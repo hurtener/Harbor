@@ -55,7 +55,11 @@ The drift-audit script (`scripts/drift-audit.sh`) checks for required headings +
 -
 
 ## Test plan
-<!-- Required. Categorize: unit / integration / conformance / concurrency / leak / fuzz. -->
+<!-- Required. Categorize: unit / integration / conformance / concurrency / leak / fuzz.
+     The Integration bucket is binding when Dependencies (below) names another shipped phase OR
+     this phase opens a cross-subsystem seam. See AGENTS.md §17. Acceptable shapes: an in-package
+     adapter test (e.g. internal/<area>/adapter_test.go) OR test/integration/<topic>_test.go.
+     Either way: real drivers on the seam, identity propagation, ≥1 failure mode, run under -race. -->
 - **Unit:**
 - **Integration:**
 - **Conformance:**
@@ -92,5 +96,6 @@ The drift-audit script (`scripts/drift-audit.sh`) checks for required headings +
 - [ ] Coverage on touched packages ≥ stated target
 - [ ] If multi-isolation paths changed: cross-session isolation test passes
 - [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. If this phase does NOT build a reusable artifact, mark this checkbox N/A with a one-line reason.
+- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. If `Dependencies` above is `00` only, mark this checkbox N/A with a one-line reason.
 - [ ] If new vocabulary: glossary updated
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed
