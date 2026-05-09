@@ -40,14 +40,15 @@ Land `internal/identity`: the canonical Go package that defines the `(tenant, us
 - [ ] No package-level mutable state. `go vet`-equivalent guard via a sentinel constant + a comment block at the top of `identity.go`.
 - [ ] Test coverage on `internal/identity` ≥ 90%.
 - [ ] Race detector test (`-race`) running ≥ 1000 concurrent ctx-derived calls confirms no shared state mutation; goroutine count returns to baseline.
-- [ ] `ConformanceTest(t *testing.T, factory func() context.Context)` exported from `internal/identity/conformance.go`; covers fail-closed-on-empty, ctx round-trip, quadruple round-trip, identity-vs-quadruple non-aliasing, and concurrent-derived-ctx isolation.
+- [ ] `Run(t *testing.T, factory func() context.Context)` exported from `internal/identity/conformancetest/conformancetest.go` (subpackage chosen so the production-code path `internal/identity` does not import `testing`); covers fail-closed-on-empty, ctx round-trip, quadruple round-trip, identity-vs-quadruple non-aliasing, and concurrent-derived-ctx isolation.
 - [ ] `make drift-audit` and `make preflight` green at commit time.
 - [ ] `phase-01.sh` smoke script present and executable; reports SKIP under preflight (Phase 01 has no HTTP surface).
 
 ## Files added or changed
 - `internal/identity/identity.go` (new) — type + function definitions.
 - `internal/identity/identity_test.go` (new) — unit + table-driven `Validate` tests + race-detector concurrency test.
-- `internal/identity/conformance.go` (new) — exported `ConformanceTest` for downstream subsystems.
+- `internal/identity/conformancetest/conformancetest.go` (new) — exported `Run` for downstream subsystems. (Deviation from earlier draft naming `internal/identity/conformance.go`: the helper imports `testing`, which production code in the parent package must not pull in. Subpackage is the idiomatic Go shape — same role as `net/http/httptest`.)
+- `internal/identity/conformancetest/conformancetest_test.go` (new) — self-applied smoke test of the suite against `context.Background()`.
 - `scripts/smoke/phase-01.sh` (new) — smoke skeleton (SKIPs at preflight; flagged for upgrade if a future surface lands).
 - `docs/plans/phase-01-identity.md` (this file).
 
@@ -123,14 +124,15 @@ func ConformanceTest(t *testing.T, factory func() context.Context)
 ## Test plan
 - **Unit:** every public function. Table-driven `Validate` covering empty-tenant / empty-user / empty-session / all-empty / fully-populated; with-and-then-from round trips; from-on-empty-ctx; quadruple ↔ identity non-aliasing (a `WithRun`-derived ctx should NOT satisfy `From` for `Identity` alone, and vice-versa, unless explicitly composed).
 - **Integration:** N/A at this phase (no other Harbor packages exist yet).
-- **Conformance:** `ConformanceTest` covers fail-closed-on-empty, ctx round-trip, quadruple round-trip, identity-vs-quadruple non-aliasing, concurrent-derived-ctx isolation. Self-applied here; consumed by future phases.
+- **Conformance:** `conformancetest.Run` covers fail-closed-on-empty, ctx round-trip, quadruple round-trip, identity-vs-quadruple non-aliasing, concurrent-derived-ctx isolation. Self-applied in `conformancetest_test.go`; consumed by future phases.
 - **Concurrency / leak:** `TestIdentity_RaceFreeConcurrentDerivedCtx` runs 1000+ goroutines deriving ctxs from different identities, asserts each goroutine reads back its own identity, and asserts `runtime.NumGoroutine` returns to baseline after the wait. `go test -race` is the gate.
 
 ## Smoke script additions
 - `scripts/smoke/phase-01.sh` issues `skip "phase 01: identity package validated by go test (no HTTP surface)"` and calls `smoke_summary`. The SKIP counter increments cleanly under preflight; no FAIL.
 
 ## Coverage target
-- `internal/identity`: 90%.
+- `internal/identity`: 90% (production code reaches 100%).
+- `internal/identity/conformancetest`: not gated; the helper's `t.Errorf` paths only fire when a downstream driver fails the suite, so a self-applied success run intentionally leaves them uncovered.
 
 ## Dependencies
 - Phase 00 (skeleton). No upstream Harbor deps.
