@@ -1,0 +1,53 @@
+# Build artifacts
+/bin/
+/dist/
+/build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+profile.cov
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local data
+*.local.yaml
+*.local.yml
+.env
+.env.local
+*.db
+*.sqlite
+*.sqlite3
+*.wal
+*.shm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Web console (when it lands)
+web/console/build/
+web/console/node_modules/
+web/console/.svelte-kit/
+
+# Frontend artifacts
+node_modules/
+.npm/
+
+# Tooling
+.tool-versions
+
+# Tmp
+*.tmp
+.tmp/
+tmp/

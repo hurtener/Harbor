@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Harbor pre-commit hook — runs the preflight gate.
+# Bypass with HARBOR_PREFLIGHT_SKIP=1 in a documented emergency.
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec bash "${ROOT}/scripts/preflight.sh"
