@@ -1,0 +1,35 @@
+# Harbor — example configuration. Copy and adapt; values shown here
+# are reasonable defaults for a local-dev binding. Production
+# deployments should override jwks_url, llm.api_key, and any
+# governance ceilings to match the operator's policy.
+
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+
+identity:
+  jwt_algorithms:
+    - RS256
+    - ES256
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: harbor
+
+state:
+  driver: inmem
+
+llm:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # Override via HARBOR_LLM_API_KEY in production; never commit a real key.
+  api_key: replace-me
+  timeout: 60s
+
+governance:
+  default_max_tokens: 4096
+  repair_attempts: 3
