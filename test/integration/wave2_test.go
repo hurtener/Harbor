@@ -386,6 +386,14 @@ func wave2Config() *config.Config {
 			IdleTimeout:              60 * time.Second,
 			DropWindow:               1 * time.Second,
 		},
+		// SessionsConfig populated by Phase 08; the validator now
+		// requires non-zero values, so Wave 2's config helper is
+		// updated to keep validating after Phase 08 lands.
+		Sessions: config.SessionsConfig{
+			IdleTTL:       1 * time.Hour,
+			HardCap:       2 * time.Hour,
+			SweepInterval: 30 * time.Minute,
+		},
 	}
 	return c
 }
