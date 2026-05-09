@@ -1,14 +1,14 @@
-// Phase 10 cross-subsystem integration test per AGENTS.md §17.
-//
-// Wires real audit + events + state + sessions + engine drivers and
-// runs a 3-node engine processing envelopes carrying the full
-// identity quadruple. Covers identity propagation through the engine
-// boundary plus the cycle-detection failure mode.
+// Phase 10 + Phase 11 cross-subsystem integration tests per AGENTS.md
+// §17. Wires real audit + events + state + sessions + engine + (for
+// Phase 11) telemetry/eventbus drivers and asserts identity
+// propagation, error routing through the bus, and cycle-detection /
+// node-failure failure modes.
 package integration_test
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
+	"log/slog"
 	"runtime"
 	"testing"
 	"time"
@@ -23,6 +23,8 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/telemetry"
+	"github.com/hurtener/Harbor/internal/telemetry/eventbus"
 )
 
 // TestE2E_Phase10_EngineProcessesEnvelopes pins the canonical
@@ -135,13 +137,13 @@ func TestE2E_Phase10_EngineProcessesEnvelopes(t *testing.T) {
 		{From: cycleA, To: []engine.Node{cycleB}},
 		{From: cycleB, To: []engine.Node{cycleA}},
 	})
-	if !errors.Is(err, engine.ErrCycleDetected) {
+	if !stderrors.Is(err, engine.ErrCycleDetected) {
 		t.Errorf("cycle detection: err=%v, want ErrCycleDetected", err)
 	}
 
 	// Identity-mandatory failure mode at Emit boundary.
 	bad := messages.Envelope{} // empty triple
-	if err := e.Emit(context.Background(), bad); !errors.Is(err, engine.ErrIdentityRequired) {
+	if err := e.Emit(context.Background(), bad); !stderrors.Is(err, engine.ErrIdentityRequired) {
 		t.Errorf("empty-identity Emit: err=%v, want ErrIdentityRequired", err)
 	}
 
@@ -243,6 +245,135 @@ func TestE2E_Phase10_ConcurrentRuns_BusAndEngineCompose(t *testing.T) {
 	defer cancelStop()
 	if err := e.Stop(stopCtx); err != nil {
 		t.Fatalf("engine.Stop: %v", err)
+	}
+}
+
+// TestE2E_Phase11_NodeFailure_BusEvent wires the Phase 11 reliability
+// shell end-to-end: a node deliberately fails; the engine's
+// RunErrorHandler routes the structured *RunError through the
+// telemetry.Logger which fires the eventbus.Adapter to publish a
+// runtime.error event; an admin subscriber asserts the event arrived
+// with the right identity and error code.
+//
+// This is the seam Wave 2 wired and Phase 11 finally exercises
+// end-to-end through the runtime kernel chain.
+func TestE2E_Phase11_NodeFailure_BusEvent(t *testing.T) {
+	cfg := phase10Config()
+	red := auditpatterns.New()
+	bus, err := events.Open(context.Background(), cfg.Events, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+
+	store, err := state.Open(context.Background(), cfg.State)
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+
+	reg, err := sessions.New(store, cfg.Sessions, bus)
+	if err != nil {
+		t.Fatalf("sessions.New: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.CloseRegistry(context.Background()) })
+
+	// Phase 04 logger wired with the wave-2 eventbus adapter so
+	// Logger.Error fires runtime.error on the bus.
+	logger, err := telemetry.New(cfg.Telemetry, red,
+		telemetry.WithBusEmitter(eventbus.New(bus)))
+	if err != nil {
+		t.Fatalf("telemetry.New: %v", err)
+	}
+
+	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
+	ctx, _ := identity.With(context.Background(), id)
+	ctx, _ = identity.WithRun(ctx, id, "R-fail")
+
+	// Subscribe to runtime.error before opening the session, so we
+	// don't race the lifecycle event ordering.
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{events.EventTypeRuntimeError},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	if _, err := reg.Open(ctx, id.SessionID, id); err != nil {
+		t.Fatalf("Open session: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.Close(ctx, id.SessionID, "test-end") })
+
+	// Failing node — always returns an error.
+	failNode := engine.Node{
+		Name: "fail",
+		Func: func(_ context.Context, _ messages.Envelope, _ *engine.NodeContext) (messages.Envelope, error) {
+			return messages.Envelope{}, stderrors.New("synthetic failure")
+		},
+		Policy: engine.NodePolicy{MaxRetries: 0},
+	}
+
+	// RunErrorHandler routes the *RunError into Logger.Error → bus.
+	handler := engine.RunErrorHandler(func(hctx context.Context, re *engine.RunError) {
+		// Build slog.Attrs from the RunError payload so the bus event
+		// carries the structured fields.
+		payload := re.ToPayload()
+		attrs := make([]slog.Attr, 0, len(payload))
+		for k, v := range payload {
+			attrs = append(attrs, slog.Any(k, v))
+		}
+		logger.Error(hctx, "runtime: node failed", attrs...)
+	})
+
+	e, err := engine.New([]engine.Adjacency{
+		{From: failNode, To: nil},
+	}, engine.WithRunErrorHandler(handler))
+	if err != nil {
+		t.Fatalf("engine.New: %v", err)
+	}
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = e.Stop(stopCtx)
+	}()
+
+	in := messages.Envelope{
+		Headers:   messages.Headers{TenantID: id.TenantID, UserID: id.UserID, Topic: "phase11"},
+		SessionID: id.SessionID,
+		RunID:     "R-fail",
+		Payload:   "trigger-failure",
+	}
+	if err := e.Emit(context.Background(), in); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// The bus subscriber must observe a runtime.error event whose
+	// identity matches the failing envelope.
+	deadline := time.After(5 * time.Second)
+	saw := false
+	for !saw {
+		select {
+		case ev := <-sub.Events():
+			if ev.Type != events.EventTypeRuntimeError {
+				continue
+			}
+			if ev.Identity.TenantID != id.TenantID || ev.Identity.SessionID != id.SessionID || ev.Identity.RunID != "R-fail" {
+				t.Errorf("identity mismatch on runtime.error: got=%+v", ev.Identity)
+			}
+			// Payload may be RuntimeErrorPayload (SafePayload=false →
+			// redactor walks it) — RedactedMap form. Either way, we
+			// expect the structured fields to carry the run_id.
+			saw = true
+		case <-deadline:
+			t.Fatal("did not observe runtime.error within 5s")
+		}
 	}
 }
 

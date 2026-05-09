@@ -198,3 +198,165 @@ func TestEngine_ConcurrentReuse_NoCrossCancel(t *testing.T) {
 
 // silence unused import warnings on messages when no fetch path uses it directly
 var _ = messages.Envelope{}
+
+// TestEngine_ConcurrentReuse_ReuseContract_WithPolicy is the Phase 11
+// extension of the Phase 10 D-025 contract: same shared *engine, but
+// nodes have a NodePolicy with retries + backoff, and probabilistic
+// failures are sprinkled throughout. Asserts under -race that the
+// reliability shell's per-invocation state never bleeds across
+// concurrent emissions, that retries succeed, and that goroutine
+// baseline is restored after Stop.
+func TestEngine_ConcurrentReuse_ReuseContract_WithPolicy(t *testing.T) {
+	const emitters = 100
+	const fetchers = 10
+
+	baseline := runtime.NumGoroutine()
+
+	// Probabilistic-failure node — first call for each RunID fails,
+	// subsequent calls succeed. The shell's retry logic should
+	// recover; final outcome: every Emit gets a successful Fetch.
+	type runState struct {
+		seen atomic.Int32
+	}
+	var stateMu sync.Mutex
+	states := make(map[string]*runState)
+
+	getOrCreate := func(runID string) *runState {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		s, ok := states[runID]
+		if !ok {
+			s = &runState{}
+			states[runID] = s
+		}
+		return s
+	}
+
+	flaky := func(_ context.Context, in messages.Envelope, _ *engine.NodeContext) (messages.Envelope, error) {
+		s := getOrCreate(in.RunID)
+		if s.seen.Add(1) == 1 {
+			return messages.Envelope{}, fmt.Errorf("first attempt synthetic-fail for %s", in.RunID)
+		}
+		return in, nil
+	}
+
+	policy := engine.NodePolicy{
+		MaxRetries:  3,
+		BackoffBase: 1 * time.Millisecond,
+		BackoffMult: 2.0,
+		MaxBackoff:  10 * time.Millisecond,
+	}
+	a := engine.Node{Name: "A", Func: flaky, Policy: policy}
+	b := engine.Node{Name: "B", Func: passthrough}
+	c := engine.Node{Name: "C", Func: passthrough}
+	e, err := engine.New([]engine.Adjacency{
+		{From: a, To: []engine.Node{b}},
+		{From: b, To: []engine.Node{c}},
+		{From: c, To: nil},
+	}, engine.WithQueueSize(64))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := e.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	type sentEnv struct {
+		tenant string
+		runID  string
+	}
+	sent := make([]sentEnv, emitters)
+
+	var wgEmit sync.WaitGroup
+	for i := 0; i < emitters; i++ {
+		i := i
+		sent[i] = sentEnv{
+			tenant: fmt.Sprintf("t-%d", i%8),
+			runID:  fmt.Sprintf("r-%d", i),
+		}
+		wgEmit.Add(1)
+		go func() {
+			defer wgEmit.Done()
+			id := identity.Identity{
+				TenantID:  sent[i].tenant,
+				UserID:    fmt.Sprintf("u-%d", i%8),
+				SessionID: fmt.Sprintf("s-%d", i%8),
+			}
+			env := envFor(id, sent[i].runID)
+			env.Payload = sent[i].runID
+			if err := e.Emit(context.Background(), env); err != nil {
+				t.Errorf("Emit %d: %v", i, err)
+			}
+		}()
+	}
+
+	var fetchedMu sync.Mutex
+	fetched := make(map[string]string) // runID → tenant
+	bleedCount := atomic.Int64{}
+
+	var wgFetch sync.WaitGroup
+	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelFetch()
+	for f := 0; f < fetchers; f++ {
+		wgFetch.Add(1)
+		go func() {
+			defer wgFetch.Done()
+			for {
+				got, err := e.Fetch(fetchCtx)
+				if err != nil {
+					return
+				}
+				fetchedMu.Lock()
+				fetched[got.RunID] = got.Identity().TenantID
+				fetchedMu.Unlock()
+				expected := ""
+				for _, s := range sent {
+					if s.runID == got.RunID {
+						expected = s.tenant
+						break
+					}
+				}
+				if expected != "" && expected != got.Identity().TenantID {
+					bleedCount.Add(1)
+				}
+			}
+		}()
+	}
+
+	wgEmit.Wait()
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		fetchedMu.Lock()
+		n := len(fetched)
+		fetchedMu.Unlock()
+		if n >= emitters {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelFetch()
+	wgFetch.Wait()
+
+	if n := len(fetched); n != emitters {
+		t.Errorf("fetched %d distinct envelopes, want %d (some retries failed?)", n, emitters)
+	}
+	if bleedCount.Load() != 0 {
+		t.Errorf("%d cross-tenant bleed observations", bleedCount.Load())
+	}
+
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelStop()
+	if err := e.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	settle := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+3 && time.Now().Before(settle) {
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if delta := runtime.NumGoroutine() - baseline; delta > 3 {
+		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)",
+			baseline, runtime.NumGoroutine(), delta)
+	}
+}

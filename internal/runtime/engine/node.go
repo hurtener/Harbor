@@ -17,10 +17,10 @@ import (
 // the structured RunError envelope.
 type NodeFunc func(ctx context.Context, in messages.Envelope, nctx *NodeContext) (messages.Envelope, error)
 
-// Node wraps a typed async function with policy + cycle opt-in. Phase
-// 10 ships the shape; the Policy field is reserved for Phase 11's
-// reliability shell (timeout / retry / validate) and is unused at this
-// layer.
+// Node wraps a typed async function with reliability policy + cycle
+// opt-in. Phase 10 shipped the shape; Phase 11 fills NodePolicy with
+// real fields (Validate / Timeout / Retry / Backoff) and the worker
+// loop now applies them via the reliability shell.
 type Node struct {
 	// Name is the unique identifier for the node within an engine.
 	// New rejects duplicates with ErrDuplicateNodeName.
@@ -28,21 +28,15 @@ type Node struct {
 	// Func is invoked by the worker loop on each incoming envelope.
 	// nil Func is rejected at New time.
 	Func NodeFunc
-	// Policy is reserved for Phase 11 (NodePolicy). Phase 10's worker
-	// does NOT consult this field; the type is here so adjacencies
-	// remain stable across the wave-4 chain.
+	// Policy controls validation, timeout, retry, and backoff for
+	// each invocation of Func. Zero value = "no policy" (single
+	// invocation, no timeout, no retry — Phase 10's bare worker
+	// behavior). See policy.go for fields.
 	Policy NodePolicy
 	// AllowCycle opts this node out of the cycle detector. Set true
 	// for legitimate self-loop or controller-loop graphs (e.g. a
 	// planner node that emits to itself for the next reasoning step).
 	AllowCycle bool
-}
-
-// NodePolicy is reserved for Phase 11. Phase 10 ships the type so
-// adjacencies don't need to refactor when the reliability shell
-// lands; the worker never reads any field here.
-type NodePolicy struct {
-	// Reserved for Phase 11.
 }
 
 // NodeRef identifies a node by name. Used for per-channel queue
