@@ -2,7 +2,7 @@
 
 A Go-native runtime for durable, steerable, event-driven AI agents.
 
-> Harbor is in pre-V1 development. The repository is currently a design surface — RFC, phase plans, and contributor normatives are landing before implementation. See `RFC-001-Harbor.md` once it's drafted; in the meantime, `docs/research/` holds phase-planning research briefs.
+> Harbor is in pre-V1 development. The repository is currently a design surface — RFC, phase plans, and contributor normatives are landed; implementation has not yet begun. See `RFC-001-Harbor.md` for the architecture, `docs/plans/README.md` for the master phase plan (84 V1 + 14 post-V1 phases), and `docs/research/` for phase-planning research briefs.
 
 ## At a glance
 
@@ -19,8 +19,8 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 
 | Phase | What lands | Status |
 |-------|------------|--------|
-| 00 — Skeleton | Repo hygiene, AGENTS.md/CLAUDE.md, Makefile, CI scaffold, preflight gate, `docs/plans/`, `docs/rfc/`, `docs/research/` | In progress |
-| 01+ | Implementation phases per `docs/plans/` | Pending RFC |
+| 00 — Skeleton | Repo hygiene, AGENTS.md/CLAUDE.md, LICENSE, Makefile, CI scaffold, preflight + drift-audit gates, `docs/plans/`, `docs/rfc/`, `docs/research/`, glossary, decisions log | Shipped |
+| 01+ | Implementation phases per `docs/plans/README.md` (Wave 1 = phases 01, 02, 03) | Pending implementation |
 
 ## Working in this repo
 

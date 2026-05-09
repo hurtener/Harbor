@@ -105,6 +105,7 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 │   │   ├── importer/           # Skills.md importer
 │   │   ├── generator/          # in-runtime skill generator
 │   │   └── providers/{localdb,portico,...}/
+│   ├── governance/             # cost ceilings + rate limits + MaxTokens (V1); key rotation + model swap + failover (post-V1)
 │   ├── tasks/                  # unified foreground/background TaskService
 │   ├── sessions/               # SessionManager + lifecycle
 │   ├── artifacts/              # artifact store
