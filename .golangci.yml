@@ -1,0 +1,64 @@
+run:
+  timeout: 5m
+  go: "1.26"
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - errorlint
+    - gofmt
+    - goimports
+    - govet
+    - gosimple
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - gosec
+    - revive
+    - stylecheck
+    - unconvert
+    - unparam
+    - misspell
+    - prealloc
+    - bodyclose
+    - copyloopvar
+    - intrange
+    - nilerr
+    - nolintlint
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/hurtener/Harbor
+  gofmt:
+    simplify: true
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+  govet:
+    enable-all: true
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+      - name: package-comments
+      - name: var-naming
+      - name: unused-parameter
+        disabled: true
+  nolintlint:
+    require-explanation: true
+    require-specific: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+        - prealloc
