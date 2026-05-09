@@ -44,8 +44,10 @@ var (
 	// trust upstream; misconfiguration here is a fail-loudly.
 	ErrLoggerNotConfigured = errors.New("telemetry: logger not configured")
 	// ErrRedactorMissing — the constructor was given a nil redactor.
-	// Wraps audit.ErrRedactorMissing so callers can errors.Is on
-	// either sentinel.
+	// Construction-time only: New wraps both this sentinel and
+	// audit.ErrRedactorMissing so callers can errors.Is on either.
+	// Runtime redaction errors (Rule.Apply failures) bubble up via
+	// audit.ErrRedactionFailed instead — distinct error class.
 	ErrRedactorMissing = errors.New("telemetry: redactor missing")
 )
 
