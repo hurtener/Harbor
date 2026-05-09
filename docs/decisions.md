@@ -208,6 +208,14 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-026 — Context-window safety net: no raw heavy content reaches the LLM; standard `ArtifactStub` everywhere
+**Date:** 2026-05-09
+**Status:** Settled
+**Where it lives:** RFC §6.5 ("Context-window safety net" subsection + standard `ArtifactStub` schema), RFC §6.10 (heavy-output threshold), AGENTS.md §13 (forbidden: raw heavy content in LLM messages), master plan phase 32 (LLM client core enforces the catch-all pass), glossary (`Context-window safety net`, `ArtifactStub`, `ErrContextLeak`, `ErrContextWindowExceeded`).
+**Why:** The predecessor learned the hard way that LLM context windows balloon when artifacts (images, PDFs, large tool outputs, memory turns) are not consistently offloaded — the safety net was retrofitted later. Harbor settles the pattern as a runtime-wide invariant from t=0: **no message reaching the `LLMClient` carries raw heavy content.** Multi-stage enforcement: (1) producers (tool dispatcher, memory subsystem, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s as part of their normal output; (2) a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` if any ≥-threshold raw payload survived, plus fails with `ErrContextWindowExceeded` if the estimated token count is within the configured `ContextWindowReserve` (default 5%) of the model's context limit. **V1 does not auto-truncate** when the budget guard fires — the planner receives a typed error and is responsible for recovery (drop older turns, summarize, etc.); auto-cascade is post-V1 work. The standard `ArtifactStub` schema (`{artifact_ref, mime, size_bytes, hash, summary, fetch}`) is the *only* thing the LLM sees in place of heavy content; format is uniform across all producers and providers — no per-model swapping.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

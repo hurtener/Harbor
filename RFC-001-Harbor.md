@@ -658,6 +658,48 @@ The `bifrost` driver translates Harbor's `ContentPart` to bifrost's per-provider
 
 **Multimodal outputs — post-V1 via tools (D-021).** Image generation, speech synthesis, transcription, and video editing/generation are delivered as Harbor **tools** that return `ArtifactRef`s. The planner emits a `tool.<name>` action; the runtime invokes the tool via the existing dispatcher (RFC §6.4); the tool wrapper internally calls bifrost's media APIs (which already cover all 23 providers' media surfaces — see brief 08 §"What `bifrost` provides"). The `LLMClient` itself never gains an output method beyond `Complete`. Phase 97 ships the media-input tool wrappers; phase 98 ships media-output wrappers. **The protocol and types settled here in V1 mean the post-V1 work is "implement tool wrappers," not "redesign."**
 
+**Context-window safety net (Settled — D-026).** A runtime-wide invariant: **no message reaching the LLM carries raw heavy content.** The safety net is multi-stage; each producer respects the boundary, and a single enforcement pass at the LLM-client edge catches anything that slipped through.
+
+*Stage 1 — at the producer:*
+- **Tool results** above the heavy-output threshold (§6.10) are routed to the `ArtifactStore` by the Dispatcher; the planner sees an `ArtifactRef`, not bytes.
+- **Memory turns** containing heavy content carry `ArtifactRef`s, not the original payload (§6.6).
+- **Multimodal inputs** above the threshold are auto-materialized to `ArtifactRef` at `CompleteRequest` construction (D-022 above).
+- **`ObservationRenderer`** (§6.4) replaces heavy observation outputs with `ArtifactStub`s when interleaving them into the next chat thread.
+
+*Stage 2 — at the LLM-client edge (the catch-all):*
+After the planner constructs `CompleteRequest` and before the driver (`bifrost`) ships it, a **single pass** of the runtime walks the messages and:
+
+1. **Asserts no raw heavy content survived** — any string / byte slice / `DataURL` whose size ≥ threshold that *isn't* already an `ArtifactRef`-shaped stub is a bug; fail loudly with `ErrContextLeak` (and emit `llm.context_leak` audit event so operators can find the offending producer).
+2. **Estimates total tokens** of the assembled request against the model's configured context limit. If the estimate is within `ContextWindowReserve` of the limit (default 5%), fail loudly with `ErrContextWindowExceeded`. V1 does not auto-truncate; the planner gets a typed error and is expected to recover (drop older turns, summarize, etc.) — auto-cascade is **post-V1** (an extension to memory's `rolling_summary` plus a `PromptAssembler` orchestrator; tracked but not on the V1 floor).
+
+**The standard `ArtifactStub` (Settled).** When the runtime substitutes heavy content, the LLM sees a compact, model-agnostic stub:
+
+```go
+// In-prompt rendering (text-mode JSON, model-friendly):
+//   {"artifact_ref":"ref-abc-def","mime":"image/png","size_bytes":65536,
+//    "hash":"sha256:...","summary":"User-uploaded screenshot at turn 3",
+//    "fetch":{"tool":"artifact.fetch","id":"ref-abc-def"}}
+//
+// Or in multimodal Parts: a text-only ContentPart whose body is the
+// stub JSON above (the binary part is replaced wholesale).
+
+type ArtifactStub struct {
+    Ref       string  `json:"artifact_ref"`
+    MIME      string  `json:"mime"`
+    SizeBytes int64   `json:"size_bytes"`
+    Hash      string  `json:"hash,omitempty"`     // sha256 prefix
+    Summary   string  `json:"summary,omitempty"`  // operator/runtime caption
+    Fetch     *Fetch  `json:"fetch,omitempty"`    // hint: "use this tool to read the bytes"
+}
+
+type Fetch struct {
+    Tool string `json:"tool"` // e.g. "artifact.fetch_image"
+    ID   string `json:"id"`   // ArtifactRef ID
+}
+```
+
+The stub format is uniform across producers (tool result, memory turn, multimodal input). Operators can override `Summary` per-producer; the rest is runtime-stamped. **The stub is the only thing the LLM ever sees in place of heavy content** — operators do NOT swap formats per provider, because the rendered JSON works in every model's prompt.
+
 **Multimodal interaction with adjacent subsystems (Settled — D-021):**
 - **Audit redactor (§6.4):** recognizes `DataURL` and inline-base64 patterns; emits `[redacted: image/<MIME> of <N> bytes]` placeholders or rewrites to `ArtifactRef`. `ArtifactRef` itself passes through unredacted (it's already a reference, not data). Phase 03 handles this from t=0.
 - **Memory (§6.6):** strategies handle multimodal turns. `truncation` drops them wholesale (the artifacts in the store are GC'd by the artifact subsystem's lifecycle, not memory). `rolling_summary` for V1 substitutes a `[image: <ArtifactRef>, MIME=<type>, size=<N>]` placeholder when summarizing; vision-aware summarization (calling a vision model to describe the image) is post-V1.

@@ -491,6 +491,7 @@ These will cause the PR to be rejected on sight.
 - ❌ Adding identity-downgrading knobs (`require_explicit_key`-style flags that allow missing tenant/user/session). Identity is mandatory.
 - ❌ Mutable state on compiled artifacts that crosses run boundaries. A `count int` field on `Engine` / `Tool` / `Planner` / etc. is a bug. Use `atomic.*` primitives for genuinely shared counters, or move per-run state into `ctx` / `RunContext`. See §5 "Concurrent reuse contract" + D-025.
 - ❌ Shipping a reusable artifact phase without a concurrent-reuse test (N≥100 invocations against a single instance under `-race`). See §11.
+- ❌ Raw heavy content in a message reaching the `LLMClient`. Any string / byte slice / `DataURL` ≥ heavy-output threshold that is not already an `ArtifactStub` is a leak. The runtime's LLM-edge enforcement pass fails loudly with `ErrContextLeak` and emits `llm.context_leak`. See RFC §6.5 "Context-window safety net" + D-026.
 - ❌ Raw color / spacing / type-scale literals in `.svelte` files (when Console code lands).
 - ❌ Hand-rolling a component the chosen library (default Skeleton) already provides.
 - ❌ Mixing package managers (`pnpm`/`yarn`) inside `web/console/` (when it lands). `npm` only.
