@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
@@ -28,6 +29,9 @@ var ErrUnknownDriver = errors.New("events: unknown driver")
 var (
 	factoriesMu sync.RWMutex
 	factories   = map[string]Factory{}
+	// registerForTestCounter makes RegisterForTest names unique across
+	// `go test -count=N` iterations of the same test.
+	registerForTestCounter atomic.Uint64
 )
 
 // Register installs a driver factory under name. Drivers self-register
@@ -49,6 +53,41 @@ func Register(name string, factory Factory) {
 		panic(fmt.Sprintf("events: driver %q already registered", name))
 	}
 	factories[name] = factory
+}
+
+// RegisterForTest installs a driver factory under a per-test unique
+// name and registers a t.Cleanup that removes it when the test ends.
+// Use this in tests that need to register a sentinel driver at
+// runtime — production code path is still Register from init().
+//
+// The function returns the actual registered name (suffixed with the
+// test's name and a counter so two `-count=N` iterations don't
+// collide). The returned name is what callers should set on
+// EventsConfig.Driver to route Open through the sentinel factory.
+//
+// Without this helper, runtime Register calls leak entries into the
+// process-wide map and panic on the second invocation under
+// `go test -count=N`. The cleanup hook closes that gap.
+func RegisterForTest(t interface {
+	Helper()
+	Name() string
+	Cleanup(func())
+}, name string, factory Factory) string {
+	t.Helper()
+	uniq := fmt.Sprintf("%s::%s::%d", name, t.Name(), registerForTestCounter.Add(1))
+	Register(uniq, factory)
+	t.Cleanup(func() { unregister(uniq) })
+	return uniq
+}
+
+// unregister removes a driver factory by name. Unexported because it
+// is only meant for the test-cleanup path; production code must never
+// remove a driver mid-flight (callers may hold an EventBus that the
+// driver constructed). Idempotent on a missing name.
+func unregister(name string) {
+	factoriesMu.Lock()
+	defer factoriesMu.Unlock()
+	delete(factories, name)
 }
 
 // Open returns an EventBus built by the factory whose name matches
