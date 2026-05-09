@@ -47,6 +47,16 @@ type NodePolicy struct {
 	// time is the engine's responsibility, not the shell's; Phase 10
 	// could harden this if needed).
 	ValidateFunc func(messages.Envelope) error
+	// RunCapacity (Phase 12) caps the number of pending stream frames
+	// (EmitChunk-emitted) for a run originating at this node before
+	// EmitChunk blocks. 0 means "use the engine's DefaultQueueSize"
+	// (64). Per-run override via WithRunCapacity on the originating
+	// Engine.Emit takes precedence over this field.
+	//
+	// Backpressure is per-run, not per-engine: one run's saturation
+	// never pauses other runs (this is the deadlock-prevention
+	// guarantee from brief 01 §4).
+	RunCapacity int
 }
 
 // ValidateMode selects which side of a node invocation the worker
