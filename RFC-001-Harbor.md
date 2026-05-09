@@ -21,6 +21,7 @@ Harbor is a Go-native runtime SDK for durable, steerable, event-driven AI agents
 4. **Harbor CLI** — the `harbor` binary. `harbor dev` boots a local Runtime + Console with hot reload and dynamic agent scaffolding (with draft saving).
 
 V1 ships:
+
 - The Runtime layer with **all** of the subsystems listed in §6.
 - The Protocol layer with one wire transport (Settled in §5; Tentative — see §11 Q-1).
 - The CLI with `harbor dev`, `harbor scaffold`, `harbor validate`, `harbor inspect-events`, `harbor inspect-runs`, `harbor version`.
@@ -59,7 +60,7 @@ Harbor's three non-negotiable product properties — multi-isolation across `(te
 
 ### 3.1 The four layers
 
-```
+```text
                                 +-----------------------+
                                 |    Harbor Console     |
                                 |  (Protocol client;    |
@@ -268,6 +269,7 @@ type Engine interface {
 ```
 
 **Settled decisions:**
+
 - Identity quadruple `(TenantID, UserID, SessionID, RunID)` flows through the Envelope. `RunID` is Harbor's term for what the predecessor called `trace_id`; Harbor reserves `TraceID` for OpenTelemetry-style traces (which may span multiple runs). (Resolves brief 01 Q-1.)
 - `DeadlineAt` is wall-clock, not duration. Set once at the boundary.
 - The egress fetch dispatcher is **always-on**. The dual-mode (pre-dispatcher direct fetch vs post-dispatcher per-run demux) the predecessor ships exists for backward compatibility Harbor doesn't owe to anyone.
@@ -276,6 +278,7 @@ type Engine interface {
 - Bus publishing failures surface to the Protocol; never silently swallowed.
 
 **Key data shapes** (settled in `docs/research/01-core-runtime.md`):
+
 - `Node`, `NodePolicy` (timeout/retry/validate/backoff), `RunError` (structured), `StreamFrame` (per-stream `Seq`, terminal `Done`).
 - Routers: `PredicateRouter`, `UnionRouter`, `RoutePolicy`.
 - Concurrency: `MapConcurrent`, `JoinK`.
@@ -363,12 +366,14 @@ type Finish        struct { Reason FinishReason; Payload any; Metadata map[strin
 ```
 
 **Settled decisions:**
+
 - `Decision` is a sum type. Runtime opcodes (parallel, spawn, await, pause, finish) are *different shapes* from tool calls. The predecessor's "magic strings as `next_node`" pattern is rejected.
 - `RunContext` is the *only* surface the planner sees. Planners do not import Runtime internals. The Runtime hands the planner a pre-filtered catalog (visibility already applied), a memory view (scoping already bound), a skills lookup, the artifact store, and `Control` signals.
 - The reference `react` planner uses functional options for the small set of genuinely policy-shaped knobs. Token budget, hop budget, deadline, max_iters, schema mode, cost cap are **runtime-level run options**, not planner state. The predecessor's ~70-field, ~50-constructor-parameter planner class is the anti-pattern.
 - Concurrency: planners are safe to use across runs; the Runtime serializes calls *within* a run. State keyed by `RunID` is the pattern.
 
 **Trajectory:**
+
 ```go
 type Trajectory struct {
     Query          string
@@ -400,6 +405,7 @@ Steering is a Runtime capability, surfaced over the Protocol. Planners observe `
 `approval_required`, `await_input`, `external_event`, `constraints_conflict`.
 
 **Pause/resume primitive:**
+
 ```go
 package pauseresume
 
@@ -494,6 +500,7 @@ type ToolProvider interface {
 ```
 
 **Settled decisions:**
+
 - The unification is at the **type level**: every `Tool` is the same struct regardless of source. The dispatch is one switch in one place.
 - `CatalogFilter` keys on the full identity triple plus `GrantedScopes`. The predecessor filters by tenant only; Harbor goes further from t=0.
 - Argument validation runs at the catalog edge; failures are typed `tool.invalid_args` events (not tool errors) so the planner can reformulate via LLM retry feedback.
@@ -525,6 +532,7 @@ catalog.RegisterFunc(
 `tools.RegisterFunc` derives `ArgsSchema` and `OutSchema` from the Go signature via generics + reflection (no manual JSON-Schema authoring for the common case).
 
 **Transports shipped at V1:**
+
 - **InProcess** — tool authors register a Go function via generics + reflection (schemas derived from input/output types).
 - **HTTP** — UTCP-style manifest, static auth (API key, bearer, cookie), retry, rate-limit handling.
 - **MCP southbound** — Go MCP client driver (stdio + streamable-HTTP + SSE); auto-detect transport via `MCPTransportMode = Auto | SSE | StreamableHTTP`.
@@ -661,6 +669,7 @@ The `bifrost` driver translates Harbor's `ContentPart` to bifrost's per-provider
 **Context-window safety net (Settled — D-026).** A runtime-wide invariant: **no message reaching the LLM carries raw heavy content.** The safety net is multi-stage; each producer respects the boundary, and a single enforcement pass at the LLM-client edge catches anything that slipped through.
 
 *Stage 1 — at the producer:*
+
 - **Tool results** above the heavy-output threshold (§6.10) are routed to the `ArtifactStore` by the Dispatcher; the planner sees an `ArtifactRef`, not bytes.
 - **Memory turns** containing heavy content carry `ArtifactRef`s, not the original payload (§6.6).
 - **Multimodal inputs** above the threshold are auto-materialized to `ArtifactRef` at `CompleteRequest` construction (D-022 above).
@@ -701,6 +710,7 @@ type Fetch struct {
 The stub format is uniform across producers (tool result, memory turn, multimodal input). Operators can override `Summary` per-producer; the rest is runtime-stamped. **The stub is the only thing the LLM ever sees in place of heavy content** — operators do NOT swap formats per provider, because the rendered JSON works in every model's prompt.
 
 **Multimodal interaction with adjacent subsystems (Settled — D-021):**
+
 - **Audit redactor (§6.4):** recognizes `DataURL` and inline-base64 patterns; emits `[redacted: image/<MIME> of <N> bytes]` placeholders or rewrites to `ArtifactRef`. `ArtifactRef` itself passes through unredacted (it's already a reference, not data). Phase 03 handles this from t=0.
 - **Memory (§6.6):** strategies handle multimodal turns. `truncation` drops them wholesale (the artifacts in the store are GC'd by the artifact subsystem's lifecycle, not memory). `rolling_summary` for V1 substitutes a `[image: <ArtifactRef>, MIME=<type>, size=<N>]` placeholder when summarizing; vision-aware summarization (calling a vision model to describe the image) is post-V1.
 - **Tools (§6.4):** any tool can declare `ArtifactRef` in its `args` schema or `result` shape. The runtime resolves refs at invocation; the tool reads bytes via the `ArtifactStore`. No special "media tool" type — multimodal is a convention on top of the existing tool catalog.
@@ -744,6 +754,7 @@ type Store interface {
 ```
 
 **Settled:**
+
 - Three strategies: `none` (no-op), `truncation` (recent-window + budget enforcement), `rolling_summary` (background summarization, health states `healthy → retry → degraded → recovering → healthy`).
 - Identity is **mandatory**. The predecessor's `require_explicit_key=False` knob is removed from Harbor. Missing identity = empty result + audit event. (Settled.)
 - Three drivers ship at V1: in-memory, SQLite, Postgres. One conformance suite passes against all three.
@@ -795,6 +806,7 @@ type SkillProvider interface {
 **Virtual-directory pattern (Settled):** `Directory(cfg)` returns identity-scoped, capability-filtered, pinned-then-{recent|top} entries. Up to `max_entries` (default 30, range 1–200).
 
 **Skills.md importer pipeline (Settled):**
+
 1. Parse YAML frontmatter + Markdown body via a deterministic CommonMark-only parser.
 2. Normalize body sections (`## Steps`, `## Preconditions`, `## Failure modes`) into structured fields.
 3. Resolve sibling resource files; record them as `Extra.attachments`.
@@ -857,6 +869,7 @@ type TaskRegistry interface {
 ```
 
 **Settled:**
+
 - **Foreground and background unify under one `TaskID` namespace.** A foreground run is a task of kind `foreground`. The predecessor splits `trace_id` (foreground) from a separate `task_id` namespace (background) and even fakes a synthetic `trace_id` like `session:<id>` to fit session updates into a trace-keyed audit log; Harbor's `TaskID` with `Kind` collapses that.
 - **Lifecycle:** `PENDING → RUNNING → COMPLETE`, with `PAUSED → RUNNING` (planner-initiated, durable via planner checkpoint), `FAILED | CANCELLED` terminal.
 - **Cancellation propagation** honors `PropagateOnCancel` (`cascade` | `isolate`).
@@ -891,6 +904,7 @@ type SessionRegistry interface {
 ```
 
 **Settled session-lifetime invariants:**
+
 - A session is open until explicitly closed or GC'd.
 - **Reopen-after-close is forbidden.** Clients open a new session.
 - The identity triple is captured on `Open` and **immutable** for the session's lifetime; reusing a session ID across tenants/users is rejected.
@@ -926,6 +940,7 @@ type Store interface {
 ```
 
 **Settled:**
+
 - Heavy outputs MUST route through the ArtifactStore. There is no opt-in flag and no `NoOp` fallback. An in-memory driver is the floor; production drivers (filesystem, SQLite-blob, Postgres-blob, S3-style) ship as additional drivers behind the same interface.
 - IDs are content-addressed: `{namespace}_{sha256[:12]}`. Re-uploading identical bytes returns the existing ref.
 - Access goes through a `ScopedArtifacts` facade per task that auto-stamps the identity triple on writes and scope-checks on reads. Tools never see raw scopes.
@@ -973,6 +988,7 @@ type StateStore interface {
 ```
 
 **Settled:**
+
 - One mandatory interface, three V1 drivers (in-memory, SQLite, Postgres), one conformance suite. The predecessor's eight optional `Supports*` capability protocols + `hasattr` duck-typing are explicitly rejected — if all V1 drivers implement everything, optional capabilities are ceremony.
 - Forward-only migrations, per-driver migration directories. Each migration ends with `INSERT OR IGNORE INTO schema_migrations(version) VALUES (N);` (or driver equivalent).
 - WAL journal mode for SQLite.
@@ -1006,6 +1022,7 @@ type RemoteTransport interface {
 ```
 
 **Settled:**
+
 - V1 ships the interfaces, an in-process `MessageBus` (loopback), and a `RemoteTransport` capable of speaking A2A to remote agents.
 - No durable distributed bus driver (NATS, Redis Streams, Postgres-as-queue) at V1. Post-V1 phases (`Distributed-2`, `Distributed-3`, …) add those.
 - Delivery semantics: `MessageBus.Publish` is at-least-once; handlers must be idempotent on `(TaskID, Edge, EventID)`. `RemoteTransport.Send` is request/reply; `Stream` yields ordered events with a final `done=true`. (Resolves brief 05 Q-4.)
@@ -1046,6 +1063,7 @@ type Bus interface {
 ```
 
 **Settled:**
+
 - One bus, not two. The predecessor's split of `FlowEvent` (telemetry) vs `StreamChunk` (chunked output) is unified.
 - Drop policy on backpressure: drop-oldest, with a `bus.dropped` event describing the dropped sequence range and reason.
 - Server-enforced isolation filter: subscribe rejects calls that elide the identity triple unless the caller has `admin` scope.
@@ -1063,6 +1081,7 @@ type Bus interface {
 Slog + OpenTelemetry from t=0. The Runtime emits events; the events drive both slog records (via the `Logger` wrapper) and OTel spans/metrics (via `Tracer` and `MetricsRegistry`). No retrofit.
 
 **Settled:**
+
 - One logger: `log/slog`. JSON in production, text in dev. No toggle inside the library; the slog handler is selected at process start.
 - Standard attribute set on every logger: `tenant_id`, `user_id`, `session_id`, `run_id`, `task_id`, `trace_id`, `span_id`, `tool` (when present).
 - `Logger.Error` emits both an slog record AND a paired `runtime.error` bus event so logs always have an event peer. (Settled.)
@@ -1157,6 +1176,7 @@ type CircuitBreaker interface { /* per-(provider, key) health (post-V1) */ }
 The Console is **its own product, in its own repository.** It is a SvelteKit + adapter-static SPA that talks to the Runtime exclusively over the Harbor Protocol. (Settled — `AGENTS.md` §4.5.)
 
 **Scope of Console (V1):**
+
 - Live event stream view per session/run, with filter/search.
 - Run timeline with planner steps, tool calls, LLM calls, costs.
 - Task list and control (cancel/pause/resume/prioritize/approve/reject).
@@ -1166,6 +1186,7 @@ The Console is **its own product, in its own repository.** It is a SvelteKit + a
 - Topology visualization (node graph, queue depth).
 
 **Out of scope (V1):**
+
 - Authoring agents in the Console (the dev-loop scaffolding lives in `harbor dev` + CLI, with the Console as the inspector — not the editor).
 - Hosting the Console in the Harbor Runtime binary. (Even when `harbor dev` boots a local Console, the Console is spawned as a separate static-file server or embedded via a thin static-file handler that talks to the Runtime via the Protocol — not via direct package imports.)
 
@@ -1177,7 +1198,7 @@ The Console repo and its phase plans land in a separate sequence. Some Console-r
 
 The Harbor CLI is a single binary `harbor` with subcommands. (Settled.)
 
-```
+```text
 harbor dev               Boot local Runtime + embedded Console + hot reload + draft-save scaffolding
 harbor scaffold          Generate a new agent skeleton from a template
 harbor validate          Validate config / skills / agent definitions without booting
@@ -1188,6 +1209,7 @@ harbor version           Print version, build hash, supported Protocol version
 ```
 
 **Settled:**
+
 - All subcommands are Protocol clients of the Runtime; they use the same client SDK a third-party tool would.
 - `harbor dev` boots the Runtime headless on `127.0.0.1:<port>`, opens the Protocol, starts the embedded Console, watches the project directory for changes, hot-reloads on Go-source changes (graceful-stop in-flight runs first; configurable), and exposes a draft-save scratchpad endpoint for dynamic agent scaffolding.
 - The dynamic scaffolding flow: a developer iterates on an agent in the dev loop, saves drafts (project-local `.harbor/drafts/`), and only commits to a final scaffold when satisfied.
@@ -1208,6 +1230,7 @@ V1 ships **three** drivers behind every persistence-shaped interface (`StateStor
 All three pass the same conformance suite. Designing the interface against three backends from t=0 forces clean abstractions; designing against one tends to leak that backend's assumptions into the contract.
 
 **Settled:**
+
 - One mandatory interface per subsystem. No optional `Supports*` ceremony.
 - Forward-only, per-driver migrations.
 - WAL journal mode for SQLite.
