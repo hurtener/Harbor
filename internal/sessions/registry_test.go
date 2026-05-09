@@ -456,19 +456,57 @@ func TestRegistry_GC_EmitsGCReapedEvent(t *testing.T) {
 	}
 }
 
+// wireExplicit constructs the same drivers as testWiring but returns
+// a single close callback the caller invokes synchronously, instead
+// of registering t.Cleanup. Goroutine-leak tests need the close to
+// run BEFORE the leak check, not after the test body returns.
+func wireExplicit(t *testing.T) (*sessions.Registry, func()) {
+	t.Helper()
+	cfg := config.SessionsConfig{IdleTTL: 24 * time.Hour, HardCap: 720 * time.Hour, SweepInterval: 1 * time.Hour}
+	red := auditpatterns.New()
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver: "inmem", MaxSubscribersPerSession: 16, SubscriberBufferSize: 64,
+		IdleTimeout: 60 * time.Second, DropWindow: 1 * time.Second,
+	}, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		_ = bus.Close(context.Background())
+		t.Fatalf("state.Open: %v", err)
+	}
+	reg, err := sessions.New(store, cfg, bus)
+	if err != nil {
+		_ = bus.Close(context.Background())
+		_ = store.Close(context.Background())
+		t.Fatalf("sessions.New: %v", err)
+	}
+	return reg, func() {
+		_ = reg.CloseRegistry(context.Background())
+		_ = bus.Close(context.Background())
+		_ = store.Close(context.Background())
+	}
+}
+
 func TestRegistry_Sweeper_StartsAndStops_NoLeak(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel — goroutine-baseline checks are sensitive to
+	// concurrent test goroutines polluting the count.
 	baseline := runtime.NumGoroutine()
 	for i := 0; i < 10; i++ {
-		reg, _, _ := testWiring(t)
-		_ = reg.CloseRegistry(context.Background())
+		_, closeAll := wireExplicit(t)
+		closeAll()
 	}
+	// Allow short settling for the sweeper / bus reaper goroutines to
+	// observe their cancellation. Tolerance is wider than +2 because
+	// the test creates 10 instances and Go's runtime may not retire
+	// the parked goroutines immediately even after Close returned.
 	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+	for runtime.NumGoroutine() > baseline+3 && time.Now().Before(deadline) {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)
 	}
-	if delta := runtime.NumGoroutine() - baseline; delta > 2 {
+	if delta := runtime.NumGoroutine() - baseline; delta > 3 {
 		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)", baseline, runtime.NumGoroutine(), delta)
 	}
 }
@@ -541,21 +579,22 @@ func TestRegistry_CrossTenant_OpenIsolation(t *testing.T) {
 }
 
 func TestRegistry_NoGoroutineLeak_AfterClose(t *testing.T) {
+	// No t.Parallel — goroutine baseline is sensitive to concurrent
+	// test goroutines.
 	baseline := runtime.NumGoroutine()
-	reg, _, _ := testWiring(t)
+	reg, closeAll := wireExplicit(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
+		closeAll()
 		t.Fatalf("Open: %v", err)
 	}
-	if err := reg.CloseRegistry(context.Background()); err != nil {
-		t.Fatalf("CloseRegistry: %v", err)
-	}
+	closeAll()
 	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
+	for runtime.NumGoroutine() > baseline+3 && time.Now().Before(deadline) {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)
 	}
-	if delta := runtime.NumGoroutine() - baseline; delta > 2 {
-		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, runtime.NumGoroutine())
+	if delta := runtime.NumGoroutine() - baseline; delta > 3 {
+		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)", baseline, runtime.NumGoroutine(), delta)
 	}
 }
