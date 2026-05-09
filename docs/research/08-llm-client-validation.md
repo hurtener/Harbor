@@ -117,6 +117,7 @@ models:
 ```
 
 This matches the operator's stated need ("we might need to leave seams to configure some models"). Concretely:
+
 - `provider`: which bifrost driver to use.
 - `model`: the provider-specific model identifier.
 - `reasoning_effort`: maps to bifrost's `ChatReasoning`.

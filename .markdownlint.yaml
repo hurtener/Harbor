@@ -6,3 +6,7 @@ MD033: false
 MD041: false
 MD046:
   style: fenced
+# MD060 is a stylistic preference about whether table separator pipes
+# carry single-space padding. Existing Harbor tables use the compact
+# `|---|` form; touching ~80 separator rows for cosmetics is churn.
+MD060: false

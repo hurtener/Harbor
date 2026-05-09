@@ -68,6 +68,7 @@ These findings emerged across multiple briefs and are recorded in memory under `
 ## Adding a new brief
 
 A new brief lands when:
+
 - A new subsystem is being scoped that's not covered above.
 - An empirical validation produces phase-shaping findings (brief 08 is an example).
 - A surface in the predecessor needs deeper investigation than the existing briefs covered.

@@ -1,9 +1,11 @@
 # Phase 00 — Repo Skeleton
 
 ## Summary
+
 Establish the repository's working surface: contributor normatives, build hygiene, CI scaffold, preflight gate, doc structure, license, and the drift hygiene framework (template + glossary + decisions log + drift-audit). No Go code yet (`go.mod` is a stub at module declaration).
 
 ## Goals
+
 - A new contributor (human or AI) can clone, run `make check-mirror`, `make drift-audit`, `make preflight`, and `make install-hooks` and have a working dev loop.
 - AGENTS.md and CLAUDE.md are verbatim mirrors enforced by CI and a local hook.
 - Phase smoke convention is in place — `scripts/smoke/common.sh` + `scripts/smoke/phase-00.sh` + `scripts/smoke/_template.sh` — so subsequent phases can extend it.
@@ -11,11 +13,13 @@ Establish the repository's working surface: contributor normatives, build hygien
 - The drift hygiene framework (per-phase template + subsystem→briefs index + decisions log + glossary + drift-audit script + binding §16 authoring workflow in AGENTS.md/CLAUDE.md) is operational.
 
 ## Non-goals
+
 - No `cmd/harbor/main.go`. No `internal/...` packages. The Runtime arrives in Phase 01+.
 - No Console code. The Console lives in its own repo or in `web/console/` once approved by RFC.
 - No production CI gates that require Go sources. Go-shaped CI jobs exist but auto-skip until Phase 01 lands.
 
 ## Acceptance criteria
+
 - [x] `AGENTS.md` exists and covers §1–§17 (orientation block + 17 numbered sections).
 - [x] `CLAUDE.md` is a verbatim mirror of `AGENTS.md`.
 - [x] `LICENSE` (Apache-2.0) present at repo root.
@@ -28,6 +32,7 @@ Establish the repository's working surface: contributor normatives, build hygien
 - [x] No top-level doc names the predecessor project; the smoke script enforces the invariant.
 
 ## Files added or changed
+
 - `AGENTS.md`, `CLAUDE.md`
 - `README.md`
 - `LICENSE` (Apache-2.0)
@@ -45,17 +50,22 @@ Establish the repository's working surface: contributor normatives, build hygien
 - `scripts/preflight.sh`, `scripts/drift-audit.sh`, `scripts/smoke/common.sh`, `scripts/smoke/phase-00.sh`, `scripts/smoke/_template.sh`, `scripts/install-hooks.sh`, `scripts/hooks/pre-commit`
 
 ## Test plan
+
 This phase has no Go tests (no Go source). Verification is the smoke script + CI green.
 
 ## Smoke script additions
+
 `scripts/smoke/phase-00.sh` asserts the doc + mirror + license + drift hygiene invariants listed above (31 assertions total).
 
 ## Coverage target
+
 N/A for this phase.
 
 ## Dependencies
+
 None.
 
 ## Open questions / risks
+
 - Final phase numbering scheme — currently 00..NN sequential with two non-sequential V1 inserts (36a, 36b) for Governance. If the RFC switches to subsystem-prefixed numbering (e.g. `R-01`, `P-01`), all phase plans get renamed in a single PR and the README reorganized.
 - Brief 09+ may land if a substantial new investigation surface emerges; the INDEX.md + drift-audit handle additions cleanly.

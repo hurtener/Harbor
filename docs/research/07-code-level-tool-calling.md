@@ -8,7 +8,7 @@ This is the keystone architectural property the source establishes (see `~/Repos
 
 ## 2. Data flow trace
 
-```
+```text
                                                                             
            ┌──────────────────────────────────────────────────────────┐     
            │ Trajectory  ─── system prompt ───────┐                   │     
@@ -108,6 +108,7 @@ After the planner step completes, results are merged back into the trajectory an
 ## 6. What the LLM client does (and doesn't) provide
 
 ### Required from the LLM client (the entire surface)
+
 - **Async chat completion** taking `messages: Sequence[Mapping[str, str]]` (`role`/`content` only — system/user/assistant — no `tool_calls`, no `tool_call_id`).
 - **Optional `response_format`** hint: `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {...}}`. The runtime is responsible for sanitizing/downgrading per provider; the client just forwards.
 - **Optional streaming** with two callbacks: `on_stream_chunk(text, done)` for content deltas and `on_reasoning_chunk(text, done)` for thinking-channel deltas.
@@ -117,6 +118,7 @@ After the planner step completes, results are merged back into the trajectory an
 That's it. The full protocol is `~/Repos/Penguiflow/penguiflow/penguiflow/planner/models.py:93-101` — six-line `Protocol`.
 
 ### NOT required from the LLM client
+
 - Provider-native tool calling (`tools=[...]`, `tool_choice=...`, OpenAI `function_call`, Anthropic `tool_use` blocks, Gemini `function_calling`).
 - Provider-native parallel tool calls.
 - Provider-native tool-call-ID generation.
@@ -125,6 +127,7 @@ That's it. The full protocol is `~/Repos/Penguiflow/penguiflow/penguiflow/planne
 - Cost/usage reporting *per tool call* (the runtime does this from its own dispatch path).
 
 ### What the "native" correction layer actually does
+
 The source's `NativeLLMAdapter` (`~/Repos/Penguiflow/penguiflow/penguiflow/llm/protocol.py:161-650`) wraps a richer internal `LLMClient` (`~/Repos/Penguiflow/penguiflow/penguiflow/llm/client.py:69`) but **implements the exact same `JSONLLMClient.complete` interface**. Its corrections are:
 
 - **Structured-output mode selection** per provider (`response_format` shape, sanitization, `additionalProperties: false`, `strict: true` modes).

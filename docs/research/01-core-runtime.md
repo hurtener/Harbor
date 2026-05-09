@@ -150,14 +150,16 @@ Catalogued so they are designed-out, not rediscovered:
 
 Coverage gates per Harbor's CI rigor (`feedback_harbor_doc_hygiene.md`):
 
-**Unit**
+### Unit
+
 - Envelope construction defaults (`RunID`, `Timestamp`).
 - `NodePolicy` validation modes.
 - Cycle detector accepts trees / DAGs; rejects cycles unless `AllowCycle` is set.
 - Backoff calculation given various `attempt`/`MaxBackoff` combinations.
 - `RunError.ToPayload()` round-trip (JSON).
 
-**Integration**
+### Integration
+
 - Linear graph: emit → fetch returns expected envelope.
 - Fan-out + `JoinK`: K parallel branches reduce to one output.
 - `MapConcurrent` honors max-concurrency bound.
@@ -165,57 +167,67 @@ Coverage gates per Harbor's CI rigor (`feedback_harbor_doc_hygiene.md`):
 - Streaming: per-stream `Seq` ordering, terminal `Done` frame, downstream backpressure under a slow consumer.
 - Subflow: parent emits, subflow processes, parent receives.
 
-**Concurrency**
+### Concurrency
+
 - N concurrent runs, each addressed by `RunID`, no cross-run frames in `FetchByRun`.
 - Capacity waiter does not deadlock under streaming + parallel runs.
 - `Cancel(runID)` drops queued envelopes for that run only; other runs continue.
 - Subflow cancellation mirrors when the parent is cancelled mid-subflow.
 
-**Goroutine leak**
+### Goroutine leak
+
 - `runtime.NumGoroutine()` returns to baseline after `Stop()` for: idle engine, engine with in-flight runs, engine with pending capacity waiters, engine running a subflow.
 
-**Fuzz / property**
+### Fuzz / property
+
 - Cycle detector against random graphs.
 - `Cancel` is idempotent regardless of when it's called relative to the run lifecycle.
 
-**Smoke (per-phase scripts)**
+### Smoke (per-phase scripts)
+
 - `harbor dev` boots; protocol stream produces the same `node_start / node_success / node_failed` events the runtime logs.
 
 ## 7. Phase decomposition
 
 Six phases for this subsystem, each shippable on its own:
 
-**Phase 01a — Envelopes, Headers, Identity**
+### Phase 01a — Envelopes, Headers, Identity
+
 - Scope: `Envelope`, `Headers`, identity quadruple, `Meta` propagation rules.
 - Acceptance: type-checks; `Envelope.WithRunID` returns a copy; `(Tenant, User, Session, Run)` round-trips through serialization.
 - Tests: unit + serialization round-trip.
 - Smoke: N/A (no surface yet).
 
-**Phase 01b — Engine skeleton + Channel + worker loop**
+### Phase 01b — Engine skeleton + Channel + worker loop
+
 - Scope: `Engine`, `Channel`, `Inlet/Outlet`, worker goroutines, `Run / Stop`, cycle detection, basic `Emit / Fetch`.
 - Acceptance: linear graph end-to-end works; `Stop` joins all goroutines; goroutine-leak test passes.
 - Tests: unit + leak test + stop-while-emitting test.
 - Smoke: dev binary boots an empty engine, `/healthz`-equivalent returns OK.
 
-**Phase 01c — Reliability shell (timeout, retry, validation, errors)**
+### Phase 01c — Reliability shell (timeout, retry, validation, errors)
+
 - Scope: `NodePolicy`, validate modes, timeout, retry-with-backoff, `RunError`, error-emission policy.
 - Acceptance: timeout produces `RunError(NodeTimeout)`; retries respect `MaxRetries`; validate=both rejects malformed envelopes.
 - Tests: unit on backoff math; integration on each error code.
 - Smoke: a deliberately-failing node produces a structured `RunError` on the egress.
 
-**Phase 01d — Streaming primitive + per-run capacity backpressure**
+### Phase 01d — Streaming primitive + per-run capacity backpressure
+
 - Scope: `StreamFrame`, `EmitChunk`, per-stream `Seq`, capacity waiters keyed by run.
 - Acceptance: N parallel runs each streaming K frames; ordering preserved per `StreamID`; no cross-run deadlock.
 - Tests: integration + concurrency + goroutine-leak under streaming.
 - Smoke: stream a synthetic 100-frame run end-to-end via egress.
 
-**Phase 01e — Cancellation + per-run fetch dispatcher**
+### Phase 01e — Cancellation + per-run fetch dispatcher
+
 - Scope: `Cancel(runID)`, queue draining, invocation cancellation, per-run egress demux, `FetchByRun`.
 - Acceptance: `Cancel` is idempotent, drops only the targeted run, returns true/false correctly; `FetchByRun` never returns frames from another run.
 - Tests: integration + concurrency.
 - Smoke: start two runs, cancel one, verify the other completes.
 
-**Phase 01f — Routers, concurrency utilities, subflows**
+### Phase 01f — Routers, concurrency utilities, subflows
+
 - Scope: `PredicateRouter`, `UnionRouter`, `RoutePolicy`, `MapConcurrent`, `JoinK`, `Subflow`.
 - Acceptance: each pattern matches its source-side behavior; subflow cancellation mirrors parent.
 - Tests: integration per pattern.
@@ -226,6 +238,7 @@ Six phases for this subsystem, each shippable on its own:
 **This subsystem needs (downstream):** nothing from elsewhere in Harbor. Pure foundation.
 
 **This subsystem is needed by (upstream):**
+
 - **Events bus** — emits typed events from worker-loop hooks; this subsystem provides the hooks.
 - **Protocol** — `EventStream` projects the event-bus output; `TaskControl` calls `Engine.Cancel`; `Observability` reads queue depths and worker state.
 - **Tasks** — task identity layered on top of `RunID`; foreground tasks are runs.
