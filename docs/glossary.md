@@ -10,6 +10,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ActionParser** — runtime component that extracts a typed `PlannerAction` from raw LLM text. Owns multi-action discovery, JSON-fence extraction, and the salvage path. Knows Harbor's `next_node` / `args` schema; deliberately knows nothing about provider-native tool-call shapes (RFC §6.4).
 
+**Audit redactor** — single central runtime component that produces a redacted copy of any payload before it is emitted to the event bus, logs, or audit storage. Owner of redaction per D-020 (Audit owns redaction; Governance owns thresholds). Pluggable via the §4.4 extensibility-seam pattern; default driver is pattern-based with built-in rules for credentials (`api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`) and configurable PII shapes. Returning an error from `Redact` means the caller MUST NOT emit — silent fall-through to the unredacted payload is forbidden. RFC §6.4 + §6.15.
+
 **Artifact** — a heavy output (large text, binary, structured payload above threshold) routed through the `ArtifactStore` instead of inlined into the event stream by reference. Mandatory routing — no opt-in (RFC §6.10).
 
 **ArtifactRef** — typed reference that points to an artifact in the `ArtifactStore`. Carries content hash, scope, and addressing info. Replaces inline payloads in event streams and LLM prompts.

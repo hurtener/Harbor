@@ -18,7 +18,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 00 | Skeleton                                      | repo / hygiene       | n/a         | —                     | n/a  | Shipped  |
 | 01 | Identity & isolation triple                   | identity             | §4          | 00                    | 90%  | Pending  |
 | 02 | Configuration loader                          | config               | §10         | 00                    | 85%  | Pending  |
-| 03 | Audit redactor                                | audit                | §6.14, §7   | 00                    | 90%  | Pending  |
+| 03 | Audit redactor                                | audit                | §6.4, §6.15 | 00                    | 90%  | Pending  |
 | 04 | slog Logger + standard attribute set          | telemetry            | §6.14       | 03                    | 85%  | Pending  |
 | 05 | Event taxonomy + InMem `EventBus` + isolation | events               | §6.13       | 01, 03                | 85%  | Pending  |
 | 06 | Bus replay + ring buffer + cursor             | events               | §6.13       | 05                    | 85%  | Pending  |
@@ -136,7 +136,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Smoke.** `harbor validate --config examples/harbor.yaml` returns 0 (subcommand auto-skip until phase 68).
 **Tests.** Unit on layering precedence; golden tests on validation errors.
 
-### 03 — Audit redactor (RFC §6.14, §7)
+### 03 — Audit redactor (RFC §6.4, §6.15)
 **Goal.** A single `audit.Redactor` that summarizes/truncates/redacts payloads before persistence or emission. Used by Logger, EventBus persistence, tool audit.
 **Acceptance.** Redactor handles nested maps, byte arrays, secret-shaped strings (bearer/api-key/jwt), and oversize payloads; configurable allowlist/denylist; audit emits `audit.redacted` events for inspection.
 **Smoke.** N/A (library only).
