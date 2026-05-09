@@ -22,8 +22,9 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 | 00 — Skeleton | Repo hygiene, AGENTS.md/CLAUDE.md, LICENSE, Makefile, CI scaffold, preflight + drift-audit gates, `docs/plans/`, `docs/rfc/`, `docs/research/`, glossary, decisions log | Shipped |
 | 01 — Identity foundation | `internal/identity` — `(tenant, user, session)` triple + `Quadruple` + ctx helpers + `conformancetest` suite | Shipped |
 | 02 — Configuration loader | `internal/config` — typed YAML loader (`goccy/go-yaml`), env overrides, validation, secret redaction, `examples/harbor.yaml` | Shipped |
-| 03 — Audit redactor | `internal/audit` — single deep-redaction pass + driver registry + canonical secret rules + multimodal-aware redaction | Pending implementation |
-| 04+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
+| 03 — Audit redactor | `internal/audit` — single deep-redaction pass + driver registry + canonical secret rules + multimodal-aware redaction | Shipped |
+| 04 — slog logger + standard attribute set | `internal/telemetry` — identity-aware structured logger; redacts every record via `audit.Redactor`; `BusEmitter` seam for Phase 05+ runtime.error events | Shipped |
+| 05+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
 
 ## Working in this repo
 
