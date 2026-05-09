@@ -363,11 +363,25 @@ done:
 	}
 }
 
-func TestReaper_CancelsIdleSubscription(t *testing.T) {
-	clk := newFakeClock(time.Unix(0, 0).UTC())
+// TestReaper_CancelsIdleSubscription_SaturatedConsumer exercises the
+// reaper's CONSUMER-IDLE semantic: a subscriber whose buffer is full
+// AND has not had a clean (non-displacing) enqueue for IdleTimeout
+// is reaped. A "clean enqueue" means the event landed without
+// displacing an older one — i.e., the consumer was keeping up.
+//
+// The test uses real-time short timeouts (rather than fakeClock)
+// because the assertion is inherently racy against fakeClock: a
+// fast consumer that starts reading immediately after Advance can
+// drain the buffer before the reaper sees `len(ch) > 0`, in which
+// case the reaper correctly does NOT reap (the consumer is keeping
+// up). To observe the saturated-reap path deterministically we
+// must keep the consumer idle until the reaper has had a chance to
+// observe the saturation; real-time + sleep is the cleanest shape.
+func TestReaper_CancelsIdleSubscription_SaturatedConsumer(t *testing.T) {
 	cfg := defaultCfg()
-	cfg.IdleTimeout = 100 * time.Millisecond
-	bus, err := inmem.New(cfg, auditpatterns.New(), inmem.WithClock(clk))
+	cfg.SubscriberBufferSize = 4
+	cfg.IdleTimeout = 80 * time.Millisecond
+	bus, err := inmem.New(cfg, auditpatterns.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,11 +395,22 @@ func TestReaper_CancelsIdleSubscription(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Advance well past IdleTimeout — no Publish, so no progress.
-	// Reaper ticks at IdleTimeout/4 = 25ms.
-	clk.Advance(200 * time.Millisecond)
+	// Saturate without consuming. Past the 4th publish the displace
+	// path freezes lastDrain.
+	for i := 0; i < 12; i++ {
+		_ = bus.Publish(context.Background(), mkEvent(1))
+	}
 
-	// Wait for the reaper goroutine to pick up the tick and act.
+	// Wait past IdleTimeout WITHOUT reading sub.Events(). The
+	// reaper's ticker (IdleTimeout/4 = 20ms) fires repeatedly; the
+	// first tick whose `now - lastDrain >= IdleTimeout` AND
+	// `len(s.ch) > 0` reaps. After ~3 IdleTimeouts of real time we
+	// know the reap has fired.
+	time.Sleep(250 * time.Millisecond)
+
+	// NOW start reading. Channel should already be closed and the
+	// closing notice (or one of the saturating events) should be
+	// queued.
 	deadline := time.After(2 * time.Second)
 	sawClosed := false
 	closedCh := false
@@ -405,6 +430,46 @@ func TestReaper_CancelsIdleSubscription(t *testing.T) {
 	}
 	if !sawClosed {
 		t.Error("did not observe SubscriptionIdleClosed before channel close")
+	}
+}
+
+// TestReaper_DoesNotReapQuietConsumer pins the OTHER half of the
+// new semantic: a consumer whose channel is empty (because the bus
+// is quiet) is NOT reaped, even after IdleTimeout elapses. Reaping
+// healthy "I'm just waiting" subscribers would be a regression.
+func TestReaper_DoesNotReapQuietConsumer(t *testing.T) {
+	clk := newFakeClock(time.Unix(0, 0).UTC())
+	cfg := defaultCfg()
+	cfg.IdleTimeout = 100 * time.Millisecond
+	bus, err := inmem.New(cfg, auditpatterns.New(), inmem.WithClock(clk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+
+	id := mkID(1)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No Publish → channel stays empty.
+	clk.Advance(500 * time.Millisecond)
+
+	// Give the reaper goroutine a real-time chance to (incorrectly)
+	// fire. If our non-empty-buffer guard works, nothing happens.
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("quiet subscriber's channel was closed by reaper")
+		}
+		if ev.Type == events.EventTypeBusSubscriptionIdleClosed {
+			t.Fatalf("reaper fired on quiet subscriber: %+v", ev)
+		}
+	case <-time.After(150 * time.Millisecond):
+		// Expected: no reap on quiet bus.
 	}
 }
 
@@ -430,6 +495,63 @@ func TestClose_Idempotent(t *testing.T) {
 	}
 	if err := bus.Close(context.Background()); err != nil {
 		t.Fatalf("Close 2: %v", err)
+	}
+}
+
+// TestBus_CloseDuringActivePublish stresses the race between a
+// publisher mid-enqueue and Close cancelling the subscription. The
+// driver uses non-blocking sends only, so a "send on closed channel"
+// panic would surface here under -race; the test asserts no panic
+// and no deadlock.
+func TestBus_CloseDuringActivePublish(t *testing.T) {
+	bus := newBus(t)
+	id := mkID(1)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain in the background to keep the buffer churning.
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for range sub.Events() {
+		}
+	}()
+
+	// Publishers running concurrently with Close.
+	stop := make(chan struct{})
+	var pwg sync.WaitGroup
+	for p := 0; p < 8; p++ {
+		pwg.Add(1)
+		go func() {
+			defer pwg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = bus.Publish(context.Background(), mkEvent(1))
+			}
+		}()
+	}
+
+	// Let publishers run briefly, then close.
+	time.Sleep(20 * time.Millisecond)
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(stop)
+	pwg.Wait()
+	<-drainDone
+
+	// Re-publish after close — must return ErrBusClosed, not panic.
+	err = bus.Publish(context.Background(), mkEvent(1))
+	if !errors.Is(err, events.ErrBusClosed) {
+		t.Fatalf("post-close Publish err=%v, want ErrBusClosed", err)
 	}
 }
 

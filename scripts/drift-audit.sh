@@ -136,6 +136,19 @@ files_to_scan=(
 for plan in docs/plans/phase-*.md; do
     files_to_scan+=("$plan")
 done
+# Extend the scan to shipped Go source so a stray comment can't sneak
+# the predecessor's name into a release binary. find used over a glob
+# so we pick up new packages automatically.
+if [ -d internal ]; then
+    while IFS= read -r f; do
+        files_to_scan+=("$f")
+    done < <(find internal -type f -name '*.go' 2>/dev/null)
+fi
+if [ -d cmd ]; then
+    while IFS= read -r f; do
+        files_to_scan+=("$f")
+    done < <(find cmd -type f -name '*.go' 2>/dev/null)
+fi
 scan_failed=0
 for f in "${files_to_scan[@]}"; do
     [ -f "$f" ] || continue
@@ -147,7 +160,7 @@ for f in "${files_to_scan[@]}"; do
     done
 done
 if [ "$scan_failed" -eq 0 ]; then
-    ok 'forbidden-name scan clean (rule files + phase plans + indices)'
+    ok 'forbidden-name scan clean (rule files + phase plans + indices + Go source)'
 fi
 
 # 8. Ensure `make` knows about drift-audit.

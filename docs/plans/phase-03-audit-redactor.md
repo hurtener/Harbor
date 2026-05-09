@@ -46,7 +46,7 @@ Deliver Harbor's central `audit.Redactor` — a single deep-redaction pass that 
 - [ ] Built-in rules cover at minimum: `api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`. Rule names enumerable.
 - [ ] Redaction is deep — nested `map[string]any`, `[]any`, byte slices, strings, and reflective struct walking all redacted consistently.
 - [ ] On rule failure (`Apply` returns non-nil error), `Redact` returns the wrapped error and does NOT return a partial payload as fallback. Test asserts no payload bytes leak on error.
-- [ ] `noop` driver at `internal/audit/drivers/noop/` exists for tests; lint rule (in `.golangci.yml` exclude path or a `// +build harbor_test` build tag) prevents it from compiling into production binaries.
+- [ ] `noop` driver at `internal/audit/drivers/noop/` exists for tests; lint rule (in `.golangci.yml` exclude path or a `// +build harbor_test` build tag) prevents it from compiling into production binaries. **Shipped guard:** the operational rule from AGENTS.md §13 (forbidden practice "Importing a concrete driver package from anywhere except `cmd/harbor` (blank import for self-registration) or that driver's own tests") plus CODEOWNERS review on `cmd/harbor/main.go`. Build tags were not added; the §13 rule is enforced by reviewers and is mechanically simpler. Tests that need a no-op driver import the package directly and call `noop.New()`.
 - [ ] Driver registry uses the §4.4 pattern: drivers self-register from `init()`; `cmd/harbor` blank-imports the production driver only.
 - [ ] Coverage on `internal/audit` ≥ 90%.
 - [ ] Golden-file tests in `internal/audit/testdata/golden/*.json` exercise the combined rule set against representative event payload shapes.

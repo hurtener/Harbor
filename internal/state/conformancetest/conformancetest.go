@@ -431,9 +431,14 @@ func Run(t *testing.T, factory Factory) {
 						SessionID: fmt.Sprintf("s-%d", i),
 					},
 				}
+				// Mix of Save / Load / LoadByEventID / Delete per
+				// iteration so the conformance gate covers every
+				// method's concurrent-correctness contract — Phase 15
+				// SQLite + Phase 16 Postgres inherit this.
 				for j := 0; j < opsPerGo; j++ {
+					eventID := state.EventID(fmt.Sprintf("ev-%d-%d", i, j))
 					rec := state.StateRecord{
-						ID:       state.EventID(fmt.Sprintf("ev-%d-%d", i, j)),
+						ID:       eventID,
 						Identity: ident,
 						Kind:     "task.checkpoint",
 						Bytes:    []byte(fmt.Sprintf("payload-%d-%d", i, j)),
@@ -442,15 +447,28 @@ func Run(t *testing.T, factory Factory) {
 						errs.Add(1)
 						return
 					}
-					got, err := s.Load(ctx, ident, "task.checkpoint")
-					if err != nil {
+					if got, err := s.Load(ctx, ident, "task.checkpoint"); err != nil {
 						errs.Add(1)
 						return
-					}
-					// The latest Save wins; assert it's at least
-					// from this goroutine (no cross-talk).
-					if string(got.Bytes) == "" {
+					} else if string(got.Bytes) == "" {
 						errs.Add(1)
+					}
+					if got, err := s.LoadByEventID(ctx, eventID); err != nil && !errors.Is(err, state.ErrNotFound) {
+						errs.Add(1)
+						return
+					} else if err == nil && got.ID != eventID {
+						errs.Add(1)
+					}
+					// Delete every fourth iteration to exercise the
+					// erase path under concurrency. Subsequent Load
+					// MAY return ErrNotFound — both outcomes are
+					// valid given other goroutines may have
+					// re-saved the slot.
+					if j%4 == 0 {
+						if err := s.Delete(ctx, ident, "task.checkpoint"); err != nil {
+							errs.Add(1)
+							return
+						}
 					}
 				}
 			}()

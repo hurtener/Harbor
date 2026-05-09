@@ -31,7 +31,7 @@ Land `internal/events`: Harbor's typed event subsystem and the in-memory driver 
 
 ## Findings I'm departing from (if any)
 
-- None.
+- **RFC §6.13 sketch — reconciled by D-028.** The earlier draft of §6.13 used flat identity strings, called the bus interface `Bus`, ranged over `Replay`, and listed inline metric fields on `Event`. The shipped surface uses `identity.Quadruple` for identity, renames to `EventBus`, defers `Replay` to Phase 06, and reserves `Extra map[string]string` for Phase 56 metric labels. Plus the sealed-via-embedded-`Sealed` payload pattern and the `SafePayload` bypass for the audit redactor — neither was in the original sketch. D-028 captures the reconciliation; RFC §6.13 is updated in the same PR that lands this departure note.
 
 ## Goals
 

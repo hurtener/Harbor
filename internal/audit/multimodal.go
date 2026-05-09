@@ -55,19 +55,27 @@ const rawBase64MinLen = 256
 // GIF / WAV / MP3 / MP4) are encoded. Detection is conservative —
 // missing a format means the redactor falls back to the key-based
 // rules; false-positives are NOT acceptable.
-var commonImageHeaderPrefixes = map[string]string{
-	"iVBORw0KGgo":     "image/png",
-	"/9j/":            "image/jpeg",
-	"R0lGOD":          "image/gif",
-	"UklGR":           "image/webp",
-	"AAABAA":          "image/x-icon",
-	"SUkqAA":          "image/tiff",
-	"TU0AKgA":         "image/tiff",
-	"//uQ":            "audio/mp3",
-	"//tA":            "audio/mp3",
-	"UklGRiQ":         "audio/wav",
-	"AAAAIGZ0eXA":     "video/mp4",
-	"AAAAGGZ0eXA":     "video/mp4",
+//
+// Ordered slice (NOT a map) so iteration order is deterministic
+// across runs and so two prefixes that share a common stem
+// (e.g. a hypothetical `iVBORw0KGgo` vs `iVBORw`) match in the
+// declared order — longest-specific first if you ever add overlap.
+var commonImageHeaderPrefixes = []struct {
+	Prefix string
+	MIME   string
+}{
+	{"iVBORw0KGgo", "image/png"},
+	{"/9j/", "image/jpeg"},
+	{"R0lGOD", "image/gif"},
+	{"UklGRiQ", "audio/wav"}, // before UklGR (image/webp) — longer prefix wins
+	{"UklGR", "image/webp"},
+	{"AAABAA", "image/x-icon"},
+	{"SUkqAA", "image/tiff"},
+	{"TU0AKgA", "image/tiff"},
+	{"//uQ", "audio/mp3"},
+	{"//tA", "audio/mp3"},
+	{"AAAAIGZ0eXA", "video/mp4"},
+	{"AAAAGGZ0eXA", "video/mp4"},
 }
 
 // multimodalRule rewrites inline base64 / DataURL content in payload
@@ -138,9 +146,9 @@ func detectBase64Header(s string) (string, bool) {
 	if len(probe) > 16 {
 		probe = probe[:16]
 	}
-	for prefix, mime := range commonImageHeaderPrefixes {
-		if strings.HasPrefix(probe, prefix) {
-			return mime, true
+	for _, entry := range commonImageHeaderPrefixes {
+		if strings.HasPrefix(probe, entry.Prefix) {
+			return entry.MIME, true
 		}
 	}
 	return "", false

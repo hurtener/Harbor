@@ -159,16 +159,24 @@ func (b *bus) reapIdle(now time.Time) {
 	b.mu.RLock()
 	candidates := make([]*subscription, 0, len(b.subs))
 	for _, s := range b.subs {
+		// Reap ONLY when (a) we haven't seen a clean enqueue (one
+		// that fit without displacing) for at least IdleTimeout AND
+		// (b) the consumer's channel currently holds queued events.
+		// Condition (b) is the load-bearing one — a quiet bus with
+		// an empty channel means the subscriber is just waiting; an
+		// idle consumer is a non-empty channel that isn't draining.
 		lastDrain := time.Unix(0, s.lastDrain.Load())
-		if now.Sub(lastDrain) >= idle {
-			candidates = append(candidates, s)
+		if now.Sub(lastDrain) < idle {
+			continue
 		}
+		if len(s.ch) == 0 {
+			continue
+		}
+		candidates = append(candidates, s)
 	}
 	b.mu.RUnlock()
 	for _, s := range candidates {
 		idleSeconds := now.Sub(time.Unix(0, s.lastDrain.Load())).Seconds()
-		// Push the close-notice payload before cancelling so any
-		// reader still draining sees the reason.
 		notice := events.Event{
 			Type:       events.EventTypeBusSubscriptionIdleClosed,
 			Identity:   s.bound,
@@ -179,8 +187,11 @@ func (b *bus) reapIdle(now time.Time) {
 			},
 		}
 		notice.Sequence = b.seq.Add(1)
-		s.enqueueClosing(notice)
-		s.cancelInternal(b)
+		// enqueueClosing + close-channel must run under the SAME
+		// s.mu lock so the closing notice's send and the channel
+		// close don't race (concurrent publishers are also under
+		// s.mu in enqueue). cancelInternal does both atomically.
+		s.cancelInternalWithNotice(b, &notice)
 	}
 }
 
@@ -393,24 +404,17 @@ type subscription struct {
 	closeChanOnce  sync.Once
 }
 
-// Events implements events.Subscription.
+// Events implements events.Subscription. Returns s.ch directly so
+// any buffered events (including a closing notice the reaper added)
+// remain readable after cancel — closed Go channels still surface
+// their buffered values before the receive returns ok=false.
+//
+// An earlier version of this method returned a freshly-closed
+// stand-in channel when s.cancelled was true; that broke the
+// reaper-emit contract because the buffered SubscriptionIdleClosed
+// notice (and any saturating events the consumer was supposed to
+// receive) became unreachable.
 func (s *subscription) Events() <-chan events.Event {
-	return wrappedReadChan(s)
-}
-
-// wrappedReadChan returns a reader-side channel that records last-drain
-// timestamps so the reaper sees fresh activity on every read. We
-// achieve this by spawning a tiny pipe — but at scale we'd rather
-// avoid a goroutine per subscriber. Instead, expose s.ch directly
-// and rely on subscribers to call s.markDrain() if they want to
-// influence the reaper. To keep the public API ergonomic, we pump
-// s.ch through a wrapper that updates lastDrain on every read.
-func wrappedReadChan(s *subscription) <-chan events.Event {
-	if s.cancelled.Load() {
-		closed := make(chan events.Event)
-		close(closed)
-		return closed
-	}
 	return s.ch
 }
 
@@ -436,11 +440,50 @@ func (s *subscription) Cancel() {
 
 // cancelInternal performs the cancel, closing s.ch and removing the
 // subscription from the bus's map (when bus is non-nil).
+//
+// Lock order: s.mu before b.mu. Taking s.mu before closing s.ch
+// serialises the close against any in-flight enqueue (which holds
+// s.mu while doing the non-blocking sends). Without this, Close
+// racing with an active Publish triggered "send on closed channel"
+// under -race; pinned by TestBus_CloseDuringActivePublish.
 func (s *subscription) cancelInternal(b *bus) {
-	s.cancelled.Store(true)
-	s.cancelledOnce.Do(func() {
-		s.closeChanOnce.Do(func() { close(s.ch) })
-	})
+	s.cancelInternalWithNotice(b, nil)
+}
+
+// cancelInternalWithNotice is the lock-coordinated cancel used by
+// the reaper: under s.mu it (a) optionally enqueues a closing
+// notice (displacing one event if the buffer is full — consumers
+// would rather see the close reason than one more saturating
+// event) AND (b) closes s.ch. Combining both under one acquisition
+// avoids the race between the notice's send and the close in
+// cancelInternal.
+func (s *subscription) cancelInternalWithNotice(b *bus, notice *events.Event) {
+	s.mu.Lock()
+	if !s.cancelled.Load() {
+		if notice != nil {
+			select {
+			case s.ch <- *notice:
+			default:
+				// Buffer full — displace one to make room for the
+				// closing notice. The closing reason is more
+				// useful than one more saturating event the
+				// consumer wasn't going to read anyway.
+				select {
+				case <-s.ch:
+				default:
+				}
+				select {
+				case s.ch <- *notice:
+				default:
+				}
+			}
+		}
+		s.cancelled.Store(true)
+		s.cancelledOnce.Do(func() {
+			s.closeChanOnce.Do(func() { close(s.ch) })
+		})
+	}
+	s.mu.Unlock()
 	if b != nil {
 		b.mu.Lock()
 		delete(b.subs, s.id)
@@ -451,6 +494,12 @@ func (s *subscription) cancelInternal(b *bus) {
 // enqueue tries to deliver ev. Drops oldest under saturation,
 // records the drop, and may emit a sibling bus.dropped event into
 // the subscriber's stream (windowed by DropWindow).
+//
+// lastDrain advances ONLY on the fast-path send (channel had room
+// without displacement). The reaper uses lastDrain + non-empty
+// buffer as the saturation signal — a saturated buffer where the
+// only way the bus could enqueue was via displacement is exactly
+// the "consumer not keeping up" condition.
 func (s *subscription) enqueue(ev events.Event, b *bus) {
 	if s.cancelled.Load() {
 		return
@@ -462,22 +511,22 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 		return
 	}
 
-	// Fast path: try non-blocking send.
+	// Fast path: try non-blocking send. Only this path advances
+	// lastDrain — it's the signal that the buffer had room.
 	select {
 	case s.ch <- ev:
 		s.markEnqueueProgress(now.UnixNano())
-		// If a drop window is open and we're now draining, check
-		// whether to emit the bus.dropped notice.
 		s.maybeEmitDropNotice(ev.Identity, b, now)
 		return
 	default:
 	}
 
-	// Channel full — drop oldest, account, then send.
+	// Channel full — drop oldest, account, then send. lastDrain
+	// stays where it was; the reaper's "buffer non-empty + lastDrain
+	// stale" condition fires after IdleTimeout in this state.
 	var dropped events.Event
 	select {
 	case dropped = <-s.ch:
-		// account
 		s.recordDrop(dropped.Sequence, ev.Sequence)
 	default:
 		// Consumer drained between our two selects; channel is no
@@ -486,7 +535,6 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 
 	select {
 	case s.ch <- ev:
-		s.markEnqueueProgress(now.UnixNano())
 		s.maybeEmitDropNotice(ev.Identity, b, now)
 	default:
 		// Pathological — record this as dropped too.
@@ -494,18 +542,9 @@ func (s *subscription) enqueue(ev events.Event, b *bus) {
 	}
 }
 
-// enqueueClosing pushes a final notice (typically the
-// SubscriptionIdleClosed event) into the channel just before cancel.
-// Best-effort: if the channel is full, the notice is dropped.
-func (s *subscription) enqueueClosing(ev events.Event) {
-	if s.cancelled.Load() {
-		return
-	}
-	select {
-	case s.ch <- ev:
-	default:
-	}
-}
+// (enqueueClosing was inlined into cancelInternalWithNotice — the
+// closing notice and the channel close MUST happen under the same
+// s.mu acquisition or they race against concurrent publishers.)
 
 // recordDrop accumulates dropped sequence range into the open window.
 func (s *subscription) recordDrop(fromSeq, toSeq uint64) {
@@ -557,20 +596,29 @@ func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bu
 	default:
 	}
 	// Channel full — displace one event so the notice can land. The
-	// displaced event becomes part of the drop accounting we'll cite
-	// in the NEXT window (we don't update the current notice's
-	// payload after constructing it; better to under-report than
-	// race the notice's contents).
+	// displaced event becomes part of the NEXT window's drop tally
+	// (we book it via recordDrop AFTER resetting the current window
+	// because the just-emitted notice already covers events up to
+	// dropToSeq — the displaced one is news for the next window).
+	var displacedSeq uint64
+	displaced := false
 	select {
-	case displaced := <-s.ch:
-		_ = displaced
+	case ev := <-s.ch:
+		displacedSeq = ev.Sequence
+		displaced = true
 	default:
 	}
 	select {
 	case s.ch <- notice:
 		s.resetDropWindow(now)
+		if displaced {
+			s.recordDrop(displacedSeq, displacedSeq)
+		}
 	default:
 		// Still couldn't land — pathological. Will retry next enqueue.
+		if displaced {
+			s.recordDrop(displacedSeq, displacedSeq)
+		}
 	}
 }
 
