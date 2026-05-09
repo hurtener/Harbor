@@ -54,6 +54,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **EventID** — a caller-supplied ULID used as the canonical idempotency key on `StateStore.Save`. Same EventID + same Bytes is a no-op; same EventID + different Bytes returns `ErrIdempotencyConflict`. `state.NewEventID()` is a convenience helper backed by `oklog/ulid`. RFC §6.11, D-027.
 
+**EventPayload** — the sealed Go interface every concrete bus payload type embeds (via `events.Sealed`) to satisfy. The seal is enforced at compile time — declaring a payload requires importing `internal/events` so external types can't bypass the contract. RFC §6.13, D-028.
+
 **Extensibility seam** — the `interface + factory + driver` pattern any subsystem with plausible alternate backends must follow. AGENTS.md §4.4.
 
 ## F
@@ -110,6 +112,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Recipe** — a declarative (YAML/JSON) representation of a `flow.Definition` so operators can author flows without writing Go. Parses into the same `Definition` struct the runtime consumes. **V1.1 (post-V1 phase 100)** — V1 ships Go-coded `Definition`s; the recipe loader is a parser added later without changing the contract. RFC §6.1, D-023.
 
+**RedactedMap** — the post-redaction payload form for events whose `EventPayload` did not implement `SafePayload`. The audit redactor's reflective walk normalises a struct payload to `map[string]any`; the bus wraps that result in `RedactedMap` so it still satisfies `EventPayload` for delivery to subscribers. Subscribers extract redacted fields via `RedactedMap.Data`. RFC §6.13, D-028.
+
 **RepairLoop** — the runtime's recovery loop for malformed planner output. Drives `parser → validator → planner-prompt-on-failure` cycles up to `RepairAttempts`. Loud on exhaust. RFC §6.4.
 
 **Run** — one execution of the planner loop within a Session. A Session contains many Runs. `RunID` is for runtime concurrency; `TraceID` (OTel) may span Runs.
@@ -138,7 +142,11 @@ Additions to this set are RFC PRs.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
-**Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog (emitting `bus.subscription_idle_closed`). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
+**Sealed (events)** — the empty `events.Sealed` struct embedded in concrete payload types to satisfy the `EventPayload` seal. Standard Go pattern (mirrors `net/netip.Addr`'s seal). External payload types compose `Sealed` directly; bus-internal types compose `SafeSealed` (which itself embeds `Sealed`) so they additionally implement `SafePayload`. RFC §6.13, D-028.
+
+**SafePayload** — a marker interface (composing `EventPayload`) for payloads whose contents are known not to carry secrets. The bus skips the audit redactor for `SafePayload` types — typed access is preserved on the subscriber side. Bus-internal payloads (`BusDroppedPayload`, `SubscriptionIdleClosedPayload`, `AuditRedactionFailedPayload`, `AdminScopeUsedPayload`) are SafePayload by construction; external payloads default to redactor-walked. RFC §6.13, D-028.
+
+**Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog when the buffer is non-empty (a quiet bus does not trigger reaping; the reaper observes saturation, not silence). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
 
 **StateRecord** — the unit of persistence on `StateStore`. Carries `(EventID, Quadruple, Kind, Version, Bytes, UpdatedAt)`. `Bytes` is opaque to the store — callers serialize their domain types and run them through audit redaction upstream of `Save`. `Version` is a hint for typed wrappers' optimistic-concurrency checks; the store does not enforce CAS. RFC §6.11, D-027.
 

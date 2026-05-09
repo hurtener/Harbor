@@ -6,7 +6,21 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 )
+
+// opaquePassThrough returns true for struct types whose internal
+// representation should NOT be walked field-by-field — the canonical
+// example is time.Time, whose unexported fields would otherwise
+// reduce to an empty map[string]any after reflection. Treating these
+// as opaque scalar values preserves the round-trip.
+func opaquePassThrough(v any) bool {
+	switch v.(type) {
+	case time.Time, *time.Time, time.Duration, *time.Duration:
+		return true
+	}
+	return false
+}
 
 // Placeholder is the value substituted in for any redacted field.
 const Placeholder = "***"
@@ -165,6 +179,9 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 	if isArtifactRef(v) {
 		return v, nil
 	}
+	if opaquePassThrough(v) {
+		return v, nil
+	}
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() {
 		return nil, nil
@@ -304,6 +321,9 @@ func reflectiveReplaceStrings(v any, replace func(string) string, depth int) (an
 		return nil, fmt.Errorf("%w (depth=%d)", ErrRedactionDepthExceeded, depth)
 	}
 	if isArtifactRef(v) {
+		return v, nil
+	}
+	if opaquePassThrough(v) {
 		return v, nil
 	}
 	rv := reflect.ValueOf(v)

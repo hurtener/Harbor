@@ -65,7 +65,7 @@ Land `internal/telemetry`: Harbor's canonical structured logger. A thin wrapper 
 
 - `internal/telemetry/logger.go` (new) — `Logger` + `BusEmitter` interface + `Option` + sentinel errors + constructor.
 - `internal/telemetry/logger_test.go` (new) — unit tests, redaction-failure path, concurrent-reuse test, attribute-conflict resolution.
-- `internal/telemetry/options.go` (new) — `Option` type + `WithBusEmitter` (and any future option carriers; no others land in Phase 04).
+- `internal/telemetry/options.go` (new) — `Option` type + `WithBusEmitter`. **Shipped also:** `WithWriter(io.Writer)` (test-only seam — `New` defaults the slog handler to `os.Stdout`; tests inject a buffered writer via `WithWriter` to inspect emitted records). The deviation is documented inline; no production caller uses `WithWriter`.
 - `internal/telemetry/bus.go` (new) — `BusEmitter` interface declaration + `noopEmitter` default. Tiny file kept separate so Phase 05 can re-document the contract without churning `logger.go`.
 - `scripts/smoke/phase-04.sh` (new) — smoke skeleton (`SKIP` under preflight; flagged for upgrade if a future surface lands).
 - `docs/plans/phase-04-logger.md` (this file).

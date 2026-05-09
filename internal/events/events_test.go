@@ -227,6 +227,50 @@ func TestOpen_DefaultDriver(t *testing.T) {
 	}
 }
 
+// TestOpen_HonoursCfgDriver verifies Open routes by cfg.Driver, not
+// just by DefaultDriver. Pins the seam for Phase 06's replay-equipped
+// driver and Phase 57's durable-log driver — both will register
+// alternative names that Open must select via cfg.
+func TestOpen_HonoursCfgDriver(t *testing.T) {
+	// Register a sentinel driver under a non-default name. Use a
+	// unique name so this test doesn't conflict with concurrent
+	// re-runs (registration is process-wide).
+	const name = "test-honour-driver-ad9c2e"
+	called := false
+	events.Register(name, func(_ config.EventsConfig, _ audit.Redactor) (events.EventBus, error) {
+		called = true
+		return nil, errInvariantNotABus
+	})
+	cfg := validCfg()
+	cfg.Driver = name
+	_, err := events.Open(context.Background(), cfg, auditpatterns.New())
+	if !called {
+		t.Fatal("registered driver factory was never called")
+	}
+	if !errors.Is(err, errInvariantNotABus) {
+		t.Fatalf("err=%v, want errors.Is errInvariantNotABus", err)
+	}
+}
+
+// errInvariantNotABus is the sentinel the test driver returns to
+// prove its factory ran.
+var errInvariantNotABus = errors.New("test: not a real bus")
+
+// TestErrAdminScopeRequired_Reserved compile-pins ErrAdminScopeRequired
+// as live surface. Phase 05 trusts the Filter.Admin boolean (the
+// cryptographic scope claim wires up in Phase 61 Protocol auth);
+// until then this sentinel is reserved but the package keeps it
+// stable so callers can errors.Is against it from day one.
+func TestErrAdminScopeRequired_Reserved(t *testing.T) {
+	if events.ErrAdminScopeRequired == nil {
+		t.Fatal("ErrAdminScopeRequired is nil — sentinel reservation broken")
+	}
+	wrapped := errors.Join(events.ErrAdminScopeRequired, errors.New("scope claim missing"))
+	if !errors.Is(wrapped, events.ErrAdminScopeRequired) {
+		t.Fatal("errors.Is on ErrAdminScopeRequired no longer works")
+	}
+}
+
 func TestOpen_NilRedactorErrors(t *testing.T) {
 	_, err := events.Open(context.Background(), validCfg(), nil)
 	if err == nil {

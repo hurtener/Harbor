@@ -242,6 +242,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-028 — Event bus surface reconciliation: `identity.Quadruple` field, `EventBus` name, replay deferred to Phase 06, sealed-via-embedded-Sealed payload pattern, SafePayload bypass
+
+**Date:** 2026-05-09
+**Status:** Settled (supersedes the earlier RFC §6.13 sketch)
+**Where it lives:** RFC §6.13 (revised; earlier sketch retained as "kept for history"), `docs/plans/phase-05-events.md` ("Findings I'm departing from"), `internal/events/events.go` (the shipped surface), `internal/events/payloads.go` (bus-internal SafePayload types).
+**Why:** The earlier RFC §6.13 sketch carried flat identity strings (`TenantID, UserID, SessionID, RunID`), an `EmittedAt` time, optional metric-shaped fields (`LatencyMs *float64`, `TokensIn/Out *uint32`, `CostUSD *float64`, `QueueDepth`), called the bus interface `Bus`, and ranged it over a `Replay(ctx, Cursor, Filter)` method. The shipped Phase 05 surface diverged in five load-bearing ways: (1) **identity reuse** — `Identity identity.Quadruple` re-uses Phase 01's type so a single concept lives in one place rather than four scattered string fields; (2) **renamed to `EventBus`** so the symbol doesn't collide with generic Go vocabulary at call sites; (3) **`Replay` deferred** to Phase 06 (the in-memory ring-buffer driver) and exposed through a future capability interface, keeping the core EventBus surface to three methods; (4) **no inline metric fields** — Phase 56 will derive metric labels from `Event.Extra` (a bounded `map[string]string`) so the cardinality boundary is explicit; (5) **sealed-via-embedded-`Sealed` payload pattern** plus the `SafePayload` marker (composing `SafeSealed`) — bus-internal payloads bypass the audit redactor (preserving typed access on the subscriber side), external payloads default to redactor-walked `RedactedMap`. The `OccurredAt` rename (from `EmittedAt`) keeps the field's verb consistent with the new "emit"/"publish" terminology in the bus implementation. Phase 05 plan acknowledged none of these in its "Findings I'm departing from" section; this entry closes that drift retrospectively. The earlier sketch is preserved verbatim in §6.13's "kept for history" paragraph.
+
+---
+
 ## D-027 — StateStore is a generic `(Quadruple, Kind, Bytes)` surface; typed wrappers land at consumer phases
 
 **Date:** 2026-05-09

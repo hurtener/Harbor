@@ -45,3 +45,24 @@ type AdminScopeUsedPayload struct {
 	Session      string
 	SubscriberID uint64
 }
+
+// RuntimeErrorPayload is the bus-side projection of a Logger.Error
+// call. The telemetry/eventbus adapter constructs one of these from
+// the redacted (msg, attrs) the Logger handed to its BusEmitter
+// seam, so RuntimeErrorPayload arrives at the bus pre-redacted.
+//
+// Even so, it is NOT marked SafePayload: a defensive contributor
+// might later construct a RuntimeErrorPayload outside the Logger
+// path (e.g. emitting a runtime error directly from a handler that
+// bypassed the redactor). Running this payload through the bus
+// redactor on every Publish is an extra walk per error event, but
+// it preserves the audit-redactor-as-bus-boundary contract (D-020).
+//
+// Fields is the slog.Attr key/value map after Logger redaction, in
+// `map[string]any` shape so the audit redactor's reflective walk
+// is deterministic.
+type RuntimeErrorPayload struct {
+	Sealed
+	Message string
+	Fields  map[string]any
+}

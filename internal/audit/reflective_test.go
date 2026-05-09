@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -664,6 +665,40 @@ func TestRedact_DataURL_InvalidBase64_FallsBackToEstimation(t *testing.T) {
 	got := m["image"].(string)
 	if !strings.HasPrefix(got, "[redacted: image/png of ") {
 		t.Errorf("invalid-base64 DataURL not redacted: %q", got)
+	}
+}
+
+// TestRedact_TimeTimePassesThrough pins the opaque-passthrough
+// behavior added for the audit reflective walker. Without it,
+// time.Time (a struct with no exported fields) collapses to an
+// empty map[string]any after redaction, silently losing timestamps.
+func TestRedact_TimeTimePassesThrough(t *testing.T) {
+	type Probe struct {
+		Note string `json:"note"`
+		At   time.Time `json:"at"`
+		Dur  time.Duration `json:"dur"`
+	}
+	driver := patterns.New()
+	want := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	in := Probe{Note: "ok", At: want, Dur: 5 * time.Second}
+	out, err := driver.Redact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Redact: %v", err)
+	}
+	m := out.(map[string]any)
+	gotAt, ok := m["at"].(time.Time)
+	if !ok {
+		t.Fatalf("at field type=%T, want time.Time (got %v)", m["at"], m["at"])
+	}
+	if !gotAt.Equal(want) {
+		t.Errorf("time.Time round-trip changed value: got %v, want %v", gotAt, want)
+	}
+	gotDur, ok := m["dur"].(time.Duration)
+	if !ok {
+		t.Fatalf("dur field type=%T, want time.Duration", m["dur"])
+	}
+	if gotDur != 5*time.Second {
+		t.Errorf("time.Duration round-trip changed: got %v, want 5s", gotDur)
 	}
 }
 
