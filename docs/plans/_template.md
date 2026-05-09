@@ -91,5 +91,6 @@ The drift-audit script (`scripts/drift-audit.sh`) checks for required headings +
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target
 - [ ] If multi-isolation paths changed: cross-session isolation test passes
+- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. If this phase does NOT build a reusable artifact, mark this checkbox N/A with a one-line reason.
 - [ ] If new vocabulary: glossary updated
 - [ ] If a brief finding was departed from: justified above + decisions.md entry filed

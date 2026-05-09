@@ -32,6 +32,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ContentPart** — one element of a multimodal `ChatMessage.Content.Parts` slice. Discriminated by `Type`: text, image, audio, or file. Concrete payload via `Image *ImagePart`, `Audio *AudioPart`, `File *FilePart` (or inline `Text` for text parts). RFC §6.5, D-021.
 
+**Concurrent reuse contract** — Harbor's runtime-wide invariant that compiled artifacts (`flow.Engine`, `Tool`, `Planner`, `MemoryStore`, `Redactor`, `LLMClient`, `ToolCatalog`) are immutable after construction and reusable across N concurrent goroutines without data races, context bleed, cancellation cross-talk, or goroutine leaks. Per-run state lives in `ctx` + `RunContext`, never on the artifact. **Every phase that builds a reusable artifact ships a concurrent-reuse test** (N≥100 invocations under `-race`). RFC §3.5, AGENTS.md §5 + §11 + §13, D-025.
+
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
 
 **Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. RFC §6.15.

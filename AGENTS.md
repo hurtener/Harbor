@@ -308,6 +308,27 @@ The Console is its own repo (or `web/console/` monorepo) and its own product. Fo
 - `sync.Mutex` is the default. Use `sync.RWMutex` only when contention is measured, not assumed.
 - No `goto`. No `runtime.Goexit`. No global state mutation outside `init` and (registered) metric definitions.
 
+### Concurrent reuse contract — non-negotiable (D-025)
+
+**Compiled artifacts are immutable after construction. Per-run state lives in `ctx` + `RunContext`, never on the artifact.**
+
+A "compiled artifact" is anything built once and called many times: a `flow.Engine`, a `Tool` (any transport), a `Planner` instance, a `MemoryStore` driver, a `Redactor`, a `LLMClient`, a `ToolCatalog`. The artifact MUST be safe to share across N concurrent goroutines without:
+
+- **Data races** (the race detector is the gate; CI runs `go test -race ./...`).
+- **Context bleed** (run A's input/state never reaches run B; verified by per-run identity assertions in the test).
+- **Cancellation cross-talk** (cancelling run A's `ctx` MUST NOT affect run B; verified by parallel-cancel tests).
+- **Goroutine leaks** (each invocation's goroutines are joined before the invocation returns; baseline `runtime.NumGoroutine()` test asserts this).
+
+Concretely:
+
+1. Mutable fields on a compiled-artifact struct that change *after* construction are forbidden, except where guarded by `sync.RWMutex` (or atomic primitives) AND documented as "internally synchronized." A bare `count int` field on `Engine` is a bug; an `atomic.Int64` is OK; a `map[string]X` is a bug unless behind a mutex with documented invariants.
+2. Each invocation of a compiled artifact (`Engine.Run(ctx, ...)`, `Tool.Invoke(ctx, args, rc)`, `Planner.Next(ctx, rc)`) creates its own per-run scope. The artifact reads from `ctx` / `rc`, never from itself, for run-specific data.
+3. Per-run goroutines are cancelled via the run's `ctx`, not via a shared engine-level `ctx`.
+4. Subflow / spawned tasks inherit the run's identity quadruple via `ctx`; they do not read identity from the parent artifact.
+5. Package-level mutable state outside `init()` is forbidden except for: driver registries (write-once, read-many; §4.4 seam pattern) and metric definitions.
+
+**Every phase that builds a reusable artifact MUST ship a concurrent-reuse test** that runs N=100+ concurrent invocations against a single shared instance with `-race`, asserting all four guarantees above. This is part of §11 Testing rules (now explicit).
+
 ### Tests
 
 - Unit tests next to the source: `foo.go` ↔ `foo_test.go`.
@@ -408,6 +429,7 @@ If a change cannot satisfy these without contortion, the design is wrong — pro
 - **Goroutine leak tests**: long-lived components have a test that asserts `runtime.NumGoroutine` returns to baseline after shutdown.
 - **Conformance suites**: subsystems with multiple drivers have a single conformance test suite that all drivers must pass.
 - **Pause/resume serialization tests** are mandatory: assert `ErrUnserializable` is raised loudly when a non-serializable handle is in pause state. No silent `nil`/`None` returns.
+- **Concurrent-reuse tests are mandatory** for any phase that builds a reusable artifact (engines, tools, planners, drivers, redactors, clients, catalogs). Test N≥100 concurrent invocations against a single shared instance under `-race`, asserting: no data races, no context bleed, no cross-cancellation, no goroutine leaks (baseline-restored after all runs return). See §5 "Concurrent reuse contract" for the full rule and D-025 for the rationale.
 
 ---
 
@@ -467,6 +489,8 @@ These will cause the PR to be rejected on sight.
 - ❌ **Naming the predecessor project anywhere in this repo** — neither the predecessor's project name nor any synonym ("the prior project", abbreviations, author names) appears in committed text. Internal context is fine in chat; the repo is Harbor-only.
 - ❌ Optional `Supports*` capability protocols when all V1 drivers implement everything (see §4.4).
 - ❌ Adding identity-downgrading knobs (`require_explicit_key`-style flags that allow missing tenant/user/session). Identity is mandatory.
+- ❌ Mutable state on compiled artifacts that crosses run boundaries. A `count int` field on `Engine` / `Tool` / `Planner` / etc. is a bug. Use `atomic.*` primitives for genuinely shared counters, or move per-run state into `ctx` / `RunContext`. See §5 "Concurrent reuse contract" + D-025.
+- ❌ Shipping a reusable artifact phase without a concurrent-reuse test (N≥100 invocations against a single instance under `-race`). See §11.
 - ❌ Raw color / spacing / type-scale literals in `.svelte` files (when Console code lands).
 - ❌ Hand-rolling a component the chosen library (default Skeleton) already provides.
 - ❌ Mixing package managers (`pnpm`/`yarn`) inside `web/console/` (when it lands). `npm` only.
