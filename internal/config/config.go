@@ -123,8 +123,18 @@ type SessionsConfig struct{}
 // ArtifactsConfig is owned by the artifact-store phases.
 type ArtifactsConfig struct{}
 
-// EventsConfig is owned by the event-bus phases.
-type EventsConfig struct{}
+// EventsConfig configures the event bus driver and its in-process
+// limits. Phase 05 fills the previously-reserved slot with the
+// inmem driver's defaults; later phases (replay-equipped Phase 06,
+// durable-log Phase 57) register additional driver names without
+// changing the field shape.
+type EventsConfig struct {
+	Driver                   string        `yaml:"driver"`
+	MaxSubscribersPerSession int           `yaml:"max_subscribers_per_session"`
+	SubscriberBufferSize     int           `yaml:"subscriber_buffer_size"`
+	IdleTimeout              time.Duration `yaml:"idle_timeout"`
+	DropWindow               time.Duration `yaml:"drop_window"`
+}
 
 // AuditConfig is owned by Phase 03 + later audit phases.
 type AuditConfig struct{}

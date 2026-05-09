@@ -130,6 +130,13 @@ func defaults() *Config {
 			DefaultMaxTokens: 4096,
 			RepairAttempts:   3,
 		},
+		Events: EventsConfig{
+			Driver:                   "inmem",
+			MaxSubscribersPerSession: 16,
+			SubscriberBufferSize:     256,
+			IdleTimeout:              60 * time.Second,
+			DropWindow:               1 * time.Second,
+		},
 	}
 }
 
