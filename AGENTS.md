@@ -567,7 +567,70 @@ This workflow exists because the volume (~80 phase plans across months) makes dr
 
 ---
 
-## 17. Mirroring
+## 17. End-to-end + cross-subsystem integration testing
+
+Per-package unit tests catch most bugs but miss two classes the Wave 2 checkpoint audit (PR #11) pinned:
+
+1. **Cross-package wiring gaps** — two phases each ship their seam, neither connects them. The Wave 2 instance was the `BusEmitter` ↔ `EventBus` wiring; both Phase 04 and Phase 05 plans assumed the OTHER would close the seam.
+2. **Cross-subsystem concurrency interactions** — boundary-level races (e.g. close-during-publish on the bus) that don't surface inside one package's tests.
+
+The hygiene response below is binding. Skipping it is the same kind of drift signal as skipping §16's brief-reading.
+
+### 17.1 When an integration test is required
+
+A phase ships an integration test whenever ANY of these is true:
+
+- Its plan's `Deps` lists a different subsystem's already-shipped phase (the new phase consumes that subsystem's surface — prove the consumption works).
+- It introduces a new adapter / wrapper / driver that closes a seam another phase opened (the wiring test belongs in this PR, not in a follow-up).
+- It introduces a new public interface that other phases will Publish/Subscribe/Open against (cover at least one round-trip end-to-end).
+
+A plan that has `Deps: 00` only (the skeleton) is exempt — there's no seam to test yet.
+
+### 17.2 Where integration tests live
+
+Two acceptable shapes:
+
+- **In-package**: when the package itself IS the wiring boundary — e.g. `internal/telemetry/eventbus/eventbus_test.go` ships `TestEndToEnd_Logger_Bus_Subscribe`. The package was created specifically to bridge two subsystems; testing it locally is appropriate.
+- **`test/integration/<topic>_test.go`**: for tests that span >2 subsystems, prove a wave-level surface is alive end-to-end, or have no natural single-package home. The wave-end smoke test (`test/integration/wave2_test.go`) is the canonical example.
+
+When in doubt, prefer `test/integration/` — it's easier to find, doesn't bloat the per-package coverage report, and serves as a wave-boundary regression gate.
+
+### 17.3 What an integration test must cover
+
+Mandatory:
+
+1. **Real drivers everywhere on the seam.** No mocks at the boundary — use the production drivers (`audit/drivers/patterns`, `events/drivers/inmem`, `state/drivers/inmem`, etc.). A mock at the seam defeats the purpose of the test.
+2. **Identity propagation**: prove the multi-isolation triple flows through every layer the test wires up. Cross-tenant isolation lives or dies at this boundary.
+3. **At least one failure mode**: a forced redactor error, a closed bus, a missing identity. Not just the happy path.
+4. **`-race` is the gate**: integration tests run under the race detector. CI fails on a hit.
+
+Required when the wiring is long-lived (server, bus, store):
+
+1. **Concurrency stress run**: N≥10 concurrent producers/consumers exercise the boundary; assert no cross-talk, no goroutine leak after teardown. (Per-package `D-025` tests assert intra-package; the integration stress proves cross-package.)
+
+### 17.4 Forbidden in integration tests
+
+- Mocks or in-test fakes that re-implement subsystem behavior.
+- `time.Sleep` used as a synchronisation primitive (sleeps for "wait for async event"). Use channels, controllable clocks, or `eventually`-style assertions with bounded real-time timeouts.
+- Skipping the test on platform / CI mismatch — integration tests run on every supported OS.
+- Using internal/unexported state — test the public surface only.
+
+### 17.5 Wave-end checkpoint audit
+
+At every wave boundary (every 2-4 phases), a checkpoint audit runs BEFORE the next wave's planning starts. The audit:
+
+1. Reads each shipped phase's source + tests + plan + RFC reference.
+2. Hunts for: wiring gaps, RFC drift, depth issues, weak tests, hygiene regressions.
+3. Produces a categorised punch list (FAIL / WARN / NIT) with file:line refs and one-line fix directives.
+4. Lands as a single `chore(checkpoint): wave-N audit fixes` PR.
+
+The audit is a forking task — the auditor runs read-only, the operator fixes from the punch list. PR #11 (the Wave 2 audit) is the reference.
+
+The audit is mandatory at wave boundaries; it is also acceptable to trigger one ad-hoc when scope drift is suspected.
+
+---
+
+## 18. Mirroring
 
 `AGENTS.md` and `CLAUDE.md` are kept verbatim identical. After any edit, run:
 
