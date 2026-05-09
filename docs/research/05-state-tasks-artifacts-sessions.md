@@ -15,6 +15,7 @@ This subsystem is the **durability layer** of Harbor. Five contracts live here, 
 - **MessageBus / RemoteTransport** — pluggable transports for distributed execution. V1 ships in-process defaults; the contracts exist so a distributed backend can land post-V1 without runtime changes.
 
 ### Why three persistence backends at V1
+
 The reference implementation we are inheriting from defines these contracts but ships **only an in-memory driver and an audit-log adapter** — no production persistence. Operators have to assemble queueing, worker management, and discovery themselves. Harbor breaks that pattern by shipping **three** drivers from day one:
 
 1. **InMemory** — zero dependencies; the default for embedded use, dev, and tests.
@@ -24,6 +25,7 @@ The reference implementation we are inheriting from defines these contracts but 
 All three pass the same conformance suite. Designing the interface against three backends from t=0 forces clean abstractions; designing against one tends to leak that backend's assumptions into the contract.
 
 ### Mandatory artifacts policy
+
 The reference implementation ships a `NoOpArtifactStore` fallback that warns and truncates. **Harbor removes this fallback.** An ArtifactStore is always configured; the in-memory driver is the floor. A heavy output above the threshold (default: 32KB, configurable) routes through the ArtifactStore — never inline. This is a runtime-level invariant, not a per-tool opt-in flag.
 
 ---
@@ -248,6 +250,7 @@ type RemoteTransport interface {
 **Planner → TaskRegistry.** The planner emits decisions; the runtime translates `task.subagent` / `task.tool` / `task.cancel` / `task.prioritize` opcodes into TaskRegistry calls. The registry is reachable from the protocol's task-control surface, so the Console and CLI can drive it the same way the planner does.
 
 **Protocol → SessionRegistry, TaskRegistry, StateStore.** The Harbor Protocol exposes:
+
 - `sessions.open / list / inspect / close`
 - `tasks.list / get / cancel / prioritize / spawn / inspect`
 - `state.history / load_planner_checkpoint / list_trajectories`
@@ -270,7 +273,8 @@ Console renders projections of these; it never reads internal Go structs.
 **Artifact dedup and content addressing.** IDs are `{namespace}_{sha256[:12]}`. Re-uploading identical bytes returns the existing ref. The `ScopedArtifacts` facade is immutable post-construction; access control reads scope fields and rejects on mismatch. Listing by scope treats `nil` fields as wildcards.
 
 **Task lifecycle state machine.**
-```
+
+```text
 PENDING → RUNNING → COMPLETE
               ↓
             PAUSED (planner-initiated; durable via planner checkpoint)
@@ -279,6 +283,7 @@ PENDING → RUNNING → COMPLETE
               ↓
             FAILED | CANCELLED | COMPLETE
 ```
+
 Cancellation propagation honors `propagate_on_cancel` ("cascade" | "isolate"). Group sealing freezes membership; `retain_turn` blocks the foreground until the group completes (no `HUMAN_GATED` interaction in retain mode).
 
 **Session-lifetime invariants.** A session is open until explicitly closed or GC'd. Reopen-after-close is forbidden — clients open a new session. The identity triple is captured on open and **immutable** for the session's lifetime; reusing a session ID across tenants/users is rejected. `Touch` updates `LastSeen`; GC sweeps sessions whose `LastSeen` exceeded the policy TTL and have no RUNNING tasks.

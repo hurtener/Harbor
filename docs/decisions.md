@@ -9,6 +9,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-001 — Identity is the triple `(tenant, user, session)`
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §4, AGENTS.md §6
@@ -17,6 +18,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-002 — Console is a Protocol client; Runtime is headless
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §5, AGENTS.md §1, §4.5, §13
@@ -25,6 +27,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-003 — Planner is swappable behind one interface
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §3.2, §6.2, AGENTS.md §1
@@ -33,6 +36,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-004 — Persistence triad shipped at V1: in-mem + SQLite + Postgres
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §9, AGENTS.md §9
@@ -41,6 +45,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-005 — Skills are a Harbor subsystem (not pushed entirely to Portico)
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.7, harbor_skills_subsystem memory
@@ -49,6 +54,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-006 — Background-task persistence: in-process at V1, durable post-V1
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.8 (and §6.12 contracts), master plan post-V1 list
@@ -57,6 +63,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-007 — A2A: full spec compliance from V1
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.4, master plan phase 29
@@ -65,6 +72,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-008 — Sessions = longer-lived multi-turn conversations containing many Runs
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.9, glossary
@@ -73,6 +81,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-009 — CLI dev-loop subcommand: `harbor dev`
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §8, master plan phase 64
@@ -81,6 +90,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-010 — Code-level tool calling (LLM = decision-maker, not runner)
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.4 + §6.5, brief 07, harbor_design_principles memory
@@ -89,6 +99,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-011 — Unified pause/resume primitive (HITL + OAuth + A2A AUTH_REQUIRED + steering PAUSE)
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §3.3 + §6.3, harbor_protocol memory
@@ -97,6 +108,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-012 — LLM client: `bifrost` (resolves Q-3); rejects CGo-required candidate
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.5, RFC §11 Q-3 RESOLVED, brief 08
@@ -105,6 +117,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-013 — Go 1.26+ minimum
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** AGENTS.md §5, RFC §10, .golangci.yml, .github/workflows/ci.yml, go.mod
@@ -113,6 +126,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-014 — License: Apache-2.0 (MIT was the considered alternate)
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §10, /LICENSE, README.md
@@ -121,6 +135,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-015 — Code-level tool calling justification recorded in RFC §6.4
+
 **Date:** 2026-05-08
 **Status:** Settled (acknowledged as a minority position)
 **Where it lives:** RFC §6.4, glossary, this entry
@@ -129,6 +144,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-016 — Governance is a Harbor subsystem; middleware between Runtime and `LLMClient` driver
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.15, master plan phases 36a + 36b + 91–96, glossary
@@ -137,6 +153,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-017 — V1 Governance scope: cost ceilings + rate limits + MaxTokens; operator-driven runtime control is post-V1
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.15, master plan phases 36a + 36b (V1) and 91–96 (post-V1)
@@ -145,6 +162,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-018 — Failover is a Harbor policy, not bifrost per-request `Fallbacks`
+
 **Date:** 2026-05-08
 **Status:** Settled (post-V1 implementation, phase 93)
 **Where it lives:** RFC §6.15, master plan phase 93
@@ -153,6 +171,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-019 — Key rotation via `Account.GetKeysForProvider` per-request lookup, not bifrost `ReloadConfig`
+
 **Date:** 2026-05-08
 **Status:** Settled (post-V1 implementation, phase 91)
 **Where it lives:** RFC §6.15, master plan phase 91
@@ -161,6 +180,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-020 — PII redaction at the LLM boundary lives in Audit; Governance owns thresholds
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.15, master plan phase 96
@@ -169,6 +189,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-021 — Multimodality scope: inputs in V1, outputs as post-V1 tool wrappers
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.5 (Multimodal inputs subsection), master plan phases 32 + 33 (V1 inputs) + 97 + 98 (post-V1 outputs), glossary (`ContentPart`, `ImagePart`, `AudioPart`, `FilePart`)
@@ -177,6 +198,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-022 — `ArtifactRef` is the canonical binary representation for multimodal content
+
 **Date:** 2026-05-08
 **Status:** Settled
 **Where it lives:** RFC §6.5 (canonical binary representation paragraph), §6.10 (Artifacts), glossary (`Artifact`, `ArtifactRef`, multimodal part types)
@@ -185,6 +207,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-023 — Flow-as-Tool: Go-coded `flow.Definition` ships V1; declarative recipe (YAML) format ships V1.1
+
 **Date:** 2026-05-09
 **Status:** Settled
 **Where it lives:** RFC §6.1 (Flow-as-Tool subsection) + §6.4 (Flow transport variant), master plan phase 26a (V1) + phase 100 (post-V1 recipe loader), glossary (`Flow`, `Definition`, `Budget` for flows, `Recipe`)
@@ -193,6 +216,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-024 — `ToolPolicy` reliability shell wraps every tool invocation, regardless of transport
+
 **Date:** 2026-05-09
 **Status:** Settled
 **Where it lives:** RFC §6.4 (`Tool.Policy` field + reliability-shell paragraph), master plan phase 26 (acceptance criteria), glossary (`ToolPolicy`)
@@ -201,6 +225,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-025 — Concurrent reuse contract: compiled artifacts immutable; per-run state lives in `ctx` + `RunContext`
+
 **Date:** 2026-05-09
 **Status:** Settled
 **Where it lives:** RFC §3.5 ("The concurrent reuse contract"), AGENTS.md §5 ("Concurrent reuse contract — non-negotiable"), §11 (mandatory concurrent-reuse tests), §13 (forbidden: mutable state on compiled artifacts), `docs/plans/_template.md` (pre-merge checklist), every Wave 1+ phase plan.
@@ -209,6 +234,7 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 ---
 
 ## D-026 — Context-window safety net: no raw heavy content reaches the LLM; standard `ArtifactStub` everywhere
+
 **Date:** 2026-05-09
 **Status:** Settled
 **Where it lives:** RFC §6.5 ("Context-window safety net" subsection + standard `ArtifactStub` schema), RFC §6.10 (heavy-output threshold), AGENTS.md §13 (forbidden: raw heavy content in LLM messages), master plan phase 32 (LLM client core enforces the catch-all pass), glossary (`Context-window safety net`, `ArtifactStub`, `ErrContextLeak`, `ErrContextWindowExceeded`).

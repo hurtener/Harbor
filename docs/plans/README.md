@@ -129,6 +129,7 @@ V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). 
 Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR plan file expands. Acceptance criteria are binding once the phase ships.
 
 ### 01 — Identity & isolation triple (RFC §4)
+
 **Goal.** Provide the `identity` package: `Identity{TenantID, UserID, SessionID}`, `From / MustFrom / With(ctx)`. The triple flows through every layer.
 **Acceptance.** `MustFrom` panics in handler-only paths; `From` returns ok-bool elsewhere; round-trips through JWT claims and JSON; identity scopes can be derived (admin / console:fleet).
 **Smoke.** `phase-01.sh` asserts the package exists and tests pass; no protocol surface yet.
@@ -136,18 +137,21 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** None significant.
 
 ### 02 — Configuration loader (RFC §10)
+
 **Goal.** YAML + env + flag layering; per-key annotation `restart_required` vs `live`; structured validation errors that point to the offending source.
 **Acceptance.** Loader returns typed `Config`; missing required keys fail with file:line; `examples/harbor.yaml` round-trips.
 **Smoke.** `harbor validate --config examples/harbor.yaml` returns 0 (subcommand auto-skip until phase 68).
 **Tests.** Unit on layering precedence; golden tests on validation errors.
 
 ### 03 — Audit redactor (RFC §6.4, §6.15)
+
 **Goal.** A single `audit.Redactor` that summarizes/truncates/redacts payloads before persistence or emission. Used by Logger, EventBus persistence, tool audit.
 **Acceptance.** Redactor handles nested maps, byte arrays, secret-shaped strings (bearer/api-key/jwt), and oversize payloads; configurable allowlist/denylist; audit emits `audit.redacted` events for inspection.
 **Smoke.** N/A (library only).
 **Tests.** Unit + golden (fixed-input fixed-output).
 
 ### 04 — slog Logger + standard attribute set (RFC §6.14)
+
 **Goal.** `Logger` wrapper around `log/slog`; pinned attribute set `(tenant_id, user_id, session_id, run_id, task_id, trace_id, span_id, tool)`; JSON in production, text in dev; emits a paired `runtime.error` bus event on `Error`.
 **Acceptance.** Loggers accept `WithIdentity(Identity)`; no log carries unredacted secret payloads (uses phase 03); CLI flag `--log-format=text|json` selects handler at process start.
 **Smoke.** N/A.
@@ -155,6 +159,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 03.
 
 ### 05 — Event taxonomy + InMem `EventBus` + isolation (RFC §6.13)
+
 **Goal.** `Event`, `EventType` (exhaustive sealed enum), `EventPayload` sealed interface, `EventBus.Publish/Subscribe`, `Filter` with server-enforced identity gates. In-memory MPSC ingress + per-subscriber bounded fan-out + drop-oldest with `bus.dropped` events.
 **Acceptance.** Subscribe rejects filters that elide the identity triple unless the caller has `admin` scope; identity-scope mismatches are audited; cardinality lint check fails CI on `RunID`/`TraceID` metric labels.
 **Smoke.** `phase-05.sh` asserts `EventType` exhaustiveness via `go test`; protocol smoke skips.
@@ -162,12 +167,14 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 01, 03.
 
 ### 06 — Bus replay + ring buffer + cursor (RFC §6.13)
+
 **Goal.** `Replay(from Cursor, filter)` against an in-memory ring (default 10k events, configurable). `Cursor = (SessionID, Sequence)`; gap-free guarantee within a `RunID`.
 **Acceptance.** Late subscriber resumes cleanly; no duplicates; documented loss when ring overrun (durable log handled in phase 57).
 **Tests.** Unit + concurrency (subscribe-during-publish); idle-subscription reaper test.
 **Deps.** 05.
 
 ### 07 — StateStore iface + InMem + conformance suite (RFC §6.11, §9)
+
 **Goal.** Single mandatory `StateStore` interface (no `Supports*` ceremony). InMem driver. `conformance.RunSuite(t, factory)` covering save/load/idempotency/identity-mandatory/cross-tenant-isolation/cross-session-isolation/concurrency/leak.
 **Acceptance.** InMem passes the suite; the suite is the gate every later driver must pass; documented `EventID` (ULID) idempotency.
 **Smoke.** N/A.
@@ -175,18 +182,21 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 01, 03.
 
 ### 08 — SessionRegistry + lifecycle + GC (RFC §6.9)
+
 **Goal.** `SessionRegistry` over phase 07 store. Open/get/touch/close/inspect/GC. Identity triple captured on Open and immutable; reopen-after-close rejected; GC sweeps idle sessions but never reaps `RUNNING`.
 **Acceptance.** Defaults: idle 24 h, hard cap 30 days, sweep 15 min; configurable via `GCPolicy`.
 **Tests.** Unit + integration; cross-tenant isolation test on `Open`.
 **Deps.** 01, 07.
 
 ### 09 — Envelopes, Headers, Identity quadruple (RFC §6.1)
+
 **Goal.** `Envelope{Payload, Headers, RunID, SessionID, Timestamp, DeadlineAt, Meta}`. `Headers{TenantID, UserID, Topic, Priority}`. `RunID` is the runtime concurrency boundary; `TraceID` reserved for OTel.
 **Acceptance.** `WithRunID` returns a copy; `(Tenant, User, Session, Run)` round-trips through JSON; `Meta` last-write-wins on collision (until merge function lands as RFC follow-up).
 **Tests.** Unit + JSON round-trip.
 **Deps.** 01, 08.
 
 ### 10 — Engine + workers + cycle detection (RFC §6.1)
+
 **Goal.** `Engine` with one goroutine per node, bounded channels per adjacency (default 64), cycle detector at construction (`AllowCycle` opt-in), `Run / Stop / Emit / Fetch`. Egress dispatcher always-on.
 **Acceptance.** Linear graph end-to-end works; `Stop` joins all workers; goroutine-leak test passes; cycle detector rejects without `AllowCycle`.
 **Smoke.** `harbor dev` boots an empty engine; `/healthz` returns 200 (gated by phase 64).
@@ -194,12 +204,14 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 09.
 
 ### 11 — Reliability shell (RFC §6.1)
+
 **Goal.** Per-node `NodePolicy{Validate, TimeoutMS, MaxRetries, BackoffBase, BackoffMult, MaxBackoff}`. `RunError{Code, Message, Cause, Metadata}`. Errors route to Protocol unconditionally; egress emission is opt-in via engine option.
 **Acceptance.** Timeout produces `RunError(NodeTimeout)`; retries respect `MaxRetries`; `validate=both` rejects malformed envelopes.
 **Tests.** Unit on backoff math; integration per error code.
 **Deps.** 10.
 
 ### 12 — Streaming + per-run capacity backpressure (RFC §6.1)
+
 **Goal.** `StreamFrame{StreamID, Seq, Text, Done, Meta}`. `EmitChunk` honors per-run capacity waiters keyed by `RunID`. **Backpressure baked in, not bolted on** — the seam closes the predecessor's deadlock-under-streaming gap.
 **Acceptance.** N parallel runs × K frames each: ordering preserved per `StreamID`; no cross-run deadlock; goroutine-leak under streaming returns to baseline after `Stop`.
 **Tests.** Integration + concurrency + leak.
@@ -207,42 +219,49 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** This is Brief 01's "must bake in." Don't accept a "we'll add it later" PR.
 
 ### 13 — Cancellation + per-run fetch dispatcher (RFC §6.1)
+
 **Goal.** `Cancel(runID)` is idempotent, drops queued envelopes for that run only, cancels in-flight invocations, drains per-run egress. `FetchByRun(runID)` demuxes via per-run dispatcher (always-on, no dual mode).
 **Acceptance.** Two concurrent runs; cancelling one leaves the other completing; `FetchByRun` never returns frames from another run.
 **Tests.** Concurrency + property (cancel idempotency).
 **Deps.** 10, 12.
 
 ### 14 — Routers + concurrency utils + subflows (RFC §6.1)
+
 **Goal.** `PredicateRouter`, `UnionRouter`, `RoutePolicy`, `MapConcurrent`, `JoinK`, `Subflow(factory, parent, opts...)` (mirrors parent cancellation; runs to first egress payload).
 **Acceptance.** Each pattern matches its specified behavior; subflow cancellation mirrors parent.
 **Tests.** Integration per pattern.
 **Deps.** 10, 11.
 
 ### 15 — SQLite StateStore driver (RFC §6.11, §9)
+
 **Goal.** `modernc.org/sqlite` (CGo-free), WAL journal, forward-only migrations under `internal/state/sqlite/migrations/`.
 **Acceptance.** Passes the phase 07 conformance suite end-to-end; clean DB starts cleanly; existing DB at version N migrates to N+1 idempotently.
 **Tests.** Conformance suite + migration tests.
 **Deps.** 07.
 
 ### 16 — Postgres StateStore driver (RFC §6.11, §9)
+
 **Goal.** `pgx`, advisory locks for binding semantics, JSONB payloads, forward-only migrations.
 **Acceptance.** Passes the phase 07 conformance suite end-to-end; CI matrix exercises against a containerized Postgres.
 **Tests.** Conformance suite + migration tests; concurrency test under `pgxpool`.
 **Deps.** 07.
 
 ### 17 — ArtifactStore iface + InMem + Filesystem drivers (RFC §6.10, §9)
+
 **Goal.** Mandatory routing above heavy-output threshold (default 32 KB, runtime-configurable, per-tool overridable). `ScopedArtifacts` facade auto-stamps identity. Content-addressed IDs.
 **Acceptance.** Re-uploading identical bytes returns the existing ref; cross-scope reads rejected; `NoOp` fallback explicitly absent.
 **Tests.** Unit + isolation; dedup test.
 **Deps.** 01, 07.
 
 ### 18 — ArtifactStore SQLite-blob + Postgres-blob (RFC §6.10, §9)
+
 **Goal.** Persistent artifact lifetimes that survive restart; same conformance suite as InMem + FS.
 **Acceptance.** Bytes round-trip; deletion is scope-checked; size enforcement matches thresholds.
 **Tests.** Conformance suite.
 **Deps.** 17, 15, 16.
 
 ### 19 — ArtifactStore S3-style driver (RFC §6.10)
+
 **Goal.** S3-compatible driver behind the same interface (suitable for MinIO/AWS/R2/GCS-via-compat).
 **Acceptance.** Conformance suite; lifecycle integration; presigned-URL `GetRef` path.
 **Tests.** Conformance + integration against MinIO container.
@@ -250,48 +269,56 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** V1 stretch — can slip to V1.1 if calendar pressure builds.
 
 ### 20 — TaskRegistry iface + InProcess + lifecycle (RFC §6.8)
+
 **Goal.** Single `TaskID` namespace unifying foreground + background; lifecycle state machine (`PENDING → RUNNING → COMPLETE`, with `PAUSED → RUNNING`, `FAILED|CANCELLED` terminal); idempotency via `IdempotencyKey`; cancellation propagates per `PropagateOnCancel`.
 **Acceptance.** Spawning with same `IdempotencyKey` returns same handle; cascade vs isolate behave per spec.
 **Tests.** Unit + concurrency + isolation.
 **Deps.** 01, 07.
 
 ### 21 — TaskGroup + retain-turn + patches (RFC §6.8)
+
 **Goal.** Group resolution/sealing/cancel/apply; retain-turn semantics block foreground until group completes; `ApplyPatch` for human-approved context patches; `AcknowledgeBackground`.
 **Acceptance.** Group sealing freezes membership; retain-turn correctly blocks; patches transition through pending → applied/rejected.
 **Tests.** Integration; group lifecycle property tests.
 **Deps.** 20.
 
 ### 22 — MessageBus + RemoteTransport contracts (RFC §6.12)
+
 **Goal.** Contract definitions + in-process `MessageBus` (loopback) + `RemoteTransport` capable of A2A. `Publish` is at-least-once; handlers idempotent on `(TaskID, Edge, EventID)`. No durable distributed driver at V1.
 **Acceptance.** In-process loopback delivers; RemoteTransport returns request/reply and stream with final `done=true`.
 **Tests.** Unit + integration; contract tests for distributed driver (skip when no driver wired).
 **Deps.** 09, 20.
 
 ### 23 — MemoryStore iface + InMem + conformance (RFC §6.6)
+
 **Goal.** `MemoryStore` interface with mandatory identity (`require_explicit_key=true`, no opt-out). `Strategy=none` only. Conformance harness includes fail-closed-on-missing-`SessionID` test.
 **Acceptance.** Missing identity fails closed + emits audit event; InMem passes the suite.
 **Tests.** Conformance suite.
 **Deps.** 01, 07.
 
 ### 24 — Memory strategies (RFC §6.6)
+
 **Goal.** Add `truncation` and `rolling_summary`. Health states `healthy → retry → degraded → recovering → healthy`. Summarizer is an injectable `Summarizer` interface (LLM call lives in phase 32+).
 **Acceptance.** Strategy matrix tested; degraded mode falls back to recent-window + queues recovery loop bounded by `RecoveryBacklogMax`; `memory.health_changed` events emitted.
 **Tests.** Strategy matrix + property + integration with a stub summarizer.
 **Deps.** 23.
 
 ### 25 — SQLite + Postgres memory drivers (RFC §6.6, §9)
+
 **Goal.** Persistent memory state across restarts; same conformance suite.
 **Acceptance.** All three drivers (InMem, SQLite, PG) pass; `Snapshot/Restore` round-trips byte-stable.
 **Tests.** Conformance + Snapshot round-trip.
 **Deps.** 23, 15, 16.
 
 ### 26 — Tool catalog core + InProcess registration (RFC §6.4)
+
 **Goal.** `Tool`, `ToolDescriptor`, `ToolCatalog`, `ToolProvider` interfaces + the `ToolPolicy` reliability shell (D-024). In-process registration via Go generics + reflection (schemas derived from input/output types) — `tools.RegisterFunc(name, fn, opts...)` is the minimum-expression API. `CatalogFilter` keyed on `(tenant, user, session)` triple plus `GrantedScopes`. Argument validation at the catalog edge using `santhosh-tekuri/jsonschema`. Dispatcher wraps every invocation in the `ToolPolicy` shell (timeout / retry-with-exponential-backoff / validation) regardless of transport — so even a zero-config `RegisterFunc` is production-resilient.
 **Acceptance.** A registered Go function appears in `cat.List(filter)` for the matching identity; arg validation produces typed `tool.invalid_args` events on failure; default `ToolPolicy` (zero-value) yields a 3-retry / 100ms→30s exponential backoff / 30s timeout shell on transient errors; `tools.WithPolicy(...)` overrides each axis.
 **Tests.** Unit (filter combinations + ToolPolicy default firing); integration; concurrency (N concurrent calls under a misbehaving tool — backoff respected).
 **Deps.** 01, 05, 09.
 
 ### 26a — Flow-as-Tool registration + per-flow Budget (RFC §6.1, §6.4, D-023)
+
 **Goal.** `flow.Definition` shape (entry/exit nodes, node specs, optional intrinsic `Budget`). `flow.Compose(def) → Engine` builds a runnable engine reusable across invocations. `flow.RegisterAsTool(catalog, def, eng)` wires the Engine into the Tool catalog with `Transport: Flow` and schemas derived from entry/exit types. Per-flow `Budget` (deadline / hop-budget / cost-cap) composes with parent run + identity-tier ceilings via `min()`; whichever fires first aborts the flow with `ErrFlowBudgetExceeded`. Reliability shell: per-node `NodePolicy` from §6.1 still applies inside the flow; no double-wrapping.
 **Acceptance.** A 3-node flow registers as a Tool whose schema reflects entry-input → exit-output; planner invokes it through the standard dispatcher; per-flow budget exceedance emits `flow.budget_exceeded` and produces `ErrFlowBudgetExceeded`; identity-tier governance can still abort the same flow via `ErrBudgetExceeded`. Tests assert both abort paths fire correctly under contention.
 **Tests.** Unit (Definition validation; min() composition math). Integration (flow-as-tool round-trip via planner mock; budget-exceedance events). Concurrency (parallel flow invocations don't bleed budget state across runs).
@@ -303,42 +330,49 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **RFC anchor.** §6.1 (Flow-as-Tool subsection) + §6.4 (Flow transport variant).
 
 ### 27 — HTTP tool driver (RFC §6.4)
+
 **Goal.** Inline (`RegisterHTTPTool(name, method, urlTemplate, ...)`) and out-of-process via UTCP-style manifest. Static auth (API key, bearer, cookie). Retry + rate-limit handling.
 **Acceptance.** Both inline + manifest paths drive the same `ToolDescriptor`; integration against `httptest.Server`.
 **Tests.** Integration; retry test.
 **Deps.** 26.
 
 ### 28 — MCP southbound driver (RFC §6.4)
+
 **Goal.** Go MCP client over stdio + streamable-HTTP + SSE. Auto-detect via `MCPTransportMode = Auto | SSE | StreamableHTTP`. Tool/resource/prompt mapping into `Tool`. Reconnect on failure.
 **Acceptance.** Mock MCP server (in-process) integration tests pass; resource subscriptions emit a separate event topic.
 **Tests.** Integration + transport-fallback test.
 **Deps.** 26.
 
 ### 29 — A2A southbound driver (full spec) (RFC §6.4)
+
 **Goal.** Agent Card discovery (`GET /.well-known/agent-card.json`); JSON-RPC `message/send`, `message/stream` (SSE), `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/*`. Registry with route scoring (trust tier, latency tier, capability match).
 **Acceptance.** Mock A2A server integration (full Agent Card); registry resolves remote skills; A2A peers appear as `Tool` entries via `ToolProvider`.
 **Tests.** Integration + spec-compliance suite.
 **Deps.** 26, 22.
 
 ### 30 — Tool-side OAuth + HITL via pause/resume (RFC §6.4, §3.3)
+
 **Goal.** `TokenStore` interface (InMem + SQLite + Postgres drivers). On `tool.auth_required`, pause via the unified pause/resume primitive (phase 50). Resume reattaches token; A2A `AUTH_REQUIRED` converges on the same primitive.
 **Acceptance.** OAuth full pause/resume cycle round-trips; A2A `AUTH_REQUIRED` triggers identical event shape.
 **Tests.** Integration end-to-end; conformance with phase 50.
 **Deps.** 26, 50.
 
 ### 31 — Tool-side approval gates (RFC §6.4, §3.3)
+
 **Goal.** Synchronous "approve this tool call" gates using the same pause/resume primitive — distinct from OAuth, simpler payload shape.
 **Acceptance.** APPROVE/REJECT round-trip via the protocol; reject path raises typed `tool.rejected` events.
 **Tests.** Integration.
 **Deps.** 30.
 
 ### 32 — LLM client core (RFC §6.5)
+
 **Goal.** `LLMClient` interface — **one method**, `Complete(ctx, req) (resp, error)`. `CompleteRequest` carries `Messages` whose `Content` is a sum-type (`Text *string` for the common case, or multimodal `Parts []ContentPart` for image/audio/file inputs — D-021), optional `ResponseFormat`, optional `OnContent`/`OnReasoning` streaming callbacks, cancellation via `ctx`, reasoning-effort hint. **No `Tools`, no `ToolChoice`, no `FunctionCall`** — tool dispatch lives in the runtime (RFC §6.4 "Code-level tool dispatch"). Inline `DataURL` content above the heavy-output threshold is auto-materialized to `ArtifactRef` before persistence/emit (D-022). **Context-window safety net (D-026)**: a catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` immediately before the driver call and (a) fails loudly with `ErrContextLeak` if any message field carries raw bytes/strings ≥ heavy-output threshold that aren't `ArtifactStub`-shaped, (b) estimates total tokens against the model's configured context limit and fails with `ErrContextWindowExceeded` when the estimate is within `ContextWindowReserve` (default 5%) of the cap. V1 fails loudly; auto-cascade is post-V1.
 **Acceptance.** Mock LLM client passes round-trip with text-only AND multimodal payloads (text + image part). Cancellation aborts streaming cleanly. Interface compiles without any tool-calling type ever appearing in `internal/llm/...`. Auto-materialization of oversized `DataURL` content is observable via `llm.image.materialized` event. **Safety-net catch-all pass exists; planted-leak test (a deliberately-buggy producer that emits ≥-threshold raw bytes) triggers `ErrContextLeak` + `llm.context_leak` audit event. Token-budget test (a synthetic huge prompt) triggers `ErrContextWindowExceeded` cleanly with a reservedness margin matching config.**
 **Tests.** Unit + integration with mock (text + multimodal); assert no `Tool*` symbol leaks into the LLM package; auto-materialize threshold test; **planted-leak test (raw bytes survive a producer); token-budget test (synthetic big prompt); ArtifactStub round-trip test (a stub renders to the model-agnostic JSON shape and parses back).**
 **Deps.** 09.
 
 ### 33 — bifrost integration (RFC §6.5, §11 Q-3)
+
 **Goal.** Wire `github.com/maximhq/bifrost/core` (pure Go LLM gateway library) behind `LLMClient`. Implement a thin `Driver` adapter that translates Harbor's `CompleteRequest` ↔ bifrost's `BifrostChatRequest` / `BifrostChatResponse`, and a minimal `schemas.Account` providing API keys. Translation includes multimodal `ContentPart`s (D-021): map Harbor's `ImagePart`/`AudioPart`/`FilePart` (with `URL` / `DataURL` / `Artifact` supply forms) to bifrost's per-provider content shapes; auto-materialize oversized `DataURL` content to `ArtifactRef` (D-022) before sending. Bifrost's `Tools` / `ToolChoice` parameters are intentionally NOT used — Harbor's runtime owns tool dispatch (RFC §6.4). Q-3 is **resolved**; this is a normal implementation phase, not a decision gate.
 **Acceptance.** Six-provider smoke green: basic chat + `json_object` response_format + streaming with content callback + ctx cancellation accepted by the runtime + token usage parsed + cost parsed + **one multimodal text+image round-trip** against a vision-capable model. Driver registers via `init()` blank-import per AGENTS.md §4.4. The driver package contains zero references to bifrost's `Tools` / `ToolChoice` types.
 **Tests.** Unit (request/response translation); integration with mock; six-provider live conformance test (gated behind `HARBOR_LIVE_LLM=1` so CI does not burn API credits by default — the local dev loop and `harbor dev` do exercise it).
@@ -347,24 +381,28 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **See also.** `docs/research/08-llm-client-validation.md` (full validation report and results).
 
 ### 34 — Provider correction layer + SchemaSanitizer (one mode, baked in) (RFC §6.5)
+
 **Goal.** Per-provider corrections compiled into a `SchemaSanitizer` and message-shape normalizer that live **between** the runtime and the `LLMClient` (NOT inside the client). Covers: message reordering (NIM), schema normalization (`additionalProperties: false`, `strict: true` modes), reasoning-effort routing for thinking-class models (`o1`, `o3`, `deepseek-reasoner`), per-provider `response_format` shape, usage backfill (proxies that report 0/0). **No `use_native` toggle.** Scope is structured-output and message-shape correctness only — never tool-call APIs (those don't exist on this layer).
 **Acceptance.** Each documented quirk has a passing normalizer test; switching providers does not require a configuration toggle; no tool-call API references in this package.
 **Tests.** One unit test per quirk; assert no `Tool*` symbol leaks.
 **Deps.** 33.
 
 ### 35 — Structured output strategies + downgrade chain (RFC §6.5)
+
 **Goal.** `OutputMode = Native | Tools | Prompted`. Per-provider `ModelProfile` selects mode. Downgrade chain: `json_schema → json_object → text` on `invalid_json_schema` errors. `llm.mode_downgraded` events.
 **Acceptance.** Forced-failure on each step of the chain results in observable downgrade and continued completion.
 **Tests.** Integration per provider.
 **Deps.** 33, 34.
 
 ### 36 — Retry with feedback (RFC §6.5)
+
 **Goal.** Validation/parse failures feed back into the planner via `LLMClient` retry; bounded by `MaxRetries`; observable.
 **Acceptance.** A planner-tagged invalid arg triggers a single LLM retry with corrective sub-prompt; retry count respects bound.
 **Tests.** Integration with mock + bounded-loop assertion.
 **Deps.** 35.
 
 ### 36a — Cost accumulator + per-identity ceilings (RFC §6.15)
+
 **Goal.** Subscribe to `llm.cost.recorded` events; aggregate `Usage.Cost.TotalCost` by `(tenant, user, session)` and by model in StateStore-backed accumulators; gate the next call when ceiling exceeded; emit `governance.budget_exceeded`; fail loudly with `ErrBudgetExceeded`. Establish the `governance.Subsystem` interface with `PreCall`/`PostCall` hooks wrapping the `LLMClient` driver.
 **Acceptance.** Three-driver conformance (in-mem / SQLite / Postgres) green for accumulators. Ceilings settable via config (Protocol-driven setters land post-V1 phase 91). Ceiling exceedance emits `governance.budget_exceeded` with the identity triple; runtime can route to the unified pause/resume primitive when configured. Cross-session isolation test passes.
 **Tests.** Unit (accumulator math). Integration per driver. Concurrency (N concurrent calls do not overshoot ceiling — atomic / lock-free path documented). Cross-session isolation. Failure-mode (StateStore read failure → fail-loud, no silent permit).
@@ -376,6 +414,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **RFC anchor.** §6.15.
 
 ### 36b — Per-identity rate limits + per-call MaxTokens (RFC §6.15)
+
 **Goal.** Token-bucket rate limiter per `(identity, model)` with bucket-state persisted in StateStore so it survives runtime restart. Per-call `MaxTokens` enforced from the identity's tier in `PreCall`. Emits `governance.rate_limited` and `governance.maxtokens_exceeded` events; fails loudly with `ErrRateLimited` and `ErrMaxTokensExceeded`.
 **Acceptance.** Bucket fills/drains per config; bucket state survives runtime restart; MaxTokens tier resolved from identity in PreCall and applied to the request before it leaves Harbor; events emitted with identity triple; CLI smoke configures a tiny bucket and asserts the limit kicks in.
 **Tests.** Unit (token-bucket math under fast and slow refill rates). Integration per driver. High-concurrency (N concurrent calls — bucket never goes negative; never permits more than `capacity`). Restart-survival.
@@ -386,26 +425,29 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** Token-bucket race conditions under concurrent call paths — must be lock-free.
 **RFC anchor.** §6.15.
 
-
 ### 37 — Skill store + LocalDB driver + FTS5 ladder (RFC §6.7)
+
 **Goal.** SQLite-backed skill store; FTS5 → regex → exact ranking ladder; CI tests both FTS-on and FTS-off builds. Schema with `Origin / OriginRef / Scope / ContentHash`.
 **Acceptance.** Same scoring constants documented in brief 04 §4.4 produce stable rankings; `existing_origin != "pack"` short-circuit refuses overwrites.
 **Tests.** Unit (golden ranking) + FTS-off-fallback test.
 **Deps.** 01, 07, 15.
 
 ### 38 — Skill planner tools (search/get/list) (RFC §6.7)
+
 **Goal.** `skill_search`, `skill_get`, `skill_list` registered through phase 26 catalog. Capability filter (`RequiredTools/Namespaces/Tags` ⊆ allowed). PII + tool-name redaction at injection. Tiered budgeter (full → drop optional → cap steps to 3).
 **Acceptance.** Filter excludes mismatched skills; redactor strips disallowed names; budgeter fits within `max_tokens`.
 **Tests.** Unit + integration.
 **Deps.** 26, 37.
 
 ### 39 — Virtual directory subsystem (RFC §6.7)
+
 **Goal.** `Directory(cfg)` API + `pinned_then_recent` / `pinned_then_top` selectors; identity-scoped; capability-filtered; redacted before injection.
 **Acceptance.** Default `max_entries=30`, range 1–200; pinned skills always included; selection respects identity.
 **Tests.** Unit + property.
 **Deps.** 37.
 
 ### 40 — Skills.md importer (RFC §6.7)
+
 **Goal.** Spec-compliant CommonMark parser; YAML frontmatter; section normalization (`## Steps`, `## Preconditions`, `## Failure modes`); attachments resolved as `ArtifactRef` (option (b) — RFC settled). Round-trip byte-stable.
 **Acceptance.** Golden corpus of N spec-compliant Skills.md files imports without source edits and re-exports byte-stable; missing `trigger`/empty `steps` fail loudly.
 **Tests.** Golden corpus + negative tests.
@@ -413,18 +455,21 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** This is the predecessor's gap-closer. The byte-stable round-trip is a tested invariant.
 
 ### 41 — In-runtime skill generator with persistence (RFC §6.7)
+
 **Goal.** `skill_propose(persist=true)` validates draft, stamps `Origin=Generated`, `OriginRef = "gen:{session_id}:{run_id}"`, scopes by operator-provided `Scope` (default `project`), upserts via store. Conflict policy: refuse to overwrite `Origin=PackImport`; for Generated→Generated, content-hash gates last-write-wins. **Audit is mandatory.**
 **Acceptance.** Generator persists; subsequent search discovers; audit event emitted on every persist.
 **Tests.** Integration end-to-end + isolation (cross-session no-leak unless promoted).
 **Deps.** 37, 38, 03.
 
 ### 42 — Planner iface + Decision sum + RunContext (RFC §6.2, §3.2)
+
 **Goal.** Define `Planner.Next(ctx, RunContext) (Decision, error)`; `Decision` sum (`CallTool`, `CallParallel`, `SpawnTask`, `AwaitTask`, `RequestPause`, `Finish`); `RunContext` is the only surface planner sees.
 **Acceptance.** Stub planner returning `Finish` runs end-to-end; planner package imports no Runtime internals.
 **Tests.** Conformance harness skeleton; import-graph lint.
 **Deps.** 09, 13, 26, 32.
 
 ### 43 — Trajectory + serialise contract (RFC §6.2, §3.4)
+
 **Goal.** `Trajectory.Serialize() (bytes, error)` returns `(nil, ErrUnserializable{Field:...})` on any non-JSON-encodable entry. **No silent-drop path.** `ToolContext` split: serialisable half + handle registry (process-local at V1 — see RFC §6.3).
 **Acceptance.** Round-trip is byte-stable; non-serialisable handle returns `ErrUnserializable`; resume with missing handle returns `ErrToolContextLost`.
 **Tests.** Round-trip + negative cases (per RFC contract).
@@ -432,102 +477,119 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** This phase closes the predecessor's silent-context-loss bug. The fail-loudly tests are the gate.
 
 ### 44 — Schema repair pipeline (RFC §6.2)
+
 **Goal.** Salvage → schema repair → graceful failure → multi-action salvage, in `internal/planner/repair/`. Configurable per concrete (`arg_fill_enabled`, `repair_attempts`, `max_consecutive_arg_failures`).
 **Acceptance.** Each step passes its targeted unit test; graceful failure forces `Finish{Reason: NoPath, Followup: true}` after N consecutive arg failures.
 **Tests.** Unit per step + integration with malformed mock LLM responses.
 **Deps.** 42, 32.
 
 ### 45 — Reference ReAct planner (minimum viable) (RFC §6.2)
+
 **Goal.** LLM call loop, JSON-only action format, tool selection, completion detection, single tool call per step. Functional options for the small policy-shaped knobs.
 **Acceptance.** 3-step reasoning task succeeds against a mock LLM; planner package has no Runtime imports; planner is concurrent-safe across runs.
 **Tests.** Conformance pack (skeleton) + scenario.
 **Deps.** 42, 43, 44, 32.
 
 ### 46 — Trajectory compression / summariser (RFC §6.2)
+
 **Goal.** Configurable summariser invoked by runtime when `token_budget` exceeded. Produces `TrajectorySummary{Goals, Facts, Pending, LastOutputDigest, Note}`. Compression is a runtime concern; planner sees only the compacted view.
 **Acceptance.** Over-budget trajectory triggers summarisation; summary replaces raw step history in subsequent prompt builds.
 **Tests.** Integration with mock summariser.
 **Deps.** 43, 32.
 
 ### 47 — Parallel-call execution + JoinSpec (RFC §6.2)
+
 **Goal.** `CallParallel{Branches, Join}` executes branches concurrently; atomic setup validation (any branch's invalid args fails the whole call before execution); parallel-pause atomicity (no branch starts side-effecting tools, or all reach checkpointed observation before pause commits); system cap `absolute_max_parallel=50`.
 **Acceptance.** Atomicity contract holds under fault injection; ordering preserved per-branch; deterministic merge keys.
 **Tests.** Concurrency + property (atomicity invariant).
 **Deps.** 45, 14.
 
 ### 48 — Deterministic planner (proves the iface) (RFC §6.2, §11 Q-6)
+
 **Goal.** A second concrete that exercises a non-LLM `Decision` shape. Executes a programmatic decision tree without an LLM call.
 **Acceptance.** Deterministic planner passes the conformance pack; the same Runtime executes both deterministic and React without changes.
 **Tests.** Conformance pack.
 **Deps.** 42.
 
 ### 49 — Planner conformance pack (RFC §6.2)
+
 **Goal.** A shared test pack any `Planner` implementation must pass: top-20 prompts produce valid `Decision` against canned tool catalog + LLM mock; respects budget; never panics on malformed LLM output.
 **Acceptance.** Pack runs against React and Deterministic; `go test ./internal/planner/conformance/...` exits 0.
 **Tests.** The pack itself.
 **Deps.** 42, 45, 48.
 
 ### 50 — Pause/Resume Coordinator + handle registry (RFC §6.3, §3.3)
+
 **Goal.** `pauseresume.Coordinator` with `Request/Resume/Status`. `Token` is opaque (runtime-owned encoding). Handle registry is process-local at V1 (documented constraint; distributed handle directory deferred — RFC §12).
 **Acceptance.** Round-trip pause→serialise→load→resume succeeds; pauses survive Runtime restart only when StateStore-backed checkpoint is configured.
 **Tests.** Unit + integration; durability (in-mem / SQLite / Postgres).
 **Deps.** 07, 09, 13.
 
 ### 51 — Pause-state serialise contract (fail-loud) (RFC §6.3, §3.4)
+
 **Goal.** Pause record serialises with `format_version: 1` JSON. Non-serialisable handles → `ErrUnserializable` (no silent `nil`); missing-on-resume handles → `ErrToolContextLost`.
 **Acceptance.** Negative tests are the gate. CI fails on any silent-drop regression.
 **Tests.** Conformance with phase 43 `Trajectory.Serialize`.
 **Deps.** 50, 43.
 
 ### 52 — Steering inbox + control taxonomy (RFC §6.3)
+
 **Goal.** Per-run inbox owned by Runtime. Nine control event types: `INJECT_CONTEXT`, `REDIRECT`, `CANCEL`, `PRIORITIZE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `USER_MESSAGE`. Validation/sanitisation at Protocol edge: depth ≤ 6, ≤ 64 keys, ≤ 50 list items, ≤ 4096 chars/string, ≤ 16 KiB total. Per-event scopes per RFC §6.3.
 **Acceptance.** Oversize/over-deep payloads rejected at edge; per-event scope mismatch returns 403 + audit.
 **Tests.** Unit (validation) + integration (auth scope per event).
 **Deps.** 50, 05.
 
 ### 53 — Steering wiring (9 control events) (RFC §6.3)
+
 **Goal.** Drain-between-steps; planner sees only `RunContext.Control`. CANCEL hard/soft propagation; PAUSE blocks at next boundary; RESUME unblocks; INJECT_CONTEXT/REDIRECT/USER_MESSAGE visible on next planner step; APPROVE/REJECT advance pause; PRIORITIZE updates task; control-history capped per session.
 **Acceptance.** Each event type has a passing integration test; no event applied mid-tool-call.
 **Tests.** Integration matrix; concurrency mid-step.
 **Deps.** 52, 13.
 
 ### 54 — Protocol task control surface (RFC §5.2, §6.3)
+
 **Goal.** Protocol endpoints: `start`, `cancel`, `pause`, `resume`, `redirect`, `inject_context`, `approve`, `reject`, `prioritize`, `user_message`.
 **Acceptance.** All nine endpoints + `start` round-trip via SSE+REST (phase 60); identity scope enforced.
 **Tests.** Smoke `phase-54.sh` exercises each method.
 **Deps.** 50, 53, 20.
 
 ### 55 — OTel traces + propagation (RFC §6.14)
+
 **Goal.** `Tracer` wrapper; spans derived from events. Propagation: `traceparent` HTTP southbound; `_meta.traceparent` per request for stdio MCP; `HARBOR_TRACEPARENT` env on stdio spawn.
 **Acceptance.** Trace continuity across HTTP and stdio; spans align with run/step boundaries.
 **Tests.** Integration with Jaeger/OTLP collector.
 **Deps.** 04, 05.
 
 ### 56 — Metrics + OTLP + Prometheus (RFC §6.14, §11 Q-5 settled)
+
 **Goal.** `MetricsRegistry` derives from `Event.Type / NodeName / Producer` only. OTLP exporter default; built-in Prometheus `/metrics` endpoint at V1.
 **Acceptance.** Cardinality-lint test fails CI on `RunID`/`TraceID` labels; both exporters emit core counters.
 **Tests.** Integration; static cardinality lint.
 **Deps.** 55, 05.
 
 ### 57 — Durable event log driver (RFC §6.13)
+
 **Goal.** Persists `Event` records keyed by `(SessionID, Sequence)` via StateStore. Replay-from-cursor exact across restarts.
 **Acceptance.** Late subscriber after Runtime restart sees no gaps; ring buffer mode auto-degrades to "best-effort" with warning.
 **Tests.** Integration across all three StateStore drivers.
 **Deps.** 05, 07, 15, 16.
 
 ### 58 — Protocol types/methods/errors single source (RFC §5, §8)
+
 **Goal.** `internal/protocol/types/`, `internal/protocol/methods/`, `internal/protocol/errors/` are the only definitions. Lint check forbids hardcoded method strings outside `methods/`.
 **Acceptance.** Build succeeds with the lint check active; new methods land only in `methods/`.
 **Tests.** Lint test (CI).
 **Deps.** 01.
 
 ### 59 — Protocol versioning + deprecation policy (RFC §5.3)
+
 **Goal.** `ProtocolVersion` constant; deprecation window discipline; capability negotiation.
 **Acceptance.** Version constant returned on `harbor version` (after phase 63); deprecation note format settled.
 **Tests.** Unit.
 **Deps.** 58.
 
 ### 60 — Protocol wire transport (SSE + REST) (RFC §5.4, §11 Q-1)
+
 **Goal.** SSE stream for events; REST/JSON for control surface. Identity-scope enforcement at edge. **Tentative — Q-1.** If WebSocket+JSON-RPC or gRPC server-streaming wins, this phase forks accordingly.
 **Acceptance.** Console can stream events and submit control over the chosen transport; smoke covers both directions.
 **Tests.** Integration; full duplex stress.
@@ -535,24 +597,28 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** Q-1 is the load-bearing decision. Owner sign-off required before this phase ships.
 
 ### 61 — Protocol auth + identity-scope enforcement (RFC §5.5, §4)
+
 **Goal.** JWT (asymmetric only); `(tenant, user, session)` in claims; admin/console:fleet scopes for elevated subscriptions.
 **Acceptance.** Missing claim rejected with audit; HS\*/`none` algorithms rejected at parser level.
 **Tests.** Unit + integration; security suite.
 **Deps.** 58, 60, 01.
 
 ### 62 — Protocol conformance suite (RFC §5)
+
 **Goal.** A single conformance suite the protocol surface passes; covers every method, every error code, every event filter.
 **Acceptance.** `go test ./internal/protocol/conformance/...` exits 0; smoke runs the same suite against `harbor dev`.
 **Tests.** The suite itself.
 **Deps.** 58, 60, 61.
 
 ### 63 — Harbor CLI skeleton (RFC §8)
+
 **Goal.** `harbor` cobra binary with subcommands `dev`, `scaffold`, `validate`, `version`, `inspect-events`, `inspect-runs`, `inspect-topology`. All structured-error / `--quiet` / `--json` output mode.
 **Acceptance.** `harbor --help` matches a golden file; `harbor version` returns version + build hash + Protocol version.
 **Tests.** CLI golden tests.
 **Deps.** 60.
 
 ### 64 — `harbor dev` v1 (RFC §8)
+
 **Goal.** Boot embedded Runtime + open Protocol on `127.0.0.1:<port>`. No hot-reload yet. Identity injection via dev-token.
 **Acceptance.** `harbor dev` returns `/healthz` 200; events stream cleanly to a test Console subscriber.
 **Smoke.** `phase-64.sh` boots dev; `assert_status 200 /healthz`.
@@ -560,72 +626,84 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 63, 60.
 
 ### 65 — `harbor dev` hot-reload (RFC §8)
+
 **Goal.** fsnotify watcher; graceful-drain restart on Go-source change; configurable retain-in-flight policy.
 **Acceptance.** File change triggers drain; in-flight runs cancel cleanly; new code picked up.
 **Tests.** Integration with file mutation.
 **Deps.** 64.
 
 ### 66 — `harbor dev` draft-save scaffolding (RFC §8)
+
 **Goal.** Project-local `.harbor/drafts/` scratchpad endpoint; iterate on agent without committing scaffold; "save" promotes to `harbor scaffold`-emitted layout.
 **Acceptance.** Draft round-trip: edit → preview run → save → resulting scaffold passes `harbor validate`.
 **Tests.** Integration + golden.
 **Deps.** 64.
 
 ### 67 — `harbor scaffold` (RFC §8)
+
 **Goal.** Generate a new agent skeleton from a template (default = "minimal-react"). Templates discoverable; output passes `harbor validate`.
 **Acceptance.** `harbor scaffold my-agent` creates a buildable project; `harbor validate` returns 0.
 **Tests.** Golden output.
 **Deps.** 63.
 
 ### 68 — `harbor validate` (RFC §8)
+
 **Goal.** Validate config / skills / agent definitions without booting. Errors include file:line.
 **Acceptance.** Each error category produces a stable message; CI uses validate as a pre-flight check.
 **Tests.** Golden errors.
 **Deps.** 63, 02.
 
 ### 69 — `harbor inspect-events / inspect-runs` (RFC §8)
+
 **Goal.** Tail/filter event bus; list recent runs + show trajectory.
 **Acceptance.** `harbor inspect-events --session SID --type tool.completed` filters server-side; `harbor inspect-runs SID` shows run trajectory.
 **Tests.** Golden CLI outputs.
 **Deps.** 63, 60.
 
 ### 70 — `harbor inspect-topology` (RFC §8)
+
 **Goal.** Render run's node graph as ASCII; consumes `topology.snapshot` events.
 **Acceptance.** Sample run produces stable ASCII matching golden.
 **Tests.** Golden.
 **Deps.** 63, 60.
 
 ### 71 — `harbortest` test kit package (RFC §6.13)
+
 **Goal.** Public `harbortest` package: `RunOnce(ctx, agent, input) (Output, EventLog, error)`, `AssertSequence(log, []EventType{...})`, `AssertNoLeaks(log)` (cross-tenant/session leakage detector), `SimulateFailure(toolName, code, n)`, `RecordedEvents(runID) []Event`.
 **Acceptance.** Flow-level test ≤ 10 lines; `AssertNoLeaks` catches a deliberate cross-session bug in a regression test.
 **Tests.** Self-test of the kit.
 **Deps.** 05, 09, 07.
 
 ### 72 — Console subscription protocol surface (RFC §5.2, §7)
+
 **Goal.** Read-only event subscription scoped by identity triple; admin/console:fleet scope for cross-session/tenant.
 **Acceptance.** Console can subscribe to a session's events; cross-tenant call rejected unless scoped admin.
 **Tests.** Integration.
 **Deps.** 60, 05, 06.
 
 ### 73 — Console state inspection surface (RFC §5.2, §7)
+
 **Goal.** `sessions.inspect`, `tasks.get`, `state.history`, `state.list_trajectories`, `state.load_planner_checkpoint`, `artifacts.list`, `artifacts.get`, `artifacts.get_ref`, `artifacts.delete` — all scope-checked, redacted on emit.
 **Acceptance.** Each method enforces identity; redaction applied; pagination defined.
 **Tests.** Integration + scope mismatch.
 **Deps.** 60, 07, 17.
 
 ### 74 — Console topology projection events (RFC §5.2, §6.13)
+
 **Goal.** `topology.snapshot` events emitted on engine construction + on edge change; static graph + live queue depth.
 **Acceptance.** Console renders a topology view from these events alone (no internal access).
 **Tests.** Integration.
 **Deps.** 05, 09.
 
 ### 75 — Console e2e Playwright (CI gate) (RFC §7)
+
 **Goal.** Playwright suite under `web/console/tests/*.spec.ts` runs against `harbor dev`. Per the binding rule: every operator-facing flow shipped in a phase has a matching `.spec.ts`. (Console implementation lives in its own repo; this phase covers the Runtime-side hooks + CI gate skeleton in this repo.)
 **Acceptance.** A baseline harness exists; CI runs it (skipped if the Console repo isn't checked out as a dev dependency); future Console phases hook into it.
 **Tests.** Playwright baseline.
 **Deps.** 64, 72, 73.
 
 ### 76 — Cross-tenant isolation conformance harness (RFC §4.3)
+
 **Goal.** A master conformance harness asserting cross-tenant + cross-session isolation across StateStore / ArtifactStore / MemoryStore / SkillStore / TaskRegistry / EventBus. 100 sessions × random ops × 30 s under `-race`.
 **Acceptance.** Final invariant: every read's identity matches the caller's identity exactly; CI runs the harness on every PR.
 **Tests.** The harness is the test.
@@ -633,36 +711,42 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Risks.** This is the integrity gate. A regression here is a security bug.
 
 ### 77 — Goroutine leak conformance harness (RFC §5 Go conventions)
+
 **Goal.** Harness wrapping every long-lived component asserting `runtime.NumGoroutine` returns to baseline after `Stop()`.
 **Acceptance.** All Runtime components pass; CI runs on every PR.
 **Tests.** The harness is the test.
 **Deps.** 10, 13, 50.
 
 ### 78 — Chaos / fault injection harness
+
 **Goal.** Kill mid-run, drop messages, simulate provider quirks, simulate StateStore disconnect, force pause-deserialize failures. Used in integration tests; not on hot path.
 **Acceptance.** Each failure mode produces the documented event + recovery path.
 **Tests.** Chaos suite.
 **Deps.** 76, 77.
 
 ### 79 — Performance benchmarks
+
 **Goal.** Engine throughput (envelopes/sec under N runs); bus fan-out (subscribers vs latency); memory-strategy latency (truncation vs rolling_summary).
 **Acceptance.** Baseline numbers committed; perf regression threshold gates PRs (e.g. > 10% slowdown blocks).
 **Tests.** `go test -bench`.
 **Deps.** 10, 12, 05.
 
 ### 80 — Documentation hygiene polish
+
 **Goal.** Every package has a doc comment; every exported symbol has godoc; example agents in `examples/`; recipe docs (`docs/recipes/`).
 **Acceptance.** `golangci-lint`'s `revive exported` and `package-comments` clean; `examples/` builds end-to-end.
 **Tests.** Lint + example builds in CI.
 **Deps.** All V1 phases.
 
 ### 81 — Release engineering (versioning, changelog) (RFC §12)
+
 **Goal.** Semver tagging, `CHANGELOG.md`, build provenance (SLSA-style attestations as a stretch).
 **Acceptance.** `git tag v1.0.0-rc.1` produces a release artifact; CHANGELOG covers all V1 phases.
 **Tests.** Release dry-run.
 **Deps.** All V1 phases.
 
 ### 82 — V1 cut (RFC §1, §12)
+
 **Goal.** `v1.0.0` tag; release notes; migration notes (if any); blog/announcement scaffold.
 **Acceptance.** `harbor version` returns `v1.0.0`; preflight green; protocol conformance suite green; cross-tenant + leak harnesses green.
 **Tests.** Full preflight.
@@ -715,16 +799,19 @@ The phase queue is a DAG, not a line. Here are the parallelizable waves; phases 
 18 (Artifact SQLite/PG; needs 17, 15, 16), 19 (Artifact S3; needs 17), 20 (TaskRegistry; needs 01, 07), 22 (Distributed contracts; needs 09, 20). Parallelizable subject to deps.
 
 **Wave 7 — Memory + tools core + LLM core (parallel tracks):**
+
 - Memory track: 23 → 24 → 25
 - Tools track: 26 → 27 / 28 / 29 (HTTP, MCP, A2A in parallel after 26)
 - LLM track: 32 → 33 → 34 → 35 → 36 (largely serial)
 - Governance track (slots in after 33): 33 → 36a → 36b (serial; relies on cost-passthrough from bifrost integration)
 
 **Wave 8 — Skills + planner core (after wave 7's foundations):**
+
 - Skills track: 37 → 38 / 39 / 40 / 41 (after 37, the four can run in parallel-ish)
 - Planner track: 42 → 43 / 44 (parallel) → 45 → 46 / 47 (parallel) → 48 → 49
 
 **Wave 9 — Pause/Resume + Steering + Telemetry + Protocol (cross-track):**
+
 - 50 (needs 07, 09, 13) → 51 → 52 → 53 → 54
 - 55 (OTel; after 04, 05) parallel with 56 (metrics; after 55, 05); 57 (durable event log; after 05, 07, 15, 16)
 - 58 (protocol types) → 59 (versioning) → 60 (transport) → 61 (auth) → 62 (conformance)
@@ -823,7 +910,7 @@ Brief 07 codified Harbor's "code-level tool calling" principle (RFC §6.4) and s
 | `Dispatcher` — single tool path | 26 (Tool catalog core + InProcess) | Validation, identity stamping, cancellation hooks. |
 | `Dispatcher` — parallel branches | 47 (Parallel-call execution + JoinSpec) | Same validation/identity/cancel plumbing as 26; the two phases ship the same dispatcher, not two dispatchers. |
 | `RepairLoop` | 44 (Schema repair pipeline) | Drives parser → validator → planner-prompt-on-failure cycles up to `RepairAttempts`. |
-| `ObservationRenderer` (`internal/runtime/planner/observation/`) | 45 (Reference ReAct planner) + 46 (Trajectory compression / summariser) | Renderer interleaves assistant/user messages from `(action, observation|error|failure)` pairs; compression in 46 plugs into the same renderer. |
+| `ObservationRenderer` (`internal/runtime/planner/observation/`) | 45 (Reference ReAct planner) + 46 (Trajectory compression / summariser) | Renderer interleaves assistant/user messages from `(action, observation \| error \| failure)` pairs; compression in 46 plugs into the same renderer. |
 | `SchemaSanitizer` (`internal/llm/correction/`) | 34 (Provider correction layer) | Lives between runtime and LLM client; per-provider `response_format` adjustments. |
 
 If a future PR renames the package layout from `internal/runtime/planner/...` to a flatter `internal/dispatch/` etc., the mapping table above moves with it and the phases retain their numbers. The trio is a design unit; splitting a single phase into "parser" + "dispatcher" + "renderer" sub-phases is allowed but not required.

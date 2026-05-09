@@ -15,6 +15,7 @@ If this is the start of a fresh Claude Code session (or your first time touching
 3. **§16 ("Authoring a phase plan")** — the binding workflow for any contributor (human or AI) touching a phase plan. **Skipping this is the single largest source of design drift.** The workflow's brief-reading and template-copying steps are forcing functions, not suggestions.
 
 **Drift hygiene artifacts (live references, all under `docs/` and `scripts/`):**
+
 - `docs/decisions.md` — append-only log of settled architectural decisions (D-001..D-NNN). When tempted to re-litigate something, grep here first.
 - `docs/glossary.md` — Harbor vocabulary. New terms land here in the same PR.
 - `docs/research/INDEX.md` — subsystem → research-briefs reverse index. Tells you which briefs to read for the subsystem you're touching.
@@ -61,7 +62,7 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 
 ## 3. Repository layout
 
-```
+```text
 .
 ├── RFC-001-Harbor.md          # design RFC
 ├── README.md                   # quickstart + pointers
@@ -188,14 +189,17 @@ Each phase smoke script auto-skips its surface if the endpoint returns 404/405/5
 When you add a feature, extend the relevant phase smoke script so the new surface is covered. PRs that introduce a new endpoint or Protocol method without a smoke check are rejected.
 
 To install the pre-commit hook locally:
+
 ```bash
 make install-hooks
 ```
 
 To bypass in an actual emergency:
+
 ```bash
 HARBOR_PREFLIGHT_SKIP=1 git commit -m '...'
 ```
+
 The PR description must justify the skip. CI still runs the gate; an emergency local skip never reaches `main`.
 
 ### 4.2 Phase implementor contract

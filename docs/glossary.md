@@ -117,6 +117,7 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **SchemaSanitizer** — runtime utility that lives BETWEEN the runtime and the `LLMClient` (NOT inside the client). Applies per-provider `response_format` shape adjustments before the request goes out. RFC §6.5.
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
+
 - `ErrUnserializable` — pause-state cannot be JSON-serialized; raised loudly by the pause/resume serialize path (RFC §6.3, brief 02).
 - `ErrToolContextLost` — pause-resume found a non-serializable handle key with no live runtime mapping; the pause cannot resume (RFC §6.3).
 - `ErrBudgetExceeded` — Governance PreCall: identity ceiling reached (RFC §6.15).
