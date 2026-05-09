@@ -265,6 +265,54 @@ type EventBus interface {
 	Close(ctx context.Context) error
 }
 
+// Cursor identifies the last event a subscriber has consumed for a
+// session. Sequence is the per-bus monotonic value assigned by
+// Publish; SessionID scopes the cursor so two subscribers on
+// different sessions can use the same numeric Sequence without
+// collision. The bus that issued the Sequence is the only bus the
+// Cursor is meaningful against; cross-bus replay is not supported.
+//
+// Cursor{Sequence: 0} has the special meaning "from the beginning"
+// for Replayer.Replay — equivalent to "the caller has seen nothing
+// yet" — and bypasses the ErrCursorTooOld check so a fresh client
+// can read whatever the ring still retains without coordinating on
+// its tail.
+type Cursor struct {
+	SessionID string
+	Sequence  uint64
+}
+
+// Replayer is the optional capability interface drivers may implement
+// to support replay-from-cursor. EventBus.Subscribe + Replayer.Replay
+// together give the caller a "resume cleanly after disconnect" pattern:
+//
+//  1. Open a fresh Subscribe with the desired filter — let the live
+//     stream begin queuing into the subscriber's buffer.
+//  2. Call Replay(lastSeenCursor, filter) — drain the historical
+//     snapshot strictly newer than the cursor.
+//  3. Live-tail the Subscribe channel; dedupe against the snapshot's
+//     last sequence so a Publish landing between Subscribe and Replay
+//     is not double-counted.
+//
+// A driver that does not implement Replayer (or whose
+// EventsConfig.ReplayBufferSize is 0) returns ErrReplayUnavailable.
+// The type assertion bus.(events.Replayer) still succeeds in the
+// configured-off case — the assertion is a compile-shaped contract;
+// the runtime decision lives in the call.
+type Replayer interface {
+	// Replay returns events whose Sequence > from.Sequence and that
+	// match f, in Sequence order (strictly increasing). The returned
+	// slice is owned by the caller. (nil, nil) is the "nothing newer
+	// to replay" case (cursor at or past the bus head). See
+	// ErrCursorTooOld and ErrReplayUnavailable for failure modes.
+	//
+	// The same filter rules as Subscribe apply: empty-triple
+	// non-admin filters are rejected with ErrIdentityScopeRequired,
+	// and Admin-scope replay emits an audit.admin_scope_used event
+	// before returning the snapshot so admin-scope use is observable.
+	Replay(ctx context.Context, from Cursor, f Filter) ([]Event, error)
+}
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrUnknownEventType — Publish was called with an EventType not
@@ -292,6 +340,20 @@ var (
 	// triple. Wraps identity.ErrIdentityIncomplete in spirit; bus-side
 	// rejection happens before any redaction or queueing.
 	ErrIdentityRequired = errors.New("events: event identity missing one or more components")
+	// ErrCursorTooOld — Replay was called with a Cursor whose Sequence
+	// is older than the ring's oldest retained entry. Wraps a
+	// "(oldest, requested)" detail in the formatted message so callers
+	// that fall through to a durable log (Phase 57) can interpret the
+	// gap. errors.Is(err, ErrCursorTooOld) is the comparison.
+	ErrCursorTooOld = errors.New("events: cursor older than ring tail")
+	// ErrReplayUnavailable — replay is disabled on this driver
+	// (EventsConfig.ReplayBufferSize=0) or the driver does not
+	// implement Replayer at all. The type assertion
+	// bus.(events.Replayer) succeeds even when the configured ring
+	// size is zero — callers learn at call time, not at assertion
+	// time, so the same call sites work whether replay is enabled or
+	// not.
+	ErrReplayUnavailable = errors.New("events: replay not available on this driver")
 )
 
 // ValidateEvent does structural validation: the EventType is in the

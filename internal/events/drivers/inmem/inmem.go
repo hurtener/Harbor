@@ -7,12 +7,21 @@
 //     metrics, and any opt-in caller). On redaction error the bus
 //     publishes an audit.redaction_failed sibling event and returns
 //     the wrapped error; the original payload is NOT enqueued.
-//   - Sequence numbering is per-bus monotonic via atomic.Uint64.
+//   - Sequence numbering is per-bus monotonic and gap-free. Sequence
+//     assignment and ring-buffer append happen under one mutex
+//     (publishMu) so the ring's contents are guaranteed to be in
+//     Sequence order — the load-bearing invariant for Replay's
+//     "no gaps within a RunID" guarantee.
 //   - Fan-out walks the subscriber map under RLock; each match runs
 //     the per-subscriber enqueue path (drop-oldest under saturation).
 //   - The reaper goroutine ticks at IdleTimeout/4 and Cancels any
 //     subscription whose Events() channel has not been drained for
 //     IdleTimeout.
+//   - Replay (Phase 06) snapshots the ring under publishMu, applies
+//     the same filter rules as Subscribe, returns events strictly
+//     newer than the cursor in Sequence order. ReplayBufferSize=0
+//     disables the ring entirely; Replay returns
+//     events.ErrReplayUnavailable.
 //   - Close idempotently signals the reaper, cancels every live
 //     subscription, and waits for goroutines to exit.
 //
@@ -92,12 +101,19 @@ func New(cfg config.EventsConfig, r audit.Redactor, opts ...Option) (events.Even
 	if cfg.DropWindow <= 0 {
 		return nil, fmt.Errorf("inmem: DropWindow must be > 0")
 	}
+	if cfg.ReplayBufferSize < 0 {
+		return nil, fmt.Errorf("inmem: ReplayBufferSize must be >= 0 (zero disables replay)")
+	}
 	b := &bus{
 		cfg:       cfg,
 		redactor:  r,
 		clock:     realClock{},
+		ringCap:   cfg.ReplayBufferSize,
 		subs:      map[uint64]*subscription{},
 		closeDone: make(chan struct{}),
+	}
+	if b.ringCap > 0 {
+		b.ringBuf = make([]events.Event, b.ringCap)
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -117,7 +133,25 @@ type bus struct {
 	redactor audit.Redactor
 	clock    Clock
 
-	seq atomic.Uint64
+	// publishMu protects sequence assignment + ring-buffer append. It
+	// is the load-bearing invariant for Replay: by serialising the two
+	// operations, the ring's contents are guaranteed in Sequence
+	// order (because seq is incremented and the event is written to
+	// the ring under the same lock acquisition). Two concurrent
+	// publishers may interleave on fanOut afterwards — that's fine,
+	// subscribers' arrival order is best-effort — but the ring is
+	// authoritative for Replay's gap-free guarantee.
+	publishMu sync.Mutex
+	nextSeq   uint64
+	// Ring buffer state. ringBuf[ringHead] is the slot the next event
+	// will be written to. ringFull is true once the buffer has wrapped
+	// at least once. ringCap is the configured capacity (snapshot of
+	// cfg.ReplayBufferSize so a future hot-reload can be staged
+	// without re-allocating live).
+	ringBuf  []events.Event
+	ringHead int
+	ringFull bool
+	ringCap  int
 
 	mu    sync.RWMutex
 	subs  map[uint64]*subscription
@@ -186,7 +220,7 @@ func (b *bus) reapIdle(now time.Time) {
 				IdleSeconds:  idleSeconds,
 			},
 		}
-		notice.Sequence = b.seq.Add(1)
+		b.assignSeqAndStore(&notice)
 		// enqueueClosing + close-channel must run under the SAME
 		// s.mu lock so the closing notice's send and the channel
 		// close don't race (concurrent publishers are also under
@@ -221,7 +255,7 @@ func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = b.clock.Now()
 	}
-	ev.Sequence = b.seq.Add(1)
+	b.assignSeqAndStore(&ev)
 
 	b.fanOut(ev)
 	return nil
@@ -241,7 +275,7 @@ func (b *bus) emitRedactionFailure(_ context.Context, original events.Event, cau
 			Reason:       cause.Error(),
 		},
 	}
-	ev.Sequence = b.seq.Add(1)
+	b.assignSeqAndStore(&ev)
 	b.fanOut(ev)
 }
 
@@ -343,11 +377,158 @@ func (b *bus) Subscribe(_ context.Context, f events.Filter) (events.Subscription
 				SubscriberID: id,
 			},
 		}
-		notice.Sequence = b.seq.Add(1)
+		b.assignSeqAndStore(&notice)
 		b.fanOut(notice)
 	}
 
 	return s, nil
+}
+
+// assignSeqAndStore is the load-bearing helper that assigns the next
+// monotonic sequence to ev AND appends a copy to the ring buffer
+// under one lock acquisition. The ring is therefore guaranteed to
+// contain events in strict Sequence order — no two ring slots will
+// ever hold events whose Sequence ordering disagrees with their slot
+// ordering.
+//
+// Caller must NOT pre-fill ev.Sequence (Publish enforces this; the
+// internal callers — emitRedactionFailure, the reaper closing
+// notice, the Subscribe AdminScopeUsed notice, the maybeEmitDropNotice
+// path — all construct fresh Events with Sequence=0 by convention).
+//
+// When ringCap is 0, only the sequence is assigned; no ring storage
+// happens (replay is configured-off).
+func (b *bus) assignSeqAndStore(ev *events.Event) {
+	b.publishMu.Lock()
+	b.nextSeq++
+	ev.Sequence = b.nextSeq
+	if b.ringCap > 0 {
+		b.ringAppendLocked(*ev)
+	}
+	b.publishMu.Unlock()
+}
+
+// ringAppendLocked writes ev to the next ring slot and advances the
+// head. Caller must hold publishMu. Called only when ringCap > 0.
+func (b *bus) ringAppendLocked(ev events.Event) {
+	b.ringBuf[b.ringHead] = ev
+	b.ringHead++
+	if b.ringHead >= b.ringCap {
+		b.ringHead = 0
+		b.ringFull = true
+	}
+}
+
+// ringSnapshotLocked returns the events currently retained in the
+// ring, in Sequence order (oldest first). Caller must hold publishMu.
+//
+// When the ring has not wrapped (ringFull=false), the live entries
+// are buf[0:ringHead]. When it has wrapped, the live entries are
+// buf[ringHead:cap] followed by buf[0:ringHead] — concatenation
+// preserves Sequence order because the appender writes monotonically.
+//
+// The returned slice is a fresh copy; the caller owns it.
+func (b *bus) ringSnapshotLocked() []events.Event {
+	if b.ringCap == 0 {
+		return nil
+	}
+	if !b.ringFull {
+		out := make([]events.Event, b.ringHead)
+		copy(out, b.ringBuf[:b.ringHead])
+		return out
+	}
+	out := make([]events.Event, b.ringCap)
+	copy(out, b.ringBuf[b.ringHead:])
+	copy(out[b.ringCap-b.ringHead:], b.ringBuf[:b.ringHead])
+	return out
+}
+
+// Replay implements events.Replayer. Returns events strictly newer
+// than from.Sequence that match f, in Sequence order. See the
+// Replayer godoc for the semantics; the call also enforces the same
+// filter rules as Subscribe (empty-triple non-admin filters are
+// rejected; Admin emits an audit.admin_scope_used sibling event).
+//
+// Concurrency: snapshotting the ring under publishMu prevents torn
+// reads against an in-progress Publish. Filtering and copying happen
+// outside the lock so a long Replay does not stall publishers.
+func (b *bus) Replay(_ context.Context, from events.Cursor, f events.Filter) ([]events.Event, error) {
+	if b.closed.Load() {
+		return nil, events.ErrBusClosed
+	}
+	if b.ringCap == 0 {
+		return nil, events.ErrReplayUnavailable
+	}
+	if !f.Admin && !f.HasFullTriple() {
+		return nil, events.ErrIdentityScopeRequired
+	}
+
+	if f.Admin {
+		// Mirror Subscribe: surface admin-scope use on the bus so
+		// abuse is retroactively detectable. Phase 61 (Protocol auth)
+		// will add cryptographic verification; Phase 06 trusts the
+		// boolean exactly as Phase 05's Subscribe does.
+		notice := events.Event{
+			Type:       events.EventTypeAdminScopeUsed,
+			Identity:   identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}},
+			OccurredAt: b.clock.Now(),
+			Payload: events.AdminScopeUsedPayload{
+				Tenant:  f.Tenant,
+				User:    f.User,
+				Session: f.Session,
+			},
+		}
+		b.assignSeqAndStore(&notice)
+		b.fanOut(notice)
+	}
+
+	// Snapshot the ring + record the head sequence under one lock
+	// acquisition so the head boundary is consistent with the
+	// snapshot's contents.
+	b.publishMu.Lock()
+	snapshot := b.ringSnapshotLocked()
+	headSeq := b.nextSeq
+	b.publishMu.Unlock()
+
+	if len(snapshot) == 0 {
+		return nil, nil
+	}
+
+	oldestSeq := snapshot[0].Sequence
+
+	// Cursor at or past the head — nothing newer.
+	if from.Sequence >= headSeq {
+		return nil, nil
+	}
+
+	// Cursor older than the ring tail. The next event the caller
+	// needs is from.Sequence+1; if that is older than oldestSeq,
+	// events have been evicted and we cannot serve a gap-free
+	// snapshot. The cursor=0 ("from beginning") case bypasses this
+	// check by definition — it means "give me whatever the ring
+	// retains" and accepts ring eviction implicitly.
+	if from.Sequence > 0 && from.Sequence+1 < oldestSeq {
+		return nil, fmt.Errorf("%w: oldest=%d requested=%d",
+			events.ErrCursorTooOld, oldestSeq, from.Sequence)
+	}
+
+	// Filter and slice. Snapshot is already in Sequence order
+	// (assignSeqAndStore guarantees this), so iterating preserves
+	// the strictly-increasing-Sequence requirement.
+	out := make([]events.Event, 0, len(snapshot))
+	for _, ev := range snapshot {
+		if ev.Sequence <= from.Sequence {
+			continue
+		}
+		if !f.Matches(ev) {
+			continue
+		}
+		out = append(out, ev)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // Close idempotently shuts the bus down. After Close, Publish and
@@ -586,7 +767,7 @@ func (s *subscription) maybeEmitDropNotice(forIdentity identity.Quadruple, b *bu
 			SubscriberID: s.id,
 		},
 	}
-	notice.Sequence = b.seq.Add(1)
+	b.assignSeqAndStore(&notice)
 
 	// Try to land the notice without displacing.
 	select {
@@ -631,8 +812,12 @@ func (s *subscription) resetDropWindow(now time.Time) {
 	s.markEnqueueProgress(now.UnixNano())
 }
 
-// Compile-time assertion that bus implements events.EventBus.
-var _ events.EventBus = (*bus)(nil)
+// Compile-time assertion that bus implements events.EventBus AND
+// events.Replayer (Phase 06).
+var (
+	_ events.EventBus = (*bus)(nil)
+	_ events.Replayer = (*bus)(nil)
+)
 
 // Compile-time assertion: subscription.Cancel is exported via the
 // interface; satisfying both Events() and Cancel() suffices.
