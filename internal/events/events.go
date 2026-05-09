@@ -128,6 +128,23 @@ func EventTypes() []EventType {
 	return out
 }
 
+// RegisterEventType installs a new canonical EventType into the
+// registry. Call from a subsystem-side init() so the type is in the
+// registry before any Publish runs (Publish rejects unregistered
+// types with ErrUnknownEventType).
+//
+// Re-registering the same value is a no-op; registering an empty
+// EventType panics — silent acceptance would defeat the exhaustive-enum
+// invariant the registry exists to enforce.
+func RegisterEventType(t EventType) {
+	if t == "" {
+		panic("events: RegisterEventType called with empty EventType")
+	}
+	canonicalMu.Lock()
+	canonicalTypes[t] = struct{}{}
+	canonicalMu.Unlock()
+}
+
 // EventPayload is the sealed payload interface. Concrete payload
 // types live alongside their owning subsystems and embed Sealed to
 // satisfy the seal. The unexported method on Sealed is the seal.

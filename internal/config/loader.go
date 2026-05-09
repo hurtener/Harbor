@@ -138,6 +138,11 @@ func defaults() *Config {
 			DropWindow:               1 * time.Second,
 			ReplayBufferSize:         10000,
 		},
+		Sessions: SessionsConfig{
+			IdleTTL:       24 * time.Hour,
+			HardCap:       720 * time.Hour,
+			SweepInterval: 15 * time.Minute,
+		},
 	}
 }
 

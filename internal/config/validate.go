@@ -38,6 +38,7 @@ func (c *Config) Validate() error {
 		c.validateLLM,
 		c.validateGovernance,
 		c.validateEvents,
+		c.validateSessions,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -181,6 +182,29 @@ func (c *Config) validateEvents() error {
 	}
 	if c.Events.ReplayBufferSize < 0 {
 		return fieldError("events.replay_buffer_size", "must be >= 0 (zero disables replay)")
+	}
+	return nil
+}
+
+func (c *Config) validateSessions() error {
+	if c.Sessions.IdleTTL <= 0 {
+		return fieldError("sessions.idle_ttl", "must be > 0")
+	}
+	if c.Sessions.HardCap <= 0 {
+		return fieldError("sessions.hard_cap", "must be > 0")
+	}
+	if c.Sessions.SweepInterval <= 0 {
+		return fieldError("sessions.sweep_interval", "must be > 0")
+	}
+	if c.Sessions.IdleTTL > c.Sessions.HardCap {
+		return fieldError("sessions.idle_ttl",
+			fmt.Sprintf("must be <= sessions.hard_cap (%s); got %s",
+				c.Sessions.HardCap, c.Sessions.IdleTTL))
+	}
+	if c.Sessions.SweepInterval > c.Sessions.IdleTTL {
+		return fieldError("sessions.sweep_interval",
+			fmt.Sprintf("must be <= sessions.idle_ttl (%s) so sessions can't live past TTL by more than one sweep; got %s",
+				c.Sessions.IdleTTL, c.Sessions.SweepInterval))
 	}
 	return nil
 }
