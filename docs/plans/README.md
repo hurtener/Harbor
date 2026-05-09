@@ -22,7 +22,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 04 | slog Logger + standard attribute set          | telemetry            | §6.14       | 03                    | 85%  | Shipped  |
 | 05 | Event taxonomy + InMem `EventBus` + isolation | events               | §6.13       | 01, 03                | 85%  | Shipped  |
 | 06 | Bus replay + ring buffer + cursor             | events               | §6.13       | 05                    | 85%  | Pending  |
-| 07 | StateStore iface + InMem + conformance suite  | state                | §6.11, §9   | 01, 03                | 85%  | Pending  |
+| 07 | StateStore iface + InMem + conformance suite  | state                | §6.11, §9   | 01, 03                | 85%  | Shipped  |
 | 08 | SessionRegistry + lifecycle + GC              | sessions             | §6.9        | 01, 07                | 85%  | Pending  |
 | 09 | Envelopes, Headers, Identity quadruple        | runtime/messages     | §6.1        | 01, 08                | 85%  | Pending  |
 | 10 | Engine + workers + cycle detection            | runtime/engine       | §6.1        | 09                    | 85%  | Pending  |
