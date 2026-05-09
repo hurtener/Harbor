@@ -81,6 +81,18 @@ type engine struct {
 	running  bool
 	stopped  atomic.Bool
 	wg       sync.WaitGroup // worker join group
+
+	// Phase 12: per-run streaming capacity bookkeeping.
+	//
+	// capMu guards capacities + runCapacityOverrides. Trackers are
+	// created lazily on first EmitChunk for a run; overrides are
+	// recorded on Engine.Emit when WithRunCapacity is passed. Both
+	// maps grow over time (one entry per run); a run's entry is NOT
+	// reaped on completion in V1 (Phase 13's Cancel and a future
+	// run-end signal will manage cleanup).
+	capMu                sync.Mutex
+	capacities           map[string]*runCapacity
+	runCapacityOverrides map[string]int
 }
 
 // New constructs an Engine from a list of adjacencies + options.
@@ -143,6 +155,7 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 		inletChans: make(map[string]chan messages.Envelope),
 		outletChan: make(chan messages.Envelope, cfg.queueSize),
 		logger:     slog.Default(),
+		capacities: make(map[string]*runCapacity),
 	}
 	if len(e.inlets) == 0 {
 		return nil, fmt.Errorf("engine: graph has no inlet (every node has a parent — adjust AllowCycle or graph shape)")
@@ -171,7 +184,7 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 		e.inletChans[name] = make(chan messages.Envelope, cfg.queueSize)
 	}
 
-	e.dispatcher = newDispatcher(e.outletChan, cfg.queueSize)
+	e.dispatcher = newDispatcher(e.outletChan, cfg.queueSize, e.signalDrainedFrame)
 	return e, nil
 }
 
@@ -255,6 +268,13 @@ func (e *engine) Stop(ctx context.Context) error {
 		cancel()
 	}
 
+	// Phase 12: release every blocked EmitChunk waiter with
+	// ErrEngineStopped BEFORE waiting for workers. A worker whose
+	// NodeFunc is mid-EmitChunk waits on a per-run sync.Cond; until
+	// we broadcast on those conds, the worker would hang and wg.Wait
+	// would deadlock against the ctx deadline.
+	e.stopAllCapacities()
+
 	// Wait for workers; workers exit when the engine's internal ctx
 	// is cancelled (which we just did).
 	doneWorkers := make(chan struct{})
@@ -297,7 +317,7 @@ func (e *engine) Stop(ctx context.Context) error {
 //
 // Blocks if the inlet channel is full — backpressure flows back to
 // the caller. Honors ctx cancellation.
-func (e *engine) Emit(ctx context.Context, env messages.Envelope, _ ...EmitOption) error {
+func (e *engine) Emit(ctx context.Context, env messages.Envelope, opts ...EmitOption) error {
 	if e.stopped.Load() {
 		return ErrEngineStopped
 	}
@@ -306,6 +326,13 @@ func (e *engine) Emit(ctx context.Context, env messages.Envelope, _ ...EmitOptio
 	}
 	if env.Timestamp.IsZero() {
 		env.Timestamp = time.Now()
+	}
+	o := emitOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.runCapacity > 0 {
+		e.recordRunCapacityOverride(env.RunID, o.runCapacity)
 	}
 	target := e.inlets[0]
 	return e.sendBlocking(ctx, e.inletChans[target], env)
@@ -496,7 +523,7 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 			_ = e.emitFromNode(ctx, node.Name, env, false)
 			continue
 		}
-		nctx := &NodeContext{engine: e, node: node.Name}
+		nctx := &NodeContext{engine: e, node: node.Name, lastEnv: env}
 		// Phase 11: invoke under the reliability shell. NodePolicy
 		// drives validate / timeout / retry / backoff. Zero-value
 		// policy = bare invocation (Phase 10 behavior).
