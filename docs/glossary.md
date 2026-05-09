@@ -52,6 +52,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Fail-loudly** — Harbor's runtime principle. Errors are explicit; capabilities are mandatory; identity is mandatory. No `try { ... } catch { return None }`-shaped patterns. AGENTS.md §5 (Errors) + §13.
 
+**Flow** — a typed DAG of `Node`s assembled into a runnable unit. Built on the same engine that powers subflows; can be registered as a Tool via `flow.RegisterAsTool(...)` so the planner invokes a multi-step orchestration the same way it invokes a single Tool. Per-node `NodePolicy` (retry / exponential backoff / timeout / validation) plus aggregate `flow.Budget` (deadline / hop budget / cost cap) compose with identity-tier Governance ceilings. RFC §6.1, D-023.
+
+**`flow.Definition`** — the canonical Go shape describing a Flow: name, description, entry/exit nodes, node specs, optional intrinsic `Budget`, and derived `InSchema` / `OutSchema`. V1 operators write `Definition`s in Go; V1.1 adds a YAML recipe loader that parses into the same struct. RFC §6.1, D-023.
+
+**`flow.Budget`** — per-flow intrinsic cap on `Deadline`, `HopBudget`, and `CostCap`. Enforced at flow boundaries via `min()` against parent-run `RunContext.Budget` and identity-tier ceilings; whichever fires first aborts the flow with `ErrFlowBudgetExceeded`. RFC §6.1, D-023.
+
 **Failover chain** — Operator-defined sequence of providers tried in order when the primary fails or hits its ceiling. Orchestrated by Harbor's Governance subsystem; audited per hop; distinct from bifrost's per-request `Fallbacks` field. Post-V1, phase 93. RFC §6.15.
 
 ## G
@@ -92,6 +98,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
 
+**Recipe** — a declarative (YAML/JSON) representation of a `flow.Definition` so operators can author flows without writing Go. Parses into the same `Definition` struct the runtime consumes. **V1.1 (post-V1 phase 100)** — V1 ships Go-coded `Definition`s; the recipe loader is a parser added later without changing the contract. RFC §6.1, D-023.
+
 **RepairLoop** — the runtime's recovery loop for malformed planner output. Drives `parser → validator → planner-prompt-on-failure` cycles up to `RepairAttempts`. Loud on exhaust. RFC §6.4.
 
 **Run** — one execution of the planner loop within a Session. A Session contains many Runs. `RunID` is for runtime concurrency; `TraceID` (OTel) may span Runs.
@@ -126,6 +134,8 @@ Additions to this set are RFC PRs.
 **TaskID** — stable identifier for a Task. Format includes `Kind`. Schema-keyed at the StateStore level. Closes the predecessor's `trace_id` vs `task_id` split (brief 05).
 
 **ToolContext** — per-tool-call runtime context split into a JSON-encodable half (persisted across pause/resume) and a runtime-handle half (re-attached by key on resume). The split is a fail-loudly contract: serializing the JSON-half MUST raise `ErrUnserializable` if any field is non-serializable rather than silently dropping data; resuming a missing handle raises `ErrToolContextLost`. RFC §6.3, brief 02.
+
+**ToolPolicy** — the reliability shell applied to every tool invocation regardless of `Transport`. Mirrors `NodePolicy` (§6.1): `TimeoutMS`, `MaxRetries`, `BackoffBase`, `BackoffMax`, `RetryOn` (error classes), `Validate`. Sensible defaults fire on zero-value so `tools.RegisterFunc(name, fn)` is production-resilient with no ceremony. RFC §6.4, D-024.
 
 **Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs. RFC §6.2.
 
