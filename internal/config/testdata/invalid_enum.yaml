@@ -1,0 +1,28 @@
+server:
+  bind_addr: 0.0.0.0:9000
+  shutdown_grace_period: 15s
+
+identity:
+  jwt_algorithms:
+    - HS256  # forbidden by AGENTS.md §7
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: harbor-test
+
+state:
+  driver: inmem
+
+llm:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  api_key: sk-test-fixture
+  timeout: 30s
+
+governance:
+  default_max_tokens: 8192
+  repair_attempts: 2
