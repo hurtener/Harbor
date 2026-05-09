@@ -136,6 +136,7 @@ func defaults() *Config {
 			SubscriberBufferSize:     256,
 			IdleTimeout:              60 * time.Second,
 			DropWindow:               1 * time.Second,
+			ReplayBufferSize:         10000,
 		},
 	}
 }
