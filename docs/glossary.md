@@ -30,6 +30,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Code-level tool calling** — Harbor's elegance principle. The LLM emits text/JSON describing intent; the runtime parses, dispatches, and merges results. Provider-native tool calling APIs (`tools=[...]`, `tool_choice`, `function_call`) are NOT used. The runtime owns the protocol; providers don't need to. RFC §6.4 + brief 07.
 
+**Cursor (events)** — `(SessionID, Sequence)` pair identifying the last event a subscriber has consumed. Used by `Replayer.Replay` to compute "events strictly newer than this." Sequence is the per-bus monotonic value assigned by `Publish`; SessionID scopes the cursor so two subscribers on different sessions can use the same numeric Sequence without collision. RFC §6.13, brief 06 §4, D-029.
+
 **CompleteRequest / CompleteResponse** — the request/response pair for `LLMClient.Complete(ctx, req) (resp, error)`. Carries `Messages` (role+content; content is text or multimodal `Parts`), optional `ResponseFormat`, optional streaming callbacks. No `Tools`, no `ToolChoice`. RFC §6.5.
 
 **ContentPart** — one element of a multimodal `ChatMessage.Content.Parts` slice. Discriminated by `Type`: text, image, audio, or file. Concrete payload via `Image *ImagePart`, `Audio *AudioPart`, `File *FilePart` (or inline `Text` for text parts). RFC §6.5, D-021.
@@ -76,6 +78,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Governance** — Harbor's middleware subsystem between the Runtime and the `LLMClient` driver. Owns identity-scoped policies: cost accumulators, ceilings, rate limits, MaxTokens, and (post-V1) key rotation, model swap, failover chains, circuit breakers, caching, PII redaction. The `LLMClient` interface stays one method; bifrost is unaware of identity scopes. RFC §6.15.
 
+**GCPolicy** — Configuration knob group for the `SessionRegistry`'s GC sweeper. Defaults: `IdleTTL=24h, HardCap=720h (30d), SweepInterval=15m`. Carries the `RunningProbe` seam through which `TaskRegistry` (Phase 20) gates "never reap a session with a RUNNING task." Fields are not hot-reloadable in V1. RFC §6.9.
+
 ## I
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
@@ -110,6 +114,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
 
+**Replayer (events)** — optional capability interface (`Replay(ctx, Cursor, Filter) ([]Event, error)`) that drivers may implement to support replay-from-cursor. The core `EventBus` interface stays at three methods; callers type-assert `bus.(events.Replayer)`. Returns events strictly newer than the cursor that match the filter, in `Sequence` order — no duplicates and no gaps within any single `RunID`. Returns `ErrCursorTooOld` when the cursor is older than the in-memory ring's tail (caller falls through to the durable log driver, Phase 57); returns `ErrReplayUnavailable` when retention is disabled (`EventsConfig.ReplayBufferSize=0`). RFC §6.13, D-029.
+
+**Ring buffer (events)** — in-memory bounded retention queue inside the events `inmem` driver; default 10000 entries (configurable via `EventsConfig.ReplayBufferSize`). Eviction is drop-oldest. Distinct from per-subscriber buffers — ring eviction is a documented retention policy, not a delivery failure, and emits no `bus.dropped` notice.
+
+**RunningProbe** — function-typed seam (`func(ctx, identity.Quadruple) (bool, error)`) the `SessionRegistry`'s GC consults before reaping a session. Default returns `(false, nil)`; Phase 20 (`TaskRegistry`) wires the real probe so GC honors "never reap a session with a RUNNING task." RFC §6.9.
+
 **Recipe** — a declarative (YAML/JSON) representation of a `flow.Definition` so operators can author flows without writing Go. Parses into the same `Definition` struct the runtime consumes. **V1.1 (post-V1 phase 100)** — V1 ships Go-coded `Definition`s; the recipe loader is a parser added later without changing the contract. RFC §6.1, D-023.
 
 **RedactedMap** — the post-redaction payload form for events whose `EventPayload` did not implement `SafePayload`. The audit redactor's reflective walk normalises a struct payload to `map[string]any`; the bus wraps that result in `RedactedMap` so it still satisfies `EventPayload` for delivery to subscribers. Subscribers extract redacted fields via `RedactedMap.Data`. RFC §6.13, D-028.
@@ -135,6 +145,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 Additions to this set are RFC PRs.
 
 **Session** — a longer-lived multi-turn conversation that contains many Runs. Identity for runtime concerns is `(tenant, user, session)`. RFC §6.9.
+
+**SessionRegistry** — Harbor's session lifecycle subsystem. One concrete implementation, `StateStore`-backed (no driver pluralism — sessions consume the StateStore conformance suite for cross-driver correctness). Open / Get / Touch / Close / Inspect / GC. Identity captured immutably on `Open`; reopen-after-close rejected; cross-tenant `SessionID` reuse rejected with `ErrSessionIDReuse`. Carries the canonical example of the D-027 typed-wrapper pattern (`SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: q, Kind: "session.lifecycle", Bytes: marshal(s)})`). RFC §6.9.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
 
