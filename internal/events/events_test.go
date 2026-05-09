@@ -232,12 +232,11 @@ func TestOpen_DefaultDriver(t *testing.T) {
 // driver and Phase 57's durable-log driver — both will register
 // alternative names that Open must select via cfg.
 func TestOpen_HonoursCfgDriver(t *testing.T) {
-	// Register a sentinel driver under a non-default name. Use a
-	// unique name so this test doesn't conflict with concurrent
-	// re-runs (registration is process-wide).
-	const name = "test-honour-driver-ad9c2e"
 	called := false
-	events.Register(name, func(_ config.EventsConfig, _ audit.Redactor) (events.EventBus, error) {
+	// RegisterForTest gives this iteration a unique name and registers
+	// a t.Cleanup hook that unregisters when the test ends — so
+	// `go test -count=N` doesn't double-register and panic.
+	name := events.RegisterForTest(t, "honour-driver", func(_ config.EventsConfig, _ audit.Redactor) (events.EventBus, error) {
 		called = true
 		return nil, errInvariantNotABus
 	})
