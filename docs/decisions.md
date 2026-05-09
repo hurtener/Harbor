@@ -260,6 +260,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-029 — Replay returns `[]Event`, not a fresh `Subscription`
+
+**Date:** 2026-05-09
+**Status:** Settled (supersedes brief 06 §2 sketch for Phase 06)
+**Where it lives:** `docs/plans/phase-06-events-replay.md` ("Findings I'm departing from"), brief 06 §2 (the original sketch is preserved unchanged in the brief), `internal/events/events.go` (the `Replayer` interface lands in Phase 06's implementation PR), glossary (`Replayer capability interface`, `Cursor`).
+**Why:** Brief 06 §2 sketched `Replay(ctx, Cursor, Filter) (Subscription, error)` returning a fresh Subscription whose stream interleaves historical-then-live events. That coupling makes the historical/live boundary fuzzy and forces the bus to dedupe at the seam between snapshot and live tail — exactly the kind of "subtle invariant maintained by clever code" pattern the predecessor learned to regret. Harbor settles the surface as `Replay(ctx, Cursor, Filter) ([]Event, error)`: a snapshot of historical events strictly between the cursor and the bus's current sequence, with the caller responsible for combining the snapshot with a fresh `Subscribe` if it wants to continue live. The split gives the no-duplicate / no-gap guarantee a clean home — `Publish` stamps every event with `Sequence`, and a subscriber's cursor is "the last sequence I have." If a future phase needs a one-shot `ReplayAndSubscribe`, it composes on top of these two primitives without changing driver implementations. The brief sketch is preserved unchanged in `docs/research/06-events-observability-devx.md` §2; this entry records the implementation departure.
+
+---
+
 <!--
 Append new entries below this line in the form:
 
