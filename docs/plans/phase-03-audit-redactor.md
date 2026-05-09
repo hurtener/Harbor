@@ -43,6 +43,7 @@ Deliver Harbor's central `audit.Redactor` — a single deep-redaction pass that 
 - [ ] Coverage on `internal/audit` ≥ 90%.
 - [ ] Golden-file tests in `internal/audit/testdata/golden/*.json` exercise the combined rule set against representative event payload shapes.
 - [ ] No package-level mutable redactor state (`audit.MustFrom(ctx)` is the only access pattern; no global `audit.Default`).
+- [ ] **Multimodal-aware redaction (D-021 / D-022).** A `multimodal` rule group recognizes inline base64 / `DataURL` content in payloads (image / audio / file MIME signatures); rewrites such fields to `[redacted: <MIME> of <N> bytes]` placeholders or, when an `ArtifactRef` is available alongside, swaps to the ref. `ArtifactRef` values pass through unredacted (they are references, not bytes). Golden-file fixture asserts a payload containing a 64 KB inline base64 image redacts cleanly.
 - [ ] `make drift-audit` and `make preflight` pass.
 
 ## Files added or changed

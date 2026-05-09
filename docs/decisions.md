@@ -168,6 +168,22 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-021 — Multimodality scope: inputs in V1, outputs as post-V1 tool wrappers
+**Date:** 2026-05-08
+**Status:** Settled
+**Where it lives:** RFC §6.5 (Multimodal inputs subsection), master plan phases 32 + 33 (V1 inputs) + 97 + 98 (post-V1 outputs), glossary (`ContentPart`, `ImagePart`, `AudioPart`, `FilePart`)
+**Why:** The predecessor accumulated an ambient "text-only" assumption that became expensive to retrofit. Harbor settles multimodal inputs at V1 (image/audio/file via `ChatMessage.Content`'s `Parts` slice; `bifrost` handles per-provider translation) so the LLM call surface is correct from t=0 — sending images to LLMs as part of analysis is the common case, not a feature. **Outputs** (image generation, TTS, transcription, video) are delivered as **tools** that return `ArtifactRef`s; the planner dispatches them via the existing tool catalog (RFC §6.4 code-level dispatch). This keeps the `LLMClient` interface one method and aligns multimodal output with the runtime's existing tool-dispatch story.
+
+---
+
+## D-022 — `ArtifactRef` is the canonical binary representation for multimodal content
+**Date:** 2026-05-08
+**Status:** Settled
+**Where it lives:** RFC §6.5 (canonical binary representation paragraph), §6.10 (Artifacts), glossary (`Artifact`, `ArtifactRef`, multimodal part types)
+**Why:** Three supply forms exist for image/audio/file content (URL, DataURL, ArtifactRef). Above the heavy-output threshold (32 KB default — RFC §6.10), the runtime *automatically* materializes inline `DataURL` content into `ArtifactRef`s and rewrites the message before event emission, audit, and persistence. This keeps event payloads, audit logs, and memory turns from carrying raw bytes; it also gives audit redaction a stable canonical form to handle (`ArtifactRef` passes through unredacted; `DataURL` is rewritten to placeholder + ref). URLs pass through unchanged when the provider can fetch them directly.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

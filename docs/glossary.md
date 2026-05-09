@@ -28,7 +28,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Code-level tool calling** — Harbor's elegance principle. The LLM emits text/JSON describing intent; the runtime parses, dispatches, and merges results. Provider-native tool calling APIs (`tools=[...]`, `tool_choice`, `function_call`) are NOT used. The runtime owns the protocol; providers don't need to. RFC §6.4 + brief 07.
 
-**CompleteRequest / CompleteResponse** — the request/response pair for `LLMClient.Complete(ctx, req) (resp, error)`. Carries `Messages` (role+content), optional `ResponseFormat`, optional streaming callbacks. No `Tools`, no `ToolChoice`. RFC §6.5.
+**CompleteRequest / CompleteResponse** — the request/response pair for `LLMClient.Complete(ctx, req) (resp, error)`. Carries `Messages` (role+content; content is text or multimodal `Parts`), optional `ResponseFormat`, optional streaming callbacks. No `Tools`, no `ToolChoice`. RFC §6.5.
+
+**ContentPart** — one element of a multimodal `ChatMessage.Content.Parts` slice. Discriminated by `Type`: text, image, audio, or file. Concrete payload via `Image *ImagePart`, `Audio *AudioPart`, `File *FilePart` (or inline `Text` for text parts). RFC §6.5, D-021.
 
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
 
@@ -59,6 +61,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## I
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
+
+**ImagePart / AudioPart / FilePart** — typed payloads for `ContentPart`. Each carries one of `URL` (provider-fetchable), `DataURL` (inline base64), or `Artifact *artifacts.Ref` (canonical Harbor reference per D-022) plus a `MIME` type. The runtime auto-materializes `DataURL` content above the heavy-output threshold (32 KB default, RFC §6.10) into `ArtifactRef`s before event emission, audit, and persistence. RFC §6.5, D-021/D-022.
 
 **Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
