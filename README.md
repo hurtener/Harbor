@@ -24,7 +24,8 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 | 02 — Configuration loader | `internal/config` — typed YAML loader (`goccy/go-yaml`), env overrides, validation, secret redaction, `examples/harbor.yaml` | Shipped |
 | 03 — Audit redactor | `internal/audit` — single deep-redaction pass + driver registry + canonical secret rules + multimodal-aware redaction | Shipped |
 | 04 — slog logger + standard attribute set | `internal/telemetry` — identity-aware structured logger; redacts every record via `audit.Redactor`; `BusEmitter` seam for Phase 05+ runtime.error events | Shipped |
-| 05+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
+| 05 — Event taxonomy + InMem `EventBus` + isolation | `internal/events` + `internal/events/drivers/inmem` — typed `EventBus` with server-enforced identity-scoped `Filter`, drop-oldest backpressure with `bus.dropped`, idle reaper, audit-before-emit | Shipped |
+| 06+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
 
 ## Working in this repo
 
