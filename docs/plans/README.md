@@ -16,9 +16,9 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | #  | Name                                          | Subsystem            | RFC §       | Deps                  | Cov. | Status   |
 |---:|-----------------------------------------------|----------------------|-------------|-----------------------|-----:|----------|
 | 00 | Skeleton                                      | repo / hygiene       | n/a         | —                     | n/a  | Shipped  |
-| 01 | Identity & isolation triple                   | identity             | §4          | 00                    | 90%  | Pending  |
-| 02 | Configuration loader                          | config               | §10         | 00                    | 85%  | Pending  |
-| 03 | Audit redactor                                | audit                | §6.4, §6.15 | 00                    | 90%  | Pending  |
+| 01 | Identity & isolation triple                   | identity             | §4          | 00                    | 90%  | Shipped  |
+| 02 | Configuration loader                          | config               | §10         | 00                    | 85%  | Shipped  |
+| 03 | Audit redactor                                | audit                | §6.4, §6.15 | 00                    | 90%  | Shipped  |
 | 04 | slog Logger + standard attribute set          | telemetry            | §6.14       | 03                    | 85%  | Pending  |
 | 05 | Event taxonomy + InMem `EventBus` + isolation | events               | §6.13       | 01, 03                | 85%  | Pending  |
 | 06 | Bus replay + ring buffer + cursor             | events               | §6.13       | 05                    | 85%  | Pending  |

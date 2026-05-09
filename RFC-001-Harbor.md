@@ -950,50 +950,41 @@ type Store interface {
 ### 6.11 StateStore
 
 ```go
-type StateEvent struct {
-    EventID  string  // ULID, monotonically increasing
-    TaskID   TaskID  // run or background task
-    Kind     string  // "task.started", "tool.called", ...
-    Ts       time.Time
-    NodeName string  // optional
-    Payload  json.RawMessage  // canonical JSON; redacted upstream
+// EventID is a ULID supplied by the caller; the store keys idempotency on it.
+type EventID string
+
+// StateRecord is the unit of persistence. Bytes is opaque to the store —
+// callers serialize their domain types and run them through audit redaction
+// upstream of Save (the store does not redact).
+type StateRecord struct {
+    ID         EventID
+    Identity   identity.Quadruple
+    Kind       string    // caller-namespaced, e.g. "session.lifecycle", "task.checkpoint"
+    Version    int       // optimistic-concurrency hint for typed wrappers
+    Bytes      []byte    // pre-redacted, caller-serialized payload
+    UpdatedAt  time.Time
 }
 
 type StateStore interface {
-    SaveEvent(ctx context.Context, ev StateEvent) error              // idempotent on EventID
-    LoadHistory(ctx context.Context, id TaskID) ([]StateEvent, error)
-    SaveBinding(ctx context.Context, b RemoteAgentBinding) error
-    FindBinding(ctx context.Context, q BindingQuery) (*RemoteAgentBinding, error)
-    ListBindings(ctx context.Context, sessionID SessionID) ([]RemoteAgentBinding, error)
-    MarkBindingTerminal(ctx context.Context, taskID TaskID, contextID, remoteTaskID string) error
-
-    SavePlannerCheckpoint(ctx context.Context, token string, payload []byte) error
-    LoadPlannerCheckpoint(ctx context.Context, token string) ([]byte, bool, error)
-
-    SaveMemoryState(ctx context.Context, key MemoryKey, state []byte) error
-    LoadMemoryState(ctx context.Context, key MemoryKey) ([]byte, bool, error)
-
-    SaveTask(ctx context.Context, t Task) error
-    ListTasks(ctx context.Context, sessionID SessionID, f TaskFilter) ([]Task, error)
-    SaveTaskUpdate(ctx context.Context, u TaskUpdate) error
-    ListTaskUpdates(ctx context.Context, sessionID SessionID, f UpdateFilter) ([]TaskUpdate, error)
-
-    SaveSteering(ctx context.Context, ev SteeringEvent) error
-    ListSteering(ctx context.Context, sessionID SessionID, f SteeringFilter) ([]SteeringEvent, error)
-
-    SaveTrajectory(ctx context.Context, taskID TaskID, t Trajectory) error
-    GetTrajectory(ctx context.Context, taskID TaskID) (*Trajectory, bool, error)
-    ListTaskIDs(ctx context.Context, sessionID SessionID, limit int) ([]TaskID, error)
+    Save(ctx context.Context, r StateRecord) error                                    // idempotent on EventID; ErrIdempotencyConflict on same-ID-different-bytes
+    Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
+    LoadByEventID(ctx context.Context, eventID EventID) (StateRecord, error)
+    Delete(ctx context.Context, id identity.Quadruple, kind string) error
+    Close(ctx context.Context) error
 }
 ```
 
-**Settled:**
+**Settled (revised — D-027):**
 
+- **Generic key-value-of-typed-bytes surface.** `StateStore` is a five-method interface keyed on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency on a caller-provided `EventID` (ULID). Consuming subsystems (sessions, tasks, planner checkpoints, memory snapshots, steering events, distributed bindings, trajectories) land their **typed wrappers at their own layer** atop this surface — not inside `internal/state`. Example: `SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`. This keeps `internal/state` a leaf with no upstream Harbor deps beyond `internal/identity` and `internal/config`.
 - One mandatory interface, three V1 drivers (in-memory, SQLite, Postgres), one conformance suite. The predecessor's eight optional `Supports*` capability protocols + `hasattr` duck-typing are explicitly rejected — if all V1 drivers implement everything, optional capabilities are ceremony.
 - Forward-only migrations, per-driver migration directories. Each migration ends with `INSERT OR IGNORE INTO schema_migrations(version) VALUES (N);` (or driver equivalent).
 - WAL journal mode for SQLite.
-- Idempotency: `SaveEvent` keys on `EventID` (caller-provided ULID).
-- Tasks are first-class at the schema level; sessions are first-class with their own table. The predecessor's `StateStoreSessionAdapter` trick (writing session updates as audit events keyed by `f"session:{session_id}"`) is unnecessary in Harbor.
+- Idempotency: `Save` keys on `EventID`; same-ID + same-bytes is a no-op, same-ID + different-bytes returns `ErrIdempotencyConflict` (caller-controlled retry semantics — the store never silently overwrites).
+- Identity-mandatory at the API boundary: empty tenant / user / session in the `Quadruple` rejected with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped state.
+- Audit redaction is **upstream** of `Save`. The store stores opaque bytes; mixing redaction into the persistence layer would couple a leaf package to the audit subsystem and split responsibility (D-020).
+
+**Earlier typed sketch (superseded by D-027 — kept for history):** an earlier draft listed 21 typed methods (`SaveTask`, `SaveTrajectory`, `SaveBinding`, `SaveSteering`, `SaveMemoryState`, etc.) keyed on domain types from unshipped phases. That shape would have inverted the dependency graph (a leaf persistence interface importing types from its consumers); the generic surface is strictly more general and lets each consumer ship its typed adapter at the right layer.
 
 **Build-tag strategy — Settled.** Both SQLite and Postgres drivers ship in the default binary; operators choose at config time. Distros that need a smaller binary use build tags to drop one. (Resolves brief 05 Q-3.)
 
