@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Phase 13 smoke skeleton — assertions land when the phase implements its surface.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "${ROOT}"
+# shellcheck source=scripts/smoke/common.sh
+source "scripts/smoke/common.sh"
+skip "phase 13: not yet implemented (skeleton only — implementation lands in feat/phase-13-* PR)"
+smoke_summary
