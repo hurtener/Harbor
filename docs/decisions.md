@@ -242,6 +242,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-027 — StateStore is a generic `(Quadruple, Kind, Bytes)` surface; typed wrappers land at consumer phases
+
+**Date:** 2026-05-09
+**Status:** Settled (supersedes RFC §6.11's typed-multi-method sketch)
+**Where it lives:** RFC §6.11 (revised to the generic surface), `docs/plans/phase-07-state.md` ("Findings I'm departing from"), `internal/state/` (will land in Phase 07 implementation), every consuming phase that wraps the surface (08 sessions, 20 tasks, 22 distributed, 23 memory, 42 planner, 50 steering — each ships its own typed adapter atop the generic interface).
+**Why:** The earlier RFC §6.11 sketch listed 21 typed methods (`SaveTask`, `SaveTrajectory`, `SaveBinding`, `SaveSteering`, `SaveMemoryState`, …) keyed on Go types (`Task`, `Trajectory`, `RemoteAgentBinding`, `SteeringEvent`, `MemoryKey`, …) that **do not exist yet** — they belong to phases not in Wave 2 (sessions Phase 08, tasks Phase 20, distributed Phase 22, memory Phase 23, planner Phase 42, steering Phase 50). A leaf persistence interface cannot import types from its consumers without inverting the dependency graph. Harbor settles the call: `StateStore` is a five-method surface keyed on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency on a caller-provided `EventID` (ULID). Consuming phases land their typed wrapper at their own layer (`SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`). Strictly more general than the typed surface, fully covered by the conformance suite, and avoids the leaf-imports-consumer cycle. Forward-only migrations, three-driver parity (in-mem / SQLite / Postgres), and the no-`Supports*`-ceremony rule from §9 still apply unchanged. The earlier sketch is not deleted from history (it captured intent); this entry supersedes it.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

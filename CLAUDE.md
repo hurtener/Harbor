@@ -216,6 +216,7 @@ When implementing **Phase N**, the following are part of the work — not option
 8. **New CLI subcommands**: include a degradation path so the smoke still works on builds that don't yet have the subcommand.
 9. **Done definition**: a phase is done when (a) all phase plan acceptance criteria pass, (b) coverage targets met, (c) `scripts/smoke/phase-NN.sh` shows OK ≥ the count of acceptance criteria it covers and FAIL = 0, (d) prior phases' smoke scripts still pass against the new build (no regressions).
 10. **Keep `README.md` current.** When a phase ships, update the Status table in the root `README.md` so a fresh visitor sees what's landed. The table flips that phase's status from "Pending" to "Shipped" and, if the phase introduced a new reader-facing surface (a CLI subcommand, an example config, an installable package), adds a one-line pointer in the relevant section. README updates ride in the same PR as the phase work — not as a follow-up.
+11. **Keep `docs/plans/README.md` current.** The master phase plan acts as the canonical execution index. When a phase ships, flip its row's `Status` column from `Pending` to `Shipped` in the same PR. If a phase plan deviated permanently (per §4.3), reflect the deviation in the master plan's detail block too — not just the per-phase plan file. Stale `Pending` rows for shipped phases are a drift signal.
 
 ### 4.3 Reasonable plan deviations
 
