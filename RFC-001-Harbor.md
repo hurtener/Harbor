@@ -123,6 +123,21 @@ Across the surface, Harbor refuses to silently degrade.
 
 These are runtime-wide invariants, recorded in `AGENTS.md` §13 forbidden practices. (Settled.)
 
+### 3.5 The concurrent reuse contract (D-025)
+
+**Compiled artifacts are immutable after construction. Per-run state lives in `ctx` + `RunContext`, never on the artifact.** This is the cross-cutting principle that prevents the predecessor's most expensive retrofit: the first version of its flow runtime had thread-safety issues because mutable state on a single-instance "singleton" Flow bled across concurrent invocations once Python's threading model finally allowed parallel execution.
+
+In Harbor every "compiled artifact" — `flow.Engine`, `Tool` (any transport), `Planner` instance, `MemoryStore` driver, `Redactor`, `LLMClient`, `ToolCatalog` — is built once, shared across N concurrent goroutines, and MUST satisfy four guarantees:
+
+1. **No data races** — `go test -race ./...` is the gate; CI runs it.
+2. **No context bleed** — run A's input/state never reaches run B; verified by per-run identity assertions in the test.
+3. **No cancellation cross-talk** — cancelling run A's `ctx` MUST NOT affect run B; verified by parallel-cancel tests.
+4. **No goroutine leaks** — each invocation's goroutines are joined before the invocation returns; baseline-restored test asserts this.
+
+**Every phase that builds a reusable artifact ships a concurrent-reuse test** (N≥100 invocations against a single shared instance under `-race`). AGENTS.md §11 makes this mandatory; phase plan template's pre-merge checklist enforces it. Wave 1 phases 01 (Identity), 02 (Config), and 03 (Audit redactor) include this test from t=0; subsequent waves inherit the pattern.
+
+**Why it matters at design time, not just at test time:** an artifact that needs mutable per-run state pushes the design to expose that state through `RunContext`, not stash it on the receiver. This shapes interface signatures, registry patterns, and lifecycle conventions across the runtime. Done from t=0, it is free; retrofitted, it requires rewriting every artifact's invocation path. The predecessor learned this. Harbor inherits the lesson.
+
 ---
 
 ## 4. Identity & isolation contract

@@ -86,7 +86,7 @@ func MustFrom(ctx context.Context) Redactor // panics if absent — fail-loudly
 - **Unit:** each built-in rule (`api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`) — positive (matches), negative (does not over-match plain words), and edge (mixed case, surrounding whitespace, JSON-quoted).
 - **Integration:** the `patterns` driver applies the rule set in deterministic order over composite payloads (nested maps, slices, structs); golden-file tests assert byte-equal output.
 - **Conformance:** N/A this phase (single driver in V1; the seam exists for future drivers — when a second driver lands, a conformance harness joins them).
-- **Concurrency / leak:** `Redactor` is safe for concurrent use; race-detector test runs N goroutines redacting independent payloads; goroutine count baseline asserted.
+- **Concurrency / leak (D-025 concurrent-reuse contract):** `Redactor` is a canonical reusable artifact — built once at boot, shared across every event emitter / logger. Test runs N≥100 goroutines redacting independent payloads against a single shared `Redactor` instance under `-race`, asserting the four guarantees: no data races, no context bleed (each goroutine reads back its own redacted payload), no cancellation cross-talk, no goroutine leaks (baseline-restored). Per AGENTS.md §5 + §11 + RFC §3.5.
 - **Fuzz:** `FuzzRedactor` walks malformed inputs (truncated UTF-8, deeply nested maps, cyclic references via `any`-pointer); does not panic; either redacts or returns an error.
 - **Failure-mode:** a `Rule.Apply` that returns an error produces a wrapped error from `Redact`; the returned payload is `nil`; no partial leakage.
 

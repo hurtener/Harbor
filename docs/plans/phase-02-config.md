@@ -89,7 +89,7 @@ func (c *Config) LiveReloadable() []string
 - **Unit:** `Load`, `LoadFromBytes`, env-var override (precedence: env > YAML), `Validate` happy path + failure modes, `MarshalForLogging` golden test (input config → expected redacted YAML), `LiveReloadable` returns empty in Phase 02.
 - **Integration:** `examples/harbor.yaml` loads cleanly; round-trips through `MarshalForLogging`; the result is valid YAML that re-parses (without secrets, used for boot-log only).
 - **Conformance:** N/A (single implementation).
-- **Concurrency / leak:** N/A (load-once-at-boot; immutable after).
+- **Concurrency / leak (D-025 concurrent-reuse contract):** `*Config` is a canonical reusable artifact (built once at boot, shared across every subsystem). Test runs N≥100 goroutines reading multiple `*Config` field paths concurrently under `-race`; goroutine count returns to baseline. The test exists as much to *enforce* the "immutable after Load" claim (a future PR that adds a write path will fail under `-race`) as to verify it. Per AGENTS.md §5 + §11 + RFC §3.5.
 - **Failure-mode tests:** missing file (`os.IsNotExist`), invalid YAML (parse error includes file:line), missing required field (error includes section.field path), invalid enum value (error lists allowed values).
 
 ## Smoke script additions

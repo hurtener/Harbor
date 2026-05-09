@@ -200,6 +200,14 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-025 — Concurrent reuse contract: compiled artifacts immutable; per-run state lives in `ctx` + `RunContext`
+**Date:** 2026-05-09
+**Status:** Settled
+**Where it lives:** RFC §3.5 ("The concurrent reuse contract"), AGENTS.md §5 ("Concurrent reuse contract — non-negotiable"), §11 (mandatory concurrent-reuse tests), §13 (forbidden: mutable state on compiled artifacts), `docs/plans/_template.md` (pre-merge checklist), every Wave 1+ phase plan.
+**Why:** The predecessor's most expensive retrofit was thread-safety on its first-version flow runtime — the singleton "build a flow once, reuse across runs" pattern had mutable state that bled across concurrent invocations once parallelism was enabled. Harbor closes this from t=0 by settling four guarantees for every compiled artifact (`flow.Engine`, `Tool`, `Planner`, `MemoryStore`, `Redactor`, `LLMClient`, `ToolCatalog`): no data races, no context bleed, no cancellation cross-talk, no goroutine leaks. **Every phase that builds a reusable artifact ships a concurrent-reuse test** (N≥100 invocations under `-race`); the test is part of the pre-merge checklist and the drift-audit-adjacent phase plan template. Mutable state on artifacts that crosses run boundaries is a forbidden practice (AGENTS.md §13). Per-run state lives in `ctx` + `RunContext`; this constraint shapes every interface signature in the runtime.
+
+---
+
 <!--
 Append new entries below this line in the form:
 
