@@ -628,6 +628,21 @@ The audit is a forking task — the auditor runs read-only, the operator fixes f
 
 The audit is mandatory at wave boundaries; it is also acceptable to trigger one ad-hoc when scope drift is suspected.
 
+### 17.6 Fix what the integration test finds — no matter where the bug lives
+
+When an integration test (especially a wave-end smoke or checkpoint audit) surfaces a bug, **fix it in the same PR — even when the root cause is in a previously-shipped phase's code.** Examples that this rule covers, regardless of which phase originally shipped the surface:
+
+- Test-time non-idempotency that surfaces under `go test -count=N` (e.g. PR #16's `TestOpen_HonoursCfgDriver` flake — registered a process-wide driver name without cleanup; lived since Phase 05; surfaced when Wave 3's stress run flushed it out).
+- Cross-package wiring gaps where each phase's tests pass in isolation but the seam between them is dead (PR #11's `BusEmitter` ↔ `EventBus` gap).
+- Validator regressions where a previous phase's test config helper stops validating after a later phase tightens a rule (Wave 2's `wave2Config()` becoming stale once Phase 08's `validateSessions` required non-zero fields — fixed in PR #15).
+- Race conditions, goroutine leaks, or stale-doc references that are only visible when the larger surface composes.
+
+**Don't defer with "this is a Phase N issue, file a follow-up."** That defeats the gate's purpose: the test exists to catch drift, and drift in old phases is just as load-bearing as drift in new ones. A wave-end smoke that "passes" only by ignoring the issues it surfaced is not a gate, it's noise.
+
+The PR's title and body should call out the cross-phase fix (e.g. `feat(...) wave-3 + fix Phase 05 driver-registration flake`) so reviewers see what's bundled. Fixing across phase boundaries is **expected**, not exceptional, when integration tests do their job.
+
+If a discovered bug is genuinely too large for the current PR (full subsystem rewrite, new RFC required), the PR description must (a) name the bug with file:line precision, (b) link a tracking issue, and (c) explain why it's deferred — *and* the integration test that surfaced it must `t.Skip` with the issue link, never silently mask the failure.
+
 ---
 
 ## 18. Mirroring
