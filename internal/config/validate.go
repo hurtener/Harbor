@@ -179,6 +179,9 @@ func (c *Config) validateEvents() error {
 	if c.Events.DropWindow <= 0 {
 		return fieldError("events.drop_window", "must be > 0")
 	}
+	if c.Events.ReplayBufferSize < 0 {
+		return fieldError("events.replay_buffer_size", "must be >= 0 (zero disables replay)")
+	}
 	return nil
 }
 

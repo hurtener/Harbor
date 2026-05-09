@@ -124,16 +124,22 @@ type SessionsConfig struct{}
 type ArtifactsConfig struct{}
 
 // EventsConfig configures the event bus driver and its in-process
-// limits. Phase 05 fills the previously-reserved slot with the
-// inmem driver's defaults; later phases (replay-equipped Phase 06,
-// durable-log Phase 57) register additional driver names without
+// limits. Phase 05 filled the previously-reserved slot with the
+// inmem driver's defaults; Phase 06 adds ReplayBufferSize for the
+// in-memory ring buffer that backs Replayer. Later phases
+// (durable-log Phase 57) register additional driver names without
 // changing the field shape.
+//
+// ReplayBufferSize=0 disables replay entirely on the inmem driver
+// (Replay returns ErrReplayUnavailable immediately). The default
+// applied by Load is 10000.
 type EventsConfig struct {
 	Driver                   string        `yaml:"driver"`
 	MaxSubscribersPerSession int           `yaml:"max_subscribers_per_session"`
 	SubscriberBufferSize     int           `yaml:"subscriber_buffer_size"`
 	IdleTimeout              time.Duration `yaml:"idle_timeout"`
 	DropWindow               time.Duration `yaml:"drop_window"`
+	ReplayBufferSize         int           `yaml:"replay_buffer_size"`
 }
 
 // AuditConfig is owned by Phase 03 + later audit phases.
