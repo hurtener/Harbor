@@ -39,8 +39,10 @@ type Quadruple struct {
 }
 
 var (
-	// ErrIdentityMissing — the context carries no Identity (or no Quadruple).
-	ErrIdentityMissing = errors.New("identity: no Identity in context")
+	// ErrIdentityMissing — the context carries no Identity AND no
+	// Quadruple. Both MustFrom and MustQuadrupleFrom panic with
+	// this sentinel when their respective key is absent.
+	ErrIdentityMissing = errors.New("identity: no Identity or Quadruple in context")
 	// ErrIdentityIncomplete — one or more components empty. Identity is mandatory.
 	ErrIdentityIncomplete = errors.New("identity: one or more components empty")
 )

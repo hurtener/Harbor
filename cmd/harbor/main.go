@@ -1,8 +1,15 @@
-// Command harbor is the Harbor binary entry point. Phase 03 ships a
-// minimal stub that exists only to host the audit-driver
-// blank-import (so the patterns driver self-registers in any build
-// of the binary). Phase 09+ replaces this with the real entry point
-// (subcommands, dev server boot, config loader wiring).
+// Command harbor is the Harbor binary entry point.
+//
+// Wave 2 ships only the driver-registration blank-imports: every
+// production driver self-registers in its own init() so the
+// audit / events / state factories resolve when something Opens
+// them. The actual subcommand router (`harbor dev`, `harbor
+// scaffold`, …) plus full subsystem bootstrap lands in Phase 09+
+// per the master plan.
+//
+// Until that lands, `./bin/harbor` builds, runs, and exits cleanly
+// — the preflight gate detects the clean exit and skips the boot
+// step (see scripts/preflight.sh).
 package main
 
 import (
@@ -15,5 +22,5 @@ import (
 )
 
 func main() {
-	// Stub. Subcommand router lands in Phase 09+.
+	// Stub. Subcommand router + subsystem bootstrap lands in Phase 09+.
 }

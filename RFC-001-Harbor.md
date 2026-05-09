@@ -1025,47 +1025,75 @@ The event bus is the **canonical projection of runtime state**. One bus, protoco
 ```go
 package events
 
-type Event struct {
-    Type      EventType
-    Sequence  uint64       // monotonic per-bus, gap-free
-    EmittedAt time.Time
+// EventType is a string-typed exhaustive enum. Each canonical type
+// is declared as an exported constant + registered in init() so the
+// registry stays the single source of truth.
+type EventType string
 
-    TenantID, UserID, SessionID, RunID string
-    TraceID, SpanID string
-
-    Producer string  // "runtime", "planner", "tool:<name>", "task", "steering"
-    NodeName, NodeID string
-
-    Payload EventPayload
-    Extra   map[string]string  // bounded, low-cardinality; safe for metric labels
-
-    LatencyMs   *float64
-    TokensIn    *uint32
-    TokensOut   *uint32
-    CostUSD     *float64
-    QueueDepth  *QueueDepthSnapshot
+// EventPayload is sealed via an unexported method on Sealed (an
+// embedded struct any caller can compose into its concrete payload
+// type). Bus-internal payloads compose SafeSealed instead, marking
+// them as SafePayload — the bus skips the audit redactor for these
+// (no secrets by construction; preserves typed access on the
+// subscriber side). External payloads default to NOT-SafePayload;
+// the bus runs their value through audit.Redactor and the
+// subscriber-side payload becomes a RedactedMap when the redactor
+// reflects a struct into a map.
+type EventPayload interface {
+    isEventPayload()
+}
+type Sealed struct{}
+type SafePayload interface {
+    EventPayload
+    isSafePayload()
+}
+type SafeSealed struct{ Sealed }
+type RedactedMap struct {
+    Sealed
+    Data map[string]any
 }
 
-type Bus interface {
+type Event struct {
+    Type       EventType
+    Identity   identity.Quadruple // tenant + user + session + run, mandatory triple
+    OccurredAt time.Time          // assigned by Publish when zero
+    Sequence   uint64             // monotonic per-bus, gap-free; assigned by Publish
+    Payload    EventPayload
+    Extra      map[string]string  // bounded, low-cardinality; reserved for Phase 56 metric labels
+}
+
+type Filter struct {
+    Tenant, User, Session string
+    Types                 []EventType
+    Admin                 bool
+}
+
+type EventBus interface {
     Publish(ctx context.Context, ev Event) error
-    Subscribe(ctx context.Context, filter Filter) (Subscription, error)
-    Replay(ctx context.Context, from Cursor, filter Filter) (Subscription, error)
+    Subscribe(ctx context.Context, f Filter) (Subscription, error)
+    Close(ctx context.Context) error
 }
 ```
 
 **Settled:**
 
-- One bus, not two. The predecessor's split of `FlowEvent` (telemetry) vs `StreamChunk` (chunked output) is unified.
-- Drop policy on backpressure: drop-oldest, with a `bus.dropped` event describing the dropped sequence range and reason.
-- Server-enforced isolation filter: subscribe rejects calls that elide the identity triple unless the caller has `admin` scope.
-- Replay-from-cursor: ring buffer (default 10k events) when no durable log; exact replay when the durable log driver (StateStore-backed) is configured.
-- Cardinality safety: `MetricsRegistry` derives metrics from `Event.Type` / `NodeName` / `Producer` only — never `RunID` or `TraceID`. A static lint check enforces this in CI.
+- One bus, not two. The predecessor's split of telemetry vs chunked-output channels is unified on this single typed bus from t=0.
+- `EventBus` (the Go-level name shipped as `internal/events.EventBus`) ships with `Publish` / `Subscribe` / `Close`. The `Replay(ctx, Cursor, Filter)` method is a separate concern and lives in Phase 06's replay-equipped driver — when that driver lands, callers will type-assert the returned `EventBus` to a `Replayer` capability interface, keeping the core surface lean.
+- Drop policy on backpressure: drop-oldest, with a `bus.dropped` event describing the dropped sequence range. Notices are windowed at most once per `DropWindow` per subscriber.
+- Server-enforced isolation filter: `Subscribe` rejects empty-triple non-admin filters with `ErrIdentityScopeRequired`. Every `Admin: true` Subscribe additionally emits an `audit.admin_scope_used` event so abuse is retroactively detectable. Cryptographic verification of the admin claim is wired in Phase 61 (Protocol auth); Phase 05 trusts the boolean.
+- **Audit-before-emit boundary.** Every `Publish` runs the payload through `audit.Redactor` before enqueueing — except for `SafePayload`-marked types, which bypass the redactor (their declarer guarantees no secret-shaped fields; preserves typed access for bus-internal events and well-known metadata). On redaction failure: the bus emits a sibling `audit.redaction_failed` event (with NO original payload bytes) AND returns the wrapped error to the caller. The original event is NOT enqueued (D-020).
+- Identity-mandatory: `Publish` rejects events whose Quadruple lacks tenant/user/session with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped events.
+- Sequence numbering: per-bus monotonic via `atomic.Uint64`; gap-free. Caller-prefilled `Sequence != 0` is rejected with `ErrSequenceProvided`.
+- Replay-from-cursor: ring buffer (default 10k events) when no durable log; exact replay when the durable log driver (StateStore-backed, Phase 57) is configured. Replay capability lives in Phase 06.
+- Cardinality safety: future metric derivation (Phase 56) will draw labels from `Event.Type` and `Event.Extra` only — never `RunID` or `TraceID`. A static lint check enforces this in CI; the script ships as a Phase 05 stub at `scripts/check-event-cardinality.sh` and tightens in Phase 56.
 
-**Event taxonomy** is Settled and exhaustively enumerated in `internal/events/types/types.go` (Phase 1 of the events subsystem). The taxonomy includes session/run lifecycle, planner step, tool, LLM, task, steering, memory/skills/artifacts, bus health, errors. (See brief 06 §3 for the full list.)
+**Event taxonomy** is Settled and lives in `internal/events/events.go`. V1 starter set: `runtime.error`, `runtime.warning`, `bus.dropped`, `bus.subscription_idle_closed`, `audit.redaction_failed`, `audit.admin_scope_used`, `governance.budget_exceeded`, `governance.rate_limited`. Adding new types is at-the-seam: declare an exported constant and register it in `init()`. The `TestEventTypes_Exhaustiveness` smoke gate runs in preflight.
 
 **Default subscription filters in `harbor dev`:** `(tenant, user, session)` of the active run by default. Multi-run debugging requires an explicit operator opt-in. (Resolves brief 06 Q-3.)
 
 **Schema versioning — Settled.** Best-effort additive: new `EventType`s and new optional fields are non-breaking. Strict semver for the bus-wire schema once third-party Consoles exist (V1.5+). (Resolves brief 06 Q-4.)
+
+**Earlier sketch (superseded by D-028 — kept for history):** an earlier draft of §6.13 carried flat identity fields (`TenantID, UserID, SessionID, RunID`) plus `EmittedAt`, plus optional metric-shaped fields (`LatencyMs *float64`, `TokensIn *uint32`, `TokensOut *uint32`, `CostUSD *float64`, `QueueDepth *QueueDepthSnapshot`), and called the bus interface `Bus`. The shipped surface uses `identity.Quadruple` (re-using Phase 01's type), `OccurredAt`, no inline metric fields (Phase 56 derives labels from `Extra`), and renamed `Bus` → `EventBus`. The earlier draft also ranged the bus interface over `Replay` directly; replay is now a Phase 06 capability layer. D-028 captures the reconciliation.
 
 ### 6.14 Telemetry
 

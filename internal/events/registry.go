@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,7 +23,7 @@ type Factory func(config.EventsConfig, audit.Redactor) (EventBus, error)
 const DefaultDriver = "inmem"
 
 // ErrUnknownDriver — the requested driver name is not in the registry.
-var ErrUnknownDriver = fmt.Errorf("events: unknown driver")
+var ErrUnknownDriver = errors.New("events: unknown driver")
 
 var (
 	factoriesMu sync.RWMutex
