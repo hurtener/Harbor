@@ -10,6 +10,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	// State driver — production in-memory StateStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
 
 func main() {
