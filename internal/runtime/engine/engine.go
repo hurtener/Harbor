@@ -497,9 +497,15 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 			continue
 		}
 		nctx := &NodeContext{engine: e, node: node.Name}
-		out, err := safeInvoke(ctx, node.Func, env, nctx)
+		// Phase 11: invoke under the reliability shell. NodePolicy
+		// drives validate / timeout / retry / backoff. Zero-value
+		// policy = bare invocation (Phase 10 behavior).
+		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, nil)
 		if err != nil {
 			e.logWorkerError(env, err)
+			if e.cfg.errorEmitToEgress {
+				e.emitErrorEnvelope(ctx, env, err)
+			}
 			continue
 		}
 		if out.Timestamp.IsZero() {
@@ -610,22 +616,105 @@ func (e *engine) incomingChannelsFor(name string) []chan messages.Envelope {
 }
 
 // logWorkerError logs a worker-loop error via the engine's slog
-// logger with the standard attribute set. Phase 11 will promote
-// these into structured RunError events on the bus; Phase 10 stays
-// in the slog path so internal failures are visible to operators
-// without crashing the worker.
+// logger AND fires the configured RunErrorHandler (Phase 11). The
+// slog path keeps internal failures visible to operators even when
+// no handler is installed; the handler is the seam production wiring
+// uses to route the structured RunError into the telemetry.Logger →
+// eventbus adapter → runtime.error bus event chain.
+//
+// The handler call is best-effort: a panic is recovered and logged.
+// Bus-emit failures must not crash the worker.
 func (e *engine) logWorkerError(env messages.Envelope, err error) {
-	if e.logger == nil {
+	if e.logger != nil {
+		q := env.Identity()
+		var (
+			code     string
+			nodeName string
+		)
+		if re, ok := asRunError(err); ok {
+			code = string(re.Code)
+			nodeName = re.NodeName
+		}
+		e.logger.Error("engine: worker error",
+			slog.String("error", err.Error()),
+			slog.String("code", code),
+			slog.String("node", nodeName),
+			slog.String("tenant_id", q.TenantID),
+			slog.String("user_id", q.UserID),
+			slog.String("session_id", q.SessionID),
+			slog.String("run_id", q.RunID),
+		)
+	}
+	// Phase 11: if a RunErrorHandler is wired and we have a typed
+	// RunError, fire it. The handler is the seam telemetry.Logger
+	// connects through to the wave-2 eventbus adapter.
+	if e.cfg.runErrorHandler != nil {
+		if re, ok := asRunError(err); ok {
+			func() {
+				defer func() {
+					if r := recover(); r != nil && e.logger != nil {
+						e.logger.Error("engine: RunErrorHandler panicked",
+							slog.Any("panic", r))
+					}
+				}()
+				// Build a ctx that carries the failing envelope's
+				// quadruple so the BusEmitter (which reads identity
+				// from ctx) sees a complete triple.
+				ctx := identityCtxFor(env)
+				e.cfg.runErrorHandler(ctx, re)
+			}()
+		}
+	}
+}
+
+// emitErrorEnvelope writes a special error-shaped envelope onto the
+// engine's outlet so callers using WithErrorEmissionToEgress can
+// Fetch it. Payload carries the *RunError directly; callers
+// type-assert.
+//
+// Best-effort: a saturated outlet drops the error envelope rather
+// than blocking the worker. The error has already gone to the
+// logger + handler (the bus-side path), so the egress emission is
+// strictly an additive surface for callers who want it.
+func (e *engine) emitErrorEnvelope(_ context.Context, env messages.Envelope, err error) {
+	re, ok := asRunError(err)
+	if !ok {
 		return
 	}
+	out := messages.Envelope{
+		Headers:    env.Headers,
+		RunID:      env.RunID,
+		SessionID:  env.SessionID,
+		Timestamp:  time.Now(),
+		DeadlineAt: env.DeadlineAt,
+		Payload:    re,
+	}
+	defer func() { _ = recover() }() // outletChan may be closed during Stop
+	select {
+	case e.outletChan <- out:
+	default:
+		// Egress saturated; the bus + logger paths still saw the
+		// error. Dropping here is documented as the egress contract.
+	}
+}
+
+// identityCtxFor returns a context.Context carrying the envelope's
+// identity quadruple via Phase 01 helpers. Used to ensure the
+// RunErrorHandler's BusEmitter sees a complete triple regardless of
+// what the worker's ctx carried.
+func identityCtxFor(env messages.Envelope) context.Context {
 	q := env.Identity()
-	e.logger.Error("engine: worker error",
-		slog.String("error", err.Error()),
-		slog.String("tenant_id", q.TenantID),
-		slog.String("user_id", q.UserID),
-		slog.String("session_id", q.SessionID),
-		slog.String("run_id", q.RunID),
-	)
+	ctx, err := identity.With(context.Background(), q.Identity)
+	if err != nil {
+		return context.Background()
+	}
+	if q.RunID != "" {
+		ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
+		if err != nil {
+			return context.Background()
+		}
+	}
+	return ctx
 }
 
 // SetLogger lets callers (or tests) install a custom slog.Logger.
