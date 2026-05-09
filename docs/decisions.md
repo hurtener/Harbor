@@ -184,6 +184,22 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-023 — Flow-as-Tool: Go-coded `flow.Definition` ships V1; declarative recipe (YAML) format ships V1.1
+**Date:** 2026-05-09
+**Status:** Settled
+**Where it lives:** RFC §6.1 (Flow-as-Tool subsection) + §6.4 (Flow transport variant), master plan phase 26a (V1) + phase 100 (post-V1 recipe loader), glossary (`Flow`, `Definition`, `Budget` for flows, `Recipe`)
+**Why:** A Flow is a typed DAG of `Node`s assembled into a runnable unit and registered as a Tool the planner can call. This composes (a) the existing subflow + reliability shell (`NodePolicy` retry / exponential backoff / timeout) from §6.1, (b) the unified tool dispatch path from §6.4, and (c) the identity-tier Governance ceilings from §6.15, without adding a parallel orchestration concept. **V1 ships the Go-coded `Definition` shape** so the contract is settled and operators can ship flows in code; **recipes (declarative YAML loaders into the same `Definition` struct) ship V1.1** to keep V1 scope tight without losing the surface. Per-flow `Budget` composes with run-level + identity-level budgets via `min()`: any layer can abort the flow, whichever cap fires first.
+
+---
+
+## D-024 — `ToolPolicy` reliability shell wraps every tool invocation, regardless of transport
+**Date:** 2026-05-09
+**Status:** Settled
+**Where it lives:** RFC §6.4 (`Tool.Policy` field + reliability-shell paragraph), master plan phase 26 (acceptance criteria), glossary (`ToolPolicy`)
+**Why:** A predecessor pattern worth preserving: even the minimum-expression tool — a plain Go function decorated as a tool — got per-call timeout / retry-with-backoff / validation for free. Harbor settles this at the catalog level: `Tool.Policy` is a `ToolPolicy` mirroring `NodePolicy` (§6.1). The Dispatcher trio (§6.4) wraps every tool invocation in the shell once; `Transport` (InProcess / HTTP / MCP / A2A / Flow) does not change the resilience guarantees. Defaults fire when `ToolPolicy` is zero-valued, so `tools.RegisterFunc(name, fn)` is production-resilient with no ceremony. Operators who want non-default policy pass `tools.WithPolicy(...)`. Same backoff math + retry classes as `NodePolicy` so the surface is one mental model.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

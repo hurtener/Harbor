@@ -42,6 +42,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 24 | Memory strategies (truncation, summary)       | memory               | §6.6        | 23                    | 85%  | Pending  |
 | 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Pending  |
 | 26 | Tool catalog core + InProcess registration    | tools                | §6.4        | 01, 05, 09            | 85%  | Pending  |
+| 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Pending  |
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 80%  | Pending  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 85%  | Pending  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 85%  | Pending  |
@@ -117,8 +118,9 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 97 | Media-input tool wrappers                     | tools/media          | §6.5, D-021 | 17, 26, 33            | n/a  | Post-V1  |
 | 98 | Media-output tool wrappers                    | tools/media          | §6.5, D-021 | 17, 26, 33            | n/a  | Post-V1  |
 | 99 | Vision-aware memory summarization             | memory               | §6.6, D-021 | 24, 33, 97            | n/a  | Post-V1  |
+|100 | Recipe loader (declarative YAML flows)        | runtime/flow/recipe  | §6.1, D-023 | 26a                   | n/a  | Post-V1  |
 
-V1 critical path: phases 01–82 + 36a + 36b (84 phases beyond skeleton). Post-V1 follow-ups: phases 83–99 (17 phases, including Governance 91–96 and Multimodal-output 97–99). Total tracked: 99 + 36a + 36b + Phase 00 = 102 entries.
+V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–100 (18 phases — Governance 91–96, Multimodal-output 97–99, Recipe loader 100). Total tracked: 100 + 26a + 36a + 36b + Phase 00 = 104 entries.
 
 ---
 
@@ -284,10 +286,21 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 23, 15, 16.
 
 ### 26 — Tool catalog core + InProcess registration (RFC §6.4)
-**Goal.** `Tool`, `ToolDescriptor`, `ToolCatalog`, `ToolProvider` interfaces. In-process registration via Go generics + reflection (schemas derived from input/output types). `CatalogFilter` keyed on `(tenant, user, session)` triple plus `GrantedScopes`. Argument validation at the catalog edge using `santhosh-tekuri/jsonschema`.
-**Acceptance.** A registered Go function appears in `cat.List(filter)` for the matching identity; arg validation produces typed `tool.invalid_args` events on failure.
-**Tests.** Unit (filter combinations) + integration.
+**Goal.** `Tool`, `ToolDescriptor`, `ToolCatalog`, `ToolProvider` interfaces + the `ToolPolicy` reliability shell (D-024). In-process registration via Go generics + reflection (schemas derived from input/output types) — `tools.RegisterFunc(name, fn, opts...)` is the minimum-expression API. `CatalogFilter` keyed on `(tenant, user, session)` triple plus `GrantedScopes`. Argument validation at the catalog edge using `santhosh-tekuri/jsonschema`. Dispatcher wraps every invocation in the `ToolPolicy` shell (timeout / retry-with-exponential-backoff / validation) regardless of transport — so even a zero-config `RegisterFunc` is production-resilient.
+**Acceptance.** A registered Go function appears in `cat.List(filter)` for the matching identity; arg validation produces typed `tool.invalid_args` events on failure; default `ToolPolicy` (zero-value) yields a 3-retry / 100ms→30s exponential backoff / 30s timeout shell on transient errors; `tools.WithPolicy(...)` overrides each axis.
+**Tests.** Unit (filter combinations + ToolPolicy default firing); integration; concurrency (N concurrent calls under a misbehaving tool — backoff respected).
 **Deps.** 01, 05, 09.
+
+### 26a — Flow-as-Tool registration + per-flow Budget (RFC §6.1, §6.4, D-023)
+**Goal.** `flow.Definition` shape (entry/exit nodes, node specs, optional intrinsic `Budget`). `flow.Compose(def) → Engine` builds a runnable engine reusable across invocations. `flow.RegisterAsTool(catalog, def, eng)` wires the Engine into the Tool catalog with `Transport: Flow` and schemas derived from entry/exit types. Per-flow `Budget` (deadline / hop-budget / cost-cap) composes with parent run + identity-tier ceilings via `min()`; whichever fires first aborts the flow with `ErrFlowBudgetExceeded`. Reliability shell: per-node `NodePolicy` from §6.1 still applies inside the flow; no double-wrapping.
+**Acceptance.** A 3-node flow registers as a Tool whose schema reflects entry-input → exit-output; planner invokes it through the standard dispatcher; per-flow budget exceedance emits `flow.budget_exceeded` and produces `ErrFlowBudgetExceeded`; identity-tier governance can still abort the same flow via `ErrBudgetExceeded`. Tests assert both abort paths fire correctly under contention.
+**Tests.** Unit (Definition validation; min() composition math). Integration (flow-as-tool round-trip via planner mock; budget-exceedance events). Concurrency (parallel flow invocations don't bleed budget state across runs).
+**Smoke additions.** `flow.budget_exceeded` event observable; `ErrFlowBudgetExceeded` mappable to a `tool.error` payload.
+**Coverage target.** `internal/runtime/flow`: 85%.
+**Deps.** 14 (subflows + reliability shell), 26 (tool catalog + ToolPolicy).
+**Briefs.** `brief 01` §6.1 / §6.5 (subflow lifecycle and reliability shell).
+**Risks.** Budget-composition math under concurrent flow invocations — must be lock-free / atomic, same pattern as 36a's accumulator. Document.
+**RFC anchor.** §6.1 (Flow-as-Tool subsection) + §6.4 (Flow transport variant).
 
 ### 27 — HTTP tool driver (RFC §6.4)
 **Goal.** Inline (`RegisterHTTPTool(name, method, urlTemplate, ...)`) and out-of-process via UTCP-style manifest. Static auth (API key, bearer, cookie). Retry + rate-limit handling.

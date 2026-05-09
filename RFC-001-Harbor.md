@@ -272,6 +272,43 @@ type Engine interface {
 
 **Error routing:** errors go to the Protocol unconditionally; egress emission (`emit_errors_to_rookery`-equivalent) is the optional path. (Resolves brief 01 Q-5.)
 
+**Flow-as-Tool registration (Settled — see D-023).** A **Flow** is a typed DAG of `Node`s assembled into a runnable unit (the same machinery that powers subflows in §6.1) that can be **registered as a Tool** in the Tool catalog (§6.4). The planner sees one Tool with an args/result schema; invoking it runs the underlying DAG with the runtime's full reliability shell — `NodePolicy` per-node (timeout / retry / exponential backoff / validation) plus an aggregate `FlowBudget` enforced at flow boundaries.
+
+```go
+package flow
+
+type Definition struct {
+    Name        string                 // tool-name when registered
+    Description string                 // surfaced to the planner
+    Entry       NodeID                 // first node in the DAG
+    Exit        NodeID                 // node whose output is the flow's result
+    Nodes       map[NodeID]NodeSpec    // node → policy + edges
+    Budget      Budget                 // optional intrinsic cap (see below)
+    InSchema    json.RawMessage        // derived from Entry's input type
+    OutSchema   json.RawMessage        // derived from Exit's output type
+}
+
+type Budget struct {
+    Deadline   time.Duration   // wall-clock cap; 0 = inherit from parent run
+    HopBudget  int             // max node hops; 0 = inherit
+    CostCap    float64         // USD ceiling enforced via Governance counters; 0 = inherit
+}
+
+// Compose builds a runnable Engine from a Definition. The engine is reusable
+// across invocations; each invocation gets its own RunID + RunContext.
+func Compose(def Definition) (Engine, error)
+
+// RegisterAsTool wires a composed Engine into the Tool catalog. Args/result
+// schemas come from def.InSchema / def.OutSchema; Transport is FlowTransport.
+// The planner cannot tell a Flow Tool from any other Tool — same one method,
+// same dispatch path (RFC §6.4 "Code-level tool dispatch").
+func RegisterAsTool(catalog tools.Catalog, def Definition, eng Engine) (tools.Tool, error)
+```
+
+**Resilience composition (Settled).** Per-node retry / backoff / timeout / validation come from `NodePolicy` (§6.1 "Key data shapes"). The `Backoff` math is exponential with jitter (`base * 2^attempt + jitter`, capped at `MaxBackoff`); per-node retries respect `MaxRetries`; per-node timeout produces `RunError(NodeTimeout)` and counts against retries. **Per-flow** caps come from `flow.Budget` and are enforced at the engine boundary: deadline = `min(flow.Budget.Deadline, parent_run.RemainingDeadline)`; hop budget = `min(flow.Budget.HopBudget, parent_run.RemainingHops)`; cost cap = `min(flow.Budget.CostCap, parent_run.RemainingCost)`. Exceeding any cap emits `flow.budget_exceeded` and aborts cleanly; the runtime returns a typed `ErrFlowBudgetExceeded` to the calling planner step. **Identity budgets (Governance §6.15) gate the LLM calls inside flow nodes** — the two budget systems compose: a flow can be aborted by either its intrinsic cap or the identity-tier ceiling, whichever fires first.
+
+**Recipe format (declarative DAG authoring) — V1.1, deliberately deferred.** A *recipe* is a YAML/JSON-shaped file that describes a Flow `Definition` declaratively (nodes, policies, edges, budget) so operators can author flows without writing Go. V1 ships **Go-coded `Definition` registration** (operators write a small Go program that calls `flow.Compose(...)` and `flow.RegisterAsTool(...)`); recipes ship as **post-V1 phase 100** to keep V1 scope tight. The `Definition` shape is the contract; the recipe loader is just a parser into the same struct.
+
 ### 6.2 Planner interface, Trajectory, RunContext
 
 ```go
@@ -401,7 +438,17 @@ type Tool struct {
     Loading     LoadingMode  // Always | Deferred
     Examples    []ToolExample
     Source      ToolSourceID
-    Transport   TransportKind  // InProcess | MCP | A2A | HTTP
+    Transport   TransportKind  // InProcess | MCP | A2A | HTTP | Flow
+    Policy      ToolPolicy     // resilience shell — see below
+}
+
+type ToolPolicy struct {
+    TimeoutMS    int           // 0 = inherit from RunContext.Budget.Deadline
+    MaxRetries   int           // 0 = no retry
+    BackoffBase  time.Duration // exponential base; 0 = sensible default (100ms)
+    BackoffMax   time.Duration // cap; 0 = sensible default (30s)
+    RetryOn      []ErrorClass  // which RunError classes are retryable; default = transient/timeout/5xx
+    Validate     ValidateMode  // both / in / out / none
 }
 
 type ToolDescriptor struct {
@@ -437,11 +484,37 @@ type ToolProvider interface {
 - Argument validation runs at the catalog edge; failures are typed `tool.invalid_args` events (not tool errors) so the planner can reformulate via LLM retry feedback.
 - Result normalization is a layered pipeline (explicit field-extraction → typed-content blocks → heuristic binary detection → size-based safety net). The size-based safety net **mandates** routing through the `ArtifactStore`; there is no inline-large-payload escape.
 
+**Reliability shell wraps EVERY tool invocation, regardless of transport (Settled — D-024).** The minimum-expression tool — a plain Go function registered via `tools.RegisterFunc(name, fn, opts...)` — gets the same reliability shell as a Flow tool: per-call timeout, exponential-backoff retry, validation, identity-aware cancellation. The runtime's Dispatcher (§6.4 trio) wraps every tool invocation in the `ToolPolicy` shell once, regardless of `Transport`. **The shell is identical to `NodePolicy` for runtime nodes (§6.1)** — same backoff math, same retry classes, same validation modes — so a developer who learned NodePolicy already knows ToolPolicy. Defaults fire when `ToolPolicy` is zero-valued so the most common case ("`@tool`-decorate this function") needs zero ceremony to be production-resilient.
+
+```go
+// Minimum-expression tool: a plain Go function registered with sensible defaults.
+// Reliability shell (timeout, retry, backoff, validation) applies automatically.
+catalog.RegisterFunc(
+    "summarize",
+    func(ctx context.Context, args SummarizeArgs) (SummaryResult, error) { ... },
+)
+
+// Same function with an opinionated policy:
+catalog.RegisterFunc(
+    "external-fetch",
+    fetcher,
+    tools.WithPolicy(tools.ToolPolicy{
+        TimeoutMS:   5000,
+        MaxRetries:  3,
+        BackoffBase: 200 * time.Millisecond,
+        RetryOn:     []ErrorClass{ErrTransient, ErrTimeout},
+    }),
+)
+```
+
+`tools.RegisterFunc` derives `ArgsSchema` and `OutSchema` from the Go signature via generics + reflection (no manual JSON-Schema authoring for the common case).
+
 **Transports shipped at V1:**
 - **InProcess** — tool authors register a Go function via generics + reflection (schemas derived from input/output types).
 - **HTTP** — UTCP-style manifest, static auth (API key, bearer, cookie), retry, rate-limit handling.
 - **MCP southbound** — Go MCP client driver (stdio + streamable-HTTP + SSE); auto-detect transport via `MCPTransportMode = Auto | SSE | StreamableHTTP`.
 - **A2A southbound** — full A2A spec compliance from t=0. Agent Card discovery (`GET /.well-known/agent-card.json`), JSON-RPC `message/send`, `message/stream` (SSE), `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/*`. Registry with route scoring (trust tier, latency tier, capability match).
+- **Flow** — a Harbor Flow (DAG, see §6.1 "Flow-as-Tool registration") registered as a Tool. The dispatcher invokes the underlying engine; the per-node `NodePolicy` (retry / exponential backoff / timeout / validation) and the aggregate `flow.Budget` (deadline / hops / cost cap) compose with identity-tier Governance ceilings. The planner sees a Flow Tool the same as any other Tool — one args/result contract, one dispatch path, one set of failure modes (`tool.invalid_args`, `tool.error`, plus `flow.budget_exceeded` mapped to `ErrFlowBudgetExceeded`).
 
 **A2A northbound (V1 candidate — Tentative — see §11 Q-2).** Exposing Harbor as an A2A *server* (so other agents can call us) is a strong V1 candidate but adds protocol-server scope. Lean: defer to V1.1 unless an early adopter demands it.
 
