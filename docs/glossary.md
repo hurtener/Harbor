@@ -58,6 +58,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Fail-loudly** — Harbor's runtime principle. Errors are explicit; capabilities are mandatory; identity is mandatory. No `try { ... } catch { return None }`-shaped patterns. AGENTS.md §5 (Errors) + §13.
 
+**Filter (events)** — the server-enforced subscription predicate on `EventBus.Subscribe`. Mandates the identity triple (`Tenant`, `User`, `Session`) unless `Admin` is set; the bus rejects empty-triple non-admin filters with `ErrIdentityScopeRequired` and audit-emits `audit.admin_scope_used` whenever admin scope is exercised. Optional `Types` slice filters by `EventType`. RFC §6.13, brief 06 §3-§4.
+
 **Flow** — a typed DAG of `Node`s assembled into a runnable unit. Built on the same engine that powers subflows; can be registered as a Tool via `flow.RegisterAsTool(...)` so the planner invokes a multi-step orchestration the same way it invokes a single Tool. Per-node `NodePolicy` (retry / exponential backoff / timeout / validation) plus aggregate `flow.Budget` (deadline / hop budget / cost cap) compose with identity-tier Governance ceilings. RFC §6.1, D-023.
 
 **`flow.Definition`** — the canonical Go shape describing a Flow: name, description, entry/exit nodes, node specs, optional intrinsic `Budget`, and derived `InSchema` / `OutSchema`. V1 operators write `Definition`s in Go; V1.1 adds a YAML recipe loader that parses into the same struct. RFC §6.1, D-023.
@@ -133,6 +135,8 @@ Additions to this set are RFC PRs.
 **SkillProvider** — interface for skill sources (LocalDB, Portico via MCP, Git, OCI, HTTP). Drivers under `internal/skills/providers/*`. Extensibility-seam pattern.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
+
+**Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog (emitting `bus.subscription_idle_closed`). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
 
 ## T
 

@@ -33,3 +33,18 @@ llm:
 governance:
   default_max_tokens: 4096
   repair_attempts: 3
+
+events:
+  driver: inmem
+  # Per-session subscriber cap. The 17th subscribe in the same
+  # (tenant, user, session) returns ErrSubscriberLimitReached.
+  max_subscribers_per_session: 16
+  # Per-subscriber buffer; on overflow the oldest event is dropped
+  # and a bus.dropped event lands in the subscriber's stream.
+  subscriber_buffer_size: 256
+  # A subscription whose Events() channel hasn't been drained for
+  # this long is reaped and emits bus.subscription_idle_closed.
+  idle_timeout: 60s
+  # At most one bus.dropped event per subscriber per drop_window
+  # — windows the drop notifications under saturation.
+  drop_window: 1s

@@ -37,6 +37,7 @@ func (c *Config) Validate() error {
 		c.validateState,
 		c.validateLLM,
 		c.validateGovernance,
+		c.validateEvents,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -151,6 +152,32 @@ func (c *Config) validateGovernance() error {
 	}
 	if c.Governance.RateLimitTPS < 0 {
 		return fieldError("governance.rate_limit_tps", "must be >= 0 (omit to disable)")
+	}
+	return nil
+}
+
+var allowedEventDrivers = map[string]struct{}{"inmem": {}}
+
+func (c *Config) validateEvents() error {
+	if c.Events.Driver == "" {
+		return fieldError("events.driver", "must not be empty")
+	}
+	if _, ok := allowedEventDrivers[c.Events.Driver]; !ok {
+		return fieldError("events.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedEventDrivers), c.Events.Driver))
+	}
+	if c.Events.MaxSubscribersPerSession <= 0 {
+		return fieldError("events.max_subscribers_per_session", "must be > 0")
+	}
+	if c.Events.SubscriberBufferSize <= 0 {
+		return fieldError("events.subscriber_buffer_size", "must be > 0")
+	}
+	if c.Events.IdleTimeout <= 0 {
+		return fieldError("events.idle_timeout", "must be > 0")
+	}
+	if c.Events.DropWindow <= 0 {
+		return fieldError("events.drop_window", "must be > 0")
 	}
 	return nil
 }
