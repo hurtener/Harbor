@@ -52,6 +52,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Event bus** — Harbor's typed event subsystem. ONE bus, not two. Protocol-grade, not observability-grade. Replaces the predecessor's split between observability events and chunk-via-message. RFC §6.13.
 
+**EventID** — a caller-supplied ULID used as the canonical idempotency key on `StateStore.Save`. Same EventID + same Bytes is a no-op; same EventID + different Bytes returns `ErrIdempotencyConflict`. `state.NewEventID()` is a convenience helper backed by `oklog/ulid`. RFC §6.11, D-027.
+
 **Extensibility seam** — the `interface + factory + driver` pattern any subsystem with plausible alternate backends must follow. AGENTS.md §4.4.
 
 ## F
@@ -137,6 +139,10 @@ Additions to this set are RFC PRs.
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
 **Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog (emitting `bus.subscription_idle_closed`). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
+
+**StateRecord** — the unit of persistence on `StateStore`. Carries `(EventID, Quadruple, Kind, Version, Bytes, UpdatedAt)`. `Bytes` is opaque to the store — callers serialize their domain types and run them through audit redaction upstream of `Save`. `Version` is a hint for typed wrappers' optimistic-concurrency checks; the store does not enforce CAS. RFC §6.11, D-027.
+
+**StateStore** — Harbor's persistence floor. Single mandatory five-method interface keyed on `(identity.Quadruple, Kind, Bytes)` with idempotency on a caller-supplied `EventID` (ULID). Three V1 drivers (in-memory, SQLite, Postgres) all pass the same `state.conformancetest.Run` suite. Consuming subsystems (sessions, tasks, governance, planner, memory, steering) land typed wrappers atop this generic surface — the leaf interface holds no domain types. RFC §6.11, §9, D-027.
 
 ## T
 
