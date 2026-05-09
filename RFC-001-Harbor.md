@@ -1093,13 +1093,13 @@ These open questions are tracked as GitHub issues once the RFC is approved; the 
 
 ## 13. Appendix A — subsystem summary cross-reference
 
-| Subsystem | RFC § | Brief |
+| Subsystem | RFC § | Briefs |
 |---|---|---|
 | Core runtime (engine, messages, streaming, routers, concurrency, playbooks) | §6.1 | `01-core-runtime.md` |
-| Planner interface, Trajectory, RunContext | §6.2 | `02-planner-and-control.md` |
-| Steering and unified pause/resume | §6.3 | `02-planner-and-control.md` + cross-fork |
-| Tool catalog and transports | §6.4 | `03-tools-and-llm.md` |
-| LLM client | §6.5 | `03-tools-and-llm.md` |
+| Planner interface, Trajectory, RunContext | §6.2 | `02-planner-and-control.md`, `07-code-level-tool-calling.md` |
+| Steering and unified pause/resume | §6.3 | `02-planner-and-control.md` + cross-fork synthesis |
+| Tool catalog and transports | §6.4 | `03-tools-and-llm.md`, `07-code-level-tool-calling.md` |
+| LLM client | §6.5 | `03-tools-and-llm.md`, `07-code-level-tool-calling.md`, `08-llm-client-validation.md` |
 | Memory | §6.6 | `04-memory-and-skills.md` |
 | Skills | §6.7 | `04-memory-and-skills.md` |
 | Tasks | §6.8 | `05-state-tasks-artifacts-sessions.md` |
@@ -1109,6 +1109,7 @@ These open questions are tracked as GitHub issues once the RFC is approved; the 
 | Distributed contracts | §6.12 | `05-state-tasks-artifacts-sessions.md` |
 | Typed event bus | §6.13 | `06-events-observability-devx.md` |
 | Telemetry (slog + OTel) | §6.14 | `06-events-observability-devx.md` |
+| Governance (cost / rate / key rotation / failover) | §6.15 | `03-tools-and-llm.md`, `08-llm-client-validation.md` (cross-cutting) |
 | Console (separate repo) | §7 | `06-events-observability-devx.md` |
 | CLI | §8 | `06-events-observability-devx.md` |
 

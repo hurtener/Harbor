@@ -5,8 +5,8 @@
 This is the canonical execution index for Harbor's V1 build. Every individual phase plan (`docs/plans/phase-NN-<slug>.md`) lives under it and inherits its done-definition, dependency declarations, and coverage discipline.
 
 - **Source of truth:** `/RFC-001-Harbor.md` (referenced as RFC §X.X). Every phase below traces to one or more RFC sections; if a phase plan and the RFC drift, the RFC wins (`AGENTS.md` §2).
-- **Research substrate:** the six briefs in `docs/research/01..06.md`. Decisions on shape, sharp edges, and Go-flavored types come from there.
-- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded. Phases 01–82 are V1 critical path; 83–90 are post-V1 follow-ups listed for completeness so we don't lose track.
+- **Research substrate:** the eight briefs in `docs/research/01..08.md` (canonical index: `docs/research/INDEX.md`). Decisions on shape, sharp edges, and Go-flavored types come from there.
+- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded. Phases 01–82 + 36a + 36b are V1; 83–96 are post-V1 follow-ups listed for completeness so we don't lose track.
 - **Done-definition (binding, from `AGENTS.md` §4.2):** (a) all acceptance criteria pass; (b) coverage targets met; (c) `scripts/smoke/phase-NN.sh` shows `OK ≥ count(criteria)` and `FAIL = 0`; (d) prior phases' smoke scripts still pass.
 - **Coverage defaults (override per phase):** 80% for new packages; 85% for persistence drivers and conformance-tested subsystems; 70% for CLI/tooling.
 - **Predecessor name:** does not appear in this repository, ever. (`AGENTS.md` §13.)
@@ -45,7 +45,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 80%  | Pending  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 85%  | Pending  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 85%  | Pending  |
-| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 39                | 85%  | Pending  |
+| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50                | 85%  | Pending  |
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Pending  |
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Pending  |
@@ -748,7 +748,7 @@ The longest dependency chain to V1, in order:
 
 00 → 01 → 03 → 04 → 05 → 07 → 08 → 09 → 10 → 11 → 12 → 13 → 50 → 51 → 52 → 53 → 54 → 26 → 32 → 33 → 34 → 35 → 36 → 42 → 43 → 44 → 45 → 49 → 60 → 61 → 62 → 64 → 76 → 80 → 81 → 82.
 
-That is **36 phases on the critical path** out of 82. Practical implications:
+That is **36 phases on the critical path** out of 84 V1 phases. (Governance phases 36a/36b sit on the LLM track but are not themselves on the critical path; they branch off after phase 33 and rejoin via the StateStore conformance suite.) Practical implications:
 
 - **The runtime kernel chain (09→14)** is six phases of deeply serial work — half a critical-path month if one engineer.
 - **The pause/resume coordinator chain (50→54)** is the second cluster of serial work — and depends on the runtime chain landing through 13.

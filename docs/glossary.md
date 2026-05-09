@@ -22,11 +22,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## C
 
+**Circuit breaker** — Per-`(provider, key)` health monitor that trips when error rate exceeds threshold and auto-recovers on cool-down. Post-V1, phase 94. RFC §6.15.
+
 **Code-level tool calling** — Harbor's elegance principle. The LLM emits text/JSON describing intent; the runtime parses, dispatches, and merges results. Provider-native tool calling APIs (`tools=[...]`, `tool_choice`, `function_call`) are NOT used. The runtime owns the protocol; providers don't need to. RFC §6.4 + brief 07.
 
 **CompleteRequest / CompleteResponse** — the request/response pair for `LLMClient.Complete(ctx, req) (resp, error)`. Carries `Messages` (role+content), optional `ResponseFormat`, optional streaming callbacks. No `Tools`, no `ToolChoice`. RFC §6.5.
 
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
+
+**Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. RFC §6.15.
 
 ## D
 
@@ -44,14 +48,6 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Fail-loudly** — Harbor's runtime principle. Errors are explicit; capabilities are mandatory; identity is mandatory. No `try { ... } catch { return None }`-shaped patterns. AGENTS.md §5 (Errors) + §13.
 
-## C (continued)
-
-**Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. RFC §6.15.
-
-**Circuit breaker** — Per-`(provider, key)` health monitor that trips when error rate exceeds threshold and auto-recovers on cool-down. Post-V1, phase 94. RFC §6.15.
-
-## F
-
 **Failover chain** — Operator-defined sequence of providers tried in order when the primary fails or hits its ceiling. Orchestrated by Harbor's Governance subsystem; audited per hop; distinct from bifrost's per-request `Fallbacks` field. Post-V1, phase 93. RFC §6.15.
 
 ## G
@@ -60,7 +56,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## I
 
-**Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency boundary. AGENTS.md §6 + RFC §4.
+**Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
+
+**Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
 ## L
 
@@ -70,11 +68,17 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Memory strategy** — declared policy that controls how a session's memory is shaped: `none`, `truncation`, `rolling_summary`. Identity-mandatory; fail-closed. RFC §6.6.
 
+## O
+
+**ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.
+
 ## P
 
-**Planner** — the reasoning-policy interface: `Next(ctx, RunContext) (Decision, error)`. Concrete planners (ReAct first; Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. RFC §6.2 + §3.2.
+**Planner** — the reasoning-policy interface: `Next(ctx, RunContext) (PlannerDecision, error)`. Concrete planners (ReAct first; Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. RFC §6.2 + §3.2.
 
 **PlannerAction** — typed instruction emitted by a planner step. Reserved opcodes: `final_response`, `parallel`, `task.subagent`, `task.tool`. Plus tool-name actions. Carries `args`. Action shape is provider-independent. RFC §6.4.
+
+**PlannerDecision** — the sum type returned from `Planner.Next`. Variants describe the next runtime mechanism to invoke (call-tool, emit-final, request-pause, spawn-subagent, etc.). See RFC §6.2 for the full variant list.
 
 **Protocol (Harbor Protocol)** — the canonical event/state contract between the Runtime and any client (Console, CLI, third-party). Versioned. RFC §5.
 
@@ -92,6 +96,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **SchemaSanitizer** — runtime utility that lives BETWEEN the runtime and the `LLMClient` (NOT inside the client). Applies per-provider `response_format` shape adjustments before the request goes out. RFC §6.5.
 
+**Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
+- `ErrUnserializable` — pause-state cannot be JSON-serialized; raised loudly by the pause/resume serialize path (RFC §6.3, brief 02).
+- `ErrToolContextLost` — pause-resume found a non-serializable handle key with no live runtime mapping; the pause cannot resume (RFC §6.3).
+- `ErrBudgetExceeded` — Governance PreCall: identity ceiling reached (RFC §6.15).
+- `ErrRateLimited` — Governance PreCall: token bucket exhausted (RFC §6.15).
+- `ErrMaxTokensExceeded` — Governance PreCall: per-call MaxTokens cap hit (RFC §6.15).
+- `ErrKeyUnavailable` — Governance PreCall: no usable provider key after rotation/circuit-breaker (RFC §6.15, post-V1).
+Additions to this set are RFC PRs.
+
 **Session** — a longer-lived multi-turn conversation that contains many Runs. Identity for runtime concerns is `(tenant, user, session)`. RFC §6.9.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
@@ -105,6 +118,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. RFC §6.8.
 
 **TaskID** — stable identifier for a Task. Format includes `Kind`. Schema-keyed at the StateStore level. Closes the predecessor's `trace_id` vs `task_id` split (brief 05).
+
+**ToolContext** — per-tool-call runtime context split into a JSON-encodable half (persisted across pause/resume) and a runtime-handle half (re-attached by key on resume). The split is a fail-loudly contract: serializing the JSON-half MUST raise `ErrUnserializable` if any field is non-serializable rather than silently dropping data; resuming a missing handle raises `ErrToolContextLost`. RFC §6.3, brief 02.
 
 **Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs. RFC §6.2.
 
