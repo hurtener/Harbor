@@ -16,6 +16,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ArtifactRef** — typed reference that points to an artifact in the `ArtifactStore`. Carries content hash, scope, and addressing info. Replaces inline payloads in event streams and LLM prompts.
 
+**ArtifactStub** — the model-agnostic JSON shape the LLM sees in place of heavy content during prompt assembly: `{artifact_ref, mime, size_bytes, hash, summary, fetch{tool, id}}`. Uniform across producers (tool result, memory turn, multimodal input) and providers — operators do not swap formats per model. The runtime stamps the stub; producers fill `Summary` when meaningful. RFC §6.5, D-026.
+
 **ArtifactScope** — `(tenant_id, user_id, session_id, run_id)`-keyed scope under which artifacts live. Inherits the identity triple plus run identity.
 
 ## B
@@ -33,6 +35,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **ContentPart** — one element of a multimodal `ChatMessage.Content.Parts` slice. Discriminated by `Type`: text, image, audio, or file. Concrete payload via `Image *ImagePart`, `Audio *AudioPart`, `File *FilePart` (or inline `Text` for text parts). RFC §6.5, D-021.
 
 **Concurrent reuse contract** — Harbor's runtime-wide invariant that compiled artifacts (`flow.Engine`, `Tool`, `Planner`, `MemoryStore`, `Redactor`, `LLMClient`, `ToolCatalog`) are immutable after construction and reusable across N concurrent goroutines without data races, context bleed, cancellation cross-talk, or goroutine leaks. Per-run state lives in `ctx` + `RunContext`, never on the artifact. **Every phase that builds a reusable artifact ships a concurrent-reuse test** (N≥100 invocations under `-race`). RFC §3.5, AGENTS.md §5 + §11 + §13, D-025.
+
+**Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. RFC §6.5, D-026.
 
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
 
