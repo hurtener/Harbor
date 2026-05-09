@@ -204,7 +204,7 @@ the planner side except for whatever the implementation wants to keep keyed by
 The planner never imports runtime internals. It calls only:
 
 - `RunContext.Catalog.{Search,Get,Validate,Schema}` — tool discovery + filter
-  + arg validation. The catalog is already pre-filtered by tenant /
+  - arg validation. The catalog is already pre-filtered by tenant /
   visibility policy when the runtime hands it over.
 - `RunContext.Memory.{Hydrate,Persist,Turn}` — declared-policy memory with the
   scoping triple already bound; the planner cannot reach to other scopes.
@@ -240,7 +240,7 @@ the result via `RunContext.Control` only; it does not receive the inbox.**
 
 Per run, the runtime owns a tight loop:
 
-```
+```text
 while not finished and steps < max_iters:
     if cancelled: emit run.cancelled; return
     drain control events; apply (may rewrite goal, append injections, raise pause/cancel)

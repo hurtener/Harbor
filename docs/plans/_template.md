@@ -25,63 +25,63 @@ The drift-audit script (`scripts/drift-audit.sh`) checks for required headings +
      Cite the brief number + section. Example: "brief 02 §5: pause-state serialization must FAIL LOUDLY
      with ErrUnserializable instead of returning nil". This forcing function ensures hard-won
      learnings make it INTO the implementation, not just into the briefs. -->
-- 
+-
 
 ## Findings I'm departing from (if any)
 <!-- Required (can be "None"). If this phase plan deliberately departs from a brief finding or RFC
      decision, list it here with explicit justification. Silent departure is forbidden — see
      AGENTS.md §15. If "None", write "None.". -->
-- 
+-
 
 ## Goals
 <!-- What this phase must achieve. Outcomes, not implementation. -->
-- 
+-
 
 ## Non-goals
 <!-- Explicit out-of-scope items. The "we'll do this in a later phase" list. -->
-- 
+-
 
 ## Acceptance criteria
 <!-- Required. Bulleted, testable. These are binding. -->
-- [ ] 
+- [ ]
 
 ## Files added or changed
 <!-- Tree-style list of files this phase touches. Reference AGENTS.md §3 for the canonical layout;
      a phase that adds a new top-level directory must update AGENTS.md §3 in the same PR. -->
-- 
+-
 
 ## Public API surface
 <!-- What other phases depend on. Interface signatures (Go-flavored). Do NOT include internal types. -->
-- 
+-
 
 ## Test plan
 <!-- Required. Categorize: unit / integration / conformance / concurrency / leak / fuzz. -->
-- **Unit:** 
-- **Integration:** 
-- **Conformance:** 
-- **Concurrency / leak:** 
+- **Unit:**
+- **Integration:**
+- **Conformance:**
+- **Concurrency / leak:**
 
 ## Smoke script additions
 <!-- Required. List the assertions `scripts/smoke/phase-NN.sh` adds. The drift-audit script verifies
      scripts/smoke/phase-NN.sh exists for every phase plan. -->
-- 
+-
 
 ## Coverage target
 <!-- Required. Per touched package. e.g. "internal/runtime/engine: 80%". -->
-- 
+-
 
 ## Dependencies
 <!-- Required. Phase numbers that must land before this one. -->
-- 
+-
 
 ## Risks / open questions
 <!-- Surface real risks. Link to RFC §11 Q-N when applicable. -->
-- 
+-
 
 ## Glossary additions
 <!-- If this phase introduces new vocabulary, list the terms here AND add them to docs/glossary.md
      in the same PR. -->
-- 
+-
 
 ## Pre-merge checklist
 <!-- Tick when complete. Same checklist that gates the PR review (AGENTS.md §14 + drift-audit). -->

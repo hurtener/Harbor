@@ -267,6 +267,7 @@ The predecessor's `skill_propose` tool calls the LLM with a JSON-schema-constrai
 ## 6. Tests required
 
 **Unit:**
+
 - Memory strategy matrix: `none|truncation|rolling_summary` × `(empty|short|over-budget|degraded)`. Property test: turns added in arbitrary order produce identical `GetLLMContext` outputs given the same final state.
 - Budget enforcement: `OverflowPolicy` semantics for each policy, including `error` raising loudly.
 - Token estimator override is honored.
@@ -277,17 +278,20 @@ The predecessor's `skill_propose` tool calls the LLM with a JSON-schema-constrai
 - Virtual directory: pinned-then-recent vs pinned-then-top selection; respects `max_entries`; identity-scoped.
 
 **Integration:**
+
 - Memory persistence round-trip via `Snapshot`/`Restore` against in-memory, SQLite, and Postgres drivers.
 - Generator end-to-end: draft → validate → persist → re-discover via `skill_search`.
 - Skills.md import golden corpus: ship N spec-compliant fixtures (with attachments) and assert byte-stable normalization.
 
 **Isolation conformance (Harbor mandate):**
+
 - Two concurrent goroutines on the same `MemoryStore` with different `IdentityTriple`s never observe each other's turns, summary, pending, or backlog.
 - Same user across two sessions sees zero cross-session content.
 - Generator output scoped to session A is not discoverable from session B unless promoted to project/tenant scope by an explicit operator action.
 - Fail-closed: `MemoryStore` operation with a missing `SessionID` returns no data and emits an audit event.
 
 **Cross-session no-leak (race):**
+
 - 100 concurrent sessions × random AddTurn / GetLLMContext / Snapshot for 30s under `-race`. Final invariant: every `GetLLMContext` output's identity matches the caller's identity exactly.
 
 ---
