@@ -117,8 +117,15 @@ type SkillsConfig struct{}
 // TasksConfig is owned by the tasks/scheduler phases.
 type TasksConfig struct{}
 
-// SessionsConfig is owned by the session lifecycle phases.
-type SessionsConfig struct{}
+// SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
+// match RFC §6.9: idle TTL 24h, hard cap 30 days, sweep every 15 min.
+// Fields are not hot-reloadable in V1 (changing GC cadence at runtime
+// would race with the sweeper goroutine).
+type SessionsConfig struct {
+	IdleTTL       time.Duration `yaml:"idle_ttl"`
+	HardCap       time.Duration `yaml:"hard_cap"`
+	SweepInterval time.Duration `yaml:"sweep_interval"`
+}
 
 // ArtifactsConfig is owned by the artifact-store phases.
 type ArtifactsConfig struct{}
