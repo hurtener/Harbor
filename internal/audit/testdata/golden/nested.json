@@ -1,0 +1,26 @@
+{
+  "event": "tool.invoke",
+  "tool": "search",
+  "args": {
+    "query": "harbor multi-isolation",
+    "auth": {
+      "api_key": "nested-secret-1",
+      "client_secret": "nested-secret-2"
+    },
+    "options": [
+      {"name": "limit", "value": 10},
+      {"name": "token", "value": "deeply-nested-token"}
+    ]
+  },
+  "result": {
+    "items": [
+      {"title": "doc-A", "snippet": "..."},
+      {"title": "doc-B", "snippet": "Bearer should-be-redacted in this snippet"}
+    ],
+    "metadata": {
+      "session": {
+        "cookie": "innermost-cookie"
+      }
+    }
+  }
+}
