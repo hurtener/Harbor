@@ -8,6 +8,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**Adjacency** — A `(From Node, To []Node)` pair the engine's `New` consumes to allocate channels. The full set of adjacencies forms the runtime DAG (with cycle opt-in per node). RFC §6.1.
+
 **ActionParser** — runtime component that extracts a typed `PlannerAction` from raw LLM text. Owns multi-action discovery, JSON-fence extraction, and the salvage path. Knows Harbor's `next_node` / `args` schema; deliberately knows nothing about provider-native tool-call shapes (RFC §6.4).
 
 **Audit redactor** — single central runtime component that produces a redacted copy of any payload before it is emitted to the event bus, logs, or audit storage. Owner of redaction per D-020 (Audit owns redaction; Governance owns thresholds). Pluggable via the §4.4 extensibility-seam pattern; default driver is pattern-based with built-in rules for credentials (`api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`) and configurable PII shapes. Returning an error from `Redact` means the caller MUST NOT emit — silent fall-through to the unredacted payload is forbidden. RFC §6.4 + §6.15.
@@ -26,9 +28,17 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## C
 
+**`Cancel(runID)`** — `Engine` method (Phase 13) that idempotently cancels a run: sets a per-run cancellation flag, drops queued envelopes for that run from every channel, cancels in-flight worker invocations, drains the egress subqueue, releases capacity waiters. Returns `(bool, error)` — `true` if the run was active. Cancellation is remembered for a bounded TTL (default 60s) so an `Emit` landing just after `Cancel` is rejected with `ErrRunCancelled`. RFC §6.1, brief 01 §4.
+
+**Cancellation TTL** — Bounded duration (default 60s) the engine remembers per-run cancellation flags for runs that may not have started yet. A periodic sweeper (every 10s) prunes expired flags; the goroutine is joined on `Engine.Stop`. Configurable via `WithCancelTTL(d)`. RFC §6.1.
+
+**Capacity waiter (engine)** — Per-run `sync.Cond` the engine uses to gate `EmitChunk` when a run's pending-frame count has reached its `RunCapacity`. Released when the dispatcher drains a frame from the run's subqueue, or when `Stop` closes the engine with `ErrEngineStopped`. The mechanism that prevents the predecessor's deadlock-under-streaming sharp edge. RFC §6.1, brief 01 §4.
+
 **Circuit breaker** — Per-`(provider, key)` health monitor that trips when error rate exceeds threshold and auto-recovers on cool-down. Post-V1, phase 94. RFC §6.15.
 
 **Code-level tool calling** — Harbor's elegance principle. The LLM emits text/JSON describing intent; the runtime parses, dispatches, and merges results. Provider-native tool calling APIs (`tools=[...]`, `tool_choice`, `function_call`) are NOT used. The runtime owns the protocol; providers don't need to. RFC §6.4 + brief 07.
+
+**Cycle detector (engine)** — Topological-sort-style check `engine.New` runs at construction time. Rejects unintended cycles with `ErrCycleDetected` listing the cycle path; per-node `AllowCycle: true` opts out so legitimate self-loop nodes (e.g. controller-loop planners) compose. RFC §6.1, brief 01 §3.
 
 **Cursor (events)** — `(SessionID, Sequence)` pair identifying the last event a subscriber has consumed. Used by `Replayer.Replay` to compute "events strictly newer than this." Sequence is the per-bus monotonic value assigned by `Publish`; SessionID scopes the cursor so two subscribers on different sessions can use the same numeric Sequence without collision. RFC §6.13, brief 06 §4, D-029.
 
@@ -46,11 +56,23 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## D
 
-**Dispatcher** — runtime component that takes a validated `PlannerAction` and runs it. Single + parallel folded into one design unit. Validates `args` against the tool's input schema, runs with deadline + cancellation, stamps synthetic call IDs, returns `ToolOutcome` / `ParallelOutcome`. RFC §6.4.
+**`DeadlineAt`** — Wall-clock deadline on an `Envelope`. Set once at the API boundary; checked before scheduling each node (Phase 10 worker loop). `nil` means "no deadline." Distinct from `Policy.TimeoutMS` (per-node timeout) and `flow.Budget.Deadline` (per-flow). RFC §6.1, brief 01 §2.
+
+**`DefaultQueueSize`** — `64`. Default bounded per-adjacency channel capacity in `internal/runtime/engine`. Settled per RFC §6.1 (resolves brief 01 Q-4). Engine-wide override via `WithQueueSize(n)`; per-channel override via `WithChannelOverride(from, to, n)`.
+
+**Dispatcher (engine)** — Single always-on goroutine the engine runs to demux egress envelopes by `RunID`. Phase 10 ships the dispatcher; Phase 13's `FetchByRun(runID)` reads from a per-run subqueue managed by it. Distinct from the tool-call dispatcher (RFC §6.4) — which takes a validated `PlannerAction` and runs it. RFC §6.1, brief 01 §4.
+
+**Dispatcher (tools)** — runtime component that takes a validated `PlannerAction` and runs it. Single + parallel folded into one design unit. Validates `args` against the tool's input schema, runs with deadline + cancellation, stamps synthetic call IDs, returns `ToolOutcome` / `ParallelOutcome`. RFC §6.4.
 
 **Driver** — a concrete implementation of an interface (per the §4.4 Extensibility seams pattern). Self-registers via `init()`; pulled in via blank import at `cmd/harbor`. Examples: SQLite driver of `StateStore`, OpenRouter driver of `bifrost`, in-proc driver of `Tool`.
 
 ## E
+
+**`EmitChunk`** — `NodeContext` method (Phase 12) that emits a `StreamFrame`. Blocks when the originating run's pending-frame count has reached `Policy.RunCapacity`. Backpressure is per-run; one run's saturation never pauses another. The mechanism that makes streaming under parallel runs deadlock-free. RFC §6.1, brief 01 §4.
+
+**Engine** — Harbor's runtime container — the typed, async, queue-backed graph executor. One in-memory implementation in V1 (`internal/runtime/engine`). Owns the worker loop (one goroutine per `Node`), bounded per-adjacency channels, the always-on egress dispatcher, cycle detection at construction, the reliability shell (`NodePolicy`), the streaming primitive (`EmitChunk`), per-run cancellation. Distinct from `events.EventBus` (the cross-subsystem event bus); the engine is the runtime kernel. RFC §6.1.
+
+**Envelope** — Harbor's canonical message shape: `Payload`, `Headers`, identity quadruple (`RunID`, `SessionID` plus `Headers.{TenantID, UserID}`), `Timestamp`, `DeadlineAt`, free-form `Meta`. Flows along every runtime channel. Defined in `internal/runtime/messages`. RFC §6.1, brief 01 §2.
 
 **Event bus** — Harbor's typed event subsystem. ONE bus, not two. Protocol-grade, not observability-grade. Replaces the predecessor's split between observability events and chunk-via-message. RFC §6.13.
 
@@ -63,6 +85,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## F
 
 **Fail-loudly** — Harbor's runtime principle. Errors are explicit; capabilities are mandatory; identity is mandatory. No `try { ... } catch { return None }`-shaped patterns. AGENTS.md §5 (Errors) + §13.
+
+**`FetchByRun(runID)`** — `Engine` method (Phase 13) that reads from the dispatcher's per-run subqueue. Concurrent fetchers per run are forbidden (`ErrConcurrentFetchByRun`) — the brief-01-recommended "no half-measure" choice for per-run roundtrip semantics. RFC §6.1, brief 01 §4-§5.
 
 **Filter (events)** — the server-enforced subscription predicate on `EventBus.Subscribe`. Mandates the identity triple (`Tenant`, `User`, `Session`) unless `Admin` is set; the bus rejects empty-triple non-admin filters with `ErrIdentityScopeRequired` and audit-emits `audit.admin_scope_used` whenever admin scope is exercised. Optional `Types` slice filters by `EventType`. RFC §6.13, brief 06 §3-§4.
 
@@ -80,6 +104,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **GCPolicy** — Configuration knob group for the `SessionRegistry`'s GC sweeper. Defaults: `IdleTTL=24h, HardCap=720h (30d), SweepInterval=15m`. Carries the `RunningProbe` seam through which `TaskRegistry` (Phase 20) gates "never reap a session with a RUNNING task." Fields are not hot-reloadable in V1. RFC §6.9.
 
+## H
+
+**Headers (envelope)** — Routing + identity sub-record on `Envelope`: `TenantID`, `UserID`, `Topic`, `Priority`. Distinct from HTTP headers; the term is RFC-settled vocabulary. RFC §6.1, brief 01 §2.
+
 ## I
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
@@ -88,21 +116,37 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
+## J
+
+**`JoinK`** — Concurrency utility (Phase 14) that reads exactly K envelopes from a channel and cancels remaining producers. Short-read returns `ErrJoinKShortRead`. RFC §6.1, brief 01 §2.
+
 ## L
 
 **LLMClient** — Harbor's interface for talking to an LLM provider. **One method**: `Complete(ctx, req) (resp, error)`. Tool dispatch is runtime-side. The single V1 driver wraps `bifrost`. RFC §6.5.
 
 ## M
 
+**`MapConcurrent`** — Concurrency utility (Phase 14) that runs `fn` over a slice of envelopes with a max-in-flight bound. Preserves input order in output. Per-run capacity backpressure and cancellation propagate through the bound. RFC §6.1, brief 01 §2.
+
 **Memory strategy** — declared policy that controls how a session's memory is shaped: `none`, `truncation`, `rolling_summary`. Identity-mandatory; fail-closed. RFC §6.6.
+
+**Meta (envelope)** — Free-form `map[string]any` propagated with the envelope. Last-write-wins on key collisions in V1; an explicit merge-function registry is reserved for a future RFC follow-up. Survives fan-out / fan-in / subflow boundaries. RFC §6.1, brief 01 §2.
 
 ## O
 
 **ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.
 
+## N
+
+**Node (engine)** — A typed async function inside the engine. Wraps a `NodeFunc` plus `NodePolicy` (Phase 11) and a per-node `AllowCycle` opt-in. One worker goroutine per node; one bounded channel per outgoing adjacency. RFC §6.1, brief 01 §2.
+
+**`NodePolicy`** — Per-node reliability config: `Validate`, `TimeoutMS`, `MaxRetries`, `BackoffBase`/`Mult`/`MaxBackoff`, `ValidateFunc`, `RunCapacity` (Phase 12). Zero value is "no policy" (Phase 10's bare worker). Sensible defaults are set explicitly, not silently — fail-loud per AGENTS.md §5. RFC §6.1.
+
 ## P
 
 **Planner** — the reasoning-policy interface: `Next(ctx, RunContext) (PlannerDecision, error)`. Concrete planners (ReAct first; Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. RFC §6.2 + §3.2.
+
+**`PredicateRouter`** — Router (Phase 14) that selects the first branch whose predicate matches the input envelope. Default target catches "no match"; nil default returns `RunError(RouteNotFound)`. RFC §6.1.
 
 **PlannerAction** — typed instruction emitted by a planner step. Reserved opcodes: `final_response`, `parallel`, `task.subagent`, `task.tool`. Plus tool-name actions. Carries `args`. Action shape is provider-independent. RFC §6.4.
 
@@ -114,7 +158,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
 
+**Reliability shell** — Phase 11 worker-loop wrapper that applies `NodePolicy` per invocation: validate-in → invoke-with-timeout → retry-with-backoff → on terminal failure, emit `RunError` to logger + bus. Backoff math is exponential with jitter (`base * mult^attempt + jitter`, capped at `MaxBackoff`). RFC §6.1, brief 01 §4.
+
 **Replayer (events)** — optional capability interface (`Replay(ctx, Cursor, Filter) ([]Event, error)`) that drivers may implement to support replay-from-cursor. The core `EventBus` interface stays at three methods; callers type-assert `bus.(events.Replayer)`. Returns events strictly newer than the cursor that match the filter, in `Sequence` order — no duplicates and no gaps within any single `RunID`. Returns `ErrCursorTooOld` when the cursor is older than the in-memory ring's tail (caller falls through to the durable log driver, Phase 57); returns `ErrReplayUnavailable` when retention is disabled (`EventsConfig.ReplayBufferSize=0`). RFC §6.13, D-029.
+
+**`RoutePolicy`** — Override mechanism (Phase 14) that bypasses predicate / union routing when an envelope's `Meta["route_policy"]` carries an explicit target. The planner-driven path. RFC §6.1.
 
 **Ring buffer (events)** — in-memory bounded retention queue inside the events `inmem` driver; default 10000 entries (configurable via `EventsConfig.ReplayBufferSize`). Eviction is drop-oldest. Distinct from per-subscriber buffers — ring eviction is a documented retention policy, not a delivery failure, and emits no `bus.dropped` notice.
 
@@ -127,6 +175,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **RepairLoop** — the runtime's recovery loop for malformed planner output. Drives `parser → validator → planner-prompt-on-failure` cycles up to `RepairAttempts`. Loud on exhaust. RFC §6.4.
 
 **Run** — one execution of the planner loop within a Session. A Session contains many Runs. `RunID` is for runtime concurrency; `TraceID` (OTel) may span Runs.
+
+**`RunCapacity`** — Per-run cap on pending stream frames (Phase 12). Default = `DefaultQueueSize` (64). Overridable per-run via `WithRunCapacity(n)` on `Engine.Emit`. The mechanism that gates `EmitChunk`'s capacity waiter. RFC §6.1.
+
+**`RunError`** — Structured error envelope from the runtime's reliability shell (Phase 11). Carries `RunID`, `NodeName`, `NodeID`, `Code` (one of `node_timeout / node_exception / run_cancelled / deadline_exceeded / validation_failed`), `Message`, `Cause`, `Metadata`. Routes to logger + bus unconditionally; egress emission opt-in via `WithErrorEmissionToEgress`. RFC §6.1.
+
+**`runtime.run_cancelled`** — `SafePayload` event type (Phase 13). Emitted by `Cancel(runID)` when the run was active. Carries `{run_id, cancelled_at, dropped_envelope_count}`. RFC §6.1.
 
 **RunContext** — passed to each `Planner.Next` call. Carries identity (the triple), tools available, memory snapshot, control surface (`RunContext.Control`), trajectory pointer, deadlines. The planner reads from this; it never reads runtime internals directly.
 
@@ -164,6 +218,10 @@ Additions to this set are RFC PRs.
 
 **StateStore** — Harbor's persistence floor. Single mandatory five-method interface keyed on `(identity.Quadruple, Kind, Bytes)` with idempotency on a caller-supplied `EventID` (ULID). Three V1 drivers (in-memory, SQLite, Postgres) all pass the same `state.conformancetest.Run` suite. Consuming subsystems (sessions, tasks, governance, planner, memory, steering) land typed wrappers atop this generic surface — the leaf interface holds no domain types. RFC §6.11, §9, D-027.
 
+**`StreamFrame`** — Chunked payload tied to a parent run (Phase 12). `StreamID` (defaults to `RunID`), `Seq` (engine-assigned, monotonic per StreamID), `Text`, `Done`, `Meta`. Distinct from `events.Event` (lifecycle markers); StreamFrames carry incremental output. RFC §6.1, brief 01 §2.
+
+**`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
+
 ## T
 
 **Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. RFC §6.8.
@@ -178,8 +236,12 @@ Additions to this set are RFC PRs.
 
 ## U
 
+**`UnionRouter`** — Router (Phase 14) that dispatches by payload tag (a string discriminator). Used for sum-type-shaped payloads (e.g. planner `Decision` variants in Phase 42). RFC §6.1.
+
 **Unified pause/resume primitive** — single runtime-level pause/resume that serves HITL approval, tool-side OAuth, A2A `AUTH_REQUIRED` / `INPUT_REQUIRED`, and steering `PAUSE`. NOT per-feature. RFC §3.3 + §6.3 + cross-fork synthesis #1.
 
 ## V
+
+**`ValidateMode`** — `both / in / out / none`. Per-node choice (`NodePolicy.Validate`) for whether the engine runs the validator on input, output, both, or skips it. `none` is the perf escape hatch for hot streaming paths. RFC §6.1, brief 01 §2.
 
 **Virtual directory pattern** — pluggable-storage namespace addressing for skills (and potentially other artifacts). Logical paths over a swappable backing store. Inherited from the predecessor (the strongest pattern brief 04 names). RFC §6.7.
