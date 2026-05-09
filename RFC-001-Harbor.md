@@ -507,6 +507,75 @@ Bifrost's `Tools` / `ToolChoice` parameters are intentionally NOT used — Harbo
 
 **Retry with feedback (Settled):** validation/parse failures feed back into the planner via the `RepairLoop`; observable; bounded by `RepairAttempts` per planner step.
 
+**Multimodal inputs (V1, Settled — see D-021).** `CompleteRequest.Messages` carries multimodal content through `ChatMessage.Content`. The common case is text-only (`Content.Text != nil`); multimodal cases use `Content.Parts`:
+
+```go
+type ChatMessage struct {
+    Role    Role
+    Content Content
+    Name    *string  // optional, for tool / participant naming
+}
+
+type Content struct {
+    // Exactly one of Text or Parts is set. Text is the common case.
+    Text  *string
+    Parts []ContentPart
+}
+
+type PartType string
+
+const (
+    PartText  PartType = "text"
+    PartImage PartType = "image"
+    PartAudio PartType = "audio"
+    PartFile  PartType = "file"
+)
+
+type ContentPart struct {
+    Type  PartType
+    Text  string      // when Type == PartText
+    Image *ImagePart  // when Type == PartImage
+    Audio *AudioPart  // when Type == PartAudio
+    File  *FilePart   // when Type == PartFile
+}
+
+type ImagePart struct {
+    // Exactly one of URL / DataURL / Artifact is set.
+    URL      string         // remote URL the provider can fetch
+    DataURL  string         // data:image/...;base64,...
+    Artifact *artifacts.Ref // canonical Harbor reference (D-022)
+    MIME     string         // image/jpeg, image/png, image/webp, ...
+    Detail   string         // "low" | "high" | "auto" (provider hint)
+}
+
+type AudioPart struct {
+    URL      string
+    DataURL  string
+    Artifact *artifacts.Ref
+    MIME     string         // audio/mpeg, audio/wav, audio/ogg, ...
+}
+
+type FilePart struct {
+    URL      string
+    DataURL  string
+    Artifact *artifacts.Ref
+    MIME     string         // application/pdf, text/csv, ...
+    Filename string         // hint shown to the model when the provider supports it
+}
+```
+
+The `bifrost` driver translates Harbor's `ContentPart` to bifrost's per-provider content shape; bifrost handles the OpenAI / Anthropic / Gemini variations. **The `LLMClient` interface stays one method** — multimodal is just richer message content, not a new method, not a new request type.
+
+**Canonical binary representation: `ArtifactRef` (D-022).** Of the three supply forms (URL, DataURL, Artifact), `ArtifactRef` is the *canonical* form for non-trivial binary content. Inline `DataURL` is convenient for small images but carries the bytes through every layer (events, audit, memory, persistence) — so it's bounded by the `heavy-output threshold` (32 KB default, RFC §6.10). Above the threshold, the runtime *automatically* materializes `DataURL` content into `ArtifactRef`s and rewrites the message before persistence and event emission. URLs pass through unchanged when the provider can fetch them.
+
+**Multimodal outputs — post-V1 via tools (D-021).** Image generation, speech synthesis, transcription, and video editing/generation are delivered as Harbor **tools** that return `ArtifactRef`s. The planner emits a `tool.<name>` action; the runtime invokes the tool via the existing dispatcher (RFC §6.4); the tool wrapper internally calls bifrost's media APIs (which already cover all 23 providers' media surfaces — see brief 08 §"What `bifrost` provides"). The `LLMClient` itself never gains an output method beyond `Complete`. Phase 97 ships the media-input tool wrappers; phase 98 ships media-output wrappers. **The protocol and types settled here in V1 mean the post-V1 work is "implement tool wrappers," not "redesign."**
+
+**Multimodal interaction with adjacent subsystems (Settled — D-021):**
+- **Audit redactor (§6.4):** recognizes `DataURL` and inline-base64 patterns; emits `[redacted: image/<MIME> of <N> bytes]` placeholders or rewrites to `ArtifactRef`. `ArtifactRef` itself passes through unredacted (it's already a reference, not data). Phase 03 handles this from t=0.
+- **Memory (§6.6):** strategies handle multimodal turns. `truncation` drops them wholesale (the artifacts in the store are GC'd by the artifact subsystem's lifecycle, not memory). `rolling_summary` for V1 substitutes a `[image: <ArtifactRef>, MIME=<type>, size=<N>]` placeholder when summarizing; vision-aware summarization (calling a vision model to describe the image) is post-V1.
+- **Tools (§6.4):** any tool can declare `ArtifactRef` in its `args` schema or `result` shape. The runtime resolves refs at invocation; the tool reads bytes via the `ArtifactStore`. No special "media tool" type — multimodal is a convention on top of the existing tool catalog.
+- **Skills (§6.7):** Skills.md attachments already settled as `ArtifactRef`s (RFC §6.7); the same convention applies.
+
 ### 6.6 Memory subsystem
 
 Memory is declared-policy, identity-scoped, and pluggable across persistence backends.
