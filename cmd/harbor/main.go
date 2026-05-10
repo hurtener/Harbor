@@ -13,12 +13,14 @@
 package main
 
 import (
-	// Artifacts drivers — content-addressed blob store. Both V1
-	// drivers self-register via init() so `artifacts.Open` can resolve
-	// them. Phase 18 adds SQLite-blob + Postgres-blob; Phase 19 adds
-	// S3-style.
+	// Artifacts drivers — content-addressed blob store. Each V1
+	// driver self-registers via init() so `artifacts.Open` can resolve
+	// them. Phase 17 ships fs + inmem; Phase 18 adds sqlite +
+	// postgres; Phase 19 adds the S3-style driver.
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/fs"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/sqlite"
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Events driver — production in-memory bus, registered via init().

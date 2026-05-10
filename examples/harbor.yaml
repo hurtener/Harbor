@@ -50,14 +50,22 @@ events:
   drop_window: 1s
 
 artifacts:
-  # `inmem` (per-process, dev/embedded floor) or `fs` (single-binary
-  # production target). Phase 18 adds `sqlite-blob` + `postgres-blob`;
-  # Phase 19 adds an S3-style driver.
+  # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
+  # production target), `sqlite` (Phase 18 — durable, single-node),
+  # or `postgres` (Phase 18 — durable, multi-replica safe). Phase 19
+  # adds an S3-style driver.
   driver: inmem
   # Required when driver=fs; the root directory under which the
   # `<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>` blob
   # tree lands. Created (`os.MkdirAll`) at boot.
   # fs_root: /var/lib/harbor/artifacts
+  # Required when driver=sqlite or driver=postgres. SQLite accepts a
+  # bare file path (or `:memory:` for the degenerate dev case);
+  # Postgres accepts a standard URL form
+  # (`postgres://user:pass@host:5432/db?sslmode=disable`) or pgx
+  # key-value form. Override via HARBOR_ARTIFACTS_DSN in production;
+  # never commit a real password.
+  # dsn: /var/lib/harbor/artifacts.sqlite
   # Heavy-output threshold: payloads at or above this byte size are
   # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
   # Default 32 KB. Per-tool overrides land at Phase 26.
