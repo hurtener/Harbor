@@ -157,6 +157,10 @@ func defaults() *Config {
 		Tasks: TasksConfig{
 			Driver: "inprocess",
 		},
+		Distributed: DistributedConfig{
+			BusDriver:    "loopback",
+			RemoteDriver: "loopback",
+		},
 	}
 }
 

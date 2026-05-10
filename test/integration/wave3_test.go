@@ -435,6 +435,11 @@ func wave3Config() *config.Config {
 		Tasks: config.TasksConfig{
 			Driver: "inprocess",
 		},
+		// DistributedConfig populated by Phase 22 — the validator
+		// added required driver fields. Wave 3's surfaces don't
+		// exercise distributed directly, but Validate runs the field
+		// through (the same §17.6 pattern).
+		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 }
 

@@ -727,5 +727,7 @@ func wave4Config() *config.Config {
 		},
 		// Phase 20 added a required `tasks.driver` field.
 		Tasks: config.TasksConfig{Driver: "inprocess"},
+		// Phase 22 added required distributed driver fields.
+		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 }

@@ -8,6 +8,14 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**A2A (Agent-to-Agent)** — the open protocol Harbor adopts for cross-agent communication. Vendored spec at `docs/specifications/a2a.proto` (pinned at commit `ae6a562d5d972f2c4b184f748bb32e1fa9aa7bf2`, 2026-04-23); full spec compliance is settled per D-007 + D-031. Every A2A RPC has a Go counterpart on `RemoteTransport`; every A2A message has a Go shape in `internal/distributed/a2a`.
+
+**A2A `Task`** — A2A's task abstraction. Distinct from Harbor's `tasks.Task` (Phase 20): Harbor's task is the local-runtime unit; A2A's `Task` is what a remote agent uses to model the same execution. Mapping happens at the Phase 29 boundary. RFC §6.12, D-031.
+
+**A2A `Message`** — A2A's communication unit between client and server. Carries role (user / agent), parts (oneof: text / raw bytes / URL / structured data), context/task IDs, extensions, and metadata. Distinct from Harbor's runtime envelope.
+
+**A2A `Part`** — A2A's discriminated message-content carrier (oneof: text, raw bytes, URL, structured data). Each part carries `media_type` + optional `filename`. Distinct from Harbor's `ContentPart` (D-021); the LLM-side multimodal types map onto A2A `Part` at the southbound boundary. RFC §6.4 + §6.12.
+
 **Adjacency** — A `(From Node, To []Node)` pair the engine's `New` consumes to allocate channels. The full set of adjacencies forms the runtime DAG (with cycle opt-in per node). RFC §6.1.
 
 **ActionParser** — runtime component that extracts a typed `PlannerAction` from raw LLM text. Owns multi-action discovery, JSON-fence extraction, and the salvage path. Knows Harbor's `next_node` / `args` schema; deliberately knows nothing about provider-native tool-call shapes (RFC §6.4).
@@ -24,9 +32,19 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ArtifactStub** — the model-agnostic JSON shape the LLM sees in place of heavy content during prompt assembly: `{artifact_ref, mime, size_bytes, hash, summary, fetch{tool, id}}`. Uniform across producers (tool result, memory turn, multimodal input) and providers — operators do not swap formats per model. The runtime stamps the stub; producers fill `Summary` when meaningful. RFC §6.5, D-026.
 
+**A2A `Artifact`** — A2A's task-output container, carrying parts plus name, description, and extensions. Distinct from Harbor's `Artifact` (the heavy-output content-addressed blob). The two converge at the Phase 29 boundary when an A2A peer's artifact is materialised onto Harbor's `ArtifactStore`. RFC §6.12, D-031.
+
+**AgentCard** — A2A's self-describing manifest for an agent. Carries name, capabilities, skills, supported interfaces (gRPC / JSON-RPC / HTTP+JSON), security schemes. Harbor consumes peers' AgentCards through `RemoteTransport.GetExtendedAgentCard`. RFC §6.12, D-031.
+
+**AgentInterface** — A2A's declaration of a target URL + protocol binding (`JSONRPC` / `GRPC` / `HTTP+JSON`) + protocol version. An `AgentCard` carries one or more `AgentInterface`s. RFC §6.12, D-031.
+
+**AgentSkill** — A2A's declaration of a distinct capability the agent exposes (id, name, description, tags, examples, input/output modes, security requirements). Distinct from Harbor's `Skill` (the token-savvy skill subsystem). RFC §6.12, D-031.
+
 ## B
 
 **Brief** — a research artifact in `docs/research/NN-*.md`, distilled from predecessor source code and authoritative for context (not design). See `docs/research/INDEX.md`.
+
+**`BusEnvelope`** — the unit `MessageBus.Publish` accepts. Carries the identity quadruple, task ID, edge / source / target labels, the (pre-redacted) payload bytes, a caller-supplied `EventID` for idempotency keying, headers + metadata, and a timestamp. Identity-mandatory; consumers MUST be idempotent on `(TaskID, Edge, EventID)`. RFC §6.12, D-031.
 
 ## C
 
@@ -138,6 +156,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Meta (envelope)** — Free-form `map[string]any` propagated with the envelope. Last-write-wins on key collisions in V1; an explicit merge-function registry is reserved for a future RFC follow-up. Survives fan-out / fan-in / subflow boundaries. RFC §6.1, brief 01 §2.
 
+**`MessageBus`** — Harbor's at-least-once cross-worker fan-out edge (`internal/distributed`). V1 ships an in-process loopback driver that projects published `BusEnvelope`s through the typed `events.EventBus`; durable backends (NATS / Redis Streams / Postgres-as-queue) are post-V1 phase 86. Handlers MUST be idempotent on `(TaskID, Edge, EventID)`. RFC §6.12, D-031.
+
 ## O
 
 **ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.
@@ -166,6 +186,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **PropagateOnCancel** — `tasks.Task` field controlling how `Cancel` walks descendants: `"cascade"` (default; cancels descendants in BFS order, emitting `task.cancelled` per cancel) or `"isolate"` (cancellation stays local to the target). Per `tasks.SpawnRequest`; the resolved value is stored on the Task and consulted at Cancel time. RFC §6.8.
 
+**`TaskPushNotificationConfig`** — A2A's per-task push-notification configuration (URL + auth credentials + optional token). Harbor's `RemoteTransport` exposes CRUD (Create / Get / List / Delete); V1's loopback driver stores in memory, post-V1 + Phase 29 add durability + outbound dispatch. RFC §6.12, D-031.
+
 ## R
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
@@ -181,6 +203,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **RunningProbe** — function-typed seam (`func(ctx, identity.Quadruple) (bool, error)`) the `SessionRegistry`'s GC consults before reaping a session. Default returns `(false, nil)`; Phase 20 (`TaskRegistry`) wires the real probe so GC honors "never reap a session with a RUNNING task." RFC §6.9.
 
 **Recipe** — a declarative (YAML/JSON) representation of a `flow.Definition` so operators can author flows without writing Go. Parses into the same `Definition` struct the runtime consumes. **V1.1 (post-V1 phase 100)** — V1 ships Go-coded `Definition`s; the recipe loader is a parser added later without changing the contract. RFC §6.1, D-023.
+
+**`RemoteTransport`** — Harbor's cross-process / cross-host call surface, designed end-to-end against the A2A v1 spec (`internal/distributed`). Every A2A `A2AService` RPC maps 1:1 to a Go method on this interface (Send / Stream / GetTask / ListTasks / Cancel / Subscribe / push-notification-config CRUD / GetExtendedAgentCard / Close). V1 ships an in-process loopback driver; the production A2A wire driver is Phase 29 (southbound). Identity-mandatory via `ctx`. RFC §6.12, D-031.
+
+**`RemoteCallRequest`** — input shape for `RemoteTransport.Send` and `RemoteTransport.Stream`. Carries `AgentURL`, `Kind` (send / stream / subscribe), `ContextID`, `TaskID`, the A2A `Message`, optional `SendMessageConfiguration`, and a per-call `Timeout`. Wire-neutral; drivers translate to the configured A2A binding. RFC §6.12, D-031.
 
 **RedactedMap** — the post-redaction payload form for events whose `EventPayload` did not implement `SafePayload`. The audit redactor's reflective walk normalises a struct payload to `map[string]any`; the bus wraps that result in `RedactedMap` so it still satisfies `EventPayload` for delivery to subscribers. Subscribers extract redacted fields via `RedactedMap.Data`. RFC §6.13, D-028.
 
@@ -214,6 +240,8 @@ Additions to this set are RFC PRs.
 
 **Session** — a longer-lived multi-turn conversation that contains many Runs. Identity for runtime concerns is `(tenant, user, session)`. RFC §6.9.
 
+**`SecurityScheme`** — A2A's discriminated union of supported authentication schemes (API key, HTTP auth, OAuth 2.0, OpenID Connect, mutual TLS). Used by `AgentCard.security_schemes`. Each variant is a distinct Go type implementing the `SecurityScheme` interface; runtime discrimination via `Kind()`. RFC §6.12, D-031.
+
 **SessionRegistry** — Harbor's session lifecycle subsystem. One concrete implementation, `StateStore`-backed (no driver pluralism — sessions consume the StateStore conformance suite for cross-driver correctness). Open / Get / Touch / Close / Inspect / GC. Identity captured immutably on `Open`; reopen-after-close rejected; cross-tenant `SessionID` reuse rejected with `ErrSessionIDReuse`. Carries the canonical example of the D-027 typed-wrapper pattern (`SessionRegistry.Save(s Session)` reduces to `StateStore.Save(StateRecord{Identity: q, Kind: "session.lifecycle", Bytes: marshal(s)})`). RFC §6.9.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
@@ -243,6 +271,10 @@ Additions to this set are RFC PRs.
 **TaskID** — ULID-shaped identifier unifying foreground runs and background tasks. Single namespace; `TaskKind` distinguishes the two. Closes the predecessor's `trace_id` vs `task_id` split (brief 05). Assigned by the registry; callers do not construct TaskIDs externally. RFC §6.8.
 
 **TaskKind** — `"foreground"` (a run inside a session's primary turn) or `"background"` (a spawned-without-blocking task). Both share the same TaskID namespace; this field is the discriminator. RFC §6.8.
+
+**`TaskStatusUpdateEvent`** — A2A streaming-event type emitted by an agent to notify the client of a change in a task's status (`state`, `message`, `timestamp`). Delivered via `SendStreamingMessage` / `SubscribeToTask`; Harbor's `RemoteEventStream.Recv` returns these inside `StreamResponse.StatusUpdate`. RFC §6.12, D-031.
+
+**`TaskArtifactUpdateEvent`** — A2A streaming-event type emitted by an agent when an artifact is generated or appended (`artifact`, `append`, `last_chunk`). Delivered via `SendStreamingMessage` / `SubscribeToTask`; Harbor's `RemoteEventStream.Recv` returns these inside `StreamResponse.ArtifactUpdate`. RFC §6.12, D-031.
 
 **TaskStatus** — lifecycle state. Values: `pending`, `running`, `paused`, `complete`, `failed`, `cancelled`. FSM enforced at the registry; invalid transitions return `ErrInvalidTransition` (wrapped with from/to states named in the message). Same-state transitions are invalid (no idempotent self-edges). Terminal states (`complete`, `failed`, `cancelled`) have no outgoing edges. RFC §6.8.
 

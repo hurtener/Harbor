@@ -405,6 +405,9 @@ func wave2Config() *config.Config {
 		// Phase 20 added a required `tasks.driver` field; populate
 		// it so Validate continues to pass through.
 		Tasks: config.TasksConfig{Driver: "inprocess"},
+		// Phase 22 added required distributed driver fields; populate
+		// them so Validate continues to pass through.
+		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 	return c
 }

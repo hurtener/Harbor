@@ -24,6 +24,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/sqlite"
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	// Distributed drivers — Phase 22 loopback MessageBus + RemoteTransport.
+	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	// State driver — production in-memory StateStore, registered via init().

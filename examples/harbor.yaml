@@ -100,3 +100,19 @@ tasks:
   # (e.g. a durable queue-backed driver at Phase 87+) extend the
   # allowlist.
   driver: inprocess
+
+distributed:
+  # MessageBus driver — Harbor's at-least-once cross-worker fan-out
+  # edge. Phase 22 ships only `loopback` (in-process; projects
+  # envelopes through the typed events.EventBus). Post-V1 phase 86
+  # adds durable backends (NATS / Redis Streams / Postgres-as-queue).
+  # Handlers MUST be idempotent on (TaskID, Edge, EventID) so the
+  # same consumer code works against both V1 + durable drivers.
+  bus_driver: loopback
+  # RemoteTransport driver — Harbor's cross-process / cross-host call
+  # surface, designed against the full A2A v1 spec (vendored at
+  # docs/specifications/a2a.proto). Phase 22 ships only `loopback`
+  # (in-process dispatch to a registered Agent stub, used by
+  # conformance tests). The production A2A wire driver lands in
+  # Phase 29 (southbound).
+  remote_driver: loopback

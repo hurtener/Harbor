@@ -41,6 +41,7 @@ func (c *Config) Validate() error {
 		c.validateSessions,
 		c.validateArtifacts,
 		c.validateTasks,
+		c.validateDistributed,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -263,6 +264,36 @@ func (c *Config) validateTasks() error {
 		return fieldError("tasks.driver",
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedTasksDrivers), c.Tasks.Driver))
+	}
+	return nil
+}
+
+// allowedDistributedBusDrivers is the V1 distributed bus driver
+// allowlist. Phase 22 ships only `loopback`; post-V1 phase 86 adds
+// durable backends (NATS / Redis Streams / Postgres-as-queue).
+var allowedDistributedBusDrivers = map[string]struct{}{"loopback": {}}
+
+// allowedDistributedRemoteDrivers is the V1 RemoteTransport driver
+// allowlist. Phase 22 ships only `loopback`; Phase 29 adds the A2A
+// wire driver.
+var allowedDistributedRemoteDrivers = map[string]struct{}{"loopback": {}}
+
+func (c *Config) validateDistributed() error {
+	if c.Distributed.BusDriver == "" {
+		return fieldError("distributed.bus_driver", "must not be empty")
+	}
+	if _, ok := allowedDistributedBusDrivers[c.Distributed.BusDriver]; !ok {
+		return fieldError("distributed.bus_driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedDistributedBusDrivers), c.Distributed.BusDriver))
+	}
+	if c.Distributed.RemoteDriver == "" {
+		return fieldError("distributed.remote_driver", "must not be empty")
+	}
+	if _, ok := allowedDistributedRemoteDrivers[c.Distributed.RemoteDriver]; !ok {
+		return fieldError("distributed.remote_driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedDistributedRemoteDrivers), c.Distributed.RemoteDriver))
 	}
 	return nil
 }
