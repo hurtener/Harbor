@@ -1,6 +1,9 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // DefaultQueueSize is the bounded per-adjacency channel capacity when
 // no override is configured. RFC §6.1 settles the value at 64
@@ -21,13 +24,40 @@ const DefaultQueueSize = 64
 // structured attrs.
 type RunErrorHandler func(ctx context.Context, re *RunError)
 
+// RunCancelledNotice is the payload the engine hands to a
+// RunCancelledHandler after Cancel(runID). The handler is the seam
+// production wiring uses to publish runtime.run_cancelled on the bus
+// without the engine importing the events package.
+//
+// CancelledAt is wall-clock; DroppedEnvelopeCount counts the
+// envelopes Cancel drained from channels (step 2 of the four-step
+// propagation). Useful for operators measuring "how loaded was the
+// cancelled run."
+type RunCancelledNotice struct {
+	RunID                string
+	CancelledAt          time.Time
+	DroppedEnvelopeCount int64
+}
+
+// RunCancelledHandler is the callback the engine fires after a Cancel
+// observed an active run. Same hook pattern as RunErrorHandler:
+// production wiring (cmd/harbor) installs a handler that publishes a
+// runtime.run_cancelled event on the bus; tests can install a
+// recording callback.
+//
+// Best-effort: a panic is recovered; bus errors must not block Cancel
+// from returning.
+type RunCancelledHandler func(ctx context.Context, n RunCancelledNotice)
+
 // engineConfig captures the New-time options. Internally consumed by
 // the engine's constructor; never exported.
 type engineConfig struct {
-	queueSize         int
-	channelOverrides  map[channelKey]int
-	errorEmitToEgress bool
-	runErrorHandler   RunErrorHandler
+	queueSize           int
+	channelOverrides    map[channelKey]int
+	errorEmitToEgress   bool
+	runErrorHandler     RunErrorHandler
+	runCancelledHandler RunCancelledHandler
+	cancelTTL           time.Duration
 }
 
 // channelKey is the (from, to) pair used to key per-channel queue
@@ -86,6 +116,16 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 func WithRunErrorHandler(h RunErrorHandler) Option {
 	return func(cfg *engineConfig) {
 		cfg.runErrorHandler = h
+	}
+}
+
+// WithRunCancelledHandler installs the callback the engine fires
+// after Cancel(runID) observed an active run. Production wiring
+// translates the notice to a runtime.run_cancelled bus event;
+// tests can use a recording callback. Phase 13.
+func WithRunCancelledHandler(h RunCancelledHandler) Option {
+	return func(cfg *engineConfig) {
+		cfg.runCancelledHandler = h
 	}
 }
 

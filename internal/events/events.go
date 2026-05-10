@@ -81,6 +81,10 @@ const (
 	EventTypeGovernanceBudgetExceeded EventType = "governance.budget_exceeded"
 	// EventTypeGovernanceRateLimited — reserved for Phase 36b emit.
 	EventTypeGovernanceRateLimited EventType = "governance.rate_limited"
+	// EventTypeRuntimeRunCancelled — emitted by Engine.Cancel(runID)
+	// when the cancellation was observed for an active run. Payload is
+	// RunCancelledPayload (SafePayload). Phase 13.
+	EventTypeRuntimeRunCancelled EventType = "runtime.run_cancelled"
 )
 
 // canonicalTypes is the registered set. Build via init() so the file
@@ -102,6 +106,7 @@ func init() {
 		EventTypeAdminScopeUsed,
 		EventTypeGovernanceBudgetExceeded,
 		EventTypeGovernanceRateLimited,
+		EventTypeRuntimeRunCancelled,
 	} {
 		canonicalTypes[t] = struct{}{}
 	}

@@ -215,6 +215,79 @@ func TestCallSubflow_NestedSubflows(t *testing.T) {
 	}
 }
 
+// TestCallSubflow_ParentCancel_PropagatesToChild — Phase 13 follow-up.
+// A real parent engine runs a node that calls CallSubflow with a
+// blocking child factory. Calling parent.Cancel(parentRunID) fires
+// the registered cancel-observer, which in turn invokes
+// child.Cancel(parentRunID). The child's Fetch wakes with
+// ErrRunCancelled and CallSubflow returns a non-nil error.
+func TestCallSubflow_ParentCancel_PropagatesToChild(t *testing.T) {
+	t.Parallel()
+
+	childStarted := make(chan struct{}, 1)
+	childFactory := func() (engine.Engine, error) {
+		blockingChild := engine.Node{
+			Name: "in",
+			Func: func(ctx context.Context, env messages.Envelope, _ *engine.NodeContext) (messages.Envelope, error) {
+				select {
+				case childStarted <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return env, ctx.Err()
+			},
+		}
+		outNode := engine.Node{Name: "out"}
+		return engine.New([]engine.Adjacency{
+			{From: blockingChild, To: []engine.Node{outNode}},
+		})
+	}
+
+	subflowDone := make(chan error, 1)
+	parentNode := engine.Node{
+		Name: "parent",
+		Func: func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
+			_, err := nctx.CallSubflow(ctx, childFactory, env)
+			subflowDone <- err
+			return env, err
+		},
+	}
+	parent, err := engine.New([]engine.Adjacency{
+		{From: parentNode},
+	})
+	if err != nil {
+		t.Fatalf("parent New: %v", err)
+	}
+	if err := parent.Run(context.Background()); err != nil {
+		t.Fatalf("parent Run: %v", err)
+	}
+	defer func() { _ = parent.Stop(context.Background()) }()
+
+	parentEnv := mkParentEnvelope("R-mirror")
+	if err := parent.Emit(context.Background(), parentEnv); err != nil {
+		t.Fatalf("parent Emit: %v", err)
+	}
+
+	select {
+	case <-childStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child subflow never started")
+	}
+
+	if _, err := parent.Cancel(context.Background(), "R-mirror"); err != nil {
+		t.Fatalf("parent Cancel: %v", err)
+	}
+
+	select {
+	case err := <-subflowDone:
+		if err == nil {
+			t.Error("CallSubflow returned nil err after parent.Cancel; want non-nil")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CallSubflow did not unblock within 3s of parent.Cancel — engine-Cancel mirroring failed")
+	}
+}
+
 func TestCallSubflow_NoGoroutineLeak(t *testing.T) {
 	t.Parallel()
 	baseline := runtime.NumGoroutine()
