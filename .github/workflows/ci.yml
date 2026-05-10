@@ -116,3 +116,74 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/artifacts/drivers/postgres/...
+
+  artifacts-s3:
+    name: artifacts/s3 conformance (MinIO)
+    runs-on: ubuntu-latest
+    # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
+    # against in CI. We launch it via `docker run` rather than a
+    # GitHub Actions service container because the official
+    # `minio/minio` image needs `server /data` as the entrypoint args
+    # (services blocks can't pass command args cleanly), and Bitnami's
+    # alternative dropped its `latest` tag. Credentials are documented
+    # dummy values per AGENTS.md §7 #2 — no real secrets cross this
+    # boundary.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Start MinIO and create harbor-test bucket
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          set -euo pipefail
+          docker run -d --name harbor-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2024-12-18T13-15-44Z \
+            server /data
+          # Poll for liveness; create the bucket once MinIO answers.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:9000/minio/health/live; then
+              echo "MinIO is live"
+              break
+            fi
+            sleep 2
+          done
+          # AWS CLI is pre-installed on ubuntu-latest runners.
+          for i in $(seq 1 15); do
+            if aws --endpoint-url http://localhost:9000 s3 mb s3://harbor-test 2>/dev/null; then
+              echo "harbor-test bucket created"
+              break
+            fi
+            if aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket harbor-test 2>/dev/null; then
+              echo "harbor-test bucket already present"
+              break
+            fi
+            sleep 2
+          done
+          aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket harbor-test
+      - name: Run artifacts/s3 tests against MinIO
+        # Note: CGO_ENABLED is intentionally NOT set here — same
+        # rationale as the state-postgres job above. The static
+        # binary CGO_ENABLED=0 invariant is enforced only at build
+        # time, not in test runs.
+        env:
+          HARBOR_TEST_S3_DSN: |
+            endpoint=http://localhost:9000
+            bucket=harbor-test
+            region=us-east-1
+            access_key=minioadmin
+            secret_key=minioadmin
+            use_path_style=true
+        run: go test -race -count=1 -timeout 240s ./internal/artifacts/drivers/s3/...
+      - name: Tear down MinIO
+        if: always()
+        run: |
+          docker logs harbor-minio || true
+          docker rm -f harbor-minio || true

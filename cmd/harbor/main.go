@@ -20,6 +20,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/fs"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/s3"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/sqlite"
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
