@@ -39,7 +39,7 @@ type dispatcher struct {
 	anyRun chan messages.Envelope
 
 	mu        sync.Mutex
-	runQueues map[string]chan messages.Envelope
+	runQueues map[string]*runQueue
 	// fetcherActive[runID] tracks whether a FetchByRun is currently in
 	// flight for that run. Used to enforce the
 	// "concurrent FetchByRun forbidden" contract (brief 01 §5). The
@@ -83,6 +83,25 @@ type dispatcher struct {
 	wg   sync.WaitGroup
 }
 
+// runQueue carries the per-run subqueue state. The `data` channel is
+// the FIFO routeEnvelope sends to and fetchByRun reads from. The
+// `closing` channel is closed by cancelRun (NOT the data channel) —
+// closing it racelessly signals both routeEnvelope and fetchByRun to
+// abort. The data channel is closed only at engine shutdown by
+// closeSubqueues, so concurrent cancel-during-send never panics with
+// "send on closed channel."
+type runQueue struct {
+	data    chan messages.Envelope
+	closing chan struct{}
+}
+
+func newRunQueue(size int) *runQueue {
+	return &runQueue{
+		data:    make(chan messages.Envelope, size),
+		closing: make(chan struct{}),
+	}
+}
+
 // newDispatcher allocates a dispatcher reading from outlet. The
 // caller passes in subqueueSize (typically engine.cfg.queueSize) and
 // an optional onFetched callback fired after each successful Fetch.
@@ -92,7 +111,7 @@ func newDispatcher(outlet chan messages.Envelope, subqueueSize int, onFetched fu
 	return &dispatcher{
 		outlet:        outlet,
 		anyRun:        make(chan messages.Envelope, subqueueSize),
-		runQueues:     make(map[string]chan messages.Envelope),
+		runQueues:     make(map[string]*runQueue),
 		fetcherActive: make(map[string]*atomic.Bool),
 		subscribed:    make(map[string]struct{}),
 		cancelled:     make(map[string]struct{}),
@@ -157,8 +176,13 @@ func (d *dispatcher) start(ctx context.Context) {
 // from un-cancelled runs arrive.
 //
 // Honors ctx cancellation (engine shutdown) on both writes.
+//
+// On the per-run path, the send is selected against rq.closing so a
+// concurrent cancelRun (closing the closing channel) cleanly aborts
+// the send — the data channel itself is NEVER closed by cancelRun, so
+// "send on closed channel" cannot happen here.
 func (d *dispatcher) routeEnvelope(ctx context.Context, env messages.Envelope) {
-	subq, mode := d.subqueueForSend(env.RunID)
+	rq, mode := d.subqueueForSend(env.RunID)
 	switch mode {
 	case sendBlocking:
 		select {
@@ -166,11 +190,15 @@ func (d *dispatcher) routeEnvelope(ctx context.Context, env messages.Envelope) {
 			return
 		case <-d.done:
 			return
-		case subq <- env:
+		case <-rq.closing:
+			return
+		case rq.data <- env:
 		}
 	case sendNonBlocking:
 		select {
-		case subq <- env:
+		case <-rq.closing:
+			return
+		case rq.data <- env:
 		default:
 			// Drop: no FetchByRun consumer subscribed; the frame is
 			// still delivered via anyRun below.
@@ -209,21 +237,21 @@ const (
 // Lazy-creates the subqueue on first access either way: the buffer
 // exists in case a future FetchByRun arrives and wants to drain
 // already-routed envelopes (best-effort up to subqueueSize).
-func (d *dispatcher) subqueueForSend(runID string) (chan messages.Envelope, sendMode) {
+func (d *dispatcher) subqueueForSend(runID string) (*runQueue, sendMode) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, isCancelled := d.cancelled[runID]; isCancelled {
 		return nil, sendSkip
 	}
-	q, ok := d.runQueues[runID]
+	rq, ok := d.runQueues[runID]
 	if !ok {
-		q = make(chan messages.Envelope, d.subqueueSize)
-		d.runQueues[runID] = q
+		rq = newRunQueue(d.subqueueSize)
+		d.runQueues[runID] = rq
 	}
 	if _, sub := d.subscribed[runID]; sub {
-		return q, sendBlocking
+		return rq, sendBlocking
 	}
-	return q, sendNonBlocking
+	return rq, sendNonBlocking
 }
 
 // fetchAny reads from the any-run channel. Returns ctx.Err() when
@@ -257,7 +285,7 @@ func (d *dispatcher) fetchByRun(ctx context.Context, runID string) (messages.Env
 	}
 	defer flag.Store(false)
 
-	q, cancelled := d.subqueueForFetch(runID)
+	rq, cancelled := d.subqueueForFetch(runID)
 	if cancelled {
 		return messages.Envelope{}, ErrRunCancelled
 	}
@@ -265,16 +293,14 @@ func (d *dispatcher) fetchByRun(ctx context.Context, runID string) (messages.Env
 	select {
 	case <-ctx.Done():
 		return messages.Envelope{}, ctx.Err()
-	case env, ok := <-q:
+	case <-rq.closing:
+		// Cancel(runID) fired; any data still in rq.data is dropped.
+		return messages.Envelope{}, ErrRunCancelled
+	case env, ok := <-rq.data:
 		if !ok {
-			// Subqueue closed: either Cancel(runID) fired or engine
-			// Stop fired. Distinguish via the cancelled map.
-			d.mu.Lock()
-			_, wasCancelled := d.cancelled[runID]
-			d.mu.Unlock()
-			if wasCancelled {
-				return messages.Envelope{}, ErrRunCancelled
-			}
+			// Data channel closed: only happens at engine Stop (via
+			// closeSubqueues). cancelRun closes the closing chan, not
+			// the data chan, so "ok=false" unambiguously means stopped.
 			return messages.Envelope{}, ErrEngineStopped
 		}
 		if d.onFetched != nil {
@@ -294,19 +320,19 @@ func (d *dispatcher) fetchByRun(ctx context.Context, runID string) (messages.Env
 // writes for this run become blocking (reliable delivery). Once
 // marked, the subscription is permanent for the run's lifetime —
 // every subsequent envelope is backpressure-bound.
-func (d *dispatcher) subqueueForFetch(runID string) (chan messages.Envelope, bool) {
+func (d *dispatcher) subqueueForFetch(runID string) (*runQueue, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, isCancelled := d.cancelled[runID]; isCancelled {
 		return nil, true
 	}
-	q, ok := d.runQueues[runID]
+	rq, ok := d.runQueues[runID]
 	if !ok {
-		q = make(chan messages.Envelope, d.subqueueSize)
-		d.runQueues[runID] = q
+		rq = newRunQueue(d.subqueueSize)
+		d.runQueues[runID] = rq
 	}
 	d.subscribed[runID] = struct{}{}
-	return q, false
+	return rq, false
 }
 
 // acquireFetcher returns the per-run fetcher flag, creating it on
@@ -338,7 +364,7 @@ func (d *dispatcher) cancelRun(runID string) int {
 		return 0
 	}
 	d.cancelled[runID] = struct{}{}
-	q, hasQueue := d.runQueues[runID]
+	rq, hasQueue := d.runQueues[runID]
 	if hasQueue {
 		// Remove from runQueues so any future routeEnvelope (if it
 		// races with the cancel) takes the cancelled-skip branch
@@ -350,23 +376,31 @@ func (d *dispatcher) cancelRun(runID string) int {
 	if !hasQueue {
 		return 0
 	}
-	// Drain pending envelopes BEFORE closing so an in-flight
-	// FetchByRun that's already past the cancel-check observes a
-	// closed channel rather than a partial drain.
+	// Close the closing chan FIRST. This is the synchronization
+	// point: any in-flight routeEnvelope blocked on `case rq.data <-
+	// env` aborts via `case <-rq.closing`; any in-flight fetchByRun
+	// blocked on `case env := <-rq.data` returns ErrRunCancelled via
+	// `case <-rq.closing`. The data channel itself is NEVER closed
+	// here — it's GC'd once routeEnvelope and fetchByRun both observe
+	// the closing signal and release their references. Avoiding the
+	// data-channel close eliminates the "send on closed channel"
+	// panic that would otherwise race a blocked routeEnvelope.
+	close(rq.closing)
+
+	// Drain pending envelopes for the count. Non-blocking; envelopes
+	// that arrive after this point cannot land in rq.data (cancelled
+	// flag is set, so subqueueForSend returns sendSkip), so the count
+	// is final.
 	drained := 0
 drainLoop:
 	for {
 		select {
-		case _, ok := <-q:
-			if !ok {
-				break drainLoop
-			}
+		case <-rq.data:
 			drained++
 		default:
 			break drainLoop
 		}
 	}
-	close(q)
 	return drained
 }
 
@@ -389,13 +423,13 @@ func (d *dispatcher) closeSubqueues() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	close(d.anyRun)
-	for runID, q := range d.runQueues {
-		// Skip queues that cancelRun already closed (defensive: the
-		// runQueues map should already be cleared for those, but the
-		// double-close is real if a race lands here).
+	for runID, rq := range d.runQueues {
+		// Skip queues that cancelRun already removed from runQueues
+		// (defensive: the map should be clear of cancelled entries,
+		// but the double-close is real if a race lands here).
 		if _, isCancelled := d.cancelled[runID]; isCancelled {
 			continue
 		}
-		close(q)
+		close(rq.data)
 	}
 }

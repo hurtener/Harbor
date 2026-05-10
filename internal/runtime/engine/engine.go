@@ -285,16 +285,20 @@ func (e *engine) Stop(ctx context.Context) error {
 	e.mu.Lock()
 	cancel := e.cancelFn
 	e.mu.Unlock()
+
+	// Phase 12: release every blocked EmitChunk waiter with
+	// ErrEngineStopped BEFORE cancelling the engine ctx. The reserve
+	// loop's exit checks the rc.stopped flag before ctx.Err, so a
+	// blocked producer that wakes via the cond broadcast returns
+	// ErrEngineStopped (the precise reason) rather than ctx.Canceled.
+	// If we cancelled ctx first, the per-run cond's ctx-watcher would
+	// race the rc.stopped write and producers could return ctx.Err()
+	// instead of ErrEngineStopped — surfaced under -count=N stress in
+	// TestEmitChunk_Stop_ReleasesWaiters.
+	e.stopAllCapacities()
 	if cancel != nil {
 		cancel()
 	}
-
-	// Phase 12: release every blocked EmitChunk waiter with
-	// ErrEngineStopped BEFORE waiting for workers. A worker whose
-	// NodeFunc is mid-EmitChunk waits on a per-run sync.Cond; until
-	// we broadcast on those conds, the worker would hang and wg.Wait
-	// would deadlock against the ctx deadline.
-	e.stopAllCapacities()
 
 	// Wait for workers; workers exit when the engine's internal ctx
 	// is cancelled (which we just did).
