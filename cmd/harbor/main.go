@@ -19,6 +19,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	// State driver — production SQLite StateStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 )
 
 func main() {
