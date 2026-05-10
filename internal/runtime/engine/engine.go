@@ -1,14 +1,15 @@
 // Package engine is Harbor's typed, async, queue-backed graph
 // executor — the runtime kernel every other phase sits on. Phase 10
-// ships the Engine interface, the worker loop (one goroutine per
+// shipped the Engine interface, the worker loop (one goroutine per
 // node), bounded per-adjacency channels (default 64), the always-on
 // egress dispatcher (RunID demux), cycle detection at construction,
 // and Run / Stop / Emit / EmitTo / Fetch.
 //
-// Phase 10 stubs Cancel + FetchByRun (return ErrNotImplemented);
-// Phase 13 fills them. Phase 11 layers the reliability shell on top
-// (NodePolicy, RunError); Phase 12 adds streaming (StreamFrame,
-// EmitChunk) + per-run capacity backpressure; Phase 14 adds routers,
+// Phase 11 layered the reliability shell on top (NodePolicy,
+// RunError); Phase 12 added streaming (StreamFrame, EmitChunk) +
+// per-run capacity backpressure; Phase 13 lands Cancel(runID) +
+// FetchByRun (replacing Phase 10's stubs) plus engine-Cancel
+// mirroring into Phase 14's Subflow; Phase 14 adds routers,
 // concurrency utilities, and Subflow. None of those phases change
 // this surface — they extend it.
 //
@@ -93,6 +94,16 @@ type engine struct {
 	capMu                sync.Mutex
 	capacities           map[string]*runCapacity
 	runCapacityOverrides map[string]int
+
+	// Phase 13: per-run cancellation bookkeeping. cancelMu guards
+	// cancellations + cancelObservers; activeRunsMu guards
+	// activeRuns. Both maps grow over time bounded by the cancellation
+	// TTL sweeper.
+	cancelMu        sync.Mutex
+	cancellations   map[string]*runCancellation
+	cancelObservers map[string][]*cancelObserver
+	activeRunsMu    sync.Mutex
+	activeRuns      map[string]int
 }
 
 // New constructs an Engine from a list of adjacencies + options.
@@ -146,16 +157,19 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 	}
 
 	e := &engine{
-		cfg:        cfg,
-		nodes:      nodes,
-		adjs:       adjacencies,
-		inlets:     inletNodes(adjacencies, nodes),
-		outlets:    outletNodes(adjacencies, nodes),
-		channels:   make(map[string]map[string]chan messages.Envelope),
-		inletChans: make(map[string]chan messages.Envelope),
-		outletChan: make(chan messages.Envelope, cfg.queueSize),
-		logger:     slog.Default(),
-		capacities: make(map[string]*runCapacity),
+		cfg:           cfg,
+		nodes:         nodes,
+		adjs:          adjacencies,
+		inlets:        inletNodes(adjacencies, nodes),
+		outlets:       outletNodes(adjacencies, nodes),
+		channels:      make(map[string]map[string]chan messages.Envelope),
+		inletChans:    make(map[string]chan messages.Envelope),
+		outletChan:    make(chan messages.Envelope, cfg.queueSize),
+		logger:        slog.Default(),
+		capacities:      make(map[string]*runCapacity),
+		cancellations:   make(map[string]*runCancellation),
+		cancelObservers: make(map[string][]*cancelObserver),
+		activeRuns:      make(map[string]int),
 	}
 	if len(e.inlets) == 0 {
 		return nil, fmt.Errorf("engine: graph has no inlet (every node has a parent — adjust AllowCycle or graph shape)")
@@ -224,6 +238,13 @@ func (e *engine) Run(ctx context.Context) error {
 	e.mu.Unlock()
 
 	e.dispatcher.start(internalCtx)
+
+	// Phase 13: cancellation TTL sweeper. Joined via wg on Stop.
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.runCancellationSweeper(internalCtx)
+	}()
 
 	for _, n := range e.nodes {
 		// Outlet nodes (no children) write to outletChan; intermediate
@@ -324,6 +345,11 @@ func (e *engine) Emit(ctx context.Context, env messages.Envelope, opts ...EmitOp
 	if err := e.validateIdentity(env); err != nil {
 		return err
 	}
+	// Phase 13: reject Emit for runs that have been Cancel'd within
+	// the cancellation TTL. Closes the "Cancel beats Emit" race window.
+	if _, cancelled := e.runIsCancelled(env.RunID); cancelled {
+		return ErrRunCancelled
+	}
 	if env.Timestamp.IsZero() {
 		env.Timestamp = time.Now()
 	}
@@ -369,16 +395,6 @@ func (e *engine) Fetch(ctx context.Context, _ ...FetchOption) (messages.Envelope
 		return messages.Envelope{}, ErrEngineStopped
 	}
 	return e.dispatcher.fetchAny(ctx)
-}
-
-// FetchByRun is stubbed for Phase 13. Returns ErrNotImplemented.
-func (e *engine) FetchByRun(_ context.Context, _ string) (messages.Envelope, error) {
-	return messages.Envelope{}, ErrNotImplemented
-}
-
-// Cancel is stubbed for Phase 13. Returns (false, ErrNotImplemented).
-func (e *engine) Cancel(_ context.Context, _ string) (bool, error) {
-	return false, ErrNotImplemented
 }
 
 // validateIdentity enforces the identity-mandatory contract on the
@@ -511,6 +527,14 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		if fatal != nil || !ok {
 			return
 		}
+		// Phase 13: per-run cancellation observed BEFORE any
+		// processing. A cancelled run's pending envelopes are dropped
+		// silently here (Cancel's drainQueuedForRun handled the
+		// already-queued ones; this catches envelopes that landed in
+		// the channel mid-drain or just after the flag flipped).
+		if _, cancelled := e.runIsCancelled(env.RunID); cancelled {
+			continue
+		}
 		// Deadline check before invocation (per brief 01 §4 worker
 		// loop). Phase 11 promotes ErrDeadlineExceeded into a
 		// RunError; Phase 10 just logs and continues.
@@ -524,10 +548,17 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 			continue
 		}
 		nctx := &NodeContext{engine: e, node: node.Name, lastEnv: env}
+		// Track this worker as active on the run so Cancel can report
+		// "the run was active" while the worker is mid-invocation.
+		e.markRunActive(env.RunID)
 		// Phase 11: invoke under the reliability shell. NodePolicy
 		// drives validate / timeout / retry / backoff. Zero-value
 		// policy = bare invocation (Phase 10 behavior).
-		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, nil)
+		// Phase 13: pass the per-run cancel-flag pointer so the shell
+		// can observe cancellation between retries.
+		rcCancel, _ := e.runIsCancelled(env.RunID)
+		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, nil, rcCancel)
+		e.markRunDone(env.RunID)
 		if err != nil {
 			e.logWorkerError(env, err)
 			if e.cfg.errorEmitToEgress {

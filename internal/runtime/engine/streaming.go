@@ -55,13 +55,14 @@ var (
 // after wakeup observes a consistent counter. cond.Broadcast() in
 // Stop ensures every waiter observes stopped=true.
 type runCapacity struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	pending  int
-	capacity int
-	seqs     map[string]int  // StreamID -> next Seq to assign (monotonic)
-	closed   map[string]bool // StreamID -> Done frame drained
-	stopped  bool            // engine Stop signalled; release waiters with ErrEngineStopped
+	mu        sync.Mutex
+	cond      *sync.Cond
+	pending   int
+	capacity  int
+	seqs      map[string]int  // StreamID -> next Seq to assign (monotonic)
+	closed    map[string]bool // StreamID -> Done frame drained
+	stopped   bool            // engine Stop signalled; release waiters with ErrEngineStopped
+	cancelled bool            // Cancel(runID) signalled; release waiters with ErrRunCancelled
 }
 
 func newRunCapacity(capacity int) *runCapacity {
@@ -114,11 +115,17 @@ func (rc *runCapacity) reserve(ctx context.Context, streamID string, done bool) 
 	if rc.closed[streamID] {
 		return 0, ErrStreamClosed
 	}
-	for rc.pending >= rc.capacity && !rc.stopped && ctx.Err() == nil && !rc.closed[streamID] {
+	if rc.cancelled {
+		return 0, ErrRunCancelled
+	}
+	for rc.pending >= rc.capacity && !rc.stopped && !rc.cancelled && ctx.Err() == nil && !rc.closed[streamID] {
 		rc.cond.Wait()
 	}
 	if rc.stopped {
 		return 0, ErrEngineStopped
+	}
+	if rc.cancelled {
+		return 0, ErrRunCancelled
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -167,6 +174,17 @@ func (rc *runCapacity) stop() {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.stopped = true
+	rc.cond.Broadcast()
+}
+
+// cancel signals the tracker that the run has been cancelled. All
+// blocked reserve calls wake and return ErrRunCancelled. Idempotent.
+// Distinct from stop so callers can tell a run-cancel from an
+// engine-stop apart in the failure mode.
+func (rc *runCapacity) cancel() {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.cancelled = true
 	rc.cond.Broadcast()
 }
 

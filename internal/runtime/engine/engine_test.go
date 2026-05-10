@@ -443,27 +443,6 @@ func TestEngine_WithErrorEmissionToEgress(t *testing.T) {
 	}
 }
 
-func TestEngine_FetchByRun_ReturnsErrNotImplemented(t *testing.T) {
-	t.Parallel()
-	e, _ := engine.New(linearGraph())
-	_, err := e.FetchByRun(context.Background(), "R-1")
-	if !errors.Is(err, engine.ErrNotImplemented) {
-		t.Fatalf("err=%v, want ErrNotImplemented", err)
-	}
-}
-
-func TestEngine_Cancel_ReturnsErrNotImplemented(t *testing.T) {
-	t.Parallel()
-	e, _ := engine.New(linearGraph())
-	ok, err := e.Cancel(context.Background(), "R-1")
-	if !errors.Is(err, engine.ErrNotImplemented) {
-		t.Fatalf("err=%v, want ErrNotImplemented", err)
-	}
-	if ok {
-		t.Errorf("ok=true, want false")
-	}
-}
-
 // --- unit: Stop / lifecycle ---
 
 func TestEngine_Stop_JoinsWorkers(t *testing.T) {
