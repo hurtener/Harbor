@@ -102,14 +102,16 @@ Land `internal/artifacts/`: Harbor's content-addressed blob store for heavy outp
 - [ ] `internal/artifacts/drivers/fs/path_safety_test.go` directly exercises the path-traversal guard: `Put` with `Filename: "../../../etc/passwd"` rejects (the filename is metadata only, not used in path construction — the guard is a defense in depth).
 - [ ] `internal/artifacts/scoped_test.go` covers the facade: scope-mismatch on Get, scope auto-stamping on Put, immutability of the facade's scope.
 - [ ] `internal/artifacts/artifacts_test.go` covers the registry surface (`Register` / `Open` / unknown driver) and the sentinel-error wiring.
-- [ ] `internal/config/config.go` extends `ArtifactsConfig`:
-  ```go
-  type ArtifactsConfig struct {
-      Driver                     string `yaml:"driver"`
-      FSRoot                     string `yaml:"fs_root,omitempty"`
-      HeavyOutputThresholdBytes  int    `yaml:"heavy_output_threshold_bytes,omitempty"`
-  }
-  ```
+- [ ] `internal/config/config.go` extends `ArtifactsConfig` to the shape:
+
+```go
+type ArtifactsConfig struct {
+    Driver                     string `yaml:"driver"`
+    FSRoot                     string `yaml:"fs_root,omitempty"`
+    HeavyOutputThresholdBytes  int    `yaml:"heavy_output_threshold_bytes,omitempty"`
+}
+```
+
 - [ ] `internal/config/loader.go::Default` populates `ArtifactsConfig` defaults: `Driver: "inmem"`, `FSRoot: ""` (only required when `Driver == "fs"`), `HeavyOutputThresholdBytes: 32 * 1024`.
 - [ ] `internal/config/loader.go::Validate` validates: when `Driver == "fs"`, `FSRoot != ""`; when `HeavyOutputThresholdBytes < 0`, reject. Empty `Driver` is rejected (no implicit default at validation; the loader fills the default before validation).
 - [ ] `cmd/harbor/main.go` adds `_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"` and `_ "github.com/hurtener/Harbor/internal/artifacts/drivers/fs"` (additive).
