@@ -31,7 +31,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 13 | Cancellation + per-run fetch dispatcher       | runtime/engine       | §6.1        | 10, 12                | 85%  | Shipped  |
 | 14 | Routers + concurrency utils + subflows        | runtime/routers      | §6.1        | 10, 11                | 85%  | Shipped  |
 | 15 | SQLite StateStore driver                      | state/sqlite         | §6.11, §9   | 07                    | 90%  | Pending  |
-| 16 | Postgres StateStore driver                    | state/postgres       | §6.11, §9   | 07                    | 90%  | Pending  |
+| 16 | Postgres StateStore driver                    | state/postgres       | §6.11, §9   | 07                    | 90%  | Shipped  |
 | 17 | ArtifactStore iface + InMem + FS drivers      | artifacts            | §6.10, §9   | 01, 07                | 85%  | Pending  |
 | 18 | ArtifactStore SQLite-blob + Postgres-blob     | artifacts            | §6.10, §9   | 17, 15, 16            | 85%  | Pending  |
 | 19 | ArtifactStore S3-style driver                 | artifacts            | §6.10       | 17                    | 80%  | Pending  |
@@ -241,9 +241,9 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 16 — Postgres StateStore driver (RFC §6.11, §9)
 
-**Goal.** `pgx`, advisory locks for binding semantics, JSONB payloads, forward-only migrations.
+**Goal.** `pgx/v5/stdlib`-backed `state.StateStore`, embedded forward-only migrations gated by `pg_advisory_lock` for safe multi-replica boot, opaque `BYTEA` payloads (per RFC §6.11 + D-027 — superseding the older brief 05 §1 "JSONB payloads" narrative).
 **Acceptance.** Passes the phase 07 conformance suite end-to-end; CI matrix exercises against a containerized Postgres.
-**Tests.** Conformance suite + migration tests; concurrency test under `pgxpool`.
+**Tests.** Conformance suite + migration tests (clean-start, idempotency, advisory-lock concurrent boot) + Postgres-specific concurrent-reuse stress.
 **Deps.** 07.
 
 ### 17 — ArtifactStore iface + InMem + Filesystem drivers (RFC §6.10, §9)
