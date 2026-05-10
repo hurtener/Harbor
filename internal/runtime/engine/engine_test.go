@@ -318,17 +318,24 @@ func TestEngine_NodeContext_EmitFanOut(t *testing.T) {
 
 // TestEngine_NodeContext_EmitNoWait covers EmitNoWait via a custom
 // NodeFunc that calls it directly. With a deliberately tiny
-// downstream queue + no consumer, EmitNoWait should return
-// ErrChannelFull on the second emit.
+// downstream queue + a blocked consumer, EmitNoWait should return
+// ErrChannelFull after the queue fills.
+//
+// The sink is gated on a release channel so the queue cannot drain
+// while src is mid-emit. Without that gate, the Go runtime schedules
+// the sink worker between src's emits (especially on macOS), the
+// queue keeps draining, and all 3 EmitNoWait calls return nil — a
+// race-shaped flake. Closing the release channel after the assertions
+// lets the test shut down cleanly.
 func TestEngine_NodeContext_EmitNoWait(t *testing.T) {
 	t.Parallel()
 	const queueSize = 1
 	emitErr := make(chan error, 4)
+	release := make(chan struct{})
 	source := engine.Node{Name: "src", Func: func(_ context.Context, in messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		// Three EmitNoWait calls; only the first slips into the
-		// 1-slot downstream queue (and then the worker's regular
-		// emit also tries once). We expect at least one
-		// ErrChannelFull from EmitNoWait.
+		// 1-slot downstream queue (sink is blocked on `release`),
+		// the next two MUST return ErrChannelFull.
 		for i := 0; i < 3; i++ {
 			emitErr <- nctx.EmitNoWait(in)
 		}
@@ -336,7 +343,22 @@ func TestEngine_NodeContext_EmitNoWait(t *testing.T) {
 		// otherwise we'd race the no-wait emits with the regular emit.
 		return messages.Envelope{}, nil
 	}}
-	sink := engine.Node{Name: "sink", Func: passthrough}
+	sink := engine.Node{Name: "sink", Func: func(ctx context.Context, in messages.Envelope, _ *engine.NodeContext) (messages.Envelope, error) {
+		// Block until the test releases us OR the engine shuts down.
+		// Observing ctx is what lets Stop join the worker cleanly when
+		// the test exits before close(release) — Engine.Stop cancels
+		// the worker ctx on shutdown.
+		select {
+		case <-release:
+			return in, nil
+		case <-ctx.Done():
+			return messages.Envelope{}, ctx.Err()
+		}
+	}}
+	// Release the sink before the engine's Stop runs so the queue
+	// drains and Stop's worker-join completes cleanly. defer + t.Cleanup
+	// LIFO would otherwise have Stop fire while sink is still parked.
+	defer close(release)
 	e, err := engine.New([]engine.Adjacency{
 		{From: source, To: []engine.Node{sink}},
 		{From: sink, To: nil},

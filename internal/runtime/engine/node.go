@@ -50,15 +50,21 @@ func (n Node) Ref() NodeRef { return NodeRef{Name: n.Name} }
 
 // NodeContext is the per-invocation handle the worker passes to the
 // NodeFunc. Carries the engine reference so the function can Emit /
-// EmitNoWait / Fetch through the same channel mechanic as external
-// callers. EmitChunk (Phase 12) and CallSubflow (Phase 14) will hang
-// off this same type.
+// EmitNoWait / EmitChunk / Fetch through the same channel mechanic as
+// external callers. CallSubflow (Phase 14) hangs off this same type.
+//
+// lastEnv records the incoming envelope for the current invocation so
+// per-invocation operations (EmitChunk's identity propagation, future
+// pause-resume hooks) can see the originating run's quadruple without
+// requiring callers to thread it through manually. The worker loop
+// sets this before invoking Func.
 //
 // NodeContext is constructed by the worker; callers must not build
 // one directly. The struct's internal fields are unexported.
 type NodeContext struct {
-	engine *engine
-	node   string // node Name; identifies which adjacency to emit on
+	engine  *engine
+	node    string // node Name; identifies which adjacency to emit on
+	lastEnv messages.Envelope
 }
 
 // Emit sends env down the node's outgoing channel(s). Blocks if any

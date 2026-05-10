@@ -89,13 +89,32 @@ func WithRunErrorHandler(h RunErrorHandler) Option {
 	}
 }
 
-// EmitOption is the Emit-time option type. Phase 12 will add
-// WithRunCapacity here; Phase 10 ships the type as an empty seam so
-// callers don't need to refactor when later phases land.
+// EmitOption is the Emit-time option type. Phase 12 added
+// WithRunCapacity for per-run streaming backpressure overrides.
 type EmitOption func(*emitOptions)
 
 type emitOptions struct {
-	// reserved for Phase 12+
+	// runCapacity, when non-zero, overrides Policy.RunCapacity for
+	// the run initiated by this Emit. Set via WithRunCapacity.
+	runCapacity int
+}
+
+// WithRunCapacity overrides the default per-run capacity for the run
+// initiated by this Emit. Pass to Engine.Emit at run start. Default
+// is the originating node's Policy.RunCapacity (when > 0) falling back
+// to the engine's DefaultQueueSize (64).
+//
+// The override is recorded under the envelope's RunID and consulted by
+// the first EmitChunk for that run. Useful for tighter streaming
+// budgets on cost-sensitive runs (e.g. a 16-frame cap for a chat run
+// vs the default 64 for a batch).
+//
+// n must be > 0; non-positive values are ignored (the engine falls
+// back to the next resolution step).
+func WithRunCapacity(n int) EmitOption {
+	return func(opts *emitOptions) {
+		opts.runCapacity = n
+	}
 }
 
 // FetchOption is the Fetch-time option type. Phase 13 will add

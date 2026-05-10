@@ -43,20 +43,36 @@ type dispatcher struct {
 	// backpressure shape is symmetric across the demux.
 	subqueueSize int
 
+	// onFetched is invoked after the consumer has drained an envelope
+	// via fetchAny (and, in Phase 13, fetchByRun). Used by Phase 12 to
+	// release the run's streaming capacity counter so EmitChunk
+	// waiters can wake. nil = no-op (Phase 10 behavior). The callback
+	// runs synchronously on the calling goroutine; keep it short.
+	//
+	// Why fetch-time and not route-time: the producer must block
+	// until the CONSUMER catches up, not until the dispatcher has
+	// queued the frame. Releasing on dispatcher-route would let a
+	// fast dispatcher unblock the producer ahead of an unresponsive
+	// consumer, defeating the backpressure semantic the test
+	// `TestEmitChunk_BlocksAtCapacity_ReleasedOnDrain` pins.
+	onFetched func(messages.Envelope)
+
 	done chan struct{}
 	wg   sync.WaitGroup
 }
 
 // newDispatcher allocates a dispatcher reading from outlet. The
-// caller passes in subqueueSize (typically engine.cfg.queueSize). The
-// dispatcher does NOT start its goroutine here — call start(ctx) once
-// the engine's internal context is ready.
-func newDispatcher(outlet chan messages.Envelope, subqueueSize int) *dispatcher {
+// caller passes in subqueueSize (typically engine.cfg.queueSize) and
+// an optional onFetched callback fired after each successful Fetch.
+// The dispatcher does NOT start its goroutine here — call start(ctx)
+// once the engine's internal context is ready.
+func newDispatcher(outlet chan messages.Envelope, subqueueSize int, onFetched func(messages.Envelope)) *dispatcher {
 	return &dispatcher{
 		outlet:       outlet,
 		anyRun:       make(chan messages.Envelope, subqueueSize),
 		runQueues:    make(map[string]chan messages.Envelope),
 		subqueueSize: subqueueSize,
+		onFetched:    onFetched,
 		done:         make(chan struct{}),
 	}
 }
@@ -95,22 +111,33 @@ func (d *dispatcher) start(ctx context.Context) {
 	}()
 }
 
-// routeEnvelope sends env to its per-RunID subqueue AND to anyRun.
-// Blocks if either target is full — backpressure flows back to the
-// emitting worker. Honors ctx cancellation (engine shutdown).
+// routeEnvelope sends env to anyRun (the consumer-facing FIFO) and
+// best-effort to its per-RunID subqueue. The subqueue write is
+// non-blocking: if the subqueue is full, the frame is dropped from
+// the per-run buffer but still delivered via anyRun. This is
+// intentional for Phase 12 because Phase 13's FetchByRun (which
+// drains subqueues) has not shipped — without this, a subqueue
+// would fill, block the dispatcher, and cascade-block all workers.
+//
+// Phase 13 will replace the non-blocking subqueue write with a
+// per-run drainer goroutine that delivers to FetchByRun listeners.
+// Until then, FetchByRun is stubbed (returns ErrNotImplemented) and
+// the per-run subqueue is observability-only.
+//
+// Honors ctx cancellation (engine shutdown) on the anyRun write —
+// that send must succeed for the consumer to see the frame.
 func (d *dispatcher) routeEnvelope(ctx context.Context, env messages.Envelope) {
 	subq := d.subqueueFor(env.RunID)
-	// Send to per-run subqueue first. A blocked send here implies
-	// no Fetcher is draining the run; backpressure is the right
-	// answer.
+	// Best-effort subqueue write. Drop on full — Phase 13's
+	// FetchByRun consumer will replace this with backpressure-bound
+	// delivery.
 	select {
-	case <-ctx.Done():
-		return
-	case <-d.done:
-		return
 	case subq <- env:
+	default:
 	}
-	// Then to anyRun so FetchAny can see it.
+	// anyRun is the consumer-facing FIFO; this send must succeed for
+	// the frame to be visible. Block on full anyRun (backpressure
+	// flows back to the worker).
 	select {
 	case <-ctx.Done():
 		return
@@ -135,7 +162,8 @@ func (d *dispatcher) subqueueFor(runID string) chan messages.Envelope {
 
 // fetchAny reads from the any-run channel. Returns ctx.Err() when
 // ctx cancels; returns ErrEngineStopped when the channel closes
-// (engine shutdown).
+// (engine shutdown). On a successful read, fires onFetched (Phase
+// 12's streaming capacity-release hook).
 func (d *dispatcher) fetchAny(ctx context.Context) (messages.Envelope, error) {
 	select {
 	case <-ctx.Done():
@@ -143,6 +171,9 @@ func (d *dispatcher) fetchAny(ctx context.Context) (messages.Envelope, error) {
 	case env, ok := <-d.anyRun:
 		if !ok {
 			return messages.Envelope{}, ErrEngineStopped
+		}
+		if d.onFetched != nil {
+			d.onFetched(env)
 		}
 		return env, nil
 	}
