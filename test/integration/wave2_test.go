@@ -394,6 +394,14 @@ func wave2Config() *config.Config {
 			HardCap:       2 * time.Hour,
 			SweepInterval: 30 * time.Minute,
 		},
+		// ArtifactsConfig populated by Phase 17; the validator now
+		// requires a non-empty driver. inmem is the floor and adds no
+		// new dependencies for wave-2 surfaces (no artifact code path
+		// is exercised in the wave-2 test, but Validate still runs).
+		Artifacts: config.ArtifactsConfig{
+			Driver:                    "inmem",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
 	}
 	return c
 }

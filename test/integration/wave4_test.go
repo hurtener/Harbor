@@ -720,5 +720,10 @@ func wave4Config() *config.Config {
 			HardCap:       2 * time.Hour,
 			SweepInterval: 30 * time.Minute,
 		},
+		// ArtifactsConfig populated by Phase 17; required by Validate.
+		Artifacts: config.ArtifactsConfig{
+			Driver:                    "inmem",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
 	}
 }
