@@ -132,7 +132,7 @@ type SessionsConfig struct {
 // which the runtime mandatorily routes payloads through the store.
 //
 // `Driver` selects an artifacts driver (`inmem` | `fs` in V1; Phase
-// 18 adds `sqlite-blob` and `postgres-blob`; Phase 19 adds an
+// 18 adds `sqlite-blob` and `postgres-blob`; Phase 19 adds the
 // `s3`-style driver). Default `inmem` (the floor; per-process
 // lifetime, no persistence).
 //
@@ -145,10 +145,28 @@ type SessionsConfig struct {
 // mandatorily routes a payload through the ArtifactStore. Default
 // 32 KB (D-022, RFC §6.10). Per-tool overrides land at Phase 26 via
 // the tool catalog; the field is the runtime-wide default.
+//
+// S3* fields configure the Phase 19 S3-style driver (AWS S3 / MinIO /
+// Cloudflare R2 / any S3-compat backend). `S3Bucket` is required when
+// `Driver == "s3"`. `S3Region` defaults to "us-east-1" when unset.
+// `S3Endpoint` is the base URL for non-AWS backends (MinIO / R2);
+// leave empty to use AWS's default endpoint resolution. `S3Prefix` is
+// an optional path prefix that lets multiple Harbor deployments share
+// one bucket. `S3AccessKeyID` and `S3SecretAccessKey` are optional —
+// when both are empty the SDK's default credential chain is used
+// (AWS_*, IRSA, instance metadata, etc.). `S3UsePathStyle` defaults
+// to false (AWS native); flip on for MinIO / older R2 endpoints.
 type ArtifactsConfig struct {
 	Driver                    string `yaml:"driver"`
 	FSRoot                    string `yaml:"fs_root,omitempty"`
 	HeavyOutputThresholdBytes int    `yaml:"heavy_output_threshold_bytes,omitempty"`
+	S3Bucket                  string `yaml:"s3_bucket,omitempty"`
+	S3Endpoint                string `yaml:"s3_endpoint,omitempty"`
+	S3Region                  string `yaml:"s3_region,omitempty"`
+	S3Prefix                  string `yaml:"s3_prefix,omitempty"`
+	S3AccessKeyID             string `yaml:"s3_access_key_id,omitempty" secret:"true"`
+	S3SecretAccessKey         string `yaml:"s3_secret_access_key,omitempty" secret:"true"`
+	S3UsePathStyle            bool   `yaml:"s3_use_path_style,omitempty"`
 }
 
 // EventsConfig configures the event bus driver and its in-process

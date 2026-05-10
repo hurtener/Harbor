@@ -147,6 +147,12 @@ func defaults() *Config {
 			Driver:                    "inmem",
 			FSRoot:                    "",
 			HeavyOutputThresholdBytes: 32 * 1024,
+			// Phase 19: S3-style driver defaults. Region defaults to
+			// us-east-1 (covers MinIO + plain R2); UsePathStyle
+			// defaults to false (AWS native — operators flip on for
+			// MinIO / older R2 endpoints).
+			S3Region:       "us-east-1",
+			S3UsePathStyle: false,
 		},
 	}
 }

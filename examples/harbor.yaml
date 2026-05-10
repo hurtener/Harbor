@@ -52,7 +52,8 @@ events:
 artifacts:
   # `inmem` (per-process, dev/embedded floor) or `fs` (single-binary
   # production target). Phase 18 adds `sqlite-blob` + `postgres-blob`;
-  # Phase 19 adds an S3-style driver.
+  # Phase 19 adds the `s3`-style driver (AWS S3 / MinIO / Cloudflare
+  # R2 / any S3-compat backend).
   driver: inmem
   # Required when driver=fs; the root directory under which the
   # `<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>` blob
@@ -62,3 +63,24 @@ artifacts:
   # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
   # Default 32 KB. Per-tool overrides land at Phase 26.
   heavy_output_threshold_bytes: 32768
+  # S3-style driver fields (Phase 19). Required when driver=s3:
+  #   s3_bucket — the bucket; the driver does NOT create it (operator
+  #               provisions out of band). HeadBucket runs at boot to
+  #               surface misconfigs early.
+  #   s3_endpoint — base URL for non-AWS backends (MinIO / R2 / GCS S3
+  #                 compat). Leave empty for AWS-native deployments.
+  #   s3_region — defaults to us-east-1 when unset (covers MinIO + plain R2).
+  #   s3_prefix — optional path prefix so multiple Harbor deployments
+  #               can share one bucket.
+  #   s3_access_key_id / s3_secret_access_key — when both empty, the
+  #               SDK's default credential chain applies (env vars, IRSA,
+  #               instance metadata, ~/.aws/credentials).
+  #   s3_use_path_style — flip on for MinIO / older R2 endpoints; AWS
+  #                       native deployments leave this off.
+  # s3_bucket: harbor-artifacts
+  # s3_endpoint: https://s3.amazonaws.com
+  # s3_region: us-east-1
+  # s3_prefix: harbor
+  # s3_access_key_id: replace-me
+  # s3_secret_access_key: replace-me
+  # s3_use_path_style: false

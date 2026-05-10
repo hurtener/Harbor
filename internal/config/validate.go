@@ -211,10 +211,10 @@ func (c *Config) validateSessions() error {
 }
 
 // allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
-// 18 will add `sqlite-blob` and `postgres-blob`; Phase 19 adds an
+// 18 will add `sqlite-blob` and `postgres-blob`; Phase 19 adds the
 // S3-style driver. The validator only checks shape; the registry
 // surfaces the matching factory at Open time.
-var allowedArtifactsDrivers = map[string]struct{}{"inmem": {}, "fs": {}}
+var allowedArtifactsDrivers = map[string]struct{}{"inmem": {}, "fs": {}, "s3": {}}
 
 func (c *Config) validateArtifacts() error {
 	if c.Artifacts.Driver == "" {
@@ -227,6 +227,10 @@ func (c *Config) validateArtifacts() error {
 	}
 	if c.Artifacts.Driver == "fs" && c.Artifacts.FSRoot == "" {
 		return fieldError("artifacts.fs_root",
+			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
+	}
+	if c.Artifacts.Driver == "s3" && c.Artifacts.S3Bucket == "" {
+		return fieldError("artifacts.s3_bucket",
 			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
 	}
 	if c.Artifacts.HeavyOutputThresholdBytes < 0 {
