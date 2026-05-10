@@ -39,6 +39,7 @@ func (c *Config) Validate() error {
 		c.validateGovernance,
 		c.validateEvents,
 		c.validateSessions,
+		c.validateArtifacts,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -205,6 +206,31 @@ func (c *Config) validateSessions() error {
 		return fieldError("sessions.sweep_interval",
 			fmt.Sprintf("must be <= sessions.idle_ttl (%s) so sessions can't live past TTL by more than one sweep; got %s",
 				c.Sessions.IdleTTL, c.Sessions.SweepInterval))
+	}
+	return nil
+}
+
+// allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
+// 18 will add `sqlite-blob` and `postgres-blob`; Phase 19 adds an
+// S3-style driver. The validator only checks shape; the registry
+// surfaces the matching factory at Open time.
+var allowedArtifactsDrivers = map[string]struct{}{"inmem": {}, "fs": {}}
+
+func (c *Config) validateArtifacts() error {
+	if c.Artifacts.Driver == "" {
+		return fieldError("artifacts.driver", "must not be empty")
+	}
+	if _, ok := allowedArtifactsDrivers[c.Artifacts.Driver]; !ok {
+		return fieldError("artifacts.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedArtifactsDrivers), c.Artifacts.Driver))
+	}
+	if c.Artifacts.Driver == "fs" && c.Artifacts.FSRoot == "" {
+		return fieldError("artifacts.fs_root",
+			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
+	}
+	if c.Artifacts.HeavyOutputThresholdBytes < 0 {
+		return fieldError("artifacts.heavy_output_threshold_bytes", "must be >= 0")
 	}
 	return nil
 }

@@ -127,8 +127,29 @@ type SessionsConfig struct {
 	SweepInterval time.Duration `yaml:"sweep_interval"`
 }
 
-// ArtifactsConfig is owned by the artifact-store phases.
-type ArtifactsConfig struct{}
+// ArtifactsConfig configures the ArtifactStore driver, the
+// filesystem-driver root path, and the heavy-output threshold above
+// which the runtime mandatorily routes payloads through the store.
+//
+// `Driver` selects an artifacts driver (`inmem` | `fs` in V1; Phase
+// 18 adds `sqlite-blob` and `postgres-blob`; Phase 19 adds an
+// `s3`-style driver). Default `inmem` (the floor; per-process
+// lifetime, no persistence).
+//
+// `FSRoot` is required when `Driver == "fs"`; it is the root
+// directory under which `<root>/<tenant>/<user>/<session>/<task>/
+// <namespace>/<id>` blobs land. The directory is created
+// (`os.MkdirAll`) at driver `New` time.
+//
+// `HeavyOutputThresholdBytes` is the byte size at which the runtime
+// mandatorily routes a payload through the ArtifactStore. Default
+// 32 KB (D-022, RFC §6.10). Per-tool overrides land at Phase 26 via
+// the tool catalog; the field is the runtime-wide default.
+type ArtifactsConfig struct {
+	Driver                    string `yaml:"driver"`
+	FSRoot                    string `yaml:"fs_root,omitempty"`
+	HeavyOutputThresholdBytes int    `yaml:"heavy_output_threshold_bytes,omitempty"`
+}
 
 // EventsConfig configures the event bus driver and its in-process
 // limits. Phase 05 filled the previously-reserved slot with the

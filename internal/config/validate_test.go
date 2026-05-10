@@ -148,6 +148,29 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Governance.RateLimitTPS = -1 },
 			"governance.rate_limit_tps",
 		},
+		{
+			"empty artifacts driver",
+			func(c *config.Config) { c.Artifacts.Driver = "" },
+			"artifacts.driver",
+		},
+		{
+			"unknown artifacts driver",
+			func(c *config.Config) { c.Artifacts.Driver = "no-such-driver" },
+			"artifacts.driver",
+		},
+		{
+			"fs driver without root",
+			func(c *config.Config) {
+				c.Artifacts.Driver = "fs"
+				c.Artifacts.FSRoot = ""
+			},
+			"artifacts.fs_root",
+		},
+		{
+			"negative heavy output threshold",
+			func(c *config.Config) { c.Artifacts.HeavyOutputThresholdBytes = -1 },
+			"artifacts.heavy_output_threshold_bytes",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

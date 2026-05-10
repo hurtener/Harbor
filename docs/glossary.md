@@ -14,13 +14,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Audit redactor** — single central runtime component that produces a redacted copy of any payload before it is emitted to the event bus, logs, or audit storage. Owner of redaction per D-020 (Audit owns redaction; Governance owns thresholds). Pluggable via the §4.4 extensibility-seam pattern; default driver is pattern-based with built-in rules for credentials (`api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`) and configurable PII shapes. Returning an error from `Redact` means the caller MUST NOT emit — silent fall-through to the unredacted payload is forbidden. RFC §6.4 + §6.15.
 
-**Artifact** — a heavy output (large text, binary, structured payload above threshold) routed through the `ArtifactStore` instead of inlined into the event stream by reference. Mandatory routing — no opt-in (RFC §6.10).
+**Artifact** — a heavy output (large text, binary, structured payload above threshold) routed through the `ArtifactStore` instead of inlined into the event stream by reference. Mandatory routing — no opt-in (RFC §6.10, D-022, D-026).
 
-**ArtifactRef** — typed reference that points to an artifact in the `ArtifactStore`. Carries content hash, scope, and addressing info. Replaces inline payloads in event streams and LLM prompts.
+**ArtifactRef** — typed reference returned by `ArtifactStore.Put*` and resolved by `GetRef`. `ID = "{namespace}_{sha256_hex[:12]}"`; carries `MimeType`, `SizeBytes`, `Filename`, full `SHA256`, `Scope`, `Namespace`, and an opaque `Source map[string]any` for caller metadata. Replaces inline payloads in event streams and LLM prompts. RFC §6.10.
+
+**ArtifactScope** — `(TenantID, UserID, SessionID, TaskID)` ownership tuple for an artifact. Identity-mandatory at the API boundary (tenant/user/session); empty `TaskID` is acceptable for session-scoped artifacts (parallels `state.StateStore`'s session-vs-run rule). `List` treats empty fields as wildcards. The consumer maps the runtime's `identity.Quadruple{Identity, RunID}` onto this shape (`RunID → TaskID` for foreground runs); the store stays decoupled from `internal/identity`. RFC §6.10.
+
+**ArtifactStore** — Harbor's mandatory content-addressed blob store. Single eight-method interface (Phase 17) with two V1 drivers — `inmem` (zero-dependency floor) and `fs` (single-binary production target with `<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>` layout + atomic-rename writes + path-traversal guard). Phase 18 adds SQLite-blob + Postgres-blob; Phase 19 adds an S3-style driver; all inherit Phase 17's conformance suite verbatim. NO `NoOp` fallback (D-022, D-026). RFC §6.10, §9.
 
 **ArtifactStub** — the model-agnostic JSON shape the LLM sees in place of heavy content during prompt assembly: `{artifact_ref, mime, size_bytes, hash, summary, fetch{tool, id}}`. Uniform across producers (tool result, memory turn, multimodal input) and providers — operators do not swap formats per model. The runtime stamps the stub; producers fill `Summary` when meaningful. RFC §6.5, D-026.
-
-**ArtifactScope** — `(tenant_id, user_id, session_id, run_id)`-keyed scope under which artifacts live. Inherits the identity triple plus run identity.
 
 ## B
 
@@ -108,6 +110,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Headers (envelope)** — Routing + identity sub-record on `Envelope`: `TenantID`, `UserID`, `Topic`, `Priority`. Distinct from HTTP headers; the term is RFC-settled vocabulary. RFC §6.1, brief 01 §2.
 
+**HeavyOutputThreshold** — the byte size at which the runtime mandatorily routes a payload through the `ArtifactStore`. Default 32 KB (`config.ArtifactsConfig.HeavyOutputThresholdBytes`); runtime-configurable. Per-tool overrides land at Phase 26 via the tool catalog. Phase 17 ships the config field + default; enforcement lives at consumer layers — tool dispatcher (Phase 26) auto-routes, LLM-edge (Phase 32) fails loudly with `ErrContextLeak` if raw heavy content slipped through. D-022, D-026, RFC §6.5, §6.10.
+
 ## I
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
@@ -187,6 +191,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## S
 
 **SchemaSanitizer** — runtime utility that lives BETWEEN the runtime and the `LLMClient` (NOT inside the client). Applies per-provider `response_format` shape adjustments before the request goes out. RFC §6.5.
+
+**ScopedArtifacts** — immutable facade carrying a fixed `ArtifactScope`; auto-stamps writes, scope-checks reads (returns `ErrScopeMismatch` if the underlying ref's scope ever differs). Tools and runtime use the facade exclusively — they never see raw `ArtifactScope`. `NewScoped` panics on invalid scope at construction (fail loud, AGENTS.md §5). RFC §6.10.
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
 

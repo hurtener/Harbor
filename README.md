@@ -26,6 +26,7 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 | 04 — slog logger + standard attribute set | `internal/telemetry` — identity-aware structured logger; redacts every record via `audit.Redactor`; `BusEmitter` seam for Phase 05+ runtime.error events | Shipped |
 | 05 — Event taxonomy + InMem `EventBus` + isolation | `internal/events` + `internal/events/drivers/inmem` — typed `EventBus` with server-enforced identity-scoped `Filter`, drop-oldest backpressure with `bus.dropped`, idle reaper, audit-before-emit | Shipped |
 | 07 — `StateStore` interface + InMem + conformance suite | `internal/state` — generic `(Quadruple, Kind, Bytes)` surface, ULID-keyed idempotency, `conformancetest.Run` for downstream drivers (Phase 15 SQLite, Phase 16 Postgres) | Shipped |
+| 17 — `ArtifactStore` interface + InMem + FS drivers | `internal/artifacts` — content-addressed blob store; eight-method interface; `ScopedArtifacts` facade; conformance suite; mandatory routing above heavy-output threshold (32 KB default) — no `NoOp` fallback (D-022, D-026) | Shipped |
 | 06, 08+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
 
 ## Working in this repo
