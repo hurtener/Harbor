@@ -100,7 +100,11 @@ jobs:
           go-version: '1.26'
           check-latest: true
       - name: Run state/postgres tests against postgres:16
+        # Note: CGO_ENABLED is intentionally NOT set here — `go test
+        # -race` requires the cgo race runtime, which means
+        # CGO_ENABLED=1 (the Ubuntu/Go default). The `make build`
+        # step in the matrix `go` job pins CGO_ENABLED=0 only for the
+        # static-binary artifact; it does not propagate to test runs.
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
-          CGO_ENABLED: '0'
         run: go test -race -count=1 -timeout 240s ./internal/state/drivers/postgres/...
