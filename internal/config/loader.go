@@ -143,6 +143,11 @@ func defaults() *Config {
 			HardCap:       720 * time.Hour,
 			SweepInterval: 15 * time.Minute,
 		},
+		Artifacts: ArtifactsConfig{
+			Driver:                    "inmem",
+			FSRoot:                    "",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
 	}
 }
 
