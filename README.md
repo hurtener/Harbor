@@ -28,6 +28,7 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 | 07 — `StateStore` interface + InMem + conformance suite | `internal/state` — generic `(Quadruple, Kind, Bytes)` surface, ULID-keyed idempotency, `conformancetest.Run` for downstream drivers (Phase 15 SQLite, Phase 16 Postgres) | Shipped |
 | 16 — Postgres `StateStore` driver | `internal/state/drivers/postgres` — `pgx`-backed driver, forward-only embedded migrations with `pg_advisory_lock`-serialised runner, conformance suite inherited verbatim, CI service-container job | Shipped |
 | 17 — `ArtifactStore` interface + InMem + FS drivers | `internal/artifacts` — content-addressed blob store; eight-method interface; `ScopedArtifacts` facade; conformance suite; mandatory routing above heavy-output threshold (32 KB default) — no `NoOp` fallback (D-022, D-026) | Shipped |
+| 19 — `ArtifactStore` S3-style driver | `internal/artifacts/drivers/s3` — `aws-sdk-go-v2`-backed driver for AWS S3 / MinIO / Cloudflare R2 / any S3-compat backend; conformance suite inherited verbatim; optional `Presigner` capability for read-side URL hand-off (`PresignGet` only); MinIO CI service-container job | Shipped |
 | 06, 08+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
 
 ## Working in this repo

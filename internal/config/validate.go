@@ -220,6 +220,7 @@ var allowedArtifactsDrivers = map[string]struct{}{
 	"fs":       {},
 	"sqlite":   {},
 	"postgres": {},
+	"s3":       {},
 }
 
 func (c *Config) validateArtifacts() error {
@@ -237,6 +238,10 @@ func (c *Config) validateArtifacts() error {
 	}
 	if (c.Artifacts.Driver == "sqlite" || c.Artifacts.Driver == "postgres") && c.Artifacts.DSN == "" {
 		return fieldError("artifacts.dsn",
+			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
+	}
+	if c.Artifacts.Driver == "s3" && c.Artifacts.S3Bucket == "" {
+		return fieldError("artifacts.s3_bucket",
 			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
 	}
 	if c.Artifacts.HeavyOutputThresholdBytes < 0 {
