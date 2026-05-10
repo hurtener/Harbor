@@ -526,6 +526,8 @@ func wave5SQLiteConfig(sqliteDSN, fsRoot string) *config.Config {
 			FSRoot:                    fsRoot,
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
+		// Phase 20 added a required `tasks.driver` field.
+		Tasks: config.TasksConfig{Driver: "inprocess"},
 	}
 }
 

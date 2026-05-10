@@ -402,6 +402,9 @@ func wave2Config() *config.Config {
 			Driver:                    "inmem",
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
+		// Phase 20 added a required `tasks.driver` field; populate
+		// it so Validate continues to pass through.
+		Tasks: config.TasksConfig{Driver: "inprocess"},
 	}
 	return c
 }

@@ -31,6 +31,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/postgres"
 	// State driver — production SQLite StateStore (Phase 15), registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
+	// Tasks driver — production in-process TaskRegistry (Phase 20), registered via init().
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 )
 
 func main() {
