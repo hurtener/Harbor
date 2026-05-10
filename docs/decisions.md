@@ -269,6 +269,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-030 — TaskRegistry surface split: per-task in Phase 20, groups + retain-turn + WatchGroup in Phase 21
+
+**Date:** 2026-05-10
+**Status:** Settled
+**Where it lives:** `docs/plans/phase-20-tasks.md` ("Findings I'm departing from"), `docs/plans/phase-21-tasks-groups.md` (the follow-up surface), `internal/tasks/tasks.go` (the shipped Phase 20 surface), brief 05 §7 (the original sketch recommending one phase for the full surface).
+**Why:** Brief 05 §7 phase decomposition recommended one phase for the full `TaskRegistry` (per-task surface + groups + retain-turn + patches + ack-background). Harbor splits this across Phase 20 (per-task surface) and Phase 21 (groups + retain-turn + WatchGroup + patches). Per-task lifecycle is independently shippable and has zero dependencies on group governance; bundling the whole TaskService into one phase would slow the wave-end E2E and delay the per-task surface that downstream phases (steering Phase 53, planner Phase 42) want as a stable foundation. The split keeps Phase 20's `TaskRegistry` interface narrow (Spawn / SpawnTool / Get / List / Cancel / Prioritize / Mark*) while Phase 21's PR extends the same interface with group + retain-turn methods against a stable per-task subset. Brief 05's recommendation is preserved verbatim in `docs/research/05-state-tasks-artifacts-sessions.md` §7; this entry records the implementation departure.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

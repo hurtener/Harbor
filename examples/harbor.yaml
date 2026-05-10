@@ -62,3 +62,11 @@ artifacts:
   # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
   # Default 32 KB. Per-tool overrides land at Phase 26.
   heavy_output_threshold_bytes: 32768
+
+tasks:
+  # TaskRegistry driver. Phase 20 ships only `inprocess` — an
+  # in-memory registry that persists every lifecycle transition
+  # through the StateStore (D-027 typed wrapper). Post-V1 phases
+  # (e.g. a durable queue-backed driver at Phase 87+) extend the
+  # allowlist.
+  driver: inprocess
