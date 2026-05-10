@@ -41,6 +41,7 @@ func runWithReliability(
 	nctx *NodeContext,
 	nodeName string,
 	jitter func() float64,
+	rcCancel *runCancellation,
 ) (messages.Envelope, error) {
 	// 1. Input validation.
 	if policy.shouldValidateIn() {
@@ -68,6 +69,14 @@ func runWithReliability(
 				"run cancelled", ctxErr, map[string]any{"attempt": attempt})
 		}
 
+		// Phase 13: per-run Cancel observed between iterations. The
+		// flag is sticky once Cancel has fired; subsequent retries see
+		// it on the next loop pass and terminate the shell.
+		if rcCancel != nil && rcCancel.cancelled.Load() {
+			return messages.Envelope{}, newRunError(in, nodeName, CodeRunCancelled,
+				"run cancelled", ErrRunCancelled, map[string]any{"attempt": attempt})
+		}
+
 		// Sleep before retries (attempt > 0 means we're retrying).
 		if attempt > 0 {
 			delay := nextBackoff(attempt, policy.BackoffBase, policy.MaxBackoff, policy.BackoffMult, jitter)
@@ -80,6 +89,13 @@ func runWithReliability(
 						"run cancelled during backoff", ctx.Err(),
 						map[string]any{"attempt": attempt, "backoff_ms": delay.Milliseconds()})
 				case <-timer.C:
+				}
+				// Re-check the per-run flag immediately after waking;
+				// Cancel may have fired during the backoff.
+				if rcCancel != nil && rcCancel.cancelled.Load() {
+					return messages.Envelope{}, newRunError(in, nodeName, CodeRunCancelled,
+						"run cancelled during backoff", ErrRunCancelled,
+						map[string]any{"attempt": attempt, "backoff_ms": delay.Milliseconds()})
 				}
 			}
 		}

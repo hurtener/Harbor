@@ -21,21 +21,27 @@ var ErrSubflowFactoryFailed = errors.New("engine: subflow factory failed")
 type SubflowFactory func() (Engine, error)
 
 // CallSubflow constructs a child engine via factory, runs it under
-// the parent's RunID, mirrors the parent's ctx cancellation into the
-// child, returns the first egress envelope, then Stops the child.
+// the parent's RunID, mirrors the parent's ctx cancellation AND the
+// parent's Engine.Cancel(parentRunID) into the child, returns the
+// first egress envelope, then Stops the child.
 //
-// **Cancellation scope (Phase 14):** ctx-based only. Parent ctx
-// cancellation propagates to the child engine via context.WithCancel
-// + a watcher goroutine. Phase 13's `Engine.Cancel(runID)` is NOT
-// honored at this seam — a follow-up PR (the one that lands Phase 13)
-// will extend this watcher to subscribe to parent.Cancel notifications.
+// **Cancellation scope (Phase 13/14):** two paths cooperate.
+//   - ctx propagation: childCtx is derived from ctx via WithCancel,
+//     so a parent ctx cancel terminates the child immediately.
+//   - Engine.Cancel mirroring: the parent engine fires registered
+//     observers when Engine.Cancel(parentRunID) lands. CallSubflow
+//     installs an observer that calls child.Cancel(parentRunID), so
+//     a steering-side cancel from the parent's Protocol surface
+//     reaches the child without requiring the parent's worker ctx
+//     to die.
 //
 // Multi-result subflows compose via concurrency.MapConcurrent over a
 // list of factories; CallSubflow itself returns exactly one envelope.
 //
-// Cleanup ordering on success: drain first egress → cancel watcher
-// ctx → child.Stop. On factory error or child.Run failure, the
-// child's Stop is still invoked (defer) so no goroutines leak.
+// Cleanup ordering on success: drain first egress → deregister cancel
+// observer → cancel watcher ctx → child.Stop. On factory error or
+// child.Run failure, the child's Stop is still invoked (defer) so no
+// goroutines leak.
 //
 // Identity propagation: the parent envelope (parentEnv) carries the
 // quadruple. The child engine sees it via the inbound envelope on its
@@ -56,6 +62,22 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 
 	childCtx, cancelChild := context.WithCancel(ctx)
 	defer cancelChild()
+
+	// Phase 13: mirror parent.Cancel(parentRunID) into the child
+	// engine. The observer fires synchronously from the parent's
+	// Cancel goroutine; child.Cancel runs against its own locks so
+	// the call doesn't deadlock the parent. A timed bounded context
+	// keeps a misbehaving child from stalling the parent's Cancel.
+	deregister := func() {}
+	if nctx != nil && nctx.engine != nil && parentEnv.RunID != "" {
+		deregister = nctx.engine.onRunCancelled(parentEnv.RunID, func() {
+			cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer ccancel()
+			_, _ = child.Cancel(cctx, parentEnv.RunID)
+			cancelChild()
+		})
+	}
+	defer deregister()
 
 	if err := child.Run(childCtx); err != nil {
 		stopChildBestEffort(child)
