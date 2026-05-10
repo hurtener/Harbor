@@ -114,8 +114,14 @@ type MemoryConfig struct{}
 // SkillsConfig is owned by the skills subsystem phases.
 type SkillsConfig struct{}
 
-// TasksConfig is owned by the tasks/scheduler phases.
-type TasksConfig struct{}
+// TasksConfig configures the TaskRegistry driver. `Driver` selects
+// the registered driver name; Phase 20 ships only `"inprocess"`.
+// Phase 21 will extend this with retain-turn timeout + continuation
+// hop limit; do not add those fields here. Restart-required (no
+// `reload:"live"` tag).
+type TasksConfig struct {
+	Driver string `yaml:"driver"`
+}
 
 // SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
 // match RFC §6.9: idle TTL 24h, hard cap 30 days, sweep every 15 min.

@@ -148,6 +148,9 @@ func defaults() *Config {
 			FSRoot:                    "",
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
+		Tasks: TasksConfig{
+			Driver: "inprocess",
+		},
 	}
 }
 
