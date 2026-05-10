@@ -66,3 +66,19 @@ type RuntimeErrorPayload struct {
 	Message string
 	Fields  map[string]any
 }
+
+// RunCancelledPayload is emitted by Engine.Cancel(runID) when the
+// cancellation was observed for an active run. Carries the RunID,
+// the wall-clock CancelledAt timestamp (unix nanoseconds), and the
+// number of envelopes the cancellation drained from the engine's
+// channels (a coarse "how loaded was the run" metric).
+//
+// SafePayload by construction — every field is internal bookkeeping
+// (no caller-controlled bytes). Subscribers consume the typed shape
+// directly without an audit-redactor walk. Phase 13.
+type RunCancelledPayload struct {
+	SafeSealed
+	RunID                string
+	CancelledAt          int64
+	DroppedEnvelopeCount int64
+}

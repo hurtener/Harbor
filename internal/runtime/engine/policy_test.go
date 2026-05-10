@@ -31,7 +31,7 @@ func TestNodePolicy_ZeroValue_BareWorker(t *testing.T) {
 		calls.Add(1)
 		return in, nil
 	})
-	out, err := runWithReliability(context.Background(), makeEnv("p"), fn, NodePolicy{}, nil, "n", nil)
+	out, err := runWithReliability(context.Background(), makeEnv("p"), fn, NodePolicy{}, nil, "n", nil, nil)
 	if err != nil {
 		t.Fatalf("err=%v, want nil", err)
 	}
@@ -55,7 +55,7 @@ func TestNodePolicy_ValidateBoth_RejectsMalformedIn(t *testing.T) {
 		Validate:     ValidateBoth,
 		ValidateFunc: func(_ messages.Envelope) error { return errors.New("bad") },
 	}
-	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil)
+	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil, nil)
 	var re *RunError
 	if !errors.As(err, &re) {
 		t.Fatalf("err=%v, want *RunError", err)
@@ -86,7 +86,7 @@ func TestNodePolicy_ValidateBoth_RejectsMalformedOut(t *testing.T) {
 			return nil
 		},
 	}
-	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil)
+	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil, nil)
 	var re *RunError
 	if !errors.As(err, &re) {
 		t.Fatalf("err=%v, want *RunError", err)
@@ -110,7 +110,7 @@ func TestNodePolicy_ValidateNone_SkipsValidator(t *testing.T) {
 			return errors.New("should not run")
 		},
 	}
-	if _, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil); err != nil {
+	if _, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil, nil); err != nil {
 		t.Fatalf("err=%v, want nil", err)
 	}
 	if validatorCalled.Load() != 0 {
@@ -133,7 +133,7 @@ func TestNodePolicy_Timeout_ProducesRunError(t *testing.T) {
 	policy := NodePolicy{TimeoutMS: 50, MaxRetries: 0}
 
 	start := time.Now()
-	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "slow", nil)
+	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "slow", nil, nil)
 	elapsed := time.Since(start)
 
 	if elapsed > 500*time.Millisecond {
@@ -157,7 +157,7 @@ func TestNodePolicy_MaxRetries_StopsAfterN(t *testing.T) {
 		return messages.Envelope{}, errors.New("always fails")
 	})
 	policy := NodePolicy{MaxRetries: 3, BackoffBase: 0}
-	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "fail", nil)
+	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "fail", nil, nil)
 	if calls.Load() != 4 {
 		t.Errorf("calls=%d, want 4 (MaxRetries=3 → 1 initial + 3 retries)", calls.Load())
 	}
@@ -194,7 +194,7 @@ func TestNodePolicy_CtxCancelled_AbortsRetries(t *testing.T) {
 		err error
 	})
 	go func() {
-		_, err := runWithReliability(ctx, makeEnv("p"), fn, policy, nil, "n", nil)
+		_, err := runWithReliability(ctx, makeEnv("p"), fn, policy, nil, "n", nil, nil)
 		done <- struct{ err error }{err}
 	}()
 
@@ -229,7 +229,7 @@ func TestNodePolicy_CtxCancelled_BeforeFirstAttempt(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := runWithReliability(ctx, makeEnv("p"), fn, NodePolicy{}, nil, "n", nil)
+	_, err := runWithReliability(ctx, makeEnv("p"), fn, NodePolicy{}, nil, "n", nil, nil)
 	var re *RunError
 	if !errors.As(err, &re) {
 		t.Fatalf("err=%v, want *RunError", err)
@@ -251,7 +251,7 @@ func TestRunError_CarriesIdentity(t *testing.T) {
 		SessionID: "sess-A",
 		RunID:     "run-A-1",
 	}
-	_, err := runWithReliability(context.Background(), in, fn, NodePolicy{}, nil, "n", nil)
+	_, err := runWithReliability(context.Background(), in, fn, NodePolicy{}, nil, "n", nil, nil)
 	var re *RunError
 	if !errors.As(err, &re) {
 		t.Fatalf("err=%v, want *RunError", err)
@@ -272,7 +272,7 @@ func TestNodePolicy_RetrySuccess(t *testing.T) {
 		return in, nil
 	})
 	policy := NodePolicy{MaxRetries: 3, BackoffBase: 0}
-	out, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil)
+	out, err := runWithReliability(context.Background(), makeEnv("p"), fn, policy, nil, "n", nil, nil)
 	if err != nil {
 		t.Fatalf("err=%v, want nil", err)
 	}
@@ -291,7 +291,7 @@ func TestNodePolicy_PanicRecovery(t *testing.T) {
 	fn := NodeFunc(func(_ context.Context, _ messages.Envelope, _ *NodeContext) (messages.Envelope, error) {
 		panic("synthetic panic")
 	})
-	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, NodePolicy{}, nil, "n", nil)
+	_, err := runWithReliability(context.Background(), makeEnv("p"), fn, NodePolicy{}, nil, "n", nil, nil)
 	var re *RunError
 	if !errors.As(err, &re) {
 		t.Fatalf("err=%v, want *RunError", err)

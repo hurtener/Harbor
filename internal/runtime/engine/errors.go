@@ -13,8 +13,7 @@ var (
 	// ErrIdentityRequired — Emit was called with an Envelope whose
 	// identity triple (TenantID, UserID, SessionID) is incomplete.
 	// Wraps identity.ErrIdentityIncomplete so callers can errors.Is
-	// against either sentinel. Empty RunID is acceptable in Phase 10
-	// (Phase 13 will tighten when it adds FetchByRun).
+	// against either sentinel.
 	ErrIdentityRequired = errors.New("engine: Emit requires non-empty identity triple")
 	// ErrChannelFull — EmitNoWait found the outgoing channel
 	// saturated. Use Emit for blocking semantics with backpressure.
@@ -31,9 +30,10 @@ var (
 	// exist in the engine's adjacency set.
 	ErrNodeNotFound = errors.New("engine: node not found")
 	// ErrNotImplemented — a method that lands in a later phase was
-	// called. Phase 10 stubs Cancel + FetchByRun with this; Phase 13
-	// fills them. Callers that errors.Is on this can detect "this
-	// surface isn't ready yet" without crashing.
+	// called. Reserved for forward stubs; no current method returns
+	// this (Phase 10's Cancel + FetchByRun stubs were filled in Phase
+	// 13). Callers that errors.Is on this can detect "this surface
+	// isn't ready yet" without crashing.
 	ErrNotImplemented = errors.New("engine: not implemented in this phase")
 	// ErrDuplicateNodeName — two adjacencies referenced different
 	// nodes with the same Name. The engine's worker map is keyed by
