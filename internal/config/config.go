@@ -114,8 +114,14 @@ type MemoryConfig struct{}
 // SkillsConfig is owned by the skills subsystem phases.
 type SkillsConfig struct{}
 
-// TasksConfig is owned by the tasks/scheduler phases.
-type TasksConfig struct{}
+// TasksConfig configures the TaskRegistry driver. `Driver` selects
+// the registered driver name; Phase 20 ships only `"inprocess"`.
+// Phase 21 will extend this with retain-turn timeout + continuation
+// hop limit; do not add those fields here. Restart-required (no
+// `reload:"live"` tag).
+type TasksConfig struct {
+	Driver string `yaml:"driver"`
+}
 
 // SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
 // match RFC §6.9: idle TTL 24h, hard cap 30 days, sweep every 15 min.
@@ -128,18 +134,31 @@ type SessionsConfig struct {
 }
 
 // ArtifactsConfig configures the ArtifactStore driver, the
-// filesystem-driver root path, and the heavy-output threshold above
-// which the runtime mandatorily routes payloads through the store.
+// filesystem-driver root path, the SQL-driver connection string, and
+// the heavy-output threshold above which the runtime mandatorily
+// routes payloads through the store.
 //
-// `Driver` selects an artifacts driver (`inmem` | `fs` in V1; Phase
-// 18 adds `sqlite-blob` and `postgres-blob`; Phase 19 adds the
-// `s3`-style driver). Default `inmem` (the floor; per-process
-// lifetime, no persistence).
+// `Driver` selects an artifacts driver. V1 ships five drivers:
+// `inmem` (the floor; per-process lifetime, no persistence), `fs`
+// (single-binary production target), `sqlite` (Phase 18 — SQLite-
+// backed, durable across restart), `postgres` (Phase 18 —
+// Postgres-backed, durable across restart, multi-replica safe), and
+// `s3` (Phase 19 — S3-compatible object-store-backed, durable;
+// presigned-URL `GetRef` via the optional `Presigner` capability).
+// Default `inmem`.
 //
 // `FSRoot` is required when `Driver == "fs"`; it is the root
 // directory under which `<root>/<tenant>/<user>/<session>/<task>/
 // <namespace>/<id>` blobs land. The directory is created
 // (`os.MkdirAll`) at driver `New` time.
+//
+// `DSN` is required when `Driver` is `"sqlite"` or `"postgres"`.
+// Format:
+//   - SQLite: a bare file path (e.g. `/var/lib/harbor/artifacts.sqlite`)
+//     or the `:memory:` sentinel (degenerate dev case).
+//   - Postgres: a standard URL form
+//     (`postgres://user:pass@host:5432/db?sslmode=disable`) or pgx
+//     key-value form.
 //
 // `HeavyOutputThresholdBytes` is the byte size at which the runtime
 // mandatorily routes a payload through the ArtifactStore. Default
@@ -159,6 +178,7 @@ type SessionsConfig struct {
 type ArtifactsConfig struct {
 	Driver                    string `yaml:"driver"`
 	FSRoot                    string `yaml:"fs_root,omitempty"`
+	DSN                       string `yaml:"dsn,omitempty" secret:"true"`
 	HeavyOutputThresholdBytes int    `yaml:"heavy_output_threshold_bytes,omitempty"`
 	S3Bucket                  string `yaml:"s3_bucket,omitempty"`
 	S3Endpoint                string `yaml:"s3_endpoint,omitempty"`

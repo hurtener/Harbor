@@ -120,6 +120,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
+**IdempotencyKey** — caller-supplied string on `tasks.SpawnRequest` that, when paired with `Identity.SessionID`, deduplicates retried spawns. Same `(SessionID, IdempotencyKey)` → returns the original `TaskHandle` with `Reused=true`; divergent SpawnRequest under the same key returns `ErrIdempotencyConflict`. Empty key disables dedup entirely (every Spawn yields a fresh handle, no collisions). The key is namespaced by SessionID, so the same key across different sessions creates two distinct tasks. RFC §6.8.
+
 ## J
 
 **`JoinK`** — Concurrency utility (Phase 14) that reads exactly K envelopes from a channel and cancels remaining producers. Short-read returns `ErrJoinKShortRead`. RFC §6.1, brief 01 §2.
@@ -161,6 +163,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`Presigner`** — optional capability interface (`internal/artifacts/presigner.go`) implemented only by backends with native presigned-URL support. The Phase 19 S3-style driver is the sole V1 implementor; the in-memory, FS, SQLite-blob, and Postgres-blob drivers do NOT implement it (verified by negative type-assertion tests). Callers type-assert from `ArtifactStore`; absence is a typed error (`ErrPresignUnsupported`), never a silent fallback. The explicit exception to AGENTS.md §4.4's no-optional-capability rule — only S3-compat stores have presigned URLs natively, and the capability cannot be reasonably faked by the other V1 drivers without bolting on a separate signing service. RFC §6.10, brief 05 §3.
 
 **Protocol (Harbor Protocol)** — the canonical event/state contract between the Runtime and any client (Console, CLI, third-party). Versioned. RFC §5.
+
+**PropagateOnCancel** — `tasks.Task` field controlling how `Cancel` walks descendants: `"cascade"` (default; cancels descendants in BFS order, emitting `task.cancelled` per cancel) or `"isolate"` (cancellation stays local to the target). Per `tasks.SpawnRequest`; the resolved value is stored on the Task and consulted at Cancel time. RFC §6.8.
 
 ## R
 
@@ -234,9 +238,15 @@ Additions to this set are RFC PRs.
 
 ## T
 
-**Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. RFC §6.8.
+**Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. Lifecycle FSM: `Pending → Running → Complete`, with `Paused → Running` and terminal `Failed | Cancelled`. RFC §6.8.
 
-**TaskID** — stable identifier for a Task. Format includes `Kind`. Schema-keyed at the StateStore level. Closes the predecessor's `trace_id` vs `task_id` split (brief 05).
+**TaskID** — ULID-shaped identifier unifying foreground runs and background tasks. Single namespace; `TaskKind` distinguishes the two. Closes the predecessor's `trace_id` vs `task_id` split (brief 05). Assigned by the registry; callers do not construct TaskIDs externally. RFC §6.8.
+
+**TaskKind** — `"foreground"` (a run inside a session's primary turn) or `"background"` (a spawned-without-blocking task). Both share the same TaskID namespace; this field is the discriminator. RFC §6.8.
+
+**TaskStatus** — lifecycle state. Values: `pending`, `running`, `paused`, `complete`, `failed`, `cancelled`. FSM enforced at the registry; invalid transitions return `ErrInvalidTransition` (wrapped with from/to states named in the message). Same-state transitions are invalid (no idempotent self-edges). Terminal states (`complete`, `failed`, `cancelled`) have no outgoing edges. RFC §6.8.
+
+**TaskRegistry** — the orchestration surface for spawning, listing, cancelling, prioritising, and driving the lifecycle FSM of tasks. One mandatory interface; one V1 driver (`inprocess`); future durable backends post-V1 (Phase 87+). The Mark* methods are the lifecycle drive-points called by the runtime engine; Cancel / Prioritize are caller-initiated (planner, steering, Console). Phase 20 ships the per-task surface; Phase 21 extends it with groups + retain-turn + WatchGroup (D-030). RFC §6.8.
 
 **ToolContext** — per-tool-call runtime context split into a JSON-encodable half (persisted across pause/resume) and a runtime-handle half (re-attached by key on resume). The split is a fail-loudly contract: serializing the JSON-half MUST raise `ErrUnserializable` if any field is non-serializable rather than silently dropping data; resuming a missing handle raises `ErrToolContextLost`. RFC §6.3, brief 02.
 

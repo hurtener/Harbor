@@ -33,9 +33,9 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 15 | SQLite StateStore driver                      | state/sqlite         | §6.11, §9   | 07                    | 90%  | Shipped  |
 | 16 | Postgres StateStore driver                    | state/postgres       | §6.11, §9   | 07                    | 90%  | Shipped  |
 | 17 | ArtifactStore iface + InMem + FS drivers      | artifacts            | §6.10, §9   | 01, 07                | 85%  | Shipped  |
-| 18 | ArtifactStore SQLite-blob + Postgres-blob     | artifacts            | §6.10, §9   | 17, 15, 16            | 85%  | Pending  |
+| 18 | ArtifactStore SQLite-blob + Postgres-blob     | artifacts            | §6.10, §9   | 17, 15, 16            | 85%  | Shipped  |
 | 19 | ArtifactStore S3-style driver                 | artifacts            | §6.10       | 17                    | 80%  | Shipped  |
-| 20 | TaskRegistry iface + InProcess + lifecycle    | tasks                | §6.8        | 01, 07                | 85%  | Pending  |
+| 20 | TaskRegistry iface + InProcess + lifecycle    | tasks                | §6.8        | 01, 07                | 85%  | Shipped  |
 | 21 | TaskGroup + retain-turn + patches             | tasks                | §6.8        | 20                    | 85%  | Pending  |
 | 22 | MessageBus + RemoteTransport contracts        | distributed          | §6.12       | 09, 20                | 80%  | Pending  |
 | 23 | MemoryStore iface + InMem + conformance       | memory               | §6.6        | 01, 07                | 85%  | Pending  |

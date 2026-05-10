@@ -154,6 +154,9 @@ func defaults() *Config {
 			S3Region:       "us-east-1",
 			S3UsePathStyle: false,
 		},
+		Tasks: TasksConfig{
+			Driver: "inprocess",
+		},
 	}
 }
 

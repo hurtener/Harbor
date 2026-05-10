@@ -50,15 +50,23 @@ events:
   drop_window: 1s
 
 artifacts:
-  # `inmem` (per-process, dev/embedded floor) or `fs` (single-binary
-  # production target). Phase 18 adds `sqlite-blob` + `postgres-blob`;
-  # Phase 19 adds the `s3`-style driver (AWS S3 / MinIO / Cloudflare
-  # R2 / any S3-compat backend).
+  # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
+  # production target), `sqlite` (Phase 18 — durable, single-node),
+  # `postgres` (Phase 18 — durable, multi-replica safe), or `s3`
+  # (Phase 19 — S3-compatible: AWS / MinIO / Cloudflare R2 / GCS-
+  # compat).
   driver: inmem
   # Required when driver=fs; the root directory under which the
   # `<root>/<tenant>/<user>/<session>/<task>/<namespace>/<id>` blob
   # tree lands. Created (`os.MkdirAll`) at boot.
   # fs_root: /var/lib/harbor/artifacts
+  # Required when driver=sqlite or driver=postgres. SQLite accepts a
+  # bare file path (or `:memory:` for the degenerate dev case);
+  # Postgres accepts a standard URL form
+  # (`postgres://user:pass@host:5432/db?sslmode=disable`) or pgx
+  # key-value form. Override via HARBOR_ARTIFACTS_DSN in production;
+  # never commit a real password.
+  # dsn: /var/lib/harbor/artifacts.sqlite
   # Heavy-output threshold: payloads at or above this byte size are
   # mandatorily routed through the ArtifactStore (D-022, RFC §6.10).
   # Default 32 KB. Per-tool overrides land at Phase 26.
@@ -84,3 +92,11 @@ artifacts:
   # s3_access_key_id: replace-me
   # s3_secret_access_key: replace-me
   # s3_use_path_style: false
+
+tasks:
+  # TaskRegistry driver. Phase 20 ships only `inprocess` — an
+  # in-memory registry that persists every lifecycle transition
+  # through the StateStore (D-027 typed wrapper). Post-V1 phases
+  # (e.g. a durable queue-backed driver at Phase 87+) extend the
+  # allowlist.
+  driver: inprocess

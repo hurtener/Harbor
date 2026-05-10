@@ -15,11 +15,13 @@ package main
 import (
 	// Artifacts drivers — content-addressed blob store. Each V1
 	// driver self-registers via init() so `artifacts.Open` can resolve
-	// them. Phase 17 ships fs + inmem; Phase 18 adds SQLite-blob +
-	// Postgres-blob; Phase 19 adds the S3-style driver.
+	// them. Phase 17 ships fs + inmem; Phase 18 adds sqlite +
+	// postgres; Phase 19 adds the S3-style driver.
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/fs"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/s3"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/sqlite"
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Events driver — production in-memory bus, registered via init().
@@ -30,6 +32,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/postgres"
 	// State driver — production SQLite StateStore (Phase 15), registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
+	// Tasks driver — production in-process TaskRegistry (Phase 20), registered via init().
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 )
 
 func main() {

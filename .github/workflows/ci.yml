@@ -108,6 +108,14 @@ jobs:
         env:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/state/drivers/postgres/...
+      - name: Run artifacts/postgres tests against postgres:16
+        # Phase 18: same container as the state/postgres step above.
+        # Running both packages in the same job keeps CI overhead
+        # minimal (~10–20s extra) while preserving the postgres:16
+        # gate for the artifact-blob driver.
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: go test -race -count=1 -timeout 240s ./internal/artifacts/drivers/postgres/...
 
   artifacts-s3:
     name: artifacts/s3 conformance (MinIO)

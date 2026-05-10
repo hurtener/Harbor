@@ -40,6 +40,7 @@ func (c *Config) Validate() error {
 		c.validateEvents,
 		c.validateSessions,
 		c.validateArtifacts,
+		c.validateTasks,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -211,10 +212,16 @@ func (c *Config) validateSessions() error {
 }
 
 // allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
-// 18 will add `sqlite-blob` and `postgres-blob`; Phase 19 adds the
-// S3-style driver. The validator only checks shape; the registry
-// surfaces the matching factory at Open time.
-var allowedArtifactsDrivers = map[string]struct{}{"inmem": {}, "fs": {}, "s3": {}}
+// 17 ships `inmem` + `fs`; Phase 18 adds `sqlite` and `postgres`;
+// Phase 19 adds the S3-style driver. The validator only checks
+// shape; the registry surfaces the matching factory at Open time.
+var allowedArtifactsDrivers = map[string]struct{}{
+	"inmem":    {},
+	"fs":       {},
+	"sqlite":   {},
+	"postgres": {},
+	"s3":       {},
+}
 
 func (c *Config) validateArtifacts() error {
 	if c.Artifacts.Driver == "" {
@@ -229,12 +236,33 @@ func (c *Config) validateArtifacts() error {
 		return fieldError("artifacts.fs_root",
 			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
 	}
+	if (c.Artifacts.Driver == "sqlite" || c.Artifacts.Driver == "postgres") && c.Artifacts.DSN == "" {
+		return fieldError("artifacts.dsn",
+			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
+	}
 	if c.Artifacts.Driver == "s3" && c.Artifacts.S3Bucket == "" {
 		return fieldError("artifacts.s3_bucket",
 			fmt.Sprintf("must be set when driver=%q", c.Artifacts.Driver))
 	}
 	if c.Artifacts.HeavyOutputThresholdBytes < 0 {
 		return fieldError("artifacts.heavy_output_threshold_bytes", "must be >= 0")
+	}
+	return nil
+}
+
+// allowedTasksDrivers is the V1 tasks-driver allowlist. Phase 20
+// ships only `inprocess`; later post-V1 phases (e.g. a durable
+// queue-backed driver) extend this list.
+var allowedTasksDrivers = map[string]struct{}{"inprocess": {}}
+
+func (c *Config) validateTasks() error {
+	if c.Tasks.Driver == "" {
+		return fieldError("tasks.driver", "must not be empty")
+	}
+	if _, ok := allowedTasksDrivers[c.Tasks.Driver]; !ok {
+		return fieldError("tasks.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedTasksDrivers), c.Tasks.Driver))
 	}
 	return nil
 }
