@@ -112,55 +112,54 @@ jobs:
   artifacts-s3:
     name: artifacts/s3 conformance (MinIO)
     runs-on: ubuntu-latest
-    services:
-      # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
-      # against in CI. The `bitnami/minio:latest` image exposes a
-      # `/minio/health/live` health endpoint we can poll. Credentials
-      # are documented dummy values per AGENTS.md §7 #2 — no real
-      # secrets cross this boundary.
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          # Pre-create the test bucket via Bitnami's helper var so we
-          # don't need a separate `mc mb` step.
-          MINIO_DEFAULT_BUCKETS: harbor-test
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+    # MinIO is the S3-compat backend Harbor's Phase 19 driver tests
+    # against in CI. We launch it via `docker run` rather than a
+    # GitHub Actions service container because the official
+    # `minio/minio` image needs `server /data` as the entrypoint args
+    # (services blocks can't pass command args cleanly), and Bitnami's
+    # alternative dropped its `latest` tag. Credentials are documented
+    # dummy values per AGENTS.md §7 #2 — no real secrets cross this
+    # boundary.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Wait for MinIO bucket
-        # Defense-in-depth: even with MINIO_DEFAULT_BUCKETS, the
-        # bucket may take a moment after the health check goes
-        # green. Poll for up to 30s using the AWS CLI (pre-installed
-        # on ubuntu-latest runners).
+      - name: Start MinIO and create harbor-test bucket
         env:
           AWS_ACCESS_KEY_ID: minioadmin
           AWS_SECRET_ACCESS_KEY: minioadmin
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          set -e
-          for i in $(seq 1 15); do
-            if aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket harbor-test 2>/dev/null; then
-              echo "harbor-test bucket ready"
-              exit 0
+          set -euo pipefail
+          docker run -d --name harbor-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2024-12-18T13-15-44Z \
+            server /data
+          # Poll for liveness; create the bucket once MinIO answers.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:9000/minio/health/live; then
+              echo "MinIO is live"
+              break
             fi
-            # Best-effort create if it isn't there yet.
-            aws --endpoint-url http://localhost:9000 s3 mb s3://harbor-test 2>/dev/null || true
             sleep 2
           done
-          echo "harbor-test bucket never became ready" >&2
-          exit 1
+          # AWS CLI is pre-installed on ubuntu-latest runners.
+          for i in $(seq 1 15); do
+            if aws --endpoint-url http://localhost:9000 s3 mb s3://harbor-test 2>/dev/null; then
+              echo "harbor-test bucket created"
+              break
+            fi
+            if aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket harbor-test 2>/dev/null; then
+              echo "harbor-test bucket already present"
+              break
+            fi
+            sleep 2
+          done
+          aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket harbor-test
       - name: Run artifacts/s3 tests against MinIO
         # Note: CGO_ENABLED is intentionally NOT set here — same
         # rationale as the state-postgres job above. The static
@@ -175,3 +174,8 @@ jobs:
             secret_key=minioadmin
             use_path_style=true
         run: go test -race -count=1 -timeout 240s ./internal/artifacts/drivers/s3/...
+      - name: Tear down MinIO
+        if: always()
+        run: |
+          docker logs harbor-minio || true
+          docker rm -f harbor-minio || true
