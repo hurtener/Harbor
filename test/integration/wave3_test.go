@@ -421,6 +421,13 @@ func wave3Config() *config.Config {
 			HardCap:       2 * time.Hour,
 			SweepInterval: 30 * time.Minute,
 		},
+		// ArtifactsConfig populated by Phase 17; the validator now
+		// requires a non-empty driver. Wave 3's surfaces don't exercise
+		// artifacts directly, but Validate runs the field through.
+		Artifacts: config.ArtifactsConfig{
+			Driver:                    "inmem",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
 	}
 }
 
