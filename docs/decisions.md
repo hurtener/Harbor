@@ -287,6 +287,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-032 — Wake-on-resolution is a planner-concrete responsibility; TaskRegistry stays neutral
+
+**Date:** 2026-05-10
+**Status:** Settled
+**Where it lives:** `docs/plans/phase-21-task-groups.md` (the `WatchGroup` surface + the three wake-mode names documented at `internal/tasks/groups.go` package godoc), `docs/plans/README.md` Phase 42 / 45 / 48 / 49 detail blocks (the consumption contract), `internal/tasks/tasks.go` (the neutral `WatchGroup(id identity.Identity, groupID TaskGroupID) (<-chan GroupCompletion, func(), error)` surface — no `Mode` enum baked in), planner phase plans when authored.
+**Why:** Phase 21 closed the predecessor's silent gap where non-retain-turn `SpawnTask` groups left the planner with no signal that all members had resolved. The fix is `WatchGroup` + `GroupCompletion` — a non-blocking notification channel the planner subscribes to. But the *policy* of how a planner reacts to that channel (wake the LLM eagerly, poll on its next deterministic iteration, or hybrid push + sidecar status emitter) is a planner-shape concern, not a TaskRegistry concern. Burning a `WakeMode` enum into the registry would either force every planner concrete onto the same policy or introduce a `Supports*` capability protocol — both anti-patterns under AGENTS.md §4.4. So the registry stays neutral and the three wake modes (`push` / `poll` / `hybrid`) are documented at the `internal/tasks` package godoc with the same vocabulary the planner phases consume. Each concrete planner (Phase 42+) MUST implement at least one of the three modes for non-retain-turn group continuation; the planner conformance pack (Phase 49) MUST exercise the round-trip (SpawnTask → group completes → planner re-enters → reads `MemberOutcome`). The retain-turn flow (turn-bound parallel) keeps its existing `RegisterRetainTurnWaiter` path — `WatchGroup` is strictly the non-retain-turn dual. Naming the wake modes in one canonical place keeps third-party planner authors aligned and makes the conformance assertion testable.
+
+---
+
 <!--
 Append new entries below this line in the form:
 
