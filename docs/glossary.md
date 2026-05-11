@@ -160,6 +160,18 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Memory strategy** — declared policy that controls how a session's memory is shaped: `none`, `truncation`, `rolling_summary`. Identity-mandatory; fail-closed. RFC §6.6.
 
+**`MemoryStore`** — Harbor's mandatory memory subsystem interface. Seven methods (`AddTurn / GetLLMContext / EstimateTokens / Flush / Health / Snapshot / Restore`) plus `Close`. Phase 23 ships the InMem driver with `Strategy = none` operational; Phase 24 adds `truncation` + `rolling_summary`; Phase 25 ships SQLite + Postgres drivers under the same conformance suite. Identity-mandatory at every method; fail-closed on missing triple with `memory.identity_rejected` audit emit. RFC §6.6, AGENTS.md §6, D-001, D-027, D-033.
+
+**`ConversationTurn`** — one turn of a memory-tracked conversation (`UserMessage`, `AssistantResponse`, optional `TrajectoryDigest`, artifact references, timestamp). The planner runtime (Phase 42+) is the producer; `MemoryStore.AddTurn` is the consumer. RFC §6.6.
+
+**`MemoryHealth`** — `MemoryStore.Health` return: `healthy | retry | degraded | recovering`. Phase 23 only produces `healthy` (Strategy=none); Phase 24's `rolling_summary` drives the full FSM. RFC §6.6.
+
+**`MemorySnapshot`** — the export shape returned by `MemoryStore.Snapshot` and consumed by `Restore`. Carries `(Strategy, Bytes)`. Bytes are opaque to consumers; the snapshot's `Strategy` must match the driver's at Restore time, else `ErrInvalidSnapshot`. Empty-zero snapshots round-trip the initial state. RFC §6.6.
+
+**`LLMContextPatch`** — the patch a planner runtime applies to its LLM call after `MemoryStore.GetLLMContext`. Carries `(Strategy, Summary, RecentTurns, Tokens)`. Empty under Strategy=none. RFC §6.6.
+
+**`memory.identity_rejected`** — bus event emitted when a `MemoryStore` method is called with an incomplete identity triple. `SafePayload` (bounded operation name + reason string; no caller-controlled bytes). The Event's `Identity` field carries the partial input with `"<missing>"` substitution for empty components (so `ValidateEvent`'s triple check passes); the payload's `Reason` field names the truly missing component(s). Subscribers MAY admin-scope-filter to fan-in cross-tenant rejections. RFC §6.6, D-001, D-033.
+
 **Meta (envelope)** — Free-form `map[string]any` propagated with the envelope. Last-write-wins on key collisions in V1; an explicit merge-function registry is reserved for a future RFC follow-up. Survives fan-out / fan-in / subflow boundaries. RFC §6.1, brief 01 §2.
 
 **`MessageBus`** — Harbor's at-least-once cross-worker fan-out edge (`internal/distributed`). V1 ships an in-process loopback driver that projects published `BusEnvelope`s through the typed `events.EventBus`; durable backends (NATS / Redis Streams / Postgres-as-queue) are post-V1 phase 86. Handlers MUST be idempotent on `(TaskID, Edge, EventID)`. RFC §6.12, D-031.

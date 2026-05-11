@@ -110,7 +110,28 @@ type GovernanceConfig struct {
 type RuntimeConfig struct{}
 
 // MemoryConfig is owned by the memory subsystem phases.
-type MemoryConfig struct{}
+//
+// `Driver` selects a `memory.MemoryStore` driver. Phase 23 ships
+// only `"inmem"`; Phase 25 adds `"sqlite"` and `"postgres"`. Default
+// `inmem`.
+//
+// `Strategy` selects the memory shape: `"none"` (Phase 23
+// operational), `"truncation"` (Phase 24), or `"rolling_summary"`
+// (Phase 24). Default `none`. Operators MAY stage Phase 24
+// strategies in their config today; `memory.Open` rejects
+// unsupported strategies loudly with `ErrStrategyNotImplemented`
+// until Phase 24 lands.
+//
+// `BudgetTokens` is reserved for Phase 24 (truncation + rolling
+// summary budget enforcement). Validated as `>= 0` today so an
+// operator-set override that elides the field flips back to zero
+// rather than silently disabling the budget. Phase 24 will define
+// the field's interpretation. Restart-required (no `reload:"live"`).
+type MemoryConfig struct {
+	Driver       string `yaml:"driver"`
+	Strategy     string `yaml:"strategy,omitempty"`
+	BudgetTokens int    `yaml:"budget_tokens,omitempty"`
+}
 
 // SkillsConfig is owned by the skills subsystem phases.
 type SkillsConfig struct{}
