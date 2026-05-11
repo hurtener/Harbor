@@ -272,6 +272,25 @@ func TestWithOverrides_RevalidatesAfterChange(t *testing.T) {
 	}
 }
 
+// TestMemoryConfig_DefaultsApplied confirms the memory section's
+// default values land when the YAML omits the block. The Phase 23
+// expectation is `driver: inmem` + `strategy: none` + `budget_tokens: 0`.
+func TestMemoryConfig_DefaultsApplied(t *testing.T) {
+	cfg, err := config.Load(context.Background(), validMinimalFixture)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Memory.Driver != "inmem" {
+		t.Errorf("Memory.Driver=%q, want %q", cfg.Memory.Driver, "inmem")
+	}
+	if cfg.Memory.Strategy != "none" {
+		t.Errorf("Memory.Strategy=%q, want %q", cfg.Memory.Strategy, "none")
+	}
+	if cfg.Memory.BudgetTokens != 0 {
+		t.Errorf("Memory.BudgetTokens=%d, want 0", cfg.Memory.BudgetTokens)
+	}
+}
+
 // TestConfig_ConcurrentRead_ReuseContract is the D-025 concurrent-reuse
 // test for *Config. It reads multiple field paths from a shared
 // instance under N goroutines and asserts no data race + no goroutine

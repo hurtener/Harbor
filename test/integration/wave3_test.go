@@ -443,6 +443,12 @@ func wave3Config() *config.Config {
 		// exercise distributed directly, but Validate runs the field
 		// through (the same §17.6 pattern).
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
+		// MemoryConfig populated by Phase 23 — the validator added a
+		// required driver field. Wave 3's surfaces don't exercise
+		// memory directly, but Validate runs the field through (same
+		// §17.6 cross-phase pattern as Artifacts / Tasks / Distributed
+		// above).
+		Memory: config.MemoryConfig{Driver: "inmem", Strategy: "none"},
 	}
 }
 
