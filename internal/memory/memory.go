@@ -45,6 +45,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
@@ -247,7 +248,121 @@ var (
 	// bytes against a `StrategyNone` driver. Fail loudly; never
 	// silently coerce.
 	ErrInvalidSnapshot = errors.New("memory: invalid snapshot for this strategy")
+
+	// ErrInvalidHealthTransition — a strategy executor attempted a
+	// `Health` transition outside the documented FSM
+	// (`healthy ↔ retry ↔ degraded ↔ recovering`). Fail loudly: an
+	// invalid transition is a programming error, not a recoverable
+	// state.
+	ErrInvalidHealthTransition = errors.New("memory: invalid health transition")
 )
+
+// OverflowPolicy is the buffer-overflow action a `truncation`-style
+// strategy applies when the recent-window buffer's token total
+// exceeds the configured `BudgetTokens`. Phase 24 ships only
+// `OverflowDropOldest`. See D-034 for the rationale (the brief 04
+// §2 trio `truncate_oldest | truncate_summary | error` was narrowed
+// to a single safe default; the `error` policy is a silent-
+// degradation footgun and `truncate_summary` conflates strategies).
+type OverflowPolicy string
+
+const (
+	// OverflowDropOldest evicts oldest turns until the buffer's
+	// token estimate fits within the budget. The only Phase 24
+	// policy.
+	OverflowDropOldest OverflowPolicy = "drop_oldest"
+)
+
+// Summarizer is the injectable callable the `rolling_summary`
+// strategy consumes. The LLM-backed implementation lands at Phase
+// 32+; Phase 24 ships only the interface and a test-grade stub
+// (`EchoSummarizer`, exported from `internal/memory/strategy`).
+//
+// The interface intentionally mirrors brief 04 §4.1's "input
+// `{previous_summary, turns}`, output `{summary: string}`" with a
+// Go-idiomatic `(ctx, identity, req)` shape so the LLM-client
+// integration phase doesn't have to invent a fresh shape.
+//
+// Concurrent-reuse contract (D-025): one `Summarizer` instance is
+// safe to share across N concurrent goroutines. Implementers MUST
+// honour `ctx.Done()`; the executor cancels in-flight summaries on
+// `Close`.
+type Summarizer interface {
+	Summarize(ctx context.Context, id identity.Quadruple, req SummarizeRequest) (SummarizeResponse, error)
+}
+
+// SummarizeRequest carries the summariser inputs. `PreviousSummary`
+// is the prior rolling summary (empty on the first turn);
+// `Turns` is the batch of recently-evicted turns to fold into the
+// summary.
+type SummarizeRequest struct {
+	PreviousSummary string
+	Turns           []ConversationTurn
+}
+
+// SummarizeResponse carries the summariser output.
+type SummarizeResponse struct {
+	Summary string
+}
+
+// healthTransitions enumerates the legal `Health` FSM edges.
+//
+//	healthy    → retry      (summariser failed; will retry)
+//	retry      → healthy    (retry succeeded)
+//	retry      → degraded   (retries exhausted; fall back to truncation)
+//	degraded   → recovering (recovery loop draining backlog)
+//	recovering → healthy    (backlog drained)
+//	recovering → degraded   (recovery batch failed; back to drain)
+//
+// Self-loops are allowed (no-op transition); any other pair is
+// rejected by `ValidateHealthTransition`.
+var healthTransitions = map[Health]map[Health]struct{}{
+	HealthHealthy: {
+		HealthHealthy: {},
+		HealthRetry:   {},
+	},
+	HealthRetry: {
+		HealthRetry:    {},
+		HealthHealthy:  {},
+		HealthDegraded: {},
+	},
+	HealthDegraded: {
+		HealthDegraded:   {},
+		HealthRecovering: {},
+	},
+	HealthRecovering: {
+		HealthRecovering: {},
+		HealthHealthy:    {},
+		HealthDegraded:   {},
+	},
+}
+
+// ValidateHealthTransition returns nil when `(prior → next)` is a
+// legal `Health` FSM edge. Invalid transitions return wrapped
+// `ErrInvalidHealthTransition` — fail loudly per AGENTS.md §5; an
+// invalid transition is a programming error in the calling
+// executor, not a recoverable state.
+//
+// The empty `Health{}` (zero value) is treated as `HealthHealthy`
+// for both sides — a freshly-constructed executor implicitly starts
+// healthy.
+func ValidateHealthTransition(prior, next Health) error {
+	if prior == "" {
+		prior = HealthHealthy
+	}
+	if next == "" {
+		next = HealthHealthy
+	}
+	edges, ok := healthTransitions[prior]
+	if !ok {
+		return fmt.Errorf("%w: unknown prior health %q", ErrInvalidHealthTransition, prior)
+	}
+	if _, ok := edges[next]; !ok {
+		return fmt.Errorf("%w: %q → %q not allowed",
+			ErrInvalidHealthTransition, prior, next)
+	}
+	return nil
+}
 
 // ValidateIdentity returns wrapped `ErrIdentityRequired` when any
 // of (tenant, user, session) is empty. Empty `RunID` is acceptable.

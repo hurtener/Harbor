@@ -290,7 +290,7 @@ func TestPostgres_CrossDriver_ByteStableRoundTrip(t *testing.T) {
 
 	inmemStore, err := memorydriverinmem.New(memory.ConfigSnapshot{
 		Driver: "inmem", Strategy: memory.StrategyNone,
-	}, memory.Deps{State: store, Bus: bus})
+	}, memory.Deps{State: store, Bus: bus}, memorydriverinmem.Options{})
 	if err != nil {
 		t.Fatalf("inmem.New: %v", err)
 	}

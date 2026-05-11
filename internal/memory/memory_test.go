@@ -134,25 +134,41 @@ func TestOpen_DefaultsToInMemDriver(t *testing.T) {
 	}
 }
 
-func TestOpen_StrategyNotImplemented_Truncation(t *testing.T) {
+// TestOpen_Truncation_OperationalAtPhase24 asserts the Phase 24
+// migration: the registry path now accepts `truncation` (no
+// summariser needed). Replaces the Phase 23
+// TestOpen_StrategyNotImplemented_Truncation test which expected
+// the strategy to error out.
+func TestOpen_Truncation_OperationalAtPhase24(t *testing.T) {
 	deps := newTestDeps(t)
-	_, err := memory.Open(context.Background(), memory.ConfigSnapshot{
+	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:   "inmem",
 		Strategy: memory.StrategyTruncation,
 	}, deps)
-	if !errors.Is(err, memory.ErrStrategyNotImplemented) {
-		t.Fatalf("err=%v, want errors.Is ErrStrategyNotImplemented", err)
+	if err != nil {
+		t.Fatalf("Open truncation: %v", err)
+	}
+	defer mem.Close(context.Background())
+	// Confirm the resolved driver works against a valid identity.
+	if _, err := mem.Health(context.Background(), validQuadruple()); err != nil {
+		t.Errorf("Health on truncation driver: %v", err)
 	}
 }
 
-func TestOpen_StrategyNotImplemented_RollingSummary(t *testing.T) {
+// TestOpen_RollingSummary_RequiresInjectableSummarizer asserts that
+// the registry path rejects `rolling_summary` because no
+// Summarizer is injectable through the registry today; operators
+// staging the strategy MUST call the driver's New() directly with
+// inmem.Options{Summarizer: ...}. Phase 32+ will land an LLM-backed
+// default summariser the registry resolves automatically.
+func TestOpen_RollingSummary_RequiresInjectableSummarizer(t *testing.T) {
 	deps := newTestDeps(t)
 	_, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:   "inmem",
 		Strategy: memory.StrategyRollingSummary,
 	}, deps)
-	if !errors.Is(err, memory.ErrStrategyNotImplemented) {
-		t.Fatalf("err=%v, want errors.Is ErrStrategyNotImplemented", err)
+	if err == nil {
+		t.Fatal("err=nil, want non-nil for rolling_summary without summariser")
 	}
 }
 
@@ -398,6 +414,140 @@ func TestEmitIdentityRejected_ReasonStrings(t *testing.T) {
 				t.Fatal("timed out waiting for rejection event")
 			}
 		})
+	}
+}
+
+// --- Phase 24 surface tests (Summarizer + Health FSM + new emit helpers) ---
+
+// TestValidateHealthTransition_Surface pins the public-API contract
+// for the health transition validator. The strategy-package test
+// covers the full matrix; this test ensures the function is
+// observable on the `memory` package surface.
+func TestValidateHealthTransition_Surface(t *testing.T) {
+	cases := map[string]struct {
+		prior, next memory.Health
+		want        error
+	}{
+		"healthy→healthy":     {memory.HealthHealthy, memory.HealthHealthy, nil},
+		"healthy→retry":       {memory.HealthHealthy, memory.HealthRetry, nil},
+		"retry→degraded":      {memory.HealthRetry, memory.HealthDegraded, nil},
+		"degraded→recovering": {memory.HealthDegraded, memory.HealthRecovering, nil},
+		"recovering→healthy":  {memory.HealthRecovering, memory.HealthHealthy, nil},
+		"healthy→degraded":    {memory.HealthHealthy, memory.HealthDegraded, memory.ErrInvalidHealthTransition},
+		"degraded→healthy":    {memory.HealthDegraded, memory.HealthHealthy, memory.ErrInvalidHealthTransition},
+		"empty_prior_ok":      {"", memory.HealthRetry, nil},
+		"empty_next_ok":       {memory.HealthHealthy, "", nil},
+		"unknown_prior":       {memory.Health("bogus"), memory.HealthHealthy, memory.ErrInvalidHealthTransition},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := memory.ValidateHealthTransition(tc.prior, tc.next)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("ValidateHealthTransition(%q, %q)=%v, want nil", tc.prior, tc.next, got)
+				}
+				return
+			}
+			if !errors.Is(got, tc.want) {
+				t.Errorf("ValidateHealthTransition(%q, %q)=%v, want errors.Is %v", tc.prior, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmitHealthChanged_PublishesEvent exercises the public-API
+// emit helper directly. Same shape as the EmitIdentityRejected
+// test — independent of the rolling-summary executor path.
+func TestEmitHealthChanged_PublishesEvent(t *testing.T) {
+	bus, _ := newTestBus(t)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{memory.EventTypeMemoryHealthChanged},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	id := validQuadruple()
+	if err := memory.EmitHealthChanged(context.Background(), bus, id,
+		memory.HealthHealthy, memory.HealthRetry, "test"); err != nil {
+		t.Fatalf("EmitHealthChanged: %v", err)
+	}
+
+	select {
+	case ev := <-sub.Events():
+		if ev.Type != memory.EventTypeMemoryHealthChanged {
+			t.Errorf("event type=%q, want %q", ev.Type, memory.EventTypeMemoryHealthChanged)
+		}
+		payload, ok := ev.Payload.(memory.HealthChangedPayload)
+		if !ok {
+			t.Fatalf("payload type=%T, want HealthChangedPayload", ev.Payload)
+		}
+		if payload.PriorHealth != memory.HealthHealthy {
+			t.Errorf("payload.PriorHealth=%q, want %q", payload.PriorHealth, memory.HealthHealthy)
+		}
+		if payload.NewHealth != memory.HealthRetry {
+			t.Errorf("payload.NewHealth=%q, want %q", payload.NewHealth, memory.HealthRetry)
+		}
+		if payload.Reason != "test" {
+			t.Errorf("payload.Reason=%q, want %q", payload.Reason, "test")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for health_changed event")
+	}
+}
+
+func TestEmitHealthChanged_RejectsBadIdentity(t *testing.T) {
+	bus, _ := newTestBus(t)
+	err := memory.EmitHealthChanged(context.Background(), bus,
+		identity.Quadruple{}, memory.HealthHealthy, memory.HealthRetry, "x")
+	if err == nil {
+		t.Fatal("err=nil, want ErrIdentityRequired")
+	}
+}
+
+func TestEmitHealthChanged_RejectsBadTransition(t *testing.T) {
+	bus, _ := newTestBus(t)
+	id := validQuadruple()
+	err := memory.EmitHealthChanged(context.Background(), bus, id,
+		memory.HealthHealthy, memory.HealthRecovering, "bogus")
+	if err == nil {
+		t.Fatal("err=nil, want ErrInvalidHealthTransition")
+	}
+}
+
+func TestEmitRecoveryDropped_PublishesEvent(t *testing.T) {
+	bus, _ := newTestBus(t)
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{memory.EventTypeMemoryRecoveryDropped},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	id := validQuadruple()
+	if err := memory.EmitRecoveryDropped(context.Background(), bus, id, "backlog_overflow"); err != nil {
+		t.Fatalf("EmitRecoveryDropped: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		if ev.Type != memory.EventTypeMemoryRecoveryDropped {
+			t.Errorf("event type=%q, want %q", ev.Type, memory.EventTypeMemoryRecoveryDropped)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for recovery_dropped event")
+	}
+}
+
+func TestEmitRecoveryDropped_RejectsBadIdentity(t *testing.T) {
+	bus, _ := newTestBus(t)
+	err := memory.EmitRecoveryDropped(context.Background(), bus,
+		identity.Quadruple{}, "test")
+	if err == nil {
+		t.Fatal("err=nil, want ErrIdentityRequired")
 	}
 }
 

@@ -314,6 +314,21 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-035 — Memory strategies: `OverflowDropOldest` is the only `OverflowPolicy`; recovery loop is bounded by `RecoveryBacklogMax` with drop-oldest + `memory.recovery_dropped` emit; retry/backoff/cadence are constants, not config
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.6, `docs/plans/phase-24-memory-strategies.md` ("Findings I'm departing from" + "Risks / open questions"), `internal/memory/memory.go` (`OverflowPolicy` enum + `OverflowDropOldest` constant + `ValidateHealthTransition` + `ErrInvalidHealthTransition` + transition table), `internal/memory/events.go` (`EventTypeMemoryHealthChanged` + `EventTypeMemoryRecoveryDropped` + `HealthChangedPayload` + `RecoveryDroppedPayload`), `internal/memory/health.go` (`EmitHealthChanged` + `EmitRecoveryDropped`), `internal/memory/strategy/rolling_summary.go` (the constants `defaultRetryAttempts = 3`, `defaultRetryBackoffBase = 100*time.Millisecond`, `defaultDegradedRetryEvery = 10*time.Second`; the bounded recovery loop), brief 04 §2 + §4.1.
+**Why:** Three narrow scope calls at this phase, all driven by AGENTS.md §13's "no silent degradation" rule + the "fail loudly" principle:
+
+1. **`OverflowPolicy` narrows from brief 04 §2's three-option enum to a single `OverflowDropOldest`.** Brief 04 §2 names `truncate_oldest`, `truncate_summary`, and `error`. Harbor ships only `OverflowDropOldest`. Rationale: (a) `truncate_summary` requires the summariser inside the truncation path which conflates two strategies; (b) `error` is a silent-degradation footgun — an over-budget AddTurn returning `ErrBudgetExceeded` would force every caller to handle the error or silently lose turns, which is exactly the pattern AGENTS.md §13 closes. The narrow enum lets the surface grow if a real LLM-client integration (Phase 32+) surfaces a use case for `truncate_summary` ("always keep a summary line, drop oldest verbatim turns first"); today the simpler shape avoids the footgun.
+2. **Recovery loop is bounded by `RecoveryBacklogMax` with drop-oldest + `memory.recovery_dropped` emit on overflow.** Brief 04 §4.1 names the bound; the drop-oldest action + the recovery-dropped event are mine, recorded here so a later auditor doesn't flag the naming or the SafePayload classification as drift. The payload is `SafePayload` by construction — only a bounded `Reason` string survives ("backlog_overflow" today). Default `RecoveryBacklogMax = 16` sized to absorb a short summariser outage (≈4 minutes at `defaultDegradedRetryEvery = 10s` × 16 retries) without unbounded memory growth.
+3. **Retry / backoff / cadence knobs from brief 04 §2 (`RetryAttempts`, `RetryBackoffBase`, `DegradedRetryEvery`) do NOT land in `config.MemoryConfig`.** Only `RecoveryBacklogMax` is operator-tunable. The three constants live in `internal/memory/strategy/rolling_summary.go` as package constants (`defaultRetryAttempts = 3`, `defaultRetryBackoffBase = 100*time.Millisecond`, `defaultDegradedRetryEvery = 10*time.Second`). Rationale: nobody has needed to tune them yet, exposing knobs no one has a calibrated answer for is fighting yaml; if the LLM-client integration (Phase 32+) surfaces real-world miscalibration we re-litigate via an RFC PR + a new `MemoryConfig` field. Keeping the surface narrow today avoids version-skew between an operator's `harbor.yaml` and a future Harbor that retunes the defaults internally.
+
+The `Health` FSM transition table is also settled at this phase: `healthy ↔ retry ↔ degraded ↔ recovering` with the explicit edges listed in `internal/memory/memory.go`'s `healthTransitions` map. Self-loops are valid; any other pair is rejected by `ValidateHealthTransition` with `ErrInvalidHealthTransition` (fail-loud — an invalid transition is a programming error in the calling executor, not a recoverable state). The full matrix is property-tested in `internal/memory/strategy/strategy_test.go::TestValidateHealthTransition_Matrix`. The `Health` FSM's observable degradation path (`memory.health_changed` emit on transition) is the explicit, documented exception to AGENTS.md §13's "no silent degradation" rule — degraded mode IS the observable failure surface, and emitting the event makes it observable (and therefore not silent).
+
+---
+
 <!--
 Append new entries below this line in the form:
 
