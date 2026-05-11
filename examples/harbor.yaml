@@ -151,6 +151,42 @@ tools:
   # with only in-process tools (registered via inproc.RegisterFunc)
   # don't need a manifest.
   http_manifests: []
+  # MCP southbound attachments (Phase 28). Each entry boots a
+  # *mcp.Provider whose discovered tools / resources / prompts merge
+  # into the runtime catalog. The section is optional — operators
+  # who don't attach external MCP servers omit it entirely.
+  #
+  # Per-server fields:
+  #   name           — source-id prefix; must be unique across servers.
+  #   transport_mode — `auto` | `sse` | `streamable_http` | `stdio`.
+  #                    `auto` tries streamable-HTTP first, then SSE;
+  #                    stdio is selected when only `command` is set.
+  #   url            — required for sse / streamable_http (and auto
+  #                    when transport is HTTP-flavoured).
+  #   command        — required for stdio. ARGV-form ONLY: [0] is the
+  #                    binary path, [1:] are arguments. Shell-form
+  #                    (`sh -c "..."`) is FORBIDDEN per AGENTS.md §7.
+  #   headers        — operator-supplied auth headers (bearer, API
+  #                    key, etc.). Treated as secrets; redacted in
+  #                    boot logs.
+  #   keep_alive     — session ping interval; zero disables.
+  #
+  # Examples (commented):
+  #
+  # mcp_servers:
+  #   - name: github
+  #     transport_mode: streamable_http
+  #     url: https://example.com/mcp/github
+  #     headers:
+  #       Authorization: Bearer replace-me
+  #     keep_alive: 30s
+  #
+  #   - name: filesystem
+  #     transport_mode: stdio
+  #     command:
+  #       - /usr/local/bin/mcp-server-filesystem
+  #       - /var/data/filesystem-root
+  mcp_servers: []
 
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out

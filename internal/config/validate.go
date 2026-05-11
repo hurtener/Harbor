@@ -368,17 +368,88 @@ func (c *Config) validateMemory() error {
 	return nil
 }
 
-// validateTools checks the Phase 26+ tools configuration. Phase 27
-// adds HTTP-manifest paths; each entry must be a non-empty string.
-// The manifest itself is parsed by `internal/tools/drivers/http`
-// at boot; this validator only enforces the structural shape so a
-// typo (empty list entry, trailing comma in YAML) fails at config
-// load rather than during driver registration.
+// allowedMCPTransportModes mirrors the MCPTransportMode allowlist
+// in `internal/tools/drivers/mcp/auto.go`. Duplicated (not imported)
+// because `internal/config` MUST NOT depend on a concrete driver
+// package (AGENTS.md §4.4 — drivers depend on interfaces, not the
+// other way round). A drift between the two lists is caught by
+// `TestValidateTools_TransportModeAllowlistMirrors_MCPDriver` in
+// `internal/tools/drivers/mcp/mcp_test.go`.
+var allowedMCPTransportModes = map[string]struct{}{
+	"auto":            {},
+	"sse":             {},
+	"streamable_http": {},
+	"stdio":           {},
+}
+
+// validateTools checks the Phase 26+ tools configuration: Phase 27's
+// HTTP manifest paths + Phase 28's MCP servers. Later phases extend
+// (Phase 29 A2A peers, Phase 30 OAuth token stores, etc.). The
+// manifest itself is parsed by `internal/tools/drivers/http` at
+// boot; this validator only enforces structural shape so a typo
+// (empty list entry, trailing comma in YAML) fails at config load
+// rather than during driver registration.
+//
+// Per-MCP-server invariants:
+//   - Name non-empty + unique across servers.
+//   - TransportMode in the allowlist (empty defaults to "auto" at
+//     driver-construction time; the validator accepts empty).
+//   - URL set when transport is sse / streamable_http.
+//   - Command set when transport is stdio.
+//   - KeepAlive >= 0.
+//
+// Auto-mode + empty URL + empty Command is rejected (no candidate
+// transport would be selected).
 func (c *Config) validateTools() error {
 	for i, p := range c.Tools.HTTPManifests {
 		if strings.TrimSpace(p) == "" {
 			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
 				"path must not be empty")
+		}
+	}
+	names := make(map[string]struct{})
+	for i, s := range c.Tools.MCPServers {
+		prefix := fmt.Sprintf("tools.mcp_servers[%d]", i)
+		if s.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := names[s.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate name %q (must be unique)", s.Name))
+		}
+		names[s.Name] = struct{}{}
+		mode := s.TransportMode
+		if mode == "" {
+			mode = "auto"
+		}
+		if _, ok := allowedMCPTransportModes[mode]; !ok {
+			return fieldError(prefix+".transport_mode",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedMCPTransportModes), s.TransportMode))
+		}
+		switch mode {
+		case "sse", "streamable_http":
+			if s.URL == "" {
+				return fieldError(prefix+".url",
+					fmt.Sprintf("must be set when transport_mode=%q", mode))
+			}
+		case "stdio":
+			if len(s.Command) == 0 {
+				return fieldError(prefix+".command",
+					"must be set (argv form) when transport_mode=\"stdio\"")
+			}
+			if s.Command[0] == "" {
+				return fieldError(prefix+".command[0]",
+					"binary path must not be empty")
+			}
+		case "auto":
+			if s.URL == "" && len(s.Command) == 0 {
+				return fieldError(prefix,
+					"auto mode requires url or command")
+			}
+		}
+		if s.KeepAlive < 0 {
+			return fieldError(prefix+".keep_alive", "must be >= 0")
 		}
 	}
 	return nil

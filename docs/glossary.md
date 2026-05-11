@@ -190,6 +190,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`MessageBus`** — Harbor's at-least-once cross-worker fan-out edge (`internal/distributed`). V1 ships an in-process loopback driver that projects published `BusEnvelope`s through the typed `events.EventBus`; durable backends (NATS / Redis Streams / Postgres-as-queue) are post-V1 phase 86. Handlers MUST be idempotent on `(TaskID, Edge, EventID)`. RFC §6.12, D-031.
 
+**`MCPTransportMode`** — selects the wire transport for an MCP southbound attachment (Phase 28): `auto` / `sse` / `streamable_http` / `stdio`. `auto` tries streamable-HTTP first (with SSE fallback when the URL endpoint rejects it); stdio is selected when only `Command` is set. The validator's allowlist in `internal/config/validate.go` is mirrored verbatim against the driver's `IsValidTransportMode` (pinned by a drift test). RFC §6.4, brief 03 §4, D-034.
+
+**`mcp.resource_updated`** — canonical event type emitted when an MCP southbound server pushes a `notifications/resources/updated` for a URI the driver previously `Subscribe`d to. `SafePayload` by construction — the URI is operator-trust-equivalent (server-controlled) and the source ID is operator-supplied. Registered in `internal/tools/drivers/mcp/events.go` via the driver's `init()`. RFC §6.4.
+
 ## O
 
 **ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.

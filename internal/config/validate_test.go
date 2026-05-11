@@ -300,6 +300,157 @@ func TestLiveReloadable_EmptyInPhase02(t *testing.T) {
 	}
 }
 
+func TestValidateTools_MCPServers(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantOK  bool
+		wantSub string
+	}{
+		{
+			name:   "empty mcp_servers passes",
+			mutate: func(c *config.Config) { c.Tools.MCPServers = nil },
+			wantOK: true,
+		},
+		{
+			name: "valid sse server",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "github", TransportMode: "sse", URL: "https://example.com/sse"},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "valid streamable_http server",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "filesystem", TransportMode: "streamable_http", URL: "https://example.com/mcp"},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "valid stdio server",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "local", TransportMode: "stdio", Command: []string{"/usr/local/bin/mcp-server"}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "valid auto with URL",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "auto", TransportMode: "auto", URL: "https://example.com/mcp"},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "empty mode defaults to auto",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "auto", URL: "https://example.com/mcp"},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "missing name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{{TransportMode: "sse", URL: "https://x"}}
+			},
+			wantSub: "tools.mcp_servers[0].name",
+		},
+		{
+			name: "duplicate name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "dup", TransportMode: "sse", URL: "https://x"},
+					{Name: "dup", TransportMode: "sse", URL: "https://y"},
+				}
+			},
+			wantSub: "duplicate name",
+		},
+		{
+			name: "unknown mode rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "websocket", URL: "https://x"},
+				}
+			},
+			wantSub: "tools.mcp_servers[0].transport_mode",
+		},
+		{
+			name: "sse without url rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "sse"},
+				}
+			},
+			wantSub: "tools.mcp_servers[0].url",
+		},
+		{
+			name: "stdio without command rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "stdio"},
+				}
+			},
+			wantSub: "tools.mcp_servers[0].command",
+		},
+		{
+			name: "stdio with empty binary path rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "stdio", Command: []string{""}},
+				}
+			},
+			wantSub: "tools.mcp_servers[0].command[0]",
+		},
+		{
+			name: "auto with neither url nor command rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "auto"},
+				}
+			},
+			wantSub: "auto mode requires url or command",
+		},
+		{
+			name: "negative keep_alive rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "x", TransportMode: "sse", URL: "https://x", KeepAlive: -1},
+				}
+			},
+			wantSub: "tools.mcp_servers[0].keep_alive",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected ok, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected validation failure, got nil")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
 func TestIsValidationError(t *testing.T) {
 	cfg := mustLoadValid(t)
 	cfg.Server.BindAddr = ""
