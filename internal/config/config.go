@@ -122,12 +122,17 @@ type SkillsConfig struct{}
 // `RetainTurnTimeout` is the maximum time the runtime engine will
 // block a foreground turn waiting for retain-turn groups to resolve.
 // Defaults to 5 minutes (RFC §6.8); zero or negative values are
-// rejected by validation.
+// rejected by validation. Consumed by the engine wiring scheduled
+// for Phase 60+ (runtime↔tasks integration); validated today so an
+// operator's deployment is rejected for an invalid value even
+// before the consumer lands.
 //
 // `ContinuationHopLimit` caps the number of background-continuation
 // hops a planner runtime may take before requiring user
 // confirmation. Defaults to 8 (RFC §6.8); zero or negative values
-// are rejected by validation.
+// are rejected by validation. Consumed by the planner concretes
+// (Phase 42+); same "validate today, consume later" pattern as
+// `RetainTurnTimeout`.
 //
 // Restart-required (no `reload:"live"` tag).
 type TasksConfig struct {
@@ -186,7 +191,10 @@ type SessionsConfig struct {
 // `HeavyOutputThresholdBytes` is the byte size at which the runtime
 // mandatorily routes a payload through the ArtifactStore. Default
 // 32 KB (D-022, RFC §6.10). Per-tool overrides land at Phase 26 via
-// the tool catalog; the field is the runtime-wide default.
+// the tool catalog; the field is the runtime-wide default. Consumed
+// by the tool dispatcher (Phase 26+) and the LLM-edge catch-all
+// (Phase 32) — validated today so an operator's deployment is
+// rejected for an invalid value even before the consumers land.
 //
 // S3* fields configure the Phase 19 S3-style driver (AWS S3 / MinIO /
 // Cloudflare R2 / any S3-compat backend). `S3Bucket` is required when
