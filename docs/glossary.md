@@ -316,9 +316,25 @@ Additions to this set are RFC PRs.
 
 **TaskRegistry** — the orchestration surface for spawning, listing, cancelling, prioritising, and driving the lifecycle FSM of tasks. One mandatory interface; one V1 driver (`inprocess`); future durable backends post-V1 (Phase 87+). The Mark* methods are the lifecycle drive-points called by the runtime engine; Cancel / Prioritize are caller-initiated (planner, steering, Console). Phase 20 ships the per-task surface; Phase 21 extends it with groups + retain-turn + WatchGroup (D-030). RFC §6.8.
 
+**Tool** — Harbor's planner-addressable unit. Same struct regardless of `Transport` (`inprocess` / `http` / `mcp` / `a2a` / `flow`); the unification is at the type level (brief 03 §1). Carries `ArgsSchema`, `OutSchema`, `Policy` (the reliability shell), `Source` (provider ID), and a `Loading` mode (`always` / `deferred`). RFC §6.4.
+
+**ToolCatalog** — the planner-addressable registry. Three-method interface: `Register(d)`, `Resolve(name)`, `List(filter)`. V1 ships the in-memory catalog (`tools.NewCatalog`); future drivers (remote-catalog, persistent-catalog) plug in behind the same interface. Concurrent reuse safe (D-025): RWMutex-guarded; descriptors immutable after Register. RFC §6.4.
+
+**ToolDescriptor** — the callable binding produced by a driver: `Tool` + `Invoke(ctx, args) (ToolResult, error)` + `Validate(args) error`. The planner never sees a `ToolDescriptor`; the dispatcher uses it. RFC §6.4.
+
+**ToolProvider** — interface for external tool sources (HTTP / MCP / A2A). Phase 27+ drivers implement `Connect` / `Discover` / `Close` / `SourceID`. Phase 26 ships the interface shape; the in-process registrar does not need a provider lifecycle (it's a thin wrapper around `ToolCatalog.Register`). RFC §6.4.
+
 **ToolContext** — per-tool-call runtime context split into a JSON-encodable half (persisted across pause/resume) and a runtime-handle half (re-attached by key on resume). The split is a fail-loudly contract: serializing the JSON-half MUST raise `ErrUnserializable` if any field is non-serializable rather than silently dropping data; resuming a missing handle raises `ErrToolContextLost`. RFC §6.3, brief 02.
 
 **ToolPolicy** — the reliability shell applied to every tool invocation regardless of `Transport`. Mirrors `NodePolicy` (§6.1): `TimeoutMS`, `MaxRetries`, `BackoffBase`, `BackoffMax`, `RetryOn` (error classes), `Validate`. Sensible defaults fire on zero-value so `tools.RegisterFunc(name, fn)` is production-resilient with no ceremony. RFC §6.4, D-024.
+
+**TransportKind** — discriminator on `Tool.Transport`. V1 values: `inprocess` (a Go function registered via `inproc.RegisterFunc`), `http` (Phase 27), `mcp` (Phase 28), `a2a` (Phase 29), `flow` (a typed DAG of Nodes registered as a Tool via `flow.RegisterAsTool`). RFC §6.4.
+
+**SideEffect** — declared side-effect class on `Tool.SideEffects`: `pure` / `read` / `write` / `external` / `stateful`. Operators reason about which classes are safe to retry / parallelize. RFC §6.4.
+
+**LoadingMode** — `always` (the planner always sees this Tool in its prompt-time catalog) or `deferred` (loaded lazily on demand). RFC §6.4.
+
+**CatalogFilter** — server-enforced visibility predicate on `ToolCatalog.List`. Keys on the `(tenant, user, session)` triple plus `GrantedScopes`. A Tool is visible only if every entry in its `AuthScopes` is contained in `GrantedScopes`. `LoadingModes` defaults to `[LoadingAlways]` for the prompt-time view. RFC §6.4.
 
 **Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs. RFC §6.2.
 
