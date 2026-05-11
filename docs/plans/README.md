@@ -800,7 +800,7 @@ The phase queue is a DAG, not a line. Here are the parallelizable waves; phases 
 15 (SQLite state), 16 (PG state), 17 (Artifacts iface + InMem + FS — needs 01, 07). Three parallel.
 
 **Wave 6 — Tasks + remaining persistence:**
-18 (Artifact SQLite/PG; needs 17, 15, 16), 19 (Artifact S3; needs 17), 20 (TaskRegistry; needs 01, 07), 22 (Distributed contracts; needs 09, 20). Parallelizable subject to deps.
+18 (Artifact SQLite/PG; needs 17, 15, 16), 19 (Artifact S3; needs 17), 20 (TaskRegistry; needs 01, 07), 21 (TaskGroup + WatchGroup + retain-turn + patches; needs 20), 22 (Distributed contracts; needs 09, 20). Stage 1 (18, 19, 20) parallelizable; Stage 2 (21, 22) once 20 lands.
 
 **Wave 7 — Memory + tools core + LLM core (parallel tracks):**
 

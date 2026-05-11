@@ -365,21 +365,22 @@ func RunRemoteTransport(t *testing.T, factory RemoteTransportFactory) {
 		}
 	})
 
-	t.Run("Send_Identity_Mandatory", func(t *testing.T) {
-		// This subtest verifies the caller-side identity guard. Drivers
-		// SHOULD reject calls without a complete identity in ctx; the
-		// runtime wraps every distributed call through an identity-
-		// asserting middleware in production. To exercise that, the
-		// conformance suite calls Send with a context that does NOT
-		// carry an Identity (it's the responsibility of the caller, NOT
-		// the driver, but the conformance suite still gates that the
-		// runtime's wrapper would catch it). Since the V1 loopback
-		// transport does not itself re-validate identity (the wrapper
-		// owns that), this test simply asserts the contract is wired
-		// at-or-above the call site by checking the helper succeeds.
+	t.Run("Send_PropagatesIdentityToAgent", func(t *testing.T) {
+		// Identity validation lives at the runtime's distributed-call
+		// boundary, NOT inside the transport driver (see remote.go
+		// "All methods receive identity via ctx … drivers SHOULD NOT
+		// need to re-validate when the runtime owns the ctx" and
+		// AGENTS.md §6 rule 9). What the transport MUST guarantee is
+		// that the ctx Identity reaches the Agent intact — without
+		// propagation, an authenticated runtime call would arrive at
+		// the remote endpoint with no scope. This subtest asserts that
+		// propagation: the stubbed Agent reads `identity.From(ctx)`
+		// and the call only succeeds when the caller supplied one.
 		//
-		// For future drivers that DO re-validate (e.g. a wire driver
-		// that requires identity headers), this test is the gate.
+		// (A future driver that DOES re-validate at its boundary —
+		// e.g. an HTTP+JSON wire driver verifying signed identity
+		// headers — would shadow this subtest with its own
+		// `Send_RejectsMissingIdentity` test alongside this one.)
 		tr, bind, cleanup := factory(t)
 		defer cleanup()
 		if bind == nil {
@@ -387,9 +388,8 @@ func RunRemoteTransport(t *testing.T, factory RemoteTransportFactory) {
 		}
 		bind(agentURL, &stubAgent{
 			sendMessage: func(ctx context.Context, msg a2a.Message, cfg a2a.SendMessageConfiguration) (a2a.Task, error) {
-				// Verify the call has identity in ctx.
 				if _, ok := identity.From(ctx); !ok {
-					return a2a.Task{}, fmt.Errorf("identity required")
+					return a2a.Task{}, fmt.Errorf("identity not propagated to Agent")
 				}
 				return a2a.Task{ID: "t-1", Status: a2a.TaskStatus{State: a2a.TaskStateCompleted}}, nil
 			},
@@ -398,14 +398,15 @@ func RunRemoteTransport(t *testing.T, factory RemoteTransportFactory) {
 			AgentURL: agentURL,
 			Message:  a2a.Message{MessageID: "m-1", Role: a2a.RoleUser, Parts: a2a.Parts{&a2a.TextPart{Text: "hi"}}},
 		}
-		// Identity-equipped call must succeed.
 		triple := tripleA()
 		if _, err := tr.Send(ctxWith(triple), req); err != nil {
 			t.Errorf("Send with identity: %v", err)
 		}
-		// Identity-less call: the Agent stub returns an identity error.
+		// Identity-less ctx: transport propagates verbatim; the Agent
+		// observes the missing identity and surfaces an error. Proves
+		// the driver did NOT inject a default identity along the way.
 		if _, err := tr.Send(context.Background(), req); err == nil {
-			t.Errorf("Send without identity: expected error, got nil")
+			t.Errorf("Send with missing identity: expected agent-side error, got nil")
 		}
 	})
 
