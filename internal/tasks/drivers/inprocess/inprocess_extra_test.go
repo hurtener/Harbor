@@ -603,6 +603,16 @@ func TestSpawn_IdempotencyConflict_DivergentFields(t *testing.T) {
 		{name: "notify-on-complete diverges", mut: func(r *tasks.SpawnRequest) {
 			r.NotifyOnComplete = true
 		}},
+		{name: "description diverges", mut: func(r *tasks.SpawnRequest) {
+			// Hashes diverge → conflict. Catches the case the redactor
+			// erases (both inputs may post-redact to the same string,
+			// but the pre-redaction SHA-256 of Description+Query
+			// surfaces the divergence).
+			r.Description = "divergent description"
+		}},
+		{name: "query diverges", mut: func(r *tasks.SpawnRequest) {
+			r.Query = "divergent query"
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -720,4 +730,62 @@ func TestNew_RejectsNilDeps(t *testing.T) {
 			t.Fatal("nil redactor: err=nil, want non-nil")
 		}
 	})
+}
+
+// TestClose_DrainsActiveWatchersAndWaiters verifies the Close
+// contract: any goroutine blocked on a `WatchGroup`-returned channel
+// or a `RegisterRetainTurnWaiter` channel observes the close-on-
+// shutdown signal instead of leaking forever. Phase 21 audit fix —
+// before this, `Close` only flipped the atomic flag.
+func TestClose_DrainsActiveWatchersAndWaiters(t *testing.T) {
+	r, cleanup := freshRegistry(t)
+	// We call Close ourselves; cleanup just teardowns the deps.
+	defer cleanup()
+	ctx := ctxA(t)
+	id := tripleA().Identity
+
+	// Group + WatchGroup subscription left intentionally open.
+	grp, err := r.ResolveOrCreateGroup(ctx, tasks.GroupRequest{
+		SessionID:   id,
+		OwnerTaskID: tasks.TaskID("owner"),
+		Description: "close-drain",
+	})
+	if err != nil {
+		t.Fatalf("ResolveOrCreateGroup: %v", err)
+	}
+	watchCh, _, err := r.WatchGroup(id, grp.ID)
+	if err != nil {
+		t.Fatalf("WatchGroup: %v", err)
+	}
+	// Retain-turn waiter left open.
+	waitCh, _ := r.RegisterRetainTurnWaiter(id)
+
+	// Close.
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Both channels MUST close (not deliver). 1s timeout is the hard
+	// cap; a leak shows up as a deadline trip, not a deadlock.
+	select {
+	case _, ok := <-watchCh:
+		if ok {
+			t.Errorf("WatchGroup channel delivered a value on Close (expected close-without-value)")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("WatchGroup channel did not close on Close — leak")
+	}
+	select {
+	case _, ok := <-waitCh:
+		if ok {
+			t.Errorf("retain-turn channel delivered a value on Close (expected close-without-value)")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("retain-turn channel did not close on Close — leak")
+	}
+
+	// Idempotent re-close.
+	if err := r.Close(context.Background()); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
 }

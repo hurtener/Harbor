@@ -31,6 +31,7 @@ package inprocess
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -432,10 +433,23 @@ func (d *driver) AcknowledgeBackground(ctx context.Context, sessionID identity.I
 	}
 	d.mu.Unlock()
 
+	// Emit EVERY collected event before returning, even if one fails.
+	// Returning early on the first publish error left earlier acks
+	// with events shipped + later acks recorded but never observable
+	// — a silent split-brain between `acknowledged` map state and
+	// subscriber visibility. Joining the errors keeps the count
+	// honest (it always reflects the tasks the driver flipped to
+	// acked) while surfacing the publish failures as a single
+	// aggregate per AGENTS.md §5 "fail loudly."
+	var publishErrs []error
 	for _, e := range emits {
 		if err := d.bus.Publish(ctx, e.ev); err != nil {
-			return count, err
+			publishErrs = append(publishErrs, fmt.Errorf("tasks/inprocess: publish %q for %v: %w",
+				e.ev.Type, e.ev.Payload, err))
 		}
+	}
+	if len(publishErrs) > 0 {
+		return count, errors.Join(publishErrs...)
 	}
 	return count, nil
 }
