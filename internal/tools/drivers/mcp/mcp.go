@@ -38,6 +38,11 @@ var (
 	// compile; the descriptor is rejected at Discover time so the
 	// catalog never holds a Tool whose Validate is broken.
 	ErrSchemaInvalid = errors.New("mcp: invalid tool input schema")
+	// ErrIdentityMissing — the per-invocation ctx had no identity
+	// triple. AGENTS.md §6 rule 9: identity is mandatory; the MCP
+	// driver fails closed rather than dispatching to a remote server
+	// with an empty `_meta` block. Mirrors the HTTP and A2A drivers.
+	ErrIdentityMissing = errors.New("mcp: identity missing from ctx")
 )
 
 // resourceTypeSeparator — used in the synthetic tool names for
@@ -445,7 +450,10 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
 		}
 	}
-	meta := buildIdentityMeta(ctx)
+	meta, err := buildIdentityMeta(ctx)
+	if err != nil {
+		return tools.ToolResult{}, err
+	}
 	params := &mcpsdk.CallToolParams{
 		Name:      name,
 		Arguments: argMap,
@@ -488,7 +496,11 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 					return tools.ToolResult{}, err
 				}
 				params := &mcpsdk.ReadResourceParams{URI: uri}
-				params.Meta = buildIdentityMeta(ctx)
+				meta, mErr := buildIdentityMeta(ctx)
+				if mErr != nil {
+					return tools.ToolResult{}, mErr
+				}
+				params.Meta = meta
 				res, err := session.ReadResource(ctx, params)
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %v", ErrTransportFailed, uri, err)
@@ -532,7 +544,11 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 					}
 				}
 				params := &mcpsdk.GetPromptParams{Name: name, Arguments: argMap}
-				params.Meta = buildIdentityMeta(ctx)
+				meta, mErr := buildIdentityMeta(ctx)
+				if mErr != nil {
+					return tools.ToolResult{}, mErr
+				}
+				params.Meta = meta
 				res, err := session.GetPrompt(ctx, params)
 				if err != nil {
 					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %v", ErrTransportFailed, name, err)
@@ -555,7 +571,11 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 		return err
 	}
 	params := &mcpsdk.SubscribeParams{URI: uri}
-	params.Meta = buildIdentityMeta(ctx)
+	meta, mErr := buildIdentityMeta(ctx)
+	if mErr != nil {
+		return mErr
+	}
+	params.Meta = meta
 	if err := session.Subscribe(ctx, params); err != nil {
 		return fmt.Errorf("%w: subscribe %q: %v", ErrTransportFailed, uri, err)
 	}
@@ -632,16 +652,26 @@ func (p *Provider) Close(ctx context.Context) error {
 // uses for caller-controlled metadata. Harbor stamps the
 // (tenant, user, session) triple under `tenant` / `user` /
 // `session` keys so MCP servers see Harbor's isolation triple.
-// Missing identity returns an empty Meta — the call still
-// proceeds; the server may reject if it requires identity.
-func buildIdentityMeta(ctx context.Context) mcpsdk.Meta {
-	meta := mcpsdk.Meta{}
-	if id, ok := identity.From(ctx); ok {
-		meta["tenant"] = id.TenantID
-		meta["user"] = id.UserID
-		meta["session"] = id.SessionID
+//
+// AGENTS.md §6 rule 9 / forbidden practice §13: identity is
+// mandatory. Missing identity returns `ErrIdentityMissing` and the
+// caller MUST abort the dispatch — never proceed with an empty Meta.
+// Callers are the per-invocation closures (callTool / read-resource
+// / call-prompt); the server-pushed onResourceUpdated path uses
+// `Config.DefaultIdentity` and bypasses this helper.
+func buildIdentityMeta(ctx context.Context) (mcpsdk.Meta, error) {
+	id, ok := identity.From(ctx)
+	if !ok {
+		return nil, ErrIdentityMissing
 	}
-	return meta
+	if id.TenantID == "" || id.UserID == "" || id.SessionID == "" {
+		return nil, ErrIdentityMissing
+	}
+	return mcpsdk.Meta{
+		"tenant":  id.TenantID,
+		"user":    id.UserID,
+		"session": id.SessionID,
+	}, nil
 }
 
 // chooseString returns first when non-empty, else second.
