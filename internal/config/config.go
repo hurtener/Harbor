@@ -44,7 +44,7 @@ type Config struct {
 	Audit     AuditConfig     `yaml:"audit,omitempty"`     // owned by Phase 03 + audit phases
 	Protocol  ProtocolConfig  `yaml:"protocol,omitempty"`  // owned by protocol phases
 	CLI       CLIConfig       `yaml:"cli,omitempty"`       // owned by CLI phases
-	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by Phase 26+ tools phases (HTTP manifests land at Phase 27)
+	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
 
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
@@ -276,21 +276,50 @@ type EventsConfig struct {
 // AuditConfig is owned by Phase 03 + later audit phases.
 type AuditConfig struct{}
 
+// ToolsConfig is owned by the tools subsystem phases (Phase 26+).
+// The block is optional — operators who don't attach external tool
+// sources omit it entirely.
+//
+// `HTTPManifests` lists paths to UTCP-style YAML manifests loaded
+// at boot by Phase 27's HTTP driver. Paths may be absolute or
+// relative; the loader rejects empty strings and resolves each via
+// `filepath.Clean` before reading. An empty list is valid.
+//
+// `MCPServers` lists Phase 28's MCP southbound attachments. Each
+// entry boots a `*mcp.Provider` whose discovered tools / resources
+// / prompts are merged into the runtime catalog.
+//
+// Phase 29 will extend this struct with A2A peer entries.
+//
+// Restart-required (no `reload:"live"` tag): adding / removing tool
+// providers at runtime is a Phase 91+ Protocol surface concern.
+type ToolsConfig struct {
+	HTTPManifests []string          `yaml:"http_manifests,omitempty"`
+	MCPServers    []MCPServerConfig `yaml:"mcp_servers,omitempty"`
+}
+
+// MCPServerConfig is one MCP southbound attachment. `Name` is the
+// source-id prefix (must be unique across servers); `TransportMode`
+// selects the wire transport (`auto` / `sse` / `streamable_http` /
+// `stdio`); `URL` is required for HTTP-flavoured transports;
+// `Command` is required for stdio (argv form ONLY — see
+// `internal/tools/drivers/mcp/transport_stdio.go` for the §7
+// security rule). `Headers` are operator-supplied auth headers
+// (treated as secrets for redaction). `KeepAlive` is the
+// session-ping interval; zero disables.
+//
+// Restart-required.
+type MCPServerConfig struct {
+	Name          string            `yaml:"name"`
+	TransportMode string            `yaml:"transport_mode"`
+	URL           string            `yaml:"url,omitempty"`
+	Command       []string          `yaml:"command,omitempty"`
+	Headers       map[string]string `yaml:"headers,omitempty" secret:"true"`
+	KeepAlive     time.Duration     `yaml:"keep_alive,omitempty"`
+}
+
 // ProtocolConfig is owned by the protocol-server phases.
 type ProtocolConfig struct{}
 
 // CLIConfig is owned by the CLI phases.
 type CLIConfig struct{}
-
-// ToolsConfig is owned by the tools subsystem (Phase 26+).
-//
-// `HTTPManifests` lists paths to UTCP-style YAML manifests loaded
-// at boot by Phase 27's HTTP driver. Paths may be absolute or
-// relative; the loader rejects empty strings and resolves each via
-// `filepath.Clean` before reading. An empty list (or absent
-// section) is valid — operators with only in-process or
-// Flow-as-Tool entries don't need a manifest. Restart-required (no
-// `reload:"live"`).
-type ToolsConfig struct {
-	HTTPManifests []string `yaml:"http_manifests,omitempty"`
-}
