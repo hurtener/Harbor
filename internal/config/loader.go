@@ -159,6 +159,10 @@ func defaults() *Config {
 			RetainTurnTimeout:    5 * time.Minute,
 			ContinuationHopLimit: 8,
 		},
+		Distributed: DistributedConfig{
+			BusDriver:    "loopback",
+			RemoteDriver: "loopback",
+		},
 	}
 }
 

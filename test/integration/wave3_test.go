@@ -438,6 +438,11 @@ func wave3Config() *config.Config {
 			RetainTurnTimeout:    5 * time.Minute,
 			ContinuationHopLimit: 8,
 		},
+		// DistributedConfig populated by Phase 22 — the validator
+		// added required driver fields. Wave 3's surfaces don't
+		// exercise distributed directly, but Validate runs the field
+		// through (the same §17.6 pattern).
+		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 }
 

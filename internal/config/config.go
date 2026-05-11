@@ -25,12 +25,13 @@ import "time"
 
 // Config is the root configuration. It is immutable after Load.
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Identity   IdentityConfig   `yaml:"identity"`
-	Telemetry  TelemetryConfig  `yaml:"telemetry"`
-	State      StateConfig      `yaml:"state"`
-	LLM        LLMConfig        `yaml:"llm"`
-	Governance GovernanceConfig `yaml:"governance"`
+	Server      ServerConfig      `yaml:"server"`
+	Identity    IdentityConfig    `yaml:"identity"`
+	Telemetry   TelemetryConfig   `yaml:"telemetry"`
+	State       StateConfig       `yaml:"state"`
+	LLM         LLMConfig         `yaml:"llm"`
+	Governance  GovernanceConfig  `yaml:"governance"`
+	Distributed DistributedConfig `yaml:"distributed,omitempty"`
 
 	// Reserved slots for future phases — owning phase fills the body.
 	Runtime   RuntimeConfig   `yaml:"runtime,omitempty"`   // owned by runtime/* phases
@@ -133,6 +134,16 @@ type TasksConfig struct {
 	Driver               string        `yaml:"driver"`
 	RetainTurnTimeout    time.Duration `yaml:"retain_turn_timeout"`
 	ContinuationHopLimit int           `yaml:"continuation_hop_limit"`
+}
+
+// DistributedConfig configures Harbor's distributed contracts (Phase
+// 22). `BusDriver` selects the MessageBus driver; `RemoteDriver`
+// selects the RemoteTransport driver. V1 ships only `"loopback"` for
+// both. Post-V1 phase 86 adds durable bus drivers; Phase 29 adds the
+// A2A wire RemoteTransport driver. Restart-required (no `reload:"live"`).
+type DistributedConfig struct {
+	BusDriver    string `yaml:"bus_driver"`
+	RemoteDriver string `yaml:"remote_driver"`
 }
 
 // SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
