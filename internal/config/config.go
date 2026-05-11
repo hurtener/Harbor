@@ -44,6 +44,7 @@ type Config struct {
 	Audit     AuditConfig     `yaml:"audit,omitempty"`     // owned by Phase 03 + audit phases
 	Protocol  ProtocolConfig  `yaml:"protocol,omitempty"`  // owned by protocol phases
 	CLI       CLIConfig       `yaml:"cli,omitempty"`       // owned by CLI phases
+	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by Phase 26+ tools phases (HTTP manifests land at Phase 27)
 
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
@@ -280,3 +281,16 @@ type ProtocolConfig struct{}
 
 // CLIConfig is owned by the CLI phases.
 type CLIConfig struct{}
+
+// ToolsConfig is owned by the tools subsystem (Phase 26+).
+//
+// `HTTPManifests` lists paths to UTCP-style YAML manifests loaded
+// at boot by Phase 27's HTTP driver. Paths may be absolute or
+// relative; the loader rejects empty strings and resolves each via
+// `filepath.Clean` before reading. An empty list (or absent
+// section) is valid — operators with only in-process or
+// Flow-as-Tool entries don't need a manifest. Restart-required (no
+// `reload:"live"`).
+type ToolsConfig struct {
+	HTTPManifests []string `yaml:"http_manifests,omitempty"`
+}

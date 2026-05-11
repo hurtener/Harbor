@@ -1,0 +1,21 @@
+# Valid UTCP-style manifest fixture for Phase 27 tests.
+#
+# Secrets reference HARBOR_TEST_* env vars that the test harness
+# sets before LoadManifest is called. This file documents the
+# operator deployment shape — DO NOT inline a real secret here.
+auth:
+  echo_key:
+    kind: api_key
+    header: X-Echo-Key
+    secret: ${HARBOR_TEST_ECHO_KEY}
+
+tools:
+  - name: echo.lookup
+    method: POST
+    url_template: '{{ .Args.endpoint }}/echo'
+    description: Echo the supplied message back.
+    auth_ref: echo_key
+    args_schema: '{"type":"object","properties":{"message":{"type":"string"},"endpoint":{"type":"string"}},"required":["message","endpoint"]}'
+    side_effect: external
+    tags: [echo, demo]
+    loading: always
