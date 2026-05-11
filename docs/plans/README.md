@@ -45,7 +45,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Shipped  |
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 85%  | Shipped  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 80%  | Shipped  |
-| 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 85%  | Pending  |
+| 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 80%  | Shipped  |
 | 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50                | 85%  | Pending  |
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Pending  |
