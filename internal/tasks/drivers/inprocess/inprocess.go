@@ -623,7 +623,9 @@ func (d *driver) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 		return err
 	}
 	if isTerminal(to) {
-		d.onMemberTerminalLocked(ctx, t)
+		if err := d.onMemberTerminalLocked(ctx, t); err != nil {
+			return err
+		}
 	}
 	return nil
 }

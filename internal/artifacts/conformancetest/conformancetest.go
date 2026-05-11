@@ -640,10 +640,14 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatalf("Close: %v", err)
 		}
 		cleanup()
+		// Bounded wait for goroutines to settle. Gosched-only —
+		// time.Sleep is forbidden as a synchronisation primitive per
+		// AGENTS.md §11. The 2-second cap is a hard deadline: a
+		// goroutine that doesn't exit in 2s under -race is a leak,
+		// not a flake.
 		deadline := time.Now().Add(2 * time.Second)
 		for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
 			runtime.Gosched()
-			time.Sleep(10 * time.Millisecond)
 		}
 		if delta := runtime.NumGoroutine() - baseline; delta > 0 {
 			t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())

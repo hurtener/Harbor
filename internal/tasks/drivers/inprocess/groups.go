@@ -179,7 +179,9 @@ func (d *driver) SealGroup(ctx context.Context, id tasks.TaskGroupID) error {
 	// If sealing finds the group already has all members terminal
 	// (e.g. members completed before the seal), resolve immediately.
 	if d.allMembersTerminalLocked(g) {
-		d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
+		if err := d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, ""); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -227,7 +229,9 @@ func (d *driver) CancelGroup(ctx context.Context, id tasks.TaskGroupID, reason s
 		}
 	}
 
-	d.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason)
+	if err := d.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -270,8 +274,7 @@ func (d *driver) applyResolveAction(ctx context.Context, id tasks.TaskGroupID) e
 	case tasks.GroupOpen:
 		return fmt.Errorf("%w: id=%q (still open)", tasks.ErrGroupNotSealed, id)
 	case tasks.GroupSealed:
-		d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
-		return nil
+		return d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
 	default:
 		return fmt.Errorf("%w: from=%q to=%q",
 			tasks.ErrGroupInvalidTransition, g.Status, tasks.GroupCompleted)
@@ -528,8 +531,13 @@ func (d *driver) WatchGroup(sessionID identity.Identity, groupID tasks.TaskGroup
 // retain-turn waiters for the owning session, persists the group,
 // and emits the right bus event.
 //
-// Caller MUST hold d.mu.
-func (d *driver) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, final tasks.TaskGroupStatus, reason string) {
+// Caller MUST hold d.mu. Returns the first persist / publish error
+// encountered. The completion payload is cached and delivered to
+// subscribers regardless of persist/publish failure so callers
+// observing WatchGroup don't deadlock; the error surfaces the
+// durable-record + bus-event gap to the public-method caller so
+// retries can land at the right layer (fail-loudly per AGENTS.md §5).
+func (d *driver) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, final tasks.TaskGroupStatus, reason string) error {
 	now := time.Now()
 	g.Status = final
 	g.UpdatedAt = now
@@ -545,25 +553,27 @@ func (d *driver) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, fin
 	}
 	d.groupCompletions[g.ID] = completion
 
-	// Persist + emit. We do this before fanning out to subscribers so
-	// the durable record exists if a subscriber panics on receive.
-	// (`persistGroupLocked` errors are surfaced via the next public
-	// method call; we cannot return an error from a defer-style
-	// resolve path without breaking the surface.)
-	_ = d.persistGroupLocked(ctx, g)
+	// Persist + emit. The WatchGroup fan-out below runs regardless of
+	// persist/publish outcome so a slow durable backend never wedges
+	// the in-memory wake; resolveErr captures the first failure and
+	// the caller surfaces it.
+	var resolveErr error
+	if err := d.persistGroupLocked(ctx, g); err != nil {
+		resolveErr = fmt.Errorf("tasks/inprocess: persist resolved group %q: %w", g.ID, err)
+	}
 
-	if final == tasks.GroupCompleted {
-		_ = d.bus.Publish(ctx, events.Event{
-			Type:     tasks.EventTypeTaskGroupResolved,
-			Identity: identity.Quadruple{Identity: g.SessionID},
-			Payload:  tasks.TaskGroupResolvedPayload{Completion: completion},
-		})
-	} else {
-		_ = d.bus.Publish(ctx, events.Event{
-			Type:     tasks.EventTypeTaskGroupCancelled,
-			Identity: identity.Quadruple{Identity: g.SessionID},
-			Payload:  tasks.TaskGroupCancelledPayload{Completion: completion},
-		})
+	evType := tasks.EventTypeTaskGroupResolved
+	var payload events.EventPayload = tasks.TaskGroupResolvedPayload{Completion: completion}
+	if final != tasks.GroupCompleted {
+		evType = tasks.EventTypeTaskGroupCancelled
+		payload = tasks.TaskGroupCancelledPayload{Completion: completion}
+	}
+	if err := d.bus.Publish(ctx, events.Event{
+		Type:     evType,
+		Identity: identity.Quadruple{Identity: g.SessionID},
+		Payload:  payload,
+	}); err != nil && resolveErr == nil {
+		resolveErr = fmt.Errorf("tasks/inprocess: publish %q for group %q: %w", evType, g.ID, err)
 	}
 
 	// Fan out the completion payload to every active WatchGroup
@@ -605,6 +615,7 @@ func (d *driver) resolveGroupLocked(ctx context.Context, g *tasks.TaskGroup, fin
 		}
 		delete(d.retainWaiters, g.SessionID.SessionID)
 	}
+	return resolveErr
 }
 
 // collectMemberOutcomesLocked returns one `MemberOutcome` per
@@ -663,18 +674,19 @@ func (d *driver) allMembersTerminalLocked(g *tasks.TaskGroup) bool {
 // onMemberTerminalLocked is the hook the per-task Mark* /
 // transitionLocked path invokes when a task that belongs to a group
 // reaches terminal. It implements the FailFast cascade + resolve
-// gate. Caller MUST hold d.mu.
-func (d *driver) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) {
+// gate. Caller MUST hold d.mu. Returns the resolve-path error (if
+// any) so `transitionLocked` can surface it to the Mark* caller.
+func (d *driver) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) error {
 	gid, ok := d.taskGroup[t.ID]
 	if !ok {
-		return
+		return nil
 	}
 	g, exists := d.groups[gid]
 	if !exists {
-		return
+		return nil
 	}
 	if isGroupTerminal(g.Status) {
-		return
+		return nil
 	}
 
 	// FailFast: a member failure cancels remaining members AND
@@ -685,6 +697,7 @@ func (d *driver) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) {
 		if t.Error != nil && t.Error.Code != "" {
 			reason = "fail-fast:" + t.Error.Code
 		}
+		var cancelErr error
 		for _, mid := range g.Members {
 			if mid == t.ID {
 				continue
@@ -696,17 +709,25 @@ func (d *driver) onMemberTerminalLocked(ctx context.Context, t *tasks.Task) {
 			if isTerminal(m.Status) {
 				continue
 			}
-			_ = d.cancelTaskLocked(ctx, m, reason, true)
+			if cerr := d.cancelTaskLocked(ctx, m, reason, true); cerr != nil && cancelErr == nil {
+				cancelErr = fmt.Errorf("tasks/inprocess: fail-fast cascade cancel member %q: %w", mid, cerr)
+			}
 		}
-		d.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason)
-		return
+		if rerr := d.resolveGroupLocked(ctx, g, tasks.GroupCancelled, reason); rerr != nil {
+			if cancelErr == nil {
+				return rerr
+			}
+			return fmt.Errorf("%w; resolve: %v", cancelErr, rerr) //nolint:errorlint // reason: aggregate; primary cause kept via %w
+		}
+		return cancelErr
 	}
 
 	// Normal resolve path: when the group is sealed AND all members
 	// terminal, transition to Completed.
 	if g.Status == tasks.GroupSealed && d.allMembersTerminalLocked(g) {
-		d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
+		return d.resolveGroupLocked(ctx, g, tasks.GroupCompleted, "")
 	}
+	return nil
 }
 
 // cancelTaskLocked cancels t under the held lock. Mirrors the public
@@ -975,7 +996,3 @@ func marshalPatch(p *tasks.Patch) ([]byte, error) {
 	return json.Marshal(p)
 }
 
-// _ulidPin is a compile-pin so a future maintainer who removes the
-// ulid usage from ResolveOrCreateGroup is reminded the file still
-// depends on it.
-var _ = ulid.Now

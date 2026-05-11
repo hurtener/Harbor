@@ -468,10 +468,12 @@ func TestE2E_Wave5_Concurrent_MultiTenant_PersistAndArtifact(t *testing.T) {
 	// Goroutine baseline restored. Tolerance +5 because we tore
 	// down two long-lived subsystems and Go's parked goroutines may
 	// not retire immediately.
+	// Gosched-only settle loop per AGENTS.md §11 (no time.Sleep for
+	// sync). 2s deadline is the hard cap; +5 tolerance covers
+	// parked-but-not-yet-retired goroutines.
 	deadline := time.Now().Add(2 * time.Second)
 	for runtime.NumGoroutine() > baseline+5 && time.Now().Before(deadline) {
 		runtime.Gosched()
-		time.Sleep(10 * time.Millisecond)
 	}
 	if delta := runtime.NumGoroutine() - baseline; delta > 5 {
 		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)", baseline, runtime.NumGoroutine(), delta)
