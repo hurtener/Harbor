@@ -356,6 +356,15 @@ The `Health` FSM transition table is also settled at this phase: `healthy ↔ re
 
 ---
 
+## D-039 — LLM-edge safety pass: mandatory-by-construction, ordering = materialize → leak-detect → token-budget; safety wrapper is the registry's only handout
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.5 ("Context-window safety net" subsection), AGENTS.md §13 (forbidden: raw heavy content reaches LLMClient), master plan phase 32 (acceptance criteria), `docs/plans/phase-32-llm-client.md`, `internal/llm/safety.go` (`safetyClient`), `internal/llm/registry.go` (`Open` returns the wrapper, not the raw `Driver`), glossary (`Context-window safety net`).
+**Why:** D-026 settled the **what** ("no message reaching the `LLMClient` carries raw heavy content; fail loudly via `ErrContextLeak` / `ErrContextWindowExceeded`"); Phase 32 settles the **how**. Three design calls warrant a settled entry so a later auditor doesn't churn them. (1) **Mandatory-by-construction.** `internal/llm.Open(...)` returns an `LLMClient` interface whose only concrete implementation is the package-private `*safetyClient`. The factory builds a `Driver` (the unexported-by-naming surface) and wraps it. A caller cannot bypass the safety pass through the registry; a caller who genuinely needs a bare `Driver` (an evaluation harness that has already run the pass) constructs the wrapper directly in its own package — but the production code path is the registry. This is the AGENTS.md §13 "fail-loudly + capability mandatory" pattern applied to the safety net: the runtime fails closed, not "fails open with a feature-flag." (2) **Pass ordering.** Inside `safetyClient.Complete`, the steps are: **identity → structural-validate → materialize → leak-detect → token-budget → driver**. Materialize runs BEFORE leak-detect so a producer that ships a oversize `DataURL` gets one more chance to be rewritten; a producer that ships raw bytes in a `Text` field (not a `DataURL`) is caught by leak-detect. The token-budget guard runs LAST so it sees the post-materialize byte count (an ArtifactStub-rewritten message is small; estimation reflects what the driver will actually send). Cancellation is honoured between every step via `ctx.Err()`. (3) **No auto-cascade at V1.** The token-budget guard fails loudly with `ErrContextWindowExceeded`; V1 does NOT truncate or summarize automatically. The planner is responsible for recovery (drop older turns, summarize, etc.). Auto-cascade is post-V1 work — an extension of memory's `rolling_summary` plus a `PromptAssembler` orchestrator; tracked but not on V1's floor. The acceptance bar of "fails loudly = observable" is settled at the bus emit (`llm.context_window_exceeded`); operators quantify how often the guard fires and tune `ContextWindowReserve` accordingly.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

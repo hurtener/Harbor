@@ -19,14 +19,14 @@ const redactedPlaceholder = "***"
 // safety net: even if a future contributor forgets the tag on a
 // new secret field, the canonical names are still redacted.
 var secretFallbackNames = map[string]struct{}{
-	"api_key":      {},
-	"apikey":       {},
-	"token":        {},
-	"password":     {},
-	"secret":       {},
+	"api_key":       {},
+	"apikey":        {},
+	"token":         {},
+	"password":      {},
+	"secret":        {},
 	"client_secret": {},
-	"private_key":  {},
-	"signing_key":  {},
+	"private_key":   {},
+	"signing_key":   {},
 }
 
 // MarshalForLogging produces YAML bytes with secret-shaped fields
