@@ -106,10 +106,17 @@ tasks:
   continuation_hop_limit: 8
 
 memory:
-  # MemoryStore driver — Phase 23 ships only `inmem`. Phase 25 will
-  # add `sqlite` and `postgres` (durable across restart). Default
+  # MemoryStore driver — Phase 23 shipped `inmem`; Phase 25 adds
+  # `sqlite` and `postgres` (durable across restart). Default
   # `inmem`.
   driver: inmem
+  # DSN — required when driver is `sqlite` or `postgres`. SQLite
+  # accepts a bare file path (or `:memory:` for the degenerate dev
+  # case); Postgres accepts a standard URL form
+  # (`postgres://user:pass@host:5432/db?sslmode=disable`) or pgx
+  # key-value form. Override via HARBOR_MEMORY_DSN in production;
+  # never commit a real password.
+  # dsn: /var/lib/harbor/memory.sqlite
   # Memory shape strategy. Phase 23 ships only `none` operational —
   # AddTurn is a no-op, GetLLMContext returns empty. Phase 24 will
   # add `truncation` (recent-turn window + budget enforcement) and

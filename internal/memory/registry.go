@@ -29,8 +29,15 @@ type Deps struct {
 // from the config package's type evolution. Callers (typically
 // `cmd/harbor/main.go`'s bootstrap or a test wiring helper)
 // translate `config.MemoryConfig` → `ConfigSnapshot` at the seam.
+//
+// `DSN` is consumed by the SQLite + Postgres drivers (Phase 25); the
+// InMem driver ignores it. Validation of "DSN required for
+// persistent drivers" lives at the config layer (`validateMemory`
+// in `internal/config/validate.go`) and at the driver constructor
+// itself — fail-loudly twice so a misconfiguration surfaces early.
 type ConfigSnapshot struct {
 	Driver       string
+	DSN          string
 	Strategy     Strategy
 	BudgetTokens int
 }

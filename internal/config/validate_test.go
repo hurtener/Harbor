@@ -191,6 +191,22 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Memory.BudgetTokens = -1 },
 			"memory.budget_tokens",
 		},
+		{
+			"sqlite memory driver requires DSN",
+			func(c *config.Config) {
+				c.Memory.Driver = "sqlite"
+				c.Memory.DSN = ""
+			},
+			"memory.dsn",
+		},
+		{
+			"postgres memory driver requires DSN",
+			func(c *config.Config) {
+				c.Memory.Driver = "postgres"
+				c.Memory.DSN = ""
+			},
+			"memory.dsn",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,6 +227,24 @@ func TestValidate_HappyPath(t *testing.T) {
 	cfg := mustLoadValid(t)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate on the canonical fixture failed: %v", err)
+	}
+}
+
+func TestValidate_AcceptsSQLiteMemoryDriverWithDSN(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Memory.Driver = "sqlite"
+	cfg.Memory.DSN = "/var/lib/harbor/memory.sqlite"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected sqlite memory driver: %v", err)
+	}
+}
+
+func TestValidate_AcceptsPostgresMemoryDriverWithDSN(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Memory.Driver = "postgres"
+	cfg.Memory.DSN = "postgres://harbor:secret@localhost:5432/harbor?sslmode=disable"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected postgres memory driver: %v", err)
 	}
 }
 

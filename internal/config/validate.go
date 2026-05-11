@@ -310,8 +310,20 @@ func (c *Config) validateDistributed() error {
 }
 
 // allowedMemoryDrivers is the V1 memory-driver allowlist. Phase 23
-// ships only `inmem`; Phase 25 will add `sqlite` and `postgres`.
-var allowedMemoryDrivers = map[string]struct{}{"inmem": {}}
+// shipped `inmem`; Phase 25 adds `sqlite` and `postgres`.
+var allowedMemoryDrivers = map[string]struct{}{
+	"inmem":    {},
+	"sqlite":   {},
+	"postgres": {},
+}
+
+// memoryDriversRequiringDSN names the drivers whose `DSN` field must
+// be non-empty. Phase 25's persistent drivers need explicit DSNs;
+// `inmem` does not.
+var memoryDriversRequiringDSN = map[string]struct{}{
+	"sqlite":   {},
+	"postgres": {},
+}
 
 // allowedMemoryStrategies is the V1 memory-strategy allowlist.
 // Phase 23 ships only `none` operational; Phase 24 will add
@@ -329,6 +341,12 @@ func (c *Config) validateMemory() error {
 		return fieldError("memory.driver",
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedMemoryDrivers), c.Memory.Driver))
+	}
+	if _, needsDSN := memoryDriversRequiringDSN[c.Memory.Driver]; needsDSN {
+		if c.Memory.DSN == "" {
+			return fieldError("memory.dsn",
+				fmt.Sprintf("must not be empty when driver=%q", c.Memory.Driver))
+		}
 	}
 	if c.Memory.Strategy != "" {
 		if _, ok := allowedMemoryStrategies[c.Memory.Strategy]; !ok {

@@ -40,7 +40,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 22 | MessageBus + RemoteTransport contracts        | distributed          | §6.12       | 09, 20                | 85%  | Shipped  |
 | 23 | MemoryStore iface + InMem + conformance       | memory               | §6.6        | 01, 07                | 85%  | Shipped  |
 | 24 | Memory strategies (truncation, summary)       | memory               | §6.6        | 23                    | 85%  | Pending  |
-| 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Pending  |
+| 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Shipped  |
 | 26 | Tool catalog core + InProcess registration    | tools                | §6.4        | 01, 05, 09            | 85%  | Shipped  |
 | 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Shipped  |
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 80%  | Pending  |
