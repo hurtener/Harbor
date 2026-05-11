@@ -265,6 +265,16 @@ func (c *Config) validateTasks() error {
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedTasksDrivers), c.Tasks.Driver))
 	}
+	// Phase 21: backgroundtasks-config knobs. Defaults are applied in
+	// `defaults()`; the validator rejects negative / zero values so an
+	// operator-set override that elides the field flips back to the
+	// default rather than silently disabling the feature.
+	if c.Tasks.RetainTurnTimeout <= 0 {
+		return fieldError("tasks.retain_turn_timeout", "must be > 0")
+	}
+	if c.Tasks.ContinuationHopLimit <= 0 {
+		return fieldError("tasks.continuation_hop_limit", "must be > 0")
+	}
 	return nil
 }
 

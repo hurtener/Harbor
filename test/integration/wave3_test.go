@@ -429,11 +429,14 @@ func wave3Config() *config.Config {
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
 		// TasksConfig populated by Phase 20 — the validator added a
-		// required driver field. Wave 3's surfaces don't exercise
-		// tasks directly, but Validate runs the field through (the
-		// same §17.6 pattern as Artifacts above).
+		// required driver field. Phase 21 added `retain_turn_timeout`
+		// + `continuation_hop_limit` validators. Wave 3's surfaces
+		// don't exercise tasks directly, but Validate runs the field
+		// through (the same §17.6 pattern as Artifacts above).
 		Tasks: config.TasksConfig{
-			Driver: "inprocess",
+			Driver:               "inprocess",
+			RetainTurnTimeout:    5 * time.Minute,
+			ContinuationHopLimit: 8,
 		},
 		// DistributedConfig populated by Phase 22 — the validator
 		// added required driver fields. Wave 3's surfaces don't

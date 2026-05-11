@@ -526,9 +526,12 @@ func wave5SQLiteConfig(sqliteDSN, fsRoot string) *config.Config {
 			FSRoot:                    fsRoot,
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
-		// Phase 20 added a required `tasks.driver` field.
-		Tasks: config.TasksConfig{Driver: "inprocess"},
-		// Phase 22 added required distributed driver fields.
+		// Phase 20 / 21 / 22 cross-phase additions per §17.6.
+		Tasks: config.TasksConfig{
+			Driver:               "inprocess",
+			RetainTurnTimeout:    5 * time.Minute,
+			ContinuationHopLimit: 8,
+		},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 }

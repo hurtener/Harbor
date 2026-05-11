@@ -402,11 +402,15 @@ func wave2Config() *config.Config {
 			Driver:                    "inmem",
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
-		// Phase 20 added a required `tasks.driver` field; populate
-		// it so Validate continues to pass through.
-		Tasks: config.TasksConfig{Driver: "inprocess"},
-		// Phase 22 added required distributed driver fields; populate
-		// them so Validate continues to pass through.
+		// Phase 20 added required `tasks.driver`; Phase 21 added the
+		// retain-turn / continuation-hop validators; Phase 22 added
+		// required distributed driver fields. All §17.6 cross-phase
+		// additions stack here so the wave-2 helper keeps validating.
+		Tasks: config.TasksConfig{
+			Driver:               "inprocess",
+			RetainTurnTimeout:    5 * time.Minute,
+			ContinuationHopLimit: 8,
+		},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
 	}
 	return c

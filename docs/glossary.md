@@ -118,11 +118,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Failover chain** — Operator-defined sequence of providers tried in order when the primary fails or hits its ceiling. Orchestrated by Harbor's Governance subsystem; audited per hop; distinct from bifrost's per-request `Fallbacks` field. Post-V1, phase 93. RFC §6.15.
 
+**`FailFast`** — `TaskGroup` flag (Phase 21): when true, the first member task that transitions to `StatusFailed` cancels the remaining non-terminal members AND transitions the group to `GroupCancelled`. Cancel reason is derived from the failing member's error code (`fail-fast:<code>` or `fail-fast` when no code is set). RFC §6.8, brief 05 §4.
+
 ## G
 
 **Governance** — Harbor's middleware subsystem between the Runtime and the `LLMClient` driver. Owns identity-scoped policies: cost accumulators, ceilings, rate limits, MaxTokens, and (post-V1) key rotation, model swap, failover chains, circuit breakers, caching, PII redaction. The `LLMClient` interface stays one method; bifrost is unaware of identity scopes. RFC §6.15.
 
 **GCPolicy** — Configuration knob group for the `SessionRegistry`'s GC sweeper. Defaults: `IdleTTL=24h, HardCap=720h (30d), SweepInterval=15m`. Carries the `RunningProbe` seam through which `TaskRegistry` (Phase 20) gates "never reap a session with a RUNNING task." Fields are not hot-reloadable in V1. RFC §6.9.
+
+**`GroupCompletion`** — typed wake-up payload delivered by `WatchGroup` (and as the `task.group_resolved` / `task.group_cancelled` bus-event payload). Carries the group's terminal status (`GroupCompleted` | `GroupCancelled`), resolve timestamp, cancel reason (when cancelled), and a `MemberOutcome` per group member. Heavy results MUST already be substituted with `ArtifactRef`s upstream (D-022, D-026); the payload is ref-shaped, not byte-bound. The same canonical shape across consumers (Console, durable-event-log, sidecar status emitters, planner runtime). RFC §6.8, Phase 21.
 
 ## H
 
@@ -152,6 +156,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`MapConcurrent`** — Concurrency utility (Phase 14) that runs `fn` over a slice of envelopes with a max-in-flight bound. Preserves input order in output. Per-run capacity backpressure and cancellation propagate through the bound. RFC §6.1, brief 01 §2.
 
+**`MemberOutcome`** — per-task entry inside `GroupCompletion`. Carries `TaskID`, terminal `Status` (`StatusComplete` | `StatusFailed` | `StatusCancelled`), and either `Result` (when complete) or `Error` (when failed); neither is populated on cancel. Heavy results are substituted with `ArtifactRef`s upstream (D-022, D-026); the entry is ref-shaped, not byte-bound. RFC §6.8, Phase 21.
+
 **Memory strategy** — declared policy that controls how a session's memory is shaped: `none`, `truncation`, `rolling_summary`. Identity-mandatory; fail-closed. RFC §6.6.
 
 **Meta (envelope)** — Free-form `map[string]any` propagated with the envelope. Last-write-wins on key collisions in V1; an explicit merge-function registry is reserved for a future RFC follow-up. Survives fan-out / fan-in / subflow boundaries. RFC §6.1, brief 01 §2.
@@ -170,7 +176,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## P
 
+**`ApplyPatch`** — registry action for accepting or rejecting a pending context patch (proposed by a planner / human reviewer). Patches transition `pending → applied | rejected` through the `TaskRegistry`'s typed surface (Phase 21). The patch payload is opaque bytes (the actual context-patch shape lives at the planner, Phase 42+); the registry stores + retrieves. Emits `task.patch_applied` or `task.patch_rejected` on a real transition; idempotent re-apply returns `(false, nil)`. RFC §6.8.
+
+**`AcknowledgeBackground`** — registry action marking a list of completed background tasks as user-acknowledged (Phase 21). Emits one `task.background_acknowledged` event per task on the real-transition path. Idempotent on re-ack; unknown / non-background / non-terminal tasks are silently skipped (the returned count reflects only the real transitions). RFC §6.8.
+
 **Planner** — the reasoning-policy interface: `Next(ctx, RunContext) (PlannerDecision, error)`. Concrete planners (ReAct first; Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. RFC §6.2 + §3.2.
+
+**Push wake (background continuation)** — wake mode where the planner subscribes via `WatchGroup`; the runtime delivers a `GroupCompletion` payload at resolve time; the planner re-enters with the payload as input. Lowest latency, lowest cost — the planner sleeps until something actually happened. Suits long-running background work where intermediate progress isn't actionable. Phase 21 ships the mechanism; planner concretes (Phase 42+) wire the mode.
+
+**Poll wake (background continuation)** — wake mode where the planner periodically calls `Get(taskID)` or `ListGroups(sessionID, filter)` until the group's status is terminal. No subscription required; suits planners interleaving background-work checks with other deterministic work, or environments where push delivery isn't reliable. Phase 21 ships the mechanism; planner concretes (Phase 42+) wire the mode.
 
 **`PredicateRouter`** — Router (Phase 14) that selects the first branch whose predicate matches the input envelope. Default target catches "no match"; nil default returns `RunError(RouteNotFound)`. RFC §6.1.
 
@@ -188,6 +202,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`TaskPushNotificationConfig`** — A2A's per-task push-notification configuration (URL + auth credentials + optional token). Harbor's `RemoteTransport` exposes CRUD (Create / Get / List / Delete); V1's loopback driver stores in memory, post-V1 + Phase 29 add durability + outbound dispatch. RFC §6.12, D-031.
 
+**Push wake — see `Push wake`** (above).
+
 ## R
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
@@ -197,6 +213,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Replayer (events)** — optional capability interface (`Replay(ctx, Cursor, Filter) ([]Event, error)`) that drivers may implement to support replay-from-cursor. The core `EventBus` interface stays at three methods; callers type-assert `bus.(events.Replayer)`. Returns events strictly newer than the cursor that match the filter, in `Sequence` order — no duplicates and no gaps within any single `RunID`. Returns `ErrCursorTooOld` when the cursor is older than the in-memory ring's tail (caller falls through to the durable log driver, Phase 57); returns `ErrReplayUnavailable` when retention is disabled (`EventsConfig.ReplayBufferSize=0`). RFC §6.13, D-029.
 
 **`RoutePolicy`** — Override mechanism (Phase 14) that bypasses predicate / union routing when an envelope's `Meta["route_policy"]` carries an explicit target. The planner-driven path. RFC §6.1.
+
+**`RetainTurn`** — `TaskGroup` flag (Phase 21); when true, the owning session blocks foreground-turn dispatch until the group reaches a terminal state. The runtime engine reads `RetainTurn` and subscribes via `RegisterRetainTurnWaiter`; the waiter channel closes when the group resolves so the engine can resume turn dispatch. Distinct from the `WatchGroup` mechanism (which never blocks the foreground). RFC §6.8, brief 05 §4.
 
 **Ring buffer (events)** — in-memory bounded retention queue inside the events `inmem` driver; default 10000 entries (configurable via `EventsConfig.ReplayBufferSize`). Eviction is drop-oldest. Distinct from per-subscriber buffers — ring eviction is a documented retention policy, not a delivery failure, and emits no `bus.dropped` notice.
 
@@ -268,6 +286,12 @@ Additions to this set are RFC PRs.
 
 **Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. Lifecycle FSM: `Pending → Running → Complete`, with `Paused → Running` and terminal `Failed | Cancelled`. RFC §6.8.
 
+**`TaskGroup`** — a sealed-or-open collection of tasks tracked as a unit for parallel-fan-out / retain-turn / aggregate-cancel semantics (Phase 21). Members spawn into the group via `SpawnRequest.GroupID`; `SealGroup` freezes membership; the driver resolves the group automatically when all members reach terminal states. `RetainTurn` blocks the foreground turn until resolve; `FailFast` cancels remaining members when one fails. Cross-session group membership is forbidden; nesting is post-V1. RFC §6.8, brief 05.
+
+**`TaskGroupID`** — ULID-shaped identifier for a `TaskGroup`. The caller MAY pre-assign in `GroupRequest.ID` for idempotency; empty → the registry assigns a fresh ULID. RFC §6.8, Phase 21.
+
+**`TaskGroupStatus`** — group lifecycle state. Values: `open`, `sealed`, `completed`, `cancelled`. FSM enforced at the driver: `Open → Sealed → Completed | Cancelled` (with the direct `Open → Cancelled` edge); `Completed` and `Cancelled` are terminal. Invalid transitions return `ErrGroupInvalidTransition`. RFC §6.8, Phase 21.
+
 **TaskID** — ULID-shaped identifier unifying foreground runs and background tasks. Single namespace; `TaskKind` distinguishes the two. Closes the predecessor's `trace_id` vs `task_id` split (brief 05). Assigned by the registry; callers do not construct TaskIDs externally. RFC §6.8.
 
 **TaskKind** — `"foreground"` (a run inside a session's primary turn) or `"background"` (a spawned-without-blocking task). Both share the same TaskID namespace; this field is the discriminator. RFC §6.8.
@@ -297,3 +321,9 @@ Additions to this set are RFC PRs.
 **`ValidateMode`** — `both / in / out / none`. Per-node choice (`NodePolicy.Validate`) for whether the engine runs the validator on input, output, both, or skips it. `none` is the perf escape hatch for hot streaming paths. RFC §6.1, brief 01 §2.
 
 **Virtual directory pattern** — pluggable-storage namespace addressing for skills (and potentially other artifacts). Logical paths over a swappable backing store. Inherited from the predecessor (the strongest pattern brief 04 names). RFC §6.7.
+
+## W
+
+**`WatchGroup`** — non-blocking dual of `RegisterRetainTurnWaiter` (Phase 21). Returns a channel that delivers a typed `GroupCompletion` payload when the group resolves; the planner runtime consumes the delivery as a wake-up signal so background-task results integrate back into the conversation without manual polling. Channel is buffered size 1; close-once invariant. Multiple subscribers on the same group all receive the same payload (D-025). Resolved-but-still-tracked groups return an already-primed channel so late subscribers don't deadlock. The mechanism for the three documented wake modes (push / poll / hybrid) — the planner picks the policy. RFC §6.8, brief 05.
+
+**Hybrid wake (background continuation)** — wake mode where the main planner subscribes via `WatchGroup` (push) AND a sidecar (typically a small / cheap LLM, or a deterministic templater) polls the group's intermediate state and emits user-visible progress updates between push events. The main planner only wakes when the group resolves; the user sees liveness in the meantime. Suits user-facing agents where silence between turn close and group resolve looks broken. Phase 21 ships the mechanism; planner concretes (Phase 42+) wire the mode.
