@@ -171,6 +171,26 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Artifacts.HeavyOutputThresholdBytes = -1 },
 			"artifacts.heavy_output_threshold_bytes",
 		},
+		{
+			"empty memory driver",
+			func(c *config.Config) { c.Memory.Driver = "" },
+			"memory.driver",
+		},
+		{
+			"unknown memory driver",
+			func(c *config.Config) { c.Memory.Driver = "redis" },
+			"memory.driver",
+		},
+		{
+			"unsupported memory strategy",
+			func(c *config.Config) { c.Memory.Strategy = "rolling_summary" },
+			"memory.strategy",
+		},
+		{
+			"negative memory budget",
+			func(c *config.Config) { c.Memory.BudgetTokens = -1 },
+			"memory.budget_tokens",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
