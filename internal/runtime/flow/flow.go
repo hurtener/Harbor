@@ -194,6 +194,19 @@ func RegisterAsTool(cat tools.ToolCatalog, def Definition, eng engine.Engine) (t
 		SideEffects: tools.SideEffectStateful,
 		Loading:     tools.LoadingAlways,
 		Transport:   tools.TransportFlow,
+		// Per Phase 26 plan line 31: "No double-wrapping" — the outer
+		// ToolPolicy provides timeout + validation around the flow,
+		// but retries are handled INSIDE the engine by per-node
+		// NodePolicy. Retrying a flow at the tool layer is also
+		// semantically wrong for budget-exceeded outcomes (the same
+		// budget would re-exhaust on the retry). Default policy here:
+		// 30s timeout, validate-none (Flow's per-node validators run
+		// inside the engine), empty RetryOn (no retries on any class).
+		Policy: tools.ToolPolicy{
+			TimeoutMS: 30000,
+			RetryOn:   []tools.ErrorClass{},
+			Validate:  tools.ValidateNone,
+		},
 	}
 
 	descriptor := tools.ToolDescriptor{
@@ -202,7 +215,15 @@ func RegisterAsTool(cat tools.ToolCatalog, def Definition, eng engine.Engine) (t
 			return nil
 		},
 		Invoke: func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-			return invokeFlow(ctx, def, eng, args)
+			// D-024 / Phase 26 plan line 31: the OUTER flow
+			// invocation wraps in ToolPolicy regardless of transport;
+			// per-node NodePolicy lives INSIDE the engine. No
+			// double-wrapping at either layer.
+			return tools.RunWithPolicy(ctx, args,
+				func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+					return invokeFlow(ctx, def, eng, args)
+				},
+				nil, nil, tool.Policy)
 		},
 	}
 

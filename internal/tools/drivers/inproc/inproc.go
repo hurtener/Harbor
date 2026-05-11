@@ -27,6 +27,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -139,20 +141,135 @@ func RegisterFunc[I any, O any](
 		Policy:      cfg.Policy,
 	}
 
+	bus := cfg.Bus
+	toolName := tool.Name
 	descriptor := tools.ToolDescriptor{
 		Tool: tool,
 		Validate: func(args json.RawMessage) error {
 			return validateAgainst(compiledIn, args)
 		},
 		Invoke: func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-			return invokeReflective[I, O](ctx, args, fn, tool.Policy, func(args json.RawMessage) error {
+			start := time.Now()
+			publishToolInvoked(ctx, bus, toolName, start)
+			result, err := invokeReflective[I, O](ctx, args, fn, tool.Policy, func(args json.RawMessage) error {
 				return validateAgainst(compiledIn, args)
 			}, func(result tools.ToolResult) error {
 				return validateAgainstResult(compiledOut, result)
 			})
+			publishToolOutcome(ctx, bus, toolName, start, err)
+			return result, err
 		},
 	}
 	return cat.Register(descriptor)
+}
+
+// publishToolInvoked emits tool.invoked on the configured bus. A
+// missing identity is treated as "publish skipped" — the tool
+// boundary already rejects missing identity, so this branch is
+// defensive (we don't want the publisher itself to panic on a nil
+// identity slot during early-boot scenarios).
+func publishToolInvoked(ctx context.Context, bus events.EventBus, name string, started time.Time) {
+	if bus == nil {
+		return
+	}
+	id, ok := identity.From(ctx)
+	if !ok {
+		return
+	}
+	q := identity.Quadruple{Identity: id}
+	_ = bus.Publish(ctx, events.Event{
+		Type:       tools.EventTypeToolInvoked,
+		Identity:   q,
+		OccurredAt: started,
+		Payload: tools.ToolInvokedPayload{
+			Identity:  q,
+			ToolName:  name,
+			Transport: tools.TransportInProcess,
+			StartedAt: started,
+		},
+	})
+}
+
+// publishToolOutcome emits tool.completed on a successful invocation
+// and tool.failed on a terminal failure. Error classification is
+// best-effort; the inproc transport's class is permanent for any
+// fn-returned error (the policy shell already classified before this
+// point) and ErrToolPolicyExhausted maps to tool.policy_exhausted.
+func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, started time.Time, err error) {
+	if bus == nil {
+		return
+	}
+	id, ok := identity.From(ctx)
+	if !ok {
+		return
+	}
+	q := identity.Quadruple{Identity: id}
+	dur := time.Since(started).Milliseconds()
+	if err == nil {
+		_ = bus.Publish(ctx, events.Event{
+			Type:       tools.EventTypeToolCompleted,
+			Identity:   q,
+			OccurredAt: time.Now(),
+			Payload: tools.ToolCompletedPayload{
+				Identity:   q,
+				ToolName:   name,
+				Transport:  tools.TransportInProcess,
+				Attempts:   1,
+				DurationMS: dur,
+			},
+		})
+		return
+	}
+	evType := tools.EventTypeToolFailed
+	class := tools.ErrClassPermanent
+	if errors.Is(err, tools.ErrToolPolicyExhausted) {
+		evType = tools.EventTypeToolPolicyExhausted
+	}
+	if errors.Is(err, tools.ErrToolInvalidArgs) {
+		evType = tools.EventTypeToolInvalidArgs
+	}
+	switch evType {
+	case tools.EventTypeToolInvalidArgs:
+		_ = bus.Publish(ctx, events.Event{
+			Type:       evType,
+			Identity:   q,
+			OccurredAt: time.Now(),
+			Payload: tools.ToolInvalidArgsPayload{
+				Identity:        q,
+				ToolName:        name,
+				Transport:       tools.TransportInProcess,
+				ValidationError: err.Error(),
+			},
+		})
+	case tools.EventTypeToolPolicyExhausted:
+		_ = bus.Publish(ctx, events.Event{
+			Type:       evType,
+			Identity:   q,
+			OccurredAt: time.Now(),
+			Payload: tools.ToolPolicyExhaustedPayload{
+				Identity:  q,
+				ToolName:  name,
+				Transport: tools.TransportInProcess,
+				Attempts:  0,
+				LastClass: class,
+				LastError: err.Error(),
+			},
+		})
+	default:
+		_ = bus.Publish(ctx, events.Event{
+			Type:       evType,
+			Identity:   q,
+			OccurredAt: time.Now(),
+			Payload: tools.ToolFailedPayload{
+				Identity:     q,
+				ToolName:     name,
+				Transport:    tools.TransportInProcess,
+				Attempts:     1,
+				ErrorClass:   class,
+				ErrorMessage: err.Error(),
+			},
+		})
+	}
 }
 
 // invokeReflective is the inner-most invocation: decode args into I,
