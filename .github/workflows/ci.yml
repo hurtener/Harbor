@@ -117,6 +117,41 @@ jobs:
           HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
         run: go test -race -count=1 -timeout 240s ./internal/artifacts/drivers/postgres/...
 
+  memory-postgres:
+    name: memory/postgres conformance (postgres:16)
+    runs-on: ubuntu-latest
+    # Phase 25: persistent memory drivers. Mirrors state-postgres
+    # above — a postgres:16 service container, HARBOR_PG_DSN piped
+    # to the test run. The driver's own tests skip-clean when the
+    # env var is unset (local-dev), so this job is the only place
+    # the Postgres memory driver is actually exercised end-to-end.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: harbor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Run memory/postgres tests against postgres:16
+        # CGO_ENABLED intentionally unset (same rationale as the
+        # state-postgres job above — -race requires the cgo race
+        # runtime; only the static-binary build pins CGO_ENABLED=0).
+        env:
+          HARBOR_PG_DSN: postgres://postgres:postgres@localhost:5432/harbor_test?sslmode=disable
+        run: go test -race -count=1 -timeout 240s ./internal/memory/drivers/postgres/...
+
   artifacts-s3:
     name: artifacts/s3 conformance (MinIO)
     runs-on: ubuntu-latest

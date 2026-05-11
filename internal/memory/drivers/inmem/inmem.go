@@ -43,10 +43,11 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
-// kindMemoryState is the StateStore Kind constant for the
-// memory-state record. Centralised so the typed wrapper and tests
-// reference one symbol.
-const kindMemoryState = "memory.state"
+// kindMemoryState aliases the canonical `memory.KindMemoryState`
+// constant for ergonomic in-package use. The exported symbol lives
+// in `internal/memory/wire.go` so SQLite + Postgres drivers (Phase
+// 25) share the same routing key.
+const kindMemoryState = memory.KindMemoryState
 
 // New constructs a `MemoryStore` directly. Exposed for tests that
 // want to skip the registry; production callers go through
@@ -104,16 +105,11 @@ type driver struct {
 	closed atomic.Bool
 }
 
-// memoryStateRecord is the JSON-serialised internal shape Snapshot
-// persists. Phase 23 only writes empty records (Strategy=none);
-// Phase 24 will append the recent-turn buffer + the rolling-summary
-// fields. The shape is intentionally narrow: drivers re-marshal at
-// every Snapshot, and the bytes round-trip through Restore via the
-// same JSON shape.
-type memoryStateRecord struct {
-	Strategy memory.Strategy            `json:"strategy"`
-	Turns    []memory.ConversationTurn  `json:"turns,omitempty"`
-}
+// memoryStateRecord aliases `memory.Record` — the canonical wire
+// envelope shared by every driver (Phase 25 SQLite + Postgres
+// inherit the same shape). Centralised in `internal/memory/wire.go`
+// so cross-driver `Snapshot/Restore` is byte-stable.
+type memoryStateRecord = memory.Record
 
 // AddTurn implements memory.MemoryStore.
 //

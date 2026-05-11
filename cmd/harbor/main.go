@@ -30,6 +30,10 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	// Memory driver — Phase 25 Postgres MemoryStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
+	// Memory driver — Phase 25 SQLite MemoryStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	// State driver — Postgres StateStore (Phase 16), registered via init().
