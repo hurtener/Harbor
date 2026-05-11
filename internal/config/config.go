@@ -114,13 +114,25 @@ type MemoryConfig struct{}
 // SkillsConfig is owned by the skills subsystem phases.
 type SkillsConfig struct{}
 
-// TasksConfig configures the TaskRegistry driver. `Driver` selects
-// the registered driver name; Phase 20 ships only `"inprocess"`.
-// Phase 21 will extend this with retain-turn timeout + continuation
-// hop limit; do not add those fields here. Restart-required (no
-// `reload:"live"` tag).
+// TasksConfig configures the TaskRegistry driver and the Phase 21
+// backgroundtasks-config knobs. `Driver` selects the registered
+// driver name; Phase 20 ships only `"inprocess"`.
+//
+// `RetainTurnTimeout` is the maximum time the runtime engine will
+// block a foreground turn waiting for retain-turn groups to resolve.
+// Defaults to 5 minutes (RFC §6.8); zero or negative values are
+// rejected by validation.
+//
+// `ContinuationHopLimit` caps the number of background-continuation
+// hops a planner runtime may take before requiring user
+// confirmation. Defaults to 8 (RFC §6.8); zero or negative values
+// are rejected by validation.
+//
+// Restart-required (no `reload:"live"` tag).
 type TasksConfig struct {
-	Driver string `yaml:"driver"`
+	Driver               string        `yaml:"driver"`
+	RetainTurnTimeout    time.Duration `yaml:"retain_turn_timeout"`
+	ContinuationHopLimit int           `yaml:"continuation_hop_limit"`
 }
 
 // SessionsConfig configures the SessionRegistry's GC sweeper. Defaults
