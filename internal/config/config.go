@@ -70,10 +70,10 @@ type IdentityConfig struct {
 
 // TelemetryConfig configures slog and OpenTelemetry export.
 type TelemetryConfig struct {
-	LogFormat   string `yaml:"log_format"`
-	LogLevel    string `yaml:"log_level"`
+	LogFormat    string `yaml:"log_format"`
+	LogLevel     string `yaml:"log_level"`
 	OTelEndpoint string `yaml:"otel_endpoint,omitempty"`
-	ServiceName string `yaml:"service_name"`
+	ServiceName  string `yaml:"service_name"`
 }
 
 // StateConfig selects the StateStore driver and its connection.
@@ -82,13 +82,74 @@ type StateConfig struct {
 	DSN    string `yaml:"dsn,omitempty" secret:"true"`
 }
 
-// LLMConfig is the default LLM client surface for the runtime.
+// LLMConfig is the default LLM client surface for the runtime
+// (Phase 32+).
+//
+// `Driver` selects the §4.4 LLM driver. Phase 32 ships `"mock"`;
+// Phase 33 registers `"bifrost"`. Empty defaults to `"mock"` so a
+// missing configuration value does NOT silently route real LLM
+// traffic — operators opt in to bifrost explicitly.
+//
+// `Provider` / `Model` / `APIKey` / `BaseURL` / `Timeout` are the
+// per-bifrost-driver knobs. They are REQUIRED when `Driver != "mock"`
+// — `validateLLM` enforces. The mock driver ignores them.
+//
+// `ContextWindowReserve` is the safety-net token-budget margin
+// (default 0.05 / 5%). The safety pass fails with
+// `ErrContextWindowExceeded` when the estimated token count is
+// within this fraction of a model's configured cap. Range [0.0, 1.0).
+//
+// `ModelProfiles` carries per-model knobs (context-window cap,
+// estimator, JSON-schema mode, default max tokens, reasoning effort,
+// cost overrides). The safety net's token-budget guard REQUIRES a
+// profile entry for every model the request mentions; missing
+// profiles surface at request time as `ErrUnsupportedModel`.
 type LLMConfig struct {
-	Provider string        `yaml:"provider"`
-	Model    string        `yaml:"model"`
-	APIKey   string        `yaml:"api_key" secret:"true"`
-	BaseURL  string        `yaml:"base_url,omitempty"`
-	Timeout  time.Duration `yaml:"timeout"`
+	Driver               string                           `yaml:"driver"`
+	Provider             string                           `yaml:"provider"`
+	Model                string                           `yaml:"model"`
+	APIKey               string                           `yaml:"api_key" secret:"true"`
+	BaseURL              string                           `yaml:"base_url,omitempty"`
+	Timeout              time.Duration                    `yaml:"timeout"`
+	ContextWindowReserve float64                          `yaml:"context_window_reserve,omitempty"`
+	ModelProfiles        map[string]LLMModelProfileConfig `yaml:"model_profiles,omitempty"`
+}
+
+// LLMModelProfileConfig is one entry in `LLMConfig.ModelProfiles`.
+// Keyed by canonical model name (e.g. `"anthropic/claude-sonnet-4"`,
+// `"google/gemini-3.1-flash-lite"`). Phase 32 ships the shape;
+// Phase 33+ consume the fields.
+//
+//   - `ContextWindowTokens` is the model's hard input-token cap.
+//     REQUIRED (> 0); the safety net's token-budget guard uses it.
+//   - `TokenEstimator` selects the estimator algorithm. "" / "chars_div_4"
+//     — default chars/4 + per-message overhead. Phase 33+ may
+//     register tiktoken-equivalent estimators by name.
+//   - `JSONSchemaMode` — Phase 35 reads ("native" / "tools" /
+//     "prompted"). Phase 32 stores opaque.
+//   - `DefaultMaxTokens` — Phase 36b's identity-tier override
+//     target. nil → use the runtime/governance default.
+//   - `ReasoningEffort` — request-level default. Empty string →
+//     "use provider default."
+//   - `CostOverrides` — fallback per-1M-token rates when the
+//     provider doesn't include cost in its response. Phase 36a
+//     reads when accumulating identity-scoped cost.
+type LLMModelProfileConfig struct {
+	ContextWindowTokens int                     `yaml:"context_window_tokens"`
+	TokenEstimator      string                  `yaml:"token_estimator,omitempty"`
+	JSONSchemaMode      string                  `yaml:"json_schema_mode,omitempty"`
+	DefaultMaxTokens    *int                    `yaml:"default_max_tokens,omitempty"`
+	ReasoningEffort     string                  `yaml:"reasoning_effort,omitempty"`
+	CostOverrides       *LLMCostOverridesConfig `yaml:"cost_overrides,omitempty"`
+}
+
+// LLMCostOverridesConfig is a per-model cost-table override (used
+// when the provider response doesn't include cost). Phase 36a reads.
+type LLMCostOverridesConfig struct {
+	InputPer1M     float64 `yaml:"input_per_1m_tokens"`
+	OutputPer1M    float64 `yaml:"output_per_1m_tokens"`
+	ReasoningPer1M float64 `yaml:"reasoning_per_1m_tokens,omitempty"`
+	Currency       string  `yaml:"currency,omitempty"`
 }
 
 // GovernanceConfig holds the V1 governance policy surface (cost

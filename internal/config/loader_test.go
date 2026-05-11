@@ -220,8 +220,8 @@ func TestWithOverrides_AppliesDottedPath(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	out, err := config.WithOverrides(cfg, map[string]string{
-		"llm.model":           "claude-haiku-4-5",
-		"server.bind_addr":    "127.0.0.1:5555",
+		"llm.model":                  "claude-haiku-4-5",
+		"server.bind_addr":           "127.0.0.1:5555",
 		"governance.repair_attempts": "5",
 	})
 	if err != nil {

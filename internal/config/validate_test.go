@@ -43,9 +43,9 @@ func TestValidate_RejectsForbiddenJWTAlg(t *testing.T) {
 
 func TestValidate_TableDriven(t *testing.T) {
 	cases := []struct {
-		name      string
-		mutate    func(*config.Config)
-		wantPath  string
+		name     string
+		mutate   func(*config.Config)
+		wantPath string
 	}{
 		{
 			"empty bind_addr",

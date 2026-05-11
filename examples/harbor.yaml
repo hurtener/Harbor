@@ -24,11 +24,54 @@ state:
   driver: inmem
 
 llm:
+  # `mock` (Phase 32 default — test-grade, no network) or `bifrost`
+  # (Phase 33 — pure-Go gateway against OpenAI / Anthropic / Google /
+  # OpenRouter / etc.). Operators ship `bifrost` in production;
+  # `mock` is the safety default when no driver is configured.
+  driver: mock
+  # Bifrost knobs — required when `driver: bifrost`. The mock driver
+  # ignores these.
   provider: openrouter
   model: anthropic/claude-sonnet-4
   # Override via HARBOR_LLM_API_KEY in production; never commit a real key.
   api_key: replace-me
   timeout: 60s
+  # Context-window safety margin (Phase 32 / D-026). The LLM-edge
+  # safety pass fails with ErrContextWindowExceeded when the
+  # estimated token count of an assembled CompleteRequest is within
+  # this fraction of the model's configured `context_window_tokens`
+  # cap. Range [0, 1). Default 0.05 (5%).
+  context_window_reserve: 0.05
+  # Per-model knobs. The safety pass REQUIRES an entry for every
+  # model that appears in a CompleteRequest; missing profiles
+  # surface as ErrUnsupportedModel at request time.
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      # Hard input-token cap; the safety pass's token-budget guard
+      # reads this and applies `context_window_reserve` to it.
+      context_window_tokens: 200000
+      # Estimator algorithm. "" or "chars_div_4" — default
+      # chars/4 + per-message overhead.
+      token_estimator: chars_div_4
+      # Phase 35 reads ("native" / "tools" / "prompted"). The
+      # downgrade chain `json_schema → json_object → text` fires
+      # off of this knob; Phase 32 stores it opaque.
+      json_schema_mode: native
+      # Phase 36b reads — identity-tier MaxTokens default.
+      # default_max_tokens: 4096
+      # Phase 33 routes — "off" / "low" / "medium" / "high" / "".
+      reasoning_effort: low
+      # Phase 36a fallback — per-1M-token rates when the provider
+      # doesn't report cost (some OpenRouter routes don't).
+      # cost_overrides:
+      #   input_per_1m_tokens: 3.0
+      #   output_per_1m_tokens: 15.0
+      #   currency: USD
+    google/gemini-3.1-flash-lite:
+      context_window_tokens: 1000000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+      reasoning_effort: ""
 
 governance:
   default_max_tokens: 4096

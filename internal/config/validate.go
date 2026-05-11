@@ -130,18 +130,77 @@ func (c *Config) validateState() error {
 	return nil
 }
 
+// allowedLLMDrivers is the registered-driver allowlist Phase 32 ships
+// with. Phase 33 adds "bifrost" here when its driver registers.
+var allowedLLMDrivers = map[string]struct{}{
+	"mock":    {},
+	"bifrost": {}, // Phase 33 will register the factory; the name is reserved here so a config that targets bifrost passes validation today and only the registry-miss fires at runtime.
+}
+
 func (c *Config) validateLLM() error {
-	if c.LLM.Provider == "" {
-		return fieldError("llm.provider", "must not be empty")
+	// Driver — empty is accepted and treated as "mock" by the
+	// runtime (`llm.DefaultDriver`). The loader's `defaults()`
+	// populates "mock" so any production config loaded from YAML
+	// carries an explicit driver; hand-constructed config values
+	// (e.g. in tests built before Phase 32) keep working.
+	driver := c.LLM.Driver
+	if driver == "" {
+		driver = "mock"
 	}
-	if c.LLM.Model == "" {
-		return fieldError("llm.model", "must not be empty")
+	if _, ok := allowedLLMDrivers[driver]; !ok {
+		return fieldError("llm.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedLLMDrivers), c.LLM.Driver))
 	}
-	if c.LLM.APIKey == "" {
-		return fieldError("llm.api_key", "must not be empty")
+	// Bifrost-driver knobs are required only for real drivers; the
+	// mock driver ignores Provider/Model/APIKey/Timeout. Keep the
+	// canonical fixture valid by enforcing these when driver != "mock".
+	if driver != "mock" {
+		if c.LLM.Provider == "" {
+			return fieldError("llm.provider", "must not be empty")
+		}
+		if c.LLM.Model == "" {
+			return fieldError("llm.model", "must not be empty")
+		}
+		if c.LLM.APIKey == "" {
+			return fieldError("llm.api_key", "must not be empty")
+		}
+		if c.LLM.Timeout <= 0 {
+			return fieldError("llm.timeout", "must be > 0")
+		}
 	}
-	if c.LLM.Timeout <= 0 {
-		return fieldError("llm.timeout", "must be > 0")
+	// Context-window reserve is the safety-net's token-budget
+	// margin. 0 (zero) is accepted as a sentinel for "use the
+	// runtime default" (`llm.DefaultContextWindowReserve = 0.05`);
+	// values >= 1 are rejected because they would fail every
+	// request.
+	if c.LLM.ContextWindowReserve < 0 || c.LLM.ContextWindowReserve >= 1.0 {
+		return fieldError("llm.context_window_reserve",
+			fmt.Sprintf("must be in [0, 1), got %g", c.LLM.ContextWindowReserve))
+	}
+	// Each model profile must declare a positive context-window
+	// cap. The safety net's token-budget guard depends on this.
+	for name, prof := range c.LLM.ModelProfiles {
+		if prof.ContextWindowTokens <= 0 {
+			return fieldError(
+				fmt.Sprintf("llm.model_profiles[%q].context_window_tokens", name),
+				fmt.Sprintf("must be > 0, got %d", prof.ContextWindowTokens),
+			)
+		}
+		if prof.DefaultMaxTokens != nil && *prof.DefaultMaxTokens <= 0 {
+			return fieldError(
+				fmt.Sprintf("llm.model_profiles[%q].default_max_tokens", name),
+				"must be > 0 when set",
+			)
+		}
+		if prof.CostOverrides != nil {
+			if prof.CostOverrides.InputPer1M < 0 || prof.CostOverrides.OutputPer1M < 0 || prof.CostOverrides.ReasoningPer1M < 0 {
+				return fieldError(
+					fmt.Sprintf("llm.model_profiles[%q].cost_overrides", name),
+					"per-1m rates must be >= 0",
+				)
+			}
+		}
 	}
 	return nil
 }

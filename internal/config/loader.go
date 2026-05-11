@@ -124,7 +124,9 @@ func defaults() *Config {
 			Driver: "inmem",
 		},
 		LLM: LLMConfig{
-			Timeout: 60 * time.Second,
+			Driver:               "mock",
+			Timeout:              60 * time.Second,
+			ContextWindowReserve: 0.05, // 5% safety margin (Phase 32 / D-026)
 		},
 		Governance: GovernanceConfig{
 			DefaultMaxTokens: 4096,
