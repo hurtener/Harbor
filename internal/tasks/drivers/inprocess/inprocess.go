@@ -29,6 +29,7 @@ package inprocess
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -66,7 +67,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 		bus:              deps.Bus,
 		redactor:         deps.Redactor,
 		tasks:            map[tasks.TaskID]*tasks.Task{},
-		idemIdx:          map[idempotencyKey]tasks.TaskID{},
+		idemIdx:          map[idempotencyKey]idempotencyRecord{},
 		children:         map[tasks.TaskID][]tasks.TaskID{},
 		groups:           map[tasks.TaskGroupID]*tasks.TaskGroup{},
 		taskGroup:        map[tasks.TaskID]tasks.TaskGroupID{},
@@ -93,6 +94,21 @@ type idempotencyKey struct {
 	Key       string
 }
 
+// idempotencyRecord captures the bookkeeping required to detect a
+// divergent re-spawn under the same `(SessionID, IdempotencyKey)`.
+// `TaskID` resolves the already-spawned handle; `ContentHash` is the
+// SHA-256 of the pre-redaction `Description + Query` bytes (the only
+// caller-controlled fields that pass through `audit.Redactor` before
+// storage). Comparing hashes lets `spawnRequestsEqual` distinguish a
+// genuine retry (same bytes → same hash) from a divergent payload
+// (different bytes → different hash) without depending on
+// post-redaction equality, which would false-positive whenever the
+// redactor erases caller-controlled tokens.
+type idempotencyRecord struct {
+	TaskID      tasks.TaskID
+	ContentHash [32]byte
+}
+
 type driver struct {
 	store    state.StateStore
 	bus      events.EventBus
@@ -100,7 +116,7 @@ type driver struct {
 
 	mu       sync.RWMutex
 	tasks    map[tasks.TaskID]*tasks.Task
-	idemIdx  map[idempotencyKey]tasks.TaskID
+	idemIdx  map[idempotencyKey]idempotencyRecord
 	children map[tasks.TaskID][]tasks.TaskID
 
 	// Phase 21 — group + patch + retain-turn + watcher state. All
@@ -137,15 +153,16 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	// Idempotency check: same (SessionID, IdempotencyKey) seen?
 	// Empty IdempotencyKey disables dedup (every Spawn yields a fresh
 	// handle).
+	contentHash := spawnRequestContentHash(req)
 	if req.IdempotencyKey != "" {
 		idemK := idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}
-		if existingID, ok := d.idemIdx[idemK]; ok {
-			existing := d.tasks[existingID]
-			if !spawnRequestsEqual(existing, req, propagate) {
+		if existing, ok := d.idemIdx[idemK]; ok {
+			stored := d.tasks[existing.TaskID]
+			if !spawnRequestsEqual(stored, existing.ContentHash, req, contentHash, propagate) {
 				return tasks.TaskHandle{}, fmt.Errorf("%w: key=%q",
 					tasks.ErrIdempotencyConflict, req.IdempotencyKey)
 			}
-			return tasks.TaskHandle{ID: existingID, Reused: true}, nil
+			return tasks.TaskHandle{ID: existing.TaskID, Reused: true}, nil
 		}
 	}
 
@@ -181,7 +198,10 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	}
 	d.tasks[id] = t
 	if req.IdempotencyKey != "" {
-		d.idemIdx[idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}] = id
+		d.idemIdx[idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey}] = idempotencyRecord{
+			TaskID:      id,
+			ContentHash: contentHash,
+		}
 	}
 	if req.ParentTaskID != nil && *req.ParentTaskID != "" {
 		d.children[*req.ParentTaskID] = append(d.children[*req.ParentTaskID], id)
@@ -582,8 +602,41 @@ func (d *driver) MarkFailed(ctx context.Context, id tasks.TaskID, taskErr tasks.
 }
 
 // Close implements tasks.TaskRegistry. Idempotent.
+//
+// Drains every still-open `WatchGroup` subscriber and every
+// `RegisterRetainTurnWaiter` channel before flipping `closed`. A
+// caller blocked on either channel observes the close-on-shutdown
+// instead of leaking forever — the public contract is "channel
+// closes exactly once: either on resolve or on registry teardown."
+// Identity is irrelevant here: we close everything we own.
 func (d *driver) Close(_ context.Context) error {
+	d.mu.Lock()
+	if d.closed.Load() {
+		d.mu.Unlock()
+		return nil
+	}
+	for gid, subs := range d.groupSubs {
+		for _, sub := range subs {
+			if sub.closed {
+				continue
+			}
+			close(sub.ch)
+			sub.closed = true
+		}
+		delete(d.groupSubs, gid)
+	}
+	for sess, waiters := range d.retainWaiters {
+		for _, w := range waiters {
+			if w.closed {
+				continue
+			}
+			close(w.ch)
+			w.closed = true
+		}
+		delete(d.retainWaiters, sess)
+	}
 	d.closed.Store(true)
+	d.mu.Unlock()
 	return nil
 }
 
@@ -752,7 +805,15 @@ func (d *driver) redactRawJSON(ctx context.Context, raw json.RawMessage) (json.R
 // `propagate` is the resolved (default-applied) value the caller is
 // asking for; `existing` is compared against it directly because the
 // stored Task already has the resolved value.
-func spawnRequestsEqual(existing *tasks.Task, req tasks.SpawnRequest, propagate string) bool {
+//
+// `existingHash` is the SHA-256 captured at the original Spawn (from
+// `idempotencyRecord.ContentHash`); `reqHash` is the SHA-256 of the
+// current request's pre-redaction Description+Query bytes. Comparing
+// hashes catches the divergence the redactor would have erased — a
+// caller that resends the same key with new bytes hits the conflict
+// path even when the redactor produces identical post-redaction
+// strings (e.g. both inputs contain only secret-shaped tokens).
+func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.SpawnRequest, reqHash [32]byte, propagate string) bool {
 	if existing.Identity != req.Identity {
 		return false
 	}
@@ -765,20 +826,9 @@ func spawnRequestsEqual(existing *tasks.Task, req tasks.SpawnRequest, propagate 
 	if !taskIDPtrEqual(existing.ParentTaskID, req.ParentTaskID) {
 		return false
 	}
-	// Note: Description/Query are caller-controlled strings and are
-	// redacted before storage; comparing the redacted-stored value
-	// against the un-redacted request would always mismatch, so we
-	// compare un-redacted-equality by re-running the redactor on the
-	// request's strings would also be expensive. Instead, the contract
-	// is: a re-spawn under the same key MUST send the same
-	// Description/Query bytes; if it does, the redacted forms also
-	// match by construction. We compare the as-stored fields against
-	// the request's pre-redaction strings as a best-effort check —
-	// truly divergent payloads will still be caught because their
-	// redacted forms diverge.
-	//
-	// (A future hardening path: persist a hash of the original bytes
-	// alongside the redacted form. Out of scope for Phase 20.)
+	if existingHash != reqHash {
+		return false
+	}
 	if existing.PropagateOnCancel != propagate {
 		return false
 	}
@@ -789,6 +839,26 @@ func spawnRequestsEqual(existing *tasks.Task, req tasks.SpawnRequest, propagate 
 		return false
 	}
 	return true
+}
+
+// spawnRequestContentHash returns a SHA-256 of the pre-redaction
+// caller-controlled string fields on req (Description + Query). The
+// hash is computed BEFORE `audit.Redactor.Redact` runs so divergent
+// inputs whose redacted forms collide (e.g. both consist entirely of
+// secret-shaped tokens that the redactor erases identically) are
+// still detected as conflicts under the same IdempotencyKey.
+//
+// The separator byte (0x1F — ASCII Unit Separator) prevents
+// preimage attacks where two distinct (Description, Query) pairs
+// concatenate to the same byte sequence ("ab" + "c" vs "a" + "bc").
+func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
+	h := sha256.New()
+	h.Write([]byte(req.Description))
+	h.Write([]byte{0x1F})
+	h.Write([]byte(req.Query))
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 func taskIDPtrEqual(a, b *tasks.TaskID) bool {

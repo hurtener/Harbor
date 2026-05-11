@@ -83,6 +83,11 @@ func (nctx *NodeContext) Emit(ctx context.Context, env messages.Envelope) error 
 // immediately if any outgoing channel is saturated. Callers that
 // want backpressure should use Emit; callers that want to drop
 // rather than wait use EmitNoWait.
-func (nctx *NodeContext) EmitNoWait(env messages.Envelope) error {
-	return nctx.engine.emitFromNode(context.Background(), nctx.node, env, true)
+//
+// `ctx` carries identity (D-001) into the downstream emit path and
+// honours the caller's cancellation. The send itself is
+// non-blocking; ctx is read for identity propagation + early-exit
+// on a cancelled run, NOT to wait for channel capacity.
+func (nctx *NodeContext) EmitNoWait(ctx context.Context, env messages.Envelope) error {
+	return nctx.engine.emitFromNode(ctx, nctx.node, env, true)
 }

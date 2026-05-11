@@ -19,21 +19,35 @@ import (
 // The goroutine ticks on a real-time time.Ticker (not the injected
 // Clock) so production sweeping is wall-clock driven; tests that need
 // deterministic GC drive GC explicitly via the public GC method.
+//
+// The parent ctx (`sweeperCtx`) is bound to `r.done` so an in-flight
+// `r.GC(...)` call is cancelled as soon as `CloseRegistry` runs —
+// without that link, a long sweep blocks `r.wg.Wait()` for up to a
+// full SweepInterval after teardown begins. Each tick derives a
+// per-iteration timeout from sweeperCtx so a stuck StateStore probe
+// cannot stall the sweeper, AND a registry shutdown cancels the
+// in-flight probe promptly.
 func (r *Registry) startSweeper() {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
+		sweeperCtx, sweeperCancel := context.WithCancel(context.Background())
+		defer sweeperCancel()
+		go func() {
+			<-r.done
+			sweeperCancel()
+		}()
 		ticker := time.NewTicker(r.gcPolicy.SweepInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-r.done:
+			case <-sweeperCtx.Done():
 				return
 			case <-ticker.C:
 				// Best-effort sweep; errors are surfaced via events
 				// (gc_reaped is emitted per-reaped session) but a
 				// transient probe error must not crash the sweeper.
-				ctx, cancel := context.WithTimeout(context.Background(), r.gcPolicy.SweepInterval)
+				ctx, cancel := context.WithTimeout(sweeperCtx, r.gcPolicy.SweepInterval)
 				_, _ = r.GC(ctx, r.gcPolicy)
 				cancel()
 			}

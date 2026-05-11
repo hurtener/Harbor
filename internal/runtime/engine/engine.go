@@ -738,7 +738,7 @@ func (e *engine) logWorkerError(env messages.Envelope, err error) {
 // than blocking the worker. The error has already gone to the
 // logger + handler (the bus-side path), so the egress emission is
 // strictly an additive surface for callers who want it.
-func (e *engine) emitErrorEnvelope(_ context.Context, env messages.Envelope, err error) {
+func (e *engine) emitErrorEnvelope(ctx context.Context, env messages.Envelope, err error) {
 	re, ok := asRunError(err)
 	if !ok {
 		return
@@ -752,11 +752,15 @@ func (e *engine) emitErrorEnvelope(_ context.Context, env messages.Envelope, err
 		Payload:    re,
 	}
 	defer func() { _ = recover() }() // outletChan may be closed during Stop
+	// Honour caller cancellation: if the run is being torn down, drop
+	// the error envelope rather than racing the close of outletChan.
+	// The bus + logger paths still observed the error; egress is the
+	// additive surface, documented as drop-on-saturation.
 	select {
 	case e.outletChan <- out:
+	case <-ctx.Done():
 	default:
-		// Egress saturated; the bus + logger paths still saw the
-		// error. Dropping here is documented as the egress contract.
+		// Egress saturated; same drop-on-saturation contract.
 	}
 }
 

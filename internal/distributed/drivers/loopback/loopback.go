@@ -114,6 +114,14 @@ type transport struct {
 
 // NewRemoteTransport builds the loopback RemoteTransport directly.
 // Exposed for tests that want to skip the registry.
+//
+// Deps are intentionally ignored: the loopback driver is in-process
+// dispatch — it has no EventBus / Cfg consumers at V1. The Phase 29
+// wire RemoteTransport driver (post-V1) WILL read deps.EventBus to
+// surface transport-level events (`distributed.send_failed` etc.)
+// and deps.Cfg for endpoint configuration; reviewers porting this
+// signature forward to the wire driver MUST replace this stub with
+// real deps consumption.
 func NewRemoteTransport(_ distributed.Dependencies) (distributed.RemoteTransport, error) {
 	return &transport{
 		agents: map[string]Agent{},

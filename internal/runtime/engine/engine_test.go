@@ -332,12 +332,12 @@ func TestEngine_NodeContext_EmitNoWait(t *testing.T) {
 	const queueSize = 1
 	emitErr := make(chan error, 4)
 	release := make(chan struct{})
-	source := engine.Node{Name: "src", Func: func(_ context.Context, in messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
+	source := engine.Node{Name: "src", Func: func(ctx context.Context, in messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		// Three EmitNoWait calls; only the first slips into the
 		// 1-slot downstream queue (sink is blocked on `release`),
 		// the next two MUST return ErrChannelFull.
 		for i := 0; i < 3; i++ {
-			emitErr <- nctx.EmitNoWait(in)
+			emitErr <- nctx.EmitNoWait(ctx, in)
 		}
 		// Return zero envelope so the worker doesn't ALSO emit;
 		// otherwise we'd race the no-wait emits with the regular emit.
