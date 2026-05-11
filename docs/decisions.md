@@ -278,6 +278,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-031 — Distributed contracts: full A2A v1 surface mapping + loopback V1 driver; vendored proto pinned by commit SHA
+
+**Date:** 2026-05-10
+**Status:** Settled
+**Where it lives:** RFC §6.4 + §6.12, `docs/plans/phase-22-distributed.md`, `docs/specifications/a2a.proto` (vendored at commit `ae6a562d5d972f2c4b184f748bb32e1fa9aa7bf2`, 2026-04-23), `docs/specifications/README.md`, `internal/distributed/` (the shipped Phase 22 surface), this entry.
+**Why:** D-007 settled "A2A full spec compliance from V1." Phase 22 realises that commitment by hand-transcribing the entire A2A v1 surface into Go: every `A2AService` RPC maps 1:1 to a `RemoteTransport` method, every proto `message` has a Go counterpart in `internal/distributed/a2a/types.go`, every `oneof` variant (`Part`, `SecurityScheme`, `OAuthFlows`, `StreamResponse`, `SendMessageResponse`) is represented as a Go interface + concrete-type-per-variant discriminated union with a `Kind() string` discriminator. The `TaskState` 8-value enum, the `Role` 3-value enum, and every nested message (`AgentCard`, `AgentInterface`, `AgentSkill`, `AgentCardSignature`, `TaskPushNotificationConfig`, `AuthenticationInfo`, the five `SecurityScheme` concretes, the five OAuth flow concretes including the two deprecated ones for spec parity, every request/response envelope) ship as named Go types. Phase 29's southbound A2A driver inherits the surface without churn. The proto is vendored at a pinned commit SHA so the source-of-truth is searchable from inside the repo; bumps land as `deps(specs):` PRs. The Go shapes are hand-written (not `protoc`-generated) because: (a) Phase 22 must not pull `google.golang.org/grpc` / `google.golang.org/protobuf` into a contracts-only package — Phase 29 owns that decision; (b) the hand-written shapes integrate cleanly with `identity.Quadruple`, slog logging, and Harbor's error idioms; (c) the `types_test.go` coverage gate (a hand-maintained list of 50 expected type names with a count assertion) makes the transcription auditable. The V1 driver is `loopback` — in-process dispatch routed through an in-memory `Agent` interface (in `internal/distributed/drivers/loopback/agent.go`) so the conformance suite can simulate every A2A RPC without leaving the process. The conformance suite IS the gate: future drivers (durable bus at phase 86, A2A wire at phase 29) inherit it verbatim.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

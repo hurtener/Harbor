@@ -29,6 +29,7 @@ Three product properties are non-negotiable: multi-isolation across `(tenant, us
 | 16 — Postgres `StateStore` driver | `internal/state/drivers/postgres` — `pgx`-backed driver, forward-only embedded migrations with `pg_advisory_lock`-serialised runner, conformance suite inherited verbatim, CI service-container job | Shipped |
 | 17 — `ArtifactStore` interface + InMem + FS drivers | `internal/artifacts` — content-addressed blob store; eight-method interface; `ScopedArtifacts` facade; conformance suite; mandatory routing above heavy-output threshold (32 KB default) — no `NoOp` fallback (D-022, D-026) | Shipped |
 | 19 — `ArtifactStore` S3-style driver | `internal/artifacts/drivers/s3` — `aws-sdk-go-v2`-backed driver for AWS S3 / MinIO / Cloudflare R2 / any S3-compat backend; conformance suite inherited verbatim; optional `Presigner` capability for read-side URL hand-off (`PresignGet` only); MinIO CI service-container job | Shipped |
+| 22 — `MessageBus` + `RemoteTransport` contracts | `internal/distributed` — at-least-once `MessageBus` + cross-process `RemoteTransport` designed against the full A2A v1 spec (vendored at `docs/specifications/a2a.proto`); every A2A RPC, message type, and oneof variant has a Go counterpart in `internal/distributed/a2a`; loopback driver for both; conformance suite as the gate (D-031) | Shipped |
 | 06, 08+ | Subsequent waves per `docs/plans/README.md` | Pending implementation |
 
 ## Working in this repo

@@ -46,6 +46,21 @@ func wrap(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{sentinel}, args...)...)
 }
 
+// EventID is a per-event idempotency key. ULID-shaped at construction
+// time; the convention is to generate via `state.NewEventID` (or any
+// caller-side ULID source) at the publish site. Used by
+// `internal/distributed.BusEnvelope.EventID` to dedupe at-least-once
+// deliveries on `(TaskID, Edge, EventID)`.
+//
+// The type lives here (and not in `internal/state`) so distributed
+// callers can reference it without importing state's persistence
+// surface. The two namespaces are intentionally parallel: state's
+// `EventID` is the persistence-layer idempotency key; events'
+// `EventID` is the bus-layer correlation key. Both ULID-shaped, both
+// caller-supplied; consumers MAY pass the same value across both
+// layers when convenient.
+type EventID string
+
 // EventType is a string-typed exhaustive enum. Each canonical type
 // is declared as an exported constant plus registered in init() so
 // the registry stays the single source of truth.

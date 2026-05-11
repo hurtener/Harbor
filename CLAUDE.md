@@ -116,6 +116,10 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 │   │   ├── ifaces/
 │   │   └── drivers/{inmem,sqlite,postgres}/
 │   ├── events/                 # typed event bus
+│   ├── distributed/            # MessageBus + RemoteTransport (A2A) contracts
+│   │   ├── a2a/                # A2A v1 Go shapes (hand-transcribed from proto)
+│   │   ├── conformancetest/    # driver conformance suites
+│   │   └── drivers/{loopback}/ # V1 in-process driver (post-V1: durable bus; Phase 29: A2A wire)
 │   ├── protocol/               # Harbor Protocol — wire types, methods, errors, transports
 │   │   ├── types/
 │   │   ├── methods/
