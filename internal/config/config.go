@@ -115,6 +115,12 @@ type RuntimeConfig struct{}
 // only `"inmem"`; Phase 25 adds `"sqlite"` and `"postgres"`. Default
 // `inmem`.
 //
+// `DSN` is required when `Driver` is `"sqlite"` or `"postgres"`.
+// The format mirrors the StateStore + ArtifactStore drivers (bare
+// file path or `file:` URI for SQLite; libpq-compatible connection
+// string for Postgres). `secret:"true"` redacts the value in
+// audit-redacted logs.
+//
 // `Strategy` selects the memory shape: `"none"` (Phase 23
 // operational), `"truncation"` (Phase 24), or `"rolling_summary"`
 // (Phase 24). Default `none`. Operators MAY stage Phase 24
@@ -129,6 +135,7 @@ type RuntimeConfig struct{}
 // the field's interpretation. Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
 	Driver       string `yaml:"driver"`
+	DSN          string `yaml:"dsn,omitempty" secret:"true"`
 	Strategy     string `yaml:"strategy,omitempty"`
 	BudgetTokens int    `yaml:"budget_tokens,omitempty"`
 }

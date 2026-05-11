@@ -305,6 +305,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-034 — Persistent memory drivers own their `memory_state` tables; `Deps.State` accepted-but-unused; wire envelope `memory.Record` exported for cross-driver byte-stable Snapshot/Restore
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.6, RFC §9, `docs/plans/phase-25-memory-drivers.md` ("Findings I'm departing from" + "Risks / open questions"), `internal/memory/wire.go` (`Record` + `KindMemoryState`), `internal/memory/drivers/sqlite/{sqlite.go,migrations/0001_init.sql}`, `internal/memory/drivers/postgres/{postgres.go,migrations/0001_init.sql}`.
+**Why:** Phase 23's InMem MemoryStore persists records through the injected `state.StateStore` per D-027 (typed-wrapper-over-generic, `Kind="memory.state"`). The Phase 25 persistent drivers (SQLite + Postgres) instead maintain their own `memory_state` table — this is a deliberate departure from D-027's "one StateStore, many typed wrappers" model and is mandated by the master plan ("Your SQLite/PG drivers persist memory state to their OWN tables ... but the byte serialisation contract is the same shape so cross-driver Snapshot/Restore round-trips byte-stable"). Two consequences are now settled: (1) the `memory.Deps.State` field is accepted by the persistent drivers but unused — the existing `validateDeps` contract still requires non-nil to preserve backward compatibility with the InMem driver (which DOES use `State`), so the persistent drivers hold the reference without writing to it; (2) the wire envelope previously named `memoryStateRecord` inside the InMem driver is promoted to an exported `memory.Record` type at `internal/memory/wire.go` (with the canonical `KindMemoryState` routing constant alongside it) so all three drivers marshal byte-identical JSON, enabling the Phase 25 acceptance criterion that a Snapshot taken by one driver Restore-round-trips byte-stably through another. Each persistent subsystem's Postgres migration runner uses a distinct `pg_advisory_lock` key (`fnv64aSigned("harbor-memory-migrations")`) so the state + memory migration runners cannot collide.
+
+---
+
 <!--
 Append new entries below this line in the form:
 
