@@ -19,10 +19,18 @@ state:
   driver: inmem
 
 llm:
+  driver: bifrost
   provider: openrouter
   model: anthropic/claude-sonnet-4
   api_key: sk-test-fixture
   timeout: 30s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+      reasoning_effort: low
 
 governance:
   default_max_tokens: 8192

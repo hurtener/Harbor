@@ -76,7 +76,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Concurrent reuse contract** — Harbor's runtime-wide invariant that compiled artifacts (`flow.Engine`, `Tool`, `Planner`, `MemoryStore`, `Redactor`, `LLMClient`, `ToolCatalog`) are immutable after construction and reusable across N concurrent goroutines without data races, context bleed, cancellation cross-talk, or goroutine leaks. Per-run state lives in `ctx` + `RunContext`, never on the artifact. **Every phase that builds a reusable artifact ships a concurrent-reuse test** (N≥100 invocations under `-race`). RFC §3.5, AGENTS.md §5 + §11 + §13, D-025.
 
-**Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. RFC §6.5, D-026.
+**Context-window safety net** — Harbor's runtime-wide invariant that **no message reaching the `LLMClient` carries raw heavy content**. Multi-stage: producers (tool dispatcher, memory, multimodal input materialization, `ObservationRenderer`) substitute heavy content with `ArtifactRef`s during normal output; a single catch-all pass at the LLM-client edge walks the assembled `CompleteRequest` and fails loudly with `ErrContextLeak` (≥-threshold raw payload found) or `ErrContextWindowExceeded` (estimated tokens within `ContextWindowReserve` of the model's context limit, default 5%). V1 fails loudly; auto-cascading recovery is post-V1. The pass is mandatory by construction — `internal/llm.Open` returns a wrapper that runs it before delegating to the underlying driver (D-039). RFC §6.5, D-026, D-039.
+
+**ContextWindowReserve** — fraction of a model's context-window cap (`ModelProfile.ContextWindowTokens`) held back as a safety margin (default 0.05 / 5%). The LLM-edge safety pass fails with `ErrContextWindowExceeded` when the estimated token count of the assembled `CompleteRequest` is within this fraction of the cap. Configured at `LLMConfig.ContextWindowReserve`. RFC §6.5, D-026.
 
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
 
@@ -200,9 +202,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`mcp.resource_updated`** — canonical event type emitted when an MCP southbound server pushes a `notifications/resources/updated` for a URI the driver previously `Subscribe`d to. `SafePayload` by construction — the URI is operator-trust-equivalent (server-controlled) and the source ID is operator-supplied. Registered in `internal/tools/drivers/mcp/events.go` via the driver's `init()`. RFC §6.4.
 
+**ModelProfile** — per-model knobs (`ContextWindowTokens`, `TokenEstimator`, `JSONSchemaMode`, `DefaultMaxTokens`, `ReasoningEffort`, `CostOverrides`). Keyed by canonical model name in `LLMConfig.ModelProfiles`. The LLM-edge safety pass requires a profile entry for every model that appears in a `CompleteRequest`; missing profiles surface as `ErrUnsupportedModel` at request time. Phase 32 ships the shape; Phase 33 reads `ContextWindowTokens` / `TokenEstimator` / `ReasoningEffort`; Phase 35 reads `JSONSchemaMode`; Phase 36a/36b read `DefaultMaxTokens` + `CostOverrides`. RFC §6.5, brief 08 ("Per-model seam").
+
 ## O
 
 **ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.
+
+**OnContent** — optional content-delta streaming callback on `CompleteRequest`. `func(delta string, done bool)`. Fires for each text chunk when `req.Stream` is true; the final invocation has `done=true`. Drivers concatenate the deltas into `CompleteResponse.Content` before returning. RFC §6.5.
+
+**OnReasoning** — optional thinking-channel-delta streaming callback on `CompleteRequest`. Provider-specific — fires only for thinking-class models (`o1`, `o3`, `deepseek-reasoner`) that expose a separate reasoning channel. Same shape as `OnContent`. RFC §6.5.
 
 ## N
 
@@ -244,7 +252,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
 
+**ReasoningEffort** — request-level hint mapped to per-provider reasoning controls (`off` / `low` / `medium` / `high` / `""`). Bifrost's `ChatReasoning` is the bridge for V1 providers; empty string means "use provider default" (the safety pass does not touch the field). Settable per request or via `ModelProfile.ReasoningEffort` defaults. RFC §6.5.
+
 **Reliability shell** — Phase 11 worker-loop wrapper that applies `NodePolicy` per invocation: validate-in → invoke-with-timeout → retry-with-backoff → on terminal failure, emit `RunError` to logger + bus. Backoff math is exponential with jitter (`base * mult^attempt + jitter`, capped at `MaxBackoff`). RFC §6.1, brief 01 §4.
+
+**ResponseFormat** — optional structured-output hint on `CompleteRequest`. Kinds: `text` (no constraint; default when `req.ResponseFormat == nil`), `json_object` (provider's "JSON mode"), `json_schema` (caller-supplied JSON Schema in strict mode). Phase 35 owns the per-provider downgrade chain `json_schema → json_object → text` on `invalid_json_schema` errors. RFC §6.5.
 
 **Replayer (events)** — optional capability interface (`Replay(ctx, Cursor, Filter) ([]Event, error)`) that drivers may implement to support replay-from-cursor. The core `EventBus` interface stays at three methods; callers type-assert `bus.(events.Replayer)`. Returns events strictly newer than the cursor that match the filter, in `Sequence` order — no duplicates and no gaps within any single `RunID`. Returns `ErrCursorTooOld` when the cursor is older than the in-memory ring's tail (caller falls through to the durable log driver, Phase 57); returns `ErrReplayUnavailable` when retention is disabled (`EventsConfig.ReplayBufferSize=0`). RFC §6.13, D-029.
 
@@ -292,6 +304,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 - `ErrRateLimited` — Governance PreCall: token bucket exhausted (RFC §6.15).
 - `ErrMaxTokensExceeded` — Governance PreCall: per-call MaxTokens cap hit (RFC §6.15).
 - `ErrKeyUnavailable` — Governance PreCall: no usable provider key after rotation/circuit-breaker (RFC §6.15, post-V1).
+- `ErrContextLeak` — LLM-edge safety pass: raw heavy content survived every producer's normalization step (`internal/llm`, RFC §6.5, D-026, D-039).
+- `ErrContextWindowExceeded` — LLM-edge safety pass: assembled `CompleteRequest`'s estimated token count is within `ContextWindowReserve` of the model's configured `ContextWindowTokens` cap (`internal/llm`, RFC §6.5, D-026, D-039).
 Additions to this set are RFC PRs.
 
 **Session** — a longer-lived multi-turn conversation that contains many Runs. Identity for runtime concerns is `(tenant, user, session)`. RFC §6.9.
