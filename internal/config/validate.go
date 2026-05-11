@@ -43,6 +43,7 @@ func (c *Config) Validate() error {
 		c.validateTasks,
 		c.validateDistributed,
 		c.validateMemory,
+		c.validateTools,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -363,6 +364,22 @@ func (c *Config) validateMemory() error {
 	}
 	if c.Memory.RecoveryBacklogMax < 0 {
 		return fieldError("memory.recovery_backlog_max", "must be >= 0")
+	}
+	return nil
+}
+
+// validateTools checks the Phase 26+ tools configuration. Phase 27
+// adds HTTP-manifest paths; each entry must be a non-empty string.
+// The manifest itself is parsed by `internal/tools/drivers/http`
+// at boot; this validator only enforces the structural shape so a
+// typo (empty list entry, trailing comma in YAML) fails at config
+// load rather than during driver registration.
+func (c *Config) validateTools() error {
+	for i, p := range c.Tools.HTTPManifests {
+		if strings.TrimSpace(p) == "" {
+			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
+				"path must not be empty")
+		}
 	}
 	return nil
 }

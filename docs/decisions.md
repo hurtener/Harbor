@@ -329,6 +329,15 @@ The `Health` FSM transition table is also settled at this phase: `healthy ↔ re
 
 ---
 
+## D-036 — HTTP tool driver: URL/body/header templates use `text/template` + explicit `urlquery`; secrets live in `Auth` only
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** `docs/plans/phase-27-tools-http.md` ("Findings I'm departing from"), `internal/tools/drivers/http/http.go` (the `checkNoSecretLeak` guard + `compileTemplate` with `missingkey=error` + `urlquery` funcmap), `internal/tools/drivers/http/manifest.go` (the loader's pre-compile leak check + the `${ENV_VAR}`-only secret form), `docs/glossary.md` (`AuthSpec` + `UTCP manifest` + `RegisterHTTPTool`), AGENTS.md §7 (credential boundary rule this implements).
+**Why:** Brief 03 §3 sketched HTTP tool registration with "url-template substitution from args" but did not specify the credential boundary. Without a constraint, the simplest implementation lets operators interpolate `${API_KEY}` or `{{ .Auth.token }}` directly into the URL — which means the secret crosses the audit redactor, lives in observability logs, and rides through any caching layer. Harbor's tools-HTTP driver tightens this from t=0: URL / body / header templates are `text/template` strings whose only namespace is `.Args.*`; the loader runs a regex check (`{{[\s-]*\.Auth\b`) against every template at register / load time and rejects matches with `ErrTemplateSecretLeak`. Secrets enter the driver only via the `Auth` map (operator-supplied), and the manifest loader requires the `${ENV_VAR}` reference form — literal secret strings are also rejected at load time. Combined: a leaked secret in an HTTP tool config is a register-time error, never a runtime data leak. Templates use `missingkey=error` so `{{ .Args.unknown }}` fails loudly rather than silently rendering as empty (consistent with the runtime's "fail loudly" rule, AGENTS.md §5). The `urlquery` funcmap alias is documented in package godoc so operators write `{{ .Args.city | urlquery }}` explicitly when the substituted value must be URL-escaped; the default rendering does NOT auto-escape (Go's `text/template` is byte-faithful), so this is the operator's responsibility for now — a future enhancement could auto-escape every substitution if the asymmetry proves error-prone.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

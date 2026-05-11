@@ -261,6 +261,37 @@ func TestValidate_AcceptsAllAllowedAlgorithms(t *testing.T) {
 	}
 }
 
+func TestValidate_AcceptsEmptyTools(t *testing.T) {
+	// Tools section is optional; absent / empty is accepted.
+	cfg := mustLoadValid(t)
+	cfg.Tools = config.ToolsConfig{}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected empty ToolsConfig: %v", err)
+	}
+	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
+		"/etc/harbor/tools/weather.yaml",
+		"/etc/harbor/tools/github.yaml",
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected populated ToolsConfig: %v", err)
+	}
+}
+
+func TestValidate_RejectsEmptyToolsManifestPath(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
+		"/etc/harbor/tools/weather.yaml",
+		"   ",
+	}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted blank manifest path")
+	}
+	if !strings.Contains(err.Error(), "tools.http_manifests[1]") {
+		t.Errorf("err missing path: %v", err)
+	}
+}
+
 func TestLiveReloadable_EmptyInPhase02(t *testing.T) {
 	cfg := mustLoadValid(t)
 	got := cfg.LiveReloadable()

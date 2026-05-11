@@ -40,6 +40,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **AgentSkill** — A2A's declaration of a distinct capability the agent exposes (id, name, description, tags, examples, input/output modes, security requirements). Distinct from Harbor's `Skill` (the token-savvy skill subsystem). RFC §6.12, D-031.
 
+**AuthSpec** — Phase 27 HTTP tool driver: static-auth specification attached to an HTTP tool, carrying `Kind` (`api_key` / `bearer` / `cookie`) plus the kind-specific field (`HeaderName` xor `QueryParam` for api_key, `CookieName` for cookie). The secret value lives separately in operator config — never in the request payload or URL template. Templates that reference the `.Auth` namespace are rejected at load time (`ErrTemplateSecretLeak`). AGENTS.md §7, RFC §6.4.
+
 ## B
 
 **Brief** — a research artifact in `docs/research/NN-*.md`, distilled from predecessor source code and authoritative for context (not design). See `docs/research/INDEX.md`.
@@ -236,6 +238,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Replayer (events)** — optional capability interface (`Replay(ctx, Cursor, Filter) ([]Event, error)`) that drivers may implement to support replay-from-cursor. The core `EventBus` interface stays at three methods; callers type-assert `bus.(events.Replayer)`. Returns events strictly newer than the cursor that match the filter, in `Sequence` order — no duplicates and no gaps within any single `RunID`. Returns `ErrCursorTooOld` when the cursor is older than the in-memory ring's tail (caller falls through to the durable log driver, Phase 57); returns `ErrReplayUnavailable` when retention is disabled (`EventsConfig.ReplayBufferSize=0`). RFC §6.13, D-029.
 
+**`RegisterHTTPTool`** — inline registration helper (Phase 27) at `internal/tools/drivers/http`: `RegisterHTTPTool(cat, name, method, urlTemplate, opts...) error`. Mirrors `inproc.RegisterFunc`'s ergonomics for the HTTP transport. URL / body / header templates use `text/template` with `urlquery` escaping; the `.Auth` namespace is rejected at register time. Operators with operator-deployment manifests use `LoadManifest` + `RegisterManifest` instead. RFC §6.4.
+
 **`RoutePolicy`** — Override mechanism (Phase 14) that bypasses predicate / union routing when an envelope's `Meta["route_policy"]` carries an explicit target. The planner-driven path. RFC §6.1.
 
 **`RetainTurn`** — `TaskGroup` flag (Phase 21); when true, the owning session blocks foreground-turn dispatch until the group reaches a terminal state. The runtime engine reads `RetainTurn` and subscribes via `RegisterRetainTurnWaiter`; the waiter channel closes when the group resolves so the engine can resume turn dispatch. Distinct from the `WatchGroup` mechanism (which never blocks the foreground). RFC §6.8, brief 05 §4.
@@ -355,6 +359,8 @@ Additions to this set are RFC PRs.
 **`UnionRouter`** — Router (Phase 14) that dispatches by payload tag (a string discriminator). Used for sum-type-shaped payloads (e.g. planner `Decision` variants in Phase 42). RFC §6.1.
 
 **Unified pause/resume primitive** — single runtime-level pause/resume that serves HITL approval, tool-side OAuth, A2A `AUTH_REQUIRED` / `INPUT_REQUIRED`, and steering `PAUSE`. NOT per-feature. RFC §3.3 + §6.3 + cross-fork synthesis #1.
+
+**UTCP manifest** — UTCP-style YAML schema (Phase 27) describing HTTP endpoints as Harbor tools. Operator deployment shape — paired with inline `RegisterHTTPTool` for the dev-loop. The manifest carries a top-level `auth:` map keyed on `auth_ref` (secrets MUST be `${ENV_VAR}` references — literal values are rejected at load time) and a `tools:` list each describing `{name, method, url_template, description?, args_schema?, out_schema?, headers?, body_template?, auth_ref?, side_effect?, tags?, loading?, policy?}`. Loaded at boot via `ToolsConfig.HTTPManifests`. AGENTS.md §7, RFC §6.4.
 
 ## V
 

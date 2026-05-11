@@ -43,7 +43,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Shipped  |
 | 26 | Tool catalog core + InProcess registration    | tools                | §6.4        | 01, 05, 09            | 85%  | Shipped  |
 | 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Shipped  |
-| 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 80%  | Pending  |
+| 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 85%  | Shipped  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 85%  | Pending  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 85%  | Pending  |
 | 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50                | 85%  | Pending  |
@@ -333,7 +333,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 ### 27 — HTTP tool driver (RFC §6.4)
 
 **Goal.** Inline (`RegisterHTTPTool(name, method, urlTemplate, ...)`) and out-of-process via UTCP-style manifest. Static auth (API key, bearer, cookie). Retry + rate-limit handling.
-**Acceptance.** Both inline + manifest paths drive the same `ToolDescriptor`; integration against `httptest.Server`.
+**Acceptance.** Both inline + manifest paths drive the same `ToolDescriptor`; integration against `httptest.Server`. **Shipped** — `internal/tools/drivers/http` exports `RegisterHTTPTool`, `LoadManifest`, `RegisterManifest`, three `AuthKind`s; URL/body/header templates use `text/template` with `urlquery` escaping and reject `{{ .Auth.* }}` references at load time (AGENTS.md §7 — no credential passthrough). `Retry-After` (seconds-integer + HTTP-date) honoured before returning the rate-limit error so the policy shell's exponential backoff stacks on top — driver consumes ONE retry budget per Invoke (D-024 no double-wrap). 4xx maps to `ErrToolInvalidArgs` (planner-reformulation channel); 5xx + transport errors are transient. `ToolsConfig.HTTPManifests []string` added to `internal/config`. Coverage: 88% (target 85%). D-025 concurrent-reuse test exercises N=128 invocations against a shared `httptest.Server` under `-race`; no context bleed, no goroutine leaks.
 **Tests.** Integration; retry test.
 **Deps.** 26.
 

@@ -135,6 +135,23 @@ memory:
   # be >= 0.
   recovery_backlog_max: 16
 
+tools:
+  # Phase 27 HTTP tool driver. Each path points at a UTCP-style
+  # YAML manifest describing one or more HTTP endpoints as Harbor
+  # tools. Paths may be absolute (production deployment) or
+  # relative to the working directory (dev loop). Secrets in
+  # manifests MUST live in ${ENV_VAR} references — literal values
+  # are rejected at load time. Example shapes:
+  #
+  #   http_manifests:
+  #     - /etc/harbor/tools/weather.yaml
+  #     - /etc/harbor/tools/github.yaml
+  #
+  # An absent or empty `http_manifests` list is valid — operators
+  # with only in-process tools (registered via inproc.RegisterFunc)
+  # don't need a manifest.
+  http_manifests: []
+
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out
   # edge. Phase 22 ships only `loopback` (in-process; projects
