@@ -286,9 +286,12 @@ func (c *Config) validateTasks() error {
 var allowedDistributedBusDrivers = map[string]struct{}{"loopback": {}}
 
 // allowedDistributedRemoteDrivers is the V1 RemoteTransport driver
-// allowlist. Phase 22 ships only `loopback`; Phase 29 adds the A2A
-// wire driver.
-var allowedDistributedRemoteDrivers = map[string]struct{}{"loopback": {}}
+// allowlist. Phase 22 ships `loopback`; Phase 29 adds the `a2a` wire
+// driver.
+var allowedDistributedRemoteDrivers = map[string]struct{}{
+	"loopback": {},
+	"a2a":      {},
+}
 
 func (c *Config) validateDistributed() error {
 	if c.Distributed.BusDriver == "" {
@@ -450,6 +453,30 @@ func (c *Config) validateTools() error {
 		}
 		if s.KeepAlive < 0 {
 			return fieldError(prefix+".keep_alive", "must be >= 0")
+		}
+	}
+	// Phase 29 A2A peers. Empty list is valid. Each entry must
+	// declare a non-empty URL, a TrustTier in [1, 5], a non-negative
+	// LatencyTierMS, and a non-negative AgentCardTTL. URL scheme
+	// enforcement (HTTPS-only by default) is deferred to the driver —
+	// validateTools accepts any non-empty string so test fixtures
+	// using `http://localhost` round-trip; the driver applies the
+	// loopback / allowlist rule at construction.
+	for i, p := range c.Tools.A2APeers {
+		if p.URL == "" {
+			return fieldError(fmt.Sprintf("tools.a2a_peers[%d].url", i), "must not be empty")
+		}
+		if p.TrustTier < 1 || p.TrustTier > 5 {
+			return fieldError(fmt.Sprintf("tools.a2a_peers[%d].trust_tier", i),
+				fmt.Sprintf("must be in [1,5], got %d", p.TrustTier))
+		}
+		if p.LatencyTierMS < 0 {
+			return fieldError(fmt.Sprintf("tools.a2a_peers[%d].latency_tier_ms", i),
+				fmt.Sprintf("must be >= 0, got %d", p.LatencyTierMS))
+		}
+		if p.AgentCardTTL < 0 {
+			return fieldError(fmt.Sprintf("tools.a2a_peers[%d].agent_card_ttl", i),
+				"must be >= 0")
 		}
 	}
 	return nil

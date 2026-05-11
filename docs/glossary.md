@@ -40,7 +40,13 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **AgentSkill** — A2A's declaration of a distinct capability the agent exposes (id, name, description, tags, examples, input/output modes, security requirements). Distinct from Harbor's `Skill` (the token-savvy skill subsystem). RFC §6.12, D-031.
 
+**A2A peer** — a remote agent Harbor connects to as a *client* via the A2A protocol. Declared in `ToolsConfig.A2APeers`. Distinct from "A2A northbound", which is the not-yet-shipped server surface (V1.1 candidate, RFC §6.4). The Phase 29 wire driver (`internal/distributed/drivers/a2a`) reads the peer list at construction and refuses any URL not in the allowlist. RFC §6.4, D-007.
+
+**Agent Card cache** — the Phase 29 wire driver's in-memory TTL cache for `GET <peer>/.well-known/agent-card.json` responses. Default TTL 10 minutes; per-peer override via `A2APeerConfig.AgentCardTTL`. Coalesces concurrent first-time fetches via an inflight map so N concurrent `Discover` calls collapse into one underlying HTTP GET. RFC §6.4.
+
 **AuthSpec** — Phase 27 HTTP tool driver: static-auth specification attached to an HTTP tool, carrying `Kind` (`api_key` / `bearer` / `cookie`) plus the kind-specific field (`HeaderName` xor `QueryParam` for api_key, `CookieName` for cookie). The secret value lives separately in operator config — never in the request payload or URL template. Templates that reference the `.Auth` namespace are rejected at load time (`ErrTemplateSecretLeak`). AGENTS.md §7, RFC §6.4.
+
+**Route scoring** — Phase 29's deterministic selection of an A2A peer when more than one declares the same capability. Score formula at `internal/distributed/drivers/a2a/registry.go`: `(5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)` — trust outranks latency; latency is the tie-breaker among similarly-trusted peers; capability match adds an additive boost. Tie-breakers: lower latency, then URL ascending so the result is reproducible. RFC §6.4, D-038.
 
 ## B
 

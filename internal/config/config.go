@@ -289,13 +289,16 @@ type AuditConfig struct{}
 // entry boots a `*mcp.Provider` whose discovered tools / resources
 // / prompts are merged into the runtime catalog.
 //
-// Phase 29 will extend this struct with A2A peer entries.
+// `A2APeers` lists Phase 29's A2A peers. The wire driver
+// (`internal/distributed/drivers/a2a`) reads this slice at
+// construction.
 //
 // Restart-required (no `reload:"live"` tag): adding / removing tool
 // providers at runtime is a Phase 91+ Protocol surface concern.
 type ToolsConfig struct {
 	HTTPManifests []string          `yaml:"http_manifests,omitempty"`
 	MCPServers    []MCPServerConfig `yaml:"mcp_servers,omitempty"`
+	A2APeers      []A2APeerConfig   `yaml:"a2a_peers,omitempty"`
 }
 
 // MCPServerConfig is one MCP southbound attachment. `Name` is the
@@ -316,6 +319,32 @@ type MCPServerConfig struct {
 	Command       []string          `yaml:"command,omitempty"`
 	Headers       map[string]string `yaml:"headers,omitempty" secret:"true"`
 	KeepAlive     time.Duration     `yaml:"keep_alive,omitempty"`
+}
+
+// A2APeerConfig declares an A2A peer the southbound driver may connect
+// to. URL is required; the driver rejects HTTP schemes unless the host
+// is loopback or `AllowInsecureLoopback` is true (AGENTS.md §7).
+//
+// `TrustTier` is an operator-set integer in [1, 5] (1 = third-party,
+// 5 = first-party). The route-scoring registry uses this to rank
+// peers when more than one declares the same capability.
+//
+// `LatencyTierMS` is an operator hint at the peer's expected p50
+// latency in milliseconds. Smaller values rank higher (latency is
+// the tie-breaker among similarly-trusted peers).
+//
+// `AllowInsecureLoopback` opts a loopback HTTP peer into the driver.
+// The flag is name-checked against loopback only — a non-loopback
+// HTTP host is still rejected regardless. Restart-required.
+//
+// `AgentCardTTL` overrides the driver-level AgentCard cache TTL.
+// Zero falls back to the driver default (10 minutes).
+type A2APeerConfig struct {
+	URL                   string        `yaml:"url"`
+	TrustTier             int           `yaml:"trust_tier"`
+	LatencyTierMS         int           `yaml:"latency_tier_ms"`
+	AllowInsecureLoopback bool          `yaml:"allow_insecure_loopback,omitempty"`
+	AgentCardTTL          time.Duration `yaml:"agent_card_ttl,omitempty"`
 }
 
 // ProtocolConfig is owned by the protocol-server phases.
