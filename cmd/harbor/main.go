@@ -26,6 +26,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Distributed drivers — Phase 22 loopback MessageBus + RemoteTransport.
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
+	// Distributed driver — Phase 29 A2A wire RemoteTransport (southbound).
+	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
@@ -42,6 +44,12 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	// Tasks driver — production in-process TaskRegistry (Phase 20), registered via init().
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
+	// Tools driver — Phase 29 A2A southbound ToolProvider. The package
+	// has no init-time registration (catalogs are constructed in code,
+	// not from a factory registry); the blank import documents the
+	// driver's presence in the binary so deployment-time reviewers can
+	// confirm it's wired.
+	_ "github.com/hurtener/Harbor/internal/tools/drivers/a2a"
 )
 
 func main() {

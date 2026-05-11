@@ -347,6 +347,15 @@ The `Health` FSM transition table is also settled at this phase: `healthy ↔ re
 
 ---
 
+## D-038 — A2A southbound driver: JSON-RPC binding, route-scoring weights settled, push-config storage forwarded to peer (no local mirror)
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.4, master plan phase 29, `docs/plans/phase-29-tools-a2a.md`, `internal/distributed/drivers/a2a/registry.go`, `internal/distributed/drivers/a2a/a2a.go` package godoc, `internal/tools/drivers/a2a/a2a.go`, glossary (`A2A peer`, `Agent Card cache`, `Route scoring`).
+**Why:** Phase 29 lands the first wire-level A2A driver. Three design calls warrant a settled entry so a later auditor doesn't churn them. (1) **Wire binding.** The vendored proto carries both `service A2AService { rpc … }` (gRPC stubs) AND `google.api.http` annotations (HTTP+JSON binding). Phase 29 implements the **JSON-RPC 2.0 over HTTPS** binding per the master-plan Phase 29 detail block and brief 03 §5; gRPC + HTTP+JSON bindings on the same peer's AgentCard are accepted as read-only metadata until those drivers ship. The driver matches `AgentInterface.ProtocolBinding == "JSONRPC"` (the Phase 22 constant `a2a.ProtocolBindingJSONRPC`); peers declaring no JSONRPC interface fail loudly with `ErrNoJSONRPCInterface`. (2) **Route-scoring weights.** The Registry's `CompositeScore = (5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)`. Trust outranks latency 5:1 (safety first); latency is the tie-breaker among similarly-trusted peers (the `1000/lat_ms` term saturates at the LatencyWeight when latency is 1ms, drops to 1.0 at 1000ms); capability match adds an additive boost so a peer that declares the exact `AgentSkill.ID` outranks a tag-match. Lower latency + lexicographic URL break composite ties so the result is deterministic. Weights are tunable post-V1 but not exposed at V1 (a single deployment uses one canonical scoring policy). (3) **Push-notification config storage.** The master-plan detail block specifies "store push-notification configs in-memory at V1." Phase 29's southbound driver IS the *client* (issuing `Create/Get/List/Delete` against the *peer*); the peer is responsible for durability. The wire driver forwards CRUD verbatim and stores nothing locally. A multi-replica Harbor consequently sees per-peer push-config state — acceptable for V1; durable mirroring is a Phase 23 (memory) / Phase 15 (SQLite state) / Phase 16 (Postgres state) compose post-V1. HTTPS-only is enforced for non-loopback peers (AGENTS.md §7); HTTP is allowed for `127.0.0.1`, `::1`, `localhost`, and operator-allowlisted loopback shapes only. The conformance suite (`internal/distributed/conformancetest.RunRemoteTransport`) is the gate — passes verbatim against the wire driver bound to an `httptest.Server`-shaped mock A2A peer.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

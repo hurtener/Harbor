@@ -198,8 +198,37 @@ distributed:
   bus_driver: loopback
   # RemoteTransport driver — Harbor's cross-process / cross-host call
   # surface, designed against the full A2A v1 spec (vendored at
-  # docs/specifications/a2a.proto). Phase 22 ships only `loopback`
+  # docs/specifications/a2a.proto). Phase 22 ships `loopback`
   # (in-process dispatch to a registered Agent stub, used by
-  # conformance tests). The production A2A wire driver lands in
-  # Phase 29 (southbound).
+  # conformance tests); Phase 29 adds `a2a` (the wire driver: JSON-RPC
+  # 2.0 over HTTPS + SSE, Agent Card discovery via
+  # `GET /.well-known/agent-card.json`, route-scoring Registry).
+  # When `remote_driver: a2a`, populate `tools.a2a_peers` below.
   remote_driver: loopback
+
+# Phase 29 tools subsystem config — the unified tool catalog's per-
+# transport peer lists. V1 ships only A2APeers; HTTP / MCP land in
+# Phases 27 / 28. Omit the `tools:` block entirely when no remote
+# tool sources are configured (the field is optional).
+# tools:
+#   a2a_peers:
+#     # First-party in-org agent. HTTPS is required for non-loopback
+#     # peers (AGENTS.md §7); the driver rejects http:// URLs whose
+#     # host is not 127.0.0.1 / ::1 / localhost.
+#     - url: https://agent.example.com
+#       # Operator-set trust tier in [1, 5]: 1 = third-party with no
+#       # contract, 5 = first-party in-org. The route-scoring
+#       # registry uses this to rank peers when more than one declares
+#       # the same capability (D-034: trust outranks latency 5:1).
+#       trust_tier: 5
+#       # Operator-set hint at the peer's expected p50 latency (ms).
+#       # Smaller is better; latency is the tie-breaker among
+#       # similarly-trusted peers.
+#       latency_tier_ms: 30
+#       # Reserved for loopback HTTP peers ONLY. Setting this on a
+#       # non-loopback HTTP URL is STILL rejected — the flag is a
+#       # name-checked override, not an HTTPS bypass.
+#       allow_insecure_loopback: false
+#       # Per-peer Agent Card cache TTL. Zero falls back to the
+#       # driver default (10 minutes).
+#       agent_card_ttl: 10m

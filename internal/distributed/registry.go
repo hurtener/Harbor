@@ -29,7 +29,9 @@ type RemoteFactory func(deps Dependencies) (RemoteTransport, error)
 // Dependencies bundles the wiring inputs every distributed driver
 // receives. EventBus is the optional projection target for the bus
 // loopback (drivers free to ignore when not in-process); Cfg carries
-// the driver names + any future per-driver tuning fields.
+// the driver names + any future per-driver tuning fields. Tools is
+// the tool-catalog config — the A2A wire RemoteTransport driver
+// (Phase 29) reads `Tools.A2APeers` to seed its route registry.
 type Dependencies struct {
 	// EventBus is the typed event bus the loopback MessageBus projects
 	// envelopes through. Optional for drivers that do not project;
@@ -37,6 +39,10 @@ type Dependencies struct {
 	EventBus events.EventBus
 	// Cfg carries Phase 22's DistributedConfig (driver names today).
 	Cfg config.DistributedConfig
+	// Tools carries the unified tool-catalog config. The A2A wire
+	// driver (Phase 29) reads `Tools.A2APeers` here. Other drivers
+	// MAY ignore.
+	Tools config.ToolsConfig
 }
 
 var (

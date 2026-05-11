@@ -212,6 +212,35 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Memory.RecoveryBacklogMax = -1 },
 			"memory.recovery_backlog_max",
 		},
+		// Phase 29 tools validation.
+		{
+			"a2a peer empty url",
+			func(c *config.Config) {
+				c.Tools.A2APeers = []config.A2APeerConfig{{URL: "", TrustTier: 3, LatencyTierMS: 10}}
+			},
+			"tools.a2a_peers[0].url",
+		},
+		{
+			"a2a peer trust tier zero",
+			func(c *config.Config) {
+				c.Tools.A2APeers = []config.A2APeerConfig{{URL: "https://a", TrustTier: 0, LatencyTierMS: 10}}
+			},
+			"tools.a2a_peers[0].trust_tier",
+		},
+		{
+			"a2a peer trust tier above range",
+			func(c *config.Config) {
+				c.Tools.A2APeers = []config.A2APeerConfig{{URL: "https://a", TrustTier: 6, LatencyTierMS: 10}}
+			},
+			"tools.a2a_peers[0].trust_tier",
+		},
+		{
+			"a2a peer negative latency",
+			func(c *config.Config) {
+				c.Tools.A2APeers = []config.A2APeerConfig{{URL: "https://a", TrustTier: 3, LatencyTierMS: -1}}
+			},
+			"tools.a2a_peers[0].latency_tier_ms",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
