@@ -467,6 +467,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Stub planner returning `Finish` runs end-to-end; planner package imports no Runtime internals.
 **Tests.** Conformance harness skeleton; import-graph lint.
 **Deps.** 09, 13, 26, 32.
+**Wake-on-resolution contract (D-032).** When the planner emits a `SpawnTask` (or group `SpawnTask` via the patched surface from Phase 21) WITHOUT retain-turn, it MUST consume `tasks.WatchGroup(sessionID, groupID) (<-chan GroupCompletion, func(), error)` from `internal/tasks` to learn when the group resolves. The three wake modes (`push`, `poll`, `hybrid`) are documented at the `internal/tasks` package godoc; this phase ships the planner-side interface contract that each concrete (45, 48, future) maps onto exactly one mode. The TaskRegistry stays neutral — no `WakeMode` field, no `Supports*` capability protocol.
 
 ### 43 — Trajectory + serialise contract (RFC §6.2, §3.4)
 
@@ -489,6 +490,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** 3-step reasoning task succeeds against a mock LLM; planner package has no Runtime imports; planner is concurrent-safe across runs.
 **Tests.** Conformance pack (skeleton) + scenario.
 **Deps.** 42, 43, 44, 32.
+**Wake mode.** ReAct ships the **`push`** wake mode (D-032): a non-retain-turn `SpawnTask` returns control to the runtime; the runtime registers the planner against `tasks.WatchGroup`; on `GroupCompletion` the runtime re-invokes `Planner.Next` with the resolved `MemberOutcome` slice surfaced through `RunContext`. The LLM sees the next planner step only after the group resolves — no LLM call burns while children are in flight.
 
 ### 46 — Trajectory compression / summariser (RFC §6.2)
 
@@ -510,6 +512,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Deterministic planner passes the conformance pack; the same Runtime executes both deterministic and React without changes.
 **Tests.** Conformance pack.
 **Deps.** 42.
+**Wake mode.** Deterministic ships the **`poll`** wake mode (D-032): each `Planner.Next` invocation reads its outstanding group's `GroupCompletion` via a non-blocking receive on the channel returned from `tasks.WatchGroup`. If the channel hasn't fired, the planner emits `AwaitTask` and the runtime sleeps the step until the next deterministic boundary; if it has fired, the planner reads the resolved `MemberOutcome` slice and proceeds. No LLM, no eager wake — a clean deterministic shape that proves the registry's `WatchGroup` surface is mode-neutral.
 
 ### 49 — Planner conformance pack (RFC §6.2)
 
@@ -517,6 +520,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Pack runs against React and Deterministic; `go test ./internal/planner/conformance/...` exits 0.
 **Tests.** The pack itself.
 **Deps.** 42, 45, 48.
+**Wake-mode round-trip (D-032).** The conformance pack MUST include a `SpawnTask` → group completes → planner re-enters → reads `MemberOutcome` round-trip exercising whichever wake mode the concrete declares (push / poll / hybrid). React validates `push`; Deterministic validates `poll`; future hybrid concretes validate `hybrid`. Failure to wire `tasks.WatchGroup` is the test's failure mode, not silent deadlock.
 
 ### 50 — Pause/Resume Coordinator + handle registry (RFC §6.3, §3.3)
 
