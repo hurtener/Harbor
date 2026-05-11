@@ -164,8 +164,9 @@ func defaults() *Config {
 			RemoteDriver: "loopback",
 		},
 		Memory: MemoryConfig{
-			Driver:   "inmem",
-			Strategy: "none",
+			Driver:             "inmem",
+			Strategy:           "none",
+			RecoveryBacklogMax: 16,
 		},
 	}
 }

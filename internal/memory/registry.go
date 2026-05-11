@@ -35,11 +35,16 @@ type Deps struct {
 // persistent drivers" lives at the config layer (`validateMemory`
 // in `internal/config/validate.go`) and at the driver constructor
 // itself — fail-loudly twice so a misconfiguration surfaces early.
+//
+// `RecoveryBacklogMax` is consumed by the `rolling_summary`
+// strategy executor only; other strategies ignore the field.
+// Default (zero) → strategy.DefaultRecoveryBacklogMax.
 type ConfigSnapshot struct {
-	Driver       string
-	DSN          string
-	Strategy     Strategy
-	BudgetTokens int
+	Driver             string
+	DSN                string
+	Strategy           Strategy
+	BudgetTokens       int
+	RecoveryBacklogMax int
 }
 
 // Factory builds a `MemoryStore` from a `ConfigSnapshot` + `Deps`.

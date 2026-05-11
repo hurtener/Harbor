@@ -39,7 +39,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 21 | TaskGroup + retain-turn + patches             | tasks                | §6.8        | 20                    | 85%  | Shipped  |
 | 22 | MessageBus + RemoteTransport contracts        | distributed          | §6.12       | 09, 20                | 85%  | Shipped  |
 | 23 | MemoryStore iface + InMem + conformance       | memory               | §6.6        | 01, 07                | 85%  | Shipped  |
-| 24 | Memory strategies (truncation, summary)       | memory               | §6.6        | 23                    | 85%  | Pending  |
+| 24 | Memory strategies (truncation, summary)       | memory               | §6.6        | 23                    | 85%  | Shipped  |
 | 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Shipped  |
 | 26 | Tool catalog core + InProcess registration    | tools                | §6.4        | 01, 05, 09            | 85%  | Shipped  |
 | 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Shipped  |
@@ -302,6 +302,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Strategy matrix tested; degraded mode falls back to recent-window + queues recovery loop bounded by `RecoveryBacklogMax`; `memory.health_changed` events emitted.
 **Tests.** Strategy matrix + property + integration with a stub summarizer.
 **Deps.** 23.
+**Status.** Shipped (D-034 — `OverflowDropOldest`-only enum, bounded recovery loop with `memory.recovery_dropped` overflow emit, retry/backoff/cadence constants not exposed as config; phase plan `phase-24-memory-strategies.md`).
 
 ### 25 — SQLite + Postgres memory drivers (RFC §6.6, §9)
 
