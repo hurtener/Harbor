@@ -62,13 +62,20 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 		return nil, fmt.Errorf("tasks/inprocess: New requires a non-nil Redactor")
 	}
 	return &driver{
-		store:       deps.Store,
-		bus:         deps.Bus,
-		redactor:    deps.Redactor,
-		tasks:       map[tasks.TaskID]*tasks.Task{},
-		idemIdx:     map[idempotencyKey]tasks.TaskID{},
-		children:    map[tasks.TaskID][]tasks.TaskID{},
-		ulidEntropy: ulid.Monotonic(rand.Reader, 0),
+		store:            deps.Store,
+		bus:              deps.Bus,
+		redactor:         deps.Redactor,
+		tasks:            map[tasks.TaskID]*tasks.Task{},
+		idemIdx:          map[idempotencyKey]tasks.TaskID{},
+		children:         map[tasks.TaskID][]tasks.TaskID{},
+		groups:           map[tasks.TaskGroupID]*tasks.TaskGroup{},
+		taskGroup:        map[tasks.TaskID]tasks.TaskGroupID{},
+		groupSubs:        map[tasks.TaskGroupID][]*groupSubscriber{},
+		groupCompletions: map[tasks.TaskGroupID]tasks.GroupCompletion{},
+		retainWaiters:    map[string][]*retainWaiter{},
+		patches:          map[patchKey]*tasks.Patch{},
+		acknowledged:     map[tasks.TaskID]struct{}{},
+		ulidEntropy:      ulid.Monotonic(rand.Reader, 0),
 	}, nil
 }
 
@@ -91,10 +98,22 @@ type driver struct {
 	bus      events.EventBus
 	redactor audit.Redactor
 
-	mu          sync.RWMutex
-	tasks       map[tasks.TaskID]*tasks.Task
-	idemIdx     map[idempotencyKey]tasks.TaskID
-	children    map[tasks.TaskID][]tasks.TaskID
+	mu       sync.RWMutex
+	tasks    map[tasks.TaskID]*tasks.Task
+	idemIdx  map[idempotencyKey]tasks.TaskID
+	children map[tasks.TaskID][]tasks.TaskID
+
+	// Phase 21 — group + patch + retain-turn + watcher state. All
+	// guarded by `mu`. See `drivers/inprocess/groups.go` for the
+	// access patterns + invariants.
+	groups           map[tasks.TaskGroupID]*tasks.TaskGroup
+	taskGroup        map[tasks.TaskID]tasks.TaskGroupID
+	groupSubs        map[tasks.TaskGroupID][]*groupSubscriber
+	groupCompletions map[tasks.TaskGroupID]tasks.GroupCompletion
+	retainWaiters    map[string][]*retainWaiter // key = SessionID
+	patches          map[patchKey]*tasks.Patch
+	acknowledged     map[tasks.TaskID]struct{}
+
 	closed      atomic.Bool
 	ulidEntropy *ulid.MonotonicEntropy
 }
@@ -167,6 +186,32 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if req.ParentTaskID != nil && *req.ParentTaskID != "" {
 		d.children[*req.ParentTaskID] = append(d.children[*req.ParentTaskID], id)
 	}
+	// Phase 21: wire the new task into the requested group, if any.
+	// Sealed / terminal groups reject with ErrGroupSealed. The error
+	// rolls back the spawn: we delete the just-created task to keep
+	// the registry consistent.
+	if req.GroupID != "" {
+		g, ok := d.groups[req.GroupID]
+		if !ok || !identitiesEqual(g.SessionID, req.Identity.Identity) {
+			delete(d.tasks, id)
+			if req.IdempotencyKey != "" {
+				delete(d.idemIdx, idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey})
+			}
+			return tasks.TaskHandle{}, fmt.Errorf("%w: id=%q", tasks.ErrGroupNotFound, req.GroupID)
+		}
+		if err := d.addMemberLocked(g, id); err != nil {
+			delete(d.tasks, id)
+			if req.IdempotencyKey != "" {
+				delete(d.idemIdx, idempotencyKey{SessionID: req.Identity.SessionID, Key: req.IdempotencyKey})
+			}
+			return tasks.TaskHandle{}, err
+		}
+		if err := d.persistGroupLocked(ctx, g); err != nil {
+			delete(d.tasks, id)
+			delete(d.taskGroup, id)
+			return tasks.TaskHandle{}, err
+		}
+	}
 
 	parentForPayload := tasks.TaskID("")
 	if req.ParentTaskID != nil {
@@ -214,6 +259,7 @@ func (d *driver) SpawnTool(ctx context.Context, req tasks.SpawnToolRequest) (tas
 		IdempotencyKey:    req.IdempotencyKey,
 		PropagateOnCancel: req.PropagateOnCancel,
 		NotifyOnComplete:  req.NotifyOnComplete,
+		GroupID:           req.GroupID,
 	})
 }
 
@@ -564,6 +610,8 @@ func (d *driver) lookupLocked(ctx context.Context, id tasks.TaskID) (*tasks.Task
 }
 
 // transitionLocked performs an FSM transition and persists the task.
+// When the destination is a terminal state AND the task belongs to a
+// group, the Phase 21 group resolve gate is checked (`onMemberTerminalLocked`).
 // Caller MUST hold d.mu.
 func (d *driver) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.TaskStatus) error {
 	if !isValidTransition(t.Status, to) {
@@ -571,7 +619,13 @@ func (d *driver) transitionLocked(ctx context.Context, t *tasks.Task, to tasks.T
 	}
 	t.Status = to
 	t.UpdatedAt = time.Now().UnixNano()
-	return d.persistLocked(ctx, t)
+	if err := d.persistLocked(ctx, t); err != nil {
+		return err
+	}
+	if isTerminal(to) {
+		d.onMemberTerminalLocked(ctx, t)
+	}
+	return nil
 }
 
 // persistLocked writes the task through the StateStore as a

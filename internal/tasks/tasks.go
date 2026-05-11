@@ -172,6 +172,12 @@ type Task struct {
 //
 // `PropagateOnCancel` defaults to "cascade" when empty; "isolate"
 // is opt-in for tasks that must survive a parent's cancellation.
+//
+// `GroupID` (Phase 21, optional) wires the new task into an existing
+// `TaskGroup`. The driver verifies the group is `Open` (sealed or
+// terminal groups reject with `ErrGroupSealed`) and registers the
+// new task as a member. Empty `GroupID` is the default — most
+// foreground turns aren't group members.
 type SpawnRequest struct {
 	Identity          identity.Quadruple
 	Kind              TaskKind
@@ -182,6 +188,7 @@ type SpawnRequest struct {
 	IdempotencyKey    string
 	PropagateOnCancel string
 	NotifyOnComplete  bool
+	GroupID           TaskGroupID
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
@@ -191,6 +198,9 @@ type SpawnRequest struct {
 // Phase 20's `SpawnTool` execution body is a no-op stub: the task is
 // persisted at `StatusPending` and never auto-advances. The runtime
 // engine (Phase 26) drives the lifecycle once dispatch is wired.
+//
+// `GroupID` (Phase 21, optional) wires the new tool task into an
+// existing `TaskGroup`. See `SpawnRequest.GroupID` for the contract.
 type SpawnToolRequest struct {
 	Identity          identity.Quadruple
 	ParentTaskID      *TaskID
@@ -201,6 +211,7 @@ type SpawnToolRequest struct {
 	IdempotencyKey    string
 	PropagateOnCancel string
 	NotifyOnComplete  bool
+	GroupID           TaskGroupID
 }
 
 // TaskHandle is the return shape of `Spawn` / `SpawnTool`. `Reused`
@@ -314,6 +325,117 @@ type TaskRegistry interface {
 	// MarkFailed transitions Running → Failed. Persists `err` on the
 	// Task record; emits `task.failed`.
 	MarkFailed(ctx context.Context, id TaskID, err TaskError) error
+
+	// ResolveOrCreateGroup is the idempotent group constructor. Empty
+	// `GroupRequest.ID` → registry assigns a fresh ULID. Non-empty +
+	// already-existing → the existing group is returned unchanged.
+	// Identity is mandatory; cross-session reuse of an ID is rejected
+	// with `ErrGroupNotFound` (existence-without-access).
+	//
+	// Emits `task.group_created` on the first creation; the no-op
+	// idempotent return does NOT re-emit.
+	ResolveOrCreateGroup(ctx context.Context, req GroupRequest) (*TaskGroup, error)
+
+	// SealGroup transitions an open group to `GroupSealed`, freezing
+	// membership. Sealed groups still have non-terminal members; the
+	// driver resolves the group automatically when the last member
+	// transitions to terminal.
+	//
+	// Invalid transitions (already sealed; terminal) return
+	// `ErrGroupInvalidTransition`. Emits `task.group_sealed`.
+	SealGroup(ctx context.Context, id TaskGroupID) error
+
+	// CancelGroup transitions a non-terminal group to `GroupCancelled`
+	// and (when `propagate=true`) cancels every non-terminal member
+	// task. The `reason` is a short caller-controlled string (same
+	// `SafePayload` contract as `Cancel`'s reason).
+	//
+	// Emits `task.group_cancelled` carrying the canonical
+	// `GroupCompletion` payload (so `WatchGroup` subscribers receive
+	// the cancel-with-reason as a single typed delivery).
+	CancelGroup(ctx context.Context, id TaskGroupID, reason string, propagate bool) error
+
+	// ApplyGroup is the action-verb wrapper over `SealGroup` /
+	// `CancelGroup` / explicit resolve. Convenience for callers that
+	// dispatch by enum.
+	//
+	//   - ActionSeal    → SealGroup
+	//   - ActionCancel  → CancelGroup(reason="action:cancel", propagate=true)
+	//   - ActionResolve → mark sealed → completed (errors with
+	//                     `ErrGroupNotSealed` on an open group)
+	ApplyGroup(ctx context.Context, id TaskGroupID, action GroupAction) error
+
+	// ListGroups returns the groups owned by `sessionID` matching the
+	// optional `status` filter (nil = wildcard). Empty list + nil
+	// error is the no-groups case; missing-identity returns
+	// `ErrIdentityRequired`.
+	ListGroups(ctx context.Context, sessionID identity.Identity, status *TaskGroupStatus) ([]TaskGroup, error)
+
+	// ApplyPatch transitions a pending patch through
+	// `pending → applied | rejected`. Returns `(true, nil)` when the
+	// transition occurred; `(false, nil)` when the patch was already
+	// in the target terminal state (idempotent). Returns
+	// `ErrPatchNotFound` on a missing patch ID.
+	//
+	// Patches are persisted through StateStore under `Kind =
+	// "task.patch"`. The patch payload is opaque bytes (D-027); the
+	// actual context-patch shape lives at the planner (Phase 42+).
+	//
+	// Emits `task.patch_applied` or `task.patch_rejected` on a real
+	// transition; no re-emit on the no-op path.
+	ApplyPatch(ctx context.Context, sessionID identity.Identity, patchID string, action PatchAction) (bool, error)
+
+	// AcknowledgeBackground marks completed background tasks as
+	// user-acknowledged. Returns the count of tasks that transitioned
+	// from un-acknowledged → acknowledged (idempotent on a re-ack).
+	//
+	// Emits one `task.background_acknowledged` event per task on the
+	// real-transition path. Unknown task IDs are silently skipped (no
+	// error; the count reflects only the real ack transitions).
+	AcknowledgeBackground(ctx context.Context, sessionID identity.Identity, ids []TaskID) (int, error)
+
+	// RegisterRetainTurnWaiter returns a channel that closes when the
+	// session's earliest-active retain-turn group resolves, and a
+	// cancel func that unsubscribes. The runtime engine consumes the
+	// closed channel as the "all retain-turn groups have resolved"
+	// signal so foreground-turn dispatch can resume.
+	//
+	// Buffered size 1 — the resolve path delivers the resolved
+	// group's ID without blocking even if the consumer is slow.
+	// Channel close is the termination signal; the optional payload
+	// is the ID of the group whose terminal transition triggered the
+	// wake.
+	//
+	// Implementations are required to close the channel exactly once.
+	RegisterRetainTurnWaiter(sessionID identity.Identity) (<-chan TaskGroupID, func())
+
+	// WatchGroup is the non-retain-turn dual of
+	// `RegisterRetainTurnWaiter`: it does NOT block any foreground
+	// turn — the planner is free to proceed while the group runs in
+	// the background. When the group reaches a terminal state, the
+	// runtime delivers a typed `GroupCompletion` payload on the
+	// returned channel and closes it.
+	//
+	// Callers typically use this as a "wake the planner" signal so
+	// background results integrate back into the conversation; see
+	// the "Wake policy modes" godoc in `groups.go` for the three
+	// patterns (push, poll, hybrid) the planner runtime can implement
+	// against this single mechanism.
+	//
+	// Returns `ErrGroupNotFound` when the group is unknown at
+	// registration time (e.g. resolved + GC'd). For a
+	// resolved-but-still-tracked group, the implementation returns a
+	// channel that is *already* primed with the cached
+	// `GroupCompletion` (so late subscribers don't deadlock).
+	//
+	// The cancel func unsubscribes; calling it after a delivery is a
+	// no-op. The channel is closed exactly once — either by the
+	// resolve path (with a delivery) or by the cancel path (without
+	// a delivery).
+	//
+	// Concurrent reuse: multiple subscribers on the same group all
+	// receive the same payload (D-025).
+	WatchGroup(sessionID identity.Identity, groupID TaskGroupID) (<-chan GroupCompletion, func(), error)
 
 	// Close releases registry resources. Subsequent operations return
 	// `ErrRegistryClosed`. Idempotent.

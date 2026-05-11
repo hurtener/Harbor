@@ -155,7 +155,9 @@ func defaults() *Config {
 			S3UsePathStyle: false,
 		},
 		Tasks: TasksConfig{
-			Driver: "inprocess",
+			Driver:               "inprocess",
+			RetainTurnTimeout:    5 * time.Minute,
+			ContinuationHopLimit: 8,
 		},
 	}
 }

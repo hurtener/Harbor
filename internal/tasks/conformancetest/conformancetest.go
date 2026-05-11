@@ -42,7 +42,7 @@ type Factory func() (tasks.TaskRegistry, func())
 
 // Run executes the canonical correctness suite.
 //
-// Subtests:
+// Phase 20 subtests (per-task surface):
 //
 //   - Spawn_AssignsTaskID
 //   - Spawn_Idempotent_SameKeyReturnsSameHandle
@@ -68,6 +68,29 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Concurrent_SpawnGetCancel_NoRace (D-025)
 //   - Close_Idempotent
 //   - GoroutineLeak_AfterClose
+//
+// Phase 21 subtests (group + retain-turn + patches + WatchGroup):
+//
+//   - Group_ResolveOrCreate_Idempotent
+//   - Group_Seal_FreezesMembership
+//   - Group_RetainTurn_BlocksUntilTerminal
+//   - Group_FailFast_OnFirstFailure_CancelsRest
+//   - Group_Cancel_Cascade_PropagatesToMembers
+//   - Group_Cancel_NoPropagate_LeavesMembersAlone
+//   - WatchGroup_Push_DeliversCompletionPayload
+//   - WatchGroup_Push_OnGroupCancelled_DeliversWithReason
+//   - WatchGroup_Poll_GetReturnsTerminalAfterResolve
+//   - WatchGroup_Hybrid_PushAndPollCoexist
+//   - WatchGroup_Unsubscribe_BeforeResolve_NoLeak
+//   - WatchGroup_AlreadyResolvedGroup_ReturnsErrGroupNotFound
+//   - WatchGroup_MultipleSubscribers_AllReceive
+//   - WatchGroup_RefShaped_MemberResultRoundTrips
+//   - Patch_Apply_HappyPath
+//   - Patch_Apply_Reject_HappyPath
+//   - Patch_Apply_NotFound
+//   - Acknowledge_Background_EmitsPerTaskEvents
+//   - Group_CrossSession_Isolation
+//   - Group_Concurrent_AddRemoveSeal_NoRace (D-025)
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
@@ -855,6 +878,10 @@ func Run(t *testing.T, factory Factory) {
 			t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
 		}
 	})
+
+	// --- Phase 21 subtests --------------------------------------------------
+
+	runGroupSubtests(t, factory)
 }
 
 // --- Test helpers ----------------------------------------------------------

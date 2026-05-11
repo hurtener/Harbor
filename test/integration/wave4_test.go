@@ -725,7 +725,12 @@ func wave4Config() *config.Config {
 			Driver:                    "inmem",
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
-		// Phase 20 added a required `tasks.driver` field.
-		Tasks: config.TasksConfig{Driver: "inprocess"},
+		// Phase 20 added a required `tasks.driver` field; Phase 21
+		// added `retain_turn_timeout` + `continuation_hop_limit`.
+		Tasks: config.TasksConfig{
+			Driver:               "inprocess",
+			RetainTurnTimeout:    5 * time.Minute,
+			ContinuationHopLimit: 8,
+		},
 	}
 }

@@ -12,7 +12,14 @@ import (
 // free of task-domain knowledge.
 //
 // Phase 20 ships eight types: seven lifecycle transitions plus
-// `task.prioritised` for caller-driven priority updates.
+// `task.prioritised` for caller-driven priority updates. Phase 21
+// adds seven more group/patch types — `task.group_created`,
+// `task.group_sealed`, `task.group_resolved`, `task.group_cancelled`,
+// `task.patch_applied`, `task.patch_rejected`,
+// `task.background_acknowledged`. The `task.group_resolved` payload
+// IS `GroupCompletion` so subscribers (planner runtime, Console,
+// durable event log, sidecar status emitters) consume one canonical
+// shape regardless of how they're wired.
 const (
 	// EventTypeTaskSpawned — emitted by Spawn / SpawnTool when a
 	// fresh task is persisted (NOT emitted on idempotency-key reuse).
@@ -38,6 +45,34 @@ const (
 	// EventTypeTaskPrioritised — emitted by Prioritize when the
 	// task's priority value changes.
 	EventTypeTaskPrioritised events.EventType = "task.prioritised"
+
+	// EventTypeTaskGroupCreated — emitted by ResolveOrCreateGroup on
+	// the first creation (NOT emitted on idempotent-return).
+	EventTypeTaskGroupCreated events.EventType = "task.group_created"
+	// EventTypeTaskGroupSealed — emitted by SealGroup /
+	// ApplyGroup(ActionSeal) when the group transitions Open → Sealed.
+	EventTypeTaskGroupSealed events.EventType = "task.group_sealed"
+	// EventTypeTaskGroupResolved — emitted when a sealed group's last
+	// non-terminal member transitions to terminal AND the group's
+	// final status is `GroupCompleted`. Payload is `GroupCompletion`
+	// — the SAME canonical shape `WatchGroup` delivers.
+	EventTypeTaskGroupResolved events.EventType = "task.group_resolved"
+	// EventTypeTaskGroupCancelled — emitted by CancelGroup or by the
+	// driver's FailFast cascade when the group transitions to
+	// `GroupCancelled`. Payload is `GroupCompletion` with
+	// `FinalStatus = GroupCancelled` and `Reason` populated.
+	EventTypeTaskGroupCancelled events.EventType = "task.group_cancelled"
+	// EventTypeTaskPatchApplied — emitted by
+	// ApplyPatch(action=PatchAccept) on the pending → applied
+	// transition.
+	EventTypeTaskPatchApplied events.EventType = "task.patch_applied"
+	// EventTypeTaskPatchRejected — emitted by
+	// ApplyPatch(action=PatchReject) on the pending → rejected
+	// transition.
+	EventTypeTaskPatchRejected events.EventType = "task.patch_rejected"
+	// EventTypeTaskBackgroundAcknowledged — emitted once per task by
+	// AcknowledgeBackground on the un-ack → ack transition.
+	EventTypeTaskBackgroundAcknowledged events.EventType = "task.background_acknowledged"
 )
 
 func init() {
@@ -49,6 +84,14 @@ func init() {
 	events.RegisterEventType(EventTypeTaskFailed)
 	events.RegisterEventType(EventTypeTaskCancelled)
 	events.RegisterEventType(EventTypeTaskPrioritised)
+
+	events.RegisterEventType(EventTypeTaskGroupCreated)
+	events.RegisterEventType(EventTypeTaskGroupSealed)
+	events.RegisterEventType(EventTypeTaskGroupResolved)
+	events.RegisterEventType(EventTypeTaskGroupCancelled)
+	events.RegisterEventType(EventTypeTaskPatchApplied)
+	events.RegisterEventType(EventTypeTaskPatchRejected)
+	events.RegisterEventType(EventTypeTaskBackgroundAcknowledged)
 }
 
 // TaskSpawnedPayload reports a successful Spawn / SpawnTool. Carries
@@ -133,4 +176,77 @@ type TaskPrioritisedPayload struct {
 	TaskID        TaskID
 	PriorPriority int
 	NewPriority   int
+}
+
+// TaskGroupCreatedPayload reports a successful
+// ResolveOrCreateGroup on the first-creation path. Carries the
+// assigned group ID, owner task, retain-turn / fail-fast flags, and
+// the description. SafePayload by construction — the description is
+// a caller-controlled short string with the same SafePayload contract
+// as session.opened's `ClosedReason`.
+type TaskGroupCreatedPayload struct {
+	events.SafeSealed
+	GroupID     TaskGroupID
+	OwnerTaskID TaskID
+	RetainTurn  bool
+	FailFast    bool
+	Description string
+}
+
+// TaskGroupSealedPayload reports a SealGroup transition.
+// SafePayload by construction.
+type TaskGroupSealedPayload struct {
+	events.SafeSealed
+	GroupID  TaskGroupID
+	Members  []TaskID
+	SealedAt int64 // unix nanoseconds
+}
+
+// TaskGroupResolvedPayload reports a sealed group's terminal
+// transition to `GroupCompleted`. The payload doubles as the
+// `WatchGroup` wake-up payload — same canonical `GroupCompletion`
+// shape so subscribers (Console, planner, sidecar status emitters)
+// consume one shape regardless of how they're wired.
+//
+// SafePayload by construction. `MemberOutcome.Result` is ref-shaped
+// (D-022, D-026); heavy bytes should already be ArtifactRefs
+// upstream.
+type TaskGroupResolvedPayload struct {
+	events.SafeSealed
+	Completion GroupCompletion
+}
+
+// TaskGroupCancelledPayload reports a CancelGroup transition (or a
+// FailFast cascade-cancel). Same `GroupCompletion` shape as
+// resolved, with `FinalStatus = GroupCancelled` and `Reason`
+// populated.
+//
+// SafePayload by construction.
+type TaskGroupCancelledPayload struct {
+	events.SafeSealed
+	Completion GroupCompletion
+}
+
+// TaskPatchAppliedPayload reports ApplyPatch(action=PatchAccept).
+// Carries the patch ID; the patch payload bytes are on the Patch
+// record (already through the audit redactor; we do NOT inline the
+// bytes here). SafePayload by construction.
+type TaskPatchAppliedPayload struct {
+	events.SafeSealed
+	PatchID string
+}
+
+// TaskPatchRejectedPayload reports ApplyPatch(action=PatchReject).
+// SafePayload by construction.
+type TaskPatchRejectedPayload struct {
+	events.SafeSealed
+	PatchID string
+}
+
+// TaskBackgroundAcknowledgedPayload reports AcknowledgeBackground
+// for a single task (one event per task). SafePayload by
+// construction.
+type TaskBackgroundAcknowledgedPayload struct {
+	events.SafeSealed
+	TaskID TaskID
 }

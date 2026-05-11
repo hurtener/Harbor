@@ -100,3 +100,7 @@ tasks:
   # (e.g. a durable queue-backed driver at Phase 87+) extend the
   # allowlist.
   driver: inprocess
+  # Phase 21 backgroundtasks-config knobs (RFC §6.8). Both fields
+  # must be > 0; defaults are applied when the section is omitted.
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
