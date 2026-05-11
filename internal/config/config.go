@@ -121,23 +121,28 @@ type RuntimeConfig struct{}
 // string for Postgres). `secret:"true"` redacts the value in
 // audit-redacted logs.
 //
-// `Strategy` selects the memory shape: `"none"` (Phase 23
-// operational), `"truncation"` (Phase 24), or `"rolling_summary"`
-// (Phase 24). Default `none`. Operators MAY stage Phase 24
-// strategies in their config today; `memory.Open` rejects
-// unsupported strategies loudly with `ErrStrategyNotImplemented`
-// until Phase 24 lands.
+// `Strategy` selects the memory shape: `"none"` (Phase 23), or
+// `"truncation"` / `"rolling_summary"` (Phase 24). Default `none`.
+// `memory.Open` rejects strategies the configured driver does not
+// implement with `ErrStrategyNotImplemented`.
 //
-// `BudgetTokens` is reserved for Phase 24 (truncation + rolling
-// summary budget enforcement). Validated as `>= 0` today so an
-// operator-set override that elides the field flips back to zero
-// rather than silently disabling the budget. Phase 24 will define
-// the field's interpretation. Restart-required (no `reload:"live"`).
+// `BudgetTokens` is the truncation / rolling-summary budget cap
+// (token estimate). Zero means "no budget" — appending is
+// unbounded.
+//
+// `RecoveryBacklogMax` is the bounded queue size for the
+// `rolling_summary` strategy's recovery loop (D-035). Default 16
+// (applied by the loader when the section is omitted). Overflow
+// drops oldest and emits `memory.recovery_dropped` on the bus.
+// Ignored by the `none` and `truncation` strategies.
+//
+// Restart-required (no `reload:"live"`).
 type MemoryConfig struct {
-	Driver       string `yaml:"driver"`
-	DSN          string `yaml:"dsn,omitempty" secret:"true"`
-	Strategy     string `yaml:"strategy,omitempty"`
-	BudgetTokens int    `yaml:"budget_tokens,omitempty"`
+	Driver             string `yaml:"driver"`
+	DSN                string `yaml:"dsn,omitempty" secret:"true"`
+	Strategy           string `yaml:"strategy,omitempty"`
+	BudgetTokens       int    `yaml:"budget_tokens,omitempty"`
+	RecoveryBacklogMax int    `yaml:"recovery_backlog_max,omitempty"`
 }
 
 // SkillsConfig is owned by the skills subsystem phases.

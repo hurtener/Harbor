@@ -3,36 +3,32 @@
 // driver (SQLite + Postgres at Phase 25) inherits the same suite
 // verbatim.
 //
-// At Phase 23 the driver supports `Strategy = StrategyNone` only:
+// At Phase 24 the driver supports all three strategies:
 //
-//   - AddTurn is a no-op.
-//   - GetLLMContext returns an empty `LLMContextPatch`.
-//   - EstimateTokens returns 0.
-//   - Flush is a no-op.
-//   - Health returns `HealthHealthy`.
-//   - Snapshot returns an empty snapshot.
-//   - Restore accepts only empty snapshots (`ErrInvalidSnapshot`
-//     on non-empty bytes).
+//   - `none` — AddTurn is a no-op; GetLLMContext returns empty.
+//   - `truncation` — recent-window buffer with `OverflowDropOldest`
+//     enforcement at the configured `BudgetTokens` boundary.
+//   - `rolling_summary` — recent-window + background-summarised
+//     long-term context with the `healthy → retry → degraded →
+//     recovering → healthy` FSM. The injectable
+//     `memory.Summarizer` (LLM-backed at Phase 32+; stubbed via
+//     `strategy.EchoSummarizer` for tests) is consumed via
+//     `inmem.Options.Summarizer`.
 //
-// Phase 24 will extend this driver to implement `truncation` and
-// `rolling_summary` over the same surface; Phase 25 will land the
-// persistent drivers.
-//
-// Per D-027, every persistent mutation lands as a `state.StateStore`
-// record at `Kind = "memory.state"` so the StateStore conformance
-// suite covers the persistence path. Strategy=none has no
-// mutations, but the wiring is in place so Phase 24's
-// implementations reuse it.
+// Per D-027 (typed wrapper over StateStore), every successful
+// mutation lands as a `state.StateStore` record at `Kind =
+// "memory.state"` so the StateStore conformance suite covers the
+// persistence path. The driver itself holds no per-key buffer
+// state; everything lives behind the strategy executor.
 //
 // Identity is mandatory at every method: empty tenant / user /
-// session returns wrapped `ErrIdentityRequired` AND publishes one
-// `memory.identity_rejected` event on the injected EventBus.
+// session returns wrapped `memory.ErrIdentityRequired` AND
+// publishes one `memory.identity_rejected` event on the injected
+// EventBus.
 package inmem
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -40,7 +36,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
-	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/memory/strategy"
 )
 
 // kindMemoryState aliases the canonical `memory.KindMemoryState`
@@ -49,58 +45,95 @@ import (
 // 25) share the same routing key.
 const kindMemoryState = memory.KindMemoryState
 
-// New constructs a `MemoryStore` directly. Exposed for tests that
-// want to skip the registry; production callers go through
-// `memory.Open`.
+// Options carries InMem-driver-specific knobs that don't live on
+// the generic `memory.ConfigSnapshot`. The summariser is the only
+// Phase-24-relevant option; future drivers may add more.
 //
-// Strategy unsupported at Phase 23 (anything other than
-// `StrategyNone` or empty-equivalent) returns
-// `ErrStrategyNotImplemented` rather than silently coercing. Empty
-// Strategy in `cfg` defaults to `StrategyNone`.
-func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
+// `Summarizer` is REQUIRED when the configured strategy is
+// `rolling_summary`. The `New` constructor rejects a nil
+// summariser for that strategy with a wrapped error; the registry
+// path (`memory.Open`) currently has no way to inject a
+// non-default summariser, so callers wanting `rolling_summary` MUST
+// call `New` directly (Phase 32+ will land an LLM-backed
+// summariser the registry can resolve by default).
+//
+// `RecoveryBacklogMax` overrides the strategy default (16); zero
+// uses the default. Operators set this through
+// `config.MemoryConfig.RecoveryBacklogMax`; the registry-level
+// `memory.Open` propagates the value via `ConfigSnapshot` (see
+// Phase 24's `memory.ConfigSnapshot` extension).
+type Options struct {
+	Summarizer         memory.Summarizer
+	RecoveryBacklogMax int
+}
+
+// New constructs a `MemoryStore` directly. Exposed for tests +
+// production callers that want full control over the strategy
+// `Options`; production callers using `memory.Open` go through the
+// registry and the default summariser (which is nil at Phase 24 —
+// only `none` + `truncation` are registry-reachable).
+//
+// Strategy unsupported at this phase returns
+// `memory.ErrStrategyNotImplemented`.
+func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.MemoryStore, error) {
 	if deps.State == nil {
 		return nil, fmt.Errorf("memory/inmem: deps.State is required")
 	}
 	if deps.Bus == nil {
 		return nil, fmt.Errorf("memory/inmem: deps.Bus is required")
 	}
-	strategy := cfg.Strategy
-	if strategy == "" {
-		strategy = memory.StrategyNone
+	s := cfg.Strategy
+	if s == "" {
+		s = memory.StrategyNone
 	}
-	if strategy != memory.StrategyNone {
-		return nil, fmt.Errorf("%w: %q (Phase 23 supports %q only)",
-			memory.ErrStrategyNotImplemented, strategy, memory.StrategyNone)
+	// Options-level overrides take precedence; otherwise the
+	// ConfigSnapshot value flows through.
+	backlog := opts.RecoveryBacklogMax
+	if backlog == 0 {
+		backlog = cfg.RecoveryBacklogMax
+	}
+	execDeps := strategy.Deps{
+		State:              deps.State,
+		Bus:                deps.Bus,
+		Summarizer:         opts.Summarizer,
+		BudgetTokens:       cfg.BudgetTokens,
+		RecoveryBacklogMax: backlog,
+	}
+	exec, err := strategy.New(s, execDeps)
+	if err != nil {
+		return nil, err
 	}
 	return &driver{
-		strategy: strategy,
-		state:    deps.State,
+		strategy: s,
 		bus:      deps.Bus,
+		exec:     exec,
 	}, nil
 }
 
 func init() {
 	memory.Register("inmem", func(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
-		return New(cfg, deps)
+		// Registry path: no summariser is injectable. Only
+		// strategies that don't require a summariser are
+		// constructable through this path. The rolling-summary
+		// strategy needs `Summarizer`; operators staging it must
+		// call `inmem.New(...)` directly until Phase 32+ lands the
+		// LLM-backed summariser the registry resolves by default.
+		return New(cfg, deps, Options{})
 	})
 }
 
-// driver is the Strategy=none in-memory MemoryStore.
+// driver is the Phase-24 in-memory MemoryStore. The driver itself
+// owns identity-rejection emit + the closed flag; per-key state +
+// strategy logic live behind the strategy executor.
 //
-// All state behind the driver is held in the injected
-// `state.StateStore`; the driver itself carries only configuration
-// + the cross-cutting deps. This keeps the driver compatible with
-// the D-025 concurrent-reuse contract — there's no mutable field
-// on the driver struct other than the close flag.
+// Concurrent-reuse contract (D-025): one instance is safe to share
+// across N concurrent goroutines. The closed flag is `atomic.Bool`
+// + a sync.Mutex serialises Close to guarantee idempotency.
 type driver struct {
 	strategy memory.Strategy
-	state    state.StateStore
 	bus      events.EventBus
+	exec     strategy.StrategyExecutor
 
-	// mu guards the closed flag's read/write pair against double-
-	// close interleaving. The atomic is the operational gate; the
-	// mutex serialises Close itself so it idempotently observes
-	// "already closed" rather than racing on the write.
 	mu     sync.Mutex
 	closed atomic.Bool
 }
@@ -111,25 +144,20 @@ type driver struct {
 // so cross-driver `Snapshot/Restore` is byte-stable.
 type memoryStateRecord = memory.Record
 
-// AddTurn implements memory.MemoryStore.
-//
-// Strategy=none: no-op. Identity validated at the boundary; missing
-// triple → fail-closed with bus emit.
-func (d *driver) AddTurn(ctx context.Context, id identity.Quadruple, _ memory.ConversationTurn) error {
+// AddTurn implements memory.MemoryStore. Identity validated at the
+// boundary; missing triple → fail-closed with bus emit. The
+// strategy executor owns turn-handling — `Strategy=none` is a
+// no-op, `truncation` / `rolling_summary` consume `turn`.
+func (d *driver) AddTurn(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) error {
 	if d.closed.Load() {
 		return memory.ErrStoreClosed
 	}
 	if memory.ValidateIdentity(id) != nil {
 		return memory.EmitIdentityRejected(ctx, d.bus, id, "AddTurn")
 	}
-	// Strategy=none: nothing persisted. Phase 24 will append the
-	// turn to the StateStore-backed buffer here.
-	return nil
+	return d.exec.AddTurn(ctx, id, turn)
 }
 
-// GetLLMContext implements memory.MemoryStore.
-//
-// Strategy=none returns an empty patch.
 func (d *driver) GetLLMContext(ctx context.Context, id identity.Quadruple) (memory.LLMContextPatch, error) {
 	if d.closed.Load() {
 		return memory.LLMContextPatch{}, memory.ErrStoreClosed
@@ -137,12 +165,9 @@ func (d *driver) GetLLMContext(ctx context.Context, id identity.Quadruple) (memo
 	if memory.ValidateIdentity(id) != nil {
 		return memory.LLMContextPatch{}, memory.EmitIdentityRejected(ctx, d.bus, id, "GetLLMContext")
 	}
-	return memory.LLMContextPatch{Strategy: d.strategy}, nil
+	return d.exec.GetLLMContext(ctx, id)
 }
 
-// EstimateTokens implements memory.MemoryStore.
-//
-// Strategy=none returns 0.
 func (d *driver) EstimateTokens(ctx context.Context, id identity.Quadruple) (int, error) {
 	if d.closed.Load() {
 		return 0, memory.ErrStoreClosed
@@ -150,13 +175,9 @@ func (d *driver) EstimateTokens(ctx context.Context, id identity.Quadruple) (int
 	if memory.ValidateIdentity(id) != nil {
 		return 0, memory.EmitIdentityRejected(ctx, d.bus, id, "EstimateTokens")
 	}
-	return 0, nil
+	return d.exec.EstimateTokens(ctx, id)
 }
 
-// Flush implements memory.MemoryStore.
-//
-// Strategy=none: no-op. Phase 24 will delete the StateStore
-// record at (id, kindMemoryState).
 func (d *driver) Flush(ctx context.Context, id identity.Quadruple) error {
 	if d.closed.Load() {
 		return memory.ErrStoreClosed
@@ -164,19 +185,9 @@ func (d *driver) Flush(ctx context.Context, id identity.Quadruple) error {
 	if memory.ValidateIdentity(id) != nil {
 		return memory.EmitIdentityRejected(ctx, d.bus, id, "Flush")
 	}
-	// Strategy=none: idempotent no-op. Even though there's nothing
-	// to delete, we walk the StateStore-delete path so the InMem
-	// driver's behaviour matches the persistent drivers' (Phase 25):
-	// Flush always returns nil on a valid identity.
-	if err := d.state.Delete(ctx, id, kindMemoryState); err != nil {
-		return fmt.Errorf("memory/inmem: Flush delete: %w", err)
-	}
-	return nil
+	return d.exec.Flush(ctx, id)
 }
 
-// Health implements memory.MemoryStore.
-//
-// Strategy=none always reports `HealthHealthy`.
 func (d *driver) Health(ctx context.Context, id identity.Quadruple) (memory.Health, error) {
 	if d.closed.Load() {
 		return "", memory.ErrStoreClosed
@@ -184,16 +195,9 @@ func (d *driver) Health(ctx context.Context, id identity.Quadruple) (memory.Heal
 	if memory.ValidateIdentity(id) != nil {
 		return "", memory.EmitIdentityRejected(ctx, d.bus, id, "Health")
 	}
-	return memory.HealthHealthy, nil
+	return d.exec.Health(ctx, id)
 }
 
-// Snapshot implements memory.MemoryStore.
-//
-// Strategy=none returns an empty snapshot. Reads through the
-// StateStore so the conformance suite exercises the
-// `state.StateStore.Load` path (D-027 typed wrapper). Missing
-// records translate to an empty snapshot (memory has not been
-// touched yet for this identity); other errors propagate.
 func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error) {
 	if d.closed.Load() {
 		return memory.Snapshot{}, memory.ErrStoreClosed
@@ -201,30 +205,9 @@ func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Sn
 	if memory.ValidateIdentity(id) != nil {
 		return memory.Snapshot{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Snapshot")
 	}
-
-	rec, err := d.state.Load(ctx, id, kindMemoryState)
-	if err != nil {
-		if errors.Is(err, state.ErrNotFound) {
-			// No prior memory state for this identity — return an
-			// empty Strategy=none snapshot. Strategy=none is the
-			// default initial state per RFC §6.6.
-			return memory.Snapshot{Strategy: d.strategy}, nil
-		}
-		return memory.Snapshot{}, fmt.Errorf("memory/inmem: Snapshot load: %w", err)
-	}
-	return memory.Snapshot{Strategy: d.strategy, Bytes: rec.Bytes}, nil
+	return d.exec.Snapshot(ctx, id)
 }
 
-// Restore implements memory.MemoryStore.
-//
-// Strategy=none accepts only empty snapshots. The snapshot's
-// Strategy MUST match the driver's; mismatched strategies return
-// `ErrInvalidSnapshot` — fail loudly, never silently coerce.
-//
-// Restore persists the (empty) snapshot through the StateStore so
-// later Snapshot calls observe the slot. This exercises the D-027
-// typed-wrapper write path even at Strategy=none, so Phase 24's
-// `truncation` / `rolling_summary` inherit the wiring.
 func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory.Snapshot) error {
 	if d.closed.Load() {
 		return memory.ErrStoreClosed
@@ -232,73 +215,20 @@ func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory
 	if memory.ValidateIdentity(id) != nil {
 		return memory.EmitIdentityRejected(ctx, d.bus, id, "Restore")
 	}
-
-	// Empty snapshot (zero value, no strategy / bytes) is always
-	// acceptable and round-trips the initial state.
-	if snap.IsEmpty() {
-		return d.persistRecord(ctx, id, memoryStateRecord{Strategy: d.strategy})
-	}
-	// Otherwise: the snapshot's Strategy must match the driver's.
-	if snap.Strategy != d.strategy {
-		return fmt.Errorf("%w: snapshot strategy=%q driver strategy=%q",
-			memory.ErrInvalidSnapshot, snap.Strategy, d.strategy)
-	}
-	// Same-strategy empty-bytes is the "default initial state" snapshot
-	// `Snapshot` returns when no record exists yet — round-trip it.
-	if len(snap.Bytes) == 0 {
-		return d.persistRecord(ctx, id, memoryStateRecord{Strategy: d.strategy})
-	}
-	if d.strategy == memory.StrategyNone {
-		// At Strategy=none the only acceptable bytes are the
-		// canonical empty record `{"strategy":"none"}`. Decode + reject
-		// anything that carries actual turns. Decoding here also
-		// catches malformed bytes loudly rather than silently storing.
-		var rec memoryStateRecord
-		if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-			return fmt.Errorf("%w: %v", memory.ErrInvalidSnapshot, err)
-		}
-		if rec.Strategy != memory.StrategyNone {
-			return fmt.Errorf("%w: record strategy=%q", memory.ErrInvalidSnapshot, rec.Strategy)
-		}
-		if len(rec.Turns) > 0 {
-			return fmt.Errorf("%w: Strategy=none cannot carry %d turn(s)",
-				memory.ErrInvalidSnapshot, len(rec.Turns))
-		}
-		return d.persistRecord(ctx, id, rec)
-	}
-	// Phase 24 will branch on d.strategy here for truncation +
-	// rolling_summary. Today, only Strategy=none with empty bytes is
-	// reachable.
-	return fmt.Errorf("%w: unsupported snapshot for strategy %q",
-		memory.ErrInvalidSnapshot, d.strategy)
+	return d.exec.Restore(ctx, id, snap)
 }
 
-// persistRecord marshals the typed record and writes through the
-// injected StateStore (D-027). EventID is fresh per write — Restore
-// is not idempotency-keyed at the caller level.
-func (d *driver) persistRecord(ctx context.Context, id identity.Quadruple, rec memoryStateRecord) error {
-	bytes, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("memory/inmem: marshal record: %w", err)
-	}
-	sr := state.StateRecord{
-		ID:       state.NewEventID(),
-		Identity: id,
-		Kind:     kindMemoryState,
-		Bytes:    bytes,
-	}
-	if err := d.state.Save(ctx, sr); err != nil {
-		return fmt.Errorf("memory/inmem: save record: %w", err)
-	}
-	return nil
-}
-
-// Close implements memory.MemoryStore. Idempotent.
-func (d *driver) Close(_ context.Context) error {
+// Close implements memory.MemoryStore. Idempotent. Tears down the
+// strategy executor's per-strategy resources (recovery loop
+// goroutine for rolling_summary; nothing for none/truncation).
+func (d *driver) Close(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.closed.Load() {
+		return nil
+	}
 	d.closed.Store(true)
-	return nil
+	return d.exec.Close(ctx)
 }
 
 // Compile-time assertion that *driver satisfies memory.MemoryStore.

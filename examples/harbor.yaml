@@ -117,19 +117,23 @@ memory:
   # key-value form. Override via HARBOR_MEMORY_DSN in production;
   # never commit a real password.
   # dsn: /var/lib/harbor/memory.sqlite
-  # Memory shape strategy. Phase 23 ships only `none` operational —
-  # AddTurn is a no-op, GetLLMContext returns empty. Phase 24 will
-  # add `truncation` (recent-turn window + budget enforcement) and
-  # `rolling_summary` (background-summarised long-term context).
-  # Operators MAY stage Phase 24 strategies today; `memory.Open`
-  # rejects unsupported strategies loudly with
-  # ErrStrategyNotImplemented until Phase 24 lands.
+  # Memory shape strategy:
+  #   - `none`            — AddTurn is a no-op; GetLLMContext returns empty.
+  #   - `truncation`      — recent-turn window + budget enforcement (drop-oldest).
+  #   - `rolling_summary` — recent window + background-summarised long-term
+  #                         context. Health FSM observable via
+  #                         `memory.health_changed`. Requires an injectable
+  #                         Summarizer (LLM-backed at Phase 32+; not
+  #                         registry-reachable today).
   strategy: none
-  # Reserved for Phase 24 (truncation + rolling-summary budget
-  # enforcement). Must be >= 0. Phase 23 ignores the value; the
-  # field exists so an operator-side config stays stable across
-  # the Phase 23 → 24 upgrade.
+  # Per-key token cap for truncation and rolling_summary; zero
+  # disables budget enforcement (turns accumulate unbounded).
   budget_tokens: 0
+  # Bounded queue size for the rolling_summary recovery loop
+  # (D-034). Overflow drops oldest and emits
+  # `memory.recovery_dropped` on the events bus. Default 16; must
+  # be >= 0.
+  recovery_backlog_max: 16
 
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out

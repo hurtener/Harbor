@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,6 +43,10 @@ import (
 //   - `Store` is the MemoryStore under test, freshly constructed.
 //   - `Bus` is the EventBus the Store was wired to so the test can
 //     Subscribe and observe audit emits without injecting a fake.
+//   - `Strategy` is the strategy the Store is configured for; the
+//     suite forks its strategy-specific subtests on this value.
+//     Defaults to `StrategyNone` when zero — preserving Phase 23
+//     callers (which had no Strategy field on Harness).
 //   - `Cleanup` releases the harness (store.Close + bus.Close +
 //     any caller-owned tear-down).
 //
@@ -50,27 +55,37 @@ import (
 // happy-path assertions and a partial / empty identity to drive
 // rejection paths.
 type Harness struct {
-	Store   memory.MemoryStore
-	Bus     events.EventBus
-	Cleanup func()
+	Store    memory.MemoryStore
+	Bus      events.EventBus
+	Strategy memory.Strategy
+	Cleanup  func()
+}
+
+// strategy returns the configured strategy, defaulting to
+// `StrategyNone` when zero (Phase 23 compatibility).
+func (h Harness) strategy() memory.Strategy {
+	if h.Strategy == "" {
+		return memory.StrategyNone
+	}
+	return h.Strategy
 }
 
 // Factory builds a fresh Harness. Called once per top-level
 // subtest; the test invokes Cleanup() when it returns.
 type Factory func() Harness
 
-// Run executes the canonical correctness suite.
+// Run executes the canonical correctness suite. Subtests are
+// strategy-aware via `Harness.Strategy`: identity / cross-isolation
+// / Close / lifecycle subtests run unconditionally, while
+// strategy-specific subtests fork on the configured strategy.
 //
-// Subtests:
+// Strategy-agnostic subtests:
 //
-//   - AddTurn_NoOpForStrategyNone
-//   - GetLLMContext_EmptyByDefault
-//   - EstimateTokens_ReturnsZeroForStrategyNone
-//   - Flush_NoOp
-//   - Health_ReturnsHealthy
-//   - Snapshot_Empty
+//   - GetLLMContext_EmptyByDefault          (Strategy on the patch matches the configured one)
+//   - Flush_NoOp                            (Flush succeeds on a fresh store)
+//   - Health_ReturnsHealthy                 (initial state is healthy for every strategy)
+//   - Snapshot_Empty                        (initial snapshot is consistent with the strategy)
 //   - Restore_RoundTripsEmptySnapshot
-//   - Restore_RejectsNonEmptyForStrategyNone
 //   - Identity_Mandatory_AddTurn
 //   - Identity_Mandatory_GetLLMContext
 //   - Identity_Mandatory_AllMethods
@@ -79,17 +94,55 @@ type Factory func() Harness
 //   - Concurrent_AllMethods_NoRace
 //   - Close_Idempotent
 //   - AfterClose_OperationsError
+//
+// Strategy=none-specific subtests:
+//
+//   - None_AddTurn_IsNoOp
+//   - None_EstimateTokens_IsZero
+//   - None_Restore_RejectsNonEmpty
+//
+// Strategy=truncation-specific subtests:
+//
+//   - Truncation_AddTurn_PersistsAndAccumulates
+//   - Truncation_EnforcesBudget
+//   - Truncation_SnapshotRestore_RoundTripsBuffer
+//
+// Strategy=rolling_summary-specific subtests:
+//
+//   - RollingSummary_AddTurn_TriggersSummarisation
+//   - RollingSummary_SnapshotRestore_RoundTripsSummary
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
-	t.Run("AddTurn_NoOpForStrategyNone", func(t *testing.T) {
+	t.Run("GetLLMContext_EmptyByDefault", func(t *testing.T) {
 		h := factory()
 		defer h.Cleanup()
+		patch, err := h.Store.GetLLMContext(context.Background(), tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext: %v", err)
+		}
+		if patch.Strategy != h.strategy() {
+			t.Errorf("patch.Strategy=%q, want %q", patch.Strategy, h.strategy())
+		}
+		// On a fresh store, no turns have been added → the patch
+		// has no recent turns / summary / tokens regardless of
+		// strategy.
+		if patch.Tokens != 0 || patch.Summary != "" || len(patch.RecentTurns) != 0 {
+			t.Errorf("non-empty patch on fresh store under %q: %+v", h.strategy(), patch)
+		}
+	})
+
+	// Strategy=none-specific subtests.
+	t.Run("None_AddTurn_IsNoOp", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyNone {
+			t.Skipf("subtest only runs under StrategyNone; got %q", h.strategy())
+		}
 		ctx := context.Background()
 		if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
 			t.Fatalf("AddTurn: %v", err)
 		}
-		// Subsequent GetLLMContext stays empty.
 		patch, err := h.Store.GetLLMContext(ctx, tripleA())
 		if err != nil {
 			t.Fatalf("GetLLMContext: %v", err)
@@ -99,30 +152,151 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("GetLLMContext_EmptyByDefault", func(t *testing.T) {
+	t.Run("None_EstimateTokens_IsZero", func(t *testing.T) {
 		h := factory()
 		defer h.Cleanup()
-		patch, err := h.Store.GetLLMContext(context.Background(), tripleA())
-		if err != nil {
-			t.Fatalf("GetLLMContext: %v", err)
+		if h.strategy() != memory.StrategyNone {
+			t.Skipf("subtest only runs under StrategyNone; got %q", h.strategy())
 		}
-		if patch.Strategy != memory.StrategyNone {
-			t.Errorf("Strategy=%q, want %q", patch.Strategy, memory.StrategyNone)
-		}
-		if patch.Tokens != 0 || patch.Summary != "" || len(patch.RecentTurns) != 0 {
-			t.Errorf("non-empty patch under Strategy=none: %+v", patch)
-		}
-	})
-
-	t.Run("EstimateTokens_ReturnsZeroForStrategyNone", func(t *testing.T) {
-		h := factory()
-		defer h.Cleanup()
 		got, err := h.Store.EstimateTokens(context.Background(), tripleA())
 		if err != nil {
 			t.Fatalf("EstimateTokens: %v", err)
 		}
 		if got != 0 {
 			t.Errorf("EstimateTokens=%d, want 0", got)
+		}
+	})
+
+	// Strategy=truncation-specific subtests.
+	t.Run("Truncation_AddTurn_PersistsAndAccumulates", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyTruncation {
+			t.Skipf("subtest only runs under StrategyTruncation; got %q", h.strategy())
+		}
+		ctx := context.Background()
+		for i := 0; i < 3; i++ {
+			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+		}
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext: %v", err)
+		}
+		if len(patch.RecentTurns) == 0 {
+			t.Error("truncation returned no recent turns after 3 AddTurns")
+		}
+		if patch.Tokens == 0 {
+			t.Error("truncation returned zero tokens after 3 AddTurns")
+		}
+	})
+
+	t.Run("Truncation_EnforcesBudget", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyTruncation {
+			t.Skipf("subtest only runs under StrategyTruncation; got %q", h.strategy())
+		}
+		ctx := context.Background()
+		bigTurn := memory.ConversationTurn{
+			UserMessage:       strings.Repeat("u", 200),
+			AssistantResponse: strings.Repeat("a", 200),
+		}
+		// Push enough turns to overflow the test budget (64 tokens
+		// in newHarness); buffer must drop oldest to fit.
+		for i := 0; i < 5; i++ {
+			if err := h.Store.AddTurn(ctx, tripleA(), bigTurn); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+		}
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext: %v", err)
+		}
+		if patch.Tokens > 100 {
+			t.Errorf("truncation did not enforce budget: Tokens=%d, want <= 100", patch.Tokens)
+		}
+	})
+
+	t.Run("Truncation_SnapshotRestore_RoundTripsBuffer", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyTruncation {
+			t.Skipf("subtest only runs under StrategyTruncation; got %q", h.strategy())
+		}
+		ctx := context.Background()
+		if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+			t.Fatalf("AddTurn: %v", err)
+		}
+		snap, err := h.Store.Snapshot(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		if err := h.Store.Restore(ctx, tripleA(), snap); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext after restore: %v", err)
+		}
+		if len(patch.RecentTurns) == 0 {
+			t.Error("restored truncation snapshot lost recent turns")
+		}
+	})
+
+	// Strategy=rolling_summary-specific subtests.
+	t.Run("RollingSummary_AddTurn_TriggersSummarisation", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyRollingSummary {
+			t.Skipf("subtest only runs under StrategyRollingSummary; got %q", h.strategy())
+		}
+		ctx := context.Background()
+		// Add enough turns to spill into pending and trigger
+		// summarisation (FullZoneTurns is 4 inside the strategy
+		// package; 6 AddTurns guarantees spillage).
+		for i := 0; i < 6; i++ {
+			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+		}
+		// The stub Summarizer (EchoSummarizer) runs inline, so the
+		// summary is observable immediately on the next GetLLMContext.
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext: %v", err)
+		}
+		if patch.Summary == "" {
+			t.Error("rolling_summary failed to produce a summary after 6 turns")
+		}
+	})
+
+	t.Run("RollingSummary_SnapshotRestore_RoundTripsSummary", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.strategy() != memory.StrategyRollingSummary {
+			t.Skipf("subtest only runs under StrategyRollingSummary; got %q", h.strategy())
+		}
+		ctx := context.Background()
+		for i := 0; i < 6; i++ {
+			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+		}
+		snap, err := h.Store.Snapshot(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		if err := h.Store.Restore(ctx, tripleA(), snap); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext after restore: %v", err)
+		}
+		if patch.Summary == "" {
+			t.Error("rolling_summary restore lost the summary")
 		}
 	})
 
@@ -158,12 +332,12 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("Snapshot: %v", err)
 		}
-		if got.Strategy != memory.StrategyNone {
-			t.Errorf("snapshot strategy=%q, want %q", got.Strategy, memory.StrategyNone)
+		if got.Strategy != h.strategy() {
+			t.Errorf("snapshot strategy=%q, want %q", got.Strategy, h.strategy())
 		}
 		// Bytes may be empty (never-written) or carry an empty JSON
-		// record; either is acceptable under Strategy=none — but
-		// the snapshot MUST round-trip through Restore.
+		// record; either is acceptable on a fresh store — but the
+		// snapshot MUST round-trip through Restore.
 	})
 
 	t.Run("Restore_RoundTripsEmptySnapshot", func(t *testing.T) {
@@ -184,9 +358,12 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	t.Run("Restore_RejectsNonEmptyForStrategyNone", func(t *testing.T) {
+	t.Run("None_Restore_RejectsNonEmpty", func(t *testing.T) {
 		h := factory()
 		defer h.Cleanup()
+		if h.strategy() != memory.StrategyNone {
+			t.Skipf("subtest only runs under StrategyNone; got %q", h.strategy())
+		}
 		ctx := context.Background()
 		bogus := memory.Snapshot{
 			Strategy: memory.StrategyNone,
@@ -310,10 +487,11 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatalf("Snapshot S2: %v", err)
 		}
-		// S2 hasn't been written; its snapshot is the empty / Strategy=
-		// none default, regardless of S1's restore.
-		if snap2.Strategy != memory.StrategyNone {
-			t.Errorf("session 2 leaked strategy: %q", snap2.Strategy)
+		// S2 hasn't been written; its snapshot is the empty /
+		// initial-state default for the configured strategy,
+		// regardless of S1's restore.
+		if snap2.Strategy != h.strategy() {
+			t.Errorf("session 2 leaked strategy: %q (want %q)", snap2.Strategy, h.strategy())
 		}
 	})
 

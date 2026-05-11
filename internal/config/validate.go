@@ -326,12 +326,15 @@ var memoryDriversRequiringDSN = map[string]struct{}{
 }
 
 // allowedMemoryStrategies is the V1 memory-strategy allowlist.
-// Phase 23 ships only `none` operational; Phase 24 will add
-// `truncation` and `rolling_summary`. The allowlist intentionally
-// tracks the operational set so an operator-set unsupported
-// strategy is rejected at config validation rather than later at
-// memory.Open — fail fast.
-var allowedMemoryStrategies = map[string]struct{}{"none": {}}
+// Phase 24 added `truncation` and `rolling_summary` alongside the
+// Phase 23 `none`. The allowlist tracks the operational set so an
+// operator-set unsupported strategy is rejected at config
+// validation rather than later at memory.Open — fail fast.
+var allowedMemoryStrategies = map[string]struct{}{
+	"none":            {},
+	"truncation":      {},
+	"rolling_summary": {},
+}
 
 func (c *Config) validateMemory() error {
 	if c.Memory.Driver == "" {
@@ -357,6 +360,9 @@ func (c *Config) validateMemory() error {
 	}
 	if c.Memory.BudgetTokens < 0 {
 		return fieldError("memory.budget_tokens", "must be >= 0")
+	}
+	if c.Memory.RecoveryBacklogMax < 0 {
+		return fieldError("memory.recovery_backlog_max", "must be >= 0")
 	}
 	return nil
 }

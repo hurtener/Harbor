@@ -183,7 +183,7 @@ func TestValidate_TableDriven(t *testing.T) {
 		},
 		{
 			"unsupported memory strategy",
-			func(c *config.Config) { c.Memory.Strategy = "rolling_summary" },
+			func(c *config.Config) { c.Memory.Strategy = "not-a-strategy" },
 			"memory.strategy",
 		},
 		{
@@ -206,6 +206,11 @@ func TestValidate_TableDriven(t *testing.T) {
 				c.Memory.DSN = ""
 			},
 			"memory.dsn",
+		},
+		{
+			"negative memory recovery backlog max",
+			func(c *config.Config) { c.Memory.RecoveryBacklogMax = -1 },
+			"memory.recovery_backlog_max",
 		},
 	}
 	for _, tc := range cases {
