@@ -725,12 +725,13 @@ func wave4Config() *config.Config {
 			Driver:                    "inmem",
 			HeavyOutputThresholdBytes: 32 * 1024,
 		},
-		// Phase 20 / 21 / 22 cross-phase additions per §17.6.
+		// Phase 20 / 21 / 22 / 23 cross-phase additions per §17.6.
 		Tasks: config.TasksConfig{
 			Driver:               "inprocess",
 			RetainTurnTimeout:    5 * time.Minute,
 			ContinuationHopLimit: 8,
 		},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
+		Memory:      config.MemoryConfig{Driver: "inmem", Strategy: "none"},
 	}
 }

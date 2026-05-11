@@ -296,6 +296,15 @@ The decisions here are mirrored in the RFC (which is the design source of truth)
 
 ---
 
+## D-033 — Memory subsystem: identity-rejection emits `memory.identity_rejected` on the bus with `"<missing>"` substitution for the partial-triple identity field
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.6, `docs/plans/phase-23-memory.md` ("Brief findings incorporated" + "Risks / open questions"), `internal/memory/events.go` (the event-type constant + registration + `MemoryIdentityRejectedPayload`), `internal/memory/reject.go` (`EmitIdentityRejected` + `identityRejectionReason`), brief 04 §4.2 + §6.
+**Why:** Brief 04 §4.2 settles that a `MemoryStore` operation with a missing identity component MUST (a) fail closed with `ErrIdentityRequired` and (b) emit an audit event so the rejection is observable on the event bus. The brief does not name the event type. Harbor settles it as `memory.identity_rejected`, registered in the canonical `events` registry via this phase's `init()`. The payload (`MemoryIdentityRejectedPayload`) is `SafePayload` by construction — `Operation` is a bounded enumerable method name, `Reason` is a static string naming the missing component(s); no caller-controlled bytes survive on the payload. The naming and the SafePayload classification are mine, recorded so a later phase auditor doesn't flag either as drift. The event's `Identity` field is also load-bearing: Phase 05's `ValidateEvent` rejects empty-triple events with `ErrIdentityRequired`, so the rejection event itself cannot be `Identity = identity.Quadruple{}` even though the rejected input was. The settled solution: substitute any empty component with a `"<missing>"` sentinel on the published event so `ValidateEvent` passes; the payload's `Reason` field names the truly missing component(s), and subscribers MAY `Admin: true`-filter to fan-in cross-tenant rejections. The memory record persistence key is also settled at this phase: `Kind = "memory.state"` for the typed-wrapper-over-`StateStore` write (D-027 pattern), per-`Quadruple` slot, with the persisted bytes shaped as `{strategy, turns}` JSON. Phase 23 only writes empty records (Strategy=none has no mutations); Phase 24 will append turn data; Phase 25's persistent drivers will inherit the shape unchanged.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

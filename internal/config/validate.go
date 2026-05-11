@@ -42,6 +42,7 @@ func (c *Config) Validate() error {
 		c.validateArtifacts,
 		c.validateTasks,
 		c.validateDistributed,
+		c.validateMemory,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -304,6 +305,40 @@ func (c *Config) validateDistributed() error {
 		return fieldError("distributed.remote_driver",
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedDistributedRemoteDrivers), c.Distributed.RemoteDriver))
+	}
+	return nil
+}
+
+// allowedMemoryDrivers is the V1 memory-driver allowlist. Phase 23
+// ships only `inmem`; Phase 25 will add `sqlite` and `postgres`.
+var allowedMemoryDrivers = map[string]struct{}{"inmem": {}}
+
+// allowedMemoryStrategies is the V1 memory-strategy allowlist.
+// Phase 23 ships only `none` operational; Phase 24 will add
+// `truncation` and `rolling_summary`. The allowlist intentionally
+// tracks the operational set so an operator-set unsupported
+// strategy is rejected at config validation rather than later at
+// memory.Open — fail fast.
+var allowedMemoryStrategies = map[string]struct{}{"none": {}}
+
+func (c *Config) validateMemory() error {
+	if c.Memory.Driver == "" {
+		return fieldError("memory.driver", "must not be empty")
+	}
+	if _, ok := allowedMemoryDrivers[c.Memory.Driver]; !ok {
+		return fieldError("memory.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedMemoryDrivers), c.Memory.Driver))
+	}
+	if c.Memory.Strategy != "" {
+		if _, ok := allowedMemoryStrategies[c.Memory.Strategy]; !ok {
+			return fieldError("memory.strategy",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedMemoryStrategies), c.Memory.Strategy))
+		}
+	}
+	if c.Memory.BudgetTokens < 0 {
+		return fieldError("memory.budget_tokens", "must be >= 0")
 	}
 	return nil
 }

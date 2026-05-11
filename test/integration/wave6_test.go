@@ -794,6 +794,7 @@ func wave6Config() *config.Config {
 			ContinuationHopLimit: 8,
 		},
 		Distributed: config.DistributedConfig{BusDriver: "loopback", RemoteDriver: "loopback"},
+		Memory:      config.MemoryConfig{Driver: "inmem", Strategy: "none"},
 	}
 }
 

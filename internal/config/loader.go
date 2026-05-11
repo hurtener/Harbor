@@ -163,6 +163,10 @@ func defaults() *Config {
 			BusDriver:    "loopback",
 			RemoteDriver: "loopback",
 		},
+		Memory: MemoryConfig{
+			Driver:   "inmem",
+			Strategy: "none",
+		},
 	}
 }
 

@@ -105,6 +105,25 @@ tasks:
   retain_turn_timeout: 5m
   continuation_hop_limit: 8
 
+memory:
+  # MemoryStore driver — Phase 23 ships only `inmem`. Phase 25 will
+  # add `sqlite` and `postgres` (durable across restart). Default
+  # `inmem`.
+  driver: inmem
+  # Memory shape strategy. Phase 23 ships only `none` operational —
+  # AddTurn is a no-op, GetLLMContext returns empty. Phase 24 will
+  # add `truncation` (recent-turn window + budget enforcement) and
+  # `rolling_summary` (background-summarised long-term context).
+  # Operators MAY stage Phase 24 strategies today; `memory.Open`
+  # rejects unsupported strategies loudly with
+  # ErrStrategyNotImplemented until Phase 24 lands.
+  strategy: none
+  # Reserved for Phase 24 (truncation + rolling-summary budget
+  # enforcement). Must be >= 0. Phase 23 ignores the value; the
+  # field exists so an operator-side config stays stable across
+  # the Phase 23 → 24 upgrade.
+  budget_tokens: 0
+
 distributed:
   # MessageBus driver — Harbor's at-least-once cross-worker fan-out
   # edge. Phase 22 ships only `loopback` (in-process; projects

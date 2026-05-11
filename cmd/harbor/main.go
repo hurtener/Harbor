@@ -28,6 +28,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	// State driver — Postgres StateStore (Phase 16), registered via init().
