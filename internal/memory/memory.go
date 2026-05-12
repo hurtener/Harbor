@@ -260,7 +260,7 @@ var (
 // OverflowPolicy is the buffer-overflow action a `truncation`-style
 // strategy applies when the recent-window buffer's token total
 // exceeds the configured `BudgetTokens`. Phase 24 ships only
-// `OverflowDropOldest`. See D-034 for the rationale (the brief 04
+// `OverflowDropOldest`. See D-035 for the rationale (the brief 04
 // §2 trio `truncate_oldest | truncate_summary | error` was narrowed
 // to a single safe default; the `error` policy is a silent-
 // degradation footgun and `truncate_summary` conflates strategies).

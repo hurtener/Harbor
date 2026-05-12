@@ -18,7 +18,7 @@ const EventTypeMemoryIdentityRejected events.EventType = "memory.identity_reject
 // EventTypeMemoryHealthChanged is emitted on every `Health` FSM
 // transition under `rolling_summary`. Subscribers (Console, audit
 // pipeline) render the transition; SREs alert on `degraded`
-// duration. Phase 24, RFC §6.6, D-034.
+// duration. Phase 24, RFC §6.6, D-035.
 //
 // The observable health-transition emit is the explicit exception
 // to AGENTS.md §13's "no silent degradation" rule — degraded mode
@@ -29,7 +29,7 @@ const EventTypeMemoryHealthChanged events.EventType = "memory.health_changed"
 // EventTypeMemoryRecoveryDropped is emitted when the
 // `rolling_summary` recovery backlog overflows `RecoveryBacklogMax`
 // and the executor drops the oldest queued batch to make room. Per
-// D-034 (bounded recovery loop).
+// D-035 (bounded recovery loop).
 const EventTypeMemoryRecoveryDropped events.EventType = "memory.recovery_dropped"
 
 func init() {

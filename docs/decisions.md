@@ -507,9 +507,10 @@ Slice fields are sorted before hashing when ordering is non-semantic (`Tags`, `R
 `Extra` participates because the generator may stamp model-specific metadata there that legitimately differs between drafts even when the body text is identical (e.g. the model fingerprint that produced the skill). The renderer accepts string / int / int64 / float64 / bool / nil and substitutes `<unhashable>` for anything else so a caller-side type bug yields a stable hash rather than a panic or non-deterministic ordering.
 
 The hash version is implicit at V1 — changes to the envelope format (adding / removing / reordering fields) require a `0002_*.sql` migration that rehashes existing rows AND a new decisions entry naming the old/new envelope. Operators with frozen content_hash values in external systems are explicitly out of scope at V1; we cross that bridge when a downstream system surfaces the hash externally.
+
 ---
 
-## D-045 — Planner package owns `PauseReason`, `FinishReason`, `WakeMode`, and the `SpawnSpec` shape; the TaskRegistry stays neutral on wake-mode
+## D-047 — Planner package owns `PauseReason`, `FinishReason`, `WakeMode`, and the `SpawnSpec` shape; the TaskRegistry stays neutral on wake-mode
 
 **Date:** 2026-05-12
 **Status:** Settled
