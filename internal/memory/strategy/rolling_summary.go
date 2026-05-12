@@ -15,7 +15,7 @@ import (
 )
 
 // Default tuning constants — encoded as package constants per
-// D-034 (operator-facing config narrows to RecoveryBacklogMax only;
+// D-035 (operator-facing config narrows to RecoveryBacklogMax only;
 // the retry / backoff / cadence knobs live here and require an RFC
 // PR + new exported config field to tune).
 const (
@@ -235,7 +235,7 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 // Returns nil after the in-band failure has been absorbed —
 // degraded mode is the observable failure surface (AGENTS.md §13
 // "no silent degradation" exception, documented at the executor
-// godoc + D-034). Returning an error here would force AddTurn to
+// godoc + D-035). Returning an error here would force AddTurn to
 // surface the summariser failure to the caller, which is exactly
 // the silent-context-loss path we're closing.
 func (e *rollingSummaryExec) onSummarizerFailure(

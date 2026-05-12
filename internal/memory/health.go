@@ -57,7 +57,7 @@ func EmitHealthChanged(ctx context.Context, bus events.EventBus, id identity.Qua
 // EmitRecoveryDropped publishes the `memory.recovery_dropped` event
 // on `bus`. Used by the `rolling_summary` recovery loop when the
 // backlog overflows `RecoveryBacklogMax` and the oldest queued
-// batch is dropped to make room (D-034 bounded recovery loop).
+// batch is dropped to make room (D-035 bounded recovery loop).
 //
 // Identity is required (D-001).
 func EmitRecoveryDropped(ctx context.Context, bus events.EventBus, id identity.Quadruple, reason string) error {

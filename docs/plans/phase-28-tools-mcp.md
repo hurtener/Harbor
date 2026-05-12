@@ -90,7 +90,7 @@ Land Harbor's Model Context Protocol (MCP) southbound driver: a `ToolProvider` t
 - `scripts/smoke/phase-28.sh` (new — already templated).
 - `docs/plans/phase-28-tools-mcp.md` (this file).
 - `docs/plans/README.md` (modified) — flip Phase 28 row Status to Shipped + update detail block to reflect the SDK choice.
-- `docs/decisions.md` (modified) — D-034 entry: "MCP southbound driver wraps `github.com/modelcontextprotocol/go-sdk@v1.6.0`; transport-reconnect lives in `ToolPolicy`, not in a parallel state machine."
+- `docs/decisions.md` (modified) — D-037 entry: "MCP southbound driver wraps `github.com/modelcontextprotocol/go-sdk@v1.6.0`; transport-reconnect lives in `ToolPolicy`, not in a parallel state machine."
 - `docs/glossary.md` (modified) — add `MCPTransportMode`, `mcp.resource_updated`.
 - `README.md` (modified) — Status table + tool driver list.
 - `go.mod` / `go.sum` (modified) — add `github.com/modelcontextprotocol/go-sdk v1.6.0`.
@@ -234,4 +234,4 @@ type MCPServerConfig struct {
 - [ ] **Concurrent-reuse test passes (D-025).** N≥100 concurrent invocations against one `Provider` instance under `-race`.
 - [ ] **Integration test exists** — `mockserver_test.go` wires a real `mcp.Server` end-to-end over `InMemoryTransport`; identity propagates; failure mode covered (invalid args + transport disconnect).
 - [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-034)
+- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-037)

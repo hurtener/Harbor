@@ -17,15 +17,15 @@ Land the two remaining memory strategies on top of Phase 23's `MemoryStore` surf
 ## Brief findings incorporated
 
 - **brief 04 §4.1 ("Memory strategies").** The brief settles the three-strategy taxonomy and the precise semantics of each: `truncation` is "append turn → keep last `FullZoneTurns` verbatim → enforce `TotalMaxTokens` per `OverflowPolicy`. Synchronous." Phase 24 adopts this verbatim. `rolling_summary` is "append turn → evict older turns into `pending` → schedule background summarization. Summarizer is an injectable async callable: input `{previous_summary, turns}`, output `{summary: string}`. The runtime spawns one task at a time per memory key and lock-protects all state." Phase 24 ships exactly this shape with one in-flight summarisation per memory key, lock-protected via a per-`(identity.Quadruple)` mutex map guarded by the strategy executor's `sync.Mutex`.
-- **brief 04 §4.1 ("Health states gate behavior").** "Health states (`healthy → retry → degraded → recovering → healthy`) gate behavior: in `degraded`, the memory falls back to truncation-style and queues a recovery loop bounded by `RecoveryBacklogMax`." Phase 24 implements the FSM as a typed transition table — illegal transitions return `ErrInvalidHealthTransition` so misuse is loud, not silent. Degraded mode falls back to recent-window truncation semantics; recovery loop is bounded by `RecoveryBacklogMax` (default 16; overflow drops oldest and emits `memory.recovery_dropped`, see D-034).
+- **brief 04 §4.1 ("Health states gate behavior").** "Health states (`healthy → retry → degraded → recovering → healthy`) gate behavior: in `degraded`, the memory falls back to truncation-style and queues a recovery loop bounded by `RecoveryBacklogMax`." Phase 24 implements the FSM as a typed transition table — illegal transitions return `ErrInvalidHealthTransition` so misuse is loud, not silent. Degraded mode falls back to recent-window truncation semantics; recovery loop is bounded by `RecoveryBacklogMax` (default 16; overflow drops oldest and emits `memory.recovery_dropped`, see D-035).
 - **brief 04 §4.1 ("Failure semantics").** "Summarizer exceptions never leak. The store falls to `degraded`, drops summarization, keeps the conversation usable from a recent window, and emits a `memory.health_changed` event the Console can render." Phase 24 implements this directly: a Summarizer error trips a counted retry; after `RetryAttempts` consecutive failures the strategy transitions to `HealthDegraded` and emits `memory.health_changed`. The observable health-transition emit is the explicit exception to AGENTS.md §13's "no silent degradation" rule — degraded mode IS the observable failure path.
 - **brief 04 §6 ("Cross-session no-leak (race)").** "100 concurrent sessions × random AddTurn / GetLLMContext / Snapshot for 30s under `-race`. Final invariant: every `GetLLMContext` output's identity matches the caller's identity exactly." Phase 24 inherits Phase 23's `Concurrent_AllMethods_NoRace` conformance subtest and extends it to run against both `truncation` and `rolling_summary` strategies — 128 goroutines × all methods × per-`(identity.Quadruple)` key isolation. Per-strategy executors are themselves reusable artifacts (D-025): a single executor is shared across all goroutines and per-key state lives in the lock-guarded map. A second concurrent-reuse test exercises the recovery loop coordinator's bounded-queue invariant under concurrent failure injection.
 - **brief 04 §2 ("`Summarizer` callable shape").** Brief 04 doesn't name the Go shape, but the predecessor's hint is "input `{previous_summary, turns}`, output `{summary: string}`." Phase 24 ships `Summarizer.Summarize(ctx context.Context, id identity.Quadruple, req SummarizeRequest) (SummarizeResponse, error)` — context first per AGENTS.md §5, identity explicit so the implementer can scope LLM calls, and a typed request/response pair so the LLM-client integration at Phase 32+ doesn't have to invent a fresh shape. A stub `EchoSummarizer` (returns `previous_summary + "\n" + last-N-turns-joined`) drives the tests; the real LLM-backed implementation lands at Phase 32+.
 
 ## Findings I'm departing from (if any)
 
-- **`OverflowPolicy` enum from brief 04 §2 is partially adopted.** Brief 04 declares `truncate_oldest`, `truncate_summary`, and `error`. Phase 24 lands `OverflowDropOldest` only (renamed from `truncate_oldest` for Go-idiomatic naming — the action is "drop", not "truncate", on the buffer). `truncate_summary` requires the summariser inside the truncation path which conflates strategies; `error` is a silent-degradation footgun (an over-budget AddTurn returning `ErrBudgetExceeded` would force every caller to handle the error or silently lose turns). Phase 24's truncation path is unconditionally drop-oldest, matching the simplest brief reading. If future operators demand `error` semantics the enum can grow; right now keeping the surface narrow avoids the silent-degradation pitfall this codebase explicitly closes (AGENTS.md §13). Recorded in D-034.
-- **Brief 04 mentions `RetryAttempts`, `RetryBackoffBase`, `DegradedRetryEvery` as `MemoryConfig` fields.** Phase 24 lands `RecoveryBacklogMax` only in `config.MemoryConfig`. The retry / backoff / degraded-retry-cadence knobs are encoded as constants on the `rolling_summary` executor (`defaultRetryAttempts=3`, `defaultRetryBackoffBase=100*time.Millisecond`, `defaultDegradedRetryEvery=10*time.Second`) so an operator who needs to tune them files an issue + RFC PR rather than fighting yaml. This keeps the config surface stable and avoids exposing knobs no one has needed yet. If the LLM-client integration (Phase 32+) surfaces real-world miscalibration, we re-litigate via an RFC PR. Recorded in D-034.
+- **`OverflowPolicy` enum from brief 04 §2 is partially adopted.** Brief 04 declares `truncate_oldest`, `truncate_summary`, and `error`. Phase 24 lands `OverflowDropOldest` only (renamed from `truncate_oldest` for Go-idiomatic naming — the action is "drop", not "truncate", on the buffer). `truncate_summary` requires the summariser inside the truncation path which conflates strategies; `error` is a silent-degradation footgun (an over-budget AddTurn returning `ErrBudgetExceeded` would force every caller to handle the error or silently lose turns). Phase 24's truncation path is unconditionally drop-oldest, matching the simplest brief reading. If future operators demand `error` semantics the enum can grow; right now keeping the surface narrow avoids the silent-degradation pitfall this codebase explicitly closes (AGENTS.md §13). Recorded in D-035.
+- **Brief 04 mentions `RetryAttempts`, `RetryBackoffBase`, `DegradedRetryEvery` as `MemoryConfig` fields.** Phase 24 lands `RecoveryBacklogMax` only in `config.MemoryConfig`. The retry / backoff / degraded-retry-cadence knobs are encoded as constants on the `rolling_summary` executor (`defaultRetryAttempts=3`, `defaultRetryBackoffBase=100*time.Millisecond`, `defaultDegradedRetryEvery=10*time.Second`) so an operator who needs to tune them files an issue + RFC PR rather than fighting yaml. This keeps the config surface stable and avoids exposing knobs no one has needed yet. If the LLM-client integration (Phase 32+) surfaces real-world miscalibration, we re-litigate via an RFC PR. Recorded in D-035.
 
 ## Goals
 
@@ -43,10 +43,10 @@ Land the two remaining memory strategies on top of Phase 23's `MemoryStore` surf
 
 - No LLM-backed Summarizer implementation — Phase 32+ owns the LLM-client wiring. This phase ships only the interface + the test-grade `EchoSummarizer` stub.
 - No SQLite / Postgres memory drivers — Phase 25 ships those; they inherit this phase's strategy executors and conformance suite unchanged.
-- No `OverflowPolicy = "error"` or `"truncate_summary"` semantics — the truncation path is unconditionally drop-oldest (departure from brief 04 §2, recorded in D-034).
+- No `OverflowPolicy = "error"` or `"truncate_summary"` semantics — the truncation path is unconditionally drop-oldest (departure from brief 04 §2, recorded in D-035).
 - No episodic memory tier — RFC §11 Q-4; explicit post-V1 follow-up.
 - No `IncludeTrajectory` / `TrajectoryDigest` ingestion — Phase 24 round-trips the field through the JSON record but applies no strategy logic to it; planner runtime (Phase 42+) is the producer that will exercise it.
-- No `MemoryConfig.RetryAttempts` / `RetryBackoffBase` / `DegradedRetryEvery` knobs — defaults are baked into the rolling-summary executor (departure from brief 04 §2, recorded in D-034).
+- No `MemoryConfig.RetryAttempts` / `RetryBackoffBase` / `DegradedRetryEvery` knobs — defaults are baked into the rolling-summary executor (departure from brief 04 §2, recorded in D-035).
 - No HTTP / Protocol surface — memory is a Go-only surface at Phase 24; the smoke script SKIPs per the §4.1 convention.
 
 ## Acceptance criteria
@@ -70,7 +70,7 @@ Land the two remaining memory strategies on top of Phase 23's `MemoryStore` surf
 - [ ] `make drift-audit` and `make preflight` green at commit time.
 - [ ] `scripts/smoke/phase-24.sh` present and executable; SKIPs cleanly (no HTTP surface).
 - [ ] `docs/glossary.md` gains entries for `Summarizer`, `OverflowPolicy`, `RecoveryBacklogMax`, `memory.health_changed`, `memory.recovery_dropped`.
-- [ ] `docs/decisions.md` gains entry **D-034** documenting (a) the unconditional drop-oldest truncation policy and the rationale for not shipping `error` / `truncate_summary`, (b) the bounded recovery-loop with drop-oldest + `memory.recovery_dropped` emit, and (c) the configuration surface narrowing (only `RecoveryBacklogMax` lands; retry/backoff defaults are constants). (D-033 is the last numbered decision; D-034 is sequentially next.)
+- [ ] `docs/decisions.md` gains entry **D-035** documenting (a) the unconditional drop-oldest truncation policy and the rationale for not shipping `error` / `truncate_summary`, (b) the bounded recovery-loop with drop-oldest + `memory.recovery_dropped` emit, and (c) the configuration surface narrowing (only `RecoveryBacklogMax` lands; retry/backoff defaults are constants). (D-035 follows D-034 — persistent memory drivers own `memory_state` tables — in the Wave 7a memory cluster.)
 - [ ] `docs/plans/README.md` flips Phase 24 from `Pending` to `Shipped` (the row + the detail block under §24).
 - [ ] `README.md` Status table gains a Phase 24 row.
 
@@ -99,7 +99,7 @@ Land the two remaining memory strategies on top of Phase 23's `MemoryStore` surf
 - `docs/plans/phase-24-memory-strategies.md` (this file).
 - `docs/plans/README.md` (modified) — flip row + detail block to `Shipped`.
 - `docs/glossary.md` (modified) — new entries.
-- `docs/decisions.md` (modified) — append D-034.
+- `docs/decisions.md` (modified) — append D-035.
 - `README.md` (modified) — Phase 24 row.
 
 No new top-level directories — `internal/memory/strategy/` sits under `internal/memory/` which is already enumerated in AGENTS.md §3.
@@ -250,16 +250,16 @@ type EchoSummarizer struct{}
 
 - **Recovery-loop ticker leak under fast Open/Close churn.** The `rolling_summary` executor starts a background goroutine for the recovery loop; Close must cancel it. Test: open → close → assert `runtime.NumGoroutine` returns to baseline within a bounded deadline (precedent: Phase 07 + Phase 23's concurrent-reuse test).
 - **Per-key mutex map growth.** With many concurrent identities the per-key mutex map grows unboundedly inside the executor. At Phase 24 this is acceptable for `inmem` driver (in-memory store, process-scoped); Phase 25's persistent drivers should consider eviction (likely tied to session GC). Documented inline; Phase 25 owns the follow-up.
-- **`OverflowPolicy` narrowing vs. brief 04 §2.** Documented in "Findings I'm departing from" + D-034. If the LLM-client integration (Phase 32+) surfaces a real-world need for `truncate_summary` (e.g. "always keep a summary line, drop oldest verbatim turns first"), we open an RFC PR to grow the enum; today the simpler shape avoids the silent-degradation pitfall.
+- **`OverflowPolicy` narrowing vs. brief 04 §2.** Documented in "Findings I'm departing from" + D-035. If the LLM-client integration (Phase 32+) surfaces a real-world need for `truncate_summary` (e.g. "always keep a summary line, drop oldest verbatim turns first"), we open an RFC PR to grow the enum; today the simpler shape avoids the silent-degradation pitfall.
 - **No open RFC §11 questions block this phase.** Q-4 (episodic memory) is post-V1.
 
 ## Glossary additions
 
 - **`Summarizer`** — the injectable callable `rolling_summary` consumes. Single method `Summarize(ctx, id, req) (resp, error)`. Phase 24 ships only the interface + a stub `EchoSummarizer`; the LLM-backed implementation lands at Phase 32+. RFC §6.6.
-- **`OverflowPolicy`** — buffer-overflow action under `truncation`. Phase 24 ships only `OverflowDropOldest` (departure from brief 04 §2's three-option enum; recorded in D-034). RFC §6.6.
+- **`OverflowPolicy`** — buffer-overflow action under `truncation`. Phase 24 ships only `OverflowDropOldest` (departure from brief 04 §2's three-option enum; recorded in D-035). RFC §6.6.
 - **`RecoveryBacklogMax`** — bounded queue size for the `rolling_summary` recovery loop. Default 16; overflow drops oldest and emits `memory.recovery_dropped`. RFC §6.6.
-- **`memory.health_changed`** — bus event emitted on every `Health` transition under `rolling_summary`. `SafePayload` carries `(PriorHealth, NewHealth, Reason)`. The observable degradation path — the explicit exception to AGENTS.md §13's "no silent degradation" rule. RFC §6.6, D-034.
-- **`memory.recovery_dropped`** — bus event emitted when the `rolling_summary` recovery backlog overflows `RecoveryBacklogMax`. `SafePayload` carries the drop reason; identity scopes the emit. RFC §6.6, D-034.
+- **`memory.health_changed`** — bus event emitted on every `Health` transition under `rolling_summary`. `SafePayload` carries `(PriorHealth, NewHealth, Reason)`. The observable degradation path — the explicit exception to AGENTS.md §13's "no silent degradation" rule. RFC §6.6, D-035.
+- **`memory.recovery_dropped`** — bus event emitted when the `rolling_summary` recovery backlog overflows `RecoveryBacklogMax`. `SafePayload` carries the drop reason; identity scopes the emit. RFC §6.6, D-035.
 
 ## Pre-merge checklist
 
@@ -272,4 +272,4 @@ type EchoSummarizer struct{}
 - [ ] **Concurrent-reuse test passes** — `Concurrent_AllMethods_NoRace_Truncation` + `Concurrent_AllMethods_NoRace_RollingSummary` each running N≥128 goroutines under `-race`, no data races, no cross-identity bleed, no goroutine leaks (D-025).
 - [ ] **Cross-subsystem integration test (`test/integration/memory_strategies_test.go`) wires real audit + events + state + memory drivers + the stub Summarizer, asserts identity propagation, covers ≥1 failure mode (forced summariser failure → degraded health transition observable on the bus), runs under `-race`.** Per AGENTS.md §17.
 - [ ] New vocabulary added to glossary (yes — `Summarizer`, `OverflowPolicy`, `RecoveryBacklogMax`, `memory.health_changed`, `memory.recovery_dropped`).
-- [ ] Brief-finding departures documented (OverflowPolicy narrowing + config-surface narrowing) + D-034 filed.
+- [ ] Brief-finding departures documented (OverflowPolicy narrowing + config-surface narrowing) + D-035 filed.

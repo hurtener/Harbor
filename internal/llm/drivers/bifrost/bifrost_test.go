@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,18 +223,19 @@ func TestDriver_Complete_StreamCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = withIdentity(t, ctx, "s-1")
 
-	// Cancel after a short window to fire mid-loop.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
 	text := "x"
 	deadline := time.Now().Add(2 * time.Second)
+	// Cancel on first observed chunk — synchronous on the driver's
+	// stream loop, so the second-chunk recv is the blocking site that
+	// must honour ctx.Done(). AGENTS.md §11: no time.Sleep.
+	var cancelOnce sync.Once
 	_, err := drv.Complete(ctx, llm.CompleteRequest{
-		Model:     "m",
-		Messages:  []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
-		Stream:    true,
-		OnContent: func(string, bool) {},
+		Model:    "m",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		Stream:   true,
+		OnContent: func(_ string, _ bool) {
+			cancelOnce.Do(cancel)
+		},
 	})
 	if time.Now().After(deadline) {
 		t.Errorf("Complete blocked past 2s deadline; cancellation didn't propagate")

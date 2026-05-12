@@ -28,8 +28,8 @@ Land the swappable-planner seam (one of Harbor's three non-negotiable product pr
 
 ## Findings I'm departing from (if any)
 
-- **brief 02 §2 sketch types `TaskKind` and `TaskSpec` as planner-local.** Departed: `SpawnTask.Kind` is `tasks.TaskKind` and `SpawnTask.Spec` is a planner-package `SpawnSpec` wrapper around the `tasks.SpawnRequest` shape. **Why:** the tasks subsystem already ships `tasks.TaskKind` / `tasks.SpawnRequest` (Phase 20 / 21); duplicating the type in the planner would be a §13 "two parallel implementations of the same conceptual feature" smell. Importing `internal/tasks` is allowed — tasks is NOT a `internal/runtime/...` package. Recorded as D-045.
-- **brief 02 §2 sketches `RequestPause.Reason` as a planner-local `PauseReason`.** Followed: the canonical `pauseresume.Reason` lives in a not-yet-shipped phase (the unified pause/resume primitive — see CLAUDE.md §7.4 / RFC §3.3). Phase 42 ships `PauseReason` in the planner package with the four canonical values (`approval_required`, `await_input`, `external_event`, `constraints_conflict`); when the pauseresume primitive lands it MAY canonicalise the enum via a typedef bridge (no shape change). Recorded as D-045.
+- **brief 02 §2 sketch types `TaskKind` and `TaskSpec` as planner-local.** Departed: `SpawnTask.Kind` is `tasks.TaskKind` and `SpawnTask.Spec` is a planner-package `SpawnSpec` wrapper around the `tasks.SpawnRequest` shape. **Why:** the tasks subsystem already ships `tasks.TaskKind` / `tasks.SpawnRequest` (Phase 20 / 21); duplicating the type in the planner would be a §13 "two parallel implementations of the same conceptual feature" smell. Importing `internal/tasks` is allowed — tasks is NOT a `internal/runtime/...` package. Recorded as D-047.
+- **brief 02 §2 sketches `RequestPause.Reason` as a planner-local `PauseReason`.** Followed: the canonical `pauseresume.Reason` lives in a not-yet-shipped phase (the unified pause/resume primitive — see CLAUDE.md §7.4 / RFC §3.3). Phase 42 ships `PauseReason` in the planner package with the four canonical values (`approval_required`, `await_input`, `external_event`, `constraints_conflict`); when the pauseresume primitive lands it MAY canonicalise the enum via a typedef bridge (no shape change). Recorded as D-047.
 
 ## Goals
 
@@ -73,7 +73,7 @@ Land the swappable-planner seam (one of Harbor's three non-negotiable product pr
 - [ ] `internal/planner/finish/finish_test.go` covers the stub planner happy path + cancel propagation + identity propagation.
 - [ ] `internal/planner/concurrent_test.go` ships the D-025 concurrent-reuse test: N=128 concurrent `finish.Planner.Next` calls against a single shared instance under `-race`; asserts no races, no context bleed (each call's `RunContext.RunID` round-trips out via `Emit`), no cancellation cross-talk (cancelling one ctx does not affect siblings), no goroutine leaks (baseline `runtime.NumGoroutine()` restored after all calls return).
 - [ ] `scripts/smoke/phase-42.sh` exists and `skip`s with the standard "no protocol surface yet" message — Phase 42 is a pure code phase; the executor that runs a `finish.Planner` end-to-end lives at a later phase that DOES have a protocol surface and a smoke check.
-- [ ] `docs/decisions.md` D-045 records the two "Findings I'm departing from" lines + the wake-mode planner-side enum decision.
+- [ ] `docs/decisions.md` D-047 records the two "Findings I'm departing from" lines + the wake-mode planner-side enum decision.
 - [ ] `docs/glossary.md` gains entries for: `Planner`, `Decision`, `RunContext`, `Trajectory`, `WakeMode` (push / poll / hybrid), `FinishReason`, `PauseReason`.
 - [ ] `docs/plans/README.md` Phase 42 row flips to `Shipped`.
 - [ ] `README.md` Status table updated.
@@ -96,7 +96,7 @@ Land the swappable-planner seam (one of Harbor's three non-negotiable product pr
 - `scripts/smoke/phase-42.sh` (new) — skip-shaped skeleton.
 - `docs/plans/phase-42-planner-iface.md` (this file).
 - `docs/plans/README.md` (modified — Phase 42 row flips to `Shipped`).
-- `docs/decisions.md` (modified — D-045 record).
+- `docs/decisions.md` (modified — D-047 record).
 - `docs/glossary.md` (modified — planner vocabulary).
 - `README.md` (modified — Status table).
 
@@ -242,4 +242,4 @@ The full set of supporting types (`PlanningHints`, `Budget`, `ControlSignals`, `
 - [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. The `finish.Planner` stub IS a reusable artifact; `concurrent_test.go` ships the N=128 test.
 - [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. Phase 42 imports TYPE shapes from `tasks` / `tools` / `events` / `identity` / `artifacts`; it does NOT consume their behavioural surface — the runtime executor that drives the stub planner end-to-end ships at a later phase, with its own integration test. Mark N/A: no behavioural consumption, no seam closed in this PR.
 - [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-045)
+- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (D-047)

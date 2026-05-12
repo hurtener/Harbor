@@ -303,7 +303,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Strategy matrix tested; degraded mode falls back to recent-window + queues recovery loop bounded by `RecoveryBacklogMax`; `memory.health_changed` events emitted.
 **Tests.** Strategy matrix + property + integration with a stub summarizer.
 **Deps.** 23.
-**Status.** Shipped (D-034 — `OverflowDropOldest`-only enum, bounded recovery loop with `memory.recovery_dropped` overflow emit, retry/backoff/cadence constants not exposed as config; phase plan `phase-24-memory-strategies.md`).
+**Status.** Shipped (D-035 — `OverflowDropOldest`-only enum, bounded recovery loop with `memory.recovery_dropped` overflow emit, retry/backoff/cadence constants not exposed as config; phase plan `phase-24-memory-strategies.md`).
 
 ### 25 — SQLite + Postgres memory drivers (RFC §6.6, §9)
 
@@ -340,11 +340,11 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 28 — MCP southbound driver (RFC §6.4)
 
-**Goal.** Go MCP client over stdio + streamable-HTTP + SSE. Auto-detect via `MCPTransportMode = Auto | SSE | StreamableHTTP`. Tool/resource/prompt mapping into `Tool`. Transport-level reconnect lives in `ToolPolicy` (D-024 retry shell), not in a parallel state machine inside the driver (D-034).
+**Goal.** Go MCP client over stdio + streamable-HTTP + SSE. Auto-detect via `MCPTransportMode = Auto | SSE | StreamableHTTP`. Tool/resource/prompt mapping into `Tool`. Transport-level reconnect lives in `ToolPolicy` (D-024 retry shell), not in a parallel state machine inside the driver (D-037).
 **Acceptance.** Mock MCP server (in-process) integration tests pass; resource subscriptions emit a separate event topic (`mcp.resource_updated`).
 **Tests.** Integration + transport-fallback test; D-025 concurrent-reuse (N=100) against the in-process mock server pair.
 **Deps.** 26.
-**Implementation note.** Wraps `github.com/modelcontextprotocol/go-sdk@v1.6.0` — the official Go SDK. Auto-mode fallback (streamable-HTTP → SSE) lives at `Provider.Connect`, not at `Transport.Connect`, so failures during the MCP initialize handshake (a `client.Connect` error) trigger the fallback the same as transport-level connect errors. See `docs/decisions.md` D-034.
+**Implementation note.** Wraps `github.com/modelcontextprotocol/go-sdk@v1.6.0` — the official Go SDK. Auto-mode fallback (streamable-HTTP → SSE) lives at `Provider.Connect`, not at `Transport.Connect`, so failures during the MCP initialize handshake (a `client.Connect` error) trigger the fallback the same as transport-level connect errors. See `docs/decisions.md` D-037.
 
 ### 29 — A2A southbound driver (full spec) (RFC §6.4)
 
