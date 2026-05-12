@@ -3,12 +3,13 @@ package planner
 import "errors"
 
 // Sentinel errors. Callers compare via errors.Is.
+//
+// Trajectory-shaped sentinels (ErrUnserializable, ErrToolContextLost)
+// live in the canonical subpackage internal/planner/trajectory and
+// are re-exported as type aliases at trajectory.go in this package.
+// Pre-Phase-43 stub ErrTrajectoryNotImplemented is retired — Phase 43
+// ships the real fail-loudly Serialize contract that replaces it.
 var (
-	// ErrTrajectoryNotImplemented is returned by Trajectory.Serialize
-	// at Phase 42 — the fail-loudly contract closes at Phase 43.
-	// Callers fail loudly rather than receiving an empty payload.
-	ErrTrajectoryNotImplemented = errors.New("planner: Trajectory.Serialize not implemented at Phase 42 (Phase 43 closes the contract)")
-
 	// ErrPlannerClosed — operations against a planner whose Close()
 	// has been called. Reserved for future planner concretes that
 	// hold lifecycle resources (HTTP client pools, LLM driver
