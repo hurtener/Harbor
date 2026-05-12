@@ -394,6 +394,28 @@ Inverse-naming the snapshot field `DisableCorrections` (instead of `CorrectionsE
 
 ---
 
+## D-042 — Custom OpenAI-compatible providers: operator-declared via yaml, OpenAI base-type only (Phase 33a), per-provider network knobs override global `NetworkDefaults`, env var resolves at `New` time
+
+**Date:** 2026-05-12
+**Status:** Settled
+**Where it lives:** RFC §6.5, `docs/plans/phase-33a-custom-providers.md`, `internal/config/config.go` (`LLMCustomProviderConfig` + `LLMNetworkDefaults`), `internal/config/validate.go` (cross-check against native ∪ custom names; `nativeBifrostProviders` mirror; `allowedCustomBaseProviderTypes`), `internal/llm/registry.go` (`CustomProviderSpec` + `NetworkDefaults` on `ConfigSnapshot`), `internal/llm/drivers/bifrost/account.go` (Account widened to support custom primary; `buildCustomProviderConfig`; `customByName` table), brief 03 §"Provider catalog", brief 08 §"Architecture".
+
+**Why:** Phase 33 shipped a thin bifrost adapter for the native provider list (OpenAI / OpenRouter / Anthropic / Cohere / Mistral / NIM / etc.). Operators want to wire OpenAI-compatible endpoints (NIM as the canonical first case, plus vLLM, ollama, lm-studio, in-house gateways) without per-provider Go code. Bifrost ships `schemas.CustomProviderConfig` for exactly this use case — Phase 33a exposes the operator-tunable subset. Four design calls warrant a settled entry.
+
+1. **OpenAI-compatible base type only at Phase 33a.** `LLMCustomProviderConfig.BaseProviderType` defaults to `"openai"` and only that value is accepted at this phase. Bifrost itself supports Anthropic / Mistral / etc. as base types for custom providers; widening Harbor's surface is a Phase 33b/c task once we have evidence operators need it. The narrow surface today avoids fighting yaml when no one's calibrated the per-base-type quirks yet. The validator's `allowedCustomBaseProviderTypes` map gates this; widening is a one-line table edit + a phase plan.
+
+2. **Per-provider network knobs override global `NetworkDefaults`.** Phase 33a unifies `Timeout` / `MaxRetries` / `RetryBackoff*` / `Concurrency` / `BufferSize` under one operator-facing surface (`llm.network_defaults`) with per-provider overrides on each custom entry. Zero-valued per-provider fields fall through to the global; zero-valued globals fall through to bifrost's package-level defaults. The fallthrough order (per-provider > global > bifrost-default) is identical for native primary and custom primary — operators tune them with one mental model. The motivating case is NIM cold-start latency (often > 60s); a 180-second per-provider `Timeout` on the NIM entry survives the cold-start without pulling every other provider's timeout up.
+
+3. **API key resolution: `env.NAME` for native primary, raw env var NAME for custom providers.** The native primary path (Phase 33) inherited `LLMConfig.APIKey` with the `env.NAME` form because the field overloads literal-or-env. Custom providers have a dedicated `APIKeyEnvVar` field; operators write the env var NAME directly (e.g. `"NVIDIA_API_KEY"`, NOT `"env.NVIDIA_API_KEY"`). This is one indirection shorter and avoids the literal-vs-env ambiguity for the multi-provider case. The validator rejects `env.` prefixes on `APIKeyEnvVar` with a clear error so the operator notices the asymmetry. Both forms resolve `os.Getenv(NAME)` at `New` time; missing env vars fail closed with `ErrMissingAPIKey` naming the unset variable.
+
+4. **`GetConfiguredProviders` returns the single PRIMARY provider only — D-040 preserved.** Phase 33a's Account holds a `customByName` map of every declared custom provider but `GetConfiguredProviders` returns only the one named by `LLMConfig.Provider`. Multi-provider routing within a single Harbor instance is a future extension; the seam (the table, the per-provider config resolution) is ready but Phase 33a does not commit to multi-routing semantics. This keeps D-040's "single-provider per Harbor instance" intact while making the future widening additive (no API change to `GetConfiguredProviders` — just return the full table when the time comes).
+
+The operator-facing BaseURL gotcha lands in this entry too: bifrost's OpenAI provider appends `/v1/chat/completions` to whatever `BaseURL` the operator sets. Operators write the HOST root (`https://integrate.api.nvidia.com`) — NOT the full `/v1/` path — for the canonical case. Endpoints whose URL already includes `/v1` use `RequestPathOverrides` to override the suffix. The example yaml documents this; the wire-level integration test asserts the path is `/v1/chat/completions` (not `/v1/v1/...`).
+
+Sub-second `Timeout` values get rounded down to zero by bifrost's `int(seconds)` conversion at the `NetworkConfig.DefaultRequestTimeoutInSeconds` boundary. Operators who need sub-second timeouts wait for Phase 33b's `NetworkConfig` widening; today the practical minimum is 1 second. The custom-provider wire timeout test uses 1s vs 3s server sleep to clear this boundary.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

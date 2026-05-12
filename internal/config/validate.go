@@ -152,6 +152,21 @@ func (c *Config) validateLLM() error {
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedLLMDrivers), c.LLM.Driver))
 	}
+	// Custom-provider validation runs before the legacy single-provider
+	// checks so we can decide which path applies. Phase 33a: when
+	// `llm.provider` matches a custom-provider `name`, the entry's
+	// `base_url`/`api_key_env_var`/`models`/`timeout` fill the role
+	// the legacy `llm.base_url`/`llm.api_key`/`llm.timeout` fields
+	// played; the legacy fields stay optional in that case.
+	customNames, err := c.validateLLMCustomProviders(driver)
+	if err != nil {
+		return err
+	}
+	// Validate network defaults independently of which provider path
+	// applies — operators may tune them with a native primary too.
+	if err := c.validateLLMNetworkDefaults(); err != nil {
+		return err
+	}
 	// Bifrost-driver knobs are required only for real drivers; the
 	// mock driver ignores Provider/Model/APIKey/Timeout. Keep the
 	// canonical fixture valid by enforcing these when driver != "mock".
@@ -162,11 +177,18 @@ func (c *Config) validateLLM() error {
 		if c.LLM.Model == "" {
 			return fieldError("llm.model", "must not be empty")
 		}
-		if c.LLM.APIKey == "" {
-			return fieldError("llm.api_key", "must not be empty")
-		}
-		if c.LLM.Timeout <= 0 {
-			return fieldError("llm.timeout", "must be > 0")
+		// When `llm.provider` names a custom-provider entry, the
+		// entry's `api_key_env_var` / `base_url` / `timeout` apply —
+		// the legacy `llm.api_key` / `llm.base_url` / `llm.timeout`
+		// fields are not required.
+		_, isCustom := customNames[c.LLM.Provider]
+		if !isCustom {
+			if c.LLM.APIKey == "" {
+				return fieldError("llm.api_key", "must not be empty (or declare llm.provider as a custom-provider name)")
+			}
+			if c.LLM.Timeout <= 0 {
+				return fieldError("llm.timeout", "must be > 0 (or declare llm.provider as a custom-provider name)")
+			}
 		}
 	}
 	// Context-window reserve is the safety-net's token-budget
@@ -216,8 +238,8 @@ func (c *Config) validateLLM() error {
 // `LLMCorrectionsProfileConfig.MessageOrdering`. Empty is always
 // valid; explicit values must match.
 var allowedMessageOrderings = map[string]struct{}{
-	"":                     {},
-	"system_first_strict":  {},
+	"":                    {},
+	"system_first_strict": {},
 }
 
 // allowedSchemaModes is the enum allowlist for
@@ -630,6 +652,178 @@ func IsValidationError(err error) bool {
 		return false
 	}
 	return errors.Is(err, ErrConfigInvalid) && strings.Contains(err.Error(), "config.")
+}
+
+// nativeBifrostProviders mirrors `bfschemas.StandardProviders` (the
+// `github.com/maximhq/bifrost/core/schemas` v1.5.8 native-provider
+// list). The mirror lives here so the config package stays decoupled
+// from the bifrost SDK — when a new native bifrost provider is added
+// in a future bifrost release, this list updates in lockstep via the
+// next phase plan. Phase 33a only widens this surface; future phases
+// may consult bifrost directly if the decoupling proves costly.
+var nativeBifrostProviders = map[string]struct{}{
+	"openai":      {},
+	"azure":       {},
+	"anthropic":   {},
+	"bedrock":     {},
+	"cohere":      {},
+	"vertex":      {},
+	"mistral":     {},
+	"ollama":      {},
+	"groq":        {},
+	"sgl":         {},
+	"parasail":    {},
+	"perplexity":  {},
+	"cerebras":    {},
+	"gemini":      {},
+	"openrouter":  {},
+	"elevenlabs":  {},
+	"huggingface": {},
+	"nebius":      {},
+	"xai":         {},
+	"replicate":   {},
+	"vllm":        {},
+	"runway":      {},
+	"fireworks":   {},
+}
+
+// allowedCustomBaseProviderTypes is the wire-protocol family allowlist
+// for `LLMCustomProviderConfig.BaseProviderType` (Phase 33a). The
+// empty string defaults to `"openai"` in the driver; both are valid
+// here. Future phases widen.
+var allowedCustomBaseProviderTypes = map[string]struct{}{
+	"":       {},
+	"openai": {},
+}
+
+// validateLLMCustomProviders validates the operator-declared custom
+// provider list (Phase 33a) and returns the set of declared names so
+// the legacy single-provider validator can decide whether the
+// configured `llm.provider` resolves to a custom or native entry.
+//
+// `driver` is the resolved driver name (mock/bifrost) — `mock` skips
+// validation since it doesn't consume the custom-provider list.
+func (c *Config) validateLLMCustomProviders(driver string) (map[string]struct{}, error) {
+	names := make(map[string]struct{}, len(c.LLM.CustomProviders))
+	if driver == "mock" || len(c.LLM.CustomProviders) == 0 {
+		return names, nil
+	}
+	for i, cp := range c.LLM.CustomProviders {
+		fieldPath := fmt.Sprintf("llm.custom_providers[%d]", i)
+		if cp.Name == "" {
+			return nil, fieldError(fieldPath+".name", "must not be empty")
+		}
+		if cp.BaseURL == "" {
+			return nil, fieldError(fieldPath+".base_url",
+				fmt.Sprintf("must not be empty (custom provider %q)", cp.Name))
+		}
+		if cp.APIKeyEnvVar == "" {
+			return nil, fieldError(fieldPath+".api_key_env_var",
+				fmt.Sprintf("must not be empty (custom provider %q)", cp.Name))
+		}
+		if strings.HasPrefix(cp.APIKeyEnvVar, "env.") {
+			return nil, fieldError(fieldPath+".api_key_env_var",
+				fmt.Sprintf("write the env var NAME without the %q prefix (custom provider %q) — the driver resolves os.Getenv(name) at construction", "env.", cp.Name))
+		}
+		if len(cp.Models) == 0 {
+			return nil, fieldError(fieldPath+".models",
+				fmt.Sprintf("must contain at least one model (custom provider %q)", cp.Name))
+		}
+		for j, m := range cp.Models {
+			if m == "" {
+				return nil, fieldError(fmt.Sprintf("%s.models[%d]", fieldPath, j),
+					fmt.Sprintf("must not be empty (custom provider %q)", cp.Name))
+			}
+		}
+		if _, ok := allowedCustomBaseProviderTypes[cp.BaseProviderType]; !ok {
+			return nil, fieldError(fieldPath+".base_provider_type",
+				fmt.Sprintf("must be one of %s, got %q (custom provider %q)",
+					sortedKeys(allowedCustomBaseProviderTypes), cp.BaseProviderType, cp.Name))
+		}
+		if _, exists := names[cp.Name]; exists {
+			return nil, fieldError(fieldPath+".name",
+				fmt.Sprintf("duplicate custom provider name %q", cp.Name))
+		}
+		if _, native := nativeBifrostProviders[cp.Name]; native {
+			return nil, fieldError(fieldPath+".name",
+				fmt.Sprintf("custom provider name %q collides with a native bifrost provider; pick a different name", cp.Name))
+		}
+		if cp.Timeout < 0 {
+			return nil, fieldError(fieldPath+".timeout",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		if cp.MaxRetries < 0 {
+			return nil, fieldError(fieldPath+".max_retries",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		if cp.RetryBackoffInitial < 0 {
+			return nil, fieldError(fieldPath+".retry_backoff_initial",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		if cp.RetryBackoffMax < 0 {
+			return nil, fieldError(fieldPath+".retry_backoff_max",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		if cp.Concurrency < 0 {
+			return nil, fieldError(fieldPath+".concurrency",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		if cp.BufferSize < 0 {
+			return nil, fieldError(fieldPath+".buffer_size",
+				fmt.Sprintf("must be >= 0 (custom provider %q)", cp.Name))
+		}
+		names[cp.Name] = struct{}{}
+	}
+	// Cross-check: if `llm.provider` is set and doesn't match a
+	// native bifrost provider, it MUST match a declared custom-
+	// provider name. The mock-driver short-circuit above prevents
+	// this from firing in the test fixture.
+	if driver != "mock" && c.LLM.Provider != "" {
+		_, native := nativeBifrostProviders[c.LLM.Provider]
+		_, custom := names[c.LLM.Provider]
+		if !native && !custom {
+			return nil, fieldError("llm.provider",
+				fmt.Sprintf("must match a native bifrost provider OR a declared llm.custom_providers entry; got %q (native: %s; declared custom: %s)",
+					c.LLM.Provider, sortedKeys(nativeBifrostProviders), sortedKeysFromSet(names)))
+		}
+	}
+	return names, nil
+}
+
+// validateLLMNetworkDefaults rejects negative durations / counts.
+// Zero-valued fields are accepted — they fall through to bifrost's
+// package-level defaults at construction.
+func (c *Config) validateLLMNetworkDefaults() error {
+	nd := c.LLM.NetworkDefaults
+	if nd.Timeout < 0 {
+		return fieldError("llm.network_defaults.timeout", "must be >= 0")
+	}
+	if nd.MaxRetries < 0 {
+		return fieldError("llm.network_defaults.max_retries", "must be >= 0")
+	}
+	if nd.RetryBackoffInitial < 0 {
+		return fieldError("llm.network_defaults.retry_backoff_initial", "must be >= 0")
+	}
+	if nd.RetryBackoffMax < 0 {
+		return fieldError("llm.network_defaults.retry_backoff_max", "must be >= 0")
+	}
+	if nd.Concurrency < 0 {
+		return fieldError("llm.network_defaults.concurrency", "must be >= 0")
+	}
+	if nd.BufferSize < 0 {
+		return fieldError("llm.network_defaults.buffer_size", "must be >= 0")
+	}
+	return nil
+}
+
+// sortedKeysFromSet renders a comma-separated list of map keys for
+// error messages, matching `sortedKeys` but for the custom-provider
+// name set so callers don't have to convert.
+func sortedKeysFromSet(m map[string]struct{}) string {
+	if len(m) == 0 {
+		return "(none)"
+	}
+	return sortedKeys(m)
 }
 
 // sortedKeys returns a deterministic comma-separated list of map

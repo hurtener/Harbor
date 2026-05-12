@@ -50,6 +50,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Shipped  |
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
+| 33a| Custom OpenAI-compatible providers + timeouts | llm                  | §6.5        | 33                    | 80%  | Shipped  |
 | 34 | Provider correction layer (one mode, baked)   | llm                  | §6.5        | 33                    | 85%  | Shipped  |
 | 35 | Structured output strategies + downgrade      | llm                  | §6.5        | 33, 34                | 85%  | Pending  |
 | 36 | Retry with feedback                           | llm                  | §6.5        | 35                    | 85%  | Pending  |
@@ -381,6 +382,16 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Deps.** 32.
 **Risks.** Bifrost requires Go 1.26+; Harbor's go.mod was bumped during validation. Stream-channel close timing on long streams may exceed naive cancel budgets — mitigation is `ctx.Done()`-driven channel-reader abandonment + goroutine-leak tests.
 **See also.** `docs/research/08-llm-client-validation.md` (full validation report and results).
+
+### 33a — Custom OpenAI-compatible providers + per-provider timeouts (RFC §6.5)
+
+**Goal.** Extend Phase 33's bifrost driver so operators can wire any OpenAI-compatible LLM endpoint (NIM, vLLM, ollama, lm-studio, in-house gateways) via `harbor.yaml` without per-provider Go code. Adds `LLMConfig.CustomProviders []LLMCustomProviderConfig` (`Name` / `BaseURL` / `APIKeyEnvVar` / `Models` / per-provider `Timeout` / retry/backoff/concurrency knobs / `RequestPathOverrides`) + `LLMConfig.NetworkDefaults` (global fallthrough for native + custom). When `llm.provider` names a custom entry, the entry's network knobs apply and legacy `llm.api_key` / `llm.base_url` / `llm.timeout` are ignored. Phase 33a supports only `base_provider_type: openai`; future phases widen.
+**Acceptance.** Account widened to multi-entry (single-PRIMARY contract per D-040 preserved — `GetConfiguredProviders` returns the one configured primary). `GetConfigForProvider` returns `*ProviderConfig` with `CustomProviderConfig.BaseProviderType = schemas.OpenAI` when the primary is a custom entry. Missing env var fails closed at `New` with `ErrMissingAPIKey` naming the var. httptest integration (happy / timeout / 5xx) green. D-025 N≥100 concurrent stress green on mixed config. No tool-call API symbol leak (extends Phase 33 static guard).
+**Tests.** Unit (custom-provider construction + validation; `NetworkDefaults` fallthrough + per-provider override; native-and-custom coexist). Integration (`httptest.Server` mimicking OpenAI-compatible `/v1/chat/completions`: happy + 5xx + timeout). Concurrency (D-025 mixed config). Smoke `scripts/smoke/phase-33a.sh`.
+**Deps.** 33.
+**Risks.** Operator-facing BaseURL gotcha — bifrost's OpenAI provider appends `/v1/chat/completions`; operators set the host root, not the full `/v1` path. Documented in yaml + the wire-test asserts the correct path. Sub-second timeouts get rounded down to 0 by bifrost's `int(seconds)` cast — practical minimum is 1s today; widening waits for a NetworkConfig API rev. Corrections (Phase 34) match by model-name prefix; custom-provider model names are typically unprefixed — operators declare `ModelProfiles[<model>].Corrections` explicitly to get quirks applied.
+**Settled decisions:** D-042.
+**See also.** `docs/plans/phase-33a-custom-providers.md`.
 
 ### 34 — Provider correction layer + SchemaSanitizer (one mode, baked in) (RFC §6.5)
 

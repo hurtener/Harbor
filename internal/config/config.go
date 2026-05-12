@@ -117,6 +117,79 @@ type LLMConfig struct {
 	// provider-correction layer. Omitted = enabled (production
 	// default). See `LLMCorrectionsConfig` for the wire shape.
 	Corrections LLMCorrectionsConfig `yaml:"corrections,omitempty"`
+
+	// CustomProviders is the registry of operator-declared
+	// OpenAI-compatible providers (Phase 33a). Each entry adds a new
+	// `ModelProvider` to the bifrost account so operators can wire
+	// NIM, vLLM, ollama, lm-studio, in-house gateways, or any other
+	// OpenAI-compatible endpoint via yaml without per-provider Go
+	// code. When `LLMConfig.Provider` matches a custom-provider
+	// `Name`, the entry's `BaseURL` / `APIKeyEnvVar` / `Models` /
+	// network knobs apply (the legacy single-provider fields
+	// `APIKey` / `BaseURL` / `Timeout` are ignored for that case).
+	CustomProviders []LLMCustomProviderConfig `yaml:"custom_providers,omitempty"`
+
+	// NetworkDefaults applies to every provider (native + custom)
+	// when the per-provider override is absent. Zero-valued fields
+	// fall through to bifrost's package-level defaults (Phase 33a
+	// unification of timeout/retry knobs that were previously
+	// scattered). Restart-required.
+	NetworkDefaults LLMNetworkDefaults `yaml:"network_defaults,omitempty"`
+}
+
+// LLMCustomProviderConfig declares one operator-configured
+// OpenAI-compatible LLM endpoint (Phase 33a). At least one entry is
+// required when `LLMConfig.Provider` names a non-native provider.
+//
+// Fields:
+//   - `Name` — the `ModelProvider` identifier the operator picks
+//     (e.g. `"nim"`, `"vllm"`). Must be unique across the list AND
+//     must not collide with bifrost's native provider names.
+//   - `BaseURL` — the OpenAI-compatible endpoint root (e.g.
+//     `"https://integrate.api.nvidia.com/v1"`). Required.
+//   - `APIKeyEnvVar` — the environment variable name (no `env.`
+//     prefix; operator writes `"NVIDIA_API_KEY"`, driver resolves
+//     `os.Getenv(...)` at construction time). Missing → fail-closed
+//     at `New` (`ErrMissingAPIKey`).
+//   - `Models` — the model-name allowlist bifrost forwards to this
+//     provider. At least one entry required.
+//   - `BaseProviderType` — wire family. Phase 33a accepts only `""`
+//     (default to `"openai"`) and `"openai"`. Future phases widen.
+//   - `Timeout` / `MaxRetries` / `RetryBackoff*` / `Concurrency` /
+//     `BufferSize` — per-provider overrides. Zero-valued → fall back
+//     to `LLMConfig.NetworkDefaults`, which itself falls back to
+//     bifrost's package-level defaults.
+//   - `RequestPathOverrides` — optional `RequestType` → custom URL
+//     path map (forwarded to bifrost's `CustomProviderConfig`). Used
+//     when an OpenAI-compatible endpoint hosts e.g. `/chat/completions`
+//     at the root instead of `/v1/chat/completions`.
+type LLMCustomProviderConfig struct {
+	Name                 string            `yaml:"name"`
+	BaseURL              string            `yaml:"base_url"`
+	APIKeyEnvVar         string            `yaml:"api_key_env_var"`
+	Models               []string          `yaml:"models"`
+	BaseProviderType     string            `yaml:"base_provider_type,omitempty"`
+	Timeout              time.Duration     `yaml:"timeout,omitempty"`
+	MaxRetries           int               `yaml:"max_retries,omitempty"`
+	RetryBackoffInitial  time.Duration     `yaml:"retry_backoff_initial,omitempty"`
+	RetryBackoffMax      time.Duration     `yaml:"retry_backoff_max,omitempty"`
+	Concurrency          int               `yaml:"concurrency,omitempty"`
+	BufferSize           int               `yaml:"buffer_size,omitempty"`
+	RequestPathOverrides map[string]string `yaml:"request_path_overrides,omitempty"`
+}
+
+// LLMNetworkDefaults are the operator-tunable defaults that apply to
+// every provider (native + custom) when the per-provider override is
+// absent (Phase 33a). Zero-valued fields fall through to bifrost's
+// package-level defaults so an operator who omits the block sees
+// today's Phase 33 behaviour unchanged.
+type LLMNetworkDefaults struct {
+	Timeout             time.Duration `yaml:"timeout,omitempty"`
+	MaxRetries          int           `yaml:"max_retries,omitempty"`
+	RetryBackoffInitial time.Duration `yaml:"retry_backoff_initial,omitempty"`
+	RetryBackoffMax     time.Duration `yaml:"retry_backoff_max,omitempty"`
+	Concurrency         int           `yaml:"concurrency,omitempty"`
+	BufferSize          int           `yaml:"buffer_size,omitempty"`
 }
 
 // LLMCorrectionsConfig is the top-level toggle for the Phase 34

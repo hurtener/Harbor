@@ -82,6 +82,65 @@ type ConfigSnapshot struct {
 	APIKey   string
 	BaseURL  string
 	Timeout  time.Duration
+
+	// CustomProviders is the operator-declared registry of
+	// OpenAI-compatible providers (Phase 33a). When `Provider`
+	// matches a custom entry's `Name`, the entry's `BaseURL` /
+	// `APIKeyEnvVar` / `Models` / network knobs apply (legacy
+	// `APIKey` / `BaseURL` / `Timeout` ignored for that case). The
+	// list is keyed only by `Name`; the bifrost driver iterates and
+	// registers all entries with bifrost's `Account`.
+	CustomProviders []CustomProviderSpec
+
+	// NetworkDefaults applies to every provider when the per-provider
+	// override is absent. Zero-valued fields fall through to
+	// bifrost's package-level defaults at construction. Restart-
+	// required.
+	NetworkDefaults NetworkDefaults
+}
+
+// CustomProviderSpec is one operator-declared OpenAI-compatible
+// provider (Phase 33a). The bifrost driver maps each entry to a
+// `bfschemas.ProviderConfig` with `CustomProviderConfig.BaseProviderType =
+// schemas.OpenAI`. Zero-valued network knobs fall through to
+// `ConfigSnapshot.NetworkDefaults`, which itself falls through to
+// bifrost's package-level defaults.
+//
+// `APIKeyEnvVar` is the environment-variable NAME (no `env.` prefix);
+// the driver resolves `os.Getenv(name)` at construction. Missing →
+// `ErrMissingAPIKey` with the env var named.
+//
+// `RequestPathOverrides` maps `bfschemas.RequestType` (string-coded
+// at this layer to avoid the import) to a custom URL path; the
+// bifrost driver translates the keys when wiring the config. Used
+// for OpenAI-compatible endpoints that host e.g. `/chat/completions`
+// at the root.
+type CustomProviderSpec struct {
+	Name                 string
+	BaseURL              string
+	APIKeyEnvVar         string
+	Models               []string
+	BaseProviderType     string
+	Timeout              time.Duration
+	MaxRetries           int
+	RetryBackoffInitial  time.Duration
+	RetryBackoffMax      time.Duration
+	Concurrency          int
+	BufferSize           int
+	RequestPathOverrides map[string]string
+}
+
+// NetworkDefaults are the operator-tunable defaults bifrost applies
+// to every provider (native + custom) when the per-provider override
+// is absent (Phase 33a). Zero-valued fields fall through to
+// bifrost's package-level defaults.
+type NetworkDefaults struct {
+	Timeout             time.Duration
+	MaxRetries          int
+	RetryBackoffInitial time.Duration
+	RetryBackoffMax     time.Duration
+	Concurrency         int
+	BufferSize          int
 }
 
 // Factory builds a `Driver` from a `ConfigSnapshot` + `Deps`.
