@@ -63,7 +63,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 41 | In-runtime skill generator with persistence   | skills/generator     | §6.7        | 37, 38, 03            | 90%  | Pending  |
 | 42 | Planner iface + Decision sum + RunContext     | planner              | §6.2, §3.2  | 09, 13, 26, 32        | 90%  | Shipped  |
 | 43 | Trajectory + serialise (fail-loudly contract) | planner/trajectory   | §6.2, §3.4  | 42, 07                | 90%  | Pending  |
-| 44 | Schema repair pipeline                        | planner/repair       | §6.2        | 42, 32                | 85%  | Pending  |
+| 44 | Schema repair pipeline                        | planner/repair       | §6.2        | 42, 32                | 85%  | Shipped  |
 | 45 | Reference ReAct planner (minimum viable)      | planner/react        | §6.2        | 42, 43, 44, 32        | 85%  | Pending  |
 | 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Pending  |
 | 47 | Parallel-call execution + JoinSpec            | planner              | §6.2        | 45, 14                | 85%  | Pending  |
