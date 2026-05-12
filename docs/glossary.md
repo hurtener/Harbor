@@ -146,6 +146,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`FailFast`** — `TaskGroup` flag (Phase 21): when true, the first member task that transitions to `StatusFailed` cancels the remaining non-terminal members AND transitions the group to `GroupCancelled`. Cancel reason is derived from the failing member's error code (`fail-fast:<code>` or `fail-fast` when no code is set). RFC §6.8, brief 05 §4.
 
+**FinishReason** — planner-side enum carried by the `Finish` decision. Canonical values: `goal` (success), `no_path` (schema-repair exhausted / no tool satisfies the goal — Phase 44), `cancelled` (CANCEL control event / parent cascade), `deadline_exceeded` (Budget.Deadline expired), `constraints_conflict` (operator denied approval / budget cap hit during a required tool call). `IsValidFinishReason` is the Runtime executor's pre-dispatch validator. RFC §6.2, D-045.
+
 ## G
 
 **Governance** — Harbor's middleware subsystem between the Runtime and the `LLMClient` driver. Owns identity-scoped policies: cost accumulators, ceilings, rate limits, MaxTokens, and (post-V1) key rotation, model swap, failover chains, circuit breakers, caching, PII redaction. The `LLMClient` interface stays one method; bifrost is unaware of identity scopes. RFC §6.15.
@@ -260,7 +262,7 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`AcknowledgeBackground`** — registry action marking a list of completed background tasks as user-acknowledged (Phase 21). Emits one `task.background_acknowledged` event per task on the real-transition path. Idempotent on re-ack; unknown / non-background / non-terminal tasks are silently skipped (the returned count reflects only the real transitions). RFC §6.8.
 
-**Planner** — the reasoning-policy interface: `Next(ctx, RunContext) (PlannerDecision, error)`. Concrete planners (ReAct first; Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. RFC §6.2 + §3.2.
+**Planner** — Harbor's swappable reasoning-policy interface: `Next(ctx context.Context, run RunContext) (Decision, error)`. Concrete planners (ReAct first — Phase 45; Deterministic — Phase 48; Plan-Execute, Workflow, Graph, Supervisor, MultiAgent, HumanApproval over time) all sit on the same Runtime primitives. Phase 42 ships the interface + the `finish.Planner` stub (always returns `Finish{Reason: Goal}`) + the §13 import-graph lint. Concretes MUST be safe for concurrent reuse (D-025). RFC §6.2 + §3.2.
 
 **Push wake (background continuation)** — wake mode where the planner subscribes via `WatchGroup`; the runtime delivers a `GroupCompletion` payload at resolve time; the planner re-enters with the payload as input. Lowest latency, lowest cost — the planner sleeps until something actually happened. Suits long-running background work where intermediate progress isn't actionable. Phase 21 ships the mechanism; planner concretes (Phase 42+) wire the mode.
 
@@ -270,7 +272,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **PlannerAction** — typed instruction emitted by a planner step. Reserved opcodes: `final_response`, `parallel`, `task.subagent`, `task.tool`. Plus tool-name actions. Carries `args`. Action shape is provider-independent. RFC §6.4.
 
-**PlannerDecision** — the sum type returned from `Planner.Next`. Variants describe the next runtime mechanism to invoke (call-tool, emit-final, request-pause, spawn-subagent, etc.). See RFC §6.2 for the full variant list.
+**PlannerDecision** — alias for `Decision`; see `Decision`.
+
+**Decision** — the sealed sum-type returned from `Planner.Next`. Six shapes (Phase 42): `CallTool` (one tool with structured args + reasoning), `CallParallel` (N tools + a `JoinSpec`), `SpawnTask` (background task with optional `GroupID`, retain-turn or non-retain-turn), `AwaitTask` (block until task terminates), `RequestPause` (pause with one of the four canonical `PauseReason` values), `Finish` (terminal with one of the canonical `FinishReason` values + payload + metadata). The interface is sealed via the unexported `isDecision()` marker — adding a seventh shape requires editing `internal/planner/decision.go`. No `NoOp` variant: wait-for-steering and trajectory-summarisation are Runtime short-circuits (resolves brief 02 Q-5). RFC §6.2, D-045.
 
 **`PresignGet`** — the read-side presigned-URL operation on the `Presigner` capability. `PresignGet(ctx, scope, id, expiry) (string, error)` returns a time-bounded HTTPS URL the caller can hand to a Console / Protocol client for direct download without proxying bytes. Bounded to `[1 minute, 7 days]` per S3's documented limit; out-of-range expiries are rejected (fail loudly). Identity is mandatory at this boundary; missing tenant/user/session returns wrapped `ErrIdentityRequired`. Read-side only — write-side presigned URLs are an attack surface intentionally not exposed at V1. RFC §6.10.
 
@@ -283,6 +287,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`TaskPushNotificationConfig`** — A2A's per-task push-notification configuration (URL + auth credentials + optional token). Harbor's `RemoteTransport` exposes CRUD (Create / Get / List / Delete); V1's loopback driver stores in memory, post-V1 + Phase 29 add durability + outbound dispatch. RFC §6.12, D-031.
 
 **Push wake — see `Push wake`** (above).
+
+**PauseReason** — planner-side enum carried by the `RequestPause` decision (RFC §6.3 — settled). Four canonical values: `approval_required` (human approval gate), `await_input` (additional input needed), `external_event` (waiting on webhook / scheduled trigger / A2A callback), `constraints_conflict` (operator resolution required). The unified pause/resume primitive (later phase) MAY canonicalise via a typedef bridge — the planner-package enum is the truth source at Phase 42. `IsValidPauseReason` is the Runtime executor's pre-dispatch validator. D-045.
 
 ## R
 
@@ -412,6 +418,14 @@ Additions to this set are RFC PRs.
 
 **ToolCatalog** — the planner-addressable registry. Three-method interface: `Register(d)`, `Resolve(name)`, `List(filter)`. V1 ships the in-memory catalog (`tools.NewCatalog`); future drivers (remote-catalog, persistent-catalog) plug in behind the same interface. Concurrent reuse safe (D-025): RWMutex-guarded; descriptors immutable after Register. RFC §6.4.
 
+**ToolCatalogView** — narrow planner-facing read view over the production `ToolCatalog` (Phase 42). Two methods: `Resolve(name) (Tool, bool)` and `List() []Tool`. Schemas only — never `ToolDescriptor`s — so the planner cannot dispatch tools directly (the planner returns `CallTool` decisions; the Runtime owns dispatch). Visibility filtering is applied BEFORE the view is constructed; the planner sees only the tools the run's identity may call. RFC §6.2, D-045.
+
+**MemoryView** — narrow planner-facing read view over the declared-policy memory snapshot (Phase 42). One method: `Snapshot(ctx) (map[string]any, error)`. The Runtime constructs the view at planner-step start from the production `MemoryStore` + scoping policy; the planner reads the snapshot, never queries the store directly. RFC §6.2, D-045.
+
+**SkillLookup** — narrow planner-facing read view over the skills subsystem (Phase 42). Two methods: `Search(ctx, query, limit) ([]SkillResult, error)` and `Get(ctx, id) (*Skill, error)`. The planner-package types (`Skill`, `SkillResult`) are projections of the production `internal/skills` records — Phase 37 ships the production surface; Phase 42 declares the view so the planner package compiles without importing `internal/skills` (parallel fork at Wave 8 Stage A). RFC §6.2, D-045.
+
+**SpawnSpec** — planner-side projection of `tasks.SpawnRequest` (Phase 42). Carries the fields the planner controls: `Description`, `Query`, `Priority`, `RetainTurn`, `FailFast`. The Runtime fills the rest (`Identity` from the run quadruple, `IdempotencyKey` from the planner step counter, `PropagateOnCancel` from the default, `NotifyOnComplete` from the spawn intent) at dispatch time. NOT a duplicate type — `tasks.TaskKind` is consumed verbatim on `SpawnTask.Kind`. RFC §6.2, D-045.
+
 **ToolDescriptor** — the callable binding produced by a driver: `Tool` + `Invoke(ctx, args) (ToolResult, error)` + `Validate(args) error`. The planner never sees a `ToolDescriptor`; the dispatcher uses it. RFC §6.4.
 
 **ToolProvider** — interface for external tool sources (HTTP / MCP / A2A). Phase 27+ drivers implement `Connect` / `Discover` / `Close` / `SourceID`. Phase 26 ships the interface shape; the in-process registrar does not need a provider lifecycle (it's a thin wrapper around `ToolCatalog.Register`). RFC §6.4.
@@ -428,7 +442,7 @@ Additions to this set are RFC PRs.
 
 **CatalogFilter** — server-enforced visibility predicate on `ToolCatalog.List`. Keys on the `(tenant, user, session)` triple plus `GrantedScopes`. A Tool is visible only if every entry in its `AuthScopes` is contained in `GrantedScopes`. `LoadingModes` defaults to `[LoadingAlways]` for the prompt-time view. RFC §6.4.
 
-**Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs. RFC §6.2.
+**Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs, plus the trajectory summary (compaction artefact from Phase 46), sources, named artifacts, hint state, steering history, background-task outcomes, and the optional `ResumeHint`. Phase 42 ships the skeleton + a stub `Serialize` that returns `ErrTrajectoryNotImplemented`; Phase 43 closes the fail-loudly serialise contract (`(nil, ErrUnserializable{Field:...})` on any non-JSON-encodable entry — no silent-drop path). RFC §6.2, §3.4, D-045.
 
 ## U
 
@@ -451,3 +465,7 @@ Additions to this set are RFC PRs.
 **`WatchGroup`** — non-blocking dual of `RegisterRetainTurnWaiter` (Phase 21). Returns a channel that delivers a typed `GroupCompletion` payload when the group resolves; the planner runtime consumes the delivery as a wake-up signal so background-task results integrate back into the conversation without manual polling. Channel is buffered size 1; close-once invariant. Multiple subscribers on the same group all receive the same payload (D-025). Resolved-but-still-tracked groups return an already-primed channel so late subscribers don't deadlock. The mechanism for the three documented wake modes (push / poll / hybrid) — the planner picks the policy. RFC §6.8, brief 05.
 
 **Hybrid wake (background continuation)** — wake mode where the main planner subscribes via `WatchGroup` (push) AND a sidecar (typically a small / cheap LLM, or a deterministic templater) polls the group's intermediate state and emits user-visible progress updates between push events. The main planner only wakes when the group resolves; the user sees liveness in the meantime. Suits user-facing agents where silence between turn close and group resolve looks broken. Phase 21 ships the mechanism; planner concretes (Phase 42+) wire the mode.
+
+**WakeMode** — planner-side enum naming a concrete's chosen wake-on-resolution strategy. Three canonical values: `push` (subscribe to WatchGroup; runtime re-invokes Next on resolution — lowest latency, lowest LLM cost — Phase 45 ReAct picks this), `poll` (skip WatchGroup; deterministic re-check on the planner's cadence — suits Phase 48 Deterministic), `hybrid` (push for the main planner + a sidecar polling for user-visible progress — suits user-facing agents). The TaskRegistry stays neutral (D-032) — no `WakeMode` field on registry types, no `Supports*` capability protocol. The choice is a planner-concrete concern, NOT a registry concern. `internal/planner/wake.go` ships the enum + the optional `WakeAware` interface + `ResolveWakeMode(Planner) WakeMode` (falls back to `WakePush` for concretes that skip `WakeAware`). D-032, D-045.
+
+**WakeAware** — OPTIONAL interface a planner concrete may implement to declare its wake mode: `WakeMode() WakeMode`. NOT a `Supports*` capability protocol — it's identity / metadata (a concrete picks one mode at construction time, not per-call), so AGENTS.md §4.4's no-optional-capability rule does not apply. The conformance pack (Phase 49) asserts the round-trip for the declared mode (`SpawnTask` → group resolves → planner re-enters → reads `MemberOutcome`); the Console surfaces the value for observability. D-032, D-045.
