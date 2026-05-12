@@ -543,29 +543,29 @@ func TestE2E_Wave7b_Live_Gemini_StructuredOutput(t *testing.T) {
 
 // TestE2E_Wave7b_Live_NIM_MessageReorderQuirk would exercise Phase 33a's
 // custom-provider path AND Phase 34's NIM message-reorder quirk end-to-
-// end, but a bifrost ↔ NIM transport-layer hang is currently blocking.
+// end, but the NIM endpoint is currently unresponsive for the
+// operator's account.
 //
-// Repro: a direct `curl` to `https://integrate.api.nvidia.com/v1/chat/completions`
-// with the same key + model + body completes in ~6 seconds, but the same
-// request routed through Harbor's bifrost driver hangs until the caller's
-// ctx deadline fires (bifrost wraps the deadline as `status 504: request
-// timed out waiting for provider response`). The hang reproduces with
-// all Wave 7b wrappers disabled (DisableCorrections / DisableDowngrade /
-// DisableRetry / DisableGovernance set true) and with both the bare host
-// + `/v1` + `request_path_overrides` variants of the BaseURL. The hang
-// is therefore upstream of Harbor's wrappers — it lives in the bifrost
-// custom-provider HTTP/queue path for the NIM endpoint specifically.
+// Observed: an initial direct `curl` to the operator's NIM endpoint
+// with `google/gemma-4-31b-it` completed cleanly in ~6 seconds and
+// returned "OK." — establishing key + endpoint + model wired up.
+// Subsequent calls (both `curl` AND bifrost-routed) time out after
+// 30-180s with zero bytes received. Both `google/gemma-4-31b-it` and
+// the alternate `deepseek-ai/deepseek-v4-flash` reproduce the timeout
+// at the transport layer. Because direct curl ALSO times out, the
+// signal is NIM-side (account throttling, cold-pool eviction, or
+// model unavailability) rather than a Harbor / bifrost translation
+// regression.
 //
 // The message-reorder quirk this test would have validated end-to-end
 // IS unit-tested in `internal/llm/corrections/normalizer_test.go` and
 // stress-tested in the D-025 concurrent-reuse suite. The live wave-end
-// observation is the missing gate, deferred to:
+// observation is the missing gate, deferred to a future PR once a
+// stable NIM model + window is identified.
 //
-//	TODO: phase-33a-nim-hang investigation (track separately).
-//
-// Skipped until the upstream hang is rooted.
+// Skipped until NIM endpoint availability stabilises (track separately).
 func TestE2E_Wave7b_Live_NIM_MessageReorderQuirk(t *testing.T) {
-	t.Skip("TODO: phase-33a-nim-hang — bifrost ↔ NIM custom-provider request hangs until ctx deadline (curl repros in 6s; bifrost path hangs identically with all Harbor wrappers disabled). Investigation deferred from wave-7b wave-end E2E.")
+	t.Skip("TODO: phase-33a-nim-live — NIM endpoint is unresponsive on this account for both google/gemma-4-31b-it and deepseek-ai/deepseek-v4-flash (direct curl times out identically to bifrost-routed). Re-enable when a stable NIM model is identified.")
 
 	requireLiveLLM(t)
 	if os.Getenv("NVIDIA_API_KEY") == "" {

@@ -18,9 +18,17 @@ import (
 // Postgres StateStore driver. Same gating shape as
 // `TestPostgres_Conformance` — skips locally when `HARBOR_PG_DSN` is
 // unset; CI provides a postgres:16 service container.
+//
+// IMPORTANT — concurrency isolation: the governance conformance
+// subtests run with `t.Parallel()` and the RestartSurvival subtest
+// writes a cost record, closes the accumulator, then re-opens against
+// the SAME state store to read the record back. Sharing one schema
+// across all parallel subtests would let one subtest's TRUNCATE wipe
+// another subtest's mid-test data. The factory therefore creates a
+// FRESH schema per harness (per subtest), and `freshSchema`'s
+// t.Cleanup drops it on subtest completion.
 func TestGovernance_Conformance_Postgres(t *testing.T) {
 	baseDSN := requireDSN(t)
-	dsn := freshSchema(t, baseDSN)
 
 	conformancetest.Run(t, func() conformancetest.Harness {
 		bus, err := events.Open(context.Background(), config.EventsConfig{
@@ -33,12 +41,14 @@ func TestGovernance_Conformance_Postgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("events.Open: %v", err)
 		}
+		// Per-subtest schema — isolates each subtest's state writes
+		// from sibling subtests running concurrently.
+		dsn := freshSchema(t, baseDSN)
 		st, err := postgres.New(config.StateConfig{Driver: "postgres", DSN: dsn})
 		if err != nil {
 			_ = bus.Close(context.Background())
 			t.Fatalf("postgres.New: %v", err)
 		}
-		truncateAll(t, dsn)
 		return conformancetest.Harness{
 			State: st,
 			Bus:   bus,
