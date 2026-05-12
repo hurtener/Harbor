@@ -35,14 +35,15 @@
 //     compose order, latent-governance, retry, and the
 //     identity-mandatory contract end-to-end without burning API
 //     credits.
+//
 //   - The live tests behind `HARBOR_LIVE_LLM=1` exercise the
 //     translation layers against real providers. Two free providers
 //     (OpenRouter free-tier + Gemini free-tier) plus NIM via the
 //     custom-provider path — the same diversity the future CI
 //     live-smoke job will use. CI default skips. Run locally with:
 //
-//       HARBOR_LIVE_LLM=1 go test -race -count=1 -timeout 600s \
-//           -run TestE2E_Wave7b_Live ./test/integration/...
+//     HARBOR_LIVE_LLM=1 go test -race -count=1 -timeout 600s \
+//     -run TestE2E_Wave7b_Live ./test/integration/...
 //
 // NIM specifically validates the Phase 34 NIM message-reorder quirk
 // end-to-end against a real provider — the corrections layer's most

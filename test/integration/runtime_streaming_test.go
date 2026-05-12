@@ -3,16 +3,16 @@
 // Wires real audit + events + state + sessions + engine drivers and
 // exercises the streaming surface end-to-end. Two scenarios:
 //
-//   1. TestE2E_Phase12_ParallelRuns_StreamFrames — N parallel runs ×
-//      K frames each with a slow consumer. Asserts:
-//      - Per-stream Seq order preserved.
-//      - All frames delivered.
-//      - Bus subscriber sees the runs' lifecycle events.
-//      - No goroutine leak after Stop.
+//  1. TestE2E_Phase12_ParallelRuns_StreamFrames — N parallel runs ×
+//     K frames each with a slow consumer. Asserts:
+//     - Per-stream Seq order preserved.
+//     - All frames delivered.
+//     - Bus subscriber sees the runs' lifecycle events.
+//     - No goroutine leak after Stop.
 //
-//   2. TestE2E_Phase12_StopMidStream_ReleasesWaiters — saturate the
-//      producer beyond capacity, call Stop, observe ErrEngineStopped
-//      on in-flight EmitChunk (the failure mode per §17.3).
+//  2. TestE2E_Phase12_StopMidStream_ReleasesWaiters — saturate the
+//     producer beyond capacity, call Stop, observe ErrEngineStopped
+//     on in-flight EmitChunk (the failure mode per §17.3).
 //
 // Both scenarios run under -race; identity propagates through every
 // layer (envelope quadruple, bus filters, session-scoped subscribers).
