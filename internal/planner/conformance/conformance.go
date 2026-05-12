@@ -60,10 +60,38 @@ type Harness struct {
 	// this declaration. Phase 49 fills the round-trip scenario.
 	WakeMode planner.WakeMode
 
+	// RunContextFactory builds the minimal valid RunContext the
+	// concrete needs to satisfy Sanity_NextReturnsDecision (and
+	// future scenarios that need a populated quadruple). Optional —
+	// defaults to a zero RunContext for concretes (e.g. the Phase 42
+	// stub `finish.Planner`) that do not enforce identity at Next
+	// boundary.
+	//
+	// Concrete planners that enforce identity (§6 rule 9 — every
+	// LLM-driven planner) MUST supply this so the Sanity scenario
+	// produces a Decision rather than an identity-missing error.
+	// The harness honours the contract: when set, the produced
+	// RunContext flows into every subtest's `p.Next` call.
+	//
+	// Added Phase 45 (D-051): the §13 fail-loud principle pushes
+	// every planner with an LLM dependency to reject missing
+	// identity, which would otherwise fail the Sanity subtest.
+	RunContextFactory func() planner.RunContext
+
 	// Cleanup is called at subtest end. Optional — typical for
 	// planner concretes that hold lifecycle resources (LLM client
 	// sessions, etc.). Phase 42's stub planner needs no cleanup.
 	Cleanup func()
+}
+
+// runContext returns the harness's per-subtest RunContext. Falls back
+// to the zero RunContext when RunContextFactory is unset. Helper to
+// keep call sites compact.
+func (h Harness) runContext() planner.RunContext {
+	if h.RunContextFactory == nil {
+		return planner.RunContext{}
+	}
+	return h.RunContextFactory()
 }
 
 // Run executes the conformance pack against the planner produced by
@@ -86,7 +114,7 @@ func Run(t *testing.T, factoryFunc func() Harness) {
 		if p == nil {
 			t.Fatal("Factory returned nil planner")
 		}
-		dec, err := p.Next(context.Background(), planner.RunContext{})
+		dec, err := p.Next(context.Background(), h.runContext())
 		if err != nil {
 			t.Fatalf("Next returned error: %v", err)
 		}
