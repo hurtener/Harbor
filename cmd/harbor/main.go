@@ -68,6 +68,12 @@ import (
 	// so deployment-time reviewers can confirm it's wired. The Phase 60+
 	// bootstrap will call `skills/tools.Register(catalog, store, deps)`.
 	_ "github.com/hurtener/Harbor/internal/skills/tools"
+	// Skills generator — Phase 41 (`skill_propose(persist=true)`). The
+	// package has no init-time registration (the catalog is built at
+	// boot); the blank import documents the package's presence in the
+	// binary. The Phase 60+ bootstrap will call
+	// `skills/generator.Register(catalog, store, deps)`.
+	_ "github.com/hurtener/Harbor/internal/skills/generator"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	// State driver — Postgres StateStore (Phase 16), registered via init().

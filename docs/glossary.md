@@ -404,11 +404,11 @@ Additions to this set are RFC PRs.
 
 **SkillStore** — Harbor's identity-scoped, capability-filterable persistence interface for skills. Phase 37 (`internal/skills`); the §4.4 seam every later phase consumes. Drivers under `internal/skills/drivers/*`. RFC §6.7.
 
-**Origin** — provenance of a skill: `PackImport` (Skills.md importer, Phase 40) or `Generated` (in-runtime generator, Phase 41). RFC §6.7, brief 04 §4.8.
+**Origin** — provenance of a skill: `PackImport` (Skills.md importer, Phase 40) or `Generated` (in-runtime generator, Phase 41 — stamped by `skill_propose(persist=true)`). Conflict policy: `Generated` cannot overwrite `PackImport` of the same name (typed `*ErrSkillConflict`); `Generated→Generated` is `ContentHash`-gated LWW. RFC §6.7, brief 04 §4.8, D-054.
 
-**OriginRef** — lineage pointer carried on every skill: `<pack-name>@<version>` for `PackImport`; `gen:{session_id}:{run_id}` for `Generated`. Used by Console to trace where a skill came from. RFC §6.7.
+**OriginRef** — lineage pointer carried on every skill: `<pack-name>@<version>` for `PackImport`; `gen:{session_id}:{run_id}` for `Generated` (Phase 41 — the format is load-bearing for audit correlation; `Promote` preserves the source's OriginRef when writing target-sibling rows). Used by Console to trace where a skill came from. RFC §6.7, D-054.
 
-**Scope (skills)** — operator-declared visibility: `Project | Tenant | Global`. The generator default is `project`. RFC §6.7.
+**Scope (skills)** — operator-declared visibility: `Session | Project | Tenant | Global`. The generator default is `project` per RFC §6.7's settled decision (Phase 41 — D-054). `Session` is the narrowest scope; cross-session promotion REQUIRES `Project` or higher via the generator's `Promote` API. RFC §6.7.
 
 **ContentHash** — sha256 over canonicalised `Skill` fields (excludes Origin / OriginRef / Scope / lifecycle timestamps). The LWW gate and idempotency key for `SkillStore.Upsert`. D-046.
 
@@ -427,6 +427,18 @@ Additions to this set are RFC PRs.
 **Tiered budgeter** — three-step injection ladder (Phase 38, `internal/skills/tools.Fit`): full → drop optional (Preconditions + FailureModes) → cap Steps to 3 → `ErrSkillTooLarge`. Token estimate is chars/4 (matches the §6.5 LLM safety net). Fail-loud per CLAUDE.md §5; no silent degradation. brief 04 §4.5, D-048.
 
 **ErrSkillTooLarge** — sentinel returned by `tools.Fit` (Phase 38) when no ladder step fits within the planner-supplied `MaxTokens`. CLAUDE.md §5 fail-loud contract.
+
+**`skill_propose`** — planner-callable Tool (Phase 41, `internal/skills/generator`) that validates an LLM-drafted skill and, when `persist=true`, stamps `Origin=Generated` + `OriginRef = "gen:{session_id}:{run_id}"` + `Scope` (default `project`), enforces the conflict policy (pack-protected refuse; Generated→Generated `ContentHash`-gated LWW), upserts via `SkillStore.Upsert`, and emits a mandatory `skill.proposed` audit event before returning success. Audit-emit failure rolls back the persist (`store.Delete`); the wrapped error names both failures when the cleanup Delete also errors. `LoadingMode=Always`; `SideEffect=Write`. RFC §6.7, brief 04 §4.8, D-054.
+
+**SkillDraft** — planner-supplied input shape for `skill_propose` (Phase 41, `internal/skills/generator`). Mirrors `skills.Skill` but excludes provenance + lifecycle fields the generator stamps itself (`Origin`, `OriginRef`, `ContentHash`, `CreatedAt`, `UpdatedAt`, `LastUsed`, `UseCount`). The wire schema uses `map[string]string` for `Extra` (closed JSON Schema for reflection-derived catalog registration). RFC §6.7, D-054.
+
+**SkillReceipt** — `skill_propose` output (Phase 41, `internal/skills/generator`). Carries `Validated`, `Persisted`, `Result` (`ProposeResult`: `validated` / `persisted` / `idempotent` / `rejected`), `Name`, `Hash`, `Origin`, `OriginRef`, `Scope`. RFC §6.7, D-054.
+
+**ProposeResult** — enum on `SkillReceipt` and `SkillProposedPayload` (Phase 41). Four values: `validated` (persist=false; validation-only, no DB write, no audit emit), `persisted` (insert OR LWW overwrite), `idempotent` (existing Generated row with matching `ContentHash`; no write needed but audit emit lands), `rejected` (pack-protected conflict — `*ErrSkillConflict{Reason:"pack_import_protected"}` returned alongside the receipt). RFC §6.7, D-054.
+
+**ErrSkillConflict** — typed error returned by `skill_propose(persist=true)` (Phase 41) when the conflict policy refuses a persist. Carries `Name` + `Reason` (e.g. `"pack_import_protected"`). Comparable via `errors.As` for the typed unpack, or `errors.Is(err, generator.ErrSkillConflictSentinel)` for the bare match. RFC §6.7, D-054.
+
+**Promote (skills)** — Go-level API (`internal/skills/generator.Promote`) that writes sibling rows of a source skill under additional target identities so a `Scope=session` row can be made visible across sessions within the same project / tenant. The Phase 37 `SkillStore` filters by `(tenant, user, session)` unconditionally; an explicit-target promotion is the V1 minimum-viable mechanism for the spec's "cross-session promotion REQUIRES Scope=project or Scope=tenant" requirement. Each target write emits its own `skill.proposed` event with `Promotion=true`. NOT a planner-callable Tool at V1 — Phase 41's D-054 records the privilege-escalation guard. Phase 39's Directory subsystem will layer a more ergonomic promotion surface. RFC §6.7, D-054.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
