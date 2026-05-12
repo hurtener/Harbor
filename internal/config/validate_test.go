@@ -241,6 +241,124 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"tools.a2a_peers[0].latency_tier_ms",
 		},
+		// Phase 33a custom-provider validation.
+		{
+			"custom provider empty name",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{BaseURL: "https://e", APIKeyEnvVar: "E", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].name",
+		},
+		{
+			"custom provider empty base url",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", APIKeyEnvVar: "E", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].base_url",
+		},
+		{
+			"custom provider empty env var",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].api_key_env_var",
+		},
+		{
+			"custom provider env var with env. prefix",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", APIKeyEnvVar: "env.E", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].api_key_env_var",
+		},
+		{
+			"custom provider empty models",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", APIKeyEnvVar: "E"},
+				}
+			},
+			"llm.custom_providers[0].models",
+		},
+		{
+			"custom provider duplicate name",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", APIKeyEnvVar: "E", Models: []string{"m"}},
+					{Name: "x", BaseURL: "https://e2", APIKeyEnvVar: "E2", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[1].name",
+		},
+		{
+			"custom provider name collides with native",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "openai"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "openai", BaseURL: "https://e", APIKeyEnvVar: "E", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].name",
+		},
+		{
+			"custom provider unknown base_provider_type",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "x"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", APIKeyEnvVar: "E",
+						BaseProviderType: "anthropic-compat", Models: []string{"m"}},
+				}
+			},
+			"llm.custom_providers[0].base_provider_type",
+		},
+		{
+			"llm.provider matches neither native nor custom",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.Provider = "ghost-provider"
+				c.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+					{Name: "x", BaseURL: "https://e", APIKeyEnvVar: "E", Models: []string{"m"}},
+				}
+			},
+			"llm.provider",
+		},
+		{
+			"network defaults negative timeout",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.NetworkDefaults = config.LLMNetworkDefaults{Timeout: -1}
+			},
+			"llm.network_defaults.timeout",
+		},
+		{
+			"network defaults negative max_retries",
+			func(c *config.Config) {
+				c.LLM.Driver = "bifrost"
+				c.LLM.NetworkDefaults = config.LLMNetworkDefaults{MaxRetries: -1}
+			},
+			"llm.network_defaults.max_retries",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -254,6 +372,49 @@ func TestValidate_TableDriven(t *testing.T) {
 				t.Errorf("err=%q missing path %q", err.Error(), tc.wantPath)
 			}
 		})
+	}
+}
+
+// Phase 33a — when llm.provider names a custom-provider entry, the
+// legacy llm.api_key / llm.timeout / llm.base_url fields are NOT
+// required because the custom entry supplies them.
+func TestValidate_CustomProviderPrimary_LegacyFieldsOptional(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.LLM.Driver = "bifrost"
+	cfg.LLM.Provider = "nim"
+	cfg.LLM.APIKey = ""
+	cfg.LLM.BaseURL = ""
+	cfg.LLM.Timeout = 0
+	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+		{
+			Name:         "nim",
+			BaseURL:      "https://integrate.api.nvidia.com",
+			APIKeyEnvVar: "NVIDIA_API_KEY",
+			Models:       []string{"google/gemma-4-31b-it"},
+			Timeout:      180 * 1e9, // 180s in time.Duration
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected custom-primary config: %v", err)
+	}
+}
+
+// Phase 33a — declared custom provider that isn't the primary still
+// validates. Native primary continues to require legacy fields.
+func TestValidate_NativeAndCustomCoexist(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.LLM.Driver = "bifrost"
+	cfg.LLM.Provider = "openrouter"
+	cfg.LLM.CustomProviders = []config.LLMCustomProviderConfig{
+		{
+			Name:         "in-house-llm",
+			BaseURL:      "http://localhost:8000",
+			APIKeyEnvVar: "INHOUSE_KEY",
+			Models:       []string{"llama"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected mixed native + custom config: %v", err)
 	}
 }
 
