@@ -268,4 +268,3 @@ func buildPerGoroutineResponses(i int, runID string) []llm.CompleteResponse {
 func makeRC(q identity.Quadruple, emit func(events.Event)) planner.RunContext {
 	return planner.RunContext{Quadruple: q, Emit: emit}
 }
-
