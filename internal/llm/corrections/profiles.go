@@ -115,3 +115,37 @@ func defaultProfileFor(model string) llm.CorrectionsProfile {
 	}
 	return llm.CorrectionsProfile{}
 }
+
+// DefaultOutputModeFor returns the per-known-provider default
+// `OutputMode` for the supplied model name. Phase 35 reads this when
+// the operator's profile leaves `OutputMode` unset.
+//
+// Defaults:
+//
+//   - `openai/*` (non-reasoning) → Native (OpenAI supports native
+//     json_schema).
+//   - `openai/o1*`, `openai/o3*`, `*deepseek-reasoner*` → Prompted
+//     (thinking-class models behave better with prompted JSON).
+//   - `anthropic/*` → Native (Anthropic supports structured outputs).
+//   - `google/*` → Native.
+//   - `nim/*` and any other prefix → Prompted (the conservative
+//     fallback that works for OpenAI-compatible endpoints without
+//     native schema support).
+//
+// The result is purely a fallback — `ProfileFor` returns the
+// operator-supplied `OutputMode` when present.
+func DefaultOutputModeFor(model string) llm.OutputMode {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "openai/o1"), strings.HasPrefix(m, "openai/o3"),
+		strings.HasPrefix(m, "o1-"), strings.HasPrefix(m, "o3-"),
+		strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"):
+		return llm.OutputModePrompted
+	case strings.Contains(m, "deepseek-reasoner"):
+		return llm.OutputModePrompted
+	case strings.HasPrefix(m, "openai/"), strings.HasPrefix(m, "anthropic/"),
+		strings.HasPrefix(m, "google/"):
+		return llm.OutputModeNative
+	}
+	return llm.OutputModePrompted
+}
