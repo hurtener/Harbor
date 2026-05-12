@@ -52,8 +52,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
 | 33a| Custom OpenAI-compatible providers + timeouts | llm                  | §6.5        | 33                    | 80%  | Shipped  |
 | 34 | Provider correction layer (one mode, baked)   | llm                  | §6.5        | 33                    | 85%  | Shipped  |
-| 35 | Structured output strategies + downgrade      | llm                  | §6.5        | 33, 34                | 85%  | Pending  |
-| 36 | Retry with feedback                           | llm                  | §6.5        | 35                    | 85%  | Pending  |
+| 35 | Structured output strategies + downgrade      | llm                  | §6.5        | 33, 34                | 85%  | Shipped  |
+| 36 | Retry with feedback                           | llm                  | §6.5        | 35                    | 85%  | Shipped  |
 | 36a| Cost accumulator + per-identity ceilings      | governance           | §6.15       | 11, 15, 33            | 85%  | Pending  |
 | 36b| Per-identity rate limits + per-call MaxTokens | governance           | §6.15       | 36a                   | 85%  | Pending  |
 | 37 | Skill store + LocalDB driver + FTS5 ladder    | skills               | §6.7        | 01, 07, 15            | 85%  | Pending  |
@@ -359,6 +359,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** OAuth full pause/resume cycle round-trips; A2A `AUTH_REQUIRED` triggers identical event shape.
 **Tests.** Integration end-to-end; conformance with phase 50.
 **Deps.** 26, 50.
+**Briefs.** **brief 09** (`docs/research/09-mcp-oauth-from-bifrost.md`) — documents bifrost's OAuth surface (`OAuth2Provider`, `OAuth2Config`, `OAuth2Token`, `OAuth2FlowInitiation`, `MCPUserOAuthRequiredError`, `MCPClientConfig` OAuth fields) as a Go-shaped reference for what to lift, what to leave, and what Harbor must add. **Bring back into the conversation when authoring the per-phase plan file** (§"Re-discussion checklist" at the bottom of the brief).
 
 ### 31 — Tool-side approval gates (RFC §6.4, §3.3)
 

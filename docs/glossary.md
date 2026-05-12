@@ -108,6 +108,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Driver** — a concrete implementation of an interface (per the §4.4 Extensibility seams pattern). Self-registers via `init()`; pulled in via blank import at `cmd/harbor`. Examples: SQLite driver of `StateStore`, OpenRouter driver of `bifrost`, in-proc driver of `Tool`.
 
+**`DowngradeChain`** — Phase 35's structured-output retry-on-schema-error sequence. The wrapper steps the request's `OutputMode` (Harbor-side strategy) through `Native → Prompted → Text` when the inner call surfaces a schema-class failure (classified by `llm.IsInvalidJSONSchemaError`). Bounded at 3 attempts (initial + 2 downgrades); exhaustion surfaces `ErrDowngradeExhausted` wrapping the chain. Each step emits `llm.mode_downgraded` with identity + From/To/Reason. RFC §6.5; D-043.
+
 ## E
 
 **`EmitChunk`** — `NodeContext` method (Phase 12) that emits a `StreamFrame`. Blocks when the originating run's pending-frame count has reached `Policy.RunCapacity`. Backpressure is per-run; one run's saturation never pauses another. The mechanism that makes streaming under parallel runs deadlock-free. RFC §6.1, brief 01 §4.
@@ -228,6 +230,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **OnReasoning** — optional thinking-channel-delta streaming callback on `CompleteRequest`. Provider-specific — fires only for thinking-class models (`o1`, `o3`, `deepseek-reasoner`) that expose a separate reasoning channel. Same shape as `OnContent`. RFC §6.5.
 
+**`OutputMode`** — Phase 35's typed enum on `ModelProfile.OutputMode`. Values: `OutputModeUnset` (operator did not declare — wrapper falls back to per-known-provider default), `OutputModeNative` (pass `FormatJSONSchema` through — provider enforces native), `OutputModeTools` (Harbor-side prompted envelope `{"name":"respond_with","arguments":{...}}` — runtime parses locally; NOT provider tool-calling), `OutputModePrompted` (coerce `FormatJSONObject` + inline the schema in a system message). The downgrade chain steps through these on schema failure. RFC §6.5, D-043.
+
 ## N
 
 **Node (engine)** — A typed async function inside the engine. Wraps a `NodeFunc` plus `NodePolicy` (Phase 11) and a per-node `AllowCycle` opt-in. One worker goroutine per node; one bounded channel per outgoing adjacency. RFC §6.1, brief 01 §2.
@@ -281,6 +285,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **ResponseFormatProfile** — enum on `CorrectionsProfile.ResponseFormatShape`. Values: `""` (default — OpenAI envelope); `"json_only"` (downgrade `FormatJSONSchema` to `FormatJSONObject` for providers that reject `json_schema`; the schema is stashed in `Extra["schema_hint"]`); `"anthropic"` (package schema in `Extra["anthropic_tool_schema"]`; clear top-level `ResponseFormat`). The corrections layer translates the envelope before the bifrost driver runs its own per-provider translator. RFC §6.5, D-041.
 
 **Reliability shell** — Phase 11 worker-loop wrapper that applies `NodePolicy` per invocation: validate-in → invoke-with-timeout → retry-with-backoff → on terminal failure, emit `RunError` to logger + bus. Backoff math is exponential with jitter (`base * mult^attempt + jitter`, capped at `MaxBackoff`). RFC §6.1, brief 01 §4.
+
+**`RetryWithFeedback`** — Phase 36's validator-driven LLM retry primitive. The wrapper invokes `CompleteRequest.Validator` after each successful inner `Complete`; a non-nil error triggers a corrective re-ask bounded by `ModelProfile.MaxRetries` (default 1). The corrective request appends an assistant turn echoing the rejected content + a user turn describing the failure; the new request flows through the full downgrade + corrections + safety stack on each attempt. Each retry emits `llm.retry_with_feedback` with identity + attempt + truncated reason. Exhaustion surfaces `ErrRetryExhausted` wrapping the validator-failure chain. RFC §6.5, D-043.
 
 **ResponseFormat** — optional structured-output hint on `CompleteRequest`. Kinds: `text` (no constraint; default when `req.ResponseFormat == nil`), `json_object` (provider's "JSON mode"), `json_schema` (caller-supplied JSON Schema in strict mode). Phase 35 owns the per-provider downgrade chain `json_schema → json_object → text` on `invalid_json_schema` errors. RFC §6.5.
 
@@ -417,6 +423,8 @@ Additions to this set are RFC PRs.
 ## V
 
 **`ValidateMode`** — `both / in / out / none`. Per-node choice (`NodePolicy.Validate`) for whether the engine runs the validator on input, output, both, or skips it. `none` is the perf escape hatch for hot streaming paths. RFC §6.1, brief 01 §2.
+
+**`Validator`** — Phase 36's caller-supplied post-response validation hook on `CompleteRequest`. Shape `func(CompleteResponse) error`. The retry wrapper invokes it after each successful `Complete`; a non-nil return drives the corrective re-ask loop bounded by `ModelProfile.MaxRetries`. A `nil` Validator (the default) disables the retry loop. Validators MUST be safe for concurrent invocation. RFC §6.5, D-043.
 
 **Virtual directory pattern** — pluggable-storage namespace addressing for skills (and potentially other artifacts). Logical paths over a swappable backing store. Inherited from the predecessor (the strongest pattern brief 04 names). RFC §6.7.
 

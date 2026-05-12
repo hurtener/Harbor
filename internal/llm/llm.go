@@ -130,6 +130,19 @@ type CompleteRequest struct {
 	Stops           []string
 	ReasoningEffort ReasoningEffort
 	Extra           map[string]any
+	// Validator (Phase 36) is the caller-supplied post-response
+	// validation hook. When non-nil, the retry wrapper invokes it
+	// after each successful `Complete`; a non-nil return triggers a
+	// corrective re-ask bounded by `ModelProfile.MaxRetries`. The
+	// validator is opaque to the wrapper — return any error type;
+	// the wrapper truncates and includes its `Error()` in the retry
+	// sub-prompt + the `llm.retry_with_feedback` event payload.
+	//
+	// `nil` Validator (the default) disables the retry loop entirely;
+	// the wrapper is a no-op pass-through. Validators MUST be safe for
+	// concurrent invocation against the same compiled artifact (the
+	// wrapper itself enforces D-025; the validator runs once per call).
+	Validator func(CompleteResponse) error
 }
 
 // CompleteResponse is the LLM-call return shape.
@@ -285,6 +298,50 @@ const (
 	ReasoningHigh   ReasoningEffort = "high"
 )
 
+// OutputMode selects the request-shaping strategy for structured
+// output (Phase 35; RFC §6.5). Three modes:
+//
+//   - `OutputModeNative` — pass `FormatJSONSchema` through unchanged.
+//     The provider validates against the schema natively. Default for
+//     OpenAI / Anthropic / Google.
+//
+//   - `OutputModeTools` — encode the schema as a *Harbor-side prompted*
+//     envelope where the LLM is asked to emit
+//     `{"name":"respond_with","arguments":{...}}` as plain output. The
+//     runtime parses that locally. Used as a fallback for providers
+//     without native `json_schema` support.
+//
+//     IMPORTANT: this is NOT a passthrough to provider-native
+//     tool-calling APIs (`tools=` / `tool_choice=` / `function_call` /
+//     `tool_use`). Harbor's runtime owns tool dispatch (RFC §6.4 /
+//     brief 07); `OutputModeTools` is purely a prompted-output
+//     technique. The static guard in `scripts/smoke/phase-35.sh`
+//     enforces this boundary.
+//
+//   - `OutputModePrompted` — coerce `FormatJSONObject` and inline the
+//     schema as a system-prompt instruction. The LLM-side parse is
+//     "produce a JSON object matching this schema." Default for NIM
+//     / custom OpenAI-compatible / deepseek-reasoner.
+//
+// The downgrade chain runs `current → next` on `IsInvalidJSONSchemaError`
+// failures, bounded at 3 total attempts (initial + 2 downgrades).
+type OutputMode string
+
+const (
+	// OutputModeUnset is the zero value — operator did not declare the
+	// mode. The downgrade wrapper applies the per-model-prefix default
+	// (see `internal/llm/corrections.defaultOutputModeFor`).
+	OutputModeUnset OutputMode = ""
+	// OutputModeNative — pass `FormatJSONSchema` through. Provider
+	// enforces strict schema mode.
+	OutputModeNative OutputMode = "native"
+	// OutputModeTools — Harbor-side prompted envelope. NOT provider
+	// tool-calling APIs.
+	OutputModeTools OutputMode = "tools"
+	// OutputModePrompted — `FormatJSONObject` + schema in system prompt.
+	OutputModePrompted OutputMode = "prompted"
+)
+
 // Cost is the provider-reported cost breakdown. Values are USD.
 // Fields are zero when the provider doesn't report a category.
 //
@@ -383,9 +440,17 @@ type ModelProfile struct {
 	// "" / "chars_div_4" — default chars/4 + role-overhead.
 	// Phase 33+ may register tiktoken-equivalent estimators by name.
 	TokenEstimator string
-	// JSONSchemaMode — Phase 35 reads ("native" / "tools" /
-	// "prompted"); Phase 32 stores opaque.
+	// JSONSchemaMode — Phase 32-era placeholder; the config loader
+	// normalises this string into `OutputMode` at snapshot time
+	// (Phase 35). Direct callers SHOULD set `OutputMode`; this field
+	// is read only when `OutputMode` is `OutputModeUnset`.
 	JSONSchemaMode string
+	// OutputMode (Phase 35) — Harbor-side structured-output strategy.
+	// Drives the request-shaping in `internal/llm/output` and the
+	// downgrade chain. See `OutputMode` constants for semantics.
+	// Zero value (`OutputModeUnset`) falls back to the per-known-
+	// provider default (see `corrections.defaultOutputModeFor`).
+	OutputMode OutputMode
 	// DefaultMaxTokens — Phase 36b's identity-tier override target.
 	DefaultMaxTokens *int
 	// ReasoningEffort — request-level default; req.ReasoningEffort
@@ -399,6 +464,11 @@ type ModelProfile struct {
 	// "no corrections needed for this model"; the corrections layer
 	// runs a no-op pass for default-shaped profiles.
 	Corrections CorrectionsProfile
+	// MaxRetries (Phase 36) — caps the validator-driven corrective
+	// re-asks performed by the retry wrapper. Zero (default) maps to
+	// `DefaultMaxRetries` (1). A negative value is rejected at config
+	// validation.
+	MaxRetries int
 }
 
 // CorrectionsProfile carries the per-model quirk flags the Phase 34

@@ -38,6 +38,14 @@ import (
 	_ "github.com/hurtener/Harbor/internal/llm/corrections"
 	// LLM driver — Phase 33 bifrost-backed LLMClient, registered via init().
 	_ "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
+	// LLM output — Phase 35 structured-output downgrade chain (RFC §6.5).
+	// Self-registers a wrapper hook so `llm.Open()` composes
+	// `downgrade(corrections(safetyClient(driver)))`.
+	_ "github.com/hurtener/Harbor/internal/llm/output"
+	// LLM retry — Phase 36 retry-with-feedback (RFC §6.5). Self-
+	// registers a wrapper hook so `llm.Open()` composes
+	// `retry(downgrade(corrections(safetyClient(driver))))`.
+	_ "github.com/hurtener/Harbor/internal/llm/retry"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	// Memory driver — Phase 25 Postgres MemoryStore, registered via init().

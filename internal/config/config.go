@@ -235,6 +235,11 @@ type LLMModelProfileConfig struct {
 	// `internal/llm/corrections.defaultProfileFor`. See
 	// `LLMCorrectionsProfileConfig` for the wire shape.
 	Corrections *LLMCorrectionsProfileConfig `yaml:"corrections,omitempty"`
+	// MaxRetries (Phase 36) — caps the validator-driven retry loop the
+	// `internal/llm/retry` wrapper runs against this model. Zero (the
+	// default) maps to `llm.DefaultMaxRetries` (1). Negative is
+	// rejected by `validateLLM`.
+	MaxRetries int `yaml:"max_retries,omitempty"`
 }
 
 // LLMCorrectionsProfileConfig is one per-model profile override for
