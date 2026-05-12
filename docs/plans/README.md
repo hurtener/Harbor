@@ -359,6 +359,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** OAuth full pause/resume cycle round-trips; A2A `AUTH_REQUIRED` triggers identical event shape.
 **Tests.** Integration end-to-end; conformance with phase 50.
 **Deps.** 26, 50.
+**Briefs.** **brief 09** (`docs/research/09-mcp-oauth-from-bifrost.md`) — documents bifrost's OAuth surface (`OAuth2Provider`, `OAuth2Config`, `OAuth2Token`, `OAuth2FlowInitiation`, `MCPUserOAuthRequiredError`, `MCPClientConfig` OAuth fields) as a Go-shaped reference for what to lift, what to leave, and what Harbor must add. **Bring back into the conversation when authoring the per-phase plan file** (§"Re-discussion checklist" at the bottom of the brief).
 
 ### 31 — Tool-side approval gates (RFC §6.4, §3.3)
 
