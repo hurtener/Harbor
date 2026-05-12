@@ -60,6 +60,22 @@ type ConfigSnapshot struct {
 	HeavyOutputThreshold int
 	ModelProfiles        map[string]ModelProfile
 
+	// DisableCorrections opts OUT of the Phase 34 per-provider
+	// correction layer. Zero-value (false) = corrections enabled —
+	// production callers wire `corrections.Wrap(safetyClient(driver))`
+	// so quirks like NIM message reordering, OpenAI strict-schema
+	// mode, thinking-class reasoning routing, Anthropic envelope
+	// translation, and usage backfill all apply automatically. Tests
+	// that need to exercise the safety pass in isolation set this to
+	// true.
+	//
+	// Inverse-named so the zero-value matches the production default
+	// — direct callers (tests, programmatic snapshot construction)
+	// don't have to flip an extra knob to get correct behaviour. The
+	// config loader resolves the operator-facing `corrections.enabled`
+	// yaml field (default true) into this inverse.
+	DisableCorrections bool
+
 	// Bifrost-driver knobs (Phase 33).
 	Provider string
 	Model    string
@@ -89,7 +105,49 @@ const (
 var (
 	factoriesMu sync.RWMutex
 	factories   = map[string]Factory{}
+
+	// correctionsWrapperMu guards correctionsWrapper. Phase 34's
+	// corrections package self-registers via init() — the hook
+	// pattern avoids a package import cycle (corrections imports
+	// llm). Callers that don't import the corrections package see
+	// nil and Open() returns the safetyClient verbatim.
+	correctionsWrapperMu sync.RWMutex
+	correctionsWrapper   func(LLMClient, ConfigSnapshot) LLMClient
 )
+
+// RegisterCorrectionsWrapper installs the Phase 34 corrections
+// wrapper hook. Called once from `internal/llm/corrections.init()`;
+// the production binary picks up the registration by blank-importing
+// the corrections package.
+//
+// The hook signature mirrors `corrections.Wrap` — given the inner
+// `LLMClient` (the safety wrapper) and the config snapshot, returns
+// the corrections-wrapped client.
+//
+// Re-registering panics — the registration model is write-once-at-
+// init and a duplicate signals a build misconfig.
+func RegisterCorrectionsWrapper(fn func(LLMClient, ConfigSnapshot) LLMClient) {
+	if fn == nil {
+		panic("llm: RegisterCorrectionsWrapper called with nil hook")
+	}
+	correctionsWrapperMu.Lock()
+	defer correctionsWrapperMu.Unlock()
+	if correctionsWrapper != nil {
+		panic("llm: corrections wrapper already registered")
+	}
+	correctionsWrapper = fn
+}
+
+// resetCorrectionsWrapperForTesting clears the registered corrections
+// hook. Used only by package-internal tests that exercise the
+// corrections-disabled code path; the hook is otherwise write-once.
+//
+//nolint:unused // referenced by tests in same package.
+func resetCorrectionsWrapperForTesting() {
+	correctionsWrapperMu.Lock()
+	defer correctionsWrapperMu.Unlock()
+	correctionsWrapper = nil
+}
 
 // Register installs a driver factory under `name`. Drivers self-
 // register from their package `init()`; `cmd/harbor` blank-imports
@@ -169,7 +227,25 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llm: driver %q construction failed: %w", name, err)
 	}
-	return newSafetyClient(drv, cfg, deps), nil
+
+	client := LLMClient(newSafetyClient(drv, cfg, deps))
+
+	// Phase 34: compose corrections OUTSIDE the safety wrapper so the
+	// safety pass sees the post-correction (final outgoing) payload.
+	// D-041 settled the order: corrections → safety → driver. The
+	// hook is set by `internal/llm/corrections.init()`; blank-imported
+	// in `cmd/harbor/main.go` so production builds always have it.
+	// Tests that need safety-only construction set
+	// `cfg.CorrectionsEnabled = false`.
+	if !cfg.DisableCorrections {
+		correctionsWrapperMu.RLock()
+		wrap := correctionsWrapper
+		correctionsWrapperMu.RUnlock()
+		if wrap != nil {
+			client = wrap(client, cfg)
+		}
+	}
+	return client, nil
 }
 
 // applyDefaults populates zero-valued fields with the Phase 32

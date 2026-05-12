@@ -374,6 +374,26 @@ The `Health` FSM transition table is also settled at this phase: `healthy ↔ re
 
 ---
 
+## D-041 — Provider corrections: outside the safety pass; single baked-in mode; `CorrectionsProfile` lives on `ModelProfile`; hook-registered wrapper
+
+**Date:** 2026-05-11
+**Status:** Settled
+**Where it lives:** RFC §6.5, `docs/plans/phase-34-provider-corrections.md`, `internal/llm/llm.go` (`CorrectionsProfile` + four enum types), `internal/llm/registry.go` (`RegisterCorrectionsWrapper` hook + `Open` compose order), `internal/llm/corrections/corrections.go` (`Wrap` + `init()` self-registration), `internal/config/config.go` (`LLMCorrectionsConfig`, `LLMCorrectionsProfileConfig`), `internal/config/validate.go` (enum allowlists), brief 03 §4–§5, brief 08 §"Phase 34 scope shrinks slightly".
+
+**Why:** Phase 34 ships the per-provider correction layer between Harbor's runtime and the Phase 32 `safetyClient(driver)`. Four design calls warrant a settled entry so a later auditor doesn't churn them.
+
+1. **Compose order is `corrections(safetyClient(driver))` — corrections OUTSIDE safety.** The safety pass (D-026 / D-039) materializes oversize `DataURL`s, asserts no raw heavy content survived, and runs the token-budget guard. If corrections wrapped INSIDE safety, the safety pass would evaluate the PRE-correction request and any future correction that grows token count would slip past. With corrections outside, the safety pass sees the POST-correction request (the final outgoing payload reaching the driver) and its invariants apply to what actually leaves the runtime. Phase 34's quirks today are content-preserving (reordering, schema mutation, envelope translation, usage backfill); future quirks may not be. The outside-safety arrangement is the safe default.
+
+2. **Single baked-in mode — no `use_native` toggle.** Brief 03 §5 documented the predecessor's `use_native_llm=True/False` toggle that shipped TWO LiteLLM/native implementations in parallel and is exactly the "two parallel implementations of the same conceptual feature" §13 rejects. Harbor picks one architecture (`corrections.Wrap` over a `bifrost`-backed driver) and compiles the per-provider quirks into a single layer. The operator's only choice is `enable: true` (production default) or `enable: false` (test-only escape hatch). The yaml field is a `*bool` so the loader distinguishes "operator omitted" (nil → default true) from "operator explicitly disabled."
+
+3. **`CorrectionsProfile` lives on `llm.ModelProfile`, not in `internal/llm/corrections`.** Two reasons: (a) Import-cycle avoidance — `corrections` imports `llm`; placing the profile TYPE on `ModelProfile` in the `llm` package lets the corrections sub-package consume it without a back-edge. (b) Single source of truth — `ModelProfile` already carries `JSONSchemaMode` (Phase 35), `DefaultMaxTokens` (Phase 36b), `ReasoningEffort` (Phase 33), `CostOverrides` (Phase 36a). The corrections fields belong in the same bundle so an operator's `harbor.yaml` `model_profiles[<model>]:` block is the one canonical place per-model quirks land. The corrections LOGIC stays in `internal/llm/corrections/`.
+
+4. **Hook-registered wrapper, blank-imported in `cmd/harbor/main.go`.** `llm.RegisterCorrectionsWrapper(fn)` is the seam: the corrections package's `init()` calls it with `Wrap`. Production binaries blank-import `_ "github.com/hurtener/Harbor/internal/llm/corrections"` so the registration fires at boot. Tests that exercise the safety pass in isolation set `cfg.DisableCorrections = true`; tests that exercise the corrections layer directly call `corrections.Wrap` without going through `llm.Open`. This pattern mirrors §4.4's driver-registry seam — write-once-at-init, blank-import for production wiring, opt-out for tests.
+
+Inverse-naming the snapshot field `DisableCorrections` (instead of `CorrectionsEnabled`) means the zero-value matches the production default: programmatic snapshot construction in tests does not have to flip an extra knob to get correct behaviour. The config loader's `*bool` Enabled field resolves to `DisableCorrections = !*Enabled` at the boundary (Phase 64+ implements the mapping; today the snapshot is constructed directly by tests).
+
+---
+
 <!--
 Append new entries below this line in the form:
 

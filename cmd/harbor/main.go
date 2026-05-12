@@ -30,6 +30,12 @@ import (
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	// LLM corrections — Phase 34 per-provider correction layer (RFC §6.5,
+	// brief 03 §4 + brief 08). Self-registers a wrapper hook in
+	// internal/llm via init() so `llm.Open()` composes
+	// `corrections(safetyClient(driver))` by default. Blank-imported
+	// so the registration fires at process boot.
+	_ "github.com/hurtener/Harbor/internal/llm/corrections"
 	// LLM driver — Phase 33 bifrost-backed LLMClient, registered via init().
 	_ "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().

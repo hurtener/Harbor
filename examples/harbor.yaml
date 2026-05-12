@@ -78,6 +78,23 @@ llm:
       token_estimator: chars_div_4
       json_schema_mode: native
       reasoning_effort: ""
+      # Phase 34 per-provider correction overrides (optional). The
+      # corrections layer infers sensible defaults from the model
+      # name prefix; this block lets the operator override per model.
+      #
+      # corrections:
+      #   message_ordering: ""             # "" / "system_first_strict" (NIM)
+      #   schema_mode: ""                  # "" / "openai_strict" / "permissive"
+      #   reasoning_effort_routing: ""     # "" / "thinking_model" (o1/o3/deepseek-reasoner)
+      #   response_format_shape: ""        # "" / "json_only" / "anthropic"
+      #   usage_backfill_enabled: false    # synth tokens+cost when provider reports 0/0
+  # Phase 34 — per-provider correction layer toggle. Enabled by
+  # default (operators who omit this block get production-correct
+  # behaviour). Set `enabled: false` only for tests that need to
+  # exercise the safety pass in isolation.
+  #
+  # corrections:
+  #   enabled: true
 
 governance:
   default_max_tokens: 4096
