@@ -22,4 +22,16 @@ var (
 	// branches). The Runtime rejects with this sentinel before
 	// dispatching the decision.
 	ErrInvalidDecision = errors.New("planner: invalid decision")
+
+	// ErrRepairExhausted (Phase 44) — surfaced by the
+	// `internal/planner/repair.RepairLoop` for callers that want to
+	// inspect the graceful-failure path before the loop's terminal
+	// `Finish{NoPath}` is dispatched. The loop's `Run` returns
+	// (Decision, nil) on graceful failure — Finish IS the success path
+	// — but the wrapped sentinel is available via the Finish.Metadata
+	// `repair_error` slot for observability sinks that prefer error-
+	// shaped reads. Compare via `errors.Is`. The fail-loudly emit
+	// (`planner.repair_exhausted`) is the canonical observability
+	// surface; this sentinel is the secondary read surface.
+	ErrRepairExhausted = errors.New("planner: schema repair exhausted")
 )

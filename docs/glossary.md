@@ -18,7 +18,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Adjacency** — A `(From Node, To []Node)` pair the engine's `New` consumes to allocate channels. The full set of adjacencies forms the runtime DAG (with cycle opt-in per node). RFC §6.1.
 
-**ActionParser** — runtime component that extracts a typed `PlannerAction` from raw LLM text. Owns multi-action discovery, JSON-fence extraction, and the salvage path. Knows Harbor's `next_node` / `args` schema; deliberately knows nothing about provider-native tool-call shapes (RFC §6.4).
+**ActionParser** — planner-side utility (`internal/planner/repair/parser.go`) that extracts one OR many `planner.CallTool` actions from raw LLM text. Tolerant: handles fenced JSON (` ```json ... ``` ` and bare ` ``` ` fences), prose-wrapped JSON, multi-object decoder scans, and bare JSON arrays. Recognises the `{"tool": "<name>", "args": {...}, "reasoning": "..."}` envelope shape; deliberately knows nothing about provider-native tool-call shapes (RFC §6.4). Ships in Phase 44 alongside the `RepairLoop`; Phase 45 (ReAct) consumes. D-050.
+
+**arg_fill_enabled** — Phase 44 `RepairLoop` knob (`Config.ArgFillEnabled`). When true, schema-validation failures on `CallTool.Args` trigger a focused corrective sub-prompt and re-ask. When false, the loop returns the parser's first valid action verbatim and lets the dispatcher reject via `tool.invalid_args`. Per-concrete: Phase 45 defaults true, Phase 48 defaults false (no LLM output to repair). D-050.
 
 **Audit redactor** — single central runtime component that produces a redacted copy of any payload before it is emitted to the event bus, logs, or audit storage. Owner of redaction per D-020 (Audit owns redaction; Governance owns thresholds). Pluggable via the §4.4 extensibility-seam pattern; default driver is pattern-based with built-in rules for credentials (`api_key`, `bearer`, `authorization`, `password`, `secret`, `token`, `cookie`) and configurable PII shapes. Returning an error from `Redact` means the caller MUST NOT emit — silent fall-through to the unredacted payload is forbidden. RFC §6.4 + §6.15.
 
@@ -146,7 +148,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`FailFast`** — `TaskGroup` flag (Phase 21): when true, the first member task that transitions to `StatusFailed` cancels the remaining non-terminal members AND transitions the group to `GroupCancelled`. Cancel reason is derived from the failing member's error code (`fail-fast:<code>` or `fail-fast` when no code is set). RFC §6.8, brief 05 §4.
 
-**FinishReason** — planner-side enum carried by the `Finish` decision. Canonical values: `goal` (success), `no_path` (schema-repair exhausted / no tool satisfies the goal — Phase 44), `cancelled` (CANCEL control event / parent cascade), `deadline_exceeded` (Budget.Deadline expired), `constraints_conflict` (operator denied approval / budget cap hit during a required tool call). `IsValidFinishReason` is the Runtime executor's pre-dispatch validator. RFC §6.2, D-047.
+**FinishReason** — planner-side enum carried by the `Finish` decision. Canonical values: `goal` (success), `no_path` (schema-repair exhausted / no tool satisfies the goal — Phase 44 graceful-failure path), `cancelled` (CANCEL control event / parent cascade), `deadline_exceeded` (Budget.Deadline expired), `constraints_conflict` (operator denied approval / budget cap hit during a required tool call). `IsValidFinishReason` is the Runtime executor's pre-dispatch validator. RFC §6.2, D-047.
+
+**FinishNoPath** — terminal `FinishReason` Phase 44's `RepairLoop` emits when the salvage / schema-repair ladder exhausts. The loop stamps `Metadata["followup"] = true` (brief 02 §6's `Followup` signal — Phase 44 carries via `Metadata` rather than adding a struct field; D-050), plus auxiliary `Metadata["repair_attempts"]`, `Metadata["repair_consecutive_arg_failures"]`, `Metadata["repair_chain"]`, `Metadata["repair_error"]` for observability. The `planner.repair_exhausted` event emit accompanies every `FinishNoPath` from the repair loop (§13 fail-loudly principle). RFC §6.2, D-050.
 
 ## G
 
@@ -189,6 +193,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## M
 
 **`MapConcurrent`** — Concurrency utility (Phase 14) that runs `fn` over a slice of envelopes with a max-in-flight bound. Preserves input order in output. Per-run capacity backpressure and cancellation propagate through the bound. RFC §6.1, brief 01 §2.
+
+**max_consecutive_arg_failures** — Phase 44 `RepairLoop` storm-guard knob (`Config.MaxConsecutiveArgFailures`). Independent counter from `repair_attempts`. When N consecutive arg-validation failures land in a row, graceful failure fires (`Finish{NoPath, Metadata["followup"]=true}` + `planner.repair_exhausted` emit) regardless of remaining `repair_attempts` budget. Default 2. The independence from `repair_attempts` closes brief 07 §10's failure-mode-blind footgun (identical-shape failures terminate quickly). D-050.
 
 **`MemberOutcome`** — per-task entry inside `GroupCompletion`. Carries `TaskID`, terminal `Status` (`StatusComplete` | `StatusFailed` | `StatusCancelled`), and either `Result` (when complete) or `Error` (when failed); neither is populated on cancel. Heavy results are substituted with `ArtifactRef`s upstream (D-022, D-026); the entry is ref-shaped, not byte-bound. RFC §6.8, Phase 21.
 
@@ -294,9 +300,17 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **PauseReason** — planner-side enum carried by the `RequestPause` decision (RFC §6.3 — settled). Four canonical values: `approval_required` (human approval gate), `await_input` (additional input needed), `external_event` (waiting on webhook / scheduled trigger / A2A callback), `constraints_conflict` (operator resolution required). The unified pause/resume primitive (later phase) MAY canonicalise via a typedef bridge — the planner-package enum is the truth source at Phase 42. `IsValidPauseReason` is the Runtime executor's pre-dispatch validator. D-047.
 
+**planner.repair_exhausted** — planner-emitted event (Phase 44). Fires from the `RepairLoop`'s graceful-failure path before the loop returns `Finish{NoPath, Metadata["followup"]=true}`. The typed `RepairExhaustedPayload` (SafePayload — operator-visible by construction) carries `Identity`, `Attempts`, `ConsecutiveArgFailures`, `Reasons []string` (each entry truncated to 256 bytes), `OccurredAt`. The emit is the load-bearing observability surface that distinguishes Harbor's graceful failure from the silent-degradation pattern banned by §13 — every graceful-failure path runs through `gracefulFailure()` which emits before returning. RFC §6.2, D-050.
+
 ## R
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. Phase 36b's `RateLimiter` Subsystem ships the token-bucket math; `governance.RateLimitConfig` carries `Capacity` / `RefillTokens` / `RefillInterval`. Latent default: `Capacity == 0` → no enforcement. RFC §6.15, D-044.
+
+**RepairLoop** — Phase 44 driver of the salvage → schema repair → graceful failure → multi-action salvage ladder (`internal/planner/repair/repair.go`). One method: `Run(ctx, rc, client, req, validateTool) (Decision, error)`. Reusable artifact — one instance safe to share across N concurrent runs (D-025; `internal/planner/repair/d025_test.go` pins N=128). Per-call state lives on the stack and in `planner.RunContext`. Returns `planner.CallTool` / `planner.CallParallel` on success, `planner.Finish{NoPath, Metadata["followup"]=true}` on graceful failure (always paired with a `planner.repair_exhausted` emit). Composition: OUTSIDE the LLM call (the Phase 36 retry-with-feedback wrapper is INSIDE — they handle different concerns; §13 forbids two-parallel-implementations). RFC §6.2, D-050.
+
+**repair_attempts** — Phase 44 `RepairLoop` knob (`Config.RepairAttempts`). Total LLM re-asks before graceful-failure consideration. Default 3 (matches brief 07 §3 step 5 predecessor default). The storm-guard counter (`max_consecutive_arg_failures`, default 2) typically fires first on identical-shape failures. D-050.
+
+**RepairExhaustedPayload** — typed payload for the `planner.repair_exhausted` event (Phase 44). SafePayload (composes `events.SafeSealed`): `Identity` (the run's quadruple), `Attempts` (total LLM re-asks burned), `ConsecutiveArgFailures` (the storm-guard counter value at exhaustion), `Reasons` (truncated chain of validator failure messages), `OccurredAt`. RFC §6.2, D-050.
 
 **`RateLimiter`** — Phase 36b `governance.Subsystem` running a token bucket per `(identity, model)`. PreCall drains `expected_tokens` (from `req.MaxTokens` or 1) from the bucket; underflow → `ErrRateLimited` + `governance.rate_limited` event. State lives in StateStore (`Kind=governance.bucket`); survives restart. Per-key mutex serialises drain operations. No refunds on call failure. RFC §6.15, D-044.
 
@@ -374,7 +388,7 @@ Additions to this set are RFC PRs.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
 
-**SkillProvider** — planner-facing wrapper around `SkillStore` (Phase 38). Adds capability filtering, PII + tool-name redaction, and the tiered injection budgeter on top of the storage surface. Distinct from `SkillStore` (the storage interface). RFC §6.7.
+**SkillProvider** — RFC §6.7's planner-facing aggregate interface (`Search / GetByName / List / Directory / FormatForInjection`). Phase 38 splits the planner-facing surface across three discrete Tools (`skill_search`, `skill_get`, `skill_list` — `internal/skills/tools`) plus Phase 39's `Directory(cfg)` API rather than a single struct, so the catalog seam handles dispatch + reliability uniformly. The Phase 38 helpers (`Filter`, `Redact`, `Fit`) collectively implement what the RFC sketched as `SkillProvider`'s injection-time concerns. Distinct from `SkillStore` (the storage interface). RFC §6.7, D-048.
 
 **SkillStore** — Harbor's identity-scoped, capability-filterable persistence interface for skills. Phase 37 (`internal/skills`); the §4.4 seam every later phase consumes. Drivers under `internal/skills/drivers/*`. RFC §6.7.
 
@@ -389,6 +403,18 @@ Additions to this set are RFC PRs.
 **FTS5Ladder** — the three-tier skill search ranking: FTS5 → regex → exact. Calibrated scoring constants in brief 04 §4.4. The ladder picks the first path that returns rows; FTS5 detected at open with deterministic fallback when absent. RFC §6.7.
 
 **RankingScore** — normalised 0.0–1.0 relevance score on a `RankedSkill`. FTS path: `bm25 → 1/(1+raw) → min-max`. Regex path: name fullmatch=0.95, name match=0.90, name search=0.85, body search=0.75. Exact path: 1.0. brief 04 §4.4.
+
+**`skill_search`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning ranked skill candidates by query. Wraps `SkillStore.Search` with capability filtering + redaction. `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**`skill_get`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning the full text of one or more named skills, redacted and budget-fit through the tiered ladder. Missing names are silently skipped; over-budget surfaces `ErrSkillTooLarge`. `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**`skill_list`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning a paged enumeration of skills filtered by scope / task_type / tags. Capability-filtered + redacted; summary-only (no budgeter — `skill_get` owns full content). `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**CapabilityContext** — planner-supplied envelope (Phase 38, `internal/skills/tools`) carrying `AllowedTools / AllowedNamespaces / AllowedTags / RedactPII`. Drives the capability filter (subset gate) AND the redactor (disallowed-name scrub + optional PII redaction). Empty allowed-set is default-deny: skills with non-empty `Required*` lists are excluded. RFC §6.7, brief 04 §4.5, D-048.
+
+**Tiered budgeter** — three-step injection ladder (Phase 38, `internal/skills/tools.Fit`): full → drop optional (Preconditions + FailureModes) → cap Steps to 3 → `ErrSkillTooLarge`. Token estimate is chars/4 (matches the §6.5 LLM safety net). Fail-loud per CLAUDE.md §5; no silent degradation. brief 04 §4.5, D-048.
+
+**ErrSkillTooLarge** — sentinel returned by `tools.Fit` (Phase 38) when no ladder step fits within the planner-supplied `MaxTokens`. CLAUDE.md §5 fail-loud contract.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 

@@ -204,4 +204,3 @@ func phase08Config() *config.Config {
 		},
 	}
 }
-
