@@ -553,6 +553,7 @@ The §11 mandatory pause/resume serialisation test (`toolcontext_test.go::TestPa
 The D-025 concurrent-reuse contract is pinned in `concurrent_test.go` across four tests: N=128 goroutines serialising distinct trajectories, N=128 goroutines exercising `HandleRegistry.Set/Get/Delete` on disjoint IDs, N=128 goroutines reading a shared handle, and N=128 goroutines serialising a shared read-only trajectory. All four exit under `-race` with no leaks (baseline `runtime.NumGoroutine` restored), no context bleed, no byte-stability violations across concurrent invocations.
 
 The §13 forbidden practice of "silent degradation" is closed by construction at three layers: `Trajectory.Serialize` (no `try/catch → nil` path), `HandleRegistry.Get` (no `(nil, nil)` return), and the planner-package alias re-exports (`ErrUnserializable` / `ErrToolContextLost` are public sentinels callers reach for via `errors.As`). Phase 51's pause-record contract (later phase) consumes this phase's Serialize bytes; Phase 51 inherits the fail-loud invariants without re-authoring.
+
 ---
 
 ## D-050 — Repair ladder ordering (salvage → schema repair → graceful failure → multi-action salvage); graceful failure is `Finish{NoPath}` not error; `Followup` carried via `Metadata`; parser+loop both live under `internal/planner/repair/`
@@ -586,6 +587,9 @@ Additionally, Phase 44 ships:
 - **No two-parallel-retry-implementations (§13).** The repair loop calls `llm.LLMClient.Complete`; the LLM client (composed at `internal/llm/registry.go::Open`) already has the Phase 36 retry-with-feedback wrapper inside. Repair is OUTSIDE the LLM call (it consumes the response); retry-with-feedback is INSIDE the LLM call (it wraps a single attempt). The smoke script guards against `internal/planner/repair/` importing `internal/llm/retry` — composition stays at the registry edge.
 
 The `internal/planner/repair/d025_test.go` ships the N=128 concurrent-reuse stress: one shared `RepairLoop` instance, per-goroutine identity quadruples, four response patterns (clean salvage / parser-correction / multi-action / graceful-failure), per-call identity round-trip assertion at three boundaries (the stub client's seen-ctx, the success-path Decision's `Reasoning` field, the graceful-failure-path `RepairExhaustedPayload.Identity`). Pre-cancelled ctxes on i%5==0 verify cancellation cross-talk is absent.
+
+---
+
 ## D-048 — Phase 38 planner-skill tools: split into three Tools (not a SkillProvider struct); default-deny capability filter; chars/4 budgeter aligned with §6.5 LLM safety net
 
 **Date:** 2026-05-12
