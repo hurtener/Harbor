@@ -59,6 +59,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
 	// Memory driver — Phase 25 SQLite MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
+	// Skills driver — Phase 37 LocalDB SkillStore, registered via init().
+	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	// State driver — Postgres StateStore (Phase 16), registered via init().

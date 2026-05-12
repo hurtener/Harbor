@@ -295,6 +295,20 @@ memory:
   # be >= 0.
   recovery_backlog_max: 16
 
+# Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
+# it entirely and skills stay uninitialised. When set, both `driver`
+# and `dsn` are required.
+# skills:
+#   # SkillStore driver — Phase 37 ships `localdb` (CGo-free SQLite
+#   # with FTS5 → regex → exact ranking ladder). Phase 49 will add
+#   # `portico` (MCP-distributed skills).
+#   driver: localdb
+#   # DSN — required when driver=localdb. SQLite accepts a bare file
+#   # path (or `:memory:` for the degenerate dev case). Override via
+#   # HARBOR_SKILLS_DSN in production; never commit a real path with
+#   # sensitive metadata.
+#   dsn: /var/lib/harbor/skills.sqlite
+
 tools:
   # Phase 27 HTTP tool driver. Each path points at a UTCP-style
   # YAML manifest describing one or more HTTP endpoints as Harbor
