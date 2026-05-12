@@ -160,6 +160,40 @@ governance:
   default_max_tokens: 4096
   repair_attempts: 3
 
+  # Phase 36a + 36b — identity tier enforcement.
+  #
+  # **LATENT DEFAULT.** With the `identity_tiers` block omitted (or
+  # `default_tier` empty), every governance policy is a permit no-op:
+  # no cost ceilings fire, no rate limits drain, no MaxTokens cap
+  # rejects. Operators opt in by populating `identity_tiers` with
+  # one or more tiers and (optionally) naming a `default_tier` for
+  # identities not otherwise mapped.
+  #
+  # Each tier's fields are INDEPENDENTLY opt-in — set
+  # `budget_ceiling_usd` only to enforce cost ceilings, leave
+  # `rate_limit` and `max_tokens` zero to leave those latent.
+  #
+  # default_tier: free
+  # identity_tiers:
+  #   free:
+  #     budget_ceiling_usd: 1.00
+  #     max_tokens: 1000
+  #     rate_limit:
+  #       capacity: 100000
+  #       refill_tokens: 50000
+  #       refill_interval: 1h
+  #   team:
+  #     budget_ceiling_usd: 50.00
+  #     max_tokens: 4000
+  #     rate_limit:
+  #       capacity: 1000000
+  #       refill_tokens: 500000
+  #       refill_interval: 1h
+  #   enterprise:
+  #     budget_ceiling_usd: 1000.00
+  #     max_tokens: 16000
+  #     # No rate_limit — enterprise tier is unbounded.
+
 events:
   driver: inmem
   # Per-session subscriber cap. The 17th subscribe in the same

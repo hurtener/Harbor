@@ -277,11 +277,61 @@ type LLMCostOverridesConfig struct {
 // ceilings, rate limits, default MaxTokens). Hot-reload candidates
 // (CostCeilingUSD, RateLimitTPS) will opt in via `reload:"live"` when
 // the governance subsystem ships its hot-reload code path; not in V1.
+//
+// **Latent default (Wave 7b scoping):** an empty `IdentityTiers` map +
+// empty `DefaultTier` disables every per-policy enforcement. Operators
+// turn on enforcement per tier by populating `IdentityTiers` with at
+// least one `GovernanceTierConfig` entry and (optionally) setting
+// `DefaultTier`. The legacy single-knob fields (`DefaultMaxTokens`,
+// `CostCeilingUSD`, `RateLimitTPS`) are PRE-Phase-36a stubs preserved
+// so existing yaml files don't break — they are NOT consumed by the
+// Phase 36a/36b governance subsystem (which reads exclusively from
+// `IdentityTiers`).
 type GovernanceConfig struct {
 	DefaultMaxTokens int     `yaml:"default_max_tokens"`
 	CostCeilingUSD   float64 `yaml:"cost_ceiling_usd,omitempty"`
 	RateLimitTPS     float64 `yaml:"rate_limit_tps,omitempty"`
 	RepairAttempts   int     `yaml:"repair_attempts"`
+
+	// DefaultTier is the tier name applied to an identity that does
+	// not match a custom resolver mapping. Empty = no default tier =
+	// no enforcement for unmatched identities (latent default).
+	DefaultTier string `yaml:"default_tier,omitempty"`
+
+	// IdentityTiers maps tier name to its policy bundle. Empty = no
+	// enforcement (latent default). Each entry's fields are
+	// independently opt-in — set `cost_ceiling_usd` only to enforce
+	// cost ceilings, leaving rate-limit + MaxTokens latent.
+	IdentityTiers map[string]GovernanceTierConfig `yaml:"identity_tiers,omitempty"`
+}
+
+// GovernanceTierConfig is one tier's policy bundle (Phase 36a + 36b).
+// Each field is independently opt-in: set the cost field only to enforce
+// the cost ceiling, leave the rest zero-valued for latent behaviour.
+//
+// `BudgetCeilingUSD` — Phase 36a. Per-identity cost ceiling. PreCall
+// blocks when the (identity, tier) accumulator total ≥ this. 0 = no
+// ceiling.
+//
+// `RateLimit` — Phase 36b. Per-(identity, model) token bucket. Zero-
+// valued (Capacity == 0) = no rate limit.
+//
+// `MaxTokens` — Phase 36b. Per-call cap. Requests whose `MaxTokens`
+// exceed this fail loudly with `ErrMaxTokensExceeded`. 0 = no cap.
+type GovernanceTierConfig struct {
+	BudgetCeilingUSD float64                    `yaml:"budget_ceiling_usd,omitempty"`
+	RateLimit        GovernanceRateLimitConfig  `yaml:"rate_limit,omitempty"`
+	MaxTokens        int                        `yaml:"max_tokens,omitempty"`
+}
+
+// GovernanceRateLimitConfig is the token-bucket shape (Phase 36b).
+// `Capacity` is the bucket ceiling (max reservable tokens).
+// `RefillTokens` are added every `RefillInterval`. A zero `Capacity`
+// disables the rate limit entirely.
+type GovernanceRateLimitConfig struct {
+	Capacity       int           `yaml:"capacity,omitempty"`
+	RefillTokens   int           `yaml:"refill_tokens,omitempty"`
+	RefillInterval time.Duration `yaml:"refill_interval,omitempty"`
 }
 
 // Reserved sub-structs. Each owning phase will populate fields and

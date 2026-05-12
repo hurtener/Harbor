@@ -87,6 +87,14 @@ type ConfigSnapshot struct {
 	// useful for tests that need to isolate the downgrade layer.
 	DisableRetry bool
 
+	// DisableGovernance opts OUT of the Phase 36a/36b governance
+	// wrapper. Zero-value (false) = enabled — but the wrapper is also
+	// a no-op pass-through when no `governance.Factory` has been
+	// registered, so the latent default (Wave 7b scoping) requires
+	// neither flag flip nor factory wiring. Tests that want to bypass
+	// even a registered factory flip this true.
+	DisableGovernance bool
+
 	// Bifrost-driver knobs (Phase 33).
 	Provider string
 	Model    string
@@ -198,6 +206,15 @@ var (
 	// self-registers via init().
 	retryWrapperMu sync.RWMutex
 	retryWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
+
+	// governanceWrapperMu guards governanceWrapper. Phase 36a/36b's
+	// governance package self-registers via init() (D-044). The
+	// governance wrapper composes OUTSIDE the rest of the chain —
+	// outermost layer in `Open` — so PreCall fires before retry /
+	// downgrade / corrections / safety / driver and PostCall fires
+	// after the whole stack returns.
+	governanceWrapperMu sync.RWMutex
+	governanceWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
 )
 
 // RegisterCorrectionsWrapper installs the Phase 34 corrections
@@ -287,6 +304,40 @@ func resetRetryWrapperForTesting() {
 	retryWrapperMu.Lock()
 	defer retryWrapperMu.Unlock()
 	retryWrapper = nil
+}
+
+// RegisterGovernanceWrapper installs the Phase 36a/36b governance
+// wrapper hook. Called once from `internal/governance.init()`; the
+// production binary blank-imports the package so the hook lands at
+// boot. Governance composes OUTSIDE the entire downstream chain
+// (D-043 + D-044) — the wrapper sits at the outermost layer in `Open`
+// so `PreCall` fires before retry / downgrade / corrections / safety
+// even reach the driver.
+//
+// The hook receives the inner `LLMClient` (typically
+// `retry(downgrade(corrections(safety(driver))))`), the config snapshot,
+// and the Deps so the wrapper can build its Subsystem if a factory has
+// been registered via `governance.SetFactory`. Latent default: with no
+// factory set, the hook returns `inner` unchanged.
+//
+// Re-registering panics — write-once-at-init.
+func RegisterGovernanceWrapper(fn func(LLMClient, ConfigSnapshot, Deps) LLMClient) {
+	if fn == nil {
+		panic("llm: RegisterGovernanceWrapper called with nil hook")
+	}
+	governanceWrapperMu.Lock()
+	defer governanceWrapperMu.Unlock()
+	if governanceWrapper != nil {
+		panic("llm: governance wrapper already registered")
+	}
+	governanceWrapper = fn
+}
+
+//nolint:unused // referenced by tests in same package.
+func resetGovernanceWrapperForTesting() {
+	governanceWrapperMu.Lock()
+	defer governanceWrapperMu.Unlock()
+	governanceWrapper = nil
 }
 
 // Register installs a driver factory under `name`. Drivers self-
@@ -403,6 +454,21 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		retryWrapperMu.RLock()
 		wrap := retryWrapper
 		retryWrapperMu.RUnlock()
+		if wrap != nil {
+			client = wrap(client, cfg, deps)
+		}
+	}
+
+	// Phase 36a / 36b (D-044): governance composes OUTSIDE retry —
+	// PreCall fires before the entire chain reaches the driver, so
+	// `ErrBudgetExceeded` / `ErrRateLimited` / `ErrMaxTokensExceeded`
+	// short-circuit without burning a retry attempt or downgrade pass.
+	// The hook is a no-op pass-through when no governance factory has
+	// been registered (latent default).
+	if !cfg.DisableGovernance {
+		governanceWrapperMu.RLock()
+		wrap := governanceWrapper
+		governanceWrapperMu.RUnlock()
 		if wrap != nil {
 			client = wrap(client, cfg, deps)
 		}
