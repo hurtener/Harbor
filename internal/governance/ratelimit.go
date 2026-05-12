@@ -211,6 +211,11 @@ func (r *RateLimiter) lazyLoad(ctx context.Context, q identity.Quadruple, ks *bu
 	if err := json.Unmarshal(rec.Bytes, &br); err != nil {
 		return fmt.Errorf("%w: unmarshal bucket record: %v", ErrStateUnavailable, err)
 	}
+	// Forward-compat guard: a future-schema record would be partially
+	// parsed silently; fail loud per AGENTS.md §13.
+	if br.Schema != 0 && br.Schema != bucketRecordSchema {
+		return fmt.Errorf("%w: bucket record schema=%d, runtime supports %d", ErrStateUnavailable, br.Schema, bucketRecordSchema)
+	}
 	if br.ByModel != nil {
 		ks.buckets = br.ByModel
 	}
