@@ -48,6 +48,17 @@ const (
 	// the load-bearing surface that distinguishes Harbor's graceful
 	// failure from the silent-degradation pattern banned by §13.
 	EventTypePlannerRepairExhausted events.EventType = "planner.repair_exhausted"
+
+	// EventTypePlannerMaxStepsExceeded — emitted by the Phase 45
+	// ReAct planner's MaxSteps circuit breaker. When a planner step
+	// observes a trajectory whose step count is ≥ the configured
+	// MaxSteps, the planner returns
+	// Finish{Reason: NoPath, Metadata["max_steps_exceeded"]=true}
+	// AND emits this event before returning so operators see the
+	// circuit-breaker fire loudly. Companion to repair_exhausted —
+	// same fail-loudly shape, different graceful-failure source
+	// (repair loop vs. planner-side step cap). D-051.
+	EventTypePlannerMaxStepsExceeded events.EventType = "planner.max_steps_exceeded"
 )
 
 func init() {
@@ -55,6 +66,7 @@ func init() {
 	events.RegisterEventType(EventTypePlannerFinish)
 	events.RegisterEventType(EventTypePlannerError)
 	events.RegisterEventType(EventTypePlannerRepairExhausted)
+	events.RegisterEventType(EventTypePlannerMaxStepsExceeded)
 }
 
 // RepairExhaustedPayload is the typed payload for
@@ -81,4 +93,29 @@ type RepairExhaustedPayload struct {
 	ConsecutiveArgFailures int
 	Reasons                []string
 	OccurredAt             time.Time
+}
+
+// MaxStepsExceededPayload is the typed payload for
+// EventTypePlannerMaxStepsExceeded. SafePayload — every field is
+// operator-visible debug data, not secret-shaped:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `MaxSteps` is the configured circuit-breaker cap that fired.
+//   - `StepsObserved` is the trajectory step count at the moment the
+//     breaker fired (always ≥ MaxSteps; equality is the typical case
+//     when the breaker is the load-bearing terminator).
+//   - `LastTool` is the most-recently-dispatched tool name (from the
+//     last trajectory step's Action), or empty when the trajectory
+//     was empty AND MaxSteps == 0 (a degenerate config).
+//
+// Phase 45 ships the payload alongside the emit site; the emit is
+// the load-bearing fail-loudly surface that makes the circuit
+// breaker not silent (§13). D-051.
+type MaxStepsExceededPayload struct {
+	events.SafeSealed
+	Identity      identity.Quadruple
+	MaxSteps      int
+	StepsObserved int
+	LastTool      string
+	OccurredAt    time.Time
 }

@@ -132,6 +132,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## F
 
+**`_finish` reserved tool name** — the Phase 45 ReAct prompt-time convention the LLM emits to signal completion. The planner intercepts a parsed `CallTool{Tool: "_finish"}` BEFORE returning the Decision and translates to `planner.Finish{Reason: FinishGoal, Payload: <args.answer>}`. The reserved name is NOT a magic-string opcode in the Decision sum (the predecessor's `next_node` anti-pattern is rejected per D-047); it's a prompt-time convention the planner translates to the typed `Finish` shape. The leading underscore is a documented hygiene convention; future runtime catalog registration MAY reject `_`-prefixed tool names. RFC §6.2, D-051.
+
 **Fail-loudly** — Harbor's runtime principle. Errors are explicit; capabilities are mandatory; identity is mandatory. No `try { ... } catch { return None }`-shaped patterns. AGENTS.md §5 (Errors) + §13.
 
 **`FetchByRun(runID)`** — `Engine` method (Phase 13) that reads from the dispatcher's per-run subqueue. Concurrent fetchers per run are forbidden (`ErrConcurrentFetchByRun`) — the brief-01-recommended "no half-measure" choice for per-run roundtrip semantics. RFC §6.1, brief 01 §4-§5.
@@ -183,6 +185,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **IdempotencyKey** — caller-supplied string on `tasks.SpawnRequest` that, when paired with `Identity.SessionID`, deduplicates retried spawns. Same `(SessionID, IdempotencyKey)` → returns the original `TaskHandle` with `Reused=true`; divergent SpawnRequest under the same key returns `ErrIdempotencyConflict`. Empty key disables dedup entirely (every Spawn yields a fresh handle, no collisions). The key is namespaced by SessionID, so the same key across different sessions creates two distinct tasks. RFC §6.8.
 
 ## J
+
+**JSON action envelope** — the wire shape the Phase 45 ReAct planner asks the LLM to emit per step: `{"tool": "<name>", "args": {...}, "reasoning": "..."}` for tool calls; `{"tool": "_finish", "args": {"answer": "..."}, "reasoning": "..."}` for completion. Parsed by Phase 44's tolerant `ActionParser` (fenced JSON, prose-wrap, multi-object scan, bare array). The reserved `_finish` tool name signals completion (translated to typed `Finish` Decision before return — the Decision sum stays sealed per D-047). RFC §6.2, D-051.
 
 **`JoinK`** — Concurrency utility (Phase 14) that reads exactly K envelopes from a channel and cancels remaining producers. Short-read returns `ErrJoinKShortRead`. RFC §6.1, brief 01 §2.
 
@@ -241,6 +245,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`MaxTokens` (governance)** — Per-call per-identity-tier cap on `CompleteRequest.MaxTokens`. Phase 36b's `MaxTokensEnforcer` PreCall rejects requests whose `MaxTokens` exceed `TierConfig.MaxTokens` with `ErrMaxTokensExceeded` and emits `governance.maxtokens_exceeded`. Fail-loud, not clamp (RFC §6.15 line 1122 + master plan line 420). Latent: tier `MaxTokens == 0` → permit. RFC §6.15, D-044.
 
 **`MaxTokensEnforcer`** — Phase 36b stateless `Subsystem` that gates per-call `MaxTokens` against the resolved identity tier. No StateStore dependency; concurrent-safe trivially. Pairs with `CostAccumulator` + `RateLimiter` under `CompoundSubsystem`. RFC §6.15, D-044.
+
+**`MaxSteps` (planner)** — Phase 45 `ReActPlanner` functional-option cap on the observed trajectory step count (default 12 via `react.DefaultMaxSteps`). The circuit breaker fires when `len(rc.Trajectory.Steps) >= MaxSteps` at the start of `Next`; the planner emits `planner.max_steps_exceeded` AND returns `Finish{Reason: NoPath, Metadata["max_steps_exceeded"]=true}` — fail-loudly per §13. Defence in depth; the runtime hop / cost budget (Phase 47+) remains the authoritative gate. RFC §6.2, D-051.
+
+**`MaxStepsExceededPayload`** — typed payload for the `planner.max_steps_exceeded` event (Phase 45). SafePayload (composes `events.SafeSealed`): `Identity` (the run's quadruple), `MaxSteps` (the configured cap), `StepsObserved` (the trajectory step count at the moment the breaker fired), `LastTool` (the most recently dispatched tool name, empty when the trajectory was empty), `OccurredAt`. RFC §6.2, D-051.
 
 ## O
 
@@ -302,11 +310,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **planner.repair_exhausted** — planner-emitted event (Phase 44). Fires from the `RepairLoop`'s graceful-failure path before the loop returns `Finish{NoPath, Metadata["followup"]=true}`. The typed `RepairExhaustedPayload` (SafePayload — operator-visible by construction) carries `Identity`, `Attempts`, `ConsecutiveArgFailures`, `Reasons []string` (each entry truncated to 256 bytes), `OccurredAt`. The emit is the load-bearing observability surface that distinguishes Harbor's graceful failure from the silent-degradation pattern banned by §13 — every graceful-failure path runs through `gracefulFailure()` which emits before returning. RFC §6.2, D-050.
 
+**planner.max_steps_exceeded** — planner-emitted event (Phase 45). Fires from the `ReActPlanner.Next` `MaxSteps` circuit breaker BEFORE the planner returns the terminal `Finish{NoPath, Metadata["max_steps_exceeded"]=true}`. Typed `MaxStepsExceededPayload` (SafePayload) carries `Identity`, `MaxSteps`, `StepsObserved`, `LastTool`, `OccurredAt`. The observability surface that makes the circuit breaker NOT silent (§13 silent-degradation ban). Companion to `planner.repair_exhausted` — same fail-loudly shape, different graceful-failure source. RFC §6.2, D-051.
+
 ## R
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. Phase 36b's `RateLimiter` Subsystem ships the token-bucket math; `governance.RateLimitConfig` carries `Capacity` / `RefillTokens` / `RefillInterval`. Latent default: `Capacity == 0` → no enforcement. RFC §6.15, D-044.
 
 **RepairLoop** — Phase 44 driver of the salvage → schema repair → graceful failure → multi-action salvage ladder (`internal/planner/repair/repair.go`). One method: `Run(ctx, rc, client, req, validateTool) (Decision, error)`. Reusable artifact — one instance safe to share across N concurrent runs (D-025; `internal/planner/repair/d025_test.go` pins N=128). Per-call state lives on the stack and in `planner.RunContext`. Returns `planner.CallTool` / `planner.CallParallel` on success, `planner.Finish{NoPath, Metadata["followup"]=true}` on graceful failure (always paired with a `planner.repair_exhausted` emit). Composition: OUTSIDE the LLM call (the Phase 36 retry-with-feedback wrapper is INSIDE — they handle different concerns; §13 forbids two-parallel-implementations). RFC §6.2, D-050.
+
+**ReActPlanner** — Harbor's reference LLM-driven planner concrete (`internal/planner/react`). Phase 45 — the first concrete implementation of the `planner.Planner` seam. Implements `planner.Planner` AND `planner.WakeAware` (returns `planner.WakePush` — D-032). Per Phase 45 (RFC §6.2): LLM call loop, JSON-only action format (`{"tool":..., "args":..., "reasoning":...}` or `{"tool":"_finish","args":{"answer":"..."}}`), tool selection, completion detection (via the `_finish` reserved tool name — translated to `Finish` Decision before return; the Decision sum stays sealed per D-047), single tool call per step (multi-action salvage from Phase 44's loop collapses to the first action — V1 minimum viable per D-051). Six functional options carry the small policy-shaped knobs (`WithMaxSteps`, `WithRepairAttempts`, `WithMaxConsecutiveArgFailures`, `WithArgFillEnabled`, `WithPromptBuilder`, `WithSystemPrompt`); token / cost / deadline / hop budget remain runtime-level via `RunContext.Budget`. Reusable artifact (D-025): one instance is safe to share across N concurrent goroutines; per-run state lives entirely in `ctx` + `RunContext`. `internal/planner/react/d025_test.go` pins N=128. The planner-side `MaxSteps` circuit breaker emits `planner.max_steps_exceeded` (fail-loudly per §13); the breaker is defence in depth alongside Phase 47+'s runtime hop budget. SpawnTask / AwaitTask / RequestPause emission deferred to later phases (V1 prompt schema is intentionally narrow). RFC §6.2 + §3.2, D-051.
 
 **repair_attempts** — Phase 44 `RepairLoop` knob (`Config.RepairAttempts`). Total LLM re-asks before graceful-failure consideration. Default 3 (matches brief 07 §3 step 5 predecessor default). The storm-guard counter (`max_consecutive_arg_failures`, default 2) typically fires first on identical-shape failures. D-050.
 

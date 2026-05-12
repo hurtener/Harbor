@@ -21,6 +21,7 @@ func TestEventTypes_AllRegistered(t *testing.T) {
 		planner.EventTypePlannerFinish,
 		planner.EventTypePlannerError,
 		planner.EventTypePlannerRepairExhausted,
+		planner.EventTypePlannerMaxStepsExceeded,
 	}
 	for _, et := range cases {
 		t.Run(string(et), func(t *testing.T) {
@@ -46,6 +47,26 @@ func TestRepairExhaustedPayload_IsSafePayload(t *testing.T) {
 		ConsecutiveArgFailures: 2,
 		Reasons:                []string{"a", "b"},
 		OccurredAt:             time.Now(),
+	}
+	// Compile-time guarantee: the type implements events.SafePayload.
+	var _ events.SafePayload = payload
+}
+
+// TestMaxStepsExceededPayload_IsSafePayload confirms the Phase 45
+// payload composes the events.SafeSealed marker so the audit
+// pipeline's safe-payload bypass applies. Same fail-loudly shape as
+// RepairExhaustedPayload — D-051.
+func TestMaxStepsExceededPayload_IsSafePayload(t *testing.T) {
+	t.Parallel()
+	payload := planner.MaxStepsExceededPayload{
+		Identity: identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+			RunID:    "r",
+		},
+		MaxSteps:      12,
+		StepsObserved: 13,
+		LastTool:      "search",
+		OccurredAt:    time.Now(),
 	}
 	// Compile-time guarantee: the type implements events.SafePayload.
 	var _ events.SafePayload = payload

@@ -303,4 +303,3 @@ func drainOneEvent(t *testing.T, sub events.Subscription, deadline time.Duration
 	}
 	return events.Event{}
 }
-
