@@ -158,6 +158,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## H
 
+**HandleID** — opaque string identifier for a non-serialisable tool-context handle (live callback, logger, socket, file descriptor). Stored in `ToolContext.Handles []HandleID` and resolved at runtime via `HandleRegistry.Get`. The actual values live in the registry, never in the serialised trajectory bytes. A missing-handle resume surfaces `ErrToolContextLost`. V1 registry driver is process-local (`sync.Map`-backed); distributed-handle directory is a post-V1 RFC concern. RFC §6.3, brief 02 §4, D-049.
+
+**HandleRegistry** — Phase 43's holder for the non-serialisable half of `ToolContext`. Interface at `internal/planner/trajectory.HandleRegistry` (`Set` / `Get` / `Delete`). V1 ships one driver: `NewProcessLocalRegistry()` returns a `sync.Map`-backed implementation. `Get` on a missing `HandleID` returns `ErrToolContextLost{Handle: id}` — never `(nil, nil)`. Resume MUST run in the same Runtime process; a distributed driver is a post-V1 RFC concern (RFC §6.3 + §12). D-049.
+
 **Headers (envelope)** — Routing + identity sub-record on `Envelope`: `TenantID`, `UserID`, `Topic`, `Priority`. Distinct from HTTP headers; the term is RFC-settled vocabulary. RFC §6.1, brief 01 §2.
 
 **HeavyOutputThreshold** — the byte size at which the runtime mandatorily routes a payload through the `ArtifactStore`. Default 32 KB (`config.ArtifactsConfig.HeavyOutputThresholdBytes`); runtime-configurable. Per-tool overrides land at Phase 26 via the tool catalog. Phase 17 ships the config field + default; enforcement lives at consumer layers — tool dispatcher (Phase 26) auto-routes, LLM-edge (Phase 32) fails loudly with `ErrContextLeak` if raw heavy content slipped through. D-022, D-026, RFC §6.5, §6.10.
@@ -352,8 +356,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
 
-- `ErrUnserializable` — pause-state cannot be JSON-serialized; raised loudly by the pause/resume serialize path (RFC §6.3, brief 02).
-- `ErrToolContextLost` — pause-resume found a non-serializable handle key with no live runtime mapping; the pause cannot resume (RFC §6.3).
+- `ErrUnserializable` — Phase 43 ships the struct type (`Field string`) at `internal/planner/trajectory.ErrUnserializable`. Returned loudly by `Trajectory.Serialize` on any non-JSON-encodable leaf; the reflective walker tracks the dotted field path so callers extract the offending location via `errors.As`. No silent-drop path. RFC §6.2 + §3.4, brief 02 §4, D-049.
+- `ErrToolContextLost` — Phase 43 ships the struct type (`Handle HandleID`) at `internal/planner/trajectory.ErrToolContextLost`. Returned by `HandleRegistry.Get` when the requested `HandleID` has no live registry mapping (the typical resume-after-process-restart shape). Never `(nil, nil)`. RFC §6.3, brief 02 §4, D-049.
 - `ErrBudgetExceeded` — Governance PreCall: identity ceiling reached (RFC §6.15).
 - `ErrRateLimited` — Governance PreCall: token bucket exhausted (RFC §6.15).
 - `ErrMaxTokensExceeded` — Governance PreCall: per-call MaxTokens cap hit (RFC §6.15).
@@ -444,7 +448,7 @@ Additions to this set are RFC PRs.
 
 **ToolProvider** — interface for external tool sources (HTTP / MCP / A2A). Phase 27+ drivers implement `Connect` / `Discover` / `Close` / `SourceID`. Phase 26 ships the interface shape; the in-process registrar does not need a provider lifecycle (it's a thin wrapper around `ToolCatalog.Register`). RFC §6.4.
 
-**ToolContext** — per-tool-call runtime context split into a JSON-encodable half (persisted across pause/resume) and a runtime-handle half (re-attached by key on resume). The split is a fail-loudly contract: serializing the JSON-half MUST raise `ErrUnserializable` if any field is non-serializable rather than silently dropping data; resuming a missing handle raises `ErrToolContextLost`. RFC §6.3, brief 02.
+**ToolContext** — per-tool-call runtime context split into a JSON-encodable `Serializable map[string]any` half (persisted across pause/resume as part of `Trajectory.Serialize`) and an opaque `[]HandleID` slice whose values live in the runtime's `HandleRegistry`. Phase 43 ships the split at `internal/planner/trajectory`. Fail-loudly contract: serialising the JSON half raises `ErrUnserializable` on any non-encodable leaf; resuming a missing handle raises `ErrToolContextLost`. No silent-drop path. RFC §6.3, brief 02 §4, D-049.
 
 **ToolPolicy** — the reliability shell applied to every tool invocation regardless of `Transport`. Mirrors `NodePolicy` (§6.1): `TimeoutMS`, `MaxRetries`, `BackoffBase`, `BackoffMax`, `RetryOn` (error classes), `Validate`. Sensible defaults fire on zero-value so `tools.RegisterFunc(name, fn)` is production-resilient with no ceremony. RFC §6.4, D-024.
 
@@ -456,7 +460,7 @@ Additions to this set are RFC PRs.
 
 **CatalogFilter** — server-enforced visibility predicate on `ToolCatalog.List`. Keys on the `(tenant, user, session)` triple plus `GrantedScopes`. A Tool is visible only if every entry in its `AuthScopes` is contained in `GrantedScopes`. `LoadingModes` defaults to `[LoadingAlways]` for the prompt-time view. RFC §6.4.
 
-**Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs, plus the trajectory summary (compaction artefact from Phase 46), sources, named artifacts, hint state, steering history, background-task outcomes, and the optional `ResumeHint`. Phase 42 ships the skeleton + a stub `Serialize` that returns `ErrTrajectoryNotImplemented`; Phase 43 closes the fail-loudly serialise contract (`(nil, ErrUnserializable{Field:...})` on any non-JSON-encodable entry — no silent-drop path). RFC §6.2, §3.4, D-047.
+**Trajectory** — the planner execution log. First-class artifact; serializable; carries the sequence of `(action, observation|error|failure)` pairs, plus the trajectory summary (compaction artefact from Phase 46), sources, named artifacts, hint state, steering history, background-task outcomes, and the optional `ResumeHint`. Phase 43 closes the fail-loudly Serialize contract at `internal/planner/trajectory`: `Serialize() ([]byte, error)` returns `(nil, ErrUnserializable{Field: "..."})` on any non-JSON-encodable leaf (the reflective walker tracks the dotted path); `Deserialize` reverses; round-trip is byte-stable. Phase 42's stub `ErrTrajectoryNotImplemented` is retired. RFC §6.2, §3.4, D-047, D-049.
 
 ## U
 
