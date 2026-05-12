@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
 )
@@ -358,6 +359,141 @@ func TestValidate_TableDriven(t *testing.T) {
 				c.LLM.NetworkDefaults = config.LLMNetworkDefaults{MaxRetries: -1}
 			},
 			"llm.network_defaults.max_retries",
+		},
+		// Phase 36a / 36b governance identity-tier validation.
+		{
+			"identity tier empty name",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"": {BudgetCeilingUSD: 1.0},
+				}
+			},
+			"governance.identity_tiers",
+		},
+		{
+			"identity tier negative budget ceiling",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {BudgetCeilingUSD: -1.0},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].budget_ceiling_usd",
+		},
+		{
+			"identity tier negative max_tokens",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {MaxTokens: -1},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].max_tokens",
+		},
+		{
+			"identity tier negative rate-limit capacity",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {RateLimit: config.GovernanceRateLimitConfig{Capacity: -1}},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].rate_limit.capacity",
+		},
+		{
+			"identity tier negative rate-limit refill_tokens",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {RateLimit: config.GovernanceRateLimitConfig{RefillTokens: -1}},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].rate_limit.refill_tokens",
+		},
+		{
+			"identity tier negative rate-limit refill_interval",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {RateLimit: config.GovernanceRateLimitConfig{RefillInterval: -1}},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].rate_limit.refill_interval",
+		},
+		{
+			"identity tier refill set without capacity",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {RateLimit: config.GovernanceRateLimitConfig{
+						RefillTokens:   10,
+						RefillInterval: time.Second,
+						Capacity:       0,
+					}},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].rate_limit.capacity",
+		},
+		{
+			"identity tier refill_tokens set without refill_interval",
+			func(c *config.Config) {
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {RateLimit: config.GovernanceRateLimitConfig{
+						Capacity:     100,
+						RefillTokens: 10,
+					}},
+				}
+			},
+			"governance.identity_tiers[\"premium\"].rate_limit.refill_interval",
+		},
+		{
+			"default_tier names unknown tier",
+			func(c *config.Config) {
+				c.Governance.DefaultTier = "phantom"
+				c.Governance.IdentityTiers = map[string]config.GovernanceTierConfig{
+					"premium": {BudgetCeilingUSD: 1.0},
+				}
+			},
+			"governance.default_tier",
+		},
+		// Phase 34 corrections-profile enum validation.
+		{
+			"corrections invalid message_ordering",
+			func(c *config.Config) {
+				c.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+					"m": {ContextWindowTokens: 4096, Corrections: &config.LLMCorrectionsProfileConfig{
+						MessageOrdering: "reverse-then-shuffle",
+					}},
+				}
+			},
+			"corrections.message_ordering",
+		},
+		{
+			"corrections invalid schema_mode",
+			func(c *config.Config) {
+				c.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+					"m": {ContextWindowTokens: 4096, Corrections: &config.LLMCorrectionsProfileConfig{
+						SchemaMode: "guesswork",
+					}},
+				}
+			},
+			"corrections.schema_mode",
+		},
+		{
+			"corrections invalid reasoning_effort_routing",
+			func(c *config.Config) {
+				c.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+					"m": {ContextWindowTokens: 4096, Corrections: &config.LLMCorrectionsProfileConfig{
+						ReasoningEffortRouting: "wild-guess",
+					}},
+				}
+			},
+			"corrections.reasoning_effort_routing",
+		},
+		{
+			"corrections invalid response_format_shape",
+			func(c *config.Config) {
+				c.LLM.ModelProfiles = map[string]config.LLMModelProfileConfig{
+					"m": {ContextWindowTokens: 4096, Corrections: &config.LLMCorrectionsProfileConfig{
+						ResponseFormatShape: "bespoke",
+					}},
+				}
+			},
+			"corrections.response_format_shape",
 		},
 	}
 	for _, tc := range cases {

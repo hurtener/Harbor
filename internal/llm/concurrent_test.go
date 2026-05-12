@@ -175,16 +175,18 @@ func TestConcurrent_PerCallCancellationIsIsolated(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		go func() {
-			// Cancel A mid-stream.
-			time.Sleep(60 * time.Millisecond)
-			cancelA()
-		}()
+		var cancelOnce sync.Once
 		_, _ = client.Complete(ctxA, llm.CompleteRequest{
-			Model:     "m",
-			Messages:  []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &textA}}},
-			Stream:    true,
-			OnContent: func(string, bool) {},
+			Model:    "m",
+			Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &textA}}},
+			Stream:   true,
+			// First observed chunk triggers cancel — synchronous on
+			// the streaming path, so cancel arrives mid-stream
+			// deterministically. AGENTS.md §11: no time.Sleep for
+			// synchronisation.
+			OnContent: func(_ string, _ bool) {
+				cancelOnce.Do(cancelA)
+			},
 		})
 		// We don't assert on A's err — both Canceled and a successful
 		// short-completion are acceptable; what matters is B is

@@ -171,15 +171,17 @@ func (a *CostAccumulator) PostCall(ctx context.Context, req llm.CompleteRequest,
 	if a.closed.Load() {
 		return ErrClosed
 	}
+	// Identity check first — AGENTS.md §6 rule 9: identity is
+	// mandatory; missing triple fails closed. Mirrors PreCall.
+	quad, err := quadrupleFromCtx(ctx)
+	if err != nil {
+		return err
+	}
 	if resp.Cost.TotalCost == 0 && len(resp.Content) == 0 && resp.Usage.TotalTokens == 0 {
 		// No accounting work to do — likely a failed call that the
 		// provider didn't price. The bifrost driver still emits
 		// llm.cost.recorded; governance just doesn't accumulate zero.
 		return nil
-	}
-	quad, err := quadrupleFromCtx(ctx)
-	if err != nil {
-		return err
 	}
 	ks, err := a.keyState(ctx, quad)
 	if err != nil {
@@ -274,6 +276,11 @@ func (a *CostAccumulator) lazyLoad(ctx context.Context, q identity.Quadruple, ks
 	if err := json.Unmarshal(rec.Bytes, &cr); err != nil {
 		// Corrupt record → fail loud rather than silently reset.
 		return fmt.Errorf("%w: unmarshal cost record: %v", ErrStateUnavailable, err)
+	}
+	// Forward-compat guard: a record from a future schema would be
+	// partially parsed silently; fail loud per AGENTS.md §13.
+	if cr.Schema != 0 && cr.Schema != costRecordSchema {
+		return fmt.Errorf("%w: cost record schema=%d, runtime supports %d", ErrStateUnavailable, cr.Schema, costRecordSchema)
 	}
 	ks.totalBits.Store(math.Float64bits(cr.Total))
 	for m, v := range cr.ByModel {

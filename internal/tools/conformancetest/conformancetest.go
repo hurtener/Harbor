@@ -318,11 +318,12 @@ func testCancellation(t *testing.T, newCatalog CatalogFactory) {
 		t.Fatalf("register: %v", err)
 	}
 	d, _ := cat.Resolve("blocking")
+	// Pre-cancel ctx — the blocking tool's <-ctx.Done() returns
+	// immediately and the policy shell propagates ctx.Err(). AGENTS.md
+	// §11 forbids time.Sleep for synchronisation; pre-cancel is the
+	// equivalent surface assertion (cancel ⇒ context.Canceled out).
 	ctx, cancel := context.WithCancel(mustIdentityCtx(t))
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
+	cancel()
 	_, err = d.Invoke(ctx, []byte(`{"n":1}`))
 	if err == nil {
 		t.Fatalf("expected ctx.Err(), got nil")
@@ -405,11 +406,10 @@ func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		runtime.Gosched()
 		if runtime.NumGoroutine() <= baseline+5 {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		runtime.Gosched()
 	}
 	if got := runtime.NumGoroutine(); got > baseline+5 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)

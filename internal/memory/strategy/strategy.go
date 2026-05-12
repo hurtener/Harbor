@@ -17,7 +17,7 @@
 //     `healthy → retry → degraded → recovering → healthy` with a
 //     bounded recovery backlog (`RecoveryBacklogMax`); failure paths
 //     emit `memory.health_changed` and `memory.recovery_dropped`
-//     events so degradation is observable, not silent (D-034).
+//     events so degradation is observable, not silent (D-035).
 //
 // Persistence: every successful mutation lands as a
 // `state.StateStore` record at `Kind = "memory.state"` (D-027 typed
@@ -113,7 +113,7 @@ type Deps struct {
 const DefaultRecoveryBacklogMax = 16
 
 // FullZoneTurns is the recent-window size before turns spill into
-// the rolling-summary `pending` queue. Constant per D-034 (the
+// the rolling-summary `pending` queue. Constant per D-035 (the
 // brief 04 §2 knob is encoded as a constant; an operator who needs
 // to tune it files an RFC PR rather than fighting yaml).
 const FullZoneTurns = 4

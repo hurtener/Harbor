@@ -30,7 +30,7 @@ Land the wire driver for `distributed.RemoteTransport` against the full A2A v1 s
 
 - **None.** Phase 29 lands the slice brief 03 §7 prescribes. Two design choices that are NOT departures but warrant calling out so a later auditor doesn't flag them:
   - **Wire binding = JSON-RPC, not gRPC.** The proto carries both `service A2AService { rpc … }` (gRPC) AND `google.api.http` annotations (HTTP+JSON). Phase 29 implements the JSON-RPC binding per the master-plan Phase 29 detail block and brief 03 §5; gRPC is deferred to a post-V1 phase. The driver's `AgentInterface.ProtocolBinding` match MUST equal `"JSONRPC"` (the canonical Phase 22 constant `a2a.ProtocolBindingJSONRPC`); gRPC and HTTP+JSON bindings on the same peer's AgentCard are read-only metadata until those drivers ship.
-  - **Push-notification config store is in-memory at V1.** A wire driver could in principle accept these CRUD calls from another process via the northbound surface, but Phase 29 is southbound-only — calls to `Create/Get/List/DeleteTaskPushNotificationConfig` simply forward to the *peer* (no local mirror) and the peer is responsible for durability. A new decision entry (D-034) is filed below to make this load-bearing.
+  - **Push-notification config store is in-memory at V1.** A wire driver could in principle accept these CRUD calls from another process via the northbound surface, but Phase 29 is southbound-only — calls to `Create/Get/List/DeleteTaskPushNotificationConfig` simply forward to the *peer* (no local mirror) and the peer is responsible for durability. A new decision entry (D-038) is filed below to make this load-bearing.
 
 ## Goals
 
@@ -78,7 +78,7 @@ Land the wire driver for `distributed.RemoteTransport` against the full A2A v1 s
 - [ ] Identity propagation: every JSON-RPC request carries the `tenant` path parameter from `identity.From(ctx)`; missing identity surfaces as `ErrIdentityRequired` at the caller boundary.
 - [ ] Streaming respects `ctx.Done()`: cancelling the parent ctx closes the response body and `Recv` returns `ctx.Err()` promptly (`< 500ms` under typical load).
 - [ ] Smoke `scripts/smoke/phase-29.sh` runs `go test -race -count=1 -timeout 180s ./internal/distributed/drivers/a2a/... ./internal/tools/drivers/a2a/...` and asserts OK ≥ 1.
-- [ ] `docs/decisions.md` D-034 entry filed for the route-scoring weights + the in-memory push-config-store decision.
+- [ ] `docs/decisions.md` D-038 entry filed for the route-scoring weights + the in-memory push-config-store decision.
 - [ ] `docs/glossary.md` adds `A2A peer`, `Route scoring`, `Agent Card cache`.
 - [ ] `docs/plans/README.md` Phase 29 row flips from `Pending` → `Shipped`.
 - [ ] `README.md` Status table updated.
@@ -107,7 +107,7 @@ Land the wire driver for `distributed.RemoteTransport` against the full A2A v1 s
 - `cmd/harbor/main.go` (modified) — blank-import the two new drivers.
 - `docs/plans/phase-29-tools-a2a.md` (this file).
 - `docs/plans/README.md` (modified) — flip Phase 29 row to `Shipped`.
-- `docs/decisions.md` (modified) — new D-034 entry (route-scoring weights + push-config V1 in-mem).
+- `docs/decisions.md` (modified) — new D-038 entry (route-scoring weights + push-config V1 in-mem).
 - `docs/glossary.md` (modified).
 - `README.md` (modified) — Status table.
 - `scripts/smoke/phase-29.sh` (new) — package-test smoke.
@@ -249,19 +249,19 @@ type A2APeerConfig struct {
 
 ## Risks / open questions
 
-- **Route-scoring weights.** `CompositeScore = (5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)`. Trust outranks latency for safety; latency is the tie-breaker among similarly-trusted peers; capability match is a bonus on top. Settled in this plan + filed as `D-034` so a later auditor doesn't churn it. Weights tunable post-V1; not in V1 scope.
+- **Route-scoring weights.** `CompositeScore = (5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)`. Trust outranks latency for safety; latency is the tie-breaker among similarly-trusted peers; capability match is a bonus on top. Settled in this plan + filed as `D-038` so a later auditor doesn't churn it. Weights tunable post-V1; not in V1 scope.
 - **SSE reconnect-on-failure.** Phase 29 does NOT auto-reconnect a closed SSE stream. The caller (planner runtime) decides reconnect policy via `ToolPolicy.MaxRetries` at the *call* level. Documented inline.
 - **JSON-RPC error mapping.** Wire driver maps standard JSON-RPC errors (`-32700` parse / `-32600` invalid request / `-32601` method-not-found / `-32602` invalid-params / `-32603` internal) plus the A2A application errors documented in the spec. `ErrTaskNotFound` is recognised on application code `1` (per the A2A spec's `TaskNotFoundError`).
 - **HTTP/1.1 vs HTTP/2 for SSE.** Go's stdlib `*http.Client` does HTTP/2 by default; SSE is HTTP/1.1-friendly but the spec is transport-agnostic. We use the default client — no forced downgrade.
 - **Identity propagation via `tenant` path.** The proto's `additional_bindings` use `/{tenant}/…`; Phase 29 uses the path-parameterised form when `identity.From(ctx).TenantID != ""`. Empty tenants surface `ErrIdentityRequired` at the caller-side boundary BEFORE the HTTP request fires (consistent with Phase 22's contract).
-- **Push-notification config storage.** V1 forwards CRUD to the peer (no local mirror); the peer is responsible for durability. Filed in `D-034`.
+- **Push-notification config storage.** V1 forwards CRUD to the peer (no local mirror); the peer is responsible for durability. Filed in `D-038`.
 - **Agent Card cache staleness.** TTL is the only invalidation lever in V1; an operator who hot-swaps a peer's AgentCard must wait up to TTL or restart. Acceptable for V1 — adding a Console-driven invalidation surface is Phase 60+ work.
 
 ## Glossary additions
 
 - **A2A peer** — a remote agent Harbor connects to as a *client* via the A2A protocol. Declared in `ToolsConfig.A2APeers`. Distinct from "A2A northbound", which is the not-yet-shipped server surface. RFC §6.4, D-007.
 - **Agent Card cache** — the wire driver's in-memory TTL cache for `GET <peer>/.well-known/agent-card.json` responses. Default 10 minutes; per-peer override via `A2APeerConfig.AgentCardTTL`. RFC §6.4.
-- **Route scoring** — the wire driver's deterministic selection of an A2A peer when more than one declares the same capability. Score formula documented at `internal/distributed/drivers/a2a/registry.go`. RFC §6.4, D-034.
+- **Route scoring** — the wire driver's deterministic selection of an A2A peer when more than one declares the same capability. Score formula documented at `internal/distributed/drivers/a2a/registry.go`. RFC §6.4, D-038.
 
 ## Pre-merge checklist
 
@@ -274,4 +274,4 @@ type A2APeerConfig struct {
 - [ ] **If this phase builds a reusable artifact: concurrent-reuse test passes** — `TestWireTransport_ConcurrentSend_D025`, `TestRegistry_ConcurrentResolve_NoRace`, `TestAgentCardCache_ConcurrentFetch_Coalesces` all under `-race` (D-025)
 - [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists** — `internal/tools/drivers/a2a/a2a_test.go` runs the full Provider → Discover → Resolve → Invoke path against the mock A2A server with real catalog + policy shell (Phase 26 surface) and real wire driver (Phase 22 surface)
 - [ ] If new vocabulary: glossary updated (yes)
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (none departed; route-scoring weights + push-config storage filed as new D-034)
+- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (none departed; route-scoring weights + push-config storage filed as new D-038)

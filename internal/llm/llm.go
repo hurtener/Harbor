@@ -330,7 +330,7 @@ type OutputMode string
 const (
 	// OutputModeUnset is the zero value — operator did not declare the
 	// mode. The downgrade wrapper applies the per-model-prefix default
-	// (see `internal/llm/corrections.defaultOutputModeFor`).
+	// (see `internal/llm/corrections.DefaultOutputModeFor`).
 	OutputModeUnset OutputMode = ""
 	// OutputModeNative — pass `FormatJSONSchema` through. Provider
 	// enforces strict schema mode.
@@ -449,7 +449,7 @@ type ModelProfile struct {
 	// Drives the request-shaping in `internal/llm/output` and the
 	// downgrade chain. See `OutputMode` constants for semantics.
 	// Zero value (`OutputModeUnset`) falls back to the per-known-
-	// provider default (see `corrections.defaultOutputModeFor`).
+	// provider default (see `corrections.DefaultOutputModeFor`).
 	OutputMode OutputMode
 	// DefaultMaxTokens — Phase 36b's identity-tier override target.
 	DefaultMaxTokens *int

@@ -3,6 +3,11 @@ package governance_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,6 +205,185 @@ func TestPreCall_FailsClosedOnMissingIdentity(t *testing.T) {
 	}
 }
 
+// TestWrap_ConcurrentReuse_D025 — N≥100 concurrent Complete calls
+// against ONE shared Wrap instance. Each goroutine carries a unique
+// identity encoded into req.Model; the PreCall + PostCall closures
+// pull identity from ctx and assert the model-tenant correspondence,
+// so any context bleed shows up as a recorded mismatch. Asserts no
+// races (the harness is the gate), no identity bleed, all callbacks
+// fire N times, and goroutine count returns to baseline.
+func TestWrap_ConcurrentReuse_D025(t *testing.T) {
+	// NOT t.Parallel() — the goroutine-count assertion would race with
+	// the sibling TestCompound_ConcurrentReuse_D025's 128-goroutine
+	// burst. Running serially keeps the baseline+current measurement
+	// honest under the D-025 contract.
+	const N = 128
+
+	var (
+		preCalls       atomic.Int64
+		postCalls      atomic.Int64
+		identityBleeds atomic.Int64
+	)
+	sub := &fakeSub{
+		preFn: func(ctx context.Context, req llm.CompleteRequest) error {
+			preCalls.Add(1)
+			q, ok := identity.QuadrupleFrom(ctx)
+			if !ok {
+				identityBleeds.Add(1)
+				return errors.New("missing identity")
+			}
+			if !strings.HasSuffix(req.Model, "-"+q.TenantID) {
+				identityBleeds.Add(1)
+				return fmt.Errorf("identity bleed: tenant=%s model=%s", q.TenantID, req.Model)
+			}
+			return nil
+		},
+		postFn: func(ctx context.Context, req llm.CompleteRequest, _ llm.CompleteResponse, _ error) error {
+			postCalls.Add(1)
+			q, ok := identity.QuadrupleFrom(ctx)
+			if !ok {
+				identityBleeds.Add(1)
+				return errors.New("missing identity")
+			}
+			if !strings.HasSuffix(req.Model, "-"+q.TenantID) {
+				identityBleeds.Add(1)
+				return fmt.Errorf("identity bleed: tenant=%s model=%s", q.TenantID, req.Model)
+			}
+			return nil
+		},
+	}
+	inner := &concurrentStubClient{response: llm.CompleteResponse{Content: "ok"}}
+	client := governance.Wrap(inner, sub)
+
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			tenant := fmt.Sprintf("t%d", i)
+			ctx := ctxWith(t, tenant, "u", "s", fmt.Sprintf("r-%d", i))
+			req := llm.CompleteRequest{Model: fmt.Sprintf("m-%s", tenant)}
+			if _, err := client.Complete(ctx, req); err != nil {
+				t.Errorf("goroutine %d: Complete: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := preCalls.Load(); got != N {
+		t.Errorf("preCalls = %d, want %d", got, N)
+	}
+	if got := postCalls.Load(); got != N {
+		t.Errorf("postCalls = %d, want %d", got, N)
+	}
+	if got := inner.calls.Load(); got != N {
+		t.Errorf("inner.calls = %d, want %d", got, N)
+	}
+	if got := identityBleeds.Load(); got != 0 {
+		t.Errorf("identity bleeds detected: %d", got)
+	}
+
+	runtime.GC()
+	current := runtime.NumGoroutine()
+	if current > baseline+5 {
+		t.Errorf("goroutine count grew: baseline=%d current=%d", baseline, current)
+	}
+}
+
+// TestCompound_ConcurrentReuse_D025 — N≥100 concurrent Pre+PostCall
+// pairs against ONE shared Compound subsystem composed of three
+// members. Asserts every member sees every invocation, no identity
+// bleed at any member, and goroutine count returns to baseline.
+func TestCompound_ConcurrentReuse_D025(t *testing.T) {
+	// NOT t.Parallel() — see TestWrap_ConcurrentReuse_D025 rationale.
+	const N = 128
+
+	var (
+		aPre, aPost atomic.Int64
+		bPre, bPost atomic.Int64
+		cPre, cPost atomic.Int64
+		bleeds      atomic.Int64
+	)
+	checkIdentity := func(ctx context.Context, req llm.CompleteRequest) error {
+		q, ok := identity.QuadrupleFrom(ctx)
+		if !ok {
+			bleeds.Add(1)
+			return errors.New("missing identity")
+		}
+		if !strings.HasSuffix(req.Model, "-"+q.TenantID) {
+			bleeds.Add(1)
+			return fmt.Errorf("identity bleed: tenant=%s model=%s", q.TenantID, req.Model)
+		}
+		return nil
+	}
+	mkMember := func(pre, post *atomic.Int64) *fakeSub {
+		return &fakeSub{
+			preFn: func(ctx context.Context, req llm.CompleteRequest) error {
+				pre.Add(1)
+				return checkIdentity(ctx, req)
+			},
+			postFn: func(ctx context.Context, req llm.CompleteRequest, _ llm.CompleteResponse, _ error) error {
+				post.Add(1)
+				return checkIdentity(ctx, req)
+			},
+		}
+	}
+	comp := governance.NewCompound(
+		mkMember(&aPre, &aPost),
+		mkMember(&bPre, &bPost),
+		mkMember(&cPre, &cPost),
+	)
+
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			tenant := fmt.Sprintf("t%d", i)
+			ctx := ctxWith(t, tenant, "u", "s", fmt.Sprintf("r-%d", i))
+			req := llm.CompleteRequest{Model: fmt.Sprintf("m-%s", tenant)}
+			if err := comp.PreCall(ctx, req); err != nil {
+				t.Errorf("goroutine %d: PreCall: %v", i, err)
+				return
+			}
+			// PostCall is observability-only; a non-nil joined error from
+			// member identity-bleed checks would surface here.
+			if err := comp.PostCall(ctx, req, llm.CompleteResponse{}, nil); err != nil {
+				t.Errorf("goroutine %d: PostCall: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for name, counters := range map[string][2]int64{
+		"a": {aPre.Load(), aPost.Load()},
+		"b": {bPre.Load(), bPost.Load()},
+		"c": {cPre.Load(), cPost.Load()},
+	} {
+		if counters[0] != N {
+			t.Errorf("member %s: preCalls = %d, want %d", name, counters[0], N)
+		}
+		if counters[1] != N {
+			t.Errorf("member %s: postCalls = %d, want %d", name, counters[1], N)
+		}
+	}
+	if got := bleeds.Load(); got != 0 {
+		t.Errorf("identity bleeds detected: %d", got)
+	}
+
+	runtime.GC()
+	current := runtime.NumGoroutine()
+	if current > baseline+5 {
+		t.Errorf("goroutine count grew: baseline=%d current=%d", baseline, current)
+	}
+}
+
 // --- helpers ---------------------------------------------------------
 
 type fakeSub struct {
@@ -236,3 +420,18 @@ func (s *stubClient) Complete(_ context.Context, _ llm.CompleteRequest) (llm.Com
 }
 
 func (s *stubClient) Close(_ context.Context) error { return nil }
+
+// concurrentStubClient is the D-025-safe variant of stubClient — uses
+// atomic.Int64 for the call counter so the inner client can be shared
+// across N goroutines without racing.
+type concurrentStubClient struct {
+	response llm.CompleteResponse
+	calls    atomic.Int64
+}
+
+func (s *concurrentStubClient) Complete(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	s.calls.Add(1)
+	return s.response, nil
+}
+
+func (s *concurrentStubClient) Close(_ context.Context) error { return nil }

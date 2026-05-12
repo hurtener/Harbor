@@ -588,16 +588,15 @@ func TestCorrections_ConcurrentReuse_D025(t *testing.T) {
 		t.Errorf("recorded request missing reasoning_effort in Extra")
 	}
 
-	// Wait for the goroutine count to settle (allow up to 1s for
-	// scheduler quiescence). The corrections wrapper itself spawns
-	// no goroutines, but the test's own goroutines may take a tick
-	// to retire.
-	for i := 0; i < 100; i++ {
-		if runtime.NumGoroutine() <= baseline+2 {
-			break
-		}
+	// Wait for the goroutine count to settle. The corrections
+	// wrapper itself spawns no goroutines, but the test's own
+	// goroutines may take a tick to retire. Bounded by a real-time
+	// deadline; per AGENTS.md §11 we don't use time.Sleep for
+	// synchronisation — Gosched yields cooperatively while the
+	// deadline caps wall-clock cost.
+	deadline := time.Now().Add(1 * time.Second)
+	for runtime.NumGoroutine() > baseline+2 && time.Now().Before(deadline) {
 		runtime.Gosched()
-		time.Sleep(10 * time.Millisecond)
 	}
 	if got := runtime.NumGoroutine(); got > baseline+5 {
 		t.Errorf("goroutine count: got %d, baseline %d (corrections wrapper leaked)", got, baseline)

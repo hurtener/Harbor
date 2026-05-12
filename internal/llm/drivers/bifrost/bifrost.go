@@ -2,7 +2,6 @@ package bifrost
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -317,8 +316,3 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 	return identity.Quadruple{Identity: id}
 }
 
-// errKnownBifrost — a sentinel for tests that want to assert on a
-// translated bifrost error. Production wraps the bifrost message; the
-// tests compare via `errors.Is`. Kept here (rather than in
-// `translate.go`) because it's only used by the test helpers.
-var errKnownBifrost = errors.New("bifrost: known error")

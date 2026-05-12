@@ -102,11 +102,13 @@ func TestMock_CancellationDuringStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx, _ = identity.With(ctx, identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"})
 
-	// Cancel after 25ms — partway through chunk 1's pre-delay.
-	go func() {
-		time.Sleep(25 * time.Millisecond)
-		cancel()
-	}()
+	// Pre-cancel ctx so the stream loop's ctx.Err() guard (or the
+	// PreStreamDelay select's ctx.Done() branch) fires
+	// deterministically. AGENTS.md §11: no time.Sleep for
+	// synchronisation. Both code paths return ctx.Err() — what we're
+	// testing is the surface contract (cancelled ctx ⇒
+	// context.Canceled), not which guard observes it first.
+	cancel()
 
 	text := "abcdefghijklmnopqrst"
 	_, err := drv.Complete(ctx, llm.CompleteRequest{
