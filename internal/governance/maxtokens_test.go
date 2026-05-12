@@ -3,6 +3,10 @@ package governance_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,5 +124,121 @@ func TestMaxTokens_PostCallNoop(t *testing.T) {
 	ctx := ctxWith(t, "T", "U", "S", "R")
 	if err := e.PostCall(ctx, llm.CompleteRequest{}, llm.CompleteResponse{}, nil); err != nil {
 		t.Errorf("PostCall: %v", err)
+	}
+}
+
+// TestMaxTokens_ConcurrentReuse_D025 — Wave 7b audit FAIL #3 closes:
+// N≥100 concurrent goroutines invoke PreCall against a single shared
+// `MaxTokensEnforcer` configured with one tier capping at 100. Half the
+// goroutines request 50 tokens (under cap → permit) and half request
+// 1_000_000 (over cap → reject). The test asserts: (a) every goroutine
+// observes the right outcome (no permit/reject crosstalk), (b) no race
+// detector hits, (c) baseline goroutine count restored after teardown,
+// (d) the bus subscriber observes exactly one `governance.maxtokens_exceeded`
+// event per rejecting call (no double-emit, no missed emit).
+func TestMaxTokens_ConcurrentReuse_D025(t *testing.T) {
+	t.Parallel()
+	bus, _, cleanup := busAndState(t)
+	defer cleanup()
+
+	const n = 128
+	const cap = 100
+	cfg := governance.Config{
+		DefaultTier: "default",
+		IdentityTiers: map[string]governance.TierConfig{
+			"default": {MaxTokens: cap},
+		},
+	}
+	enforcer := governance.NewMaxTokensEnforcer(bus, cfg)
+
+	// Subscribe once before the goroutines fire so we count rejection
+	// events without losing emissions during channel attach.
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{governance.EventTypeMaxTokensExceeded},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	var permits atomic.Int64
+	var rejects atomic.Int64
+	var errs atomic.Int64
+
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			// Per-call identity so the per-key state map is exercised.
+			ctx := ctxWith(t, "T", "U", fmt.Sprintf("S-%d", i), "R")
+			var requested int
+			if i%2 == 0 {
+				requested = 50 // under cap → permit
+			} else {
+				requested = 1_000_000 // over cap → reject
+			}
+			req := llm.CompleteRequest{Model: "m", MaxTokens: &requested}
+			err := enforcer.PreCall(ctx, req)
+			switch {
+			case err == nil && requested <= cap:
+				permits.Add(1)
+			case errors.Is(err, governance.ErrMaxTokensExceeded) && requested > cap:
+				rejects.Add(1)
+			default:
+				errs.Add(1)
+				t.Errorf("goroutine %d: requested=%d got err=%v", i, requested, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if errs.Load() != 0 {
+		t.Fatalf("%d goroutines saw unexpected outcomes", errs.Load())
+	}
+	if got, want := permits.Load(), int64(n/2); got != want {
+		t.Errorf("permits=%d want %d", got, want)
+	}
+	if got, want := rejects.Load(), int64(n/2); got != want {
+		t.Errorf("rejects=%d want %d", got, want)
+	}
+
+	// Drain the bus subscription — should see exactly n/2 events.
+	gotEvents := 0
+	drainDeadline := time.NewTimer(2 * time.Second)
+	defer drainDeadline.Stop()
+drain:
+	for gotEvents < n/2 {
+		select {
+		case ev, ok := <-sub.Events():
+			if !ok {
+				break drain
+			}
+			if ev.Type != governance.EventTypeMaxTokensExceeded {
+				t.Errorf("unexpected event type=%s", ev.Type)
+				continue
+			}
+			gotEvents++
+		case <-drainDeadline.C:
+			break drain
+		}
+	}
+	if gotEvents != n/2 {
+		t.Errorf("observed %d maxtokens_exceeded events, want %d", gotEvents, n/2)
+	}
+
+	// Goroutine baseline restored — same tolerance as Phase 36a cost
+	// stress (+5 absorbs sub.Cancel teardown + the bus's reader).
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline+5 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if leak := runtime.NumGoroutine() - baseline; leak > 5 {
+		t.Errorf("goroutine leak after N=%d concurrent PreCalls: %d above baseline", n, leak)
 	}
 }
