@@ -54,6 +54,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`BusEnvelope`** — the unit `MessageBus.Publish` accepts. Carries the identity quadruple, task ID, edge / source / target labels, the (pre-redacted) payload bytes, a caller-supplied `EventID` for idempotency keying, headers + metadata, and a timestamp. Identity-mandatory; consumers MUST be idempotent on `(TaskID, Edge, EventID)`. RFC §6.12, D-031.
 
+**BifrostDriver** — Harbor's adapter (Phase 33) that wires `github.com/maximhq/bifrost/core` (the pure-Go LLM gateway settled by RFC §11 Q-3 / brief 08) behind `llm.Driver`. Self-registers under `"bifrost"`; blank-imported in `cmd/harbor`. Thin translation layer: `CompleteRequest` ↔ `BifrostChatRequest`, multimodal `ContentPart` → bifrost's `ChatContentBlock` shapes, cost passthrough → `llm.cost.recorded` emit. Provider-native tool-calling fields are intentionally never set (RFC §6.4 / brief 07; the Phase 32 smoke static guard enforces).
+
+**BifrostContext** — `*schemas.BifrostContext`, bifrost's custom `context.Context` implementation that tracks user-set values and propagates cancellation. Harbor constructs one per `Complete` via `schemas.NewBifrostContext(ctx, schemas.NoDeadline)`. Wraps Harbor's parent ctx so cancellation propagates upstream; bifrost's internal goroutines exit when the upstream HTTP body completes (brief 08 §"Cancellation caveat").
+
 ## C
 
 **`Cancel(runID)`** — `Engine` method (Phase 13) that idempotently cancels a run: sets a per-run cancellation flag, drops queued envelopes for that run from every channel, cancels in-flight worker invocations, drains the egress subqueue, releases capacity waiters. Returns `(bool, error)` — `true` if the run was active. Cancellation is remembered for a bounded TTL (default 60s) so an `Emit` landing just after `Cancel` is rejected with `ErrRunCancelled`. RFC §6.1, brief 01 §4.
@@ -219,6 +223,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`NodePolicy`** — Per-node reliability config: `Validate`, `TimeoutMS`, `MaxRetries`, `BackoffBase`/`Mult`/`MaxBackoff`, `ValidateFunc`, `RunCapacity` (Phase 12). Zero value is "no policy" (Phase 10's bare worker). Sensible defaults are set explicitly, not silently — fail-loud per AGENTS.md §5. RFC §6.1.
 
 ## P
+
+**ProviderRouting** — the per-Harbor-instance bifrost provider selection (`LLMConfig.Provider`). Phase 33 V1 supports one configured provider per Harbor binary; the operator's `harbor.yaml` names the bifrost provider (e.g. `openrouter`, `openai`, `anthropic`) and the per-model `LLMConfig.ModelProfiles` keys carry the upstream identifier. Multi-provider routing per Harbor instance is a post-V1 consideration; if a deployment needs multiple LLM endpoints, an operator runs multiple Harbor instances.
 
 **`ApplyPatch`** — registry action for accepting or rejecting a pending context patch (proposed by a planner / human reviewer). Patches transition `pending → applied | rejected` through the `TaskRegistry`'s typed surface (Phase 21). The patch payload is opaque bytes (the actual context-patch shape lives at the planner, Phase 42+); the registry stores + retrieves. Emits `task.patch_applied` or `task.patch_rejected` on a real transition; idempotent re-apply returns `(false, nil)`. RFC §6.8.
 

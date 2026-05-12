@@ -49,7 +49,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50                | 85%  | Pending  |
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Shipped  |
-| 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Pending  |
+| 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
 | 34 | Provider correction layer (one mode, baked)   | llm                  | §6.5        | 33                    | 80%  | Pending  |
 | 35 | Structured output strategies + downgrade      | llm                  | §6.5        | 33, 34                | 85%  | Pending  |
 | 36 | Retry with feedback                           | llm                  | §6.5        | 35                    | 85%  | Pending  |

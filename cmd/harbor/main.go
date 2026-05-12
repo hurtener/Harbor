@@ -30,6 +30,8 @@ import (
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	// LLM driver — Phase 33 bifrost-backed LLMClient, registered via init().
+	_ "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	// Memory driver — Phase 25 Postgres MemoryStore, registered via init().
