@@ -43,6 +43,7 @@ func (c *Config) Validate() error {
 		c.validateTasks,
 		c.validateDistributed,
 		c.validateMemory,
+		c.validateSkills,
 		c.validateTools,
 	}
 	for _, v := range validators {
@@ -612,6 +613,49 @@ func (c *Config) validateMemory() error {
 	}
 	if c.Memory.RecoveryBacklogMax < 0 {
 		return fieldError("memory.recovery_backlog_max", "must be >= 0")
+	}
+	return nil
+}
+
+// allowedSkillsDrivers is the V1 skills-driver allowlist. Phase 37
+// ships only `"localdb"`. Phase 49 (Portico) will add `"portico"`.
+var allowedSkillsDrivers = map[string]struct{}{
+	"localdb": {},
+}
+
+// skillsDriversRequiringDSN names the drivers whose `DSN` field must
+// be supplied. Mirrors `memoryDriversRequiringDSN`.
+var skillsDriversRequiringDSN = map[string]struct{}{
+	"localdb": {},
+}
+
+// validateSkills validates the optional `skills:` block. The block
+// is fully optional at the config layer — an empty SkillsConfig
+// passes silently and the skills subsystem stays uninitialised. The
+// runtime wiring decides whether `skills.Open` is called; that path
+// fails loudly on its own when handed an empty DSN.
+//
+// When the operator HAS supplied any skills field, the validator
+// enforces driver-allowlist + driver-requires-DSN.
+func (c *Config) validateSkills() error {
+	if c.Skills.Driver == "" && c.Skills.DSN == "" {
+		return nil
+	}
+	if c.Skills.Driver == "" {
+		return fieldError("skills.driver",
+			"must not be empty when any skills field is set")
+	}
+	if _, ok := allowedSkillsDrivers[c.Skills.Driver]; !ok {
+		return fieldError("skills.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedSkillsDrivers), c.Skills.Driver))
+	}
+	if _, needsDSN := skillsDriversRequiringDSN[c.Skills.Driver]; needsDSN {
+		if c.Skills.DSN == "" {
+			return fieldError("skills.dsn",
+				fmt.Sprintf("must not be empty when driver=%q (use \":memory:\" for ephemeral)",
+					c.Skills.Driver))
+		}
 	}
 	return nil
 }
