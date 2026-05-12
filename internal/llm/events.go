@@ -43,6 +43,10 @@ const (
 	// Phase 32 registers the type as a forward-compat seam; no
 	// downgrade logic ships in Phase 32.
 	EventTypeModeDowngraded events.EventType = "llm.mode_downgraded"
+	// EventTypeRetryWithFeedback (Phase 36) — emitted by the retry
+	// wrapper per corrective re-ask. Carries the attempt index and a
+	// truncated `Reason` derived from the validator's error.
+	EventTypeRetryWithFeedback events.EventType = "llm.retry_with_feedback"
 )
 
 func init() {
@@ -52,6 +56,7 @@ func init() {
 		EventTypeContextWindowExceeded,
 		EventTypeCostRecorded,
 		EventTypeModeDowngraded,
+		EventTypeRetryWithFeedback,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -114,14 +119,33 @@ type CostRecordedPayload struct {
 }
 
 // ModeDowngradedPayload is the typed payload for
-// EventTypeModeDowngraded. Phase 35 fills the From/To fields; Phase
-// 32 registers the type only.
+// EventTypeModeDowngraded. Phase 35 fills the From/To/Reason fields.
+// `FromMode` / `ToMode` carry the Harbor-side `OutputMode` (Native /
+// Tools / Prompted / text); `From` / `To` carry the resolved
+// `ResponseFormatKind` for backward visibility.
 type ModeDowngradedPayload struct {
 	events.SafeSealed
 	Identity   identity.Quadruple
 	Model      string
+	FromMode   OutputMode
+	ToMode     OutputMode
 	From       ResponseFormatKind
 	To         ResponseFormatKind
+	Reason     string
+	OccurredAt time.Time
+}
+
+// RetryWithFeedbackPayload (Phase 36) is the typed payload for
+// EventTypeRetryWithFeedback. SafePayload — `Attempt` is the 1-based
+// retry index (1 = first re-ask after the original); `Reason` is the
+// validator's truncated `Error()` string. The wrapper truncates
+// Reason at 256 characters to keep audit payloads bounded.
+type RetryWithFeedbackPayload struct {
+	events.SafeSealed
+	Identity   identity.Quadruple
+	Model      string
+	Attempt    int
+	MaxRetries int
 	Reason     string
 	OccurredAt time.Time
 }

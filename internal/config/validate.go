@@ -230,8 +230,36 @@ func (c *Config) validateLLM() error {
 				return err
 			}
 		}
+		// Phase 35 — JSONSchemaMode is the legacy operator-facing string
+		// that the snapshot normalises into `llm.OutputMode`. Validate
+		// the enum here so operators get a useful error at boot.
+		if _, ok := allowedJSONSchemaModes[prof.JSONSchemaMode]; !ok {
+			return fieldError(
+				fmt.Sprintf("llm.model_profiles[%q].json_schema_mode", name),
+				fmt.Sprintf("must be one of \"\", \"native\", \"tools\", \"prompted\"; got %q", prof.JSONSchemaMode),
+			)
+		}
+		// Phase 36 — MaxRetries must be non-negative.
+		if prof.MaxRetries < 0 {
+			return fieldError(
+				fmt.Sprintf("llm.model_profiles[%q].max_retries", name),
+				fmt.Sprintf("must be >= 0, got %d", prof.MaxRetries),
+			)
+		}
 	}
 	return nil
+}
+
+// allowedJSONSchemaModes is the enum allowlist for
+// `LLMModelProfileConfig.JSONSchemaMode`. Empty string is the
+// "operator did not declare" sentinel — the snapshot's
+// `applyDefaults` will fall back to the per-provider default
+// `llm.OutputMode` via `corrections.DefaultOutputModeFor`.
+var allowedJSONSchemaModes = map[string]struct{}{
+	"":         {},
+	"native":   {},
+	"tools":    {},
+	"prompted": {},
 }
 
 // allowedMessageOrderings is the enum allowlist for

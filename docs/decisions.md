@@ -416,6 +416,33 @@ Sub-second `Timeout` values get rounded down to zero by bifrost's `int(seconds)`
 
 ---
 
+## D-043 — LLM-edge compose order: `retry(downgrade(corrections(safety(driver))))`; `OutputMode.Tools` is Harbor-side prompted output, not provider tool-calling; `Validator` is a `CompleteRequest` field
+
+**Date:** 2026-05-12
+**Status:** Settled
+**Where it lives:** RFC §6.5, `docs/plans/phase-35-structured-output.md`, `docs/plans/phase-36-retry-feedback.md`, `internal/llm/llm.go` (`OutputMode` enum + `CompleteRequest.Validator` field + `ModelProfile.OutputMode`/`MaxRetries`), `internal/llm/registry.go` (`RegisterDowngradeWrapper` + `RegisterRetryWrapper` + the compose chain in `Open`), `internal/llm/output/` (downgrade wrapper), `internal/llm/retry/` (retry wrapper), `internal/llm/errors.go` (`IsInvalidJSONSchemaError` + new sentinels), `internal/llm/events.go` (`ModeDowngradedPayload` + `RetryWithFeedbackPayload`), brief 03 §6, brief 07.
+
+**Why:** Phases 35 + 36 ship two new wrappers on top of Phase 32's `safetyClient` and Phase 34's `corrections.Wrap`. Three design calls warrant a settled entry.
+
+1. **Compose order — `retry(downgrade(corrections(safety(driver))))`.** Three principles drive the order, outermost first:
+   - **Retry is outermost.** A validator-driven retry appends a corrective user turn to the conversation; the new turn must flow through corrections + downgrade + safety on each attempt. Corrections normalize message ordering (NIM rejects mid-thread system) — if retry sat INSIDE corrections, the corrected message slice would be augmented with the corrective turn AFTER the reorder, breaking the invariant on the second attempt.
+   - **Downgrade sits between retry and corrections.** A downgrade rewrites `ResponseFormat` (e.g. `json_schema` → `json_object` + system-prompt instruction); corrections then re-shape the per-provider envelope for the rewritten format (Anthropic envelope translation; JSONOnly stash-the-schema hint). If downgrade sat INSIDE corrections, the corrections layer would only see the ORIGINAL format; the downgraded format would skip the per-provider shaping.
+   - **Corrections sit between downgrade and safety.** Settled by D-041. The safety net (D-039 / mandatory-by-construction) sees the post-corrections request — leak-detection and the token-budget guard apply to the final outgoing payload regardless of whether downgrade or retry rewrote it.
+
+   The chain is composed in `llm.Open` via three write-once hooks: `RegisterCorrectionsWrapper` (Phase 34), `RegisterDowngradeWrapper` (Phase 35), `RegisterRetryWrapper` (Phase 36). The wrappers self-register via `init()` in their respective sub-packages; `cmd/harbor/main.go` blank-imports them. The `ConfigSnapshot.DisableDowngrade` / `DisableRetry` inverse-named knobs (zero-value = enabled) let tests exercise lower layers in isolation.
+
+2. **`OutputMode.Tools` is a Harbor-side prompted-output strategy, NOT provider tool-calling.** RFC §6.4 + brief 07 keep tool dispatch runtime-side. `OutputMode.Tools` asks the model to emit `{"name":"respond_with","arguments":{...}}` as plain JSON output (parsed locally by the runtime); the bifrost driver never sees provider-native `tools=` / `tool_choice=` / `function_call` / `tool_use` parameters. The static guard in `scripts/smoke/phase-35.sh` greps `internal/llm/output/` for the canonical provider-tool-call symbol names; a leak fails the smoke. The package godoc names the boundary explicitly so future readers don't reintroduce the violation by reaching for bifrost's native tool-call API.
+
+3. **`Validator` is a field on `CompleteRequest`, not a separate method.** Two alternatives were considered: (a) `Validator func(CompleteResponse) error` field on `CompleteRequest` — the retry wrapper runs the loop internally; (b) a `client.Validate(resp) error` method on `LLMClient` — callers run the loop themselves. Option (a) wins because Phase 36a / governance wraps the OUTER client with `PreCall` / `PostCall` hooks — the retry loop must stay INSIDE the governance wrapper so each retry's call counts against the identity budget. Surfacing the loop as a caller-driven `Validate` method would leak retry semantics to governance and require every caller to re-implement the bounded loop. The field-on-request shape also lets the validator be `nil` (the common case) — the wrapper becomes a pure pass-through with one branch.
+
+The wrapper's corrective-sub-prompt template ships fixed at Phase 36: assistant turn echoes the rejected content; a user turn says "Your previous response failed validation: <truncated reason>. Please respond again, addressing this issue exactly." Tuning is post-V1 — operators who need a different template can shadow-wrap the retry layer in their own code.
+
+`IsInvalidJSONSchemaError` is the boundary the downgrade wrapper uses to classify driver errors. The classifier checks (1) `errors.Is(err, ErrInvalidJSONSchema)` for drivers that wrap with the sentinel, and (2) a small case-insensitive substring allowlist (`json_schema`, `json schema`, `invalid schema`, `schema validation`, `response_format`, `response format`, `structured output`, `json mode`, `json_object`). The allowlist is deliberately narrow to avoid false-positive downgrades on transient / auth / 5xx failures. Drivers can tighten the classification by wrapping their provider-specific schema errors with `ErrInvalidJSONSchema` — Phase 33's bifrost driver is a §17.6 follow-up candidate.
+
+`ResponseFormatProfile.ResponseFormatJSONOnly` (Phase 34) and `OutputMode.Prompted` (Phase 35) are deliberately distinct concepts. JSONOnly is a corrections-layer per-provider quirk: "this provider rejects `json_schema` at the wire level, surface schema as `Extra["schema_hint"]`." Prompted is a Harbor-side output-mode strategy: "skip native schema enforcement entirely, instruct the model to emit JSON matching the schema via system prompt." They compose: a Prompted request flowing through a JSONOnly profile would have the schema both in the system prompt (Prompted's job) and in `Extra["schema_hint"]` (JSONOnly's job, when a `FormatJSONSchema` survives). Operators who want one or the other (not both) set OutputMode and leave the corrections profile default, or vice versa.
+
+---
+
 <!--
 Append new entries below this line in the form:
 

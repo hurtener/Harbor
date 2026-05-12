@@ -154,10 +154,10 @@ func (c *client) Close(ctx context.Context) error {
 //
 // Order is deterministic and matches the data-flow direction:
 //
-//	1. message reordering   — operates on `req.Messages`
-//	2. schema sanitization  — operates on `req.ResponseFormat.JSONSchema`
-//	3. reasoning routing    — operates on `req.ReasoningEffort` / `Extra`
-//	4. response-format shape — operates on `req.ResponseFormat` / `Extra`
+//  1. message reordering   — operates on `req.Messages`
+//  2. schema sanitization  — operates on `req.ResponseFormat.JSONSchema`
+//  3. reasoning routing    — operates on `req.ReasoningEffort` / `Extra`
+//  4. response-format shape — operates on `req.ResponseFormat` / `Extra`
 //
 // Steps 3 and 4 read `req.Extra`; we always allocate a fresh map so
 // concurrent callers cannot share map state.

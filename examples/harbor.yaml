@@ -59,10 +59,22 @@ llm:
       # Estimator algorithm. "" or "chars_div_4" — default
       # chars/4 + per-message overhead.
       token_estimator: chars_div_4
-      # Phase 35 reads ("native" / "tools" / "prompted"). The
-      # downgrade chain `json_schema → json_object → text` fires
-      # off of this knob; Phase 32 stores it opaque.
+      # Phase 35 — structured-output strategy. Allowed values:
+      #   ""         → fall back to per-known-provider default
+      #                 (OpenAI/Anthropic/Google → "native";
+      #                  NIM/custom OpenAI-compat → "prompted";
+      #                  o1/o3/deepseek-reasoner → "prompted")
+      #   "native"   → pass FormatJSONSchema through to the provider
+      #   "tools"    → Harbor-side prompted envelope (NOT provider
+      #                tool-calling APIs); runtime parses locally
+      #   "prompted" → FormatJSONObject + schema in system prompt
+      # The downgrade chain `native → prompted → text` fires on
+      # `IsInvalidJSONSchemaError` failures.
       json_schema_mode: native
+      # Phase 36 — caps the validator-driven retry-with-feedback loop
+      # for this model. 0 (default) → DefaultMaxRetries (1). The
+      # wrapper is a no-op when `req.Validator` is nil.
+      # max_retries: 1
       # Phase 36b reads — identity-tier MaxTokens default.
       # default_max_tokens: 4096
       # Phase 33 routes — "off" / "low" / "medium" / "high" / "".

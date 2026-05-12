@@ -76,6 +76,17 @@ type ConfigSnapshot struct {
 	// yaml field (default true) into this inverse.
 	DisableCorrections bool
 
+	// DisableDowngrade opts OUT of the Phase 35 structured-output
+	// downgrade chain. Zero-value (false) = enabled. Inverse-named so
+	// production callers get the right behaviour by default.
+	DisableDowngrade bool
+
+	// DisableRetry opts OUT of the Phase 36 retry-with-feedback
+	// wrapper. Zero-value (false) = enabled. The wrapper is a no-op
+	// when `CompleteRequest.Validator` is nil, so disabling is only
+	// useful for tests that need to isolate the downgrade layer.
+	DisableRetry bool
+
 	// Bifrost-driver knobs (Phase 33).
 	Provider string
 	Model    string
@@ -159,6 +170,10 @@ const DefaultDriver = "mock"
 const (
 	DefaultContextWindowReserve = 0.05   // 5%
 	DefaultHeavyOutputThreshold = 32_768 // 32 KiB; matches D-022 / RFC §6.10
+	// DefaultMaxRetries (Phase 36) — the retry-with-feedback bound
+	// when `ModelProfile.MaxRetries` is zero. Conservative: one
+	// corrective re-ask after the original attempt.
+	DefaultMaxRetries = 1
 )
 
 var (
@@ -172,6 +187,17 @@ var (
 	// nil and Open() returns the safetyClient verbatim.
 	correctionsWrapperMu sync.RWMutex
 	correctionsWrapper   func(LLMClient, ConfigSnapshot) LLMClient
+
+	// downgradeWrapperMu guards downgradeWrapper. Phase 35's output
+	// package self-registers via init(); blank-imported in
+	// `cmd/harbor/main.go`.
+	downgradeWrapperMu sync.RWMutex
+	downgradeWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
+
+	// retryWrapperMu guards retryWrapper. Phase 36's retry package
+	// self-registers via init().
+	retryWrapperMu sync.RWMutex
+	retryWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
 )
 
 // RegisterCorrectionsWrapper installs the Phase 34 corrections
@@ -206,6 +232,61 @@ func resetCorrectionsWrapperForTesting() {
 	correctionsWrapperMu.Lock()
 	defer correctionsWrapperMu.Unlock()
 	correctionsWrapper = nil
+}
+
+// RegisterDowngradeWrapper installs the Phase 35 structured-output
+// downgrade wrapper hook. Called once from
+// `internal/llm/output.init()`; the production binary blank-imports
+// `internal/llm/output` so the registration fires at boot.
+//
+// The hook receives the inner `LLMClient` (typically `corrections(safety(driver))`),
+// the config snapshot, and the Deps so the wrapper can emit events
+// on the shared bus.
+//
+// Re-registering panics — write-once-at-init.
+func RegisterDowngradeWrapper(fn func(LLMClient, ConfigSnapshot, Deps) LLMClient) {
+	if fn == nil {
+		panic("llm: RegisterDowngradeWrapper called with nil hook")
+	}
+	downgradeWrapperMu.Lock()
+	defer downgradeWrapperMu.Unlock()
+	if downgradeWrapper != nil {
+		panic("llm: downgrade wrapper already registered")
+	}
+	downgradeWrapper = fn
+}
+
+//nolint:unused // referenced by tests in same package.
+func resetDowngradeWrapperForTesting() {
+	downgradeWrapperMu.Lock()
+	defer downgradeWrapperMu.Unlock()
+	downgradeWrapper = nil
+}
+
+// RegisterRetryWrapper installs the Phase 36 retry-with-feedback
+// wrapper hook. Called once from `internal/llm/retry.init()`; the
+// production binary blank-imports `internal/llm/retry`.
+//
+// The hook signature mirrors `RegisterDowngradeWrapper`.
+//
+// Re-registering panics — write-once-at-init.
+func RegisterRetryWrapper(fn func(LLMClient, ConfigSnapshot, Deps) LLMClient) {
+	if fn == nil {
+		panic("llm: RegisterRetryWrapper called with nil hook")
+	}
+	retryWrapperMu.Lock()
+	defer retryWrapperMu.Unlock()
+	if retryWrapper != nil {
+		panic("llm: retry wrapper already registered")
+	}
+	retryWrapper = fn
+}
+
+//nolint:unused // referenced by tests in same package.
+func resetRetryWrapperForTesting() {
+	retryWrapperMu.Lock()
+	defer retryWrapperMu.Unlock()
+	retryWrapper = nil
 }
 
 // Register installs a driver factory under `name`. Drivers self-
@@ -291,11 +372,7 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 
 	// Phase 34: compose corrections OUTSIDE the safety wrapper so the
 	// safety pass sees the post-correction (final outgoing) payload.
-	// D-041 settled the order: corrections → safety → driver. The
-	// hook is set by `internal/llm/corrections.init()`; blank-imported
-	// in `cmd/harbor/main.go` so production builds always have it.
-	// Tests that need safety-only construction set
-	// `cfg.CorrectionsEnabled = false`.
+	// D-041 settled the order.
 	if !cfg.DisableCorrections {
 		correctionsWrapperMu.RLock()
 		wrap := correctionsWrapper
@@ -304,11 +381,39 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 			client = wrap(client, cfg)
 		}
 	}
+
+	// Phase 35: downgrade composes OUTSIDE corrections. A downgrade
+	// rewrites `ResponseFormat`; the corrections layer must re-apply
+	// its per-provider envelope shaping to the new format on each
+	// downgraded attempt. D-043 settles this order.
+	if !cfg.DisableDowngrade {
+		downgradeWrapperMu.RLock()
+		wrap := downgradeWrapper
+		downgradeWrapperMu.RUnlock()
+		if wrap != nil {
+			client = wrap(client, cfg, deps)
+		}
+	}
+
+	// Phase 36: retry-with-feedback composes OUTSIDE downgrade. A
+	// validator-driven retry adds a fresh corrective turn to the
+	// messages; the new message sequence flows through downgrade +
+	// corrections + safety on each attempt. D-043 settles this order.
+	if !cfg.DisableRetry {
+		retryWrapperMu.RLock()
+		wrap := retryWrapper
+		retryWrapperMu.RUnlock()
+		if wrap != nil {
+			client = wrap(client, cfg, deps)
+		}
+	}
 	return client, nil
 }
 
 // applyDefaults populates zero-valued fields with the Phase 32
-// defaults. Cheap; idempotent.
+// defaults. Cheap; idempotent. Also normalises Phase 35's
+// `JSONSchemaMode` string into the typed `OutputMode` so the rest of
+// the stack reads one source of truth.
 func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 	if cfg.Driver == "" {
 		cfg.Driver = DefaultDriver
@@ -318,6 +423,29 @@ func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 	}
 	if cfg.HeavyOutputThreshold == 0 {
 		cfg.HeavyOutputThreshold = DefaultHeavyOutputThreshold
+	}
+	if cfg.ModelProfiles != nil {
+		// Normalise per-profile fields. ModelProfile is value-typed
+		// so we copy before mutating to preserve the caller's map
+		// values.
+		normalised := make(map[string]ModelProfile, len(cfg.ModelProfiles))
+		for name, p := range cfg.ModelProfiles {
+			if p.OutputMode == OutputModeUnset && p.JSONSchemaMode != "" {
+				switch p.JSONSchemaMode {
+				case "native":
+					p.OutputMode = OutputModeNative
+				case "tools":
+					p.OutputMode = OutputModeTools
+				case "prompted":
+					p.OutputMode = OutputModePrompted
+				}
+			}
+			if p.MaxRetries == 0 {
+				p.MaxRetries = DefaultMaxRetries
+			}
+			normalised[name] = p
+		}
+		cfg.ModelProfiles = normalised
 	}
 	return cfg
 }
@@ -338,6 +466,16 @@ func validateSnapshot(cfg ConfigSnapshot) error {
 		if p.ContextWindowTokens <= 0 {
 			return fmt.Errorf("%w: ModelProfiles[%q].ContextWindowTokens=%d must be > 0",
 				ErrInvalidConfig, name, p.ContextWindowTokens)
+		}
+		if p.MaxRetries < 0 {
+			return fmt.Errorf("%w: ModelProfiles[%q].MaxRetries=%d must be >= 0",
+				ErrInvalidConfig, name, p.MaxRetries)
+		}
+		switch p.OutputMode {
+		case OutputModeUnset, OutputModeNative, OutputModeTools, OutputModePrompted:
+		default:
+			return fmt.Errorf("%w: ModelProfiles[%q].OutputMode=%q is unknown",
+				ErrInvalidConfig, name, p.OutputMode)
 		}
 	}
 	return nil
