@@ -65,8 +65,10 @@ const (
 )
 
 // Config is the operator-supplied configuration for one MCP
-// attachment. Construct via the config package's
-// `MCPServerConfig` shape and convert with `NewConfigFrom`.
+// attachment. Operator-facing fields map 1:1 to the
+// `config.MCPServerConfig` yaml shape; the runtime entry point
+// (cmd/harbor wiring, future phase) is responsible for the
+// projection.
 type Config struct {
 	// Name is the unique source ID prefix. Empty rejects with
 	// ErrInvalidConfig.
