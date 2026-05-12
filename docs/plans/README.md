@@ -57,7 +57,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 36a| Cost accumulator + per-identity ceilings      | governance           | §6.15       | 11, 15, 33            | 85%  | Shipped  |
 | 36b| Per-identity rate limits + per-call MaxTokens | governance           | §6.15       | 36a                   | 85%  | Shipped  |
 | 37 | Skill store + LocalDB driver + FTS5 ladder    | skills               | §6.7        | 01, 07, 15            | 85%  | Shipped  |
-| 38 | Skill planner tools (search/get/list)         | skills/tools         | §6.7        | 26, 37                | 85%  | Pending  |
+| 38 | Skill planner tools (search/get/list)         | skills/tools         | §6.7        | 26, 37                | 85%  | Shipped  |
 | 39 | Virtual directory subsystem                   | skills               | §6.7        | 37                    | 80%  | Pending  |
 | 40 | Skills.md importer (gap-closer)               | skills/importer      | §6.7        | 37                    | 90%  | Pending  |
 | 41 | In-runtime skill generator with persistence   | skills/generator     | §6.7        | 37, 38, 03            | 90%  | Pending  |

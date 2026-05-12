@@ -376,9 +376,9 @@ func TestE2E_Phase14_Subflow_FactoryError(t *testing.T) {
 	})
 
 	in := messages.Envelope{
-		Headers: messages.Headers{TenantID: id.TenantID, UserID: id.UserID},
+		Headers:   messages.Headers{TenantID: id.TenantID, UserID: id.UserID},
 		SessionID: id.SessionID,
-		RunID: "R-factory-err",
+		RunID:     "R-factory-err",
 	}
 	if err := e.Emit(context.Background(), in); err != nil {
 		t.Fatalf("Emit: %v", err)

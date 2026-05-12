@@ -3,19 +3,26 @@
 // Wave 7a closed two big surfaces:
 //
 //   - Memory subsystem (Phases 23 / 24 / 25):
-//       * `MemoryStore` interface + InMem driver + conformance suite
-//       * `truncation` + `rolling_summary` strategies + `Summarizer`
-//         interface + health FSM + `RecoveryBacklogMax` recovery loop
-//       * SQLite + Postgres memory drivers (persistent legs)
+//
+//   - `MemoryStore` interface + InMem driver + conformance suite
+//
+//   - `truncation` + `rolling_summary` strategies + `Summarizer`
+//     interface + health FSM + `RecoveryBacklogMax` recovery loop
+//
+//   - SQLite + Postgres memory drivers (persistent legs)
 //
 //   - Tools subsystem (Phases 26 / 26a / 27 / 28 / 29):
-//       * Unified `Tool` / `ToolCatalog` / `ToolProvider` surface +
-//         `ToolPolicy` reliability shell (D-024)
-//       * `tools.RegisterFunc[I,O]` with reflection-derived schemas
-//       * `flow.Definition` + `flow.RegisterAsTool` + per-flow `Budget`
-//       * HTTP / MCP / A2A transports (each transport's per-driver
-//         tests cover its wire surface; this wave-end E2E focuses on
-//         the in-process composition path so it exercises NO network)
+//
+//   - Unified `Tool` / `ToolCatalog` / `ToolProvider` surface +
+//     `ToolPolicy` reliability shell (D-024)
+//
+//   - `tools.RegisterFunc[I,O]` with reflection-derived schemas
+//
+//   - `flow.Definition` + `flow.RegisterAsTool` + per-flow `Budget`
+//
+//   - HTTP / MCP / A2A transports (each transport's per-driver
+//     tests cover its wire surface; this wave-end E2E focuses on
+//     the in-process composition path so it exercises NO network)
 //
 // The wave-end E2E proves these COMPOSE: a tool invocation reads
 // ctx-carried identity, the result is appendable to memory under the
@@ -424,16 +431,16 @@ func TestE2E_Wave7a_RollingSummary_TriggersSummarizer(t *testing.T) {
 //
 // What this test still gates against, given the Phase 25 surface:
 //
-//	1. Tool invocation under identity composes with the SQLite memory
-//	   driver's boundary (AddTurn on StrategyNone is a no-op but the
-//	   driver still validates identity, runs the bus-emit on missing
-//	   identity, and returns nil — the tool→memory hand-off works).
-//	2. Snapshot bytes round-trip across Close/reopen for the canonical
-//	   empty-record envelope (`memory.Record{Strategy: "none"}`) —
-//	   this is the cross-driver byte-stable invariant per D-034.
-//	3. Cross-tenant identity isolation pins at the SQLite layer.
-//	4. The persistent driver rejects missing identity at the boundary
-//	   (`memory.identity_rejected` emit path, D-033).
+//  1. Tool invocation under identity composes with the SQLite memory
+//     driver's boundary (AddTurn on StrategyNone is a no-op but the
+//     driver still validates identity, runs the bus-emit on missing
+//     identity, and returns nil — the tool→memory hand-off works).
+//  2. Snapshot bytes round-trip across Close/reopen for the canonical
+//     empty-record envelope (`memory.Record{Strategy: "none"}`) —
+//     this is the cross-driver byte-stable invariant per D-034.
+//  3. Cross-tenant identity isolation pins at the SQLite layer.
+//  4. The persistent driver rejects missing identity at the boundary
+//     (`memory.identity_rejected` emit path, D-033).
 func TestE2E_Wave7a_DurablePersistence_SQLiteMemory_AcrossClose(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "wave7a.sqlite")
 	dsn := "file:" + dbPath + "?cache=shared"
