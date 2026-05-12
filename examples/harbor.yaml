@@ -31,9 +31,15 @@ llm:
   driver: mock
   # Bifrost knobs — required when `driver: bifrost`. The mock driver
   # ignores these.
+  #
+  # The `api_key` field accepts a literal key OR an `env.NAME`
+  # reference. Production deployments use `env.NAME` so secrets stay
+  # out of the repo (Phase 33 fails closed at boot with
+  # `ErrMissingAPIKey` if the named env var is unset).
   provider: openrouter
   model: anthropic/claude-sonnet-4
-  # Override via HARBOR_LLM_API_KEY in production; never commit a real key.
+  # Production: `api_key: env.OPENROUTER_API_KEY` (Phase 33 resolves
+  # at New time via os.Getenv).
   api_key: replace-me
   timeout: 60s
   # Context-window safety margin (Phase 32 / D-026). The LLM-edge
