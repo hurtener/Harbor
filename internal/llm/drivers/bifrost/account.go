@@ -47,10 +47,16 @@ type Account struct {
 	// `os.Getenv(APIKeyEnvVar)` for custom primary). NEVER logged.
 	apiKey string
 	// primaryModels is the model allowlist for the primary provider's
-	// bifrost `Key.Models`. Empty slice = "every model bifrost routes
-	// to this provider." For custom primary, this is the operator-
-	// declared `Models` list. For native primary, empty (the V1
-	// single-key contract serves every model bifrost routes).
+	// bifrost `Key.Models`. For custom primary, this is the operator-
+	// declared `Models` list. For native primary, the wildcard
+	// `["*"]` — bifrost's documented "all non-blacklisted models"
+	// sentinel (`core@v1.5.8/bifrost.go:7218-7220`: empty Models =
+	// deny-by-default, `["*"]` = allow-all, non-empty list = explicit
+	// allowlist). Earlier Phase 33 commits left this empty intending
+	// "all," which silently broke every native-primary routing
+	// because bifrost's deny-by-default semantic does NOT match the
+	// in-code comment — wave-end E2E surfaced this and §17.6 routed
+	// the fix into the same PR.
 	primaryModels []string
 	// primaryConfig is the resolved `ProviderConfig` for the primary
 	// provider (network / concurrency / custom-provider details).
@@ -136,6 +142,7 @@ func newAccount(cfg llm.ConfigSnapshot) (*Account, error) {
 	return &Account{
 		provider:      provider,
 		apiKey:        key,
+		primaryModels: []string{"*"}, // bifrost's "all non-blacklisted" wildcard; see Account.primaryModels godoc
 		primaryConfig: nativeCfg,
 		customByName:  customByName,
 	}, nil

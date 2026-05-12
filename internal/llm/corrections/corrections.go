@@ -68,6 +68,11 @@ import (
 // `ConfigSnapshot` whose `DisableCorrections` is false (the default).
 func init() {
 	llm.RegisterCorrectionsWrapper(Wrap)
+	// Wave 7b audit FAIL #1: applyDefaults consults this resolver so
+	// operator-omitted `OutputMode` flows through to the per-known-
+	// provider canonical default — closing the dead-code gap the
+	// `DefaultOutputModeFor` symbol had before this hook landed.
+	llm.RegisterDefaultOutputModeResolver(DefaultOutputModeFor)
 }
 
 // Wrap composes the corrections layer on top of `inner`. The returned
