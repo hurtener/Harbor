@@ -215,6 +215,18 @@ var (
 	// after the whole stack returns.
 	governanceWrapperMu sync.RWMutex
 	governanceWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
+
+	// defaultOutputModeResolverMu guards defaultOutputModeResolver. The
+	// resolver returns the per-known-provider `OutputMode` default for
+	// a model name; `internal/llm/corrections` registers it via
+	// `RegisterDefaultOutputModeResolver`. The hook pattern keeps
+	// `applyDefaults` free of an `internal/llm/corrections` import
+	// (corrections imports `internal/llm`, so the reverse would cycle).
+	// Wave-end audit FAIL #1: without this hook, `corrections.DefaultOutputModeFor`
+	// was dead code and three doc sites lied about per-known-provider
+	// fallback.
+	defaultOutputModeResolverMu sync.RWMutex
+	defaultOutputModeResolver   func(model string) OutputMode
 )
 
 // RegisterCorrectionsWrapper installs the Phase 34 corrections
@@ -491,6 +503,12 @@ func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 		cfg.HeavyOutputThreshold = DefaultHeavyOutputThreshold
 	}
 	if cfg.ModelProfiles != nil {
+		// Read the registered default-OutputMode resolver once per
+		// snapshot — the corrections package wires this at init when
+		// its blank-import lands; tests that don't blank-import
+		// corrections see the resolver nil and fall through to the
+		// JSONSchemaMode legacy mapping only.
+		resolver := getDefaultOutputModeResolver()
 		// Normalise per-profile fields. ModelProfile is value-typed
 		// so we copy before mutating to preserve the caller's map
 		// values.
@@ -506,6 +524,16 @@ func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 					p.OutputMode = OutputModePrompted
 				}
 			}
+			// Per-known-provider default fallback (Wave 7b audit FAIL
+			// #1): if the operator did not declare an OutputMode AND
+			// the legacy JSONSchemaMode mapping above did not resolve
+			// it, ask the corrections package for the per-model
+			// canonical default (openai/o1* → Prompted, anthropic/*
+			// → Native, etc.). Unrecognized models still fall through
+			// to OutputModeUnset; the downgrade chain skips them.
+			if p.OutputMode == OutputModeUnset && resolver != nil {
+				p.OutputMode = resolver(name)
+			}
 			if p.MaxRetries == 0 {
 				p.MaxRetries = DefaultMaxRetries
 			}
@@ -514,6 +542,42 @@ func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 		cfg.ModelProfiles = normalised
 	}
 	return cfg
+}
+
+// RegisterDefaultOutputModeResolver installs the per-known-provider
+// `OutputMode` resolver from `internal/llm/corrections`. Called once
+// from `corrections.init()`; the production binary blank-imports the
+// corrections package so the registration fires at boot. Re-registering
+// panics — write-once-at-init.
+func RegisterDefaultOutputModeResolver(fn func(model string) OutputMode) {
+	if fn == nil {
+		panic("llm: RegisterDefaultOutputModeResolver called with nil resolver")
+	}
+	defaultOutputModeResolverMu.Lock()
+	defer defaultOutputModeResolverMu.Unlock()
+	if defaultOutputModeResolver != nil {
+		panic("llm: default-OutputMode resolver already registered")
+	}
+	defaultOutputModeResolver = fn
+}
+
+// resetDefaultOutputModeResolverForTesting clears the registered
+// resolver. Used only by package-internal tests that exercise the
+// resolver-absent code path; the hook is otherwise write-once.
+//
+//nolint:unused // referenced by tests in same package.
+func resetDefaultOutputModeResolverForTesting() {
+	defaultOutputModeResolverMu.Lock()
+	defer defaultOutputModeResolverMu.Unlock()
+	defaultOutputModeResolver = nil
+}
+
+// getDefaultOutputModeResolver returns the registered resolver under a
+// read lock. Nil if no resolver has been registered.
+func getDefaultOutputModeResolver() func(model string) OutputMode {
+	defaultOutputModeResolverMu.RLock()
+	defer defaultOutputModeResolverMu.RUnlock()
+	return defaultOutputModeResolver
 }
 
 // validateSnapshot checks the structural invariants the safety pass
