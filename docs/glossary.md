@@ -88,7 +88,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
 
-**Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. RFC §6.15.
+**Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. Also known as **`BudgetCeiling`** (the Go-side name on `governance.TierConfig.BudgetCeilingUSD`). RFC §6.15, D-044.
+
+**`CostAccumulator`** — Phase 36a `governance.Subsystem` that aggregates `Usage.Cost.TotalCost` per `(tenant, user, session, model)` and per `(tenant, user, session)`. State persists to `state.StateStore` (three-driver conformance). PreCall reads the atomic snapshot for the request's tier; ≥ ceiling → `ErrBudgetExceeded`. PostCall accumulates synchronously (RFC §6.15 line 1128) — NOT a `llm.cost.recorded` subscription — so the next PreCall sees the latest total race-free. Lock-free CAS on `math.Float64bits` for concurrent PostCalls. RFC §6.15, D-044.
 
 **CorrectionsProfile** — Per-model bundle of provider-quirk flags consumed by the Phase 34 corrections layer. Lives on `llm.ModelProfile.Corrections`. Zero-value means "no quirks declared for this model"; the corrections layer treats every zero field as the Harbor-default behaviour (no reorder, no schema mutation, OpenAI envelopes, usage backfill off). Fields: `MessageOrdering`, `SchemaMode`, `ReasoningEffortRouting`, `ResponseFormatShape`, `UsageBackfillEnabled`. RFC §6.5, D-041, brief 03 §4, brief 08.
 
@@ -166,6 +168,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
+**`IdentityTier`** — One named bundle of governance policies (`BudgetCeilingUSD`, `RateLimit`, `MaxTokens`) under `Governance.IdentityTiers`. Operators map identities to tiers via `Governance.DefaultTier` (every identity gets the same tier) or a custom `TierResolver` function. Empty map = no enforcement (latent default per D-044). Each field within a tier is independently opt-in. RFC §6.15, D-044.
+
 **IdempotencyKey** — caller-supplied string on `tasks.SpawnRequest` that, when paired with `Identity.SessionID`, deduplicates retried spawns. Same `(SessionID, IdempotencyKey)` → returns the original `TaskHandle` with `Reused=true`; divergent SpawnRequest under the same key returns `ErrIdempotencyConflict`. Empty key disables dedup entirely (every Spawn yields a fresh handle, no collisions). The key is namespaced by SessionID, so the same key across different sessions creates two distinct tasks. RFC §6.8.
 
 ## J
@@ -222,6 +226,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **MessageOrderingPolicy** — enum on `CorrectionsProfile.MessageOrdering`. Values: `""` (default — passthrough); `"system_first_strict"` (NIM-style ordering). Brief 03 §4 documents the NIM quirk. RFC §6.5, D-041.
 
+**`MaxTokens` (governance)** — Per-call per-identity-tier cap on `CompleteRequest.MaxTokens`. Phase 36b's `MaxTokensEnforcer` PreCall rejects requests whose `MaxTokens` exceed `TierConfig.MaxTokens` with `ErrMaxTokensExceeded` and emits `governance.maxtokens_exceeded`. Fail-loud, not clamp (RFC §6.15 line 1122 + master plan line 420). Latent: tier `MaxTokens == 0` → permit. RFC §6.15, D-044.
+
+**`MaxTokensEnforcer`** — Phase 36b stateless `Subsystem` that gates per-call `MaxTokens` against the resolved identity tier. No StateStore dependency; concurrent-safe trivially. Pairs with `CostAccumulator` + `RateLimiter` under `CompoundSubsystem`. RFC §6.15, D-044.
+
 ## O
 
 **ObservationRenderer** — runtime component that turns a `(Trajectory, latest step)` into the next chat thread, interleaving assistant and user messages from `(action, observation | error | failure)` pairs and applying LLM-facing redaction (heavy outputs replaced with `ArtifactRef`s). RFC §6.4.
@@ -241,6 +249,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **NetworkDefaults** — operator-tunable defaults (Phase 33a) bifrost applies to every provider (native + custom) when the per-provider override is absent. Fields: `Timeout`, `MaxRetries`, `RetryBackoffInitial`, `RetryBackoffMax`, `Concurrency`, `BufferSize`. Zero-valued fields fall through to bifrost's package-level defaults; non-zero values override. Configured at `llm.network_defaults`. Restart-required. RFC §6.5, D-042.
 
 ## P
+
+**`PreCall` / `PostCall`** — the two hooks on `governance.Subsystem`. `PreCall(ctx, req) error` runs BEFORE the wrapped `LLMClient.Complete`; a non-nil return short-circuits the call (the inner client is NOT invoked). `PostCall(ctx, req, resp, callErr) error` runs AFTER the inner returns, accumulating cost / observing the outcome — its error is logged but does NOT supplant the original `(resp, callErr)` outcome. RFC §6.15, D-044.
 
 **ProviderRouting** — the per-Harbor-instance bifrost provider selection (`LLMConfig.Provider`). Phase 33 V1 supports one configured provider per Harbor binary; the operator's `harbor.yaml` names the bifrost provider (e.g. `openrouter`, `openai`, `anthropic`) and the per-model `LLMConfig.ModelProfiles` keys carry the upstream identifier. Phase 33a widens this so the named provider can also be an operator-declared `CustomProvider`. Multi-provider routing per Harbor instance is a post-V1 consideration; if a deployment needs multiple LLM endpoints, an operator runs multiple Harbor instances.
 
@@ -276,7 +286,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## R
 
-**Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. RFC §6.15.
+**Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. Phase 36b's `RateLimiter` Subsystem ships the token-bucket math; `governance.RateLimitConfig` carries `Capacity` / `RefillTokens` / `RefillInterval`. Latent default: `Capacity == 0` → no enforcement. RFC §6.15, D-044.
+
+**`RateLimiter`** — Phase 36b `governance.Subsystem` running a token bucket per `(identity, model)`. PreCall drains `expected_tokens` (from `req.MaxTokens` or 1) from the bucket; underflow → `ErrRateLimited` + `governance.rate_limited` event. State lives in StateStore (`Kind=governance.bucket`); survives restart. Per-key mutex serialises drain operations. No refunds on call failure. RFC §6.15, D-044.
 
 **ReasoningEffort** — request-level hint mapped to per-provider reasoning controls (`off` / `low` / `medium` / `high` / `""`). Bifrost's `ChatReasoning` is the bridge for V1 providers; empty string means "use provider default" (the safety pass does not touch the field). Settable per request or via `ModelProfile.ReasoningEffort` defaults. RFC §6.5.
 
@@ -324,6 +336,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## S
 
+**`Subsystem` (governance)** — the Phase 36a interface every governance policy implements: `PreCall(ctx, req) error` + `PostCall(ctx, req, resp, callErr) error`. `governance.Wrap(inner, sub)` composes a Subsystem around `LLMClient`. `governance.NewCompound(subs...)` bundles many Subsystems into one (fan PreCall on first-failure, fan PostCall to all members). Concrete V1 implementations: `CostAccumulator`, `RateLimiter`, `MaxTokensEnforcer`. RFC §6.15, D-044.
+
 **SchemaSanitizer** — Phase 34 corrections-layer helper. `sanitizeSchema(json.RawMessage, SchemaSanitizationMode) (json.RawMessage, error)`. Walks the operator-supplied JSON-Schema bytes and applies per-mode mutations: `openai_strict` adds `additionalProperties:false`+`strict:true` on every object-typed schema; `permissive` strips both fields. Operator-set via `ModelProfile.Corrections.SchemaMode`. RFC §6.5, D-041.
 
 **SchemaSanitizationMode** — enum on `CorrectionsProfile.SchemaMode`. Values: `""` (default — passthrough); `"openai_strict"` (insert structured-output required fields); `"permissive"` (strip them). Brief 03 §4 documents the per-provider variation. RFC §6.5, D-041.
@@ -369,6 +383,10 @@ Additions to this set are RFC PRs.
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
 
 ## T
+
+**`TierResolver`** — operator-supplied `func(identity.Identity) string` that maps an identity to a tier name. nil resolver = "use `Governance.DefaultTier` for every identity." Returning `""` lets the runtime fall back to `DefaultTier`. Resolvers MUST be pure and deterministic (the per-identity state cache is keyed on the resolved tier). RFC §6.15, D-044.
+
+**`TokenBucket`** — Phase 36b per-`(identity, model)` rate-limit shape. Carries `Level` (current available tokens) + `LastRefill` (wall-clock timestamp of the most recent refill). `RateLimitConfig` parameters: `Capacity` (ceiling), `RefillTokens` (added every `RefillInterval`), `RefillInterval`. Linear refill: `floor(elapsed / RefillInterval) * RefillTokens`, capped at `Capacity`. A zero `RefillInterval` disables refill (one-shot bucket). State persists at `Kind=governance.bucket`. RFC §6.15, D-044.
 
 **Task** — a unit of work the Runtime executes for a Planner. Foreground (within a Run) or Background (long-running). Identity unified: one `TaskID` with `Kind=foreground|background`. Lifecycle FSM: `Pending → Running → Complete`, with `Paused → Running` and terminal `Failed | Cancelled`. RFC §6.8.
 

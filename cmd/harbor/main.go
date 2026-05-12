@@ -46,6 +46,13 @@ import (
 	// registers a wrapper hook so `llm.Open()` composes
 	// `retry(downgrade(corrections(safetyClient(driver))))`.
 	_ "github.com/hurtener/Harbor/internal/llm/retry"
+	// Governance — Phase 36a + 36b cost accumulator + rate limiter +
+	// MaxTokens enforcer (RFC §6.15). Self-registers a wrapper hook
+	// so `llm.Open()` composes `governance(retry(...))` outermost.
+	// **LATENT default:** with no factory registered via
+	// `governance.SetFactory`, the wrapper is a pass-through — the
+	// blank-import only seats the hook (D-044).
+	_ "github.com/hurtener/Harbor/internal/governance"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	// Memory driver — Phase 25 Postgres MemoryStore, registered via init().
