@@ -61,6 +61,13 @@ import (
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
 	// Skills driver — Phase 37 LocalDB SkillStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
+	// Skills planner tools — Phase 38 (`skill_search` / `skill_get` /
+	// `skill_list`). The package has no init-time registration
+	// (catalogs are constructed at boot, not from a factory registry);
+	// the blank import documents the package's presence in the binary
+	// so deployment-time reviewers can confirm it's wired. The Phase 60+
+	// bootstrap will call `skills/tools.Register(catalog, store, deps)`.
+	_ "github.com/hurtener/Harbor/internal/skills/tools"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	// State driver — Postgres StateStore (Phase 16), registered via init().

@@ -384,7 +384,7 @@ Additions to this set are RFC PRs.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
 
-**SkillProvider** — planner-facing wrapper around `SkillStore` (Phase 38). Adds capability filtering, PII + tool-name redaction, and the tiered injection budgeter on top of the storage surface. Distinct from `SkillStore` (the storage interface). RFC §6.7.
+**SkillProvider** — RFC §6.7's planner-facing aggregate interface (`Search / GetByName / List / Directory / FormatForInjection`). Phase 38 splits the planner-facing surface across three discrete Tools (`skill_search`, `skill_get`, `skill_list` — `internal/skills/tools`) plus Phase 39's `Directory(cfg)` API rather than a single struct, so the catalog seam handles dispatch + reliability uniformly. The Phase 38 helpers (`Filter`, `Redact`, `Fit`) collectively implement what the RFC sketched as `SkillProvider`'s injection-time concerns. Distinct from `SkillStore` (the storage interface). RFC §6.7, D-048.
 
 **SkillStore** — Harbor's identity-scoped, capability-filterable persistence interface for skills. Phase 37 (`internal/skills`); the §4.4 seam every later phase consumes. Drivers under `internal/skills/drivers/*`. RFC §6.7.
 
@@ -399,6 +399,18 @@ Additions to this set are RFC PRs.
 **FTS5Ladder** — the three-tier skill search ranking: FTS5 → regex → exact. Calibrated scoring constants in brief 04 §4.4. The ladder picks the first path that returns rows; FTS5 detected at open with deterministic fallback when absent. RFC §6.7.
 
 **RankingScore** — normalised 0.0–1.0 relevance score on a `RankedSkill`. FTS path: `bm25 → 1/(1+raw) → min-max`. Regex path: name fullmatch=0.95, name match=0.90, name search=0.85, body search=0.75. Exact path: 1.0. brief 04 §4.4.
+
+**`skill_search`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning ranked skill candidates by query. Wraps `SkillStore.Search` with capability filtering + redaction. `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**`skill_get`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning the full text of one or more named skills, redacted and budget-fit through the tiered ladder. Missing names are silently skipped; over-budget surfaces `ErrSkillTooLarge`. `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**`skill_list`** — planner-callable Tool (Phase 38, `internal/skills/tools`) returning a paged enumeration of skills filtered by scope / task_type / tags. Capability-filtered + redacted; summary-only (no budgeter — `skill_get` owns full content). `LoadingMode=Always`; `SideEffect=Read`. RFC §6.7, brief 04 §4.5, D-048.
+
+**CapabilityContext** — planner-supplied envelope (Phase 38, `internal/skills/tools`) carrying `AllowedTools / AllowedNamespaces / AllowedTags / RedactPII`. Drives the capability filter (subset gate) AND the redactor (disallowed-name scrub + optional PII redaction). Empty allowed-set is default-deny: skills with non-empty `Required*` lists are excluded. RFC §6.7, brief 04 §4.5, D-048.
+
+**Tiered budgeter** — three-step injection ladder (Phase 38, `internal/skills/tools.Fit`): full → drop optional (Preconditions + FailureModes) → cap Steps to 3 → `ErrSkillTooLarge`. Token estimate is chars/4 (matches the §6.5 LLM safety net). Fail-loud per CLAUDE.md §5; no silent degradation. brief 04 §4.5, D-048.
+
+**ErrSkillTooLarge** — sentinel returned by `tools.Fit` (Phase 38) when no ladder step fits within the planner-supplied `MaxTokens`. CLAUDE.md §5 fail-loud contract.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
