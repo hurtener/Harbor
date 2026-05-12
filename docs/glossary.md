@@ -88,6 +88,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. RFC §6.15.
 
+**CorrectionsProfile** — Per-model bundle of provider-quirk flags consumed by the Phase 34 corrections layer. Lives on `llm.ModelProfile.Corrections`. Zero-value means "no quirks declared for this model"; the corrections layer treats every zero field as the Harbor-default behaviour (no reorder, no schema mutation, OpenAI envelopes, usage backfill off). Fields: `MessageOrdering`, `SchemaMode`, `ReasoningEffortRouting`, `ResponseFormatShape`, `UsageBackfillEnabled`. RFC §6.5, D-041, brief 03 §4, brief 08.
+
+**Corrections layer** — `internal/llm/corrections`. The wrapper that sits between Harbor's runtime and the Phase 32 `safetyClient(driver)`. Rewrites `CompleteRequest`s per `ModelProfile.Corrections` before delegating, and optionally backfills `Usage` when the driver returns all-zeros. Compose order: `corrections(safetyClient(driver))` — the safety pass sees the post-correction request (D-041). Five quirks: message reordering (NIM), schema sanitization (`additionalProperties`/`strict`), reasoning-effort routing (thinking-class models), response-format envelope translation, usage backfill. Single baked-in mode — no `use_native` toggle (brief 03 §5). RFC §6.5, D-041.
+
 ## D
 
 **`DeadlineAt`** — Wall-clock deadline on an `Envelope`. Set once at the API boundary; checked before scheduling each node (Phase 10 worker loop). `nil` means "no deadline." Distinct from `Policy.TimeoutMS` (per-node timeout) and `flow.Budget.Deadline` (per-flow). RFC §6.1, brief 01 §2.
@@ -206,7 +210,11 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`mcp.resource_updated`** — canonical event type emitted when an MCP southbound server pushes a `notifications/resources/updated` for a URI the driver previously `Subscribe`d to. `SafePayload` by construction — the URI is operator-trust-equivalent (server-controlled) and the source ID is operator-supplied. Registered in `internal/tools/drivers/mcp/events.go` via the driver's `init()`. RFC §6.4.
 
-**ModelProfile** — per-model knobs (`ContextWindowTokens`, `TokenEstimator`, `JSONSchemaMode`, `DefaultMaxTokens`, `ReasoningEffort`, `CostOverrides`). Keyed by canonical model name in `LLMConfig.ModelProfiles`. The LLM-edge safety pass requires a profile entry for every model that appears in a `CompleteRequest`; missing profiles surface as `ErrUnsupportedModel` at request time. Phase 32 ships the shape; Phase 33 reads `ContextWindowTokens` / `TokenEstimator` / `ReasoningEffort`; Phase 35 reads `JSONSchemaMode`; Phase 36a/36b read `DefaultMaxTokens` + `CostOverrides`. RFC §6.5, brief 08 ("Per-model seam").
+**ModelProfile** — per-model knobs (`ContextWindowTokens`, `TokenEstimator`, `JSONSchemaMode`, `DefaultMaxTokens`, `ReasoningEffort`, `CostOverrides`, `Corrections`). Keyed by canonical model name in `LLMConfig.ModelProfiles`. The LLM-edge safety pass requires a profile entry for every model that appears in a `CompleteRequest`; missing profiles surface as `ErrUnsupportedModel` at request time. Phase 32 ships the shape; Phase 33 reads `ContextWindowTokens` / `TokenEstimator` / `ReasoningEffort`; Phase 34 reads `Corrections` (per-provider quirk flags); Phase 35 reads `JSONSchemaMode`; Phase 36a/36b read `DefaultMaxTokens` + `CostOverrides`. RFC §6.5, brief 08 ("Per-model seam"), D-041.
+
+**MessageNormalizer** — Phase 34 corrections-layer helper. `normalizeMessages([]ChatMessage, MessageOrderingPolicy) ([]ChatMessage, error)`. Today the only non-default policy is `OrderingSystemFirstStrict` (collapse all system-role messages to the front, preserving relative order). Operator-set via `ModelProfile.Corrections.MessageOrdering`. RFC §6.5, D-041.
+
+**MessageOrderingPolicy** — enum on `CorrectionsProfile.MessageOrdering`. Values: `""` (default — passthrough); `"system_first_strict"` (NIM-style ordering). Brief 03 §4 documents the NIM quirk. RFC §6.5, D-041.
 
 ## O
 
@@ -260,6 +268,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ReasoningEffort** — request-level hint mapped to per-provider reasoning controls (`off` / `low` / `medium` / `high` / `""`). Bifrost's `ChatReasoning` is the bridge for V1 providers; empty string means "use provider default" (the safety pass does not touch the field). Settable per request or via `ModelProfile.ReasoningEffort` defaults. RFC §6.5.
 
+**ReasoningRouting** — enum on `CorrectionsProfile.ReasoningEffortRouting`. Values: `""` (default — bifrost's `Reasoning.Effort` consumes the hint); `"thinking_model"` (clears top-level `ReasoningEffort` and surfaces it in `req.Extra["reasoning_effort"]`). The thinking-class models (`o1`, `o3`, `deepseek-reasoner`) interpret the hint via a provider-specific path that bifrost passes opaquely. Brief 03 §4. RFC §6.5, D-041.
+
+**ResponseFormatProfile** — enum on `CorrectionsProfile.ResponseFormatShape`. Values: `""` (default — OpenAI envelope); `"json_only"` (downgrade `FormatJSONSchema` to `FormatJSONObject` for providers that reject `json_schema`; the schema is stashed in `Extra["schema_hint"]`); `"anthropic"` (package schema in `Extra["anthropic_tool_schema"]`; clear top-level `ResponseFormat`). The corrections layer translates the envelope before the bifrost driver runs its own per-provider translator. RFC §6.5, D-041.
+
 **Reliability shell** — Phase 11 worker-loop wrapper that applies `NodePolicy` per invocation: validate-in → invoke-with-timeout → retry-with-backoff → on terminal failure, emit `RunError` to logger + bus. Backoff math is exponential with jitter (`base * mult^attempt + jitter`, capped at `MaxBackoff`). RFC §6.1, brief 01 §4.
 
 **ResponseFormat** — optional structured-output hint on `CompleteRequest`. Kinds: `text` (no constraint; default when `req.ResponseFormat == nil`), `json_object` (provider's "JSON mode"), `json_schema` (caller-supplied JSON Schema in strict mode). Phase 35 owns the per-provider downgrade chain `json_schema → json_object → text` on `invalid_json_schema` errors. RFC §6.5.
@@ -298,7 +310,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## S
 
-**SchemaSanitizer** — runtime utility that lives BETWEEN the runtime and the `LLMClient` (NOT inside the client). Applies per-provider `response_format` shape adjustments before the request goes out. RFC §6.5.
+**SchemaSanitizer** — Phase 34 corrections-layer helper. `sanitizeSchema(json.RawMessage, SchemaSanitizationMode) (json.RawMessage, error)`. Walks the operator-supplied JSON-Schema bytes and applies per-mode mutations: `openai_strict` adds `additionalProperties:false`+`strict:true` on every object-typed schema; `permissive` strips both fields. Operator-set via `ModelProfile.Corrections.SchemaMode`. RFC §6.5, D-041.
+
+**SchemaSanitizationMode** — enum on `CorrectionsProfile.SchemaMode`. Values: `""` (default — passthrough); `"openai_strict"` (insert structured-output required fields); `"permissive"` (strip them). Brief 03 §4 documents the per-provider variation. RFC §6.5, D-041.
 
 **ScopedArtifacts** — immutable facade carrying a fixed `ArtifactScope`; auto-stamps writes, scope-checks reads (returns `ErrScopeMismatch` if the underlying ref's scope ever differs). Tools and runtime use the facade exclusively — they never see raw `ArtifactScope`. `NewScoped` panics on invalid scope at construction (fail loud, AGENTS.md §5). RFC §6.10.
 

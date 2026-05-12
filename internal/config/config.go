@@ -113,6 +113,22 @@ type LLMConfig struct {
 	Timeout              time.Duration                    `yaml:"timeout"`
 	ContextWindowReserve float64                          `yaml:"context_window_reserve,omitempty"`
 	ModelProfiles        map[string]LLMModelProfileConfig `yaml:"model_profiles,omitempty"`
+	// Corrections toggles + per-model-profile-override the Phase 34
+	// provider-correction layer. Omitted = enabled (production
+	// default). See `LLMCorrectionsConfig` for the wire shape.
+	Corrections LLMCorrectionsConfig `yaml:"corrections,omitempty"`
+}
+
+// LLMCorrectionsConfig is the top-level toggle for the Phase 34
+// per-provider correction layer. The layer is enabled by default;
+// operators set `enabled: false` only for testing scenarios that
+// need to exercise the safety pass in isolation.
+//
+// `Enabled` is `*bool` so the loader can distinguish "operator didn't
+// set the field" (nil → defaults to true) from "operator explicitly
+// disabled" (&false). Restart-required.
+type LLMCorrectionsConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
 }
 
 // LLMModelProfileConfig is one entry in `LLMConfig.ModelProfiles`.
@@ -141,6 +157,33 @@ type LLMModelProfileConfig struct {
 	DefaultMaxTokens    *int                    `yaml:"default_max_tokens,omitempty"`
 	ReasoningEffort     string                  `yaml:"reasoning_effort,omitempty"`
 	CostOverrides       *LLMCostOverridesConfig `yaml:"cost_overrides,omitempty"`
+	// Corrections — per-model overrides for the Phase 34 correction
+	// layer. nil → use the per-provider defaults baked into
+	// `internal/llm/corrections.defaultProfileFor`. See
+	// `LLMCorrectionsProfileConfig` for the wire shape.
+	Corrections *LLMCorrectionsProfileConfig `yaml:"corrections,omitempty"`
+}
+
+// LLMCorrectionsProfileConfig is one per-model profile override for
+// the Phase 34 correction layer. Each field is the operator-facing
+// string form of the equivalent `internal/llm` enum
+// (`MessageOrderingPolicy`, `SchemaSanitizationMode`, `ReasoningRouting`,
+// `ResponseFormatProfile`). Empty string → use the per-provider
+// default keyed by model-name prefix.
+//
+// Valid enum values:
+//
+//   - `message_ordering`: "" / "system_first_strict"
+//   - `schema_mode`: "" / "openai_strict" / "permissive"
+//   - `reasoning_effort_routing`: "" / "thinking_model"
+//   - `response_format_shape`: "" / "json_only" / "anthropic"
+//   - `usage_backfill_enabled`: bool
+type LLMCorrectionsProfileConfig struct {
+	MessageOrdering        string `yaml:"message_ordering,omitempty"`
+	SchemaMode             string `yaml:"schema_mode,omitempty"`
+	ReasoningEffortRouting string `yaml:"reasoning_effort_routing,omitempty"`
+	ResponseFormatShape    string `yaml:"response_format_shape,omitempty"`
+	UsageBackfillEnabled   bool   `yaml:"usage_backfill_enabled,omitempty"`
 }
 
 // LLMCostOverridesConfig is a per-model cost-table override (used

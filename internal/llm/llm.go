@@ -394,7 +394,130 @@ type ModelProfile struct {
 	// CostOverrides — per-1M-token rates when the provider doesn't
 	// report cost (some OpenRouter routes don't). Phase 36a reads.
 	CostOverrides *CostTable
+	// Corrections — per-provider quirk flags consumed by the Phase 34
+	// `internal/llm/corrections` layer. Zero-valued struct means
+	// "no corrections needed for this model"; the corrections layer
+	// runs a no-op pass for default-shaped profiles.
+	Corrections CorrectionsProfile
 }
+
+// CorrectionsProfile carries the per-model quirk flags the Phase 34
+// `internal/llm/corrections` layer dispatches on. The types live in
+// the `llm` package so the corrections sub-package can consume them
+// without an import cycle (logic lives in `internal/llm/corrections`).
+//
+// Zero-valued struct means "no quirks declared for this model"; the
+// corrections pass treats each field's zero value as the Harbor-default
+// behaviour (no reorder, no schema mutation, OpenAI-style envelopes,
+// usage backfill off).
+//
+// Per RFC §6.5 + brief 03 §4: this is the operator-controlled surface
+// for adapting Harbor's neutral `CompleteRequest` shape to per-provider
+// expectations. The corrections layer is the ONLY consumer.
+type CorrectionsProfile struct {
+	// MessageOrdering controls how the request's chat-message slice
+	// is reordered before reaching the driver. Default (zero value)
+	// passes the slice through unchanged.
+	MessageOrdering MessageOrderingPolicy
+	// SchemaMode controls how the request's `ResponseFormat.JSONSchema`
+	// bytes are mutated before reaching the driver. Default passes
+	// the schema through unchanged.
+	SchemaMode SchemaSanitizationMode
+	// ReasoningEffortRouting controls whether `req.ReasoningEffort` is
+	// translated to a provider-specific `Extra` key (thinking-class
+	// models) or passed through as the top-level field (default).
+	ReasoningEffortRouting ReasoningRouting
+	// ResponseFormatShape controls the wire-shape translation of
+	// `req.ResponseFormat`. Default emits the OpenAI envelope; other
+	// values translate to per-provider envelopes (Anthropic tool-
+	// schema, `json_only` for providers that reject `json_schema`).
+	ResponseFormatShape ResponseFormatProfile
+	// UsageBackfillEnabled, when true, makes the corrections layer
+	// compute synthetic token counts (and, if `CostOverrides` is set,
+	// synthetic costs) when the driver returns an all-zeros `Usage`.
+	// Default false — the response surfaces zeros verbatim.
+	UsageBackfillEnabled bool
+}
+
+// MessageOrderingPolicy enumerates the message-reordering modes the
+// Phase 34 corrections layer supports. Operator-set in
+// `ModelProfile.Corrections.MessageOrdering`.
+type MessageOrderingPolicy string
+
+const (
+	// OrderingDefault passes the message slice through unchanged.
+	OrderingDefault MessageOrderingPolicy = ""
+	// OrderingSystemFirstStrict collapses all system-role messages
+	// to the front of the slice and emits an alternating
+	// user/assistant tail. Required by NIM and some OpenAI-compatible
+	// proxies that reject mid-thread `system` messages (brief 03 §4).
+	OrderingSystemFirstStrict MessageOrderingPolicy = "system_first_strict"
+)
+
+// SchemaSanitizationMode enumerates the JSON-Schema-mutation modes the
+// Phase 34 `SchemaSanitizer` supports. Operator-set in
+// `ModelProfile.Corrections.SchemaMode`.
+type SchemaSanitizationMode string
+
+const (
+	// SchemaDefault passes the operator-supplied schema through
+	// unchanged.
+	SchemaDefault SchemaSanitizationMode = ""
+	// SchemaOpenAIStrict adds `additionalProperties:false` and
+	// `strict:true` at every nested object schema. OpenAI's
+	// structured-output mode requires both fields; most schemas
+	// produced by `tools.RegisterFunc[I, O]` omit them.
+	SchemaOpenAIStrict SchemaSanitizationMode = "openai_strict"
+	// SchemaPermissive strips `additionalProperties` and `strict`
+	// fields wherever they appear. Some providers reject those keys.
+	SchemaPermissive SchemaSanitizationMode = "permissive"
+)
+
+// ReasoningRouting enumerates the `ReasoningEffort` routing modes the
+// Phase 34 corrections layer supports. Operator-set in
+// `ModelProfile.Corrections.ReasoningEffortRouting`.
+type ReasoningRouting string
+
+const (
+	// ReasoningRouteDefault passes the top-level
+	// `req.ReasoningEffort` through to the driver unchanged.
+	// Bifrost's `ChatReasoning.Effort` field consumes it.
+	ReasoningRouteDefault ReasoningRouting = ""
+	// ReasoningRouteThinking moves the effort hint from the
+	// top-level field into `req.Extra["reasoning_effort"]`.
+	// Thinking-class models (`o1`, `o3`, `deepseek-reasoner`)
+	// interpret the hint via a provider-specific path that bifrost
+	// passes through opaquely. The top-level field is cleared so the
+	// regular reasoning channel is not used.
+	ReasoningRouteThinking ReasoningRouting = "thinking_model"
+)
+
+// ResponseFormatProfile enumerates the `response_format` envelope
+// shapes the Phase 34 corrections layer can emit. Operator-set in
+// `ModelProfile.Corrections.ResponseFormatShape`.
+type ResponseFormatProfile string
+
+const (
+	// ResponseFormatOpenAI emits the OpenAI envelope —
+	// `{"type":"json_object"}` for `FormatJSONObject` and
+	// `{"type":"json_schema","json_schema":{...}}` for
+	// `FormatJSONSchema`. This is the default; bifrost's
+	// `translateResponseFormat` already produces this shape, so a
+	// `default`-profile model is a no-op in the corrections layer.
+	ResponseFormatOpenAI ResponseFormatProfile = ""
+	// ResponseFormatJSONOnly downgrades `FormatJSONSchema` to
+	// `FormatJSONObject`. Used for providers that don't support
+	// `json_schema` natively (e.g. some OpenRouter routes); the
+	// schema is preserved as `Extra["schema_hint"]` so a prompted
+	// fallback can reference it.
+	ResponseFormatJSONOnly ResponseFormatProfile = "json_only"
+	// ResponseFormatAnthropic packages the schema into Anthropic's
+	// tool-schema-style envelope, surfaced in
+	// `req.Extra["anthropic_tool_schema"]`. Phase 33's bifrost
+	// driver passes `Extra` opaquely; the Anthropic provider
+	// converter consumes the key (or future Phase 35 logic does).
+	ResponseFormatAnthropic ResponseFormatProfile = "anthropic"
+)
 
 // CostTable carries fallback per-1M-token rates. Used when the
 // provider's response doesn't include cost. Phase 36a consumes.
