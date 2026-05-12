@@ -387,7 +387,7 @@ Indexed for `(tenant_id, scope, subject_id, source_id)` lookups. Tokens encrypte
 
 The lift from bifrost is **the shape of the OAuth dance**. The composition with Harbor's runtime is the part bifrost does not have:
 
-```
+```text
 Tool invocation in flight
     └─ tools.RunWithPolicy (D-024)
         └─ provider.Invoke (Phase 28 MCP / Phase 27 HTTP / Phase 29 A2A)

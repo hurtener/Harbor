@@ -72,6 +72,7 @@ The view is the mockup's centerpiece. Decomposing into discrete features:
 ### LR-1. Topology graph
 
 A directed graph of the run's nodes (or session's tasks, or both — see open questions). Each node carries:
+
 - A **name** (the node's display label — e.g. "Search Skills").
 - A **type tag** (mcp / api / llm / planner / web / stream — matching `TransportKind` from `internal/tools/tools.go` + new tags for `planner` and `stream` and `web` source).
 - A **status pill** (Running / Completed / Paused / Failed) with status counts in a side legend (4 / 6 / 1 / 0 in the mockup).
@@ -81,12 +82,14 @@ A directed graph of the run's nodes (or session's tasks, or both — see open qu
 - **Visual encoding** for special states: the Human Approval node is rendered with a dashed border + warning color to communicate "awaiting user action."
 
 Protocol surface required:
+
 - Topology projection events (Phase 74 — `Console topology projection events`).
 - Per-task status events (existing event bus + Phase 72 subscription).
 - Streaming updates as new nodes/edges/state changes land.
 - Cursor-resumable subscription so reconnect catches up cleanly (Phase 6 — `Bus replay + ring buffer + cursor`; Phase 72 surfaces it on the Protocol).
 
 Open questions:
+
 - Is the graph **per-run** (one DAG instance for one trigger) or **per-session** (the union of all runs in this session)? The mockup looks per-session given multiple node types coexist; but task IDs in the event stream all carry one `task_1a2b3c` prefix → per-run is also plausible. Recommendation: per-run primary, with a "show all session tasks" toggle.
 - Layout strategy: hand-laid (operator places nodes) vs. automatic (dagre / ELK / d3-force). Mockup looks automatic. Recommendation: automatic, with persistence of operator overrides per session.
 - Node grouping: should the Console group N successive tool calls of the same source into one collapsed "tool calls × N" node? Default no; expansion is the user's job.
@@ -103,6 +106,7 @@ Four sibling views over the same session/run:
 ### LR-3. Status counts legend + filters + time range + pause
 
 Top-right of the topology canvas:
+
 - **Status counts** (Running / Completed / Paused / Failed) with counts.
 - **Filters** dropdown — likely by node type / status / source / minimum latency / has-error.
 - **Time range** — "Last 30 min" default. Implies the event subscription is time-bounded; replay needs to materialize the topology for an older window.
@@ -111,6 +115,7 @@ Top-right of the topology canvas:
 ### LR-4. Session detail panel (right sidebar)
 
 Persistent right column showing:
+
 - **Session ID** with copy button.
 - **Status** (Running / Paused / Completed / Failed).
 - **Started** (relative time).
@@ -122,6 +127,7 @@ Persistent right column showing:
 - **Priority** (Normal / High / Low — implies a priority dimension that doesn't exist in the current master plan).
 
 Then **Current Step** sub-panel:
+
 - Step name + type tag.
 - Run-ID + elapsed-time-for-this-step.
 - Model name (when LLM step) — comes from the model configured in Phase 33 / 34.
@@ -129,29 +135,34 @@ Then **Current Step** sub-panel:
 - "View Details" → opens the bottom-dock per-task pane.
 
 Then **Recent Artifacts** sub-panel:
+
 - 3 most recent artifacts produced by this session, with filename / size / age.
 - "View All Artifacts" link → goes to the Artifacts view filtered to this session.
 - Comes from Phases 17–19 (Artifact store + drivers); the Protocol exposes artifacts by reference only — clicking a row opens the artifact viewer.
 
 Then **Interventions** sub-panel:
+
 - A live list of pending pause records for this session.
 - Shows: type (Human Approval / OAuth-required / Tool approval), elapsed time paused, requester (agent or system), reason.
 - "View" → opens the intervention detail; "Resume" → action button gated by JWT scope.
 - Comes from Phase 50 (Pause/Resume Coordinator) + Phase 54 (Protocol task control surface).
 
 Open questions for the right sidebar:
+
 - Should the right sidebar be **session-scoped** (current selection) or **run-scoped** (the run currently being inspected)? The "Current Step" content suggests run-scoped, but the metadata above suggests session-scoped. Recommendation: session-scoped with a "current run within session" navigator.
 - The "Priority" field doesn't exist in the master plan — it's a feature the mockup invents. Does Harbor honor a per-session priority dimension? Not currently. **Open question**: add it (touches Phase 20 task service + Phase 14 routers) or drop it from the Console design? Recommendation: drop it from V1; revisit if operator load patterns demand it.
 
 ### LR-5. Event Stream (bottom-left dock)
 
 Live, filtered, time-ordered list:
+
 - Format per row: `HH:MM:SS [type-icon] event_type source_descriptor`
 - Event types visible: `task.started`, `tool.call`, `tool.result`. Implies the canonical event taxonomy from Phase 5 + later phases is what backs this.
 - Filter dropdown — by event type / source / identity / search text.
 - "Live" indicator pulse when streaming.
 
 Protocol surface:
+
 - Phase 72 (Console subscription protocol surface) ships the wire.
 - Phase 6 (replay + cursor) lets the stream pick up from a cursor on reconnect.
 
@@ -160,6 +171,7 @@ Open question: does the stream respect identity-scope filtering inherent in the 
 ### LR-6. Per-task detail pane (bottom-right dock)
 
 When a node is selected, this pane shows:
+
 - **Step name + type + status + live indicator + close button**.
 - **Tab strip**: Details / Input / Output / Logs.
 - **Logs tab** (shown in mockup): time-stamped log entries with severity (info / debug). Streaming chunk events appear inline as `[debug] Chunk received (X.X KB)`.
@@ -169,6 +181,7 @@ When a node is selected, this pane shows:
 - **Expand** + **Copy** buttons.
 
 Protocol surface:
+
 - Per-task structured log retrieval (likely via Phase 57 durable event log + Phase 60 protocol transport).
 - Per-task input/output retrieval — these are stored on the StateStore (Phase 7) + audit-redacted before exposure (Phase 3).
 
@@ -181,6 +194,7 @@ The mockup focuses on Live Runtime. The sidebar lists 13 more views. Each gets a
 ### Sessions view (OVERVIEW)
 
 A list / table of sessions with filtering and drill-down:
+
 - Filters: status, agent, user, tenant, started-in-window, has-pending-intervention, has-failed-task, cost-above-threshold.
 - Per-row: session ID, agent, user, status, started, duration, tasks, total-cost, total-tokens.
 - Click → opens the Live Runtime view scoped to that session.
@@ -192,6 +206,7 @@ Backing: Phase 8 (SessionRegistry) + Phase 72 (Protocol subscription) + Phase 36
 ### Tasks view (OVERVIEW)
 
 Like sessions but at the task granularity. Useful for "find every failed task in the last hour" / "what's currently running across all sessions":
+
 - Filters: task type, status, source, latency-above, identity, error-class.
 - Per-row: task ID, parent session, type, status, started, duration, identity.
 - Click → opens the per-task detail pane scoped to history (not live).
@@ -201,6 +216,7 @@ Backing: Phase 20 (TaskRegistry) + Phase 21 (TaskGroup) + Phase 72.
 ### Agents view (OVERVIEW)
 
 This is the most under-specified view in the master plan and the most important one for brief 09 + the playground (below):
+
 - List of configured agents in the current tenant.
 - Per-agent: name, description, owner (admin who created), # sessions today, # users authorized, # tool attachments, # MCP connections, # agent-bound credentials configured (count of `ScopeAgent` OAuth bindings with valid tokens).
 - Click → opens the **Agent Detail** view:
@@ -220,6 +236,7 @@ Backing: this view does not currently have a phase. **Recommendation**: a new ph
 ### Tools view (OVERVIEW or BUILD — undecided)
 
 Browse the registered tool catalog:
+
 - Filter by source / transport / side-effect class / loading mode / tag.
 - Per-row: name, source, transport, side-effect, schema hash, examples count, last-invoked.
 - Click → tool detail: full schema, description, examples, recent invocations, policy, source provenance.
@@ -230,6 +247,7 @@ Backing: Phase 26 (catalog) + Phase 72.
 ### Events view (OVERVIEW)
 
 The event stream from the bottom dock but as a full-screen, query-driven view:
+
 - Time-range picker, type filter, identity filter, free-text search.
 - Save / share filtered views.
 - Export to JSONL / CSV (per-row rendered, post-redaction).
@@ -240,6 +258,7 @@ Backing: Phase 57 (durable event log) + Phase 6 (replay + cursor) + Phase 60.
 ### Background Jobs view (OVERVIEW)
 
 Long-running tasks that don't belong to a foreground session:
+
 - Filters: status, type, identity, age.
 - Per-row: job ID, type, status, started, ETA, # related sessions.
 - Click → progress detail (artifacts produced so far, sub-task progress).
@@ -250,6 +269,7 @@ Backing: Phase 20–21 + Phase 72. Phase 20's `TaskRegistry` already unifies for
 ### Flows view (BUILD)
 
 Read-only inspector + (optionally) editor for declared Flows (Phase 26a Flow-as-Tool, Phase 100 Recipe loader):
+
 - Per-flow: visual DAG (nodes + edges), source-of-truth view (YAML / Go code reference), test history.
 - "Run this flow" → playground-like invocation.
 - Read-only V1; editor / DSL is post-V1.
@@ -259,6 +279,7 @@ Backing: Phase 26a + Phase 100.
 ### Memory view (BUILD)
 
 Inspect memory state per identity / session / agent:
+
 - Filter by identity (the visible scope respects the JWT — only sees what the JWT scope allows).
 - Memory items list (per-item: content, ttl, created, last-accessed, scope).
 - Memory strategy debugger — show how a strategy (Phase 24) selected items for a given session.
@@ -269,6 +290,7 @@ Backing: Phases 23–25.
 ### MCP Connections view (BUILD)
 
 The shipped MCP southbound surface (Phase 28) deserves a control plane:
+
 - List of configured MCP servers.
 - Per-server: name, transport, URL/command, state (connected/disconnected/error), last-discovery time, tool count, recent latency, error rate.
 - "Refresh discovery" button → calls Phase 28's `Provider.Discover` again.
@@ -282,6 +304,7 @@ Backing: Phase 28 + brief 09 + Phase 73.
 ### Evaluations view (ANALYZE)
 
 Out-of-scope for V1 per the master plan, but the sidebar lists it:
+
 - Eval suites, runs, scores.
 - A/B comparisons (planner X vs planner Y on the same input set).
 - Regression detection.
@@ -291,6 +314,7 @@ Backing: post-V1. Mention here so the brief is complete; Phase 80+ would address
 ### Artifacts view (ANALYZE)
 
 Browse the artifact store:
+
 - Filter by mime type, size, identity, session, source-task, time.
 - Per-row: filename, size, age, source-task, content-hash.
 - Click → preview (per-mime-type renderer; see playground for the renderer types).
@@ -302,6 +326,7 @@ Backing: Phases 17–19 + Phase 73.
 ### Settings view (SETTINGS)
 
 Console-wide + per-user settings:
+
 - **Connected runtimes**: list of attached runtimes, add new, remove.
 - **API tokens**: per-user OAuth bindings for tools (the user's `ScopeUser` tokens — separate UI from admin's `ScopeAgent` setup in the Agents view).
 - **Theme**: light / dark / system.
@@ -341,6 +366,7 @@ Both lead to the same surface. The Playground is a chat-style interface for dire
 ### PG-3. Full MCP-Apps compliance
 
 The MCP spec includes "MCP Apps" — server-sent rich UI primitives that go beyond plain text:
+
 - `EmbeddedResource` — server attaches a resource the client should render inline.
 - `ResourceLink` — server returns a URI the client may fetch / preview.
 - `ImageContent` / `AudioContent` — typed binary content with explicit MIME.
@@ -348,6 +374,7 @@ The MCP spec includes "MCP Apps" — server-sent rich UI primitives that go beyo
 - Future MCP-Apps additions (the spec is evolving): server-sent UI fragments, structured forms, interactive widgets.
 
 The Console MUST render every typed content shape Harbor's MCP driver (Phase 28) lowers from MCP into `ToolResult.Value`:
+
 - `string` → markdown render with code-block highlighting + link preview.
 - `ImageRef` → inline image with download fallback.
 - `AudioRef` → audio player with download fallback.
@@ -359,6 +386,7 @@ When MCP-Apps gain new content types, the Console renderer registry adds one ren
 ### PG-4. Rich output rendering (assistant-side)
 
 The Playground's message renderer supports:
+
 - **Markdown** (CommonMark + GFM): tables, task lists, footnotes, math (KaTeX), Mermaid diagrams.
 - **Code blocks** with syntax highlighting (highlight.js / Shiki), per-block copy, per-block "open in editor".
 - **JSON / YAML / TOML** with collapsible tree view.
@@ -402,6 +430,7 @@ A "show traces" toggle that overlays the Topology view (LR-1) inline with the ch
 ### CC-1. Multi-runtime context
 
 The "Local Runtime • Running" indicator in the sidebar implies multi-runtime support:
+
 - The Console can connect to N runtimes simultaneously (a local dev runtime + a staging runtime + a production runtime).
 - A runtime-switcher in the top-left chooses the active context.
 - Each view's data is scoped to the active runtime.
@@ -412,6 +441,7 @@ Protocol surface: each runtime is a separate Protocol endpoint. The Console mana
 ### CC-2. Identity-aware UI
 
 Every view respects the JWT's identity scope:
+
 - Tenant-scoped users see only their tenant's data.
 - Admin-scoped users see fleet across tenants (with an explicit "elevated view" indicator).
 - User-scoped users see only their own sessions / artifacts / memory / tokens.
@@ -422,6 +452,7 @@ CLAUDE.md §6 makes this mandatory — the Console enforces UI gates *and* the P
 ### CC-3. Notifications
 
 Notification center backing:
+
 - Each notification is a Protocol-emitted event of type `notification.*` carrying severity, identity scope, summary, deep-link.
 - The Console subscribes to its own user's notification topic on connection.
 - Routing config (email / Slack / web-push) is per-user (Settings view).
@@ -437,6 +468,7 @@ Notification center backing:
 ### CC-4. Global search (⌘K)
 
 Cross-entity quick search:
+
 - Indexes: session IDs (and metadata), task IDs, agent names, tool names, flow names, MCP server names, artifact filenames, event types, user/tenant identifiers.
 - Result types render with type-specific previews (e.g. a session result shows agent + status + age).
 - Keyboard navigation; recent searches; pinned searches.
@@ -445,6 +477,7 @@ Cross-entity quick search:
 ### CC-5. Keyboard navigation
 
 The mockup shows `⌘K` for search. Likely a fuller keyboard surface:
+
 - `g s` → Sessions, `g t` → Tasks, `g a` → Agents, etc. (Vim-style "go to" prefixes).
 - `j` / `k` → next / previous row in a list.
 - `Enter` → drill into selection.

@@ -7,8 +7,8 @@ corrective sub-prompt; the runtime re-asks the model bounded by
 `ModelProfile.MaxRetries`. Each retry emits `llm.retry_with_feedback`. The
 seam is a `Validator func(CompleteResponse) error` field on `CompleteRequest`
 — callers provide a checker; the wrapper runs the loop. The retry wrapper
-composes OUTSIDE downgrade so a fresh corrective turn flows through downgrade
-+ corrections + safety on each attempt (D-043).
+composes OUTSIDE downgrade so a fresh corrective turn flows through downgrade,
+corrections, and safety on each attempt (D-043).
 
 ## RFC anchor
 
