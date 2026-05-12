@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,15 +210,17 @@ func runLiveCancel(t *testing.T, client llm.LLMClient, model string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = withIdentity(t, ctx, "cancel")
 	text := "Tell me a long story about an ancient library, in 500 words."
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		cancel()
-	}()
+	// Cancel on first observed chunk — synchronous on the stream
+	// loop, so the second-chunk recv is the blocking site that must
+	// honour ctx.Done(). AGENTS.md §11: no time.Sleep.
+	var cancelOnce sync.Once
 	_, err := client.Complete(ctx, llm.CompleteRequest{
-		Model:     model,
-		Messages:  []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
-		Stream:    true,
-		OnContent: func(string, bool) {},
+		Model:    model,
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+		Stream:   true,
+		OnContent: func(_ string, _ bool) {
+			cancelOnce.Do(cancel)
+		},
 	})
 	// We tolerate either context.Canceled or a successful short
 	// completion (some providers finish before our 200ms timer
