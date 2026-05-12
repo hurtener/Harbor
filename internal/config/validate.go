@@ -342,6 +342,68 @@ func (c *Config) validateGovernance() error {
 	if c.Governance.RateLimitTPS < 0 {
 		return fieldError("governance.rate_limit_tps", "must be >= 0 (omit to disable)")
 	}
+	// Phase 36a / 36b — validate the IdentityTiers block. Empty map is
+	// the latent default (no enforcement); the validator rejects only
+	// malformed entries.
+	for name, tier := range c.Governance.IdentityTiers {
+		if name == "" {
+			return fieldError("governance.identity_tiers", "tier names must not be empty")
+		}
+		if tier.BudgetCeilingUSD < 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].budget_ceiling_usd", name),
+				"must be >= 0 (omit to disable)",
+			)
+		}
+		if tier.MaxTokens < 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].max_tokens", name),
+				"must be >= 0 (omit to disable)",
+			)
+		}
+		rl := tier.RateLimit
+		if rl.Capacity < 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].rate_limit.capacity", name),
+				"must be >= 0 (omit to disable)",
+			)
+		}
+		if rl.RefillTokens < 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].rate_limit.refill_tokens", name),
+				"must be >= 0",
+			)
+		}
+		if rl.RefillInterval < 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].rate_limit.refill_interval", name),
+				"must be >= 0",
+			)
+		}
+		// Coherence checks — partial rate-limit config is operator-
+		// confusing. Enforce: if any of (Capacity, RefillTokens,
+		// RefillInterval) is set, RefillInterval must be > 0 OR
+		// Capacity must be set (one-shot bucket is allowed: drains to
+		// zero, never refills).
+		if (rl.RefillTokens > 0 || rl.RefillInterval > 0) && rl.Capacity == 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].rate_limit.capacity", name),
+				"must be > 0 when refill_tokens or refill_interval is set",
+			)
+		}
+		if rl.RefillTokens > 0 && rl.RefillInterval == 0 {
+			return fieldError(
+				fmt.Sprintf("governance.identity_tiers[%q].rate_limit.refill_interval", name),
+				"must be > 0 when refill_tokens is set",
+			)
+		}
+	}
+	if c.Governance.DefaultTier != "" {
+		if _, ok := c.Governance.IdentityTiers[c.Governance.DefaultTier]; !ok {
+			return fieldError("governance.default_tier",
+				fmt.Sprintf("%q must reference an entry in identity_tiers", c.Governance.DefaultTier))
+		}
+	}
 	return nil
 }
 
