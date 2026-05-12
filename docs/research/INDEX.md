@@ -18,6 +18,7 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 08 | LLM client validation (bifrost) | 1319 | 2026-05-08 |
 | 09 | MCP OAuth — lessons from bifrost | ~3500 | 2026-05-12 |
 | 10 | Code-mode as a Harbor primitive | ~4200 | 2026-05-12 |
+| 11 | Console feature surface (from operator mockup + playground) | ~5000 | 2026-05-12 |
 
 ## Subsystem → briefs reverse index
 
@@ -31,6 +32,7 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Tool catalog + transports (in-proc / HTTP / MCP / A2A) | §6.4 | **03**, **07** |
 | Tool-side OAuth + HITL (Phase 30) | §6.4, §3.3 | **09** |
 | Code-mode as a tool primitive (proposed phase) | §6.4, §6.5 | **10** |
+| Console feature surface + playground (Phases 72–75 and new phases) | §5, §7 | **11** |
 | LLM client + provider correction | §6.5 | **03**, **07**, **08** |
 | Memory subsystem (strategies, scoping, drivers) | §6.6 | **04** |
 | Skills subsystem (catalog, virtual directory, importer, generator) | §6.7 | **04** |
