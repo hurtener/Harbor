@@ -127,6 +127,16 @@ func defaults() *Config {
 			Driver:               "mock",
 			Timeout:              60 * time.Second,
 			ContextWindowReserve: 0.05, // 5% safety margin (Phase 32 / D-026)
+			Corrections: LLMCorrectionsConfig{
+				// Phase 34 — corrections enabled by default. Operators
+				// who omit the field get the production behaviour.
+				// `*bool` distinguishes "operator didn't set" (nil →
+				// loader fills with true) from "operator explicitly
+				// disabled" (*false). The loader's `defaults()` runs
+				// BEFORE yaml merge, so the explicit `false` from yaml
+				// survives.
+				Enabled: boolPtr(true),
+			},
 		},
 		Governance: GovernanceConfig{
 			DefaultMaxTokens: 4096,
@@ -172,6 +182,12 @@ func defaults() *Config {
 		},
 	}
 }
+
+// boolPtr returns a pointer to b. Used by `defaults()` to populate
+// pointer-bool fields (e.g. `LLMCorrectionsConfig.Enabled`) where the
+// loader needs to distinguish "operator didn't set" from "operator
+// set false."
+func boolPtr(b bool) *bool { return &b }
 
 // applyEnvOverrides walks every leaf field of *Config and, when the
 // corresponding HARBOR_<PATH> env var is set, parses and applies it.

@@ -201,6 +201,80 @@ func (c *Config) validateLLM() error {
 				)
 			}
 		}
+		// Phase 34 correction-layer overrides — validate enum values.
+		// Empty string is always valid (= use per-provider default).
+		if prof.Corrections != nil {
+			if err := validateCorrectionsProfile(name, prof.Corrections); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// allowedMessageOrderings is the enum allowlist for
+// `LLMCorrectionsProfileConfig.MessageOrdering`. Empty is always
+// valid; explicit values must match.
+var allowedMessageOrderings = map[string]struct{}{
+	"":                     {},
+	"system_first_strict":  {},
+}
+
+// allowedSchemaModes is the enum allowlist for
+// `LLMCorrectionsProfileConfig.SchemaMode`.
+var allowedSchemaModes = map[string]struct{}{
+	"":              {},
+	"openai_strict": {},
+	"permissive":    {},
+}
+
+// allowedReasoningRoutings is the enum allowlist for
+// `LLMCorrectionsProfileConfig.ReasoningEffortRouting`.
+var allowedReasoningRoutings = map[string]struct{}{
+	"":               {},
+	"thinking_model": {},
+}
+
+// allowedResponseFormatShapes is the enum allowlist for
+// `LLMCorrectionsProfileConfig.ResponseFormatShape`.
+var allowedResponseFormatShapes = map[string]struct{}{
+	"":          {},
+	"json_only": {},
+	"anthropic": {},
+}
+
+// validateCorrectionsProfile enforces the Phase 34 per-profile
+// correction-layer enum constraints. Each enum's empty string maps
+// to "use the per-provider default" — the operator opts in by setting
+// a specific value.
+func validateCorrectionsProfile(name string, c *LLMCorrectionsProfileConfig) error {
+	if _, ok := allowedMessageOrderings[c.MessageOrdering]; !ok {
+		return fieldError(
+			fmt.Sprintf("llm.model_profiles[%q].corrections.message_ordering", name),
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedMessageOrderings), c.MessageOrdering),
+		)
+	}
+	if _, ok := allowedSchemaModes[c.SchemaMode]; !ok {
+		return fieldError(
+			fmt.Sprintf("llm.model_profiles[%q].corrections.schema_mode", name),
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedSchemaModes), c.SchemaMode),
+		)
+	}
+	if _, ok := allowedReasoningRoutings[c.ReasoningEffortRouting]; !ok {
+		return fieldError(
+			fmt.Sprintf("llm.model_profiles[%q].corrections.reasoning_effort_routing", name),
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedReasoningRoutings), c.ReasoningEffortRouting),
+		)
+	}
+	if _, ok := allowedResponseFormatShapes[c.ResponseFormatShape]; !ok {
+		return fieldError(
+			fmt.Sprintf("llm.model_profiles[%q].corrections.response_format_shape", name),
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedResponseFormatShapes), c.ResponseFormatShape),
+		)
 	}
 	return nil
 }
