@@ -112,15 +112,43 @@ func TestResolveWakeMode_HonoursWakeAware(t *testing.T) {
 }
 
 func TestTrajectory_SerializeFailsLoudly(t *testing.T) {
-	// Phase 42's contract: Serialize returns ErrTrajectoryNotImplemented.
-	// Phase 43 closes the contract; until then, callers fail loudly.
-	tr := &planner.Trajectory{Query: "hello"}
-	out, err := tr.Serialize()
-	if !errors.Is(err, planner.ErrTrajectoryNotImplemented) {
-		t.Fatalf("Serialize err = %v want ErrTrajectoryNotImplemented", err)
+	// Phase 43's contract: Serialize succeeds on JSON-encodable input
+	// and returns ErrUnserializable{Field: "..."} on any non-encodable
+	// leaf. No silent-drop path. (RFC §6.2 + §3.4 + brief 02 §4.)
+	//
+	// Happy path — a Trajectory with only JSON-encodable values
+	// serialises cleanly.
+	good := &planner.Trajectory{Query: "hello"}
+	out, err := good.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize(happy) err = %v want nil", err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("Serialize(happy) returned empty bytes")
+	}
+
+	// Fail-loudly path — a non-JSON-encodable leaf (function) in
+	// LLMContext surfaces as ErrUnserializable with a field path,
+	// NEVER silently as nil.
+	bad := &planner.Trajectory{
+		Query: "hello",
+		LLMContext: map[string]any{
+			"callback": func() {},
+		},
+	}
+	out, err = bad.Serialize()
+	if err == nil {
+		t.Fatalf("Serialize(bad) returned nil error — fail-loudly contract violated")
 	}
 	if out != nil {
-		t.Fatalf("Serialize returned non-nil bytes (%d) on stub path", len(out))
+		t.Fatalf("Serialize(bad) returned non-nil bytes (%d) on failure path", len(out))
+	}
+	var unserr planner.ErrUnserializable
+	if !errors.As(err, &unserr) {
+		t.Fatalf("Serialize(bad) err = %v; want errors.As(ErrUnserializable)", err)
+	}
+	if unserr.Field == "" {
+		t.Fatalf("ErrUnserializable.Field empty — must name the offending leaf")
 	}
 }
 
