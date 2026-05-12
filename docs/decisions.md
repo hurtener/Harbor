@@ -473,6 +473,40 @@ The `MaxTokens` semantic is fail-loud not clamp (master plan line 420 + RFC §6.
 
 `governance.NewCompound(subs...)` bundles `MaxTokensEnforcer` (cheapest reject — no state I/O), `RateLimiter` (per-key mutex + per-identity state write), and `CostAccumulator` (state I/O on every PostCall) into one Subsystem. Fan-out order is operator-driven; the default ordering puts cheapest-first so a likely rejection short-circuits before reaching the state-heavy accumulator.
 
+## D-045 — Skills LocalDB driver owns its own tables (no piggyback on StateStore); FTS5 detected at open with deterministic regex/exact fallback
+
+**Date:** 2026-05-12
+**Status:** Settled
+**Where it lives:** RFC §6.7, `docs/plans/phase-37-skills-store.md`, `internal/skills/skills.go` (`Deps` has no `State` field), `internal/skills/drivers/localdb/localdb.go` (driver opens its own DB), `internal/skills/drivers/localdb/migrations/0001_init.sql` (own `skills` + `skills_fts` schema), `internal/skills/drivers/localdb/search.go` (FTS5 → regex → exact ladder), brief 04 §4.3 + §4.4.
+
+**Why:** Phase 37 lands the SkillStore subsystem. Two design calls warrant a settled entry.
+
+1. **D-034 analog: skills drivers own their tables; the `Deps` struct does NOT carry a `StateStore`.** Memory's Phase 25 settled the precedent — persistent memory drivers own a dedicated `memory_state` table rather than piggybacking on the StateStore's `state_records` shape (D-034). The skills LocalDB driver follows the same pattern with a dedicated `skills` + `skills_fts` schema. Three reasons compound:
+   - **Schema fit.** `Skill` has 20+ load-bearing columns (`Origin`, `OriginRef`, `Scope`, `ScopeTenantID`, `ScopeProjectID`, `ContentHash`, JSON-encoded slices, lifecycle timestamps). The StateStore's `(Quadruple, Kind, Bytes)` envelope means every column lookup is a JSON probe — fine for opaque memory blobs, not for an indexed FTS5 corpus.
+   - **FTS5 needs a real table.** The FTS5 virtual table uses `content='skills' content_rowid='rowid'` external-content mode + INSERT/DELETE/UPDATE triggers to mirror the skills table. Building this against `state_records` would require a phantom-content table and a custom rowid mapping; the per-driver `skills` schema is cleaner.
+   - **Cross-driver portability.** The Portico SkillStore driver (post-V1) talks to a remote MCP server and has no StateStore need either — keeping the seam free of StateStore obligations widens the door for future drivers (Git, OCI, HTTP).
+
+2. **FTS5 availability detected at open via a probe query; the ranking ladder gracefully falls through to regex/exact when FTS5 is unavailable.** brief 04 §4.4 mandates the fallback test. `modernc.org/sqlite` compiles FTS5 in by default, so the production path always uses FTS5; the fallback is a correctness gate for builds (and for tests that force `ftsAvailable = false` via the internal test surface). **No operator-facing knob** to force the regex/exact path — that would be a "two parallel implementations of the same feature" (AGENTS.md §13 forbidden practice). Detection is mechanical: `SELECT count(*) FROM skills_fts WHERE skills_fts MATCH '__fts_probe__'` either succeeds (FTS5 alive) or errors (the migration's `CREATE VIRTUAL TABLE` rolled back on a build without FTS5).
+
+## D-046 — Skill ContentHash is sha256 over canonicalised content fields, excluding Origin / OriginRef / Scope / lifecycle timestamps
+
+**Date:** 2026-05-12
+**Status:** Settled
+**Where it lives:** RFC §6.7, `docs/plans/phase-37-skills-store.md`, `internal/skills/wire.go` (`CanonicalContentHash`), `internal/skills/drivers/localdb/localdb.go` (LWW + idempotency check uses the hash), brief 04 §4.8.
+
+**Why:** Conflict policy needs a deterministic gate. brief 04 §4.8 says "Generated → Generated: last-write-wins gated by `content_hash` change" — the hash must be stable across re-imports (the same Skills.md pack imported twice produces the same hash) and resilient to caller-side normalisation noise.
+
+The canonical hash envelope:
+
+- **Included:** `Name`, `Title`, `Description`, `Trigger`, `TaskType`, sorted `Tags`, ordered `Steps`, ordered `Preconditions`, ordered `FailureModes`, sorted `RequiredTools`, sorted `RequiredNS`, sorted `RequiredTags`, `Extra` (key-sorted text rendering).
+- **Excluded:** `Origin`, `OriginRef`, `Scope`, `ScopeTenantID`, `ScopeProjectID` — provenance metadata that legitimately differs across import paths without representing content drift.
+- **Excluded:** `CreatedAt`, `UpdatedAt`, `LastUsed`, `UseCount` — lifecycle state that evolves over a row's life.
+
+Slice fields are sorted before hashing when ordering is non-semantic (`Tags`, `RequiredTools`, `RequiredNS`, `RequiredTags`); preserved when ordering is semantic (`Steps`, `Preconditions`, `FailureModes` — these are procedural prose rendered to the planner in declared order). Field separator is `\x1f` (ASCII unit-separator) so caller-supplied newlines / whitespace / pipes can't collide with the envelope framing.
+
+`Extra` participates because the generator may stamp model-specific metadata there that legitimately differs between drafts even when the body text is identical (e.g. the model fingerprint that produced the skill). The renderer accepts string / int / int64 / float64 / bool / nil and substitutes `<unhashable>` for anything else so a caller-side type bug yields a stable hash rather than a panic or non-deterministic ordering.
+
+The hash version is implicit at V1 — changes to the envelope format (adding / removing / reordering fields) require a `0002_*.sql` migration that rehashes existing rows AND a new decisions entry naming the old/new envelope. Operators with frozen content_hash values in external systems are explicitly out of scope at V1; we cross that bridge when a downstream system surfaces the hash externally.
 ---
 
 ## D-045 — Planner package owns `PauseReason`, `FinishReason`, `WakeMode`, and the `SpawnSpec` shape; the TaskRegistry stays neutral on wake-mode

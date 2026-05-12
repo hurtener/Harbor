@@ -319,9 +319,9 @@ type GovernanceConfig struct {
 // `MaxTokens` — Phase 36b. Per-call cap. Requests whose `MaxTokens`
 // exceed this fail loudly with `ErrMaxTokensExceeded`. 0 = no cap.
 type GovernanceTierConfig struct {
-	BudgetCeilingUSD float64                    `yaml:"budget_ceiling_usd,omitempty"`
-	RateLimit        GovernanceRateLimitConfig  `yaml:"rate_limit,omitempty"`
-	MaxTokens        int                        `yaml:"max_tokens,omitempty"`
+	BudgetCeilingUSD float64                   `yaml:"budget_ceiling_usd,omitempty"`
+	RateLimit        GovernanceRateLimitConfig `yaml:"rate_limit,omitempty"`
+	MaxTokens        int                       `yaml:"max_tokens,omitempty"`
 }
 
 // GovernanceRateLimitConfig is the token-bucket shape (Phase 36b).
@@ -379,7 +379,19 @@ type MemoryConfig struct {
 }
 
 // SkillsConfig is owned by the skills subsystem phases.
-type SkillsConfig struct{}
+//
+// `Driver` selects a `skills.SkillStore` driver. Phase 37 ships the
+// `"localdb"` driver only; Phase 49 (Portico) adds `"portico"`.
+// Default `localdb`.
+//
+// `DSN` is required when `Driver` is `"localdb"`. The format mirrors
+// the StateStore + MemoryStore drivers (bare file path or `file:`
+// URI for SQLite; `:memory:` honoured for tests). `secret:"true"`
+// redacts the value in audit-redacted logs.
+type SkillsConfig struct {
+	Driver string `yaml:"driver,omitempty"`
+	DSN    string `yaml:"dsn,omitempty" secret:"true"`
+}
 
 // TasksConfig configures the TaskRegistry driver and the Phase 21
 // backgroundtasks-config knobs. `Driver` selects the registered

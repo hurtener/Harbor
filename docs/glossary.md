@@ -370,7 +370,21 @@ Additions to this set are RFC PRs.
 
 **Skill** — a token-savvy unit of operational know-how the runtime can search and inject. Distinct from Portico's distribution role; Harbor consumes via `SkillProvider`. RFC §6.7.
 
-**SkillProvider** — interface for skill sources (LocalDB, Portico via MCP, Git, OCI, HTTP). Drivers under `internal/skills/providers/*`. Extensibility-seam pattern.
+**SkillProvider** — planner-facing wrapper around `SkillStore` (Phase 38). Adds capability filtering, PII + tool-name redaction, and the tiered injection budgeter on top of the storage surface. Distinct from `SkillStore` (the storage interface). RFC §6.7.
+
+**SkillStore** — Harbor's identity-scoped, capability-filterable persistence interface for skills. Phase 37 (`internal/skills`); the §4.4 seam every later phase consumes. Drivers under `internal/skills/drivers/*`. RFC §6.7.
+
+**Origin** — provenance of a skill: `PackImport` (Skills.md importer, Phase 40) or `Generated` (in-runtime generator, Phase 41). RFC §6.7, brief 04 §4.8.
+
+**OriginRef** — lineage pointer carried on every skill: `<pack-name>@<version>` for `PackImport`; `gen:{session_id}:{run_id}` for `Generated`. Used by Console to trace where a skill came from. RFC §6.7.
+
+**Scope (skills)** — operator-declared visibility: `Project | Tenant | Global`. The generator default is `project`. RFC §6.7.
+
+**ContentHash** — sha256 over canonicalised `Skill` fields (excludes Origin / OriginRef / Scope / lifecycle timestamps). The LWW gate and idempotency key for `SkillStore.Upsert`. D-046.
+
+**FTS5Ladder** — the three-tier skill search ranking: FTS5 → regex → exact. Calibrated scoring constants in brief 04 §4.4. The ladder picks the first path that returns rows; FTS5 detected at open with deterministic fallback when absent. RFC §6.7.
+
+**RankingScore** — normalised 0.0–1.0 relevance score on a `RankedSkill`. FTS path: `bm25 → 1/(1+raw) → min-max`. Regex path: name fullmatch=0.95, name match=0.90, name search=0.85, body search=0.75. Exact path: 1.0. brief 04 §4.4.
 
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
