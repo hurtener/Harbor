@@ -32,9 +32,9 @@ func TestConcurrent_D025_BifrostDriver(t *testing.T) {
 	const N = 128
 	baseline := runtime.NumGoroutine()
 	var (
-		wg    sync.WaitGroup
-		errs  atomic.Int64
-		ok    atomic.Int64
+		wg   sync.WaitGroup
+		errs atomic.Int64
+		ok   atomic.Int64
 	)
 	wg.Add(N)
 	for i := 0; i < N; i++ {

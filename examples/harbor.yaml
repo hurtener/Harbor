@@ -96,6 +96,54 @@ llm:
   # corrections:
   #   enabled: true
 
+  # Phase 33a — custom OpenAI-compatible providers. Lets operators
+  # wire NIM, vLLM, ollama, lm-studio, or any other OpenAI-compatible
+  # endpoint without per-provider Go code. Set `llm.provider` to a
+  # custom provider's `name` and bifrost routes traffic through the
+  # custom configuration (the legacy `llm.api_key` / `llm.base_url` /
+  # `llm.timeout` fields are ignored in that case).
+  #
+  # IMPORTANT URL gotcha: bifrost's OpenAI provider appends
+  # `/v1/chat/completions` to `base_url`. NIM's host
+  # (`https://integrate.api.nvidia.com`) is the right BaseURL form;
+  # for endpoints whose URL already includes `/v1` use
+  # `request_path_overrides` to set the suffix to `/chat/completions`.
+  #
+  # custom_providers:
+  #   - name: nim
+  #     base_url: https://integrate.api.nvidia.com
+  #     # The env var NAME (no `env.` prefix); the driver resolves
+  #     # os.Getenv(name) at New time. Missing env var → fail closed
+  #     # at boot.
+  #     api_key_env_var: NVIDIA_API_KEY
+  #     models:
+  #       - google/gemma-4-31b-it
+  #     # NIM cold-start latency can exceed 60s; 180s is a conservative
+  #     # default. Operators can tune per-deployment.
+  #     timeout: 180s
+  #     max_retries: 2
+  #     retry_backoff_initial: 500ms
+  #     retry_backoff_max: 5s
+  #     # base_provider_type defaults to "openai" (Phase 33a only
+  #     # supports OpenAI-compatible). Future phases widen.
+  #     # base_provider_type: openai
+  #     # Optional — override bifrost's default URL paths when the
+  #     # endpoint diverges from OpenAI's path scheme. Keys are
+  #     # bifrost RequestType strings ("chat_completion", etc.).
+  #     # request_path_overrides:
+  #     #   chat_completion: /chat/completions
+  #
+  # network_defaults:
+  #   # Defaults applied to every provider (native + custom) when the
+  #   # per-provider override is absent. Zero-valued fields fall
+  #   # through to bifrost's package-level defaults.
+  #   timeout: 60s
+  #   max_retries: 3
+  #   retry_backoff_initial: 500ms
+  #   retry_backoff_max: 5s
+  #   concurrency: 3
+  #   buffer_size: 10
+
 governance:
   default_max_tokens: 4096
   repair_attempts: 3

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/artifacts"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"

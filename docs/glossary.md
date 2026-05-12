@@ -58,6 +58,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **BifrostContext** — `*schemas.BifrostContext`, bifrost's custom `context.Context` implementation that tracks user-set values and propagates cancellation. Harbor constructs one per `Complete` via `schemas.NewBifrostContext(ctx, schemas.NoDeadline)`. Wraps Harbor's parent ctx so cancellation propagates upstream; bifrost's internal goroutines exit when the upstream HTTP body completes (brief 08 §"Cancellation caveat").
 
+**BaseProviderType** — the wire-protocol family a `CustomProvider` emulates (Phase 33a). Phase 33a supports only `"openai"` (OpenAI-compatible endpoints; NIM, vLLM, ollama, lm-studio, in-house gateways). Future phases may widen to `"anthropic"` / `"cohere"` / etc. as evidence accrues. The validator's `allowedCustomBaseProviderTypes` map gates which values land.
+
 ## C
 
 **`Cancel(runID)`** — `Engine` method (Phase 13) that idempotently cancels a run: sets a per-run cancellation flag, drops queued envelopes for that run from every channel, cancels in-flight worker invocations, drains the egress subqueue, releases capacity waiters. Returns `(bool, error)` — `true` if the run was active. Cancellation is remembered for a bounded TTL (default 60s) so an `Emit` landing just after `Cancel` is rejected with `ErrRunCancelled`. RFC §6.1, brief 01 §4.
@@ -91,6 +93,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **CorrectionsProfile** — Per-model bundle of provider-quirk flags consumed by the Phase 34 corrections layer. Lives on `llm.ModelProfile.Corrections`. Zero-value means "no quirks declared for this model"; the corrections layer treats every zero field as the Harbor-default behaviour (no reorder, no schema mutation, OpenAI envelopes, usage backfill off). Fields: `MessageOrdering`, `SchemaMode`, `ReasoningEffortRouting`, `ResponseFormatShape`, `UsageBackfillEnabled`. RFC §6.5, D-041, brief 03 §4, brief 08.
 
 **Corrections layer** — `internal/llm/corrections`. The wrapper that sits between Harbor's runtime and the Phase 32 `safetyClient(driver)`. Rewrites `CompleteRequest`s per `ModelProfile.Corrections` before delegating, and optionally backfills `Usage` when the driver returns all-zeros. Compose order: `corrections(safetyClient(driver))` — the safety pass sees the post-correction request (D-041). Five quirks: message reordering (NIM), schema sanitization (`additionalProperties`/`strict`), reasoning-effort routing (thinking-class models), response-format envelope translation, usage backfill. Single baked-in mode — no `use_native` toggle (brief 03 §5). RFC §6.5, D-041.
+
+**CustomProvider** — operator-declared LLM provider (Phase 33a) whose wire protocol is OpenAI-compatible but whose endpoint is not on bifrost's native provider list. Configured under `llm.custom_providers` in `harbor.yaml`. Each entry: `name` (operator-picked `ModelProvider` identifier), `base_url` (OpenAI-compatible endpoint), `api_key_env_var` (env var NAME — no `env.` prefix), `models` (allowlist), optional per-provider `timeout` / `max_retries` / `retry_backoff_*` / `concurrency` / `buffer_size` overrides. When `llm.provider` matches a custom entry's name, the entry's network knobs apply and the legacy `llm.api_key` / `llm.base_url` / `llm.timeout` fields are ignored. NIM is the canonical first instance. RFC §6.5, D-042.
 
 ## D
 
@@ -230,9 +234,13 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`NodePolicy`** — Per-node reliability config: `Validate`, `TimeoutMS`, `MaxRetries`, `BackoffBase`/`Mult`/`MaxBackoff`, `ValidateFunc`, `RunCapacity` (Phase 12). Zero value is "no policy" (Phase 10's bare worker). Sensible defaults are set explicitly, not silently — fail-loud per AGENTS.md §5. RFC §6.1.
 
+**NetworkDefaults** — operator-tunable defaults (Phase 33a) bifrost applies to every provider (native + custom) when the per-provider override is absent. Fields: `Timeout`, `MaxRetries`, `RetryBackoffInitial`, `RetryBackoffMax`, `Concurrency`, `BufferSize`. Zero-valued fields fall through to bifrost's package-level defaults; non-zero values override. Configured at `llm.network_defaults`. Restart-required. RFC §6.5, D-042.
+
 ## P
 
-**ProviderRouting** — the per-Harbor-instance bifrost provider selection (`LLMConfig.Provider`). Phase 33 V1 supports one configured provider per Harbor binary; the operator's `harbor.yaml` names the bifrost provider (e.g. `openrouter`, `openai`, `anthropic`) and the per-model `LLMConfig.ModelProfiles` keys carry the upstream identifier. Multi-provider routing per Harbor instance is a post-V1 consideration; if a deployment needs multiple LLM endpoints, an operator runs multiple Harbor instances.
+**ProviderRouting** — the per-Harbor-instance bifrost provider selection (`LLMConfig.Provider`). Phase 33 V1 supports one configured provider per Harbor binary; the operator's `harbor.yaml` names the bifrost provider (e.g. `openrouter`, `openai`, `anthropic`) and the per-model `LLMConfig.ModelProfiles` keys carry the upstream identifier. Phase 33a widens this so the named provider can also be an operator-declared `CustomProvider`. Multi-provider routing per Harbor instance is a post-V1 consideration; if a deployment needs multiple LLM endpoints, an operator runs multiple Harbor instances.
+
+**ProviderEndpoint** — the URL bifrost POSTs requests to for a given provider. For native providers, bifrost's per-provider driver knows the URL. For `CustomProvider` entries (Phase 33a), the operator supplies it via `LLMCustomProviderConfig.BaseURL`. Important gotcha: bifrost's OpenAI provider appends `/v1/chat/completions` to the BaseURL — operators set the host root (e.g. `https://integrate.api.nvidia.com`), NOT the full `/v1` path. Endpoints whose URL already includes `/v1` use `RequestPathOverrides` to override the suffix. RFC §6.5, D-042.
 
 **`ApplyPatch`** — registry action for accepting or rejecting a pending context patch (proposed by a planner / human reviewer). Patches transition `pending → applied | rejected` through the `TaskRegistry`'s typed surface (Phase 21). The patch payload is opaque bytes (the actual context-patch shape lives at the planner, Phase 42+); the registry stores + retrieves. Emits `task.patch_applied` or `task.patch_rejected` on a real transition; idempotent re-apply returns `(false, nil)`. RFC §6.8.
 
