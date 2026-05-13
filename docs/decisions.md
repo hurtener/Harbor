@@ -780,7 +780,6 @@ The `internal/skills/directory_concurrent_test.go` ships the D-025 stress: N=128
 
 ---
 
-<<<<<<< feat/phase-48-deterministic-planner
 ## D-057 — Phase 48 deterministic planner: `DecisionTreeStep` abstraction over typed `Decision` returns; `WakePoll` non-blocking `WatchGroup` semantics; iface-validation lens proving `Planner` swappability; §13 primitive-with-consumer closed by in-scenario SpawnTask + AwaitTask emission
 
 **Date:** 2026-05-13
@@ -797,7 +796,9 @@ The `internal/skills/directory_concurrent_test.go` ships the D-025 stress: N=128
 **Identity is mandatory** (§6 rule 9 + D-001). The deterministic planner returns wrapped `planner.ErrIdentityRequired` on a partial quadruple at `Next` entry — defensive in depth alongside the runtime engine's identity propagation. **Fail-loud construction** (§13). `NewDeterministicPlanner` returns wrapped `planner.ErrInvalidConfig` when the configured step set is empty, when any configured step is nil, or when a group-aware step is configured without `WithRegistry`. Configuration errors NEVER surface at `Next` time; the constructor is the boundary.
 
 **Concurrent reuse pinned (D-025).** `DeterministicPlanner` is a reusable artifact: the receiver is read-only after construction; per-run state lives on the stack and in `RunContext`. `SpawnAndAwaitStep` holds an internal `sync.Map` keyed by `(SessionID, StepID)` so per-run spawn-tracking state is safe across N concurrent runs against the shared planner. `internal/planner/deterministic/d025_test.go` pins N=128 concurrent `Next` invocations against one shared instance under `-race` — asserts no races, no identity bleed (each call's `Finish.Metadata["run_id"]` matches the goroutine's RunID), no cancellation cross-talk (pre-cancelled ctx on i%5==0 returns ctx.Err() without affecting siblings), no goroutine leak (baseline `runtime.NumGoroutine` restored within 500ms of WaitGroup join). Coverage: 90.1% on `internal/planner/deterministic` (target 85%).
-=======
+
+---
+
 ## D-056 — Phase 47 parallel executor + ReAct CallParallel / SpawnTask / AwaitTask emission: three reserved tool names as V1 emission surface; `reduceToSingleAction` deletion timing; `AbsoluteMaxParallel = 50`; JoinSpec enum semantics (JoinAll / JoinFirstSuccess / JoinN); atomic-setup vs in-flight failure handling; §13 primitive-with-consumer compliance
 
 **Date:** 2026-05-13
@@ -834,4 +835,3 @@ The `internal/skills/directory_concurrent_test.go` ships the D-025 stress: N=128
    The §13 rule explicitly names `SpawnTask` and `AwaitTask` as the pair that MUST land together: "a planner that can spawn a background task but cannot join it produces orphan work the runtime cannot recover." Phase 47's PR bundles them per the binding rule. The unified pause/resume primitive (Phase 50) is the next §13 application of the same rule — it will land with a `RequestPause`-emitting consumer in the same wave.
 
 The `internal/runtime/parallel/concurrent_test.go` ships the D-025 N=128 reuse stress: one shared `*parallel.Executor`, per-goroutine identity quadruples (no bleed), pre-cancelled ctxes on i%17==0 (no cross-talk), goroutine baseline restored within 2s of WaitGroup join (no leak). The Phase 45 `internal/planner/react/d025_test.go` test already covers the upgraded ReAct emission paths transitively (any `Next` call exercises `mapDecision`'s new cases). Coverage: `internal/runtime/parallel` ≥ 85% (master-plan target).
->>>>>>> main
