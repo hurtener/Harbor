@@ -165,17 +165,40 @@ func TestExecute_JoinAll_RejectsInvalidArgsBranchAtomically(t *testing.T) {
 // TestExecute_JoinFirstSuccess_CancelsRemainder pins the
 // first-success cancellation semantics: when one branch succeeds, the
 // remaining branches are cancelled via a derived ctx.
+//
+// Synchronisation note: the executor's `invokeBranch` short-circuits
+// on `ctx.Err()` BEFORE calling the tool — an efficient skip for
+// branches whose goroutine hasn't been scheduled yet when the first
+// success fires. To verify cancel propagation we must guarantee the
+// slow branches have entered their `select` (and are therefore
+// cancellation-observable) BEFORE the fast branch succeeds. We pin
+// that ordering with a `slowReady` WaitGroup the fast branch awaits.
 func TestExecute_JoinFirstSuccess_CancelsRemainder(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
 
-	// fast tool — returns immediately.
-	invFast, _ := echoTool("fast")
+	// Synchronisation point: both slow branches must reach their
+	// select before fast succeeds — otherwise fast's success races
+	// the slow goroutines' scheduling and they get short-circuited
+	// by invokeBranch's ctx.Err() guard before invSlow runs.
+	const slowBranches = 2
+	var slowReady sync.WaitGroup
+	slowReady.Add(slowBranches)
+
+	// fast tool — blocks until both slow branches are in their
+	// select, then returns immediately. Cancel signal then has a
+	// guaranteed observable target.
+	invFast := func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+		slowReady.Wait()
+		return tools.ToolResult{Value: "fast"}, nil
+	}
 	resolver.Register("fast", invFast, nil)
 
-	// slow tool — blocks on ctx; counts cancellation observations.
+	// slow tool — signals readiness, then blocks on ctx; counts
+	// cancellation observations.
 	var slowCancelled atomic.Int64
 	invSlow := func(ctx context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+		slowReady.Done()
 		select {
 		case <-ctx.Done():
 			slowCancelled.Add(1)
@@ -212,20 +235,24 @@ func TestExecute_JoinFirstSuccess_CancelsRemainder(t *testing.T) {
 	if dur > 1*time.Second {
 		t.Errorf("Execute took %v — first-success should not wait on slow branches", dur)
 	}
-	// Slow branches may have been cancelled — give them a beat to
-	// observe ctx.Done().
-	// Polling pattern (no time.Sleep for sync): the cancel signal must
-	// propagate quickly, but we don't strictly require both slow
-	// branches to have observed it before Execute returned (they may
-	// still be unwinding). Just assert at least one observed cancel.
-	deadline := time.After(500 * time.Millisecond)
+	// Both slow branches were guaranteed to have entered their select
+	// before fast succeeded (slowReady barrier). The cancel signal
+	// from the executor's `cancel()` call MUST therefore propagate to
+	// both. Poll with a 1ms ticker so the assertion goroutine yields
+	// CPU to the slow branches under CI load (race detector + 1-2 CPU
+	// runner). Deadline at 2s (matches slow tool's fallback) gives a
+	// busy CI scheduler plenty of runway.
+	ticker := time.NewTicker(1 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Second)
 loop:
-	for slowCancelled.Load() < 1 {
+	for slowCancelled.Load() < slowBranches {
 		select {
 		case <-deadline:
-			t.Errorf("slowCancelled = %d, want ≥ 1 (first-success must derive a cancel ctx)", slowCancelled.Load())
+			t.Errorf("slowCancelled = %d, want %d (first-success must cancel every slow branch)",
+				slowCancelled.Load(), slowBranches)
 			break loop
-		default:
+		case <-ticker.C:
 		}
 	}
 }
