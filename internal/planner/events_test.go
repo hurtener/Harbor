@@ -22,6 +22,8 @@ func TestEventTypes_AllRegistered(t *testing.T) {
 		planner.EventTypePlannerError,
 		planner.EventTypePlannerRepairExhausted,
 		planner.EventTypePlannerMaxStepsExceeded,
+		planner.EventTypeTrajectoryCompressed,
+		planner.EventTypeTrajectoryCompressionFailed,
 	}
 	for _, et := range cases {
 		t.Run(string(et), func(t *testing.T) {
@@ -66,6 +68,45 @@ func TestMaxStepsExceededPayload_IsSafePayload(t *testing.T) {
 		MaxSteps:      12,
 		StepsObserved: 13,
 		LastTool:      "search",
+		OccurredAt:    time.Now(),
+	}
+	// Compile-time guarantee: the type implements events.SafePayload.
+	var _ events.SafePayload = payload
+}
+
+// TestTrajectoryCompressedPayload_IsSafePayload confirms the Phase 46
+// success-path payload composes events.SafeSealed. D-055.
+func TestTrajectoryCompressedPayload_IsSafePayload(t *testing.T) {
+	t.Parallel()
+	payload := planner.TrajectoryCompressedPayload{
+		Identity: identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+			RunID:    "r",
+		},
+		StepsBefore:   12,
+		StepsAfter:    12,
+		TokenEstimate: 8192,
+		OccurredAt:    time.Now(),
+	}
+	// Compile-time guarantee: the type implements events.SafePayload.
+	var _ events.SafePayload = payload
+}
+
+// TestTrajectoryCompressionFailedPayload_IsSafePayload confirms the
+// Phase 46 fail-loudly payload composes events.SafeSealed. The emit
+// is the load-bearing observability surface for compression failures
+// (§13 — silent degradation banned). D-055.
+func TestTrajectoryCompressionFailedPayload_IsSafePayload(t *testing.T) {
+	t.Parallel()
+	payload := planner.TrajectoryCompressionFailedPayload{
+		Identity: identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
+			RunID:    "r",
+		},
+		StepsObserved: 12,
+		TokenEstimate: 8192,
+		ErrorCode:     "summariser_error",
+		ErrorMessage:  "downstream LLM returned 500",
 		OccurredAt:    time.Now(),
 	}
 	// Compile-time guarantee: the type implements events.SafePayload.

@@ -11,18 +11,31 @@ import (
 )
 
 // defaultBuilder is the in-package [PromptBuilder]. It produces a
-// three-block conversation:
+// conversation whose shape depends on whether the trajectory has been
+// compacted (Phase 46):
 //
 //  1. System message: the supplied system prompt + a rendered tool
 //     catalog block (name + description per tool from rc.Catalog).
 //  2. User message: the run's Goal (or Query when Goal is empty),
-//     followed by an optional Summary block when rc.Trajectory.Summary
-//     is non-nil (Phase 46 populates Summary; Phase 45 reads but does
-//     not write it).
-//  3. Per-step assistant + user pair: the prior planner action
-//     rendered as JSON (assistant) and the rendered observation
-//     (user). Observations prefer LLMObservation over raw Observation
-//     per D-026 heavy-content discipline.
+//     followed by — when rc.Trajectory.Summary is non-nil — a single
+//     compacted block that lists the summary's Goals / Facts /
+//     Pending / LastOutputDigest / Note fields.
+//  3. **Trajectory rendering — Phase 46 contract (D-055):**
+//     - When `rc.Trajectory.Summary == nil`: render each completed
+//     Step as an assistant turn (the prior planner action as JSON) +
+//     a user turn (the rendered observation, preferring
+//     LLMObservation over raw Observation per D-026 heavy-content
+//     discipline).
+//     - When `rc.Trajectory.Summary != nil`: SKIP the per-step loop.
+//     The summary block in the user message (block 2) IS the
+//     trajectory representation. Brief 02 §4: "The compressed
+//     digest replaces the raw step history in subsequent prompt
+//     builds." Rendering both would double-count tokens and defeat
+//     the compression.
+//  4. Optional background-task outcomes block: resolved
+//     [planner.BackgroundResult] entries surface as a final user
+//     message (the D-032 push-wake seam). Renders independently of
+//     compaction.
 //
 // The builder reads from rc; it MUST NOT mutate rc. The result is
 // always safe to discard / re-build per call — the builder is
@@ -51,28 +64,41 @@ func (defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Comp
 		Content: textContent(userContent),
 	})
 
-	// 3. Trajectory steps: assistant (prior action) + user
-	// (observation) per completed step.
+	// 3. Trajectory rendering. Phase 46 contract (D-055): when
+	// rc.Trajectory.Summary is non-nil, SKIP the per-step assistant +
+	// user pair loop. The compacted summary in the user block above is
+	// the trajectory representation; rendering both would double-count
+	// tokens and defeat the compression (brief 02 §4: "The compressed
+	// digest replaces the raw step history in subsequent prompt
+	// builds."). When Summary is nil, render the raw step history as
+	// before (the Phase 45 V1 minimum-viable shape).
 	if rc.Trajectory != nil {
-		for _, step := range rc.Trajectory.Steps {
-			asst := renderActionForLLM(step.Action)
-			obs := renderObservationForLLM(step)
-			if asst != "" {
-				messages = append(messages, llm.ChatMessage{
-					Role:    llm.RoleAssistant,
-					Content: textContent(asst),
-				})
-			}
-			if obs != "" {
-				messages = append(messages, llm.ChatMessage{
-					Role:    llm.RoleUser,
-					Content: textContent(obs),
-				})
+		if rc.Trajectory.Summary == nil {
+			for _, step := range rc.Trajectory.Steps {
+				asst := renderActionForLLM(step.Action)
+				obs := renderObservationForLLM(step)
+				if asst != "" {
+					messages = append(messages, llm.ChatMessage{
+						Role:    llm.RoleAssistant,
+						Content: textContent(asst),
+					})
+				}
+				if obs != "" {
+					messages = append(messages, llm.ChatMessage{
+						Role:    llm.RoleUser,
+						Content: textContent(obs),
+					})
+				}
 			}
 		}
 		// Optional: emit any resolved background-task outcomes (push
 		// wake — D-032 / Phase 45 spec) as a final user message so
-		// the planner sees them on the very next step.
+		// the planner sees them on the very next step. This block
+		// fires regardless of compaction — background outcomes are
+		// the latest signal the planner has and must reach it on the
+		// NEXT step. (A future phase MAY route them through the
+		// summariser; Phase 46 keeps them as a separate trailing
+		// user turn.)
 		if len(rc.Trajectory.Background) > 0 {
 			if bg := renderBackground(rc.Trajectory.Background); bg != "" {
 				messages = append(messages, llm.ChatMessage{

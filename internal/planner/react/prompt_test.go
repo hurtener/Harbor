@@ -275,6 +275,112 @@ func TestDefaultBuilder_RendersBackgroundResults(t *testing.T) {
 	}
 }
 
+// TestDefaultBuilder_WithSummary_SkipsStepHistory is the Phase 46
+// contract assertion (D-055): when rc.Trajectory.Summary is non-nil,
+// the builder MUST NOT render per-step assistant/user pairs. The
+// summary block in the user content IS the trajectory representation;
+// rendering both would double-count tokens and defeat the
+// compression. Brief 02 §4: "The compressed digest replaces the raw
+// step history in subsequent prompt builds."
+//
+// Test shape: a trajectory carries 3 Steps AND a non-nil Summary.
+// Expected messages: [system, user (goal + summary)]. No assistant
+// messages from the step loop.
+func TestDefaultBuilder_WithSummary_SkipsStepHistory(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "test",
+		Trajectory: &planner.Trajectory{
+			Summary: &planner.Summary{
+				Goals: []string{"reach goal"},
+				Note:  "compacted by Phase 46 runner",
+			},
+			Steps: []planner.Step{
+				{
+					Action:         planner.CallTool{Tool: "search", Args: json.RawMessage(`{"q":"foo"}`)},
+					LLMObservation: "found 3 hits — heavy raw text that would normally render",
+				},
+				{
+					Action:         planner.CallTool{Tool: "summarize"},
+					LLMObservation: "summary text",
+				},
+				{
+					Action:         planner.CallTool{Tool: "verify"},
+					LLMObservation: "verified",
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+
+	// Count assistant messages — Phase 46 contract: ZERO when Summary
+	// is non-nil.
+	asstCount := 0
+	for _, m := range req.Messages {
+		if m.Role == llm.RoleAssistant {
+			asstCount++
+		}
+	}
+	if asstCount != 0 {
+		t.Errorf("Phase 46 contract: assistant message count = %d, want 0 (Summary present must skip step history)", asstCount)
+	}
+
+	// Confirm the summary IS in the user content — the planner still
+	// observes the compacted view.
+	userMsg := req.Messages[1]
+	if userMsg.Role != llm.RoleUser {
+		t.Fatalf("Messages[1].Role = %q, want user", userMsg.Role)
+	}
+	body := *userMsg.Content.Text
+	for _, want := range []string{"reach goal", "compacted by Phase 46 runner"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("user content missing summary segment %q. Body: %s", want, body)
+		}
+	}
+
+	// Confirm raw step history did NOT leak through.
+	for _, leak := range []string{"found 3 hits", `"tool":"search"`, `"tool":"summarize"`, `"tool":"verify"`} {
+		for _, m := range req.Messages {
+			if m.Content.Text != nil && strings.Contains(*m.Content.Text, leak) {
+				t.Errorf("Phase 46 contract: step-history fragment %q leaked into prompt despite non-nil Summary", leak)
+				break
+			}
+		}
+	}
+}
+
+// TestDefaultBuilder_NoSummary_RendersStepHistory is the regression
+// guard: when Summary == nil, the builder must STILL render the
+// per-step assistant/user pairs (the Phase 45 V1 minimum-viable
+// shape). The Phase 46 swap is conditional on Summary != nil; the
+// nil branch must not regress.
+func TestDefaultBuilder_NoSummary_RendersStepHistory(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "test",
+		Trajectory: &planner.Trajectory{
+			Summary: nil, // explicit
+			Steps: []planner.Step{
+				{
+					Action:         planner.CallTool{Tool: "search", Args: json.RawMessage(`{"q":"foo"}`)},
+					LLMObservation: "found 3 hits",
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+
+	asstCount := 0
+	for _, m := range req.Messages {
+		if m.Role == llm.RoleAssistant {
+			asstCount++
+		}
+	}
+	if asstCount != 1 {
+		t.Errorf("Summary==nil regression: assistant message count = %d, want 1 (step history must render)", asstCount)
+	}
+}
+
 // TestDefaultBuilder_NilCatalogProducesNoToolsBlock asserts the
 // prompt builder handles nil catalog defensively.
 func TestDefaultBuilder_NilCatalogProducesNoToolsBlock(t *testing.T) {
