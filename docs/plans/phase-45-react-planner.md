@@ -248,14 +248,8 @@ across N concurrent goroutines; per-run state lives entirely in
 
 ## Non-goals
 
-- No SpawnTask / AwaitTask / RequestPause decision emission. The V1
-  minimum-viable spec is "single tool call per step." Later planner
-  phases (or a follow-up upgrade to ReAct) add the prompt-engineering
-  surface for these decision shapes.
-- No `CallParallel` emission. Multi-action salvage from Phase 44's
-  loop is collapsed to the first action; the parallel execution
-  primitive lands in Phase 47. The `reduceToSingleAction` method is
-  the unwind point — Phase 47 deletes the override.
+- ~~No SpawnTask / AwaitTask / RequestPause decision emission.~~ **Phase 47 (D-056) closed SpawnTask + AwaitTask emission via the two new reserved tool names (`_spawn_task`, `_await_task`). RequestPause emission remains deferred until Phase 50's unified pause/resume primitive lands with a real consumer per §13 primitive-with-consumer.** The V1 minimum-viable spec at Phase 45 was "single tool call per step"; Phase 47 lifted that ceiling.
+- ~~No `CallParallel` emission.~~ **Phase 47 (D-056) deleted the `reduceToSingleAction` override; the planner now passes `CallParallel` through `mapDecision` verbatim, consumed by the new `internal/runtime/parallel` executor.** Multi-action salvage from Phase 44's loop now flows end-to-end.
 - No runtime loop. Phase 45 ships the `Planner.Next` implementation;
   the runtime executor that calls Next in a loop, executes Decisions,
   and threads observations back into the next prompt lands in the

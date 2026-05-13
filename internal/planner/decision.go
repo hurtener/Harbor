@@ -71,8 +71,13 @@ type JoinSpec struct {
 	// Phase 47 ships the implementations.
 	Kind JoinKind
 	// MergeKeys is the deterministic merge ordering (only meaningful
-	// for KeyedMerge).
+	// for JoinKeyed).
 	MergeKeys []string
+	// N is the success threshold for JoinN — the executor waits until
+	// N branches succeed, then cancels the remaining branches. Ignored
+	// for any Kind other than JoinN. Values ≤ 0 fall back to JoinAll
+	// semantics (the executor validates this at setup time).
+	N int
 }
 
 // JoinKind enumerates the parallel-result merge strategies.
@@ -90,6 +95,15 @@ const (
 	// JoinKeyed produces a keyed merge over the branches; the
 	// MergeKeys slice gives the deterministic ordering.
 	JoinKeyed JoinKind = "keyed"
+	// JoinN waits for N branches to succeed, then cancels the
+	// remaining branches. JoinSpec.N carries the threshold; the
+	// executor validates 0 < N ≤ len(Branches) at setup time and
+	// fails the call with ErrParallelInvalidJoin when out of range.
+	// D-056 — Phase 47 introduces JoinN as the third explicit join
+	// shape (JoinAll / JoinFirstSuccess / JoinN); JoinKeyed remains
+	// a documented future surface (a future runtime phase merges
+	// outputs by key).
+	JoinN JoinKind = "n"
 )
 
 // SpawnTask spawns a background task. When `Spec.RetainTurn` is true

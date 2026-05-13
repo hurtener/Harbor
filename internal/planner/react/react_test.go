@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -264,11 +265,18 @@ func TestNext_FinishToolNameMappedToFinishDecision(t *testing.T) {
 	}
 }
 
-// TestNext_ParallelReducesToFirstCallTool asserts the V1
-// single-tool-call-per-step override: when the repair loop returns
-// CallParallel (multi-action salvage), the planner collapses to the
-// first branch.
-func TestNext_ParallelReducesToFirstCallTool(t *testing.T) {
+// TestNext_ParallelPassesThroughVerbatim asserts the Phase 47 (D-056)
+// upgrade: when the repair loop returns CallParallel (multi-action
+// salvage), the planner passes it through unchanged. The runtime
+// parallel executor (internal/runtime/parallel) consumes the shape;
+// the §13 import-graph contract forbids the planner subtree from
+// importing internal/runtime/..., so the executor is OUTSIDE the
+// planner package by design.
+//
+// This test supersedes the prior V1 reduction test
+// (`TestNext_ParallelReducesToFirstCallTool`) — the Phase 45 D-051
+// stop-gap reduction override was DELETED in Phase 47.
+func TestNext_ParallelPassesThroughVerbatim(t *testing.T) {
 	t.Parallel()
 	// Multi-action response — Phase 44's parser produces a
 	// CallParallel from a JSON array.
@@ -283,22 +291,30 @@ func TestNext_ParallelReducesToFirstCallTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
-	call, ok := dec.(planner.CallTool)
+	par, ok := dec.(planner.CallParallel)
 	if !ok {
-		t.Fatalf("decision = %T, want planner.CallTool (V1 single-tool-call-per-step; D-051)", dec)
+		t.Fatalf("decision = %T, want planner.CallParallel (Phase 47 / D-056 pass-through)", dec)
 	}
-	if call.Tool != "alpha" {
-		t.Errorf("Tool = %q, want first branch %q", call.Tool, "alpha")
+	if got, want := len(par.Branches), 3; got != want {
+		t.Fatalf("len(Branches) = %d, want %d", got, want)
 	}
-	if call.Reasoning == "" {
-		t.Errorf("Reasoning empty — planner must annotate the reduction (D-051)")
+	wantNames := []string{"alpha", "beta", "gamma"}
+	for i, b := range par.Branches {
+		if b.Tool != wantNames[i] {
+			t.Errorf("Branches[%d].Tool = %q, want %q", i, b.Tool, wantNames[i])
+		}
+	}
+	if par.Join == nil || par.Join.Kind != planner.JoinAll {
+		t.Errorf("Join = %+v, want JoinAll (Phase 44 multi-action salvage default)", par.Join)
 	}
 }
 
-// TestNext_ParallelWithFinishFirstStillFinishes asserts the
-// reduction's special case: if the first parallel branch is
-// `_finish`, the planner converts it to a Finish Decision (the
-// reduction must not change completion semantics).
+// TestNext_ParallelWithFinishFirstStillFinishes asserts the special
+// case: if the first parallel branch is `_finish`, the planner
+// converts it to a Finish Decision (translating reserved names in the
+// first branch is the symmetric rule with the single-action path).
+// Phase 47 (D-056) preserves this special case even after the
+// CallParallel pass-through landed.
 func TestNext_ParallelWithFinishFirstStillFinishes(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
@@ -673,6 +689,205 @@ func TestStepsTaken_TracksSuccessfulNextCalls(t *testing.T) {
 	}
 	if got := p.StepsTaken(); got != 2 {
 		t.Errorf("StepsTaken = %d, want 2", got)
+	}
+}
+
+// TestNext_SpawnTaskEmissionMappedToSpawnTaskDecision asserts the
+// Phase 47 (D-056) spawn-task emission path: when the LLM emits the
+// reserved tool name `_spawn_task`, the planner translates the
+// envelope into a typed planner.SpawnTask Decision with Kind + Spec
+// fields populated. Background is the documented default kind; the
+// retain-turn / fail-fast / priority fields round-trip.
+func TestNext_SpawnTaskEmissionMappedToSpawnTaskDecision(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_spawn_task","args":{"kind":"background","spec":{"description":"summarise document X","query":"summarise X","priority":5,"retain_turn":false,"fail_fast":true},"group_id":"g-42"},"reasoning":"want a side-channel summary"}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-spawn")
+	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	spawn, ok := dec.(planner.SpawnTask)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.SpawnTask (Phase 47 / D-056)", dec)
+	}
+	if spawn.Kind != "background" {
+		t.Errorf("Kind = %q, want %q", spawn.Kind, "background")
+	}
+	if spawn.Spec.Description != "summarise document X" {
+		t.Errorf("Spec.Description = %q, want %q", spawn.Spec.Description, "summarise document X")
+	}
+	if spawn.Spec.Priority != 5 {
+		t.Errorf("Spec.Priority = %d, want 5", spawn.Spec.Priority)
+	}
+	if spawn.Spec.RetainTurn {
+		t.Errorf("Spec.RetainTurn = true, want false (push-wake default per D-032)")
+	}
+	if !spawn.Spec.FailFast {
+		t.Errorf("Spec.FailFast = false, want true")
+	}
+	if string(spawn.GroupID) != "g-42" {
+		t.Errorf("GroupID = %q, want %q", spawn.GroupID, "g-42")
+	}
+}
+
+// TestNext_SpawnTaskDefaultsKindToBackground asserts the documented
+// default: when the LLM omits `kind`, the planner stamps
+// `tasks.KindBackground`.
+func TestNext_SpawnTaskDefaultsKindToBackground(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_spawn_task","args":{"spec":{"description":"bg","query":"q"}}}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-spawn-default")
+	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	spawn, ok := dec.(planner.SpawnTask)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.SpawnTask", dec)
+	}
+	if spawn.Kind != "background" {
+		t.Errorf("Kind = %q, want %q (default)", spawn.Kind, "background")
+	}
+}
+
+// TestNext_SpawnTaskMalformedArgsFailsLoudly asserts fail-loudly
+// translation: malformed JSON in `args` returns wrapped
+// planner.ErrInvalidDecision rather than silently emitting a literal
+// `_spawn_task` CallTool (which the dispatcher would reject anyway —
+// the planner surfaces the error at translation time per §13).
+func TestNext_SpawnTaskMalformedArgsFailsLoudly(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			// args is a string, not an object — JSON-valid at the parser
+			// (parser accepts any args shape) but Unmarshal into the
+			// envelope struct fails.
+			{Content: `{"tool":"_spawn_task","args":"this is not an object"}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-spawn-mal")
+	_, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err == nil {
+		t.Fatal("Next returned nil err, want wrapped ErrInvalidDecision")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("err = %v, want errors.Is planner.ErrInvalidDecision", err)
+	}
+}
+
+// TestNext_SpawnTaskInvalidKindFailsLoudly asserts an unknown
+// `kind` value (anything other than foreground/background) is
+// rejected at translation time.
+func TestNext_SpawnTaskInvalidKindFailsLoudly(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_spawn_task","args":{"kind":"poltergeist","spec":{"description":"d","query":"q"}}}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-spawn-kind")
+	_, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err == nil {
+		t.Fatal("Next returned nil err, want wrapped ErrInvalidDecision")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("err = %v, want errors.Is planner.ErrInvalidDecision", err)
+	}
+}
+
+// TestNext_AwaitTaskEmissionMappedToAwaitTaskDecision asserts the
+// Phase 47 (D-056) await-task emission: when the LLM emits
+// `_await_task` with a `task_id`, the planner returns a typed
+// planner.AwaitTask Decision.
+func TestNext_AwaitTaskEmissionMappedToAwaitTaskDecision(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_await_task","args":{"task_id":"t-99"},"reasoning":"block on the spawn"}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-await")
+	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	aw, ok := dec.(planner.AwaitTask)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.AwaitTask (Phase 47 / D-056)", dec)
+	}
+	if string(aw.TaskID) != "t-99" {
+		t.Errorf("TaskID = %q, want %q", aw.TaskID, "t-99")
+	}
+}
+
+// TestNext_AwaitTaskEmptyIDFailsLoudly asserts the fail-loudly path:
+// empty task_id returns wrapped ErrInvalidDecision.
+func TestNext_AwaitTaskEmptyIDFailsLoudly(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_await_task","args":{"task_id":""}}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-await-empty")
+	_, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err == nil {
+		t.Fatal("Next returned nil err, want wrapped ErrInvalidDecision")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("err = %v, want errors.Is planner.ErrInvalidDecision", err)
+	}
+}
+
+// TestNext_AwaitTaskMalformedJSONFailsLoudly asserts malformed args
+// JSON returns wrapped ErrInvalidDecision.
+func TestNext_AwaitTaskMalformedJSONFailsLoudly(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"_await_task","args":[1,2,3]}`},
+		},
+	}
+	p := react.New(client)
+	q := fixedQuadruple(t, "r-await-mal")
+	_, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err == nil {
+		t.Fatal("Next returned nil err, want wrapped ErrInvalidDecision")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("err = %v, want errors.Is planner.ErrInvalidDecision", err)
+	}
+}
+
+// TestDefaultSystemPrompt_DocumentsAllThreeReservedNames asserts the
+// system prompt documents `_finish`, `_spawn_task`, `_await_task` so
+// the LLM can emit them without prompt-engineering at the call site.
+// The string-grep is intentionally brittle — drift in the prompt
+// surfaces here at test time.
+func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(react.DefaultSystemPrompt, "_finish") {
+		t.Errorf("DefaultSystemPrompt missing _finish (D-056 reserved names)")
+	}
+	if !strings.Contains(react.DefaultSystemPrompt, "_spawn_task") {
+		t.Errorf("DefaultSystemPrompt missing _spawn_task (D-056 reserved names)")
+	}
+	if !strings.Contains(react.DefaultSystemPrompt, "_await_task") {
+		t.Errorf("DefaultSystemPrompt missing _await_task (D-056 reserved names)")
 	}
 }
 
