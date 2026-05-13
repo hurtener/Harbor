@@ -758,6 +758,9 @@ The `internal/skills/importer/concurrent_test.go` ships the N=128 stress; `inter
 Additionally, Phase 41 adds `ScopeSession` to the `skills.Scope` enumeration (Phase 37 declared only `Project | Tenant | Global`; the session-scope marker was missing). The validator at `skills.Skill.Validate` accepts the new value; the `localdb` driver's existing identity filter already enforces session-only visibility for `Scope=session` rows (the storage layer's `WHERE tenant = ? AND user = ? AND session = ?` is unconditional). The `Promote` API rejects `scope=session` as contradictory (a promotion target other than the source session at session scope is meaningless).
 
 The `internal/skills/generator/concurrent_test.go` ships the D-025 N=128 concurrent-reuse stress: per-goroutine identity quadruples + distinct skill names against ONE shared catalog. The identity-bleed detector asserts each receipt's `Name` + `OriginRef` reflect the calling goroutine's identity (no cross-goroutine state leaks via shared map or closure capture). Pre-cancelled ctxes on i%5==0 surface either `context.Canceled` or graceful exit (no cancellation cross-talk); the goroutine baseline is restored within 500ms of WaitGroup join (no leak). The companion `TestConcurrent_SameNameResolvesDeterministically` proves that 16 concurrent writers proposing the SAME `(identity, name)` resolve to exactly one persisted state with the remaining 15 reporting `idempotent` (their hash matches the first writer's). Coverage: 92.2% on `internal/skills/generator` (target 90%).
+
+---
+
 ## D-052 — Phase 39 virtual directory: dual-source pinning (`DirectoryConfig.Pinned` + `Skill.Extra["pinned"]`); pinned partition exempted only from MaxEntries cap when fits, never from capability filter; `IncludeFields` deferred; deterministic `Name ASC` tie-break
 
 **Date:** 2026-05-12
