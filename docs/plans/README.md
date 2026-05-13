@@ -65,7 +65,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 43 | Trajectory + serialise (fail-loudly contract) | planner/trajectory   | §6.2, §3.4  | 42, 07                | 90%  | Shipped  |
 | 44 | Schema repair pipeline                        | planner/repair       | §6.2        | 42, 32                | 85%  | Shipped  |
 | 45 | Reference ReAct planner (minimum viable)      | planner/react        | §6.2        | 42, 43, 44, 32        | 85%  | Shipped  |
-| 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Pending  |
+| 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Shipped  |
 | 47 | Parallel-call execution + JoinSpec            | planner              | §6.2        | 45, 14                | 85%  | Pending  |
 | 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
 | 47 | Parallel-call exec + ReAct emission upgrade   | planner+runtime      | §6.2        | 45, 14, 42, 20, 21    | 85%  | Shipped  |

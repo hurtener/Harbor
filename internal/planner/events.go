@@ -59,6 +59,24 @@ const (
 	// same fail-loudly shape, different graceful-failure source
 	// (repair loop vs. planner-side step cap). D-051.
 	EventTypePlannerMaxStepsExceeded events.EventType = "planner.max_steps_exceeded"
+
+	// EventTypeTrajectoryCompressed — emitted by the Phase 46
+	// CompressionRunner when the trajectory summariser successfully
+	// produces a compaction artefact. Payload
+	// (TrajectoryCompressedPayload, SafePayload) carries the run's
+	// identity quadruple + step count + token estimate at the moment
+	// of compression. The success-path companion to
+	// trajectory.compression_failed (the fail-loudly surface). D-055.
+	EventTypeTrajectoryCompressed events.EventType = "trajectory.compressed"
+
+	// EventTypeTrajectoryCompressionFailed — emitted by the Phase 46
+	// CompressionRunner when the summariser returns an error, the
+	// estimator fails, or the summariser returns (nil, nil). Payload
+	// (TrajectoryCompressionFailedPayload, SafePayload) carries the
+	// identity + step count + token estimate + error code + truncated
+	// error message. The load-bearing fail-loudly observability surface
+	// for compression failures (§13 — silent degradation banned). D-055.
+	EventTypeTrajectoryCompressionFailed events.EventType = "trajectory.compression_failed"
 )
 
 func init() {
@@ -67,6 +85,8 @@ func init() {
 	events.RegisterEventType(EventTypePlannerError)
 	events.RegisterEventType(EventTypePlannerRepairExhausted)
 	events.RegisterEventType(EventTypePlannerMaxStepsExceeded)
+	events.RegisterEventType(EventTypeTrajectoryCompressed)
+	events.RegisterEventType(EventTypeTrajectoryCompressionFailed)
 }
 
 // RepairExhaustedPayload is the typed payload for
@@ -117,5 +137,64 @@ type MaxStepsExceededPayload struct {
 	MaxSteps      int
 	StepsObserved int
 	LastTool      string
+	OccurredAt    time.Time
+}
+
+// TrajectoryCompressedPayload is the typed payload for
+// EventTypeTrajectoryCompressed (Phase 46). SafePayload — every field
+// is operator-visible debug data, not secret-shaped:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `StepsBefore` is the trajectory step count when compression ran.
+//   - `StepsAfter` is the step count after compression. Phase 46 does
+//     NOT truncate the Steps slice; the runner only stamps Summary.
+//     `StepsAfter == StepsBefore` in V1; the field exists so future
+//     phases that truncate (free memory; trade observability for
+//     footprint) extend the schema without a payload-version bump.
+//   - `TokenEstimate` is the estimator's count at the moment the
+//     budget was breached.
+//
+// The emit is the success-path observability surface that pairs with
+// trajectory.compression_failed for the failure path; together they
+// make compression observable in both directions (§13 fail-loudly).
+// D-055.
+type TrajectoryCompressedPayload struct {
+	events.SafeSealed
+	Identity      identity.Quadruple
+	StepsBefore   int
+	StepsAfter    int
+	TokenEstimate int
+	OccurredAt    time.Time
+}
+
+// TrajectoryCompressionFailedPayload is the typed payload for
+// EventTypeTrajectoryCompressionFailed (Phase 46). SafePayload — the
+// fields carry operator-visible debug data:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `StepsObserved` is the trajectory step count at the moment of
+//     the failure.
+//   - `TokenEstimate` is the estimator's count when the failure
+//     happened (zero when the estimator itself failed).
+//   - `ErrorCode` classifies the failure into one of three buckets:
+//     `summariser_error` (the Summariser returned a non-nil error),
+//     `empty_summary` (the Summariser returned (nil, nil) — contract
+//     violation), `estimator_error` (the TokenEstimator returned an
+//     error, typically a Phase 43 ErrUnserializable surfaced through
+//     DefaultTokenEstimator's Serialize call).
+//   - `ErrorMessage` is the truncated original error message (capped
+//     at 256 chars to keep audit payloads bounded). Never carries raw
+//     trajectory content.
+//
+// Phase 46 ships the payload + the emit; the bus subscribers observe
+// the failure end-to-end. The emit is the load-bearing fail-loudly
+// observability surface (§13 — silent degradation banned). D-055.
+type TrajectoryCompressionFailedPayload struct {
+	events.SafeSealed
+	Identity      identity.Quadruple
+	StepsObserved int
+	TokenEstimate int
+	ErrorCode     string
+	ErrorMessage  string
 	OccurredAt    time.Time
 }
