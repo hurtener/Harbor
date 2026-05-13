@@ -1,0 +1,22 @@
+{
+  "Name": "preconditions-only",
+  "Title": "",
+  "Description": "A skill with preconditions and steps but no failure modes section.",
+  "Trigger": "when the skill demands setup but lists no failure modes",
+  "TaskType": "",
+  "Tags": null,
+  "Steps": [
+    "Execute the steady-state action."
+  ],
+  "Preconditions": [
+    "The cache is warm.",
+    "The remote endpoint is reachable."
+  ],
+  "FailureModes": null,
+  "RequiredTools": null,
+  "RequiredNS": null,
+  "RequiredTags": null,
+  "Origin": "pack",
+  "OriginRef": "",
+  "Scope": "project"
+}
