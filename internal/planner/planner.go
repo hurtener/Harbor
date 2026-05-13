@@ -291,6 +291,18 @@ type Budget struct {
 	// CostSpent is the cost accumulated so far this run. Same units
 	// as CostCap.
 	CostSpent int64
+	// TokenBudget is the maximum estimated token count the planner-
+	// observed trajectory may carry before the runtime invokes the
+	// trajectory summariser (Phase 46). Zero means no token-budget
+	// enforcement; the trajectory grows unbounded.
+	//
+	// The runtime's [trajectory.CompressionRunner] reads this field
+	// and, when exceeded, invokes the configured [trajectory.Summariser]
+	// to produce a [trajectory.TrajectorySummary] that replaces the raw
+	// step history in subsequent prompt builds (RFC §6.2, brief 02 §4,
+	// D-055). Compression is a runtime concern; the planner sees only
+	// the compacted view via [RunContext.Trajectory.Summary].
+	TokenBudget int
 }
 
 // PlanningHints are caller-provided nudges the planner MAY honour.
