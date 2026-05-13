@@ -67,6 +67,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 45 | Reference ReAct planner (minimum viable)      | planner/react        | §6.2        | 42, 43, 44, 32        | 85%  | Shipped  |
 | 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Shipped  |
 | 47 | Parallel-call execution + JoinSpec            | planner              | §6.2        | 45, 14                | 85%  | Pending  |
+| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
+| 47 | Parallel-call exec + ReAct emission upgrade   | planner+runtime      | §6.2        | 45, 14, 42, 20, 21    | 85%  | Shipped  |
 | 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Pending  |
 | 49 | Planner conformance pack                      | planner              | §6.2        | 42, 45, 48            | 90%  | Pending  |
 | 50 | Pause/Resume Coordinator + handle registry    | runtime/pauseresume  | §6.3, §3.3  | 07, 09, 13            | 90%  | Pending  |
@@ -513,12 +515,14 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Tests.** Integration with mock summariser.
 **Deps.** 43, 32.
 
-### 47 — Parallel-call execution + JoinSpec (RFC §6.2)
+### 47 — Parallel-call execution + ReAct CallParallel/SpawnTask/AwaitTask emission (RFC §6.2)
 
-**Goal.** `CallParallel{Branches, Join}` executes branches concurrently; atomic setup validation (any branch's invalid args fails the whole call before execution); parallel-pause atomicity (no branch starts side-effecting tools, or all reach checkpointed observation before pause commits); system cap `absolute_max_parallel=50`.
-**Acceptance.** Atomicity contract holds under fault injection; ordering preserved per-branch; deterministic merge keys.
-**Tests.** Concurrency + property (atomicity invariant).
-**Deps.** 45, 14.
+**Goal.** `CallParallel{Branches, Join}` executes branches concurrently; atomic setup validation (any branch's invalid args fails the whole call before execution); parallel-pause atomicity (no branch starts side-effecting tools, or all reach checkpointed observation before pause commits); system cap `absolute_max_parallel=50`. PLUS the §13 primitive-with-consumer bundle: ReAct upgrades to EMIT `CallParallel` (delete the Phase 45 D-051 single-tool-call-per-step stop-gap) AND emit `SpawnTask` / `AwaitTask` via the two new reserved tool names (`_spawn_task`, `_await_task`). Phase 47 closes three primitive-with-consumer gaps in one wave (CallParallel runtime + SpawnTask emitter + AwaitTask emitter). D-056.
+**Acceptance.** Atomicity contract holds under fault injection; ordering preserved per-branch; deterministic merge keys (branch index + tool name); 51-branch input fails with `ErrParallelCapExceeded`; `JoinFirstSuccess` cancels remainder; `JoinN` waits for N successes; ReAct emits `_spawn_task` → runtime spawns real task → group resolves → planner re-enters via `RunContext.Trajectory.Background` → planner emits Finish end-to-end.
+**Tests.** Concurrency + property (atomicity invariant) + spawn → wake → re-entry integration test against real TaskRegistry + EventBus + ArtifactStore drivers.
+**Deps.** 45, 14, 42, 20, 21.
+**Wake-mode interaction.** ReAct's WakePush declaration (Phase 45 / D-032) is wired end-to-end: a non-retain-turn `SpawnTask` returns control to the runtime; the runtime registers against `tasks.WatchGroup`; on `GroupCompletion` the runtime re-invokes `Planner.Next` with the resolved `MemberOutcome` slice surfaced through `RunContext.Trajectory.Background`. The integration test asserts the round-trip.
+**Parallel-pause atomicity contract surface.** Phase 47 ships the stub (`ErrParallelPauseUnsupported`) — the executor fails loud on a mid-execution pause request. Phase 50 (unified pause/resume primitive) upgrades the path to a checkpointed atomic pause.
 
 ### 48 — Deterministic planner (proves the iface) (RFC §6.2, §11 Q-6)
 
