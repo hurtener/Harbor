@@ -34,4 +34,33 @@ var (
 	// (`planner.repair_exhausted`) is the canonical observability
 	// surface; this sentinel is the secondary read surface.
 	ErrRepairExhausted = errors.New("planner: schema repair exhausted")
+
+	// ErrIdentityRequired (Phase 48) — a concrete planner observed a
+	// `RunContext.Quadruple` missing one of the four scope components
+	// (tenant / user / session / run). Identity is mandatory at every
+	// planner boundary (§6 rule 9 + D-001). Concrete planners SHOULD
+	// wrap this sentinel with their context so the runtime executor
+	// can surface a precise failure (e.g. `fmt.Errorf("%w (missing
+	// run_id)", planner.ErrIdentityRequired)`). The deterministic
+	// planner is the first emitter; future concretes that enforce
+	// identity at Next boundary consume the same sentinel.
+	ErrIdentityRequired = errors.New("planner: identity required (tenant/user/session/run)")
+
+	// ErrInvalidConfig (Phase 48) — a concrete planner's constructor
+	// rejected the supplied configuration (empty step set, missing
+	// dependency, contradictory options). The fail-loudly contract:
+	// a malformed configuration MUST surface at construction time,
+	// NEVER at Next time. Wrapping per-concrete with structural
+	// context (`fmt.Errorf("%w: WithSteps required at least one
+	// step", planner.ErrInvalidConfig)`) is the recommended pattern.
+	ErrInvalidConfig = errors.New("planner: invalid configuration")
+
+	// ErrDeterministicStep (Phase 48) — a `DecisionTreeStep` inside
+	// the deterministic planner's walker returned a non-nil error.
+	// The planner wraps the step's error with this sentinel so
+	// callers can distinguish a structural step failure from a
+	// transport-level error returned by other concretes. Fail-loudly
+	// per §13 — the walker does NOT skip a failing step (a silent
+	// skip would mask operator bugs in the tree).
+	ErrDeterministicStep = errors.New("planner/deterministic: step returned error")
 )

@@ -67,7 +67,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 45 | Reference ReAct planner (minimum viable)      | planner/react        | §6.2        | 42, 43, 44, 32        | 85%  | Shipped  |
 | 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Pending  |
 | 47 | Parallel-call execution + JoinSpec            | planner              | §6.2        | 45, 14                | 85%  | Pending  |
-| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Pending  |
+| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
 | 49 | Planner conformance pack                      | planner              | §6.2        | 42, 45, 48            | 90%  | Pending  |
 | 50 | Pause/Resume Coordinator + handle registry    | runtime/pauseresume  | §6.3, §3.3  | 07, 09, 13            | 90%  | Pending  |
 | 51 | Pause-state serialise contract (fail-loud)    | runtime/pauseresume  | §6.3, §3.4  | 50, 43                | 90%  | Pending  |
