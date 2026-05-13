@@ -428,6 +428,18 @@ Additions to this set are RFC PRs.
 
 **ErrSkillTooLarge** — sentinel returned by `tools.Fit` (Phase 38) when no ladder step fits within the planner-supplied `MaxTokens`. CLAUDE.md §5 fail-loud contract.
 
+**`Directory`** — Phase 39's planner-facing virtual-directory shape (`internal/skills/directory.go`). `Directory.View(ctx, cap CapabilityContext) ([]SkillView, error)` returns a bounded, identity-scoped, capability-filtered, redacted snapshot of the catalog up to `MaxEntries`. Reuses `tools.Filter` + `tools.Redact` from Phase 38 by direct import (no parallel implementation). Identity-mandatory; emits `skill.identity_rejected` on a missing triple. RFC §6.7, brief 04 §4.6, D-052.
+
+**`DirectoryConfig`** — Phase 39 configuration for the virtual directory: `Pinned []string` (operator-declared name list), `MaxEntries int` (default 30, range `[1, 200]`), `Selection` (one of `SelectionPinnedThenRecent` / `SelectionPinnedThenTop`). Out-of-range `MaxEntries` or unknown `Selection` returns wrapped `ErrInvalidConfig`. brief 04 §3, D-052.
+
+**`SkillView`** — Phase 39 four-field projection (`Name`, `Title`, `Trigger`, `TaskType`) returned from `Directory.View`. Wire-stable: every entry carries all four fields unconditionally (brief 04 §3's `IncludeFields` knob is deferred — D-052). brief 04 §4.6, D-052.
+
+**`pinned_then_recent`** — Phase 39 `Selection` constant value `"pinned_then_recent"`. Lists the pinned partition first (config-declared in declaration order, then `Extra["pinned"]=true` skills sorted by `UpdatedAt DESC, Name ASC`), then the unpinned remainder sorted by `UpdatedAt DESC, Name ASC` up to `MaxEntries`. Default selection when `Selection` is empty. brief 04 §3, D-052.
+
+**`pinned_then_top`** — Phase 39 `Selection` constant value `"pinned_then_top"`. Lists the pinned partition first (config-declared in declaration order, then `Extra["pinned"]=true` skills sorted by `UseCount DESC, Name ASC`), then the unpinned remainder sorted by `UseCount DESC, Name ASC` up to `MaxEntries`. brief 04 §3, D-052.
+
+**`MaxEntries`** — Phase 39 `DirectoryConfig` field bounding the View length. Default 30; valid range `[1, 200]` per brief 04 §3. Pinned skills are exempted only from the cap when they fit (`count(pinned-after-filter) ≤ MaxEntries`); they are never exempted from the capability filter — pinning is a prominence signal, not a visibility bypass (D-052). The smoke script pins the bounds (`scripts/smoke/phase-39.sh`).
+
 **Steering** — out-of-band runtime control: `CANCEL`, `REDIRECT`, `INJECT_CONTEXT`, `USER_MESSAGE`, `PAUSE`, `RESUME`, `APPROVE`, `REJECT`, `PRIORITIZE`. Lives at the runtime level; planners see only `RunContext.Control`. RFC §3.3 + §6.3.
 
 **Sealed (events)** — the empty `events.Sealed` struct embedded in concrete payload types to satisfy the `EventPayload` seal. Standard Go pattern (mirrors `net/netip.Addr`'s seal). External payload types compose `Sealed` directly; bus-internal types compose `SafeSealed` (which itself embeds `Sealed`) so they additionally implement `SafePayload`. RFC §6.13, D-028.
