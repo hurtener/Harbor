@@ -62,6 +62,14 @@ type Scope string
 
 // Scope values.
 const (
+	// ScopeSession — visible only inside the originating session.
+	// The narrowest scope; cross-session visibility requires an
+	// explicit promotion (RFC §6.7, brief 04 §6 "isolation
+	// conformance"). The storage layer's identity filter already
+	// pins rows to a `(tenant, user, session)` triple; ScopeSession
+	// is the matching declared-scope marker for rows that should
+	// stay session-local.
+	ScopeSession Scope = "session"
 	// ScopeProject — visible inside the operator-declared project
 	// only. The generator default per RFC §6.7.
 	ScopeProject Scope = "project"
@@ -82,7 +90,7 @@ const (
 //   - `Trigger` non-empty (planner-visible match cue, brief 04 §4.7)
 //   - `Steps` non-empty (at least one step)
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
-//   - `Scope` ∈ {ScopeProject, ScopeTenant, ScopeGlobal}
+//   - `Scope` ∈ {ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal}
 type Skill struct {
 	Name           string
 	Title          string
@@ -129,9 +137,9 @@ func (s Skill) Validate() error {
 		return fmt.Errorf("%w: Origin=%q (expected pack|generated)", ErrInvalidSkill, s.Origin)
 	}
 	switch s.Scope {
-	case ScopeProject, ScopeTenant, ScopeGlobal:
+	case ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal:
 	default:
-		return fmt.Errorf("%w: Scope=%q (expected project|tenant|global)", ErrInvalidSkill, s.Scope)
+		return fmt.Errorf("%w: Scope=%q (expected session|project|tenant|global)", ErrInvalidSkill, s.Scope)
 	}
 	return nil
 }
