@@ -8,6 +8,12 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**`_await_task`** — Phase 47 (D-056) reserved tool name the LLM emits to block the foreground turn on a previously-spawned task. The ReAct `mapDecision` translates `{"tool":"_await_task","args":{"task_id":"<id>"}}` into a typed `planner.AwaitTask{TaskID}` Decision; empty task_id fails loud with `planner.ErrInvalidDecision`. The reserved name is a prompt-time convention (the leading underscore marks it as planner-internal); the Decision sum stays sealed per D-047.
+
+**`_spawn_task`** — Phase 47 (D-056) reserved tool name the LLM emits to spawn a background task. The ReAct `mapDecision` translates `{"tool":"_spawn_task","args":{"kind":"...", "spec":{...}, "group_id":"..."}}` into a typed `planner.SpawnTask{Kind, Spec, GroupID}` Decision. `kind` defaults to `background`; `spec.retain_turn` defaults to false (push-wake per D-032). Malformed args fail loud with wrapped `planner.ErrInvalidDecision`.
+
+**`AbsoluteMaxParallel`** — the system cap on `planner.CallParallel.Branches` length. Value: 50 (RFC §6.2, settled). The runtime parallel executor (Phase 47) rejects above-cap emissions with `planner.ErrParallelCapExceeded` before any branch dispatches. Defence in depth: operators tune the soft cap via `PlanningHints.MaxParallel`; the system cap stays settled. D-056.
+
 **A2A (Agent-to-Agent)** — the open protocol Harbor adopts for cross-agent communication. Vendored spec at `docs/specifications/a2a.proto` (pinned at commit `ae6a562d5d972f2c4b184f748bb32e1fa9aa7bf2`, 2026-04-23); full spec compliance is settled per D-007 + D-031. Every A2A RPC has a Go counterpart on `RemoteTransport`; every A2A message has a Go shape in `internal/distributed/a2a`.
 
 **A2A `Task`** — A2A's task abstraction. Distinct from Harbor's `tasks.Task` (Phase 20): Harbor's task is the local-runtime unit; A2A's `Task` is what a remote agent uses to model the same execution. Mapping happens at the Phase 29 boundary. RFC §6.12, D-031.
@@ -188,9 +194,17 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## J
 
-**JSON action envelope** — the wire shape the Phase 45 ReAct planner asks the LLM to emit per step: `{"tool": "<name>", "args": {...}, "reasoning": "..."}` for tool calls; `{"tool": "_finish", "args": {"answer": "..."}, "reasoning": "..."}` for completion. Parsed by Phase 44's tolerant `ActionParser` (fenced JSON, prose-wrap, multi-object scan, bare array). The reserved `_finish` tool name signals completion (translated to typed `Finish` Decision before return — the Decision sum stays sealed per D-047). RFC §6.2, D-051.
+**JSON action envelope** — the wire shape the Phase 45 ReAct planner asks the LLM to emit per step: `{"tool": "<name>", "args": {...}, "reasoning": "..."}` for tool calls; `{"tool": "_finish", "args": {"answer": "..."}, "reasoning": "..."}` for completion. Parsed by Phase 44's tolerant `ActionParser` (fenced JSON, prose-wrap, multi-object scan, bare array). Three reserved tool names today (Phase 47 / D-056): `_finish` (completion), `_spawn_task` (background spawn), `_await_task` (block on a spawned task) — all translated to typed Decisions before return; the Decision sum stays sealed per D-047. RFC §6.2, D-051, D-056.
 
 **`JoinK`** — Concurrency utility (Phase 14) that reads exactly K envelopes from a channel and cancels remaining producers. Short-read returns `ErrJoinKShortRead`. RFC §6.1, brief 01 §2.
+
+**`JoinSpec`** — The parallel-merge descriptor on `planner.CallParallel`. Carries `Kind` (the join strategy: `JoinAll` / `JoinFirstSuccess` / `JoinN` / future `JoinKeyed`), `MergeKeys` (reserved for keyed merges), and `N` (the success threshold for `JoinN`). The runtime parallel executor (Phase 47) consumes the spec. RFC §6.2, D-056.
+
+**`JoinAll`** — The default `JoinKind`: wait for every parallel branch to terminate; return results in branch-index order. Mixed success / failure surfaces per-branch on `Result.Err`; the call-level error stays nil. Phase 47, D-056.
+
+**`JoinFirstSuccess`** — `JoinKind` that returns the first successful parallel branch's result and cancels the remainder via a derived ctx. Failures do not cancel — a slow success can still arrive after a fast failure. Total-failure path returns a joined error wrapping every branch's `Err`. Phase 47, D-056.
+
+**`JoinN`** — `JoinKind` that waits for N parallel branches to succeed, then cancels the remainder. `JoinSpec.N` carries the threshold; setup validates `0 < N ≤ len(Branches)`. Returns successes in completion order (each `Result` retains its original branch `Index` as the deterministic merge key). Phase 47, D-056.
 
 ## L
 
@@ -271,6 +285,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **NetworkDefaults** — operator-tunable defaults (Phase 33a) bifrost applies to every provider (native + custom) when the per-provider override is absent. Fields: `Timeout`, `MaxRetries`, `RetryBackoffInitial`, `RetryBackoffMax`, `Concurrency`, `BufferSize`. Zero-valued fields fall through to bifrost's package-level defaults; non-zero values override. Configured at `llm.network_defaults`. Restart-required. RFC §6.5, D-042.
 
 ## P
+
+**`ParallelExecutor`** — the `internal/runtime/parallel.Executor` runtime component that consumes `planner.CallParallel` Decisions (Phase 47, D-056). Three settled invariants: atomic-setup validation (any branch's invalid args fails the whole call BEFORE dispatch), system cap on branch count (`AbsoluteMaxParallel = 50`), parallel-pause atomicity contract surface (failing loud on mid-execution pause requests until Phase 50's unified pause primitive lands). Dispatches via the resolved `tools.ToolDescriptor`'s `Invoke`; concurrent-reuse safe per D-025. RFC §6.2, D-056.
 
 **`PreCall` / `PostCall`** — the two hooks on `governance.Subsystem`. `PreCall(ctx, req) error` runs BEFORE the wrapped `LLMClient.Complete`; a non-nil return short-circuits the call (the inner client is NOT invoked). `PostCall(ctx, req, resp, callErr) error` runs AFTER the inner returns, accumulating cost / observing the outcome — its error is logged but does NOT supplant the original `(resp, callErr)` outcome. RFC §6.15, D-044.
 
