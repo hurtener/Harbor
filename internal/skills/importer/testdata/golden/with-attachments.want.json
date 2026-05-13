@@ -1,0 +1,20 @@
+{
+  "Name": "with-attachments",
+  "Title": "",
+  "Description": "A skill that references a sibling file via an inline attachment.\n\nSee the example file: ![example](artifact://<REF:attachments/example.txt>)",
+  "Trigger": "when the skill carries inline attachments",
+  "TaskType": "",
+  "Tags": null,
+  "Steps": [
+    "Read the attached example.",
+    "Apply the documented procedure."
+  ],
+  "Preconditions": null,
+  "FailureModes": null,
+  "RequiredTools": null,
+  "RequiredNS": null,
+  "RequiredTags": null,
+  "Origin": "pack",
+  "OriginRef": "",
+  "Scope": "project"
+}

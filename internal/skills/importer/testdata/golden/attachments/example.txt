@@ -1,0 +1,1 @@
+This is the example attachment payload for the Skills.md importer golden corpus.

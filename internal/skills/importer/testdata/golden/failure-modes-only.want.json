@@ -1,0 +1,22 @@
+{
+  "Name": "failure-modes-only",
+  "Title": "",
+  "Description": "A skill that enumerates failure modes without preconditions.",
+  "Trigger": "when the skill lists failure modes but no preconditions",
+  "TaskType": "",
+  "Tags": null,
+  "Steps": [
+    "Attempt the operation."
+  ],
+  "Preconditions": null,
+  "FailureModes": [
+    "Operation times out: retry once then surface ErrTimeout.",
+    "Operation conflicts with another tenant: surface ErrConflict."
+  ],
+  "RequiredTools": null,
+  "RequiredNS": null,
+  "RequiredTags": null,
+  "Origin": "pack",
+  "OriginRef": "",
+  "Scope": "project"
+}

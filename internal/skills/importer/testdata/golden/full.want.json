@@ -1,0 +1,27 @@
+{
+  "Name": "full-skill",
+  "Title": "Full Featured Skill",
+  "Description": "This skill exercises every Skills.md section the importer normalises.\n\nIt carries a multi-paragraph description so the parser keeps the gap between paragraphs in the description.",
+  "Trigger": "when the user wants the kitchen sink",
+  "TaskType": "domain",
+  "Tags": ["example", "full"],
+  "Steps": [
+    "Prepare the environment.",
+    "Run the primary action.",
+    "Verify the result."
+  ],
+  "Preconditions": [
+    "The user is authenticated.",
+    "The session has the `allow-net` tag."
+  ],
+  "FailureModes": [
+    "Network unreachable: surface a typed error.",
+    "Tool returns non-zero exit: bubble up."
+  ],
+  "RequiredTools": ["shell_run"],
+  "RequiredNS": ["tools.shell"],
+  "RequiredTags": ["allow-net"],
+  "Origin": "pack",
+  "OriginRef": "",
+  "Scope": "project"
+}

@@ -1,0 +1,20 @@
+{
+  "Name": "minimal-skill",
+  "Title": "",
+  "Description": "This is the description paragraph for the minimal skill fixture.",
+  "Trigger": "when the user asks for the minimum viable skill",
+  "TaskType": "",
+  "Tags": null,
+  "Steps": [
+    "Do the first thing.",
+    "Do the second thing."
+  ],
+  "Preconditions": null,
+  "FailureModes": null,
+  "RequiredTools": null,
+  "RequiredNS": null,
+  "RequiredTags": null,
+  "Origin": "pack",
+  "OriginRef": "",
+  "Scope": "project"
+}
