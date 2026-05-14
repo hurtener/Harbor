@@ -79,7 +79,6 @@ package react
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -690,8 +689,3 @@ func assertIdentity(rc planner.RunContext) error {
 	}
 	return nil
 }
-
-// errFinishNotTranslated is a defensive sentinel used by tests that
-// want to assert the Finish-translation path is reachable; never
-// surfaced through the planner's public contract.
-var errFinishNotTranslated = errors.New("react: finish tool name not translated to Finish Decision")

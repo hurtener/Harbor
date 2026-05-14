@@ -438,7 +438,7 @@ func (e *Executor) dispatchN(
 	joined := errors.Join(errs...)
 	return successes, fmt.Errorf(
 		"%w: JoinN N=%d reached %d successes only: %v",
-		planner.ErrInvalidDecision, n, len(successes), joined,
+		planner.ErrParallelThresholdUnmet, n, len(successes), joined,
 	)
 }
 

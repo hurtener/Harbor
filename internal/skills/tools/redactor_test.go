@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/capfilter"
 )
 
 func TestRedact_DisallowedToolNameReplaced_WithSearch(t *testing.T) {
@@ -25,8 +26,8 @@ func TestRedact_DisallowedToolNameReplaced_WithSearch(t *testing.T) {
 		if strings.Contains(field, "fs_write") {
 			t.Fatalf("disallowed tool name leaked: %q", field)
 		}
-		if !strings.Contains(field, replaceWithSearch) {
-			t.Fatalf("expected %q replacement, got %q", replaceWithSearch, field)
+		if !strings.Contains(field, capfilter.ReplacementWithSearch) {
+			t.Fatalf("expected %q replacement, got %q", capfilter.ReplacementWithSearch, field)
 		}
 	}
 	for i, step := range got.Steps {
@@ -46,8 +47,8 @@ func TestRedact_DisallowedToolNameReplaced_WithoutSearch(t *testing.T) {
 	cap := CapabilityContext{AllowedTools: []string{"http_fetch"}} // no tool_search
 	got := Redact(s, cap)
 
-	if !strings.Contains(got.Title, replaceWithoutSearch) {
-		t.Fatalf("got Title=%q, want bare replacement %q", got.Title, replaceWithoutSearch)
+	if !strings.Contains(got.Title, capfilter.ReplacementWithoutSearch) {
+		t.Fatalf("got Title=%q, want bare replacement %q", got.Title, capfilter.ReplacementWithoutSearch)
 	}
 	if strings.Contains(got.Title, "(use tool_search)") {
 		t.Fatalf("got Title=%q, must not include the search-aware variant when tool_search is not allowed", got.Title)

@@ -12,6 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/deterministic"
+	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // TestDeterministicPlanner_ConcurrentReuse_D025 is the D-025
@@ -141,6 +142,103 @@ func TestDeterministicPlanner_ConcurrentReuse_D025(t *testing.T) {
 	}
 	if final > baseline+2 {
 		t.Errorf("D-025 goroutine leak: baseline=%d final=%d (delta=%d)", baseline, final, final-baseline)
+	}
+}
+
+// TestSpawnAndAwaitStep_ConcurrentSameSession_D025 is the D-025 gate
+// for the SpawnAndAwaitStep's per-`(SessionID, StepID)` spawnState.
+// Unlike the planner-level D-025 test above (which keys every
+// goroutine with a DISTINCT SessionID and therefore never contends on
+// a shared spawnState), this test deliberately shares ONE SessionID +
+// StepID across all N goroutines so every call resolves to the SAME
+// *spawnState. Without the per-state mutex the spawned/resolved/
+// groupID/ownerTaskID transitions race; the race detector is the gate.
+//
+// Asserts:
+//
+//   - No data races on the shared spawnState (the -race gate).
+//   - Exactly one goroutine wins the spawn transition → exactly one
+//     SpawnTask decision; every other goroutine sees state.spawned
+//     and emits AwaitTask (the group never resolves in this test
+//     because nothing marks the member complete).
+//   - No call returns an error.
+func TestSpawnAndAwaitStep_ConcurrentSameSession_D025(t *testing.T) {
+	const N = 128
+	deps := mustStepsDeps(t)
+
+	// ONE shared SessionID + StepID → ONE shared *spawnState.
+	q := identity.Quadruple{
+		Identity: identity.Identity{
+			TenantID:  "t-d025",
+			UserID:    "u-d025",
+			SessionID: "s-shared",
+		},
+		RunID: "r-shared",
+	}
+	ctxIdent, err := identity.With(context.Background(), q.Identity)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+
+	spawnStep := &deterministic.SpawnAndAwaitStep{
+		StepID: "d025-shared-spawn",
+		Kind:   tasks.KindBackground,
+		SpecBuilder: func(_ planner.RunContext) (planner.SpawnSpec, error) {
+			return planner.SpawnSpec{Description: "d025 background task", Query: "work"}, nil
+		},
+		OnResolved: func(_ planner.RunContext, _ []tasks.MemberOutcome) (planner.Decision, error) {
+			return planner.Finish{Reason: planner.FinishGoal}, nil
+		},
+	}
+	shared, err := deterministic.NewDeterministicPlanner(
+		deterministic.WithSteps(spawnStep),
+		deterministic.WithRegistry(deps.registry),
+	)
+	if err != nil {
+		t.Fatalf("unexpected construction error: %v", err)
+	}
+
+	var (
+		wg         sync.WaitGroup
+		spawnCount int64
+		awaitCount int64
+		errCount   int64
+		shapeFails int64
+	)
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			rc := planner.RunContext{Quadruple: q, Goal: "d025-shared"}
+			rc.Trajectory = &planner.Trajectory{}
+			dec, callErr := shared.Next(ctxIdent, rc)
+			if callErr != nil {
+				atomic.AddInt64(&errCount, 1)
+				return
+			}
+			switch dec.(type) {
+			case planner.SpawnTask:
+				atomic.AddInt64(&spawnCount, 1)
+			case planner.AwaitTask:
+				atomic.AddInt64(&awaitCount, 1)
+			default:
+				atomic.AddInt64(&shapeFails, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if errCount != 0 {
+		t.Errorf("D-025: %d concurrent Next calls returned unexpected errors", errCount)
+	}
+	if shapeFails != 0 {
+		t.Errorf("D-025: %d calls returned a decision shape other than SpawnTask/AwaitTask", shapeFails)
+	}
+	if spawnCount != 1 {
+		t.Errorf("D-025: spawnCount = %d, want exactly 1 (the per-state mutex must serialise the spawn transition)", spawnCount)
+	}
+	if spawnCount+awaitCount != N {
+		t.Errorf("D-025: spawn(%d)+await(%d) = %d, want %d", spawnCount, awaitCount, spawnCount+awaitCount, N)
 	}
 }
 
