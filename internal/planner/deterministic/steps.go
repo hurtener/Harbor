@@ -237,6 +237,14 @@ func (s *PauseStep) Decide(_ context.Context, rc planner.RunContext) (planner.De
 //   - resolved: the OnResolved callback has fired; future calls of
 //     the same `(SessionID, StepID)` SKIP (the step is "done").
 type spawnState struct {
+	// mu guards every field below. Decide locks it for the whole
+	// transition so concurrent invocations sharing one
+	// `(SessionID, StepID)` key are serialised — the D-025
+	// concurrent-reuse contract is binary (§5): the artifact must be
+	// race-free for shared concurrent use, not merely race-free when
+	// callers happen to use distinct keys. Distinct keys still get
+	// distinct *spawnState values, so cross-run calls never contend.
+	mu          sync.Mutex
 	spawned     bool
 	resolved    bool
 	groupID     tasks.TaskGroupID
@@ -357,11 +365,13 @@ func (s *SpawnAndAwaitStep) Decide(ctx context.Context, rc planner.RunContext) (
 	// Per-`(SessionID, StepID)` state transitions forward only:
 	//   empty → spawned → resolved.
 	// Concurrent reuse across runs uses distinct map keys (the
-	// `(SessionID, StepID)` tuple); concurrent invocations within
-	// ONE run would race here — but the planner's per-call contract
-	// is one-Next-at-a-time per run (the runtime engine serialises
-	// within a run; D-025 § "concurrent reuse" is about distinct
-	// runs).
+	// `(SessionID, StepID)` tuple) → distinct *spawnState values.
+	// state.mu serialises concurrent invocations that DO share a
+	// key, so the field reads/writes below are race-free under the
+	// D-025 contract regardless of how callers key their runs.
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
 	if state.resolved {
 		return nil, false, nil
 	}

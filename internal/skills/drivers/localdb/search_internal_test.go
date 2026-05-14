@@ -112,6 +112,7 @@ func TestRegexScore_Constants(t *testing.T) {
 	}{
 		{"name_fullmatch", "alpha", 0.95},
 		{"name_prefix", "alph", 0.90},
+		{"name_search", "lph", 0.85}, // matches inside "alpha", not at prefix
 		{"body_search", "ody", 0.75},
 		{"miss", "zzz", 0.0},
 	}

@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 
 	"github.com/hurtener/Harbor/internal/events"
-	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/skills/capfilter"
 )
 
 // Phase 39 — Virtual directory subsystem (RFC §6.7).
@@ -249,7 +248,7 @@ func NewDirectory(store SkillStore, deps Deps, cfg DirectoryConfig) (*Directory,
 // Concurrent-safe: pure read pipeline over the immutable *Directory.
 // Per-call state lives on ctx + cap; no shared mutable state.
 func (d *Directory) View(ctx context.Context, cap DirectoryCapability) ([]SkillView, error) {
-	q, err := d.identityFromCtx(ctx)
+	q, err := IdentityFromCtx(ctx)
 	if err != nil {
 		return nil, EmitIdentityRejected(ctx, d.bus, q, "directory.View")
 	}
@@ -404,10 +403,11 @@ func sortBySelection(in []Skill, sel Selection) {
 	}
 }
 
-// filterByCapability is the directory-local subset gate. Mirrors
-// Phase 38's tools.Filter; duplicated here to avoid an import cycle
-// (internal/skills/tools imports internal/skills already). The two
-// implementations MUST stay in lockstep — see D-052.
+// filterByCapability is the directory's capability subset gate. The
+// subset logic lives in capfilter — the single source shared with
+// Phase 38's tools.Filter (D-052). capfilter is a leaf package, so
+// internal/skills can import it without the cycle that blocked a
+// direct internal/skills/tools import.
 //
 // A skill passes when, for each of RequiredTools / RequiredNS /
 // RequiredTags, the required entries are a subset of the
@@ -418,50 +418,24 @@ func filterByCapability(in []Skill, cap DirectoryCapability) []Skill {
 	if len(in) == 0 {
 		return nil
 	}
-	allowTools := buildStringSet(cap.AllowedTools)
-	allowNS := buildStringSet(cap.AllowedNamespaces)
-	allowTags := buildStringSet(cap.AllowedTags)
+	allowTools := capfilter.BuildSet(cap.AllowedTools)
+	allowNS := capfilter.BuildSet(cap.AllowedNamespaces)
+	allowTags := capfilter.BuildSet(cap.AllowedTags)
 
 	out := make([]Skill, 0, len(in))
 	for _, s := range in {
-		if !subsetOfSet(s.RequiredTools, allowTools) {
+		if !capfilter.Subset(s.RequiredTools, allowTools) {
 			continue
 		}
-		if !subsetOfSet(s.RequiredNS, allowNS) {
+		if !capfilter.Subset(s.RequiredNS, allowNS) {
 			continue
 		}
-		if !subsetOfSet(s.RequiredTags, allowTags) {
+		if !capfilter.Subset(s.RequiredTags, allowTags) {
 			continue
 		}
 		out = append(out, s)
 	}
 	return out
-}
-
-func buildStringSet(in []string) map[string]struct{} {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]struct{}, len(in))
-	for _, k := range in {
-		out[k] = struct{}{}
-	}
-	return out
-}
-
-func subsetOfSet(required []string, allowed map[string]struct{}) bool {
-	if len(required) == 0 {
-		return true
-	}
-	if allowed == nil {
-		return false
-	}
-	for _, r := range required {
-		if _, ok := allowed[r]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // projectToSkillView returns the planner-visible projection of s.
@@ -474,102 +448,15 @@ func subsetOfSet(required []string, allowed map[string]struct{}) bool {
 // The `pinned` flag is supplied by the caller (the View pipeline
 // computes it from the final partition assembly).
 func projectToSkillView(s Skill, cap DirectoryCapability, pinned bool) SkillView {
-	allowedTools := buildStringSet(cap.AllowedTools)
-	disallowed := disallowedToolNames(s.RequiredTools, allowedTools)
-	replacement := replacementForDisallowedTool(allowedTools)
+	allowedTools := capfilter.BuildSet(cap.AllowedTools)
+	disallowed := capfilter.DisallowedNames(s.RequiredTools, allowedTools)
+	replacement := capfilter.Replacement(allowedTools)
 
 	return SkillView{
 		Name:     s.Name,
-		Title:    scrubDisallowedToolNames(s.Title, disallowed, replacement),
-		Trigger:  scrubDisallowedToolNames(s.Trigger, disallowed, replacement),
+		Title:    capfilter.Scrub(s.Title, disallowed, replacement),
+		Trigger:  capfilter.Scrub(s.Trigger, disallowed, replacement),
 		TaskType: s.TaskType,
 		Pinned:   pinned,
 	}
-}
-
-// Tool-name scrubber — mirrors tools.scrubToolNames + the
-// replacement-string selection in internal/skills/tools/redactor.go.
-// Duplicated here for the same import-cycle reason as
-// filterByCapability; the two implementations MUST stay in lockstep
-// (D-052).
-
-// directoryToolSearchName is the tool name that, when present in
-// cap.AllowedTools, selects the "(use tool_search)" replacement
-// variant. Brief 04 §4.5.
-const directoryToolSearchName = "tool_search"
-
-// directoryReplacementWithSearch / directoryReplacementWithoutSearch
-// are the two replacement variants for disallowed tool names. The
-// directory picks based on whether tool_search itself is in
-// cap.AllowedTools (proxy for "the run has the search escape hatch").
-const (
-	directoryReplacementWithSearch    = "a suitable tool (use tool_search)"
-	directoryReplacementWithoutSearch = "a suitable tool"
-)
-
-func disallowedToolNames(required []string, allowed map[string]struct{}) []string {
-	if len(required) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(required))
-	for _, t := range required {
-		if t == "" {
-			continue
-		}
-		if _, ok := allowed[t]; !ok {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func replacementForDisallowedTool(allowed map[string]struct{}) string {
-	if _, ok := allowed[directoryToolSearchName]; ok {
-		return directoryReplacementWithSearch
-	}
-	return directoryReplacementWithoutSearch
-}
-
-func scrubDisallowedToolNames(text string, disallowed []string, replacement string) string {
-	if text == "" || len(disallowed) == 0 {
-		return text
-	}
-	for _, name := range disallowed {
-		if name == "" {
-			continue
-		}
-		pat := `\b` + regexp.QuoteMeta(name) + `\b`
-		re, err := regexp.Compile(pat)
-		if err != nil {
-			// Defensive: QuoteMeta-escaped patterns should always
-			// compile. Skipping this name still surfaces the redacted
-			// View; the (canonical) audit redactor remains the last
-			// line of defence.
-			continue
-		}
-		text = re.ReplaceAllString(text, replacement)
-	}
-	return text
-}
-
-// identityFromCtx reads the identity Quadruple/Identity from ctx and
-// validates the triple. Returns the (possibly partial) Quadruple plus
-// a wrapped ErrIdentityRequired on failure; the partial value flows
-// to EmitIdentityRejected which substitutes the missing-component
-// sentinel for the bus's ValidateEvent triple check.
-func (d *Directory) identityFromCtx(ctx context.Context) (identity.Quadruple, error) {
-	if q, ok := identity.QuadrupleFrom(ctx); ok {
-		if err := identity.Validate(q.Identity); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
-		}
-		return q, nil
-	}
-	if id, ok := identity.From(ctx); ok {
-		q := identity.Quadruple{Identity: id}
-		if err := identity.Validate(id); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
-		}
-		return q, nil
-	}
-	return identity.Quadruple{}, fmt.Errorf("%w: no identity in ctx", ErrIdentityRequired)
 }

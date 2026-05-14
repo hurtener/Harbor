@@ -291,6 +291,45 @@ func TestConformance_DefaultReactContentMap_PopulatesEveryScenario(t *testing.T)
 	}
 }
 
+// TestConformance_SelfTest_MinimalCapabilities runs the pack against
+// a stub that declares NO optional capabilities and returns a
+// CallTool decision. This exercises two branch classes the
+// fully-capable self-tests above never reach:
+//
+//   - the capability-gated `t.Skip(...)` branches in the LLM-driven,
+//     pause-bounds, wake-round-trip, and steering-drain scenarios
+//     (a planner that declares the capability never hits the skip);
+//   - the tolerant non-Finish `t.Logf(...)` branches in scenarios
+//     like BudgetAware that accept — but log — a non-Finish shape.
+func TestConformance_SelfTest_MinimalCapabilities(t *testing.T) {
+	conformance.Run(t, func() conformance.Harness {
+		return conformance.Harness{
+			Factory: func() planner.Planner {
+				return &selfStubPlanner{decision: planner.CallTool{Tool: "self-stub-tool"}}
+			},
+			ScenarioFactory: func(_ conformance.ScenarioName) planner.Planner {
+				return &selfStubPlanner{decision: planner.CallTool{Tool: "self-stub-tool"}}
+			},
+			WakeMode: planner.WakePush,
+			// Capabilities deliberately empty — every capability-gated
+			// scenario takes its Skip-with-reason branch.
+			RunContextFactory: func() planner.RunContext {
+				return planner.RunContext{
+					Quadruple: identity.Quadruple{
+						Identity: identity.Identity{
+							TenantID:  "selftest-tenant",
+							UserID:    "selftest-user",
+							SessionID: "selftest-session-minimal",
+						},
+						RunID: "selftest-run-minimal",
+					},
+					Goal: "self-test minimal capabilities",
+				}
+			},
+		}
+	})
+}
+
 // spawnFinishStub returns SpawnTask on the first Next call and
 // Finish on subsequent calls. Used by the push-mode wake-round-trip
 // self-test to exercise the runtime-side spawn → resolve flow.

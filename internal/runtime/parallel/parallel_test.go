@@ -399,6 +399,49 @@ func TestExecute_JoinN_WaitsForNSuccesses(t *testing.T) {
 	}
 }
 
+// TestExecute_JoinN_ThresholdUnmetIsRuntimeOutcome pins that a JoinN
+// call which falls short of N successes surfaces ErrParallelThresholdUnmet
+// — NOT ErrInvalidDecision. The CallParallel was well-formed and passed
+// atomic-setup validation; the branches failed at invoke time, which is
+// a runtime outcome, not a malformed emission.
+func TestExecute_JoinN_ThresholdUnmetIsRuntimeOutcome(t *testing.T) {
+	t.Parallel()
+	resolver := newStub()
+
+	// one branch succeeds, two fail at invoke — JoinN N=3 cannot be met.
+	invOK, _ := echoTool("ok")
+	resolver.Register("ok", invOK, nil)
+	invFail := func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+		return tools.ToolResult{}, errors.New("branch invoke failed")
+	}
+	resolver.Register("fail", invFail, nil)
+
+	exec := parallel.New(resolver)
+	q := fixedQ(t, "r-joinn-unmet")
+
+	results, err := exec.Execute(ctxWithQ(t, q), planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "ok", Args: json.RawMessage(`{}`)},
+			{Tool: "fail", Args: json.RawMessage(`{}`)},
+			{Tool: "fail", Args: json.RawMessage(`{}`)},
+		},
+		Join: &planner.JoinSpec{Kind: planner.JoinN, N: 3},
+	})
+	if err == nil {
+		t.Fatal("Execute returned nil err, want ErrParallelThresholdUnmet")
+	}
+	if !errors.Is(err, planner.ErrParallelThresholdUnmet) {
+		t.Errorf("err = %v, want errors.Is ErrParallelThresholdUnmet", err)
+	}
+	if errors.Is(err, planner.ErrInvalidDecision) {
+		t.Errorf("err = %v, must NOT be ErrInvalidDecision — a runtime branch shortfall is not a malformed decision", err)
+	}
+	// The partial successes are still returned for the caller to inspect.
+	if len(results) != 1 {
+		t.Errorf("len(results) = %d, want 1 (partial success preserved)", len(results))
+	}
+}
+
 // TestExecute_JoinN_InvalidThresholdFailsLoudly asserts validation of
 // JoinN.N at setup time.
 func TestExecute_JoinN_InvalidThresholdFailsLoudly(t *testing.T) {

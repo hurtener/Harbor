@@ -402,3 +402,30 @@ func ValidateIdentity(q identity.Quadruple) error {
 	}
 	return nil
 }
+
+// IdentityFromCtx reads the identity `Quadruple` (or bare `Identity`)
+// from `ctx` and validates the triple. It returns the (possibly
+// partial) Quadruple plus a wrapped `ErrIdentityRequired` on failure;
+// the partial value is what callers pass to `EmitIdentityRejected`,
+// which substitutes the missing-component sentinel for the bus's
+// `ValidateEvent` triple check.
+//
+// Single source for the planner tools (`internal/skills/tools`) and
+// the virtual directory (`internal/skills`) — both consumed the same
+// byte-for-byte logic before this was hoisted here (Wave 8 audit).
+func IdentityFromCtx(ctx context.Context) (identity.Quadruple, error) {
+	if q, ok := identity.QuadrupleFrom(ctx); ok {
+		if err := identity.Validate(q.Identity); err != nil {
+			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		}
+		return q, nil
+	}
+	if id, ok := identity.From(ctx); ok {
+		q := identity.Quadruple{Identity: id}
+		if err := identity.Validate(id); err != nil {
+			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		}
+		return q, nil
+	}
+	return identity.Quadruple{}, fmt.Errorf("%w: no identity in ctx", ErrIdentityRequired)
+}
