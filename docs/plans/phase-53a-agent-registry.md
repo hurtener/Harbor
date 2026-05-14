@@ -2,7 +2,18 @@
 
 ## Summary
 
-Ships the **Agent Registry** — an in-process, per-runtime-instance subsystem that owns the *registration identity* of agents. It mints and persists `agent_id`, tracks the ephemeral `incarnation` and the content-derived `version_hash`, handles both creation cases (locally-hosted and connect-to-remote), and emits `agent.*` events so downstream consumers (tool-side OAuth, the Console Agents page) render runtime state rather than inventing their own.
+Phase 53a lands `internal/runtime/registry` — the **Agent Registry**: an
+in-process, per-runtime-instance subsystem that owns the *registration
+identity* of agents. It implements the three-ID model (`agent_id` /
+`incarnation` / `version_hash`, D-059), persists records through the
+instance's configured `state.StateStore` (in-mem / SQLite / Postgres,
+§4.4 seam — the registry consumes the existing StateStore seam, it does
+not add a new driver seam of its own), handles both creation cases
+(locally-hosted + connect-to-remote handle, D-060), emits `agent.*`
+events on the typed `events.EventBus` so the Console Agents page is a
+runtime lens (D-061/D-062), and gates fleet-control commands behind a
+more-elevated privilege tier than fleet observation with audit-redacted
+emission (D-066).
 
 ## RFC anchor
 
@@ -16,165 +27,324 @@ Ships the **Agent Registry** — an in-process, per-runtime-instance subsystem t
 
 ## Brief findings incorporated
 
-- **brief 09 §166–169:** "bifrost has no first-class 'agent' principal … Harbor's Console design treats agents as first-class addressable subjects: `agent_id` appears on every session … Agent-bound OAuth tokens are keyed by `agent_id`, not by a user identifier." This phase makes `agent_id` a real, minted, persisted runtime identifier so Phase 30 can key agent-bound tokens by `(tenant, agent_id, source)`.
-- **brief 09 §453:** "First-class agent identity. bifrost has no `agent_id` concept. Harbor's Console-shown agents need to be a runtime principal — addressable, ACL-bound, the owner of agent-scoped OAuth tokens, and captured in the audit trail as the *actor* … This is a cross-cutting addition that Phase 30 *cannot* punt on; it likely warrants an RFC stub before the Phase 30 plan PR." This phase IS that subsystem; the RFC stub is RFC §6.16, settled by D-059/D-060.
-- **brief 09 §460:** "Cross-tenant + cross-user + cross-agent isolation conformance … each token resolves only for its owning principal." The registry's conformance suite asserts a registration in one `(tenant, user, session)` scope never resolves for another.
-- **brief 11 §169:** "does the stream respect identity-scope filtering inherent in the JWT, or does an admin see every tenant's events by default? Recommendation: respect identity by default, with a per-view 'elevate to fleet view' gesture that requires admin scope." The registry's `List`/observation surface respects the identity scope; fleet-wide visibility requires an elevated scope claim — and fleet *control* requires a higher tier still (D-066).
-- **brief 11 §55 + §437:** the operator mockup shows an Agents fleet view with per-agent health, task counts, and runtime controls — confirming the Agents page is a *lens* over a runtime-side registry, not a Console-local list.
+- **brief 09 §"Agent identity (Harbor's addition — bifrost has no
+  concept)":** "Agent-bound OAuth tokens are keyed by `agent_id`, not by
+  a user identifier." Phase 53a is the subsystem that mints and persists
+  that `agent_id`; the registry's `AgentID` is the exact key Phase 30
+  will use for `(tenant, agent_id, source)` agent-bound token lookups.
+  The registry therefore exposes `agent_id` as a stable, rehydrated-on-
+  restart value — Phase 30 cannot key tokens against an id that changes
+  every boot.
+- **brief 09 §"Server-level / agent-bound flow":** the agent is a
+  first-class addressable subject configured *once during agent setup*,
+  distinct from the per-chat user identity. Phase 53a models this: an
+  `AgentRecord` is registered explicitly (by operator wiring / CLI /
+  `harbor dev`), not implicitly minted per request. Registration is a
+  deliberate lifecycle event, not a side effect of a run.
+- **brief 11 §"Agents view (OVERVIEW)":** the Agents page lists
+  "configured agents in the current tenant" with per-agent operational
+  fields (planner, tool attachments, health) and a control surface.
+  Phase 53a provides the runtime-side source of truth that page renders:
+  `agent.*` events + a `List` snapshot scoped by identity. The brief's
+  own checklist item — "Agent-identity RFC stub landed" — is satisfied by
+  RFC §6.16; this phase is its implementation.
+- **brief 11 §"`Agents ≠ chatbots`" (and RFC §7.2):** "Agents are runtime
+  execution entities ... not personas." The registry stores operational
+  registration identity (ids, planner config descriptor, health, drain
+  state) — never persona/prompt content as a user-facing object. Prompt
+  *content* feeds `version_hash` as hashed input only.
+- **brief 11 §"elevated view":** fleet-wide observation requires an
+  elevated subscription; Phase 53a extends this to a *second, higher*
+  tier for fleet **control** (D-066) — observation and control are
+  distinct scope claims, control commands are audit-redacted and emitted.
 
 ## Findings I'm departing from (if any)
 
-- **brief 09 §170** poses the open RFC-level question and recommends `agent_id` become a **peer of the identity triple** — a quadruple `(tenant, agent, user, session)` where isolation predicates may key on `agent_id`. **This phase departs from that recommendation.** D-059 settles `agent_id` as a *registration identity*, **not** an isolation principal: Harbor's isolation boundary stays `(tenant, user, session)` (+ `run`). An agent runs *within* that tuple and does not widen it; storage methods and event filters never key isolation on `agent_id`. Rationale: the acting-subject-vs-requesting-principal provenance need that brief 09 §170 is really chasing is satisfied by recording `agent_id` in provenance and audit (the actor) alongside the identity tuple (the requester) — without making `agent_id` an isolation key, which would force every identity-scoped table and every event filter across the runtime to grow a fourth dimension for a concept that is not an isolation boundary. The departure is recorded in `docs/decisions.md` D-059 per AGENTS.md §15 + §16.
+None. brief 09 raised an open RFC-level question — "does Harbor's
+identity surface extend to a quadruple `(tenant, agent, user, session)`"
+— and recommended making `agent_id` a peer of the isolation tuple. That
+recommendation was **explicitly rejected** at RFC time and settled by
+D-059: `agent_id` is a registration identity, not an isolation principal.
+Phase 53a follows D-059 (the settled decision), not brief 09's superseded
+recommendation. This is not a silent departure — D-059 already records
+the resolution; this section notes it so the brief→RFC delta is visible.
 
 ## Goals
 
-- A `registry.AgentRegistry` interface with one V1 implementation, persisted via the runtime instance's configured `StateStore` (the §9 triad — no separate registry-driver seam; persistence rides the existing StateStore seam, mirroring how Governance persists, D-044).
-- The three-ID model: `agent_id` (stable, minted once, rehydrated on restart), `incarnation` (ephemeral, bumps every process start), `version_hash` (deterministic content hash, bumps only on configuration change).
-- Both creation cases: locally-hosted agents (runtime mints a local `agent_id`) and connect-to-remote agents (local `agent_id` is a handle; canonical identity is the remote A2A AgentCard).
-- `restart` rehydrates the same `agent_id` from a durable StateStore; `restart ≠ recreate`.
-- `agent.*` events on the typed event bus (`agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered`).
-- Fleet-control vs fleet-observation privilege tiers represented in the API surface so downstream Protocol phases can enforce them; every control operation is audit-redacted and emitted.
+- A `registry.AgentRegistry` interface + one concrete `*Registry`
+  implementation, StateStore-backed, per-runtime-instance, in-process.
+- The three-ID model: `agent_id` (ULID, minted once at first
+  registration, persisted, rehydrated), `incarnation` (bumps every
+  process start / every `Register` of an already-known agent),
+  `version_hash` (deterministic content hash; bumps iff configuration
+  content changed).
+- Both creation cases: `Register` for locally-hosted agents (runtime
+  mints a local `agent_id`); `RegisterRemote` for connect-to-remote
+  agents (local `agent_id` is a *handle*; an `AgentCardRef` points at the
+  remote operator's canonical A2A AgentCard).
+- `restart ≠ recreate`: re-registering a known logical agent (same
+  `RegistrationKey`) rehydrates the existing record and bumps
+  `incarnation`; `Deregister` then `Register` mints a fresh `agent_id`.
+- `agent.*` events (`agent.registered`, `agent.restarted`,
+  `agent.health`, `agent.drained`, `agent.deregistered`) on the
+  `events.EventBus`, carrying the registration `agent_id`.
+- Fleet-control surface (`Pause` / `Drain` / `Restart` / `ForceStop`)
+  gated behind an elevated control-scope claim; every control command is
+  audit-redacted and emitted. Fleet observation (`Get` / `List` /
+  `Inspect`) requires only the ordinary identity scope.
+- Identity is mandatory and fails closed: every method rejects a missing
+  / incomplete identity triple. `agent_id` is **never** used as a
+  `WHERE`-clause isolation filter — storage scopes by
+  `(tenant, user, session)` only.
+- Concurrent-reuse safety (D-025): one shared `*Registry` is safe under
+  N≥100 concurrent registrations / lookups / control commands.
 
 ## Non-goals
 
-- **Protocol exposure.** The registry is a runtime-internal subsystem at this phase. `agents.*` Protocol methods and the Console Agents page land in the Protocol / Console-attaching waves (54+, 72–75) and twin with their own smoke coverage per RFC §7.
-- **Agent scaffolding / authoring.** Creating agent definitions via UI is post-V2 (RFC §7.4).
-- **A runtime-side control-plane client enrollment allowlist.** Deferred "decide later" per D-066; per-request JWT scope covers V1.
-- **Agent-bound OAuth token storage.** That is Phase 30 — this phase only supplies the `agent_id` Phase 30 keys by.
-- **Cross-runtime fleet aggregation.** Console-side aggregation, post-V1 (brief 11 §539).
+- **No Protocol surface.** `agent.*` events and the registry snapshot
+  reach the Console through the Protocol phases (54+); Phase 53a ships
+  the runtime subsystem only. No REST endpoint, no Protocol method.
+- **No new StateStore driver.** The registry persists through the
+  *existing* `state.StateStore` seam (D-027). It does not define a
+  `registry/drivers/` seam — driver pluralism already lives at the
+  StateStore layer (in-mem / SQLite / Postgres).
+- **No agent execution.** The registry owns registration *identity* and
+  *lifecycle metadata*, not planner runtime, tool dispatch, or task
+  ownership. Wiring the registry into the run path is later work.
+- **No cryptographic scope verification.** The elevated control-scope
+  claim is trust-based in Phase 53a (mirrors the events package's
+  Phase-05 `Admin` claim); cryptographic verification arrives with
+  Protocol auth (Phase 61).
+- **No control-plane client enrollment allowlist.** Deferred per D-066
+  ("decide later").
+- **No Console page.** The Agents page is Console-wave work (72–75
+  re-decomposition); it ships only after this phase's feeding Protocol
+  surface (D-062).
 
 ## Acceptance criteria
 
-- [ ] `registry.AgentRegistry` interface defined; one V1 implementation constructed via `registry.New(...)` taking an injected `state.StateStore` + `events.EventBus`.
-- [ ] `Register` mints a ULID `agent_id`, persists the agent record via StateStore, and emits `agent.registered`.
-- [ ] Three-ID model: `incarnation` bumps on every `New`/boot rehydration; `version_hash` is a deterministic hash over (prompt set, tool set + schemas, planner config, model policy) and is byte-stable across runs given identical configuration content.
-- [ ] `restart` rehydration: with a durable StateStore driver, re-constructing the registry yields the *same* `agent_id` for a previously-registered agent, a *new* `incarnation`, and an unchanged `version_hash` when configuration content is unchanged; `agent.restarted` is emitted. With the in-mem driver, the registry starts empty (documented dev-only behaviour, not a silent failure).
-- [ ] `restart ≠ recreate`: a `Deregister` + `Register` of the same logical agent mints a fresh `agent_id`; a restart does not.
-- [ ] Connect-to-remote: registering a remote agent stores a handle (`agent_id` local to this instance) plus an A2A AgentCard reference; the handle is runtime-instance-local and never assumed globally unique.
-- [ ] `agent.*` events carry the registration `agent_id` and the identity tuple; payloads are sealed (`events.Sealed`) and audit-redacted on emit.
-- [ ] Identity is mandatory: `Register` / `List` / control operations reject a missing identity component with a wrapped sentinel (fail-closed, §6 rule 9).
-- [ ] Cross-tenant / cross-session isolation conformance: a registration in one `(tenant, user, session)` scope never resolves or lists for another.
-- [ ] Fleet control vs observation: control operations (`Pause` / `Drain` / `Restart` / `ForceStop`) are gated behind an elevated-scope check and emit audit events; observation (`Get` / `List`) is not. The gate is a typed sentinel, not a silent no-op.
-- [ ] Concurrent-reuse test: N≥100 concurrent `Register` / `Get` / `List` / control invocations against one shared `AgentRegistry` under `-race` — no data races, no context bleed (per-goroutine identity round-trips), no cancellation cross-talk, no goroutine leaks (baseline `runtime.NumGoroutine` restored after teardown).
-- [ ] `scripts/smoke/phase-53a.sh` exists and passes (skips the Protocol surface, which does not exist until later phases — per the §4.2 404/405/501 → SKIP convention).
-- [ ] `cmd/harbor` wires the registry into the runtime boot.
-- [ ] `docs/plans/README.md` and root `README.md` status flipped to Shipped in the same PR.
+- [ ] `agent_id` is stable across a process restart when a durable
+  StateStore driver (SQLite / Postgres) is configured — a rehydration
+  test registers an agent, "restarts" by constructing a fresh
+  `*Registry` over the same store, and asserts the same `agent_id`.
+- [ ] The in-mem driver is documented as dev-only / non-persistent; a
+  test asserts a fresh `*Registry` over a fresh in-mem store does not see
+  the prior agent (the dev-mode artifact, not the fleet posture).
+- [ ] `incarnation` bumps on every re-registration of a known agent
+  (every "process start"); `version_hash` is **stable** across a
+  re-registration with byte-identical configuration and **bumps** when
+  configuration content changes.
+- [ ] `version_hash` is deterministic: the same configuration content
+  produces the same hash regardless of map ordering or struct field
+  enumeration order (canonicalised before hashing).
+- [ ] `restart ≠ recreate`: re-registering the same `RegistrationKey`
+  keeps the `agent_id` and the StateStore record; `Deregister` followed
+  by `Register` of the same `RegistrationKey` mints a *fresh* `agent_id`.
+- [ ] Remote-agent registration (`RegisterRemote`) stores a handle
+  `agent_id` plus an `AgentCardRef`; the handle is documented and tested
+  as runtime-instance-local and never assumed globally unique.
+- [ ] Every `agent.*` event carries the registration `agent_id` in its
+  payload.
+- [ ] Cross-tenant / cross-session isolation conformance: an agent
+  registered under `(T1,U1,S1)` is invisible to `Get` / `List` /
+  `Inspect` under `(T2,U2,S2)`; one identity's registry view never bleeds
+  into another.
+- [ ] Fleet-control commands (`Pause` / `Drain` / `Restart` /
+  `ForceStop`) require the elevated control-scope claim — a context
+  without it is rejected with `ErrControlScopeRequired` — and each emits
+  an audit-redacted `agent.*` control event. Fleet-observation methods
+  do **not** require the control claim.
+- [ ] Missing / incomplete identity fails closed on every method
+  (`ErrIdentityRequired`-wrapped) — there is no opt-out knob.
+- [ ] Concurrent-reuse test: N≥100 concurrent registrations / lookups /
+  control commands against one shared `*Registry` under `-race` — no data
+  races, no context bleed (per-run identity asserted), no goroutine
+  leaks (baseline `runtime.NumGoroutine` restored after teardown).
+- [ ] `scripts/smoke/phase-53a.sh` runs the package tests + the
+  integration test under `-race` and shows `OK ≥ 3`, `FAIL = 0`.
 
 ## Files added or changed
 
 ```text
-internal/runtime/registry/
-├── registry.go            # AgentRegistry interface + New(...) constructor + factory wiring
-├── agent.go               # Agent, AgentID, Incarnation, VersionHash, RegistrationSpec, AgentCardRef
-├── version.go             # version_hash computation (deterministic content hash)
-├── store.go               # StateStore-backed persistence (key layout, (de)serialisation)
-├── events.go              # agent.* event payloads (sealed via events.Sealed)
-├── errors.go              # typed sentinels (ErrIdentityRequired, ErrElevatedScopeRequired, ErrAgentNotFound, ...)
-├── registry_test.go       # unit: three-ID model, register/get/list, restart-vs-recreate
-├── version_test.go        # unit: version_hash determinism + change-detection
-├── d025_test.go           # concurrent-reuse stress (N≥100, -race)
-└── conformance/
-    └── conformance.go     # cross-tenant/session isolation conformance suite
-test/integration/
-└── agent_registry_test.go # integration: StateStore-backed rehydration across 3 drivers, real EventBus on the seam, identity propagation, ≥1 failure mode
-cmd/harbor/main.go         # wire the registry into runtime boot
-scripts/smoke/phase-53a.sh # smoke skeleton (skips: no Protocol surface at this phase)
-docs/plans/README.md       # status flip → Shipped
-README.md                  # status table flip → Shipped
+docs/plans/phase-53a-agent-registry.md         # this plan (new)
+docs/plans/README.md                           # 53a row Pending → Shipped
+docs/decisions.md                              # D-068 (version_hash algorithm + handle encoding)
+docs/glossary.md                               # control-scope claim term
+README.md                                      # status table: 53a row
+scripts/smoke/phase-53a.sh                     # new smoke script
+internal/runtime/registry/registry.go          # AgentRegistry interface, AgentRecord, three-ID model, sentinels, ctx helpers
+internal/runtime/registry/registry_impl.go     # *Registry concrete impl over state.StateStore + events.EventBus
+internal/runtime/registry/versionhash.go       # deterministic version_hash over agent config content
+internal/runtime/registry/events.go            # agent.* EventType constants + SafePayload types + init() registration
+internal/runtime/registry/registry_test.go     # unit: three-ID model, restart-vs-recreate, isolation, control-scope, fail-closed, D-025 concurrent reuse
+internal/runtime/registry/versionhash_test.go  # unit: version_hash canonicalisation + determinism
+test/integration/agent_registry_test.go        # integration: StateStore-backed rehydration across inmem/sqlite/postgres, real EventBus on seam, identity propagation, missing-identity-fails-closed
 ```
+
+`internal/runtime/registry/` is already listed in CLAUDE.md / AGENTS.md
+§3 ("Agent Registry — registration identity + agent.* events"); this
+phase fills it. No new top-level directory.
 
 ## Public API surface
 
 ```go
 package registry
 
-// AgentRegistry owns the registration identity of agents for ONE runtime instance.
-// It is a reusable artifact (D-025): immutable after construction, safe for N
-// concurrent callers; per-call state lives in ctx, never on the registry.
+// AgentRecord is the persisted registration-identity record for one agent.
+type AgentRecord struct {
+    AgentID         string             // ULID, minted once, rehydrated on restart
+    Incarnation     uint64             // bumps on every process start / re-registration
+    VersionHash     string             // deterministic content hash; bumps iff config changed
+    RegistrationKey string             // operator-stable logical-agent key; restart != recreate hinges on it
+    Identity        identity.Identity  // the (tenant,user,session) the agent is registered within
+    Hosting         Hosting            // HostingLocal | HostingRemote
+    AgentCardRef    string             // remote only: reference to the canonical A2A AgentCard
+    DisplayName     string
+    Health          Health             // HealthUnknown | HealthHealthy | HealthDegraded | HealthDraining | HealthStopped
+    RegisteredAt    time.Time
+    UpdatedAt       time.Time
+}
+
+// AgentConfig is the content version_hash is derived from. Caller-supplied
+// at Register time; hashed (canonicalised) — never stored as a persona object.
+type AgentConfig struct {
+    Prompts       []string
+    Tools         []ToolDescriptor   // name + schema digest
+    PlannerConfig map[string]string
+    ModelPolicy   map[string]string
+}
+
+// AgentRegistry is the per-runtime-instance registration-identity subsystem.
 type AgentRegistry interface {
-    // Register mints (or, on restart rehydration, restores) an agent_id, bumps
-    // incarnation, computes version_hash, persists via StateStore, emits agent.registered
-    // (or agent.restarted). Identity-mandatory; fails closed on a partial tuple.
-    Register(ctx context.Context, spec RegistrationSpec) (Agent, error)
-
-    // Get / List are observation-tier: scoped by the caller's identity tuple.
-    Get(ctx context.Context, id AgentID) (Agent, error)
-    List(ctx context.Context, filter ListFilter) ([]Agent, error)
-
-    // Deregister removes the agent record; a subsequent Register of the same logical
-    // agent mints a FRESH agent_id (recreate ≠ restart).
-    Deregister(ctx context.Context, id AgentID) error
-
-    // Pause / Drain / Restart / ForceStop are fleet-CONTROL tier: gated behind an
-    // elevated-scope check, audit-redacted and emitted. ErrElevatedScopeRequired on
-    // an insufficient scope claim — never a silent no-op.
-    Pause(ctx context.Context, id AgentID) error
-    Drain(ctx context.Context, id AgentID) error
-    Restart(ctx context.Context, id AgentID) error
-    ForceStop(ctx context.Context, id AgentID) error
+    // Register mints (or rehydrates) a locally-hosted agent's agent_id.
+    Register(ctx context.Context, key string, cfg AgentConfig, opts RegisterOptions) (*AgentRecord, error)
+    // RegisterRemote registers a connect-to-remote agent: local agent_id is a handle.
+    RegisterRemote(ctx context.Context, key string, cardRef string, opts RegisterOptions) (*AgentRecord, error)
+    // Get / List / Inspect — fleet observation; ordinary identity scope.
+    Get(ctx context.Context, agentID string) (*AgentRecord, error)
+    List(ctx context.Context) ([]AgentRecord, error)
+    Inspect(ctx context.Context, agentID string) (*AgentSnapshot, error)
+    // ReportHealth updates Health and emits agent.health.
+    ReportHealth(ctx context.Context, agentID string, h Health) error
+    // Deregister removes the record and emits agent.deregistered. recreate mints fresh.
+    Deregister(ctx context.Context, agentID string) error
+    // Fleet control — requires the elevated control-scope claim; audit-redacted + emitted.
+    Pause(ctx context.Context, agentID string, reason string) error
+    Drain(ctx context.Context, agentID string, reason string) error
+    Restart(ctx context.Context, agentID string, reason string) error
+    ForceStop(ctx context.Context, agentID string, reason string) error
+    // Close releases the registry (no long-lived goroutine in V1; symmetry + future-proofing).
+    Close(ctx context.Context) error
 }
 
-type AgentID string      // stable registration identity; runtime-instance-local ULID
-type Incarnation uint64  // ephemeral; bumps every process start
-type VersionHash string  // deterministic content hash; bumps only on config change
+// Control-scope claim helpers (trust-based in V1; crypto verification at Phase 61).
+func WithControlScope(ctx context.Context) context.Context
+func HasControlScope(ctx context.Context) bool
 
-type Agent struct {
-    ID          AgentID
-    Incarnation Incarnation
-    VersionHash VersionHash
-    Identity    identity.Identity // owning (tenant, user, session) scope
-    Origin      Origin            // OriginLocal | OriginRemote
-    AgentCard   *AgentCardRef     // set iff Origin == OriginRemote (handle → canonical remote identity)
-    // ... planner type, tool/memory bindings, health, timestamps
-}
-
-// New constructs the V1 registry, persisted via the injected StateStore. On a
-// durable driver it rehydrates existing agents (same agent_id, new incarnation).
-func New(store state.StateStore, bus events.EventBus, opts ...Option) (AgentRegistry, error)
+// Sentinels (callers errors.Is):
+var (
+    ErrIdentityRequired     = errors.New("registry: identity triple incomplete")
+    ErrControlScopeRequired = errors.New("registry: fleet-control requires elevated control-scope claim")
+    ErrAgentNotFound        = errors.New("registry: agent not found")
+    ErrAgentExists          = errors.New("registry: registration key already active")
+    ErrRegistryClosed       = errors.New("registry: registry is closed")
+    ErrInvalidConfig        = errors.New("registry: invalid agent config")
+)
 ```
 
 ## Test plan
 
-- **Unit:** three-ID model (`agent_id` stable, `incarnation` bumps, `version_hash` deterministic); `version_hash` change-detection (config edit bumps it, plain restart does not); `restart ≠ recreate`; identity-mandatory fail-closed paths; elevated-scope gate returns the typed sentinel.
-- **Integration:** `test/integration/agent_registry_test.go` — StateStore-backed rehydration exercised across **all three** StateStore drivers (in-mem / SQLite / Postgres) with real drivers on the seam; real `events.EventBus` (inmem driver) asserting `agent.*` emission; identity propagation through every layer; ≥1 failure mode (missing identity fails closed; a forced StateStore error surfaces, not silently swallowed).
-- **Conformance:** `internal/runtime/registry/conformance` — cross-tenant / cross-session isolation: N tenants × M sessions, every registration resolves only for its owning scope.
-- **Concurrency / leak:** `d025_test.go` — N≥100 concurrent `Register`/`Get`/`List`/control calls against one shared registry under `-race`; per-goroutine identity round-trip (no context bleed); pre-cancelled ctx on a subset (no cross-talk); baseline goroutine count restored after teardown.
+- **Unit:** three-ID model (mint-once `agent_id`, `incarnation` bump on
+  re-registration, `version_hash` bump iff config content changed);
+  `version_hash` determinism + canonicalisation (map-order independence);
+  `restart != recreate` (re-register keeps id; deregister+register mints
+  fresh); remote-agent handle stores `AgentCardRef`; every `agent.*`
+  event carries `agent_id`; fail-closed on missing identity;
+  control-scope gating (`ErrControlScopeRequired` without the claim,
+  success with it); audit-redacted control-event emission.
+- **Integration** (`test/integration/agent_registry_test.go`,
+  `TestE2E_Phase53a_*`): StateStore-backed rehydration across all three
+  drivers (inmem — asserts non-persistence; sqlite + postgres — assert
+  `agent_id` stable across a simulated restart) wired with a real
+  `events.EventBus` (`events.drivers.inmem`) on the seam; identity
+  propagation asserted end-to-end (`agent.*` events carry the registering
+  triple); ≥1 failure mode — a `Register` call with an incomplete
+  identity triple fails closed before touching the store. Real drivers
+  everywhere on the seam (no mocks), under `-race`. Postgres leg uses the
+  same env-gate convention as the existing Postgres integration tests.
+- **Conformance:** cross-tenant / cross-session isolation — an agent
+  registered under one triple is invisible to `Get` / `List` / `Inspect`
+  under another; N concurrent distinct-identity registrations assert no
+  cross-talk in the `List` views.
+- **Concurrency / leak:** D-025 concurrent-reuse — N≥100 concurrent
+  `Register` / `Get` / `List` / control-command invocations against one
+  shared `*Registry` under `-race`; per-invocation identity asserted (no
+  context bleed); `runtime.NumGoroutine` baseline restored after
+  `Close`.
 
 ## Smoke script additions
 
-- `scripts/smoke/phase-53a.sh` documents that the Agent Registry is a runtime-internal subsystem at Phase 53a with **no Protocol surface** — `agents.*` Protocol methods land in the Protocol / Console-attaching waves and twin with their own smoke coverage. The script therefore `skip`s (per the §4.2 404/405/501 → SKIP convention that lets phase-N+1 surfaces coexist with phase-N builds). When a later phase exposes the registry over the Protocol, that phase's smoke script asserts the live surface.
+`scripts/smoke/phase-53a.sh` (no HTTP/Protocol surface yet — correctness
+is verified by the Go suite, mirroring `phase-08.sh`):
+
+- `OK`: `go test -race ./internal/runtime/registry/...` passes.
+- `OK`: `go test -race -run '^TestE2E_Phase53a_' ./test/integration/...`
+  passes.
+- `OK`: `go vet ./internal/runtime/registry/...` is clean.
+- `skip`: "phase 53a: Agent Registry has no HTTP/Protocol surface yet
+  (Console Agents page + Protocol surface land in the 54+ / 72–75 waves)".
 
 ## Coverage target
 
-- `internal/runtime/registry`: 85%
-- `internal/runtime/registry/conformance`: 85%
+- `internal/runtime/registry`: 85% (master-plan target for this
+  conformance-tested subsystem).
 
 ## Dependencies
 
-- 01 (identity), 05 (events — `agent.*` payloads ride the typed bus), 07 (StateStore iface + InMem — persistence), 08 (SessionRegistry — agents register within a session scope).
-
-Note: dependencies are all long-shipped. Phase 53a is slotted into the 50–53 band per the master-plan planning decision (earlier runtime-subsystem bands are already shipped); it is parallelizable with the 50→54 pause/resume + steering chain and must land before Phase 54 and the Console-attaching wave (72–75) that consume it.
+- 01 (identity triple), 05 (`events.EventBus` + `agent.*` event types),
+  07 (`state.StateStore` generic surface), 08 (sessions — the
+  typed-wrapper-over-StateStore pattern this phase mirrors). All shipped.
 
 ## Risks / open questions
 
-- **`version_hash` input surface.** The hash must be deterministic across runs and stable under semantically-irrelevant reordering (e.g. tool registration order). Mitigation: canonicalise the input (sorted tool list by name, sorted schema keys) before hashing; `version_test.go` pins the determinism.
-- **Restart rehydration with a non-durable StateStore.** The in-mem driver loses the registry on restart. This is documented dev-only behaviour, surfaced explicitly (not a silent empty registry that looks like data loss). Operators running a fleet use SQLite/Postgres.
-- **Elevated-scope gate shape.** The exact scope-claim representation for fleet control is pinned to the Protocol auth surface (Phase 61). At this phase the gate is a typed seam (`ErrElevatedScopeRequired`); Phase 61 wires the concrete claim check. This is the §13 "primitive with its consumer" boundary — the gate ships with a unit test exercising it, and the Protocol consumer twins later.
-- **Remote-agent liveness.** A connect-to-remote agent's health depends on the A2A peer being reachable. V1 stores the handle + AgentCard reference; health polling of remote peers is a later concern.
+- **`version_hash` algorithm choice.** The RFC says "deterministic hash
+  over (prompt set, tool set + schemas, planner config, model policy)"
+  but does not pin the algorithm or the canonicalisation rule. Phase 53a
+  settles this in D-068: SHA-256 over a canonical JSON encoding (sorted
+  keys, sorted slices where order is not semantic) of an `AgentConfig`,
+  hex-encoded. This is an implementation call within the RFC's envelope,
+  not an RFC departure.
+- **Handle encoding for remote agents.** D-060 says the local `agent_id`
+  for a connect-to-remote agent is a "handle." Phase 53a settles in
+  D-068 that the handle is a normal locally-minted ULID `agent_id` with
+  `Hosting = HostingRemote` and a non-empty `AgentCardRef` — i.e. the
+  handle is not a distinct type, it is the same `agent_id` field
+  discriminated by `Hosting`. This keeps the three-ID model uniform
+  across both creation cases.
+- **No long-lived goroutine.** Unlike `sessions.Registry` (which owns a
+  GC sweeper), the Agent Registry has no background loop in V1 — health
+  is push-reported via `ReportHealth`, not polled. `Close` is retained
+  for interface symmetry and future-proofing. The D-025 leak test still
+  asserts baseline goroutine count to catch any accidental goroutine.
 
 ## Glossary additions
 
-- `Agent Registry`, `agent_id`, `incarnation`, `version_hash`, `Fleet control / fleet observation` — all added to `docs/glossary.md` in this PR's batch.
+- `agent_id`, `incarnation`, `version_hash`, `Agent Registry`,
+  `Console DB`, `Evaluations` — **already present** in `docs/glossary.md`
+  (added at RFC time alongside D-059/060/061/064).
+- **New:** `control-scope claim` — the elevated privilege tier that
+  fleet-control commands require, distinct from (and higher than) the
+  fleet-observation scope (D-066).
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes
-- [ ] **If this phase builds a reusable artifact (engine, tool, planner, driver, redactor, client, catalog, etc.): concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`, asserting no data races, no context bleed, no cancellation cross-talk, no goroutine leaks.** See AGENTS.md §5 + §11 + D-025. — `internal/runtime/registry/d025_test.go`.
-- [ ] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists (in-package adapter test OR `test/integration/<topic>_test.go`), wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** See AGENTS.md §17. — `test/integration/agent_registry_test.go` (consumes StateStore + EventBus).
-- [ ] If new vocabulary: glossary updated
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed — brief 09 §170, justified above, D-059.
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes
+- [x] **If this phase builds a reusable artifact: concurrent-reuse test passes — N≥100 concurrent invocations against a single shared instance under `-race`.** `*Registry` is a compiled reusable artifact; `TestRegistry_ConcurrentReuse_D025` ships.
+- [x] **If this phase consumes a shipped subsystem's surface OR closes a cross-subsystem seam: an integration test exists, wires real drivers end-to-end, asserts identity propagation, covers ≥1 failure mode, and runs under `-race`.** `test/integration/agent_registry_test.go` wires real state + events drivers.
+- [x] If new vocabulary: glossary updated (`control-scope claim`)
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (brief 09 → D-059 already settled; D-068 filed for implementation calls)
