@@ -563,6 +563,12 @@ Additions to this set are RFC PRs.
 
 ## T
 
+**Tracer** — Harbor's OpenTelemetry tracer wrapper (`internal/telemetry`, Phase 55). Wraps `go.opentelemetry.io/otel/trace.Tracer`; derives spans from `events.Event` records via `SpanFromEvent` so span boundaries align with run/step boundaries; exposes the W3C TraceContext propagation carriers and the `trace_id` / `span_id` `slog.Attr` pair (`LogAttrs`) for log correlation. Built once at boot via `NewTracer`; immutable and concurrency-safe (D-025). The span exporter sits behind a §4.4 driver seam — `noop` (default) and `otlp` (OTLP/gRPC). RFC §6.14, brief 06, D-073.
+
+**traceparent** — the W3C TraceContext header carrying the trace id + parent span id across process boundaries. Harbor propagates it three ways (Phase 55): as the `traceparent` HTTP header (HTTP southbound), as `_meta.traceparent` in a per-request map (stdio MCP), and as the `HARBOR_TRACEPARENT` env var on stdio child-process spawn. Each idiom has an `Inject*` / `Extract*` carrier pair in `internal/telemetry/propagation.go`. RFC §6.14, D-073.
+
+**span-from-event** — Harbor's rule that OTel spans are a *derivation of the event bus*, not a parallel instrumentation path. Subsystems emit `events.Event` records; `Tracer.SpanFromEvent` is the single bridge that turns an event into a span — there is no public `Start` method on `Tracer` and no `tracer.Start(...)` scattered across subsystems. brief 06 §1 + §6, D-073.
+
 **`TierResolver`** — operator-supplied `func(identity.Identity) string` that maps an identity to a tier name. nil resolver = "use `Governance.DefaultTier` for every identity." Returning `""` lets the runtime fall back to `DefaultTier`. Resolvers MUST be pure and deterministic (the per-identity state cache is keyed on the resolved tier). RFC §6.15, D-044.
 
 **`TokenBucket`** — Phase 36b per-`(identity, model)` rate-limit shape. Carries `Level` (current available tokens) + `LastRefill` (wall-clock timestamp of the most recent refill). `RateLimitConfig` parameters: `Capacity` (ceiling), `RefillTokens` (added every `RefillInterval`), `RefillInterval`. Linear refill: `floor(elapsed / RefillInterval) * RefillTokens`, capped at `Capacity`. A zero `RefillInterval` disables refill (one-shot bucket). State persists at `Kind=governance.bucket`. RFC §6.15, D-044.
