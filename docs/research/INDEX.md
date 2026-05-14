@@ -31,6 +31,7 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Steering and unified pause/resume | §3.3, §6.3 | **02** |
 | Tool catalog + transports (in-proc / HTTP / MCP / A2A) | §6.4 | **03**, **07** |
 | Tool-side OAuth + HITL (Phase 30) | §6.4, §3.3 | **09** |
+| Agent Registry — registration identity, three-ID model, fleet control (Phase 53a) | §6.16, §7 | **09**, **11** |
 | Code-mode as a tool primitive (proposed phase) | §6.4, §6.5 | **10** |
 | Console feature surface + playground (Phases 72–75 and new phases) | §5, §7 | **11** |
 | LLM client + provider correction | §6.5 | **03**, **07**, **08** |

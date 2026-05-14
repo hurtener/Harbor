@@ -86,6 +86,7 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 │   │   ├── playbooks/          # composable subflows
 │   │   ├── pauseresume/        # the unified pause/resume primitive
 │   │   ├── steering/           # cancel/redirect/inject/pause/resume control
+│   │   ├── registry/           # Agent Registry — registration identity + agent.* events
 │   │   └── ...
 │   ├── planner/                # Planner interface + concrete planners
 │   │   ├── ifaces/
@@ -372,6 +373,8 @@ These rules are integrity-critical. A violation is a security bug, not a style n
 9. **Identity is mandatory.** Memory drivers, state drivers, event subscribers — all reject requests with a missing identity component. There is no opt-out knob: the runtime fails closed.
 10. **Concurrency-leak tests are mandatory.** Any new code path touching identity has a test running N concurrent sessions and asserting no cross-talk.
 
+**Clarifying note — `agent_id` is NOT part of the isolation tuple.** Agents are runtime *entities* with a registration identity (`agent_id`, minted and persisted by the Agent Registry — RFC §6.16, D-059). That registration identity is **not** an isolation principal: the isolation boundary is and stays the tuple `(tenant, user, session)` (+ `run` for the quadruple). An agent runs *within* `(tenant, user, session)`; it does not widen the boundary. Storage methods, event filters, and memory/state drivers scope by the tuple, never by `agent_id`. Do not add `agent_id` to `WHERE` clauses as an isolation filter.
+
 If a change cannot satisfy these without contortion, the design is wrong — propose a fix in the RFC first.
 
 ---
@@ -494,6 +497,8 @@ These will cause the PR to be rejected on sight.
 - ❌ Building a new subsystem with plausible alternate implementations as a single concrete type instead of an interface + factory + registry (see §4.4).
 - ❌ **The Console reads or imports any Runtime internal type.** All data flows through the Protocol's canonical events/state.
 - ❌ **The Runtime imports the Console package**, in any direction.
+- ❌ **A Console DB used as a shadow source of truth for runtime entities** (agents, sessions, tasks, tools, events, artifacts). A Console-side datastore holds Console-local state only — saved views, layouts, preferences, annotations. Runtime entities flow exclusively through the Protocol. See RFC §7, D-061.
+- ❌ **A Console page phase shipping without its feeding Protocol-surface phase** landing first or in the same wave. This is the "no primitive without its consumer" rule read backwards — it keeps the Console honest as a Protocol client instead of letting it grow private hooks. See RFC §7, D-062.
 - ❌ **Two parallel implementations of the same conceptual feature** (e.g. "with-flag-X / without-flag-X" toggles for the same purpose). Pick one and deepen it.
 - ❌ **Shipping a primitive without its first consumer in the same wave.** A primitive (interface, control instruction, decision shape, runtime mechanism) that lands without a concrete that exercises it will bit-rot, drift from the design that motivated it, or be silently dropped at the next refactor. **The rule is binary:** the wave that introduces a primitive MUST also introduce at least one consumer that exercises the primitive end-to-end with a test. If a primitive lands in V1, its first consumer lands in V1 — not "later." Two concrete consequences of this rule, called out so they don't get re-litigated:
   - **`SpawnTask` and `AwaitTask` emission MUST land in the same phase.** A planner that can spawn a background task but cannot join it produces orphan work the runtime cannot recover. The pair is the unit of value; splitting them across phases violates this rule. The Decision sum already pins both shapes (Phase 42 / D-047) — the emission paths are what must twin.

@@ -1190,26 +1190,75 @@ type CircuitBreaker interface { /* per-(provider, key) health (post-V1) */ }
 
 ---
 
+### 6.16 Agent Registry
+
+The Agent Registry is the runtime subsystem that owns the **registration identity** of agents. It is an in-process, per-runtime-instance component — there is no central Harbor service, and there must not be one. Every `harbor` process (and every embedding of the Harbor library) has its own registry, persisted via that instance's configured `StateStore` driver (in-memory / SQLite / Postgres — the §9 triad, behind the §4.4 seam pattern).
+
+**`agent_id` is a registration identity, not an isolation principal.** Harbor's isolation boundary is and stays the tuple `(tenant, user, session)` (+ `run` for the quadruple — §4, §6.1). An agent is a runtime *entity* — it has a planner, tool bindings, memory bindings, policies, and operational health — but it runs *within* `(tenant, user, session)`; it does not widen the isolation boundary. Memory drivers, state drivers, and event subscribers continue to scope by the tuple, never by `agent_id`. (Settled — D-059. This dissolves a recurring ambiguity: "agent as a registered, runtime-tracked entity" and "agent as an isolation boundary" are orthogonal; the first is this subsystem, the second is explicitly rejected for V1.)
+
+**The three-ID model.** Each registered agent carries three identifiers, each answering a different question:
+
+| ID | Question | Lifecycle |
+|---|---|---|
+| `agent_id` | "which logical agent" | Minted once at first registration, persisted, rehydrated on restart. Runtime-instance-local, collision-free by construction (ULID); never assumed globally unique. |
+| `incarnation` | "which boot of it" | Ephemeral; bumps on every process start. |
+| `version_hash` | "which configuration" | Deterministic content hash over (prompt set, tool set + schemas, planner config, model policy); bumps **only** when configuration content changes. |
+
+A plain restart yields the same `agent_id` + same `version_hash` + a new `incarnation`; a restart after a configuration edit bumps both `incarnation` and `version_hash`. `version_hash` is the free V1 precursor to the post-V1 Evaluations / agent version-control program (§12) — success-rate-over-`version_hash` needs no retrofit if the hash is present from V1.
+
+**Two creation cases.** *Locally-hosted agent* — the runtime instance is running the agent; it mints a local `agent_id`. *Connect-to-remote agent* — the agent runs in another Harbor instance (or is any A2A-speaking peer); the local runtime assigns a **handle** (an `agent_id` local to this instance), and the canonical identity of the remote agent is its A2A AgentCard (§6.12), owned by the remote operator. This mirrors a DNS resolver's relationship to a remote host: the local entry is a handle, the authoritative record lives elsewhere. (Settled — D-060.)
+
+**`restart` rehydrates; `restart ≠ recreate`.** With a durable StateStore driver, a process restart rehydrates the registry and an agent returns with the *same* `agent_id` — a stable fleet view depends on this. The in-memory driver loses the registry on restart and is documented as dev-only. Teardown-and-recreate is distinct: recreate genuinely mints a fresh `agent_id` because it is a new logical entity; restart keeps the StateStore record.
+
+**Events.** The registry emits `agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered` on the typed event bus (§6.13), carrying the registration `agent_id`. The Console Agents page (§7) is a lens over these events plus a registry state snapshot — the Console never holds the agent list itself (D-061).
+
+**Fleet privilege tiers.** A Console managing one or more Harbor runtimes is a control plane. Fleet *observation* (reading events, viewing topology, listing agents) and fleet *control* (pause / drain / restart / force-stop of agents) are **distinct privilege tiers** — control requires a more-elevated scope claim than observation, extending the elevated-scope-claim concept (§6.13 admin subscriptions). Every fleet-control command is audit-redacted (§6.4) and emitted. A leaked read-only Console token must not be able to force-stop a fleet. A runtime-side enrollment allowlist of authorized control-plane clients is a stronger-than-JWT-scope option, deferred as a "decide later" item — per-request JWT scope (§5.5) covers the V1 need. (Settled — D-066.)
+
+**Consumers.** Phase 30 (tool-side OAuth) keys agent-bound tokens by the registration `agent_id`. The Console Agents page renders the three-ID model and the fleet-control surface. Briefs: `09-mcp-oauth-from-bifrost.md` (agent-as-actor), `11-console-feature-surface.md` (operator mockup).
+
+---
+
 ## 7. Console layer
 
 The Console is **its own product, in its own repository.** It is a SvelteKit + adapter-static SPA that talks to the Runtime exclusively over the Harbor Protocol. (Settled — `AGENTS.md` §4.5.)
 
-**Scope of Console (V1):**
+### 7.1 The runtime-lens principle
 
-- Live event stream view per session/run, with filter/search.
-- Run timeline with planner steps, tool calls, LLM calls, costs.
-- Task list and control (cancel/pause/resume/prioritize/approve/reject).
-- Session list with identity scope.
-- Artifact browser (read-only listing, download by ref).
-- State inspector (planner checkpoints, trajectories — read-only, redacted).
-- Topology visualization (node graph, queue depth).
+The Console does **not** own execution — the Runtime does. The Console connects through the Protocol and renders `state snapshots + realtime events + control commands`. Every Console page is therefore a **runtime lens**: a projection over canonical Runtime state, never a standalone app feature and never a privileged hook. This principle has a binding consequence — see §7.3.
 
-**Out of scope (V1):**
+### 7.2 Information architecture
 
-- Authoring agents in the Console (the dev-loop scaffolding lives in `harbor dev` + CLI, with the Console as the inspector — not the editor).
+The Console is a 14-page observability + control plane, organized in five clusters:
+
+```text
+Harbor Console
+├─ Runtime      — Overview, Live Runtime
+├─ Execution    — Sessions, Tasks, Agents, Tools, Events, Background Jobs
+├─ Resources    — Flows, Memory, MCP Connections, Artifacts
+├─ Evaluation   — Evaluations (post-V1, §12)
+└─ Settings     — Settings
+```
+
+The canonical Agents-page mockup is `docs/rfc/assets/console-agents-page.png` — fleet management, not an assistant gallery.
+
+Two distinctions are settled and load-bearing (D-062):
+
+- **`Live Runtime ≠ Sessions`.** Live Runtime is the present-tense interactive execution workbench — initiate, observe, and steer live executions through the same Protocol surfaces used in production; the chat/testing interface is one panel among many. Sessions are the past-and-active *durable execution records* — replay, continue, clone, convert-to-evaluation. Conflating them produces two half-built versions of the same surface.
+- **`Agents ≠ chatbots`.** Agents are runtime execution entities with planners, tool bindings, memory bindings, policies, task ownership, event streams, and operational health — not personas. The Agents page is a lens over the Agent Registry (§6.16).
+
+### 7.3 Binding conventions
+
+- **No Console page phase ships without its feeding Protocol-surface phase** landing first or in the same wave. This is the "no primitive without its consumer" rule (`AGENTS.md` §13) read backwards — it keeps the Console honest as a Protocol client. Cross-cutting Console needs (a `notification.*` event topic for the Overview intervention queue, `search.*` Protocol methods for global search) land as named acceptance criteria of their consuming page phases, not as free-floating primitives.
+- **A Console DB, if one exists, holds Console-local state only** — saved views, dashboard layouts, per-operator preferences, annotations. It is never a source of truth for runtime entities (agents, sessions, tasks, tools, events, artifacts); those flow exclusively through the Protocol. (Settled — D-061; `AGENTS.md` §13 forbidden practice.)
+- **MCP Apps `DisplayMode` is a Protocol-level concern.** An MCP app declares its preferred rendering mode — `inline` (a widget in the chat scroll), `fullscreen` (a new tab within the agent/session view; multiple fullscreen apps yield multiple tabs), or `pip` (split-screen between chat and app, default 50/50, resizable). The runtime forwards the declared mode; the Console honours it. `DisplayMode` lives in `internal/protocol/types/`, not in Console-only state.
+
+### 7.4 Out of scope (V1)
+
+- **Evaluations** is a post-V1 subsystem, not a V1 page (§12, D-064).
+- Authoring agents in the Console — the dev-loop scaffolding lives in `harbor dev` + CLI, with the Console as the inspector, not the editor. The Flows page is a *viewer* over engine graphs in V1; flow authoring/versioning is post-V1 (D-063).
 - Hosting the Console in the Harbor Runtime binary. (Even when `harbor dev` boots a local Console, the Console is spawned as a separate static-file server or embedded via a thin static-file handler that talks to the Runtime via the Protocol — not via direct package imports.)
 
-The Console repo and its phase plans land in a separate sequence. Some Console-related phases live in this repo (Protocol surface evolution, e2e Playwright tests against `harbor dev`); the Console itself does not.
+The Console repo and its phase plans land in a separate sequence. Some Console-related phases live in this repo (Protocol surface evolution, e2e Playwright tests against `harbor dev`); the Console itself does not. The current phase plan (phases 72–75) covers a subset of this IA; re-decomposition against the full IA is tracked in `docs/plans/README.md`. Brief: `11-console-feature-surface.md`.
 
 ---
 
@@ -1329,6 +1378,8 @@ These open questions are tracked as GitHub issues once the RFC is approved; the 
 - **A2A northbound server** (Harbor as an A2A endpoint). V1 candidate but de-prioritized; revisit at V1.1.
 - **An `episodic memory` tier** above `rolling_summary`.
 - **Visualization editor** in the Console. V1 ships read-only topology visualization; an editor is later.
+- **Code-mode as a Harbor primitive.** A sandboxed (`go.starlark.net`) code surface over the tool catalog, with meta-tools and pause/resume composition. Detailed design in `docs/research/10-code-mode-as-harbor-primitive.md`; correctly post-V1. Its cross-impact touches many V1 phases compositionally, not structurally — revisit at V1.1 planning.
+- **Evaluations subsystem + agent version-control.** Eval suites, golden sessions, replay-based evaluation, regression diffs, baseline promotion — and, built on top, agent version-control (success-rate-over-`version_hash`, prompt evolution, tool evolution). It is a subsystem, not the Console page alone. Settled constraints (D-064): built as a §4.4 extensibility seam so a premium/hosted variant is a driver and not a fork; hard dependency on fully-replayable sessions, which makes the durable event log (Phase 57) load-bearing for it. Brief: `11-console-feature-surface.md`.
 
 ---
 
@@ -1351,7 +1402,8 @@ These open questions are tracked as GitHub issues once the RFC is approved; the 
 | Typed event bus | §6.13 | `06-events-observability-devx.md` |
 | Telemetry (slog + OTel) | §6.14 | `06-events-observability-devx.md` |
 | Governance (cost / rate / key rotation / failover) | §6.15 | `03-tools-and-llm.md`, `08-llm-client-validation.md` (cross-cutting) |
-| Console (separate repo) | §7 | `06-events-observability-devx.md` |
+| Agent Registry (registration identity, three-ID model, fleet control) | §6.16 | `09-mcp-oauth-from-bifrost.md`, `11-console-feature-surface.md` |
+| Console (separate repo) | §7 | `06-events-observability-devx.md`, `11-console-feature-surface.md` |
 | CLI | §8 | `06-events-observability-devx.md` |
 
 ---

@@ -52,6 +52,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Agent Card cache** — the Phase 29 wire driver's in-memory TTL cache for `GET <peer>/.well-known/agent-card.json` responses. Default TTL 10 minutes; per-peer override via `A2APeerConfig.AgentCardTTL`. Coalesces concurrent first-time fetches via an inflight map so N concurrent `Discover` calls collapse into one underlying HTTP GET. RFC §6.4.
 
+**Agent Registry** — Phase 53a (`internal/runtime/registry`) in-process, per-runtime-instance subsystem that owns the *registration identity* of agents. StateStore-backed (in-mem / SQLite / Postgres, §4.4 seam). Mints and persists `agent_id`, tracks `incarnation` + `version_hash`, handles both creation cases (locally-hosted: runtime mints a local id; connect-to-remote: local id is a handle, canonical identity is the remote A2A `AgentCard`), and emits `agent.*` events so the Console Agents page renders runtime state. Not a central service — every `harbor` instance has its own. RFC §6.16, §7, D-059, D-060.
+
+**`agent_id`** — an agent's stable *registration identity* — minted once at first registration by the Agent Registry, persisted, rehydrated on restart. It is **not** an isolation principal: Harbor's isolation tuple stays `(tenant, user, session, run)` and `agent_id` does not widen it. For a connect-to-remote agent the local `agent_id` is a handle; the canonical identity is the remote A2A `AgentCard`. Runtime-instance-local, collision-free by construction (ULID/UUID), never assumed globally unique. RFC §6.16, AGENTS.md §6, D-059, D-060.
+
 **AuthSpec** — Phase 27 HTTP tool driver: static-auth specification attached to an HTTP tool, carrying `Kind` (`api_key` / `bearer` / `cookie`) plus the kind-specific field (`HeaderName` xor `QueryParam` for api_key, `CookieName` for cookie). The secret value lives separately in operator config — never in the request payload or URL template. Templates that reference the `.Auth` namespace are rejected at load time (`ErrTemplateSecretLeak`). AGENTS.md §7, RFC §6.4.
 
 **Route scoring** — Phase 29's deterministic selection of an A2A peer when more than one declares the same capability. Score formula at `internal/distributed/drivers/a2a/registry.go`: `(5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)` — trust outranks latency; latency is the tie-breaker among similarly-trusted peers; capability match adds an additive boost. Tie-breakers: lower latency, then URL ascending so the result is reproducible. RFC §6.4, D-038.
@@ -102,7 +106,9 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **ContextWindowReserve** — fraction of a model's context-window cap (`ModelProfile.ContextWindowTokens`) held back as a safety margin (default 0.05 / 5%). The LLM-edge safety pass fails with `ErrContextWindowExceeded` when the estimated token count of the assembled `CompleteRequest` is within this fraction of the cap. Configured at `LLMConfig.ContextWindowReserve`. RFC §6.5, D-026.
 
-**Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. RFC §5 + §7.
+**Console** — the observability + control-plane UI. Architecturally a Protocol client of the Runtime; ships in its own product/repo. The Runtime never imports it; it never reads Runtime internals. Its information architecture is a 14-page observability + control plane organized as **runtime lenses** (RFC §7, D-062): every page is a projection over `state snapshots + realtime events + control commands`. RFC §5 + §7.
+
+**Console DB** — an optional Console-side datastore. It holds **Console-local state only** — saved views, dashboard layouts, per-operator preferences, annotations. It is **never** a source of truth for runtime entities (agents, sessions, tasks, tools, events, artifacts); those live in the Runtime and reach the Console exclusively through the Protocol. A Console DB used as a shadow source of truth breaks the "Console is a Protocol client" rule and is a forbidden practice (CLAUDE.md §13). The legitimate runtime-side inverse — an allowlist of authorized control-plane clients — is a separate concern (D-066). RFC §7, D-061.
 
 **Cost ceiling** — Identity-scoped budget cap (per tenant / user / session, optionally per model). PreCall check; emits `governance.budget_exceeded` on breach; fails loudly with `ErrBudgetExceeded`. Also known as **`BudgetCeiling`** (the Go-side name on `governance.TierConfig.BudgetCeilingUSD`). RFC §6.15, D-044.
 
@@ -124,6 +130,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Dispatcher (tools)** — runtime component that takes a validated `PlannerAction` and runs it. Single + parallel folded into one design unit. Validates `args` against the tool's input schema, runs with deadline + cancellation, stamps synthetic call IDs, returns `ToolOutcome` / `ParallelOutcome`. RFC §6.4.
 
+**DisplayMode** — an MCP App's declared rendering mode for the Console: `inline` (a widget embedded in the chat scroll), `fullscreen` (the app takes a new tab within the agent/session view; multiple fullscreen apps yield multiple tabs), or `pip` (split-screen between chat and app, default 50/50, resizable). DisplayMode is a Protocol-level concern — the MCP app declares its preferred mode, the runtime forwards it, the Console honours it; it lives in `internal/protocol/types/`, never in Console-only state. RFC §7, D-062.
+
 **Driver** — a concrete implementation of an interface (per the §4.4 Extensibility seams pattern). Self-registers via `init()`; pulled in via blank import at `cmd/harbor`. Examples: SQLite driver of `StateStore`, OpenRouter driver of `bifrost`, in-proc driver of `Tool`.
 
 **`DowngradeChain`** — Phase 35's structured-output retry-on-schema-error sequence. The wrapper steps the request's `OutputMode` (Harbor-side strategy) through `Native → Prompted → Text` when the inner call surfaces a schema-class failure (classified by `llm.IsInvalidJSONSchemaError`). Bounded at 3 attempts (initial + 2 downgrades); exhaustion surfaces `ErrDowngradeExhausted` wrapping the chain. Each step emits `llm.mode_downgraded` with identity + From/To/Reason. RFC §6.5; D-043.
@@ -135,6 +143,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Engine** — Harbor's runtime container — the typed, async, queue-backed graph executor. One in-memory implementation in V1 (`internal/runtime/engine`). Owns the worker loop (one goroutine per `Node`), bounded per-adjacency channels, the always-on egress dispatcher, cycle detection at construction, the reliability shell (`NodePolicy`), the streaming primitive (`EmitChunk`), per-run cancellation. Distinct from `events.EventBus` (the cross-subsystem event bus); the engine is the runtime kernel. RFC §6.1.
 
 **Envelope** — Harbor's canonical message shape: `Payload`, `Headers`, identity quadruple (`RunID`, `SessionID` plus `Headers.{TenantID, UserID}`), `Timestamp`, `DeadlineAt`, free-form `Meta`. Flows along every runtime channel. Defined in `internal/runtime/messages`. RFC §6.1, brief 01 §2.
+
+**Evaluations** — a **post-V1** subsystem (not a V1 page) for quality / reliability / regression testing of agents, flows, tools, and runtime policies — eval suites, golden sessions, replay-based evaluation, regression diffs, baseline promotion. It is the foundation for post-V1 agent version-control (success-rate-over-`version_hash`, prompt evolution, tool evolution). Built as a §4.4 extensibility seam so a premium/hosted variant is a driver, not a fork. Hard dependency: fully-replayable sessions, which makes the durable event log (Phase 57) load-bearing for it. RFC §12, D-064.
 
 **Event bus** — Harbor's typed event subsystem. ONE bus, not two. Protocol-grade, not observability-grade. Replaces the predecessor's split between observability events and chunk-via-message. RFC §6.13.
 
@@ -154,11 +164,15 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Filter (events)** — the server-enforced subscription predicate on `EventBus.Subscribe`. Mandates the identity triple (`Tenant`, `User`, `Session`) unless `Admin` is set; the bus rejects empty-triple non-admin filters with `ErrIdentityScopeRequired` and audit-emits `audit.admin_scope_used` whenever admin scope is exercised. Optional `Types` slice filters by `EventType`. RFC §6.13, brief 06 §3-§4.
 
+**Fleet control / fleet observation** — the two privilege tiers for a Console (or any Protocol client) managing one or more Harbor runtimes. *Fleet observation* — reading events, viewing topology, listing agents. *Fleet control* — pause / drain / restart / force-stop of agents. Control is a distinct, **more-elevated** privilege tier than observation (extending the §6 elevated-scope-claim concept); every control command is audit-redacted and emitted. A leaked read-only token must not be able to force-stop a fleet. RFC §6.16, §5.5, D-066.
+
 **Flow** — a typed DAG of `Node`s assembled into a runnable unit. Built on the same engine that powers subflows; can be registered as a Tool via `flow.RegisterAsTool(...)` so the planner invokes a multi-step orchestration the same way it invokes a single Tool. Per-node `NodePolicy` (retry / exponential backoff / timeout / validation) plus aggregate `flow.Budget` (deadline / hop budget / cost cap) compose with identity-tier Governance ceilings. RFC §6.1, D-023.
 
 **`flow.Definition`** — the canonical Go shape describing a Flow: name, description, entry/exit nodes, node specs, optional intrinsic `Budget`, and derived `InSchema` / `OutSchema`. V1 operators write `Definition`s in Go; V1.1 adds a YAML recipe loader that parses into the same struct. RFC §6.1, D-023.
 
 **`flow.Budget`** — per-flow intrinsic cap on `Deadline`, `HopBudget`, and `CostCap`. Enforced at flow boundaries via `min()` against parent-run `RunContext.Budget` and identity-tier ceilings; whichever fires first aborts the flow with `ErrFlowBudgetExceeded`. RFC §6.1, D-023.
+
+**Flows (Console page)** — the Console page that surfaces engine graphs, scoped to the graph-family planners (Graph / Workflow / Deterministic). Not a new runtime subsystem — a "Flow" here *is* an `internal/runtime/engine` node graph; the page is a view over it. V1 scope is read / run / inspect-run-history (a pure lens); authoring / versioning / import-export is post-V1 and is the part that may need a real subsystem. Distinct from `Flow` (the runtime DAG type). RFC §7, D-063.
 
 **Failover chain** — Operator-defined sequence of providers tried in order when the primary fails or hits its ceiling. Orchestrated by Harbor's Governance subsystem; audited per hop; distinct from bifrost's per-request `Fallbacks` field. Post-V1, phase 93. RFC §6.15.
 
@@ -194,6 +208,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Identity quadruple** — the identity triple plus `RunID`. Used in `Envelope`s and run-scoped data flow (artifacts, state checkpoints, per-run audit). The triple is the load-bearing **isolation** key (cross-session leakage is forbidden); the `RunID` is the per-execution scope **within** a session. RFC §6.1, §6.10.
 
+**`incarnation`** — the ephemeral half of an agent's identity in the Agent Registry: a marker that bumps on every process start ("which boot of the agent"). Distinct from `agent_id` (stable across restart) and `version_hash` (bumps only on configuration change). A restart with no config change yields the same `agent_id` + same `version_hash` + a new `incarnation` — which is how the Console distinguishes "restarted, no change" from "restarted after a config edit". RFC §6.16, D-059.
+
 **`IdentityTier`** — One named bundle of governance policies (`BudgetCeilingUSD`, `RateLimit`, `MaxTokens`) under `Governance.IdentityTiers`. Operators map identities to tiers via `Governance.DefaultTier` (every identity gets the same tier) or a custom `TierResolver` function. Empty map = no enforcement (latent default per D-044). Each field within a tier is independently opt-in. RFC §6.15, D-044.
 
 **IdempotencyKey** — caller-supplied string on `tasks.SpawnRequest` that, when paired with `Identity.SessionID`, deduplicates retried spawns. Same `(SessionID, IdempotencyKey)` → returns the original `TaskHandle` with `Reused=true`; divergent SpawnRequest under the same key returns `ErrIdempotencyConflict`. Empty key disables dedup entirely (every Spawn yields a fresh handle, no collisions). The key is namespaced by SessionID, so the same key across different sessions creates two distinct tasks. RFC §6.8.
@@ -215,6 +231,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`JoinN`** — `JoinKind` that waits for N parallel branches to succeed, then cancels the remainder. `JoinSpec.N` carries the threshold; setup validates `0 < N ≤ len(Branches)`. Returns successes in completion order (each `Result` retains its original branch `Index` as the deterministic merge key). Phase 47, D-056.
 
 ## L
+
+**Live Runtime** — the Console page that is the present-tense interactive execution workbench: initiate, observe, and steer live Harbor executions through the same Protocol surfaces used in production. The chat/testing interface is one panel among many (live topology, planner steps, tool calls, streaming response, event stream, runtime controls). It is the spiritual replacement of the predecessor's Playground, upgraded. Distinct from **Sessions**, which are the past-and-active *durable execution records* (replay / continue / clone / convert-to-eval) — Live Runtime is present-tense and interactive, Sessions are investigative. RFC §7, D-062.
 
 **LLMClient** — Harbor's interface for talking to an LLM provider. **One method**: `Complete(ctx, req) (resp, error)`. Tool dispatch is runtime-side. The single V1 driver wraps `bifrost`. RFC §6.5.
 
@@ -357,6 +375,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **RepairExhaustedPayload** — typed payload for the `planner.repair_exhausted` event (Phase 44). SafePayload (composes `events.SafeSealed`): `Identity` (the run's quadruple), `Attempts` (total LLM re-asks burned), `ConsecutiveArgFailures` (the storm-guard counter value at exhaustion), `Reasons` (truncated chain of validator failure messages), `OccurredAt`. RFC §6.2, D-050.
 
 **`RateLimiter`** — Phase 36b `governance.Subsystem` running a token bucket per `(identity, model)`. PreCall drains `expected_tokens` (from `req.MaxTokens` or 1) from the bucket; underflow → `ErrRateLimited` + `governance.rate_limited` event. State lives in StateStore (`Kind=governance.bucket`); survives restart. Per-key mutex serialises drain operations. No refunds on call failure. RFC §6.15, D-044.
+
+**Runtime lens** — the design principle for the Harbor Console: every Console page is a *projection* over the Runtime's canonical `state snapshots + realtime events + control commands` — never a standalone app feature, never a privileged hook. The Console does not own execution; the Runtime does. The principle is what makes the structuring rule binding — no Console page phase ships without its feeding Protocol-surface phase landing first or in the same wave. RFC §7, D-062.
 
 **ReasoningEffort** — request-level hint mapped to per-provider reasoning controls (`off` / `low` / `medium` / `high` / `""`). Bifrost's `ChatReasoning` is the bridge for V1 providers; empty string means "use provider default" (the safety pass does not touch the field). Settable per request or via `ModelProfile.ReasoningEffort` defaults. RFC §6.5.
 
@@ -580,6 +600,8 @@ Additions to this set are RFC PRs.
 **`ValidateMode`** — `both / in / out / none`. Per-node choice (`NodePolicy.Validate`) for whether the engine runs the validator on input, output, both, or skips it. `none` is the perf escape hatch for hot streaming paths. RFC §6.1, brief 01 §2.
 
 **`Validator`** — Phase 36's caller-supplied post-response validation hook on `CompleteRequest`. Shape `func(CompleteResponse) error`. The retry wrapper invokes it after each successful `Complete`; a non-nil return drives the corrective re-ask loop bounded by `ModelProfile.MaxRetries`. A `nil` Validator (the default) disables the retry loop. Validators MUST be safe for concurrent invocation. RFC §6.5, D-043.
+
+**`version_hash`** — the content-derived half of an agent's identity in the Agent Registry: a deterministic hash over the agent's configuration content (prompt set, tool set + schemas, planner config, model policy). It bumps **only** when configuration content changes — stable across a plain restart, changed by a prompt or tool edit. Distinct from `agent_id` (stable registration identity) and `incarnation` (bumps every boot). It is the free V1 precursor to the post-V1 Evaluations / version-control program (success-rate-over-`version_hash`). RFC §6.16, D-059, D-064.
 
 **Virtual directory pattern** — pluggable-storage namespace addressing for skills (and potentially other artifacts). Logical paths over a swappable backing store. Inherited from the predecessor (the strongest pattern brief 04 names). RFC §6.7.
 
