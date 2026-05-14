@@ -24,16 +24,33 @@
 //     with `ErrScopeMismatch` (the Protocol projection maps that to
 //     403 + an audit emit).
 //
-// # What Phase 52 does NOT ship (Phase 53)
+// # What Phase 53 adds (the run-loop wiring)
 //
-// Phase 52 is the primitive. It does NOT wire steering into the
-// engine's run loop — drain-between-steps, CANCEL propagation, PAUSE
-// blocking at the next boundary, the planner seeing only
-// `RunContext.Control`, the control-history cap — all of that is
-// Phase 53 (Wave 9, Stage 3, "Steering wiring — 9 control events").
-// Phase 53 is the §13 first consumer of this primitive; it lands in
-// the SAME wave. See D-070 and the phase-52 plan's
-// "§13 primitive-with-consumer obligation" section.
+// Phase 52 shipped the primitive (taxonomy + inbox + validation +
+// scope). Phase 53 ships `RunLoop` — the per-run planner-step loop
+// that is the §13 first consumer of BOTH this primitive AND the
+// Phase 50 `pauseresume.Coordinator`:
+//
+//   - `RunLoop.Run` drives a `planner.Planner` to a terminal
+//     `planner.Finish`, draining the per-run `Inbox` exactly ONCE per
+//     step boundary (`Inbox.Drain` — never mid-tool-call, the
+//     drain-between-steps invariant from brief 02 §6).
+//   - The nine control events' side effects are applied (`apply.go`):
+//     CANCEL hard/soft, PAUSE/RESUME/APPROVE/REJECT onto the unified
+//     `pauseresume.Coordinator`, INJECT_CONTEXT/REDIRECT/USER_MESSAGE
+//     projected onto `RunContext.Control` (the planner sees ONLY this
+//     — never the `Inbox`), PRIORITIZE onto the `tasks.TaskRegistry`.
+//   - A planner's `RequestPause` decision routes through
+//     `Coordinator.Request`; `Inbox.WaitForEvent` blocks the loop
+//     (no busy-spin) until a RESUME / APPROVE arrives, which routes
+//     through `Coordinator.Resume`.
+//   - Per-session applied-control history is capped
+//     (`controlHistory`, `MaxControlHistory`, newest-wins ring).
+//   - `control.received` / `control.applied` lifecycle events are
+//     emitted (`events.go`).
+//
+// See D-071 and the phase-53 plan's "§13 primitive-with-consumer —
+// discharged here" section.
 //
 // # Pause-family controls converge on the unified primitive
 //

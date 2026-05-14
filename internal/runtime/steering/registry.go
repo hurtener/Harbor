@@ -78,6 +78,7 @@ func (r *Registry) Open(q identity.Quadruple) (*Inbox, error) {
 	in := &Inbox{
 		identity: q,
 		clock:    r.clock,
+		notify:   make(chan struct{}, 1),
 	}
 	r.inboxes[q] = in
 	return in, nil
