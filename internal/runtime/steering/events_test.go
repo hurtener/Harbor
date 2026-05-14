@@ -25,6 +25,27 @@ func TestControlRejectedPayload_IsSafePayload(t *testing.T) {
 	var _ events.SafePayload = ControlRejectedPayload{}
 }
 
+func TestControlLifecycleEventTypes_Registered(t *testing.T) {
+	// Phase 53 adds control.received + control.applied — the run-loop
+	// lifecycle events brief 02 §3 names.
+	for _, et := range []events.EventType{EventTypeControlReceived, EventTypeControlApplied} {
+		if !events.IsValidEventType(et) {
+			t.Errorf("event type %q is not registered in the events registry", et)
+		}
+	}
+	if EventTypeControlReceived != "control.received" {
+		t.Errorf("EventTypeControlReceived = %q, want %q", EventTypeControlReceived, "control.received")
+	}
+	if EventTypeControlApplied != "control.applied" {
+		t.Errorf("EventTypeControlApplied = %q, want %q", EventTypeControlApplied, "control.applied")
+	}
+}
+
+func TestControlLifecyclePayload_IsSafePayload(t *testing.T) {
+	var _ events.EventPayload = ControlLifecyclePayload{}
+	var _ events.SafePayload = ControlLifecyclePayload{}
+}
+
 func TestClassifyRejection(t *testing.T) {
 	cases := []struct {
 		err  error

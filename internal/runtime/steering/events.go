@@ -13,25 +13,70 @@ import (
 // package's canonical registry from init(), so a Publish never trips
 // events.ErrUnknownEventType.
 //
-// Phase 52 emits exactly one of these: control.rejected, on a
-// validation / scope failure at Enqueue time. The control.received /
-// control.applied lifecycle events (brief 02 §3) are Phase 53's
-// concern — Phase 53 wires the drain loop and the side-effect
-// application that those events report. Registering control.rejected
-// here keeps the audit-on-scope-mismatch path (master-plan Phase 52
-// acceptance) end-to-end testable against a real EventBus without
-// waiting for the Phase 54 Protocol edge.
+// Phase 52 emitted exactly one of these: control.rejected, on a
+// validation / scope failure at Enqueue time. Phase 53 adds the two
+// lifecycle events brief 02 §3 names — control.received (a control
+// event was drained from the per-run inbox by the RunLoop) and
+// control.applied (the RunLoop applied the control's side effect).
+// Together with control.rejected they are the full steering audit
+// trail; Phase 54's Protocol edge surfaces them over the wire.
 const (
 	// EventTypeControlRejected — emitted when a steering submission is
 	// rejected at the edge: an unknown control type, a payload-bounds
 	// violation, or — the master-plan acceptance case — a per-event
 	// scope mismatch. Payload is ControlRejectedPayload.
 	EventTypeControlRejected events.EventType = "control.rejected"
+
+	// EventTypeControlReceived — emitted by the RunLoop when a control
+	// event is drained from the per-run inbox at a step boundary
+	// (before its side effect is applied). Payload is
+	// ControlLifecyclePayload.
+	EventTypeControlReceived events.EventType = "control.received"
+
+	// EventTypeControlApplied — emitted by the RunLoop after a drained
+	// control event's side effect has been applied (the goal was
+	// rewritten, the pause was requested / resumed, the task was
+	// reprioritised, etc.). Payload is ControlLifecyclePayload — the
+	// Err field is non-empty when the side effect failed.
+	EventTypeControlApplied events.EventType = "control.applied"
 )
 
 func init() {
 	events.RegisterEventType(EventTypeControlRejected)
+	events.RegisterEventType(EventTypeControlReceived)
+	events.RegisterEventType(EventTypeControlApplied)
 }
+
+// ControlLifecyclePayload is the typed payload for control.received and
+// control.applied events. SafePayload by construction: every field is
+// the RunLoop's own bookkeeping — the control Type is one of nine
+// canonical enum values, the Outcome / Err strings are low-cardinality
+// runtime-derived classifications. The caller-controlled control
+// payload itself is NOT carried (mirroring ControlRejectedPayload):
+// these events are a low-cardinality audit trail, not a payload
+// archive.
+type ControlLifecyclePayload struct {
+	events.SafeSealed
+	// Type is the control type that was received / applied.
+	Type string
+	// Outcome is a stable, low-cardinality classification of the apply
+	// result — "received" for control.received, and one of "applied" /
+	// "failed" for control.applied. Empty on a control.received event.
+	Outcome string
+	// Err is a short, redaction-safe description of why the side
+	// effect failed, when Outcome == "failed". Empty otherwise. The
+	// RunLoop derives this from a sentinel classification, never the
+	// raw error message (which may quote caller data).
+	Err string
+}
+
+// Control lifecycle outcome strings — stable, low-cardinality (safe for
+// Phase 56 metric derivation).
+const (
+	outcomeReceived = "received"
+	outcomeApplied  = "applied"
+	outcomeFailed   = "failed"
+)
 
 // ControlRejectedPayload is the typed payload for a control.rejected
 // event. SafePayload by construction: every field is the steering
