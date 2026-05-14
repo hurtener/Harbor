@@ -39,8 +39,10 @@ func (t *Trajectory) Serialize() ([]byte, error) {
 	}
 
 	// Pre-flight: walk the trajectory reflectively, fail on the first
-	// non-encodable leaf with a precise field path.
-	if err := walkEncodable(reflect.ValueOf(*t), "Trajectory", make(map[uintptr]struct{})); err != nil {
+	// non-encodable leaf with a precise field path. ValidateEncodable
+	// is the exported entry point — Serialize and external consumers
+	// (the Phase 51 pause-record envelope) share the SAME walker.
+	if err := ValidateEncodable(*t, "Trajectory"); err != nil {
 		return nil, err
 	}
 
@@ -54,6 +56,37 @@ func (t *Trajectory) Serialize() ([]byte, error) {
 	// *UnsupportedTypeError, which the walker matches structurally —
 	// see walkEncodable).
 	return json.Marshal(t)
+}
+
+// ValidateEncodable reports whether v is fully JSON-encodable, failing
+// loud with ErrUnserializable{Field: <dotted.path>} on the FIRST
+// non-encodable leaf — never silently. It is the reusable primitive
+// behind Trajectory.Serialize's pre-flight pass, exported so other
+// runtime serialise contracts that share the fail-loudly invariant
+// (the Phase 51 pause-record envelope is the first such consumer) walk
+// the SAME walker rather than re-implementing it — re-implementing it
+// would be the CLAUDE.md §13 two-parallel-implementations anti-pattern
+// (RFC §3.4, D-049, D-069).
+//
+// root is the field-path prefix the returned error is rooted at — pass
+// the consumer's own envelope name (e.g. "PauseRecord") so the error
+// path is actionable from the caller's vocabulary, not "Trajectory".
+//
+// The encoding rules mirror encoding/json verbatim (see walkEncodable):
+// chan / func / unsafe.Pointer / complex are rejected; nil interfaces /
+// nil pointers / nil slices encode as JSON null; []byte encodes as
+// base64; json.Marshaler implementers are probed; struct fields tagged
+// json:"-" are skipped; cyclic graphs surface as
+// ErrUnserializable{Field: ... <cycle>}.
+//
+// Callers extract the offending path via errors.As:
+//
+//	var unserr trajectory.ErrUnserializable
+//	if errors.As(err, &unserr) {
+//	    log.Printf("non-encodable leaf at %s", unserr.Field)
+//	}
+func ValidateEncodable(v any, root string) error {
+	return walkEncodable(reflect.ValueOf(v), root, make(map[uintptr]struct{}))
 }
 
 // Deserialize parses canonical JSON bytes into a Trajectory. The

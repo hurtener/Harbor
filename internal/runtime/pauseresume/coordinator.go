@@ -156,6 +156,24 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		return Pause{}, fmt.Errorf("%w: %q", ErrInvalidReason, req.Reason)
 	}
 
+	// Fail-loudly serialise contract (Phase 51 / D-069): the pause
+	// Payload is the pause record's caller-controlled wire shape — it
+	// MUST be JSON-encodable whether or not a checkpoint store is
+	// configured. A non-encodable leaf is rejected LOUD here, before a
+	// Token is minted or anything is recorded — never silently carried
+	// on a process-local-only pause that could never round-trip
+	// (RFC §3.4 — no silent degradation). When a checkpoint store IS
+	// configured, the full envelope is re-walked by SerializeRecord
+	// below; this pre-check makes the no-store path fail-loud too.
+	if req.Payload != nil {
+		if err := trajectory.ValidateEncodable(req.Payload, "PauseRequest.Payload"); err != nil {
+			// trajectory.ErrUnserializable propagates verbatim — the
+			// caller reaches it via errors.As. No Token minted, no pause
+			// recorded, no checkpoint written.
+			return Pause{}, err
+		}
+	}
+
 	token := newToken()
 	pausedAt := c.now()
 
@@ -382,7 +400,10 @@ func (c *coordinator) emit(ctx context.Context, evType events.EventType, entry *
 // verbatim (the caller reaches it via errors.As).
 func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 	rec := checkpointRecord{
-		FormatVersion: currentFormatVersion,
+		// FormatVersion is set here for completeness; SerializeRecord
+		// re-stamps it to the current FormatVersion on every write, so
+		// the version field is single-sourced there (Phase 51 / D-069).
+		FormatVersion: FormatVersion,
 		Token:         e.token,
 		Reason:        e.reason,
 		State:         e.state,
