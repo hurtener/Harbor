@@ -5,8 +5,8 @@
 This is the canonical execution index for Harbor's V1 build. Every individual phase plan (`docs/plans/phase-NN-<slug>.md`) lives under it and inherits its done-definition, dependency declarations, and coverage discipline.
 
 - **Source of truth:** `/RFC-001-Harbor.md` (referenced as RFC §X.X). Every phase below traces to one or more RFC sections; if a phase plan and the RFC drift, the RFC wins (`AGENTS.md` §2).
-- **Research substrate:** the eight briefs in `docs/research/01..08.md` (canonical index: `docs/research/INDEX.md`). Decisions on shape, sharp edges, and Go-flavored types come from there.
-- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded. Phases 01–82 + 36a + 36b are V1; 83–96 are post-V1 follow-ups listed for completeness so we don't lose track.
+- **Research substrate:** the eleven briefs in `docs/research/01..11.md` (canonical index: `docs/research/INDEX.md`). Decisions on shape, sharp edges, and Go-flavored types come from there.
+- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded; lettered suffixes (`36a`, `53a`) insert work into an existing band without renumbering. Phases 01–82 + 36a + 36b + 53a are V1; 83–99 are post-V1 follow-ups listed for completeness so we don't lose track.
 - **Done-definition (binding, from `AGENTS.md` §4.2):** (a) all acceptance criteria pass; (b) coverage targets met; (c) `scripts/smoke/phase-NN.sh` shows `OK ≥ count(criteria)` and `FAIL = 0`; (d) prior phases' smoke scripts still pass.
 - **Coverage defaults (override per phase):** 80% for new packages; 85% for persistence drivers and conformance-tested subsystems; 70% for CLI/tooling.
 - **Predecessor name:** does not appear in this repository, ever. (`AGENTS.md` §13.)
@@ -46,7 +46,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 85%  | Shipped  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 80%  | Shipped  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 80%  | Shipped  |
-| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50                | 85%  | Pending  |
+| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50, 53a           | 85%  | Pending  |
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Shipped  |
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
@@ -66,15 +66,14 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 44 | Schema repair pipeline                        | planner/repair       | §6.2        | 42, 32                | 85%  | Shipped  |
 | 45 | Reference ReAct planner (minimum viable)      | planner/react        | §6.2        | 42, 43, 44, 32        | 85%  | Shipped  |
 | 46 | Trajectory compression / summariser           | planner              | §6.2        | 43, 32                | 80%  | Shipped  |
-| 47 | Parallel-call execution + JoinSpec            | planner              | §6.2        | 45, 14                | 85%  | Pending  |
-| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
 | 47 | Parallel-call exec + ReAct emission upgrade   | planner+runtime      | §6.2        | 45, 14, 42, 20, 21    | 85%  | Shipped  |
-| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Pending  |
+| 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
 | 49 | Planner conformance pack                      | planner              | §6.2        | 42, 45, 48            | 90%  | Shipped  |
 | 50 | Pause/Resume Coordinator + handle registry    | runtime/pauseresume  | §6.3, §3.3  | 07, 09, 13            | 90%  | Pending  |
 | 51 | Pause-state serialise contract (fail-loud)    | runtime/pauseresume  | §6.3, §3.4  | 50, 43                | 90%  | Pending  |
 | 52 | Steering inbox + control taxonomy             | runtime/steering     | §6.3        | 50, 05                | 85%  | Pending  |
 | 53 | Steering wiring (9 control events)            | runtime/steering     | §6.3        | 52, 13                | 85%  | Pending  |
+| 53a| Agent Registry (registration identity + IDs)  | runtime/registry     | §6.16, §7   | 01, 05, 07, 08        | 85%  | Pending  |
 | 54 | Protocol task control surface                 | protocol             | §5.2, §6.3  | 50, 53, 20            | 85%  | Pending  |
 | 55 | OTel traces + propagation conventions         | telemetry            | §6.14       | 04, 05                | 85%  | Pending  |
 | 56 | Metrics + OTLP + Prometheus drivers           | telemetry            | §6.14, §11Q5| 55, 05                | 85%  | Pending  |
@@ -357,10 +356,10 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 30 — Tool-side OAuth + HITL via pause/resume (RFC §6.4, §3.3)
 
-**Goal.** `TokenStore` interface (InMem + SQLite + Postgres drivers). On `tool.auth_required`, pause via the unified pause/resume primitive (phase 50). Resume reattaches token; A2A `AUTH_REQUIRED` converges on the same primitive.
-**Acceptance.** OAuth full pause/resume cycle round-trips; A2A `AUTH_REQUIRED` triggers identical event shape.
-**Tests.** Integration end-to-end; conformance with phase 50.
-**Deps.** 26, 50.
+**Goal.** `TokenStore` interface (InMem + SQLite + Postgres drivers) with **encryption-at-rest** for token material. `OAuthProvider` covering both **user-bound** and **agent-bound** binding scopes — `BindingScope` is a declared config field, not inferred. On `tool.auth_required`, the tool driver emits a typed `ErrAuthRequired` carrying a structured payload (provider, scope, binding-scope, flow-initiation URL); the runtime pauses via the unified pause/resume primitive (phase 50). Resume reattaches the token; A2A `AUTH_REQUIRED` converges on the same primitive. Authorization flows use **PKCE**; **RFC 7591 dynamic client registration** and authorization-server **metadata discovery** are supported. Agent-bound tokens are keyed by the Agent Registry's registration `agent_id` (phase 53a, D-059) — never by an isolation-tuple element, since `agent_id` is not part of the isolation tuple.
+**Acceptance.** OAuth full pause/resume cycle round-trips for both binding scopes; A2A `AUTH_REQUIRED` triggers an identical event shape; `ErrAuthRequired` payload is typed and audit-redacted (no raw token material in events); PKCE challenge/verifier round-trips; dynamic registration + discovery exercised against a test authorization server; token material is encrypted at rest (driver conformance asserts ciphertext on disk); admin-scope authz gates protect provider configuration; cross-tenant / cross-user / cross-agent isolation conformance — one identity's tokens never resolve for another; user-bound and agent-bound tokens coexist for the same tool without collision; initiate-then-cancel emits no goroutine leak.
+**Tests.** Integration end-to-end (both binding scopes); conformance with phase 50; isolation conformance (cross-tenant/user/agent); encryption-at-rest driver conformance; goroutine-leak (initiate-then-cancel).
+**Deps.** 26, 50, 53a.
 **Briefs.** **brief 09** (`docs/research/09-mcp-oauth-from-bifrost.md`) — documents bifrost's OAuth surface (`OAuth2Provider`, `OAuth2Config`, `OAuth2Token`, `OAuth2FlowInitiation`, `MCPUserOAuthRequiredError`, `MCPClientConfig` OAuth fields) as a Go-shaped reference for what to lift, what to leave, and what Harbor must add. **Bring back into the conversation when authoring the per-phase plan file** (§"Re-discussion checklist" at the bottom of the brief).
 
 ### 31 — Tool-side approval gates (RFC §6.4, §3.3)
@@ -398,10 +397,11 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 34 — Provider correction layer + SchemaSanitizer (one mode, baked in) (RFC §6.5)
 
-**Goal.** Per-provider corrections compiled into a `SchemaSanitizer` and message-shape normalizer that live **between** the runtime and the `LLMClient` (NOT inside the client). Covers: message reordering (NIM), schema normalization (`additionalProperties: false`, `strict: true` modes), reasoning-effort routing for thinking-class models (`o1`, `o3`, `deepseek-reasoner`), per-provider `response_format` shape, usage backfill (proxies that report 0/0). **No `use_native` toggle.** Scope is structured-output and message-shape correctness only — never tool-call APIs (those don't exist on this layer).
-**Acceptance.** Each documented quirk has a passing normalizer test; switching providers does not require a configuration toggle; no tool-call API references in this package.
+**Goal.** A **thin** correction layer — bifrost already normalizes provider-specific transport quirks across its 23 first-class providers (brief 08), so this phase is NOT a "native vs. LiteLLM" dual-architecture; it is a narrow `SchemaSanitizer` + message-shape normalizer that lives **between** the runtime and the `LLMClient` (NOT inside the client), handling only what bifrost does not. Scope: `response_format` shape adjustments, reasoning-effort routing for thinking-class models (`o1`, `o3`, `deepseek-reasoner`), schema normalization (`additionalProperties: false`, `strict: true` modes), message reordering (NIM), usage backfill (proxies that report 0/0). **No `use_native` toggle** — there is one mode, baked in. Scope is structured-output and message-shape correctness only — never tool-call APIs (those don't exist on this layer).
+**Acceptance.** Each documented quirk has a passing normalizer test; switching providers does not require a configuration toggle; no tool-call API references in this package; the layer is demonstrably thin — quirks bifrost already handles are NOT re-implemented here.
 **Tests.** One unit test per quirk; assert no `Tool*` symbol leaks.
 **Deps.** 33.
+**Briefs.** **brief 07** (code-level tool calling — runtime owns dispatch, so this layer never touches tool-call APIs), **brief 08** (bifrost validation — what the LLM substrate already normalizes, so this phase doesn't).
 
 ### 35 — Structured output strategies + downgrade chain (RFC §6.5)
 
@@ -568,6 +568,16 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Tests.** Integration matrix; concurrency mid-step.
 **Deps.** 52, 13.
 
+### 53a — Agent Registry (registration identity + IDs) (RFC §6.16, §7)
+
+**Goal.** An in-process, per-runtime-instance `registry.AgentRegistry` subsystem, StateStore-backed (in-mem / SQLite / Postgres, §4.4 seam). Owns the **registration identity** of agents and the three-ID model (D-059): a stable `agent_id` (minted once at first registration, persisted, rehydrated on restart), an ephemeral `incarnation` (bumps every process start), and a content-derived `version_hash` (deterministic hash over prompt set, tool set + schemas, planner config, model policy — bumps only when configuration changes). `agent_id` is a registration identity, **not** an isolation principal — the isolation tuple stays `(tenant, user, session, run)` (D-059, CLAUDE.md §6). Handles both creation cases (D-060): locally-hosted agents (the runtime mints a local `agent_id`) and connect-to-remote agents (the local `agent_id` is a *handle*; the canonical identity is the remote A2A AgentCard, owned by the remote operator). Emits `agent.*` events (`agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered`) so the Console Agents page renders runtime state, never Console-local state (D-061). Fleet *control* (pause / drain / restart / force-stop) is a distinct, more-elevated privilege tier than fleet *observation* (D-066) — every control command is audit-redacted and emitted.
+**Acceptance.** `agent_id` is stable across restart when a durable StateStore driver is configured (rehydration test); the in-mem driver is dev-only and documented as non-persistent. `incarnation` bumps on every restart; `version_hash` bumps iff configuration content changed and is stable otherwise (`restart ≠ recreate` — restart keeps the record, recreate mints a fresh `agent_id`). Remote-agent registration stores a handle + AgentCard reference; the handle is runtime-instance-local and never assumed globally unique. `agent.*` events carry the registration `agent_id`. Cross-tenant / cross-session isolation conformance — one identity's registry view never bleeds into another. Fleet-control commands require the elevated scope claim and emit audit events; fleet-observation does not. Concurrent-reuse test: N≥100 concurrent registrations / lookups / control commands against one shared `AgentRegistry` under `-race` (no data races, no context bleed, no goroutine leaks).
+**Tests.** Unit (three-ID model, `version_hash` determinism, restart-vs-recreate); integration (StateStore-backed rehydration across all three drivers, real `events.EventBus` on the seam, identity propagation, ≥1 failure mode — missing identity fails closed); conformance (cross-tenant/session isolation); concurrency (D-025 N≥100 reuse stress).
+**Deps.** 01, 05, 07, 08.
+**Briefs.** **brief 09** (agent-as-actor / agent-bound OAuth — the registration `agent_id` is what Phase 30 keys agent-bound tokens by), **brief 11** (operator Console mockup — the Agents page is a runtime lens over this subsystem; `console-agents-page.png`).
+**Why here.** Slotted into the 50–53 band (steering / pause-resume wave) because the earlier runtime-subsystem bands are already shipped; its real dependencies (01, 05, 07, 08) all landed long ago, so it can be implemented any time after them, but it must land **before** the Protocol surface (54+) and the Console-attaching wave (72–75) that consume it.
+**Settled decisions:** D-059, D-060, D-061, D-062, D-066.
+
 ### 54 — Protocol task control surface (RFC §5.2, §6.3)
 
 **Goal.** Protocol endpoints: `start`, `cancel`, `pause`, `resume`, `redirect`, `inject_context`, `approve`, `reject`, `prioritize`, `user_message`.
@@ -595,6 +605,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Late subscriber after Runtime restart sees no gaps; ring buffer mode auto-degrades to "best-effort" with warning.
 **Tests.** Integration across all three StateStore drivers.
 **Deps.** 05, 07, 15, 16.
+**Downstream (load-bearing).** This is not just the Console event-stream backing — it is the **hard dependency for the post-V1 Evaluations / agent version-control program** (D-064). Evaluations is built on *fully replayable sessions* ("create eval from session", "mark as test case"); a session is only replayable if its event log is durable and gap-free. Lossy events (ring-buffer-only) in V1 would foreclose Evaluations entirely, since you cannot retrofit completeness into already-shipped sessions. Treat this phase's durability guarantees as binding for that reason, not optional.
 
 ### 58 — Protocol types/methods/errors single source (RFC §5, §8)
 
@@ -695,6 +706,8 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Flow-level test ≤ 10 lines; `AssertNoLeaks` catches a deliberate cross-session bug in a regression test.
 **Tests.** Self-test of the kit.
 **Deps.** 05, 09, 07.
+
+> **Console wave — re-decomposition pending (tracked, not yet expanded).** Phases 72–75 currently cover the Runtime-side Protocol hooks for a *subset* of the Console. RFC §7 now defines the full Console information architecture: a 14-page observability + control plane (Overview, Live Runtime, Sessions, Tasks, Agents, Tools, Events, Background Jobs, Flows, Memory, MCP Connections, Artifacts, Evaluations, Settings) organized as **runtime lenses** — every page is a projection over `state snapshots + realtime events + control commands`. The binding structuring rule (RFC §7, CLAUDE.md §13): **no Console page phase ships without its feeding Protocol-surface phase landing first or in the same wave.** When this wave is re-decomposed, the heavy pages (Live Runtime, Events, Agents) each become their own phase twinned with a Protocol-surface phase; the lighter pages cluster. The Agents page is a lens over the Agent Registry (phase 53a). The `notification.*` topic (Overview intervention queue) and `search.*` Protocol methods (global ⌘K) land as named acceptance criteria of their consuming page phases, not as free-floating primitives. Evaluations is explicitly **post-V1** (D-064) — it is a subsystem, not a page. Re-decomposition itself follows the §16 phase-authoring ritual per new phase and is not done in this edit.
 
 ### 72 — Console subscription protocol surface (RFC §5.2, §7)
 
@@ -835,9 +848,10 @@ The phase queue is a DAG, not a line. Here are the parallelizable waves; phases 
 **Wave 9 — Pause/Resume + Steering + Telemetry + Protocol (cross-track):**
 
 - 50 (needs 07, 09, 13) → 51 → 52 → 53 → 54
+- 53a (Agent Registry; needs 01, 05, 07, 08) — parallelizable with the 50→54 chain; its deps are all long-shipped. Must land before 54 and the Console-attaching wave (72–75).
 - 55 (OTel; after 04, 05) parallel with 56 (metrics; after 55, 05); 57 (durable event log; after 05, 07, 15, 16)
 - 58 (protocol types) → 59 (versioning) → 60 (transport) → 61 (auth) → 62 (conformance)
-- 30 (Tool OAuth/HITL; needs 26, 50), 31 (approval gates; needs 30) slot in once 50 is up
+- 30 (Tool OAuth/HITL; needs 26, 50, 53a), 31 (approval gates; needs 30) slot in once 50 + 53a are up
 
 **Wave 10 — CLI + test kit:**
 63 → 64 → 65 / 66 / 67 / 68 / 69 / 70 (mostly parallel after 64). 71 (test kit; needs 05, 09, 07) parallel.
@@ -855,7 +869,7 @@ Practical reading: with three or four engineers (or three concurrent worker suba
 
 ## V1 cut line
 
-**V1 ships phases 01–82 + 36a + 36b.** Seventeen follow-ups (83–99) are intentionally deferred to post-V1: eight original (83–90), six Governance (91–96), and three Multimodality follow-ups (97–99) for media-input tool wrappers, media-output tool wrappers, and vision-aware memory summarization. Multimodal **inputs** ship in V1 (RFC §6.5 + D-021); only multimodal **outputs** and richer memory handling are post-V1.
+**V1 ships phases 01–82 + 36a + 36b + 53a.** Seventeen follow-ups (83–99) are intentionally deferred to post-V1: eight original (83–90), six Governance (91–96), and three Multimodality follow-ups (97–99) for media-input tool wrappers, media-output tool wrappers, and vision-aware memory summarization. Multimodal **inputs** ship in V1 (RFC §6.5 + D-021); only multimodal **outputs** and richer memory handling are post-V1. The Evaluations subsystem and code-mode (Starlark) are also post-V1 — see RFC §12.
 
 The cut line is justified by RFC §12 (Out of Scope for V1):
 

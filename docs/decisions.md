@@ -884,3 +884,119 @@ The `internal/runtime/parallel/concurrent_test.go` ships the D-025 N=128 reuse s
 **Identity is mandatory** across every scenario (§6 rule 9 + D-001). The conformance pack's `DefaultRunContext` factory stamps a populated quadruple; per-concrete tests build their own factories on the same shape. **§13 import-graph contract** preserved: the conformance package imports `internal/audit`, `internal/config`, `internal/events`, `internal/state`, `internal/tasks`, `internal/identity`, `internal/planner` — NONE of which are `internal/runtime/...`. The Phase 42 `importgraph_test.go` walks the planner subtree and gates the contract; Phase 49 adds no `internal/runtime/...` imports.
 
 **Concurrent reuse pinned (D-025).** The `ConcurrentReuse_D025` scenario in the pack runs N=64 parallel `Next` calls against ONE shared planner from the harness factory; the race detector is the gate; per-goroutine RunID round-trip checks for context bleed. The Wave 8 E2E's concurrency stress (N=10) provides the cross-package complement. **Coverage:** `internal/planner/conformance` ≥ 80% (Phase 49 target). The pack's coverage is asserted by Run-against-both-concretes: each concrete's test exercises every non-skipped scenario, and the skip paths are exercised by the capability-gating fallthrough.
+
+---
+
+## D-059 — Agent identity model: `agent_id` is a runtime *registration* identity, NOT an isolation principal; the isolation tuple stays `(tenant, user, session, run)`; agents carry a three-ID model (`agent_id` / `incarnation` / `version_hash`)
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §6.16 (Agent Registry), CLAUDE.md / AGENTS.md §6 (clarifying note), `docs/plans/phase-53a-agent-registry.md`, `docs/glossary.md` (`agent_id`, `incarnation`, `version_hash`, registration identity).
+
+**Why:** During Console information-architecture planning the question "is `agent_id` a fourth element of the identity tuple?" surfaced repeatedly and threatened to leak implicit assumptions into every identity-touching phase. It is settled here so it does not get re-litigated.
+
+1. **`agent_id` is a registration identity, not an isolation principal.** Harbor's isolation boundary is and stays the tuple `(tenant, user, session, run)` (RFC §4, §6 rules, D-001). An agent is a runtime *entity* — it has a planner, tool bindings, memory bindings, policies, health — but it runs *within* `(tenant, user, session)`; it does not widen the isolation boundary. Memory drivers, state drivers, event subscribers continue to scope by the tuple, never by `agent_id`. This dissolves the recurring confusion: there are two orthogonal concepts — "agent as a registered, runtime-tracked entity with a stable ID and lifecycle" (this decision) and "agent as an isolation boundary" (explicitly rejected for V1).
+2. **Agents carry a three-ID model.** `agent_id` — stable, "which logical agent," minted once at first registration, persisted, rehydrated on restart. `incarnation` — ephemeral, "which boot of it," bumps on every process start. `version_hash` — content-derived, "which configuration," a deterministic hash over (prompt set, tool set + schemas, planner config, model policy); bumps **only** when configuration content changes. The three answer different questions and must not be collapsed: a restart with no config change yields the same `agent_id` + same `version_hash` + a new `incarnation`; a restart after a prompt edit bumps both `incarnation` and `version_hash`.
+3. **`version_hash` is load-bearing for the post-V1 Evaluations / version-control program (D-064).** If every agent carries a config hash from V1, Evaluations can later attribute success-rate changes to a specific configuration version with zero retrofit. It is cheap to compute at registration and is the free precursor to prompt/tool evolution work.
+4. **Consumers.** Phase 30 (tool-side OAuth) keys agent-bound tokens by the registration `agent_id` — never by an isolation-tuple element. The Console Agents page (RFC §7, D-062) renders the three-ID model. See [[D-060]] for the subsystem that owns minting and persistence, and [[D-061]] for the Console-DB boundary.
+
+---
+
+## D-060 — Agent Registry is an in-process, per-runtime-instance, StateStore-backed subsystem; it covers both creation cases (locally-hosted + connect-to-remote); restart rehydrates (`restart ≠ recreate`)
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §6.16, CLAUDE.md / AGENTS.md §3 (`internal/runtime/registry/` layout entry), `docs/plans/phase-53a-agent-registry.md`, master plan phase 53a.
+
+**Why:** "How can the registry mint an `agent_id` if Harbor can be used by anybody?" — Harbor is a Go-native SDK + single static binary; there is no central Harbor service, and there must not be one. The minting and ownership model is settled here.
+
+1. **The registry is not a central authority — it is an in-process subsystem inside each `harbor` instance.** Every `harbor` process (or every embedding of the library) maintains its own `registry.AgentRegistry`, persisted via *that instance's* configured StateStore driver (in-mem / SQLite / Postgres, §4.4 seam). This is the same shape Harbor already uses for `(tenant, user, session)`: Harbor never mints identity globally — it receives identity from the operator's auth boundary and scopes state locally. `agent_id` never needs to be globally unique; it only needs to be unique within the runtime instance that issued it, which is collision-free by construction (ULID/UUID).
+2. **Two creation cases, both landing in the registry.** *Locally-hosted agent* — the runtime instance is running the agent; it mints a local `agent_id`. *Connect-to-remote agent* — the agent runs in someone else's Harbor (or is any A2A-speaking peer); the local runtime assigns a **handle** (`agent_id` local to this instance), and the canonical identity of the remote agent is its A2A AgentCard, owned by the remote operator. See [[D-061]] — neither case puts the agent list in a Console DB.
+3. **`restart` rehydrates; `restart ≠ recreate`.** With a durable StateStore driver, a process restart rehydrates the registry and the agent comes back with the *same* `agent_id` (a stable fleet view depends on this). The in-mem driver loses the registry on restart and is documented as dev-only — the "id changes on restart" behaviour is a dev-mode artifact, not the intended fleet posture. Teardown-and-recreate is distinct from restart: recreate genuinely mints a fresh `agent_id` because it is a new logical entity; restart keeps the StateStore record.
+4. **The registry emits `agent.*` events** (`agent.registered`, `agent.restarted`, `agent.health`, `agent.drained`, `agent.deregistered`) so the Console renders runtime state. See [[D-059]] for the three-ID model the registry owns and [[D-066]] for the fleet-control privilege tier.
+
+---
+
+## D-061 — A Console DB holds Console-local state only; it is never a shadow source of truth for runtime entities
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §7, CLAUDE.md / AGENTS.md §13 (forbidden practice), `docs/glossary.md` (Console DB).
+
+**Why:** The instinct to track "which agents exist" in a Console-side database is exactly how the predecessor's Console drifted into re-implementing runtime APIs. The boundary is settled before any Console phase is authored.
+
+1. **If a Console DB exists, it holds Console-local state only** — saved views, dashboard layouts, per-operator preferences, annotations. It must never be the source of truth for runtime entities (agents, sessions, tasks, tools, events, artifacts). Those live in the Runtime and reach the Console exclusively through the Protocol's canonical events / state snapshots / control commands.
+2. **Rationale: a Console DB as a shadow source of truth breaks the "Console is a Protocol client" rule** (RFC §5, §7, CLAUDE.md §4.5). If the Console DB owned the agent list, a third-party Console would have a *different* agent list, and the Agents page would be a standalone app rather than a runtime lens. The Agent Registry ([[D-060]]) is the runtime-side owner; the Console renders it.
+3. **A runtime-side control-plane client allowlist is the legitimate inverse** and is a separate concern from a Console DB — see [[D-066]].
+
+---
+
+## D-062 — Harbor Console is a 14-page observability + control plane organized as runtime lenses; `Live Runtime ≠ Sessions`; `Agents ≠ chatbots`; no Console page phase ships without its feeding Protocol-surface phase
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §7 (expanded), `docs/research/11-console-feature-surface.md`, `docs/rfc/assets/console-agents-page.png`, master plan README.md (Console-wave re-decomposition note), CLAUDE.md / AGENTS.md §13 (forbidden practice — Console page without Protocol surface).
+
+**Why:** The Console is not "the Playground plus widgets" — it is a full control/observability plane. Its information architecture is settled so the (currently under-scoped) phases 72–75 can be re-decomposed against a fixed target.
+
+1. **Fourteen pages, five clusters, all runtime lenses.** Runtime (Overview, Live Runtime); Execution (Sessions, Tasks, Agents, Tools, Events, Background Jobs); Resources (Flows, Memory, MCP Connections, Artifacts); Evaluation (Evaluations); Settings. Every page is a *projection* over `state snapshots + realtime events + control commands` — never a standalone app feature. The canonical Agents-page mockup is `docs/rfc/assets/console-agents-page.png`.
+2. **`Live Runtime ≠ Sessions`.** Live Runtime is the present-tense interactive workbench (initiate / observe / steer / debug a live execution — the spiritual replacement of the predecessor's Playground, with the chat as one panel among many). Sessions are the past-and-active durable execution records (replay / continue / clone / convert-to-eval). Conflating them produces two half-built versions of the same surface.
+3. **`Agents ≠ chatbots`.** Agents are runtime execution entities with planners, tool bindings, memory bindings, policies, task ownership, event streams, and operational health — not personas. The Agents page is fleet management, not an assistant gallery; it is a lens over the Agent Registry ([[D-060]]).
+4. **Structuring rule: no Console page phase ships without its feeding Protocol-surface phase landing first or in the same wave.** This is the §13 "no primitive without its consumer" rule read backwards — it keeps the Console honest as a Protocol client instead of letting it grow private hooks. The `notification.*` topic (Overview intervention queue) and `search.*` Protocol methods (global ⌘K) land as named acceptance criteria of their consuming page phases, not as free-floating primitives.
+5. **MCP Apps `DisplayMode` (`inline` / `fullscreen` / `pip`) is a Protocol-level concern** — the MCP app declares its preferred mode, the runtime forwards it, the Console honours it. DisplayMode lives in `internal/protocol/types/`, not in Console-only state.
+
+---
+
+## D-063 — The Console Flows page is a view over engine graphs scoped to graph-family planners; V1 = read / run / inspect-history; authoring / versioning / import-export is post-V1
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §7, `docs/glossary.md` (Flows), master plan README.md (Console-wave note).
+
+**Why:** "Flows" risked being scoped as a new runtime subsystem when it is really a projection. Settled to bound it.
+
+1. **Flows are engine graphs, not a new subsystem.** A "Flow" in the Console is the graph structure that a graph-family planner (Graph / Workflow / Deterministic — RFC §6.2, §12) runs on. It is a view over `internal/runtime/engine/` node graphs, filtered to agents whose planner is graph-shaped.
+2. **V1 Flows page = read / run / inspect-run-history** — a pure lens, needing only a Protocol method that exposes the engine graph structure + run history.
+3. **Authoring / versioning / import-export is post-V1** — that is the part that may need a real subsystem, and it is deliberately deferred. This splits Flows along the same present-vs-authoring line as [[D-062]]'s `Live Runtime ≠ Sessions`.
+
+---
+
+## D-064 — Evaluations is a post-V1 subsystem built as a §4.4 extensibility seam; it depends on fully-replayable sessions, which makes the durable event log (Phase 57) a hard dependency; a premium/hosted variant must be a driver, not a fork
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §12 (post-V1 / future work), master plan README.md (phase 57 detail block, V1 cut line), `docs/glossary.md` (Evaluations).
+
+**Why:** The Console IA lists an Evaluations page; that page implies a substantial runtime subsystem. Its scope and dependencies are settled so V1 does not foreclose it.
+
+1. **Evaluations is a subsystem, not a page.** "Eval suites, golden sessions, replay-based evaluation, regression diffs, baseline promotion" is a runtime program — an eval runner, eval storage, replay machinery — with the Console page as its thin front-end. It is explicitly **post-V1**.
+2. **It is the foundation for post-V1 agent version-control** — success-rate-over-`version_hash` ([[D-059]]), prompt evolution, tool evolution.
+3. **It depends on fully-replayable sessions, so Phase 57 (durable event log) is a hard dependency.** "Create eval from session" / "mark as test case" only work if a session's event log is durable and gap-free. Lossy V1 sessions (ring-buffer-only) would foreclose Evaluations entirely — you cannot retrofit completeness into already-shipped sessions. Phase 57's durability guarantees are therefore binding, not optional.
+4. **Built as a §4.4 seam from day one** — interface + drivers — so a premium / hosted / enterprise variant is a *driver*, not a fork of the runtime. This keeps a future monetization path open without polluting the V1 open-source surface.
+
+---
+
+## D-065 — The session `priority` dimension is dropped from V1
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §6.9 (sessions), `docs/research/11-console-feature-surface.md`.
+
+**Why:** The operator Console mockup showed a "Priority: Normal / High / Low" field on the session detail panel. Brief 11 recommends dropping it from V1 unless real load patterns demand it.
+
+1. **Dropped from V1.** No session-level priority field; no router or task-registry plumbing for it. Task-level prioritization via the `PRIORITIZE` steering control (Phase 52/53) already exists and covers the concrete operator need.
+2. **Revisit only on evidence.** If post-V1 load patterns show a genuine need for session-level priority, it is a scoped phase touching sessions (RFC §6.9) and routers (Phase 14) — not a V1 retrofit.
+
+---
+
+## D-066 — Fleet control is a distinct, more-elevated privilege tier than fleet observation; a runtime-side control-plane client enrollment allowlist is deferred ("decide later")
+
+**Date:** 2026-05-14
+**Status:** Settled
+**Where it lives:** RFC §6.16 (Agent Registry security), RFC §5.5 (Protocol authentication), `docs/plans/phase-53a-agent-registry.md`.
+
+**Why:** A Console deployed to manage a fleet of Harbor runtimes is a control plane; the security model for that needs to be explicit so it is not discovered late.
+
+1. **Fleet control is a distinct, more-elevated privilege tier than fleet observation.** Observation (read events, view topology, list agents) and control (pause / drain / restart / force-stop) are different privilege tiers. Control requires a more-elevated scope claim than observation — this extends the §6.5 / §6 elevated-scope-claim concept to the fleet surface. A leaked read-only Console token must not be able to force-stop a fleet. Every fleet-control command is audit-redacted and emitted ("who restarted which agent, from which Console, when").
+2. **The Console is just another Protocol client** — it authenticates to each runtime with an operator-issued JWT (asymmetric algorithms only, §7), and the Protocol never accepts a request without an identity scope (§8). Deployment posture (private subnet, Console as the only reachable client, optional transport mTLS) is defense-in-depth and is mostly the operator's responsibility, not a runtime feature.
+3. **A runtime-side control-plane client enrollment allowlist is deferred.** A runtime recording "control-plane client with key-fingerprint F is authorized at scope S" is stronger than per-request JWT scope alone, but the JWT scope covers the core V1 need. This is a "decide later" item, not V1 scope. It is the legitimate inverse of a Console DB ([[D-061]]) — a runtime-side record of authorized controllers, not a Console-side record of agents.
