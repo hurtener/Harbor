@@ -166,7 +166,12 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 	// configured, the full envelope is re-walked by SerializeRecord
 	// below; this pre-check makes the no-store path fail-loud too.
 	if req.Payload != nil {
-		if err := trajectory.ValidateEncodable(req.Payload, "PauseRequest.Payload"); err != nil {
+		// Root at "PauseRecord.payload" — the canonical envelope
+		// vocabulary the plan + glossary use, and the same root
+		// SerializeRecord's full-envelope walk produces for a bad
+		// payload leaf. One operator-facing field-path vocabulary
+		// whether the leaf is caught here or in SerializeRecord.
+		if err := trajectory.ValidateEncodable(req.Payload, "PauseRecord.payload"); err != nil {
 			// trajectory.ErrUnserializable propagates verbatim — the
 			// caller reaches it via errors.As. No Token minted, no pause
 			// recorded, no checkpoint written.
@@ -225,6 +230,18 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 
 // Resume terminates a pause. See the Coordinator interface godoc for
 // the full contract.
+//
+// Resume is DESTRUCTIVE on the durable record: it flips the in-memory
+// entry to StatusResumed and then DELETES the checkpoint from the
+// StateStore. The resumed state is therefore queryable only via
+// Status on the SAME Coordinator instance (in-memory) — a fresh
+// Coordinator over the same store (a "restart") will get
+// ErrPauseNotFound for a resumed token, NOT Status{State: resumed}.
+// This is intentional: a resumed pause is terminal, and keeping a
+// resumed checkpoint around would be an unbounded store leak with no
+// consumer. Do not "fix" the missing post-resume-across-restart
+// Status — checkpoint_test.go / phase50_durability_test.go assert
+// this behaviour.
 func (c *coordinator) Resume(ctx context.Context, token Token, payload map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("pauseresume: resume cancelled: %w", err)

@@ -436,6 +436,8 @@ type Coordinator interface {
 
 **Steering payload bounds:** depth ≤ 6, ≤ 64 keys, ≤ 50 list items, ≤ 4096 chars per string, ≤ 16 KiB total. Enforced at the Protocol edge. (Settled.)
 
+**Rejected HITL gate is terminal.** `APPROVE` and `RESUME` resolve an outstanding pause and the planner re-enters. `REJECT`, by contrast, resolves the pause via `Coordinator.Resume` with a `rejected: true` marker and **terminates the run** with `Finish{constraints_conflict}` — a rejected human-in-the-loop gate is a constraint the planner cannot resolve, not a recoverable signal. (Settled — D-071. The alternative "re-enter the planner on `REJECT` so it can replan" was considered and rejected for V1: it lets a rejected gate loop indefinitely. A planner that should replan-on-reject is a future planner-*policy* concern, not a steering-*primitive* one — it would be a separate RFC change.)
+
 **Pause-state serialization format:** JSON with `format_version: 1`. Settled to align with the event bus (also JSON) and operational simplicity. (Resolves brief 02 Q-2.)
 
 **`NoOp` decisions are not part of the `Planner` interface.** Wait-for-steering and trajectory-summarization are Runtime short-circuits. (Resolves brief 02 Q-5.)
