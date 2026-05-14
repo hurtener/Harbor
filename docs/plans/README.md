@@ -625,11 +625,11 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 60 — Protocol wire transport (SSE + REST) (RFC §5.4, §11 Q-1)
 
-**Goal.** SSE stream for events; REST/JSON for control surface. Identity-scope enforcement at edge. **Tentative — Q-1.** If WebSocket+JSON-RPC or gRPC server-streaming wins, this phase forks accordingly.
-**Acceptance.** Console can stream events and submit control over the chosen transport; smoke covers both directions.
+**Goal.** SSE stream for events; REST/JSON for control surface. Identity-scope enforcement at edge. **Q-1 RESOLVED 2026-05-14 — SSE + REST** (owner sign-off given; RFC §5.4 + §11 Q-1 updated). Phase 60 is now a normal implementation phase, not a decision gate. WebSocket remains an additive alternate transport for a later phase via the `internal/protocol/transports/` seam — not a fork of this phase.
+**Acceptance.** Console can stream events and submit control over SSE+REST; smoke covers both directions.
 **Tests.** Integration; full duplex stress.
 **Deps.** 58, 05.
-**Risks.** Q-1 is the load-bearing decision. Owner sign-off required before this phase ships.
+**Risks.** Q-1 resolved — the load-bearing decision is settled. Remaining risk is ordinary implementation risk (SSE keepalive/reconnect discipline, identity-scope enforcement at the edge).
 
 ### 61 — Protocol auth + identity-scope enforcement (RFC §5.5, §4)
 
