@@ -53,4 +53,29 @@ var (
 	// that already has a live inbox. Opening twice would orphan the
 	// first inbox's queued events; the second call is rejected loud.
 	ErrInboxExists = errors.New("steering: inbox already open for run")
+
+	// ErrNoPlanner — RunLoop.Run was called with a nil RunSpec.Planner.
+	// The planner is the swappable reasoning policy the loop drives;
+	// there is no default. Fails closed (CLAUDE.md §5) rather than
+	// no-op'ing.
+	ErrNoPlanner = errors.New("steering: RunSpec.Planner is nil")
+
+	// ErrRunLoopMisconfigured — NewRunLoop was called with a nil
+	// Registry or a nil Coordinator. Both are mandatory: the Registry
+	// owns the per-run inbox the loop drains; the Coordinator is the
+	// ONE pause/resume primitive PAUSE / RESUME / APPROVE / REJECT
+	// converge on (CLAUDE.md §7 rule 4).
+	ErrRunLoopMisconfigured = errors.New("steering: RunLoop missing a mandatory dependency")
+
+	// ErrNoOutstandingPause — a RESUME / APPROVE / REJECT control event
+	// arrived for a run with no pause Token recorded. The run is not
+	// paused; advancing a non-existent pause is a caller / operator bug
+	// and is surfaced loud rather than silently ignored.
+	ErrNoOutstandingPause = errors.New("steering: control targets a run with no outstanding pause")
+
+	// ErrMaxStepsExceeded — RunLoop.Run drove the planner for
+	// RunSpec.MaxSteps planner steps without reaching a terminal
+	// Finish decision. The loop terminates loud rather than spinning
+	// forever — an unbounded planner loop is a misconfiguration.
+	ErrMaxStepsExceeded = errors.New("steering: run loop exceeded the configured max planner steps")
 )

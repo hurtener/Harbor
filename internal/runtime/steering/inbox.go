@@ -1,6 +1,7 @@
 package steering
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -62,6 +63,16 @@ type Inbox struct {
 	mu     sync.Mutex
 	queue  []ControlEvent
 	closed bool
+
+	// notify is a 1-buffered "something was enqueued" signal channel.
+	// Enqueue does a non-blocking send on it; WaitForEvent (Phase 53's
+	// RunLoop, while a pause is outstanding) selects on it so the loop
+	// blocks instead of busy-spinning on Drain. The 1-buffer + non-
+	// blocking send is the standard coalesced-signal pattern: N
+	// enqueues between two waits coalesce to one wake, and the waiter
+	// always Drains everything queued. close() closes it so a waiter on
+	// a retired inbox unblocks.
+	notify chan struct{}
 }
 
 // Identity returns the run quadruple this Inbox is scoped to.
@@ -116,7 +127,66 @@ func (in *Inbox) Enqueue(ev ControlEvent) error {
 	}
 	ev.EnqueuedAt = in.clock.Now()
 	in.queue = append(in.queue, ev)
+
+	// Coalesced wake: a non-blocking send on the 1-buffered notify
+	// channel. A waiter (Phase 53's RunLoop, blocked in WaitForEvent
+	// while a pause is outstanding) wakes and Drains everything; a full
+	// buffer means a wake is already pending — N enqueues coalesce to
+	// one wake, which is correct because the waiter always drains the
+	// whole queue. The send is done UNDER the lock: close() also runs
+	// under the lock and sets in.closed first, so a send here can never
+	// race with (or land after) the close — in.closed is false here by
+	// the guard above, and close() cannot interleave while we hold mu.
+	if in.notify != nil {
+		select {
+		case in.notify <- struct{}{}:
+		default:
+		}
+	}
 	return nil
+}
+
+// WaitForEvent blocks until the inbox has at least one queued event, the
+// inbox is retired, or ctx is cancelled. It is the surface Phase 53's
+// RunLoop uses to wait — without busy-spinning — for a steering control
+// to arrive while a run is paused (a pause is outstanding and the
+// planner must not be re-entered until a RESUME / APPROVE / REJECT lands).
+//
+// It returns:
+//
+//   - nil — an event is queued; the caller should Drain.
+//   - ctx.Err() — the wait was cancelled.
+//   - ErrInboxNotFound — the inbox was retired while waiting.
+//
+// WaitForEvent does NOT itself Drain — the caller calls Drain after a
+// nil return. This keeps Drain the single atomic-remove surface.
+func (in *Inbox) WaitForEvent(ctx context.Context) error {
+	for {
+		in.mu.Lock()
+		if in.closed {
+			in.mu.Unlock()
+			return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
+		}
+		if len(in.queue) > 0 {
+			in.mu.Unlock()
+			return nil
+		}
+		notify := in.notify
+		in.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, ok := <-notify:
+			if !ok {
+				// notify closed by close() — the inbox was retired.
+				return fmt.Errorf("%w: %+v", ErrInboxNotFound, in.identity)
+			}
+			// Woken — loop back, re-check under the lock (the queue may
+			// have been drained by another goroutine between the wake
+			// and the re-check; that is fine, we just wait again).
+		}
+	}
 }
 
 // Drain atomically removes and returns every queued ControlEvent in
@@ -157,8 +227,17 @@ func (in *Inbox) Len() int {
 func (in *Inbox) close() {
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	if in.closed {
+		// Idempotent: a second close must not double-close notify.
+		return
+	}
 	in.closed = true
 	in.queue = nil
+	if in.notify != nil {
+		// Closing notify unblocks any WaitForEvent waiter with
+		// ErrInboxNotFound — a retired inbox's waiter must not hang.
+		close(in.notify)
+	}
 }
 
 // validateQuadruple fails closed on an incomplete run quadruple. The

@@ -1,6 +1,8 @@
 package steering
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -8,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 )
 
 // TestConcurrentReuse_Registry is the mandatory D-025 concurrent-reuse
@@ -209,4 +212,115 @@ func assertNoGoroutineLeak(t *testing.T, baseline int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("goroutine count %d did not return to baseline %d — leak", runtime.NumGoroutine(), baseline)
+}
+
+// TestConcurrentReuse_RunLoop is the mandatory D-025 concurrent-reuse
+// test for the RunLoop compiled artifact (CLAUDE.md §5 + §11 + the
+// phase-53 plan). It runs N=120 goroutines (≥100 per the contract)
+// each driving ONE distinct run to completion against ONE shared
+// RunLoop under -race, asserting:
+//
+//   - no data races (the -race detector is the gate);
+//   - no context bleed — each goroutine uses a distinct run quadruple
+//     and a distinct scripted planner; a Finish carrying a foreign
+//     run_id would mean one run's RunContext leaked into another's;
+//   - no cross-cancellation — a subset of goroutines pre-cancel their
+//     ctx; their Run must fail with context.Canceled and the
+//     non-cancelled runs must finish cleanly regardless;
+//   - no goroutine leak — runtime.NumGoroutine returns to baseline
+//     after all goroutines join.
+func TestConcurrentReuse_RunLoop(t *testing.T) {
+	clk := newFakeClock()
+	reg := NewRegistry(WithClock(clk))
+	coord := &stubCoordinator{}
+	rl, err := NewRunLoop(reg, coord, WithRunLoopClock(clk))
+	if err != nil {
+		t.Fatalf("NewRunLoop: %v", err)
+	}
+
+	const N = 120
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	var (
+		mu        sync.Mutex
+		failures  []string
+		cancelled int
+		finished  int
+	)
+	for i := 0; i < N; i++ {
+		idx := i
+		go func() {
+			defer wg.Done()
+			q := identity.Quadruple{
+				Identity: identity.Identity{
+					TenantID:  fmt.Sprintf("tenant-%d", idx),
+					UserID:    fmt.Sprintf("user-%d", idx),
+					SessionID: fmt.Sprintf("session-%d", idx),
+				},
+				RunID: fmt.Sprintf("run-%d", idx),
+			}
+			runID := q.RunID
+			// Each run's planner stamps its own run_id into Finish
+			// metadata so a context bleed surfaces as a wrong run_id.
+			p := &scriptedPlanner{
+				defaultDec: planner.Finish{
+					Reason:   planner.FinishGoal,
+					Metadata: map[string]any{"run_id": runID},
+				},
+			}
+			ctx := context.Background()
+			preCancel := idx%5 == 0 // ~20% of runs pre-cancel their ctx
+			if preCancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			fin, rerr := rl.Run(ctx, runSpecFor(q, p))
+			mu.Lock()
+			defer mu.Unlock()
+			if preCancel {
+				if !errors.Is(rerr, context.Canceled) {
+					failures = append(failures, fmt.Sprintf("run %s: pre-cancelled ctx but err = %v (want context.Canceled)", runID, rerr))
+				} else {
+					cancelled++
+				}
+				return
+			}
+			if rerr != nil {
+				failures = append(failures, fmt.Sprintf("run %s: Run err = %v", runID, rerr))
+				return
+			}
+			if got, _ := fin.Metadata["run_id"].(string); got != runID {
+				failures = append(failures, fmt.Sprintf("run %s: Finish carried run_id %q — context bleed", runID, got))
+				return
+			}
+			finished++
+		}()
+	}
+	wg.Wait()
+
+	for _, f := range failures {
+		t.Error(f)
+	}
+	if finished+cancelled != N {
+		t.Errorf("finished(%d) + cancelled(%d) = %d, want %d", finished, cancelled, finished+cancelled, N)
+	}
+	if reg.Len() != 0 {
+		t.Errorf("Registry has %d open inboxes after all runs returned — inbox leak", reg.Len())
+	}
+
+	// Bounded wait for goroutines to drain (no time.Sleep-as-sync; a
+	// bounded §11 goroutine-leak assertion).
+	for i := 0; i < 50; i++ {
+		if runtime.NumGoroutine() <= baseline+2 {
+			return
+		}
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > baseline+8 {
+		t.Errorf("goroutine count %d did not return near baseline %d — leak", got, baseline)
+	}
 }

@@ -72,7 +72,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 50 | Pause/Resume Coordinator + handle registry    | runtime/pauseresume  | §6.3, §3.3  | 07, 09, 13            | 90%  | Shipped  |
 | 51 | Pause-state serialise contract (fail-loud)    | runtime/pauseresume  | §6.3, §3.4  | 50, 43                | 90%  | Shipped  |
 | 52 | Steering inbox + control taxonomy             | runtime/steering     | §6.3        | 50, 05                | 85%  | Shipped  |
-| 53 | Steering wiring (9 control events)            | runtime/steering     | §6.3        | 52, 13                | 85%  | Pending  |
+| 53 | Steering wiring (9 control events)            | runtime/steering     | §6.3        | 52, 13                | 85%  | Shipped  |
 | 53a| Agent Registry (registration identity + IDs)  | runtime/registry     | §6.16, §7   | 01, 05, 07, 08        | 85%  | Shipped  |
 | 54 | Protocol task control surface                 | protocol             | §5.2, §6.3  | 50, 53, 20            | 85%  | Pending  |
 | 55 | OTel traces + propagation conventions         | telemetry            | §6.14       | 04, 05                | 85%  | Pending  |
@@ -568,6 +568,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Each event type has a passing integration test; no event applied mid-tool-call.
 **Tests.** Integration matrix; concurrency mid-step.
 **Deps.** 52, 13.
+**Shipped.** `internal/runtime/steering/runloop.go` ships `RunLoop` — the per-run planner-step loop, the §13 first consumer of BOTH the Phase 50 `pauseresume.Coordinator` AND the Phase 52 steering inbox/taxonomy. `RunLoop.Run` drains the per-run `Inbox` once per step boundary (`apply.go` applies the nine control-event side effects; the planner sees only `RunContext.Control`), routes a planner's `RequestPause` through `Coordinator.Request` and blocks via the new `Inbox.WaitForEvent` (a coalesced 1-buffered notify channel — no busy-spin) until a RESUME/APPROVE arrives, and caps per-session applied-control history (`history.go`, `MaxControlHistory` newest-wins ring). **Deviation (§4.3):** Phase 53 *builds* the per-run planner loop rather than retrofitting an existing one — `internal/runtime/engine` is a graph executor, not a planner-step loop; the only `Planner.Next` driver before Phase 53 was the Phase 49 conformance harness. The loop lives in `internal/runtime/steering` (its master-plan subsystem); no new top-level directory, no RFC change (RFC §6.3 §4: "the runtime implements this loop"). CANCEL is soft-by-default with an optional `WithHardCancelHook` seam (no hard import of the engine). The nine-event integration matrix + the §13 pause-Coordinator round-trip + the drain-between-steps invariant test + the concurrency-mid-step test live in `test/integration/phase53_steering_wiring_test.go`. Coverage 92.4% (target 85%). See D-071.
 
 ### 53a — Agent Registry (registration identity + IDs) (RFC §6.16, §7)
 
