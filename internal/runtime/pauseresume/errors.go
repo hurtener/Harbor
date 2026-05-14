@@ -43,12 +43,6 @@ var (
 	// rather than recording a malformed pause record.
 	ErrInvalidReason = errors.New("pauseresume: invalid pause reason")
 
-	// ErrCheckpointStoreRequired — an operation that needs a
-	// configured checkpoint store was attempted on a Coordinator
-	// constructed without one. Surfaces a misconfiguration loud
-	// instead of silently degrading to process-local behaviour.
-	ErrCheckpointStoreRequired = errors.New("pauseresume: operation requires a configured checkpoint store")
-
 	// ErrCheckpointCorrupt — a checkpoint loaded from the StateStore
 	// failed to decode into a pause record. Surfaces store corruption
 	// loud rather than resuming with a half-decoded record.

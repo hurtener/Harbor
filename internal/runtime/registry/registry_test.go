@@ -857,6 +857,81 @@ func TestRegistry_ConcurrentReuse_D025(t *testing.T) {
 	}
 }
 
+// TestRegistry_ConcurrentSameAgentMutation_NoLostUpdate is the
+// regression guard for the Wave 9 §17.5 audit finding: ReportHealth
+// and the fleet-control path did a load→mutate→save on an agent's
+// record document WITHOUT holding r.mu, so a concurrent mutation of
+// the same agent_id could lose an update. TestRegistry_ConcurrentReuse_D025
+// above never caught it — it gives every goroutine a DISTINCT identity,
+// so no two goroutines ever contend on the same record.
+//
+// This test contends ONE agent record under ONE identity: M re-Register
+// calls (each bumps Incarnation, under r.mu) race M ReportHealth calls
+// (load→mutate→save, now also under r.mu). The lost-update detector is
+// deterministic — every re-Register bumps Incarnation by exactly 1, so
+// after the storm Incarnation MUST equal 1 + M. If ReportHealth saved a
+// stale record it would revert an Incarnation bump and the final value
+// would be < 1 + M. The -race detector cannot see this race (the
+// contention is at the StateStore layer, not Go memory), so the
+// Incarnation arithmetic is the gate.
+func TestRegistry_ConcurrentSameAgentMutation_NoLostUpdate(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	ctx := identityCtx(t, "T", "U", "S")
+	const key = "lost-update-agent"
+	const m = 50
+
+	// Initial registration — Incarnation == 1.
+	rec, err := reg.Register(ctx, key, sampleConfig(), registry.RegisterOptions{})
+	if err != nil {
+		t.Fatalf("initial Register: %v", err)
+	}
+	agentID := rec.AgentID
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2*m)
+
+	// M re-registrations of the SAME key — each is a restart that bumps
+	// Incarnation by exactly 1 (under r.mu).
+	for i := 0; i < m; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, rerr := reg.Register(ctx, key, sampleConfig(), registry.RegisterOptions{}); rerr != nil {
+				errCh <- fmt.Errorf("re-Register: %w", rerr)
+			}
+		}()
+	}
+	// M ReportHealth calls on the SAME agent — load→mutate→save on the
+	// record document. Before the fix these ran without r.mu and could
+	// revert a concurrent Incarnation bump.
+	for i := 0; i < m; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if herr := reg.ReportHealth(ctx, agentID, registry.HealthHealthy); herr != nil {
+				errCh <- fmt.Errorf("ReportHealth: %w", herr)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		t.Error(e)
+	}
+
+	got, err := reg.Get(ctx, agentID)
+	if err != nil {
+		t.Fatalf("Get after storm: %v", err)
+	}
+	if got.Incarnation != uint64(1+m) {
+		t.Errorf("Incarnation = %d, want %d — a ReportHealth save reverted a re-Register bump (lost update; r.mu not held across the record RMW)",
+			got.Incarnation, 1+m)
+	}
+	if got.AgentID != agentID {
+		t.Errorf("AgentID changed under re-registration: got %q want %q (restart != recreate)", got.AgentID, agentID)
+	}
+}
+
 // ---------------------------------------------------------------------
 // bus subscription helpers
 // ---------------------------------------------------------------------
