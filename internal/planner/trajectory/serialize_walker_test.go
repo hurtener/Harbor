@@ -2,6 +2,7 @@ package trajectory_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,5 +185,86 @@ func TestWalker_StructAddressable_Time(t *testing.T) {
 	_, err := tr.Serialize()
 	if err != nil {
 		t.Fatalf("Serialize err = %v want nil", err)
+	}
+}
+
+// --- ValidateEncodable: the exported reusable-walker entry point -------
+//
+// ValidateEncodable is the same walker Trajectory.Serialize's
+// pre-flight pass uses, exported (Phase 51) so other runtime serialise
+// contracts — the pauseresume pause-record envelope is the first
+// consumer — share it rather than forking a second fail-loudly walker
+// (CLAUDE.md §13, D-069). These tests pin the exported entry directly.
+
+// TestValidateEncodable_OK_RootedPath — a fully-encodable value passes
+// and the root prefix is the caller's, not "Trajectory".
+func TestValidateEncodable_OK_RootedPath(t *testing.T) {
+	v := map[string]any{
+		"region": "eu-west-1",
+		"scopes": []any{"read", "write"},
+		"count":  float64(3),
+	}
+	if err := trajectory.ValidateEncodable(v, "PauseRecord.payload"); err != nil {
+		t.Fatalf("ValidateEncodable on an encodable value: %v", err)
+	}
+}
+
+// TestValidateEncodable_FailLoud_FunctionLeaf — a func leaf fails loud
+// with ErrUnserializable whose Field path is rooted at the caller's
+// own prefix (not "Trajectory").
+func TestValidateEncodable_FailLoud_FunctionLeaf(t *testing.T) {
+	v := map[string]any{"callback": func() {}}
+	err := trajectory.ValidateEncodable(v, "PauseRecord.payload")
+	var unserr trajectory.ErrUnserializable
+	if !errors.As(err, &unserr) {
+		t.Fatalf("err = %v, want trajectory.ErrUnserializable", err)
+	}
+	if !strings.Contains(unserr.Field, "PauseRecord.payload") {
+		t.Errorf("Field %q is not rooted at the caller-supplied prefix", unserr.Field)
+	}
+	if !strings.Contains(unserr.Field, "callback") {
+		t.Errorf("Field %q does not name the offending 'callback' key", unserr.Field)
+	}
+}
+
+// TestValidateEncodable_FailLoud_ChannelInStruct — ValidateEncodable
+// walks struct fields too (not just maps), so a non-encodable leaf
+// nested in a struct field surfaces with a dotted path.
+func TestValidateEncodable_FailLoud_ChannelInStruct(t *testing.T) {
+	type envelope struct {
+		Name    string         `json:"name"`
+		Payload map[string]any `json:"payload"`
+	}
+	v := envelope{Name: "x", Payload: map[string]any{"sock": make(chan int)}}
+	err := trajectory.ValidateEncodable(v, "Envelope")
+	var unserr trajectory.ErrUnserializable
+	if !errors.As(err, &unserr) {
+		t.Fatalf("err = %v, want trajectory.ErrUnserializable on a struct-nested channel", err)
+	}
+	if !strings.Contains(unserr.Field, "payload") || !strings.Contains(unserr.Field, "sock") {
+		t.Errorf("Field %q should name the payload.sock path", unserr.Field)
+	}
+}
+
+// TestValidateEncodable_SharesSerializeWalker — ValidateEncodable and
+// Trajectory.Serialize's pre-flight produce the same ErrUnserializable
+// type for the same offending shape: the observable proof Serialize is
+// re-pointed at the exported entry (one walker, not two).
+func TestValidateEncodable_SharesSerializeWalker(t *testing.T) {
+	tr := &trajectory.Trajectory{HintState: map[string]any{"f": func() {}}}
+	_, serErr := tr.Serialize()
+
+	vErr := trajectory.ValidateEncodable(*tr, "Trajectory")
+
+	var serUnser, vUnser trajectory.ErrUnserializable
+	if !errors.As(serErr, &serUnser) {
+		t.Fatalf("Serialize err = %v, want trajectory.ErrUnserializable", serErr)
+	}
+	if !errors.As(vErr, &vUnser) {
+		t.Fatalf("ValidateEncodable err = %v, want trajectory.ErrUnserializable", vErr)
+	}
+	if serUnser.Field != vUnser.Field {
+		t.Errorf("Serialize and ValidateEncodable disagree on the field path: %q vs %q",
+			serUnser.Field, vUnser.Field)
 	}
 }
