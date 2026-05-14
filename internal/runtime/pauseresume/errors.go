@@ -53,4 +53,13 @@ var (
 	// failed to decode into a pause record. Surfaces store corruption
 	// loud rather than resuming with a half-decoded record.
 	ErrCheckpointCorrupt = errors.New("pauseresume: checkpoint record is corrupt")
+
+	// ErrUnsupportedFormatVersion — a pause record loaded from the
+	// StateStore carries a format_version this Runtime does not
+	// recognise (a zero/absent version, or a higher version written by
+	// a newer Runtime). The load-side half of the RFC §6.3 "JSON with
+	// format_version: 1" contract: rather than silently mis-decoding a
+	// forward-incompatible record against the current schema, the load
+	// fails loud (Phase 51 / D-069).
+	ErrUnsupportedFormatVersion = errors.New("pauseresume: unsupported pause-record format_version")
 )

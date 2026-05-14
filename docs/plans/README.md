@@ -70,7 +70,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 48 | Deterministic planner (proves the iface)      | planner/deterministic| §6.2, §11Q6 | 42                    | 85%  | Shipped  |
 | 49 | Planner conformance pack                      | planner              | §6.2        | 42, 45, 48            | 90%  | Shipped  |
 | 50 | Pause/Resume Coordinator + handle registry    | runtime/pauseresume  | §6.3, §3.3  | 07, 09, 13            | 90%  | Shipped  |
-| 51 | Pause-state serialise contract (fail-loud)    | runtime/pauseresume  | §6.3, §3.4  | 50, 43                | 90%  | Pending  |
+| 51 | Pause-state serialise contract (fail-loud)    | runtime/pauseresume  | §6.3, §3.4  | 50, 43                | 90%  | Shipped  |
 | 52 | Steering inbox + control taxonomy             | runtime/steering     | §6.3        | 50, 05                | 85%  | Pending  |
 | 53 | Steering wiring (9 control events)            | runtime/steering     | §6.3        | 52, 13                | 85%  | Pending  |
 | 53a| Agent Registry (registration identity + IDs)  | runtime/registry     | §6.16, §7   | 01, 05, 07, 08        | 85%  | Shipped  |
@@ -553,6 +553,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Negative tests are the gate. CI fails on any silent-drop regression.
 **Tests.** Conformance with phase 43 `Trajectory.Serialize`.
 **Deps.** 50, 43.
+**Shipped.** `internal/runtime/pauseresume/pauserecord.go` ships `SerializeRecord` / `DeserializeRecord` + the `FormatVersion` constant. The Phase 43 reflective walker is exported as `trajectory.ValidateEncodable` and **shared** (not forked) by the pause-record contract — `SerializeRecord` walks it, surfacing `trajectory.ErrUnserializable` rooted at `PauseRecord.payload.<key>`; `DeserializeRecord` enforces `format_version: 1` (`ErrUnsupportedFormatVersion` on any other value). `Coordinator.Request`'s Payload-encodability check is **unconditional** (fails loud with or without a checkpoint store). Negative tests (`pauserecord_test.go`, `pauserecord_contract_test.go`, `test/integration/phase51_pause_serialise_test.go`) are the gate. Coverage 94.0% (target 90%). See D-069.
 
 ### 52 — Steering inbox + control taxonomy (RFC §6.3)
 

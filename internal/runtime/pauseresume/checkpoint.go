@@ -19,24 +19,27 @@ import (
 // make the second pause evict the first).
 const checkpointKindPrefix = "pauseresume.checkpoint:"
 
-// currentFormatVersion is the checkpoint envelope's format version.
-// Phase 50 ships version 1. Phase 51 authors the full pause-state
-// serialise contract on top of this envelope; the explicit version
-// field lets Phase 51 deepen the typed fields without a wire break.
-const currentFormatVersion = 1
-
 // checkpointRecord is the JSON envelope persisted to the StateStore
-// for a durable pause. It is intentionally minimal: Phase 50 ships the
-// Coordinator primitive, and Phase 51 deepens this envelope into the
-// full RFC §6.3 "Pause-state serialization format" (format_version: 1).
-// The FormatVersion field is the forward-compatibility hinge.
+// for a durable pause — the canonical RFC §6.3 "Pause-state
+// serialization format" (JSON with format_version: 1). Phase 50
+// shipped the envelope shape as the Coordinator's checkpoint surface;
+// Phase 51 closes the fail-loudly serialise contract ON it
+// (SerializeRecord / DeserializeRecord in pauserecord.go) — see D-069.
+//
+// The FormatVersion field is the forward-compatibility hinge:
+// SerializeRecord stamps it to the current FormatVersion constant,
+// DeserializeRecord enforces it (ErrUnsupportedFormatVersion on a
+// version this Runtime does not recognise).
 //
 // TrajectoryBytes holds the output of trajectory.Trajectory.Serialize
 // verbatim — opaque, canonical JSON bytes. Storing it as a nested
 // json.RawMessage (rather than re-marshalling) preserves the
 // byte-stable round-trip the trajectory package guarantees.
 type checkpointRecord struct {
-	// FormatVersion is the envelope schema version. 1 at Phase 50.
+	// FormatVersion is the envelope schema version (RFC §6.3:
+	// format_version: 1). Owned by SerializeRecord — it stamps the
+	// current FormatVersion constant on every write; DeserializeRecord
+	// rejects any other value loud.
 	FormatVersion int `json:"format_version"`
 	// Token is the opaque pause Token (also the StateRecord EventID).
 	Token Token `json:"token"`
@@ -88,11 +91,18 @@ func checkpointKind(token Token) string {
 // re-saving the same EventID with different Bytes — see
 // coordinator.go's resume path.
 func saveCheckpoint(ctx context.Context, store state.StateStore, rec checkpointRecord) error {
-	bytes, err := json.Marshal(rec)
+	// SerializeRecord is the fail-loudly pause-record serialise contract
+	// (Phase 51 / D-069): it walks the envelope reflectively and
+	// surfaces trajectory.ErrUnserializable naming the offending leaf
+	// (the load-bearing case: a non-JSON-encodable Payload value) —
+	// never a silent drop, never a half-persisted checkpoint. It also
+	// stamps the current format_version.
+	bytes, err := SerializeRecord(rec)
 	if err != nil {
-		// json.Marshal on a checkpointRecord can only fail if Payload
-		// carries a non-encodable leaf. Fail loud — never half-persist.
-		return fmt.Errorf("pauseresume: marshal checkpoint for token %q: %w", rec.Token, err)
+		// trajectory.ErrUnserializable propagates verbatim — the caller
+		// reaches it via errors.As. No half-persist: this returns before
+		// store.Save is ever called.
+		return err
 	}
 	sr := state.StateRecord{
 		ID:       state.EventID(rec.Token),
@@ -109,8 +119,10 @@ func saveCheckpoint(ctx context.Context, store state.StateStore, rec checkpointR
 // loadCheckpoint resolves a checkpoint record from a Token alone via
 // the StateStore's EventID secondary index. Returns ErrPauseNotFound
 // (wrapping state.ErrNotFound) when no checkpoint exists for the
-// token, and ErrCheckpointCorrupt when the persisted bytes fail to
-// decode.
+// token, ErrCheckpointCorrupt when the persisted bytes fail to decode,
+// and ErrUnsupportedFormatVersion when the record carries a
+// format_version this Runtime does not recognise — all loud, never a
+// half-decoded record (Phase 51 / D-069).
 func loadCheckpoint(ctx context.Context, store state.StateStore, token Token) (checkpointRecord, error) {
 	sr, err := store.LoadByEventID(ctx, state.EventID(token))
 	if err != nil {
@@ -119,9 +131,13 @@ func loadCheckpoint(ctx context.Context, store state.StateStore, token Token) (c
 		}
 		return checkpointRecord{}, fmt.Errorf("pauseresume: load checkpoint for token %q: %w", token, err)
 	}
-	var rec checkpointRecord
-	if err := json.Unmarshal(sr.Bytes, &rec); err != nil {
-		return checkpointRecord{}, fmt.Errorf("%w: token %q: %v", ErrCheckpointCorrupt, token, err)
+	// DeserializeRecord is the load-side half of the fail-loudly
+	// pause-record serialise contract: it surfaces ErrCheckpointCorrupt
+	// on malformed bytes and ErrUnsupportedFormatVersion on a version
+	// this Runtime cannot read.
+	rec, err := DeserializeRecord(sr.Bytes)
+	if err != nil {
+		return checkpointRecord{}, fmt.Errorf("%w (token %q)", err, token)
 	}
 	return rec, nil
 }
