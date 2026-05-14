@@ -74,9 +74,17 @@ type Registry struct {
 	redactor audit.Redactor
 	clock    Clock
 
-	// mu guards the read-modify-write of index documents. The
-	// documents themselves live in the StateStore; mu only prevents a
-	// lost-update race between concurrent index mutations.
+	// mu guards every read-modify-write against the StateStore — both
+	// the per-identity index document AND a per-agent record document.
+	// The documents themselves live in the StateStore (internally
+	// synchronised), but a load→mutate→save sequence is not atomic at
+	// the store layer, so mu serialises it. Every method that does a
+	// load→mutate→save (register, Deregister, ReportHealth, control)
+	// MUST hold mu across the whole sequence; a load under mu followed
+	// by a save outside it is the lost-update bug the Wave 9 §17.5
+	// audit caught in ReportHealth/control. Read-only paths (Get,
+	// Inspect) and List's record fan-out do not need mu — a stale read
+	// is acceptable; a lost write is not.
 	mu sync.Mutex
 
 	closed atomic.Bool
@@ -350,6 +358,18 @@ func (r *Registry) ReportHealth(ctx context.Context, agentID string, h Health) e
 	if err != nil {
 		return err
 	}
+
+	// The record load→mutate→save is a read-modify-write on a single
+	// agent's record document; it MUST run under r.mu so concurrent
+	// mutations of the same agent_id (e.g. ReportHealth racing a
+	// fleet-control command, or either racing a re-register) cannot
+	// lose an update. r.mu is the registry-wide lock — the same one
+	// Deregister and register hold across their RMW. Per-agent locking
+	// would be finer-grained but registry ops are not hot; correctness
+	// over contention here.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	rec, err := r.loadRecord(ctx, ident, agentID)
 	if err != nil {
 		return err
@@ -458,16 +478,26 @@ func (r *Registry) control(
 	if !HasControlScope(ctx) {
 		return fmt.Errorf("%w: command=%q", ErrControlScopeRequired, command)
 	}
-	rec, err := r.loadRecord(ctx, ident, agentID)
-	if err != nil {
-		return err
-	}
 	// Redact the operator-supplied reason BEFORE it reaches the bus
 	// payload (D-020 — no caller-controlled string bypasses the
-	// redactor).
+	// redactor). Done before the lock — it needs only `reason`, not
+	// the record.
 	redacted, err := r.redactString(ctx, reason)
 	if err != nil {
 		return fmt.Errorf("registry: %s: redact reason: %w", command, err)
+	}
+
+	// The record load→mutate→save is a read-modify-write on a single
+	// agent's record document; it MUST run under r.mu so concurrent
+	// mutations of the same agent_id (control racing ReportHealth, two
+	// control commands racing, or either racing a re-register) cannot
+	// lose an update. Same registry-wide lock Deregister/register hold.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, err := r.loadRecord(ctx, ident, agentID)
+	if err != nil {
+		return err
 	}
 	now := r.clock.Now()
 	if newHealth != "" {

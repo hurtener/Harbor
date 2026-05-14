@@ -2,7 +2,6 @@ package steering
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -235,12 +234,13 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		return planner.Finish{}, fmt.Errorf("steering: opening run inbox: %w", err)
 	}
 	// Retire ALWAYS — a leaked inbox orphans the run's steering surface.
+	// The per-session control-history ring is intentionally NOT forgotten
+	// here: run-end is the wrong signal (a session hosts multiple runs).
+	// Wiring controlHistory.forget to a real session-end signal is
+	// tracked in issue #79; each ring is capped so the per-session entry
+	// is bounded, only the session-keyed map grows. Accepted V1 limit — D-071.
 	defer func() {
 		_ = rl.registry.Retire(q)
-		// Forget the session's control history only when the inbox
-		// retire succeeded for the LAST run in the session is a
-		// later-phase concern; Phase 53 keeps the per-session ring until
-		// the process ends (it is capped, so it is bounded regardless).
 	}()
 
 	maxSteps := spec.MaxSteps
@@ -501,11 +501,6 @@ func (rl *RunLoop) ControlHistory(sessionID string) []AppliedControl {
 // planner.PauseReason. If that bridge is ever re-typed, this fails to
 // compile and the requestPause mapping must be revisited.
 var _ pauseresume.Reason = planner.PauseReason("")
-
-// errMaxStepsIs is a tiny helper kept so callers can errors.Is-test the
-// max-steps terminal without importing the sentinel name awkwardly.
-// (Unexported; used by runloop_test.go.)
-func errMaxStepsIs(err error) bool { return errors.Is(err, ErrMaxStepsExceeded) }
 
 // mergeSignals folds carry-over signals (accumulated while a pause was
 // outstanding) into this step's freshly-drained signals. The boolean

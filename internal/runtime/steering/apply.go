@@ -33,13 +33,14 @@ type stepControl struct {
 	// RunLoop can branch on "a PAUSE control arrived" without re-reading
 	// the projection.
 	pauseRequested bool
-	// resumeToken / resumePayload carry a RESUME / APPROVE / REJECT
-	// drained this step. resumeKind records which of the three it was so
-	// the RunLoop branches correctly (APPROVE / RESUME re-enter the
-	// planner; REJECT terminates the run).
+	// resumeRequested / resumeKind record that a RESUME / APPROVE /
+	// REJECT was drained this step. resumeKind records which of the
+	// three it was so the RunLoop branches correctly (APPROVE / RESUME
+	// re-enter the planner; REJECT terminates the run). The resume
+	// payload itself is NOT stashed here — advancePause reads it from
+	// the drained ControlEvent directly.
 	resumeRequested bool
 	resumeKind      ControlType
-	resumePayload   map[string]any
 	// prioritize carries a PRIORITIZE's new priority + a "was set" flag.
 	prioritizeSet bool
 	prioritizeVal int
@@ -131,7 +132,6 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 		// resumed, scope mismatch) is surfaced loud at apply time.
 		sc.resumeRequested = true
 		sc.resumeKind = ev.Type
-		sc.resumePayload = ev.Payload
 		return a.advancePause(ctx, ev, outstandingToken)
 
 	case ControlPrioritize:

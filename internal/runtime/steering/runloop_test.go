@@ -241,7 +241,7 @@ func TestRun_MaxStepsExceeded(t *testing.T) {
 	spec := runSpecFor(runA, p)
 	spec.MaxSteps = 5
 	_, err := rl.Run(context.Background(), spec)
-	if !errMaxStepsIs(err) {
+	if !errors.Is(err, ErrMaxStepsExceeded) {
 		t.Fatalf("Run err = %v, want ErrMaxStepsExceeded", err)
 	}
 	if p.stepCount() != 5 {

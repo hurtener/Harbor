@@ -324,21 +324,27 @@ const (
   subsystem (`runtime/steering`) and avoids a new top-level directory, but the
   loop is conceptually a planner-runtime concern. Settled in D-071: the loop
   lives in `internal/runtime/steering` for V1 because steering wiring IS its
-  reason to exist; a future planner-runtime phase MAY relocate it. No RFC
-  change — RFC §3 lists `internal/runtime/steering` as the steering home and
-  RFC §6.3 §4 says "the runtime implements this loop."
+  reason to exist; no RFC change — RFC §3 lists `internal/runtime/steering` as
+  the steering home and RFC §6.3 §4 says "the runtime implements this loop."
+  **Wave 9 §17.5 audit:** confirmed as a layering smell accepted for V1 only —
+  **issue #81** is the named exit condition (relocate `RunLoop` to a dedicated
+  planner-runtime package at the next planner-runtime phase), replacing the
+  earlier open-ended "a future phase MAY relocate it."
 - **Risk: hard-CANCEL seam.** `RunLoop` must not hard-import
   `internal/runtime/engine` (it would couple the step-loop family to the graph
   engine). Resolved via the `WithHardCancelHook` functional-option seam — the
   caller wires `engine.Cancel` (or any cancellation propagator); `RunLoop`
   holds only a `func(ctx, runID) error`.
-- **Open question: REJECT semantics.** RFC §6.3 lists `REJECT` in the taxonomy
-  but does not pin whether a rejected pause re-enters the planner or terminates
-  the run. Settled in D-071: `REJECT` calls `Coordinator.Resume` with a
-  `rejected: true` payload and terminates the run with
-  `Finish{ConstraintsConflict}` — a rejected HITL gate is a constraint
-  conflict the planner cannot resolve. If a future planner needs
-  re-enter-on-reject, that is an RFC PR.
+- **REJECT semantics — RFC-pinned.** RFC §6.3 originally listed `REJECT` in the
+  taxonomy but did not pin whether a rejected pause re-enters the planner or
+  terminates the run; D-071 settled it (`REJECT` → `Coordinator.Resume` with a
+  `rejected: true` payload → terminate with `Finish{ConstraintsConflict}`). The
+  Wave 9 §17.5 audit flagged that settling an open RFC question in a phase-plan
+  decision is RFC drift — so RFC §6.3 was amended (Wave 9 audit chore PR) with
+  a "Rejected HITL gate is terminal" paragraph that pins the behaviour. This is
+  no longer an open question: the behaviour is RFC-canonical, D-071 records its
+  implementation, and re-enter-on-reject would be a future planner-policy RFC
+  change.
 
 ## Glossary additions
 

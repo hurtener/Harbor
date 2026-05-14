@@ -61,7 +61,7 @@ Ship `internal/runtime/pauseresume` — Harbor's **ONE** pause/resume primitive 
 - [ ] `Coordinator.Status(ctx, Token) (Status, error)`: returns the pause lifecycle state without mutation; wrapped `ErrPauseNotFound` for an unknown token; falls back to a checkpoint-store load when the token is absent from the in-memory registry but a checkpoint store is configured (the restart-survival path).
 - [ ] A `Coordinator` constructed **without** a checkpoint store: `Request` succeeds (process-local only); a fresh `Coordinator` (simulating restart) returns `ErrPauseNotFound` for that token — pauses explicitly do **not** survive restart without a store.
 - [ ] A `Coordinator` constructed **with** a checkpoint store: after `Request`, a fresh `Coordinator` over the *same* store resolves the token via `Status` / `Resume` — the pause survived "restart".
-- [ ] `internal/runtime/pauseresume/errors.go` defines sentinels: `ErrIdentityRequired`, `ErrPauseNotFound`, `ErrAlreadyResumed`, `ErrScopeMismatch`, `ErrCheckpointStoreRequired` (for a checkpoint-load path with no store). `ErrUnserializable` / `ErrToolContextLost` are *not* redefined — they propagate from `trajectory` and callers reach them via `errors.As`.
+- [ ] `internal/runtime/pauseresume/errors.go` defines sentinels: `ErrIdentityRequired`, `ErrPauseNotFound`, `ErrAlreadyResumed`, `ErrScopeMismatch`. `ErrUnserializable` / `ErrToolContextLost` are *not* redefined — they propagate from `trajectory` and callers reach them via `errors.As`. (A `Coordinator` with no checkpoint store rehydrating an unknown token returns `ErrPauseNotFound` — "absent from the in-mem registry, no store" is genuinely *not found*, not a distinct misconfiguration error; an early draft of this plan listed an `ErrCheckpointStoreRequired` sentinel for that case — the Wave 9 §17.5 audit found it dead and removed it, since the no-store path correctly surfaces `ErrPauseNotFound` already.)
 - [ ] Identity-mandatory at every `Coordinator` method boundary (CLAUDE.md §6 rule 9 + D-001). No identity-downgrading knob.
 - [ ] D-025 concurrent-reuse test (`internal/runtime/pauseresume/concurrent_test.go`): N≥100 goroutines, distinct identity quadruples, against one shared `Coordinator` — `Request` then `Resume` then `Status` — under `-race`. Asserts no races, no context bleed (each goroutine's pause carries only its own identity/payload), no cross-cancellation (pre-cancelled ctx on a subset honoured per-call), no goroutine leak (baseline `runtime.NumGoroutine` restored).
 - [ ] Integration test (`test/integration/phase50_durability_test.go`): real `state.StateStore` across in-mem / SQLite / Postgres drivers; pause→serialise→checkpoint→load→resume round-trip exact-match; lost-handle negative case returns `ErrToolContextLost`; missing-identity negative case returns `ErrIdentityRequired`; runs under `-race`. (Postgres leg skips with a reason when no test database is reachable — matching the existing state-driver integration-test convention.)
@@ -145,11 +145,10 @@ func WithBus(b events.EventBus) Option
 func New(opts ...Option) Coordinator
 
 var (
-    ErrIdentityRequired        = errors.New("pauseresume: identity triple incomplete")
-    ErrPauseNotFound           = errors.New("pauseresume: pause token not found")
-    ErrAlreadyResumed          = errors.New("pauseresume: pause already resumed")
-    ErrScopeMismatch           = errors.New("pauseresume: resume identity scope does not match pause")
-    ErrCheckpointStoreRequired = errors.New("pauseresume: operation requires a configured checkpoint store")
+    ErrIdentityRequired = errors.New("pauseresume: identity triple incomplete")
+    ErrPauseNotFound    = errors.New("pauseresume: pause token not found")
+    ErrAlreadyResumed   = errors.New("pauseresume: pause already resumed")
+    ErrScopeMismatch    = errors.New("pauseresume: resume identity scope does not match pause")
 )
 ```
 

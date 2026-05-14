@@ -51,3 +51,10 @@ node_modules/
 *.tmp
 .tmp/
 tmp/
+
+# Local agent scratch space — Claude Code worktrees, scheduled-task locks,
+# etc. These are per-clone local state and must never be tracked. A past
+# agent ran `git add` in the main checkout and committed 34 worktree
+# directories as gitlinks; this rule + the untracking in the same commit
+# (Wave 9 §17.5 audit) closes that.
+.claude/
