@@ -161,8 +161,17 @@ func TestSearch_FTSPath(t *testing.T) {
 	if out[0].Skill.Name != "alpha" {
 		t.Fatalf("Search ordering: expected alpha first (higher term frequency), got %q", out[0].Skill.Name)
 	}
-	if out[0].Score < out[1].Score {
-		t.Fatalf("Search scores: alpha=%v should be >= bravo=%v", out[0].Score, out[1].Score)
+	// Frozen golden scores: with exactly two distinct bm25 raw scores,
+	// the min-max normalisation pins the stronger match at 1.0 and the
+	// weaker at 0.0 (brief 04 §4.4: `bm25 → 1/(1+raw) → min-max`).
+	// Assert the exact values within ε so a scoring-math regression
+	// surfaces here, not just an ordering flip.
+	const eps = 1e-9
+	if d := out[0].Score - 1.0; d < -eps || d > eps {
+		t.Fatalf("Search golden score: alpha = %v, want 1.0 (min-max top)", out[0].Score)
+	}
+	if d := out[1].Score - 0.0; d < -eps || d > eps {
+		t.Fatalf("Search golden score: bravo = %v, want 0.0 (min-max bottom)", out[1].Score)
 	}
 }
 

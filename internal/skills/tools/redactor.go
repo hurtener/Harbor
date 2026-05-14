@@ -4,25 +4,17 @@ import (
 	"regexp"
 
 	"github.com/hurtener/Harbor/internal/skills"
+	"github.com/hurtener/Harbor/internal/skills/capfilter"
 )
 
-// Replacement strings for the disallowed-tool-name scrub. Brief
-// 04 §4.5: "replacement is `'a suitable tool (use tool_search)'`
-// when search is available, else `'a suitable tool'`." Phase 38
-// selects between the two based on whether `tool_search` itself is
-// in the run's `AllowedTools` set.
-const (
-	replaceWithSearch    = "a suitable tool (use tool_search)"
-	replaceWithoutSearch = "a suitable tool"
-	// piiPlaceholder is the canonical redacted marker for any PII
-	// pattern hit. Single sentinel so audit consumers can grep
-	// without enumerating variants.
-	piiPlaceholder = "[REDACTED-PII]"
-	// toolSearchName matches the planner tool name reserved for the
-	// "search for a tool" capability — used to pick the
-	// replacement variant.
-	toolSearchName = "tool_search"
-)
+// piiPlaceholder is the canonical redacted marker for any PII pattern
+// hit. Single sentinel so audit consumers can grep without
+// enumerating variants.
+//
+// The disallowed-tool-name replacement variants and the tool-name
+// scrub itself live in [capfilter] — the single source shared with
+// the virtual directory (internal/skills, Phase 39).
+const piiPlaceholder = "[REDACTED-PII]"
 
 // PII patterns. Compiled once at package load — concurrent reuse is
 // safe (compiled `*regexp.Regexp` values are read-only after compile,
@@ -76,29 +68,18 @@ func Redact(s skills.Skill, cap CapabilityContext) skills.Skill {
 	// Build the disallowed-tool-name redactor closure. The closure
 	// captures the resolved set so subsequent field rewrites stay
 	// in lockstep.
-	allowedTools := buildSet(cap.AllowedTools)
-	toolReplacement := replaceWithoutSearch
-	if _, ok := allowedTools[toolSearchName]; ok {
-		toolReplacement = replaceWithSearch
-	}
-	// Disallowed names are every tool name in the skill's
-	// `RequiredTools` (the names the skill plans to use) that are
-	// NOT in `AllowedTools`. The redactor walks the skill's free-
-	// text fields and rewrites mentions of each disallowed name.
 	//
 	// Brief 04 §4.5: the scrub operates on the planner-facing skill
 	// text, NOT on the skill's `RequiredTools` slice itself —
 	// callers reading provenance from `RequiredTools` still see the
-	// true list.
-	disallowed := make([]string, 0, len(s.RequiredTools))
-	for _, t := range s.RequiredTools {
-		if _, ok := allowedTools[t]; !ok {
-			disallowed = append(disallowed, t)
-		}
-	}
+	// true list. The set/disallowed/replacement/scrub primitives all
+	// live in [capfilter], shared with the virtual directory.
+	allowedTools := capfilter.BuildSet(cap.AllowedTools)
+	toolReplacement := capfilter.Replacement(allowedTools)
+	disallowed := capfilter.DisallowedNames(s.RequiredTools, allowedTools)
 
 	rewrite := func(text string) string {
-		text = scrubToolNames(text, disallowed, toolReplacement)
+		text = capfilter.Scrub(text, disallowed, toolReplacement)
 		if cap.RedactPII {
 			text = scrubPII(text)
 		}
@@ -113,34 +94,6 @@ func Redact(s skills.Skill, cap CapabilityContext) skills.Skill {
 	out.FailureModes = rewriteSlice(s.FailureModes, rewrite)
 
 	return out
-}
-
-// scrubToolNames rewrites every occurrence of a disallowed tool
-// name in `text` with `replacement`. Word boundaries prevent
-// `email` from matching `emails`. Each disallowed name is escaped
-// (so a name containing regex metachars cannot smuggle in a
-// pattern).
-func scrubToolNames(text string, disallowed []string, replacement string) string {
-	if text == "" || len(disallowed) == 0 {
-		return text
-	}
-	for _, name := range disallowed {
-		if name == "" {
-			continue
-		}
-		pat := `\b` + regexp.QuoteMeta(name) + `\b`
-		re, err := regexp.Compile(pat)
-		if err != nil {
-			// Defensive: QuoteMeta-escaped patterns should always
-			// compile. If somehow they don't, skip this name —
-			// other rewrites still apply and the audit emit downstream
-			// will flag a leaked name (the redactor is best-effort,
-			// the audit redactor is canonical).
-			continue
-		}
-		text = re.ReplaceAllString(text, replacement)
-	}
-	return text
 }
 
 // scrubPII applies the four canonical PII regexes to `text`,

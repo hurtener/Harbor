@@ -2,7 +2,7 @@
 
 ## Summary
 
-Land the runtime-side trajectory summariser invoked when the planner-step's token estimate exceeds `RunContext.Budget.TokenBudget`. The phase ships the `Summariser` interface + `TrajectorySummary` shape in `internal/planner/trajectory/`, a reusable `CompressionRunner` (D-025) that owns the "estimate → invoke summariser → stamp `Trajectory.Summary`" loop, the `Budget.TokenBudget` slot the runner consults, and the in-package ReAct consumer wire-up so the primitive lands with its first end-to-end consumer (CLAUDE.md §13 primitive-with-consumer rule). `defaultBuilder` now skips raw step history when `rc.Trajectory.Summary != nil`, rendering the summary as the trajectory representation — compression is a runtime concern; the planner sees only the compacted view. Fail-loudly: summariser errors propagate verbatim, never silently fall through to raw history.
+Land the runtime-side trajectory summariser invoked when the planner-step's token estimate exceeds `RunContext.Budget.TokenBudget`. The phase ships the `Summariser` interface + `TrajectorySummary` shape in `internal/planner/` (the `trajectory` subpackage cannot import `internal/planner` — same import-cycle reason as D-049/D-055), a reusable `CompressionRunner` (D-025) that owns the "estimate → invoke summariser → stamp `Trajectory.Summary`" loop, the `Budget.TokenBudget` slot the runner consults, and the in-package ReAct consumer wire-up so the primitive lands with its first end-to-end consumer (CLAUDE.md §13 primitive-with-consumer rule). `defaultBuilder` now skips raw step history when `rc.Trajectory.Summary != nil`, rendering the summary as the trajectory representation — compression is a runtime concern; the planner sees only the compacted view. Fail-loudly: summariser errors propagate verbatim, never silently fall through to raw history.
 
 ## RFC anchor
 
@@ -44,7 +44,7 @@ Land the runtime-side trajectory summariser invoked when the planner-step's toke
 - **Identity-mandatory at the runner boundary** (§6 rule 9 + D-001). `MaybeCompress` rejects calls with a missing identity component; wrapped `llm.ErrIdentityMissing` to match the planner's identity-rejection sentinel.
 - **D-025 concurrent-reuse pinned**: N≥128 goroutines invoking `CompressionRunner.MaybeCompress` against one shared instance under `-race` (per-goroutine RunContext + per-goroutine trajectory; assert no races, no context bleed, no cancellation cross-talk, no goroutine leaks).
 - **End-to-end integration test** (Phase 45 consumer): in `internal/planner/react/`, build an over-budget trajectory (many large steps), invoke `CompressionRunner.MaybeCompress` to stamp `Trajectory.Summary`, then re-invoke `defaultBuilder.Build` and assert: (a) the returned messages contain the summary block, (b) zero per-step assistant turns survive, (c) the LLM-call count remains correct (no double-call from the compaction).
-- Coverage on `internal/planner/trajectory` (incremental Phase 46 surface): ≥ 80% (master-plan target).
+- Coverage on `internal/planner` (incremental Phase 46 compression surface — `compression.go`): ≥ 80% (master-plan target).
 
 ## Non-goals
 
@@ -99,12 +99,12 @@ Land the runtime-side trajectory summariser invoked when the planner-step's toke
   - Invoke `CompressionRunner.MaybeCompress` with a `staticSummariser` fixture; assert `tr.Summary` is stamped + the compressed event fires on the bus.
   - Re-invoke `defaultBuilder.Build` with the now-summarised trajectory; assert: (i) the system + user blocks are present, (ii) the user block contains the summary text, (iii) zero per-step assistant turns.
   - Run a follow-up `ReActPlanner.Next` with a scripted `_finish` LLM response; assert the planner returns `Finish{Goal}` and the LLM was called exactly once (the compaction did not double-call the LLM).
-- [ ] `scripts/smoke/phase-46.sh` exists, executable, runs `go test -race -count=1 -timeout 180s ./internal/planner/trajectory/... ./internal/planner/react/...`, asserts `Summariser` / `TrajectorySummary` / `CompressionRunner` / `EventTypeTrajectoryCompressed` / `EventTypeTrajectoryCompressionFailed` are exported via `go doc` + grep, asserts no `internal/runtime/...` import drift in the trajectory or react packages (re-asserts the Phase 42 import-graph contract).
-- [ ] `docs/decisions.md` D-055 records: (a) compression-replaces-step-history rendering rule (departure from Phase 45's additive shape); (b) `TrajectorySummary` alias on existing `Summary` struct; (c) chars/4 token estimator (single estimator surface — no parallel implementation of the `internal/llm/tokens.go` estimator); (d) `Summariser` interface lives in `internal/planner/trajectory/` (sibling to `HandleRegistry`); (e) fail-loudly contract on the summariser boundary; (f) idempotency short-circuit when `Summary != nil`.
+- [ ] `scripts/smoke/phase-46.sh` exists, executable, runs `go test -race -count=1 -timeout 180s ./internal/planner ./internal/planner/trajectory/... ./internal/planner/react/...`, asserts `Summariser` / `TrajectorySummary` / `CompressionRunner` / `EventTypeTrajectoryCompressed` / `EventTypeTrajectoryCompressionFailed` are exported from `internal/planner` via `go doc` + grep, asserts no `internal/runtime/...` import drift in the planner or react packages (re-asserts the Phase 42 import-graph contract).
+- [ ] `docs/decisions.md` D-055 records: (a) compression-replaces-step-history rendering rule (departure from Phase 45's additive shape); (b) `TrajectorySummary` alias on existing `Summary` struct; (c) chars/4 token estimator (single estimator surface — no parallel implementation of the `internal/llm/tokens.go` estimator); (d) `Summariser` interface + `CompressionRunner` live in `internal/planner/` — NOT the `trajectory` subpackage, which cannot import `internal/planner` without an import cycle (the `Summariser` signature needs `planner.RunContext`); (e) fail-loudly contract on the summariser boundary; (f) idempotency short-circuit when `Summary != nil`.
 - [ ] `docs/glossary.md` gains entries for `Summariser`, `TrajectorySummary`, `Compression budget`, `CompressionRunner`, `trajectory.compressed`, `trajectory.compression_failed`.
 - [ ] `docs/plans/README.md` Phase 46 row flips `Pending` → `Shipped`.
 - [ ] `README.md` Status table gains a Phase 46 row.
-- [ ] Coverage on `internal/planner/trajectory`: ≥ 80% (incremental — Phase 43 maintains ≥ 90% on its existing surface).
+- [ ] Coverage on `internal/planner` (incremental Phase 46 `compression.go` surface): ≥ 80%. Phase 43's `internal/planner/trajectory` maintains ≥ 90% on its existing surface.
 
 ## Files added or changed
 
@@ -259,9 +259,9 @@ type Budget struct {
 
 `scripts/smoke/phase-46.sh`:
 
-- Run `go test -race -count=1 -timeout 180s ./internal/planner/trajectory/...` → OK on pass.
+- Run `go test -race -count=1 -timeout 180s ./internal/planner` → OK on pass (the Phase 46 compression surface). `./internal/planner/trajectory/...` also runs → OK (Phase 43 surface unchanged).
 - Run `go test -race -count=1 -timeout 180s ./internal/planner/react/...` → OK on pass (re-asserts the consumer wire-up did not regress Phase 45's tests).
-- `go doc` assertions: `Summariser`, `TrajectorySummary`, `CompressionRunner`, `DefaultTokenEstimator`, `WithTokenEstimator`, `NewCompressionRunner` exported from `internal/planner/trajectory`.
+- `go doc` assertions: `Summariser`, `TrajectorySummary`, `CompressionRunner`, `DefaultTokenEstimator`, `WithTokenEstimator`, `NewCompressionRunner` exported from `internal/planner`.
 - Grep assertion: `EventTypeTrajectoryCompressed` + `EventTypeTrajectoryCompressionFailed` present in `internal/planner/events.go`.
 - Grep assertion: `TokenBudget` field present in `internal/planner/planner.go` on the `Budget` struct.
 - §13 import-graph guard: no `internal/runtime/...` imports in `internal/planner/trajectory/` or `internal/planner/react/`.
@@ -269,7 +269,7 @@ type Budget struct {
 
 ## Coverage target
 
-- `internal/planner/trajectory`: ≥ 80% (incremental Phase 46 surface; Phase 43 maintains ≥ 90% on its existing surface).
+- `internal/planner`: ≥ 80% on the incremental Phase 46 `compression.go` surface; Phase 43's `internal/planner/trajectory` maintains ≥ 90% on its existing surface.
 - `internal/planner/react`: ≥ 85% maintained (no coverage regression on the Phase 45 surface).
 
 ## Dependencies
@@ -288,10 +288,10 @@ type Budget struct {
 
 ## Glossary additions
 
-- **`Summariser`** — runtime-side interface (`internal/planner/trajectory.Summariser`) for the trajectory-compaction driver. Implementations produce a `TrajectorySummary` from a `Trajectory` + `RunContext`. Fail-loudly: errors propagate verbatim through `CompressionRunner.MaybeCompress`. Production wiring binds an LLM client + a compaction prompt; Phase 46 ships the seam + test fixtures. RFC §6.2, brief 02 §4, D-055.
+- **`Summariser`** — runtime-side interface (`internal/planner.Summariser`) for the trajectory-compaction driver. Implementations produce a `TrajectorySummary` from a `Trajectory` + `RunContext`. Fail-loudly: errors propagate verbatim through `CompressionRunner.MaybeCompress`. Production wiring binds an LLM client + a compaction prompt; Phase 46 ships the seam + test fixtures. RFC §6.2, brief 02 §4, D-055.
 - **`TrajectorySummary`** — the compaction artefact stamped on `Trajectory.Summary` when the runtime invokes the summariser. Five fields per RFC §6.2: `Goals`, `Facts`, `Pending`, `LastOutputDigest`, `Note`. Phase 46 exports it as a type alias for the Phase 43 in-package `Summary` struct so the name matches the RFC + master plan vocabulary. RFC §6.2, D-055.
 - **`Compression budget`** — `Budget.TokenBudget int` (Phase 46). The token-estimate threshold above which the runtime invokes the trajectory summariser. Zero means no compression. Estimated via the `TokenEstimator` (default: chars/4 via `Trajectory.Serialize`). RFC §6.2, brief 02 §4, D-055.
-- **`CompressionRunner`** — runtime-side reusable artifact (D-025) at `internal/planner/trajectory.CompressionRunner` that owns the "estimate → optional summariser invocation → stamp Trajectory.Summary" loop. Idempotent on `Summary != nil`. RFC §6.2, D-055.
+- **`CompressionRunner`** — runtime-side reusable artifact (D-025) at `internal/planner.CompressionRunner` that owns the "estimate → optional summariser invocation → stamp Trajectory.Summary" loop. Idempotent on `Summary != nil`. RFC §6.2, D-055.
 - **`trajectory.compressed`** — event emitted by `CompressionRunner.MaybeCompress` on successful summary stamping. `TrajectoryCompressedPayload` (SafePayload) carries identity + step count + token estimate. RFC §6.2, D-055.
 - **`trajectory.compression_failed`** — event emitted by `CompressionRunner.MaybeCompress` when the summariser returns an error or empty summary, or when the estimator errors. `TrajectoryCompressionFailedPayload` (SafePayload) carries identity + error code + truncated message. The fail-loudly observability surface (§13). D-055.
 

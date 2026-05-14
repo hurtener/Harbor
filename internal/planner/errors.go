@@ -88,6 +88,16 @@ var (
 	// per RFC §6.2's parallel-pause-atomicity contract. Phase 50
 	// upgrades this path to a checkpointed atomic pause.
 	ErrParallelPauseUnsupported = errors.New("planner: CallParallel pause-mid-execution not supported until Phase 50 unified pause primitive")
+
+	// ErrParallelThresholdUnmet (Phase 47, D-056) — a JoinN parallel
+	// call completed but fewer than N branches succeeded. This is a
+	// runtime-execution outcome, NOT an invalid decision: the
+	// CallParallel was well-formed and passed atomic-setup validation;
+	// the branches simply failed at invoke time. Distinguished from
+	// ErrInvalidDecision so callers doing errors.Is can tell a
+	// malformed emission apart from a runtime branch shortfall. The
+	// wrapped error joins every failed branch's error.
+	ErrParallelThresholdUnmet = errors.New("planner: CallParallel JoinN threshold not met")
 )
 
 // AbsoluteMaxParallel is the system cap on CallParallel branch counts

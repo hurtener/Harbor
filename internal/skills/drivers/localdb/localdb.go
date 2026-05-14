@@ -59,7 +59,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -140,7 +139,8 @@ type driver struct {
 	bus          events.EventBus
 	ftsAvailable bool
 
-	mu     sync.Mutex
+	// closed flips exactly once via CompareAndSwap in Close — the CAS
+	// is the once-only guard, so no mutex is needed around teardown.
 	closed atomic.Bool
 }
 
@@ -481,8 +481,9 @@ func (d *driver) Delete(ctx context.Context, id identity.Quadruple, name string)
 
 // Close implements skills.SkillStore. Idempotent.
 func (d *driver) Close(_ context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	// CompareAndSwap is the once-only guard: the goroutine that flips
+	// closed false→true owns the db.Close(); every other concurrent
+	// caller loses the swap and returns nil. Close is idempotent.
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil
 	}

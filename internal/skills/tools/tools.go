@@ -48,7 +48,6 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/events"
-	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/skills"
 	tcat "github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
@@ -269,7 +268,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 // from ctx → SkillStore.Search → Filter → Redact (per-row). Path is
 // surfaced for observability.
 func searchHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args SearchArgs) (SearchResult, error) {
-	q, err := identityFromCtx(ctx)
+	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return SearchResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_search")
 	}
@@ -321,7 +320,7 @@ func searchHandler(ctx context.Context, store skills.SkillStore, bus events.Even
 // a hard error for stale planner caches); the budgeter is the only
 // hard error path.
 func getHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args GetArgs) (GetResult, error) {
-	q, err := identityFromCtx(ctx)
+	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return GetResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_get")
 	}
@@ -366,7 +365,7 @@ func getHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 // SkillStore.List → Filter → Redact (summary fields only — full
 // content is reserved for `skill_get`).
 func listHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args ListArgs) (ListResult, error) {
-	q, err := identityFromCtx(ctx)
+	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return ListResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_list")
 	}
@@ -389,29 +388,4 @@ func listHandler(ctx context.Context, store skills.SkillStore, bus events.EventB
 		out[i] = normalizeSkill(Redact(s, args.Capability))
 	}
 	return ListResult{Skills: out}, nil
-}
-
-// identityFromCtx reads the identity Quadruple from ctx, validating
-// the triple. Returns the quadruple (possibly with empty components)
-// plus an error wrapping `skills.ErrIdentityRequired` when the
-// triple is incomplete.
-//
-// The caller passes the partial Quadruple to `skills.EmitIdentityRejected`
-// which substitutes the missing-component sentinel for the bus's
-// `ValidateEvent` triple check.
-func identityFromCtx(ctx context.Context) (identity.Quadruple, error) {
-	if q, ok := identity.QuadrupleFrom(ctx); ok {
-		if err := identity.Validate(q.Identity); err != nil {
-			return q, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
-		}
-		return q, nil
-	}
-	if id, ok := identity.From(ctx); ok {
-		q := identity.Quadruple{Identity: id}
-		if err := identity.Validate(id); err != nil {
-			return q, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
-		}
-		return q, nil
-	}
-	return identity.Quadruple{}, fmt.Errorf("%w: no identity in ctx", skills.ErrIdentityRequired)
 }

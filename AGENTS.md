@@ -655,6 +655,19 @@ The PR's title and body should call out the cross-phase fix (e.g. `feat(...) wav
 
 If a discovered bug is genuinely too large for the current PR (full subsystem rewrite, new RFC required), the PR description must (a) name the bug with file:line precision, (b) link a tracking issue, and (c) explain why it's deferred — *and* the integration test that surfaced it must `t.Skip` with the issue link, never silently mask the failure.
 
+### 17.7 Wave delivery cadence (the repeatable six-step process)
+
+Harbor is built in **waves** — a wave is ~3–8 phases that form a coherent subsystem slice. §17.5 documents the wave-end audit; this section documents the full cadence the audit sits inside. The six steps are binding for any contributor (human or AI) coordinating a wave.
+
+1. **Scope the wave.** Open `docs/plans/README.md`, read the next contiguous block of `Pending` phases plus the critical-path ordering near the bottom. A wave is the next coherent subsystem slice — not an arbitrary count.
+2. **Stage it.** Group the wave's phases into **stages** — bundles that can be built in parallel because they have no inter-dependencies. A phase whose `Deps` list points only at already-shipped phases can go in the current stage; one that depends on a sibling waits for the next stage. Confirm the staging with the user before dispatching — staging is a judgment call they sign off on. **Apply the §13 primitive-with-consumer rule here:** if a stage introduces a primitive (interface, decision shape, runtime mechanism), the same stage MUST include a consumer that exercises it end-to-end with a test.
+3. **Dispatch each stage as parallel worktree agents** — one phase per agent, isolated worktree, one general-purpose agent each. Every dispatch prompt MUST include: the master-plan detail block, the mandatory reading list (the relevant CLAUDE.md sections, RFC sections, predecessor phase plans, briefs), the §16 phase-plan workflow, the validation gate, a **pre-assigned `D-NNN` number** (so parallel agents don't collide in `docs/decisions.md`), an explicit **workspace warning** (operate only inside the worktree; `pwd` first; STOP if a path resolves outside it), and the **markdownlint hygiene reminder** (blank lines around `---` and `## D-NNN` headings in `docs/decisions.md`; run `markdownlint-cli2` repo-wide before committing).
+4. **Drain merges, then dispatch the next stage.** Wait for the user to merge a stage's PRs before dispatching the dependent stage. A cleanup `chore` PR may run as background work between stages if audit WARNs/NITs have accumulated.
+5. **Wave-end E2E.** The final stage includes a `test/integration/waveN_test.go` — real drivers across the wave's surface, identity propagation, ≥1 failure mode, N≥10 concurrency stress. It is bundled with the final phase's PR.
+6. **Wave-end checkpoint audit (§17.5).** A read-only fork audits every phase in the wave; the coordinator lands the punch list as one `chore(checkpoint): wave-N audit fixes` PR. **This gates the next wave's planning** — do not start Wave N+1 scoping until Wave N's audit PR is merged.
+
+**Recurring failure modes to pre-empt** (the reason each guard in step 3 exists): agents drifting out of their worktree into the main checkout; latent `docs/decisions.md` markdownlint breakage that surfaces one PR late (CI lints repo-wide); committed merge-conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) from an agent that ran `git merge main` mid-build; and the occasional agent dying on an API-overload error mid-run — recover by picking up that worktree's in-progress work and finishing it as coordinator rather than re-dispatching from scratch.
+
 ---
 
 ## 18. Mirroring

@@ -258,4 +258,3 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
-
