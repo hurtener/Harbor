@@ -287,7 +287,11 @@ func TestScaffoldCmd_Quiet_SuppressesInformationalOutput(t *testing.T) {
 // scaffold writes to ./<name>. We exercise this from a tmp CWD so
 // the test does not pollute the working tree.
 func TestScaffoldCmd_DefaultsOutputToProjectName(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel(): this test calls os.Chdir, which mutates
+	// process-global CWD and races any parallel test that resolves a
+	// relative path (e.g. validate_test.go's quiet-flag test reading
+	// testdata/, or main_test.go's fixture-exists check). Surfaced by
+	// the preflight gate as a flaky cmd/harbor go-test failure.
 	tmpCWD := t.TempDir()
 	cwd, err := os.Getwd()
 	if err != nil {
