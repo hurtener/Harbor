@@ -555,12 +555,105 @@ type AuditConfig struct{}
 // (`internal/distributed/drivers/a2a`) reads this slice at
 // construction.
 //
+// `Entries` lists per-tool catalog wiring declarations: operators
+// attach approval policies and / or OAuth bindings to a tool name
+// without writing Go wiring code. Phase 64a (D-090) — the catalog
+// builder reads this list at boot and auto-wraps each named tool's
+// descriptor with the declared middleware. An entry whose Name does
+// not resolve to a registered tool fails the catalog build loud
+// (§13 "fail loudly at boot"); an entry that names an unknown
+// approval policy or OAuth provider also fails loud.
+//
 // Restart-required (no `reload:"live"` tag): adding / removing tool
 // providers at runtime is a Phase 91+ Protocol surface concern.
 type ToolsConfig struct {
 	HTTPManifests []string          `yaml:"http_manifests,omitempty"`
 	MCPServers    []MCPServerConfig `yaml:"mcp_servers,omitempty"`
 	A2APeers      []A2APeerConfig   `yaml:"a2a_peers,omitempty"`
+	Entries       []ToolEntryConfig `yaml:"entries,omitempty"`
+}
+
+// ToolEntryConfig is one per-tool catalog wiring declaration. Phase
+// 64a / D-090. The shape is intentionally small: the catalog builder
+// looks up the registered tool by `Name`, then applies whichever of
+// `Approval` and / or `OAuth` are populated.
+//
+// Layout in YAML:
+//
+//	tools:
+//	  entries:
+//	    - name: delete_doc
+//	      approval:
+//	        policy: deny-all
+//	        reason: "deletion requires human review"
+//	    - name: github.repo.read
+//	      oauth:
+//	        provider: github
+//	        binding_scope: user
+//	    - name: write_to_prod
+//	      approval:
+//	        policy: tagged
+//	        require_tags: ["sensitive", "write:prod"]
+//	      oauth:
+//	        provider: prod-api
+//	        binding_scope: agent
+//
+// An empty `Approval` AND `OAuth` block is rejected at validation
+// time (an entry with no middleware to apply is a configuration
+// typo).
+//
+// Restart-required.
+type ToolEntryConfig struct {
+	// Name is the catalog tool name the entry applies to. Required.
+	// The catalog builder fails closed when no tool registered with
+	// this name resolves at boot.
+	Name string `yaml:"name"`
+	// Approval declares an approval-gate wiring for this tool. Omit
+	// for tools that need no gating. When present, `Approval.Policy`
+	// MUST be one of the canonical policy names; an unknown value
+	// fails closed.
+	Approval *ToolApprovalConfig `yaml:"approval,omitempty"`
+	// OAuth declares an OAuth binding for this tool. Omit for tools
+	// that need no OAuth. When present, `OAuth.Provider` MUST name a
+	// configured OAuth source and `OAuth.BindingScope` MUST be one of
+	// "user" / "agent" (Phase 30 D-083).
+	OAuth *ToolOAuthConfig `yaml:"oauth,omitempty"`
+}
+
+// ToolApprovalConfig declares an approval-gate wiring for one tool.
+// Phase 64a / D-090.
+type ToolApprovalConfig struct {
+	// Policy names which bundled approval policy to apply. The
+	// catalog builder maps this name onto a concrete
+	// `approval.ApprovalPolicy` instance. Allowed values:
+	//   - "deny-all"      → `approval.AlwaysDenyPolicy`
+	//   - "approve-all"   → `approval.AlwaysApprovePolicy` (dev only)
+	//   - "tagged"        → `approval.TaggedPolicy` (consults
+	//                       `RequireTags` below)
+	// An unknown policy value fails the catalog build with a wrapped
+	// error naming the offending value.
+	Policy string `yaml:"policy"`
+	// Reason is the operator-facing classification carried on
+	// `tool.approval_requested`. Optional — the bundled policies
+	// supply a sensible default.
+	Reason string `yaml:"reason,omitempty"`
+	// RequireTags is consulted by the `tagged` policy. An entry whose
+	// `Policy: tagged` AND `RequireTags: []` is rejected — the
+	// tagged policy with no tags is a no-op (configuration smell).
+	RequireTags []string `yaml:"require_tags,omitempty"`
+}
+
+// ToolOAuthConfig declares an OAuth binding for one tool. Phase 64a
+// / D-090.
+type ToolOAuthConfig struct {
+	// Provider names the OAuth source the tool binds to. The catalog
+	// builder consults the configured OAuth registry; a name that
+	// resolves to no source fails the catalog build loud.
+	Provider string `yaml:"provider"`
+	// BindingScope is "user" or "agent" (Phase 30 / D-083). An
+	// invalid value fails the catalog build with a wrapped error
+	// naming the offending value.
+	BindingScope string `yaml:"binding_scope"`
 }
 
 // MCPServerConfig is one MCP southbound attachment. `Name` is the
