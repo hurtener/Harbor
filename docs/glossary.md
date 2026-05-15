@@ -210,6 +210,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **HeavyOutputThreshold** — the byte size at which the runtime mandatorily routes a payload through the `ArtifactStore`. Default 32 KB (`config.ArtifactsConfig.HeavyOutputThresholdBytes`); runtime-configurable. Per-tool overrides land at Phase 26 via the tool catalog. Phase 17 ships the config field + default; enforcement lives at consumer layers — tool dispatcher (Phase 26) auto-routes, LLM-edge (Phase 32) fails loudly with `ErrContextLeak` if raw heavy content slipped through. D-022, D-026, RFC §6.5, §6.10.
 
+**`harbor_events_total`** — the canonical Phase 56 core metric: a counter of total `events.Event` records observed by the `MetricsRegistry`, labelled `event_type` / `producer` / `node` and NOTHING else. The first metric derived through the event-to-metric bridge (`MetricsRegistry.RegisterEvent`); per-subsystem instruments land later through the same bridge, never through a direct `meter.Int64Counter(...)` call. RFC §6.14, D-076.
+
 ## I
 
 **Identity triple** — `(tenant_id, user_id, session_id)`. Every layer carries this. The session is the innermost concurrency *boundary* — but within a session, multiple Runs may execute concurrently and require an additional identity dimension; see *Identity quadruple*. AGENTS.md §6 + RFC §4.
@@ -255,6 +257,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`MemberOutcome`** — per-task entry inside `GroupCompletion`. Carries `TaskID`, terminal `Status` (`StatusComplete` | `StatusFailed` | `StatusCancelled`), and either `Result` (when complete) or `Error` (when failed); neither is populated on cancel. Heavy results are substituted with `ArtifactRef`s upstream (D-022, D-026); the entry is ref-shaped, not byte-bound. RFC §6.8, Phase 21.
 
 **Memory strategy** — declared policy that controls how a session's memory is shaped: `none`, `truncation`, `rolling_summary`. Identity-mandatory; fail-closed. RFC §6.6.
+
+**`MetricsRegistry`** — Harbor's OpenTelemetry metrics wrapper (`internal/telemetry`, Phase 56). Wraps the OTel Metrics SDK `MeterProvider`; derives the canonical `harbor_events_total` counter from `events.Event` records via `RegisterEvent` — keyed **only** by `event_type` / `producer` / `node`, never by any `Event.Identity` field, so the run quadruple physically cannot reach a metric label (the cardinality firewall). There is deliberately no public `Counter` / `Meter` accessor — metrics are a derivation of the event bus, not a parallel channel. The metric exporter sits behind a §4.4 driver seam (`otlpmetric` default when an OTLP endpoint is configured, `prometheus` otherwise — the built-in `/metrics` pull endpoint); `telemetry.PrometheusHandler` returns the standalone Prometheus `http.Handler`. Built once at boot; immutable (D-025). RFC §6.14, brief 06, D-076.
+
+**metrics cardinality lint** — Harbor's build-gating static check (`internal/telemetry/cardinalitylint`, Phase 56) that fails CI if a metric label derives from a high-cardinality source — `run_id`, `trace_id`, `span_id`, `task_id`, or a value sourced from an `events.Event` `Identity` field. A `go/parser` AST walk scoped to `metric.WithAttributes(...)` calls (legitimate span attributes are untouched), mirroring the Phase 58 `internal/protocol/singlesource` checker. It makes the brief 06 "metrics cardinality footgun" lesson mechanically un-violatable. brief 06 §"Metrics-cardinality lint test", D-076.
 
 **`MemoryStore`** — Harbor's mandatory memory subsystem interface. Seven methods (`AddTurn / GetLLMContext / EstimateTokens / Flush / Health / Snapshot / Restore`) plus `Close`. Phase 23 ships the InMem driver with `Strategy = none` operational; Phase 24 adds `truncation` + `rolling_summary`; Phase 25 ships SQLite + Postgres drivers under the same conformance suite. Identity-mandatory at every method; fail-closed on missing triple with `memory.identity_rejected` audit emit. RFC §6.6, AGENTS.md §6, D-001, D-027, D-033.
 

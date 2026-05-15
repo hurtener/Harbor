@@ -76,7 +76,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 53a| Agent Registry (registration identity + IDs)  | runtime/registry     | §6.16, §7   | 01, 05, 07, 08        | 85%  | Shipped  |
 | 54 | Protocol task control surface                 | protocol             | §5.2, §6.3  | 50, 53, 20            | 85%  | Shipped  |
 | 55 | OTel traces + propagation conventions         | telemetry            | §6.14       | 04, 05                | 85%  | Shipped  |
-| 56 | Metrics + OTLP + Prometheus drivers           | telemetry            | §6.14, §11Q5| 55, 05                | 85%  | Pending  |
+| 56 | Metrics + OTLP + Prometheus drivers           | telemetry            | §6.14, §11Q5| 55, 05                | 85%  | Shipped  |
 | 57 | Durable event log driver (StateStore-backed)  | events               | §6.13       | 05, 07, 15, 16        | 85%  | Shipped  |
 | 58 | Protocol types/methods/errors single source   | protocol             | §5, §8      | 01                    | 90%  | Shipped  |
 | 59 | Protocol versioning + deprecation policy      | protocol             | §5.3        | 58                    | 85%  | Pending  |
@@ -600,6 +600,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Cardinality-lint test fails CI on `RunID`/`TraceID` labels; both exporters emit core counters.
 **Tests.** Integration; static cardinality lint.
 **Deps.** 55, 05.
+**Deviations (§4.3, see D-076).** (1) `NodeName` / `Producer` are realised as the reserved `Event.Extra["node"]` / `Event.Extra["producer"]` keys — not new `events.Event` struct fields — because the Phase 05 `Event` doc already reserves `Extra` for "Phase 56's bounded low-cardinality metric labels"; no `events.Event` shape change. (2) The static cardinality-lint flags `attribute.*` calls only when nested inside `metric.WithAttributes(...)` — a span's `attribute.String("run_id", …)` inside `trace.WithAttributes` is legitimate (D-073) and is left alone; the rule is metric-labels-only. (3) The `/metrics` endpoint ships as the standalone `telemetry.PrometheusHandler` `http.Handler` constructor; the live Runtime server that mounts it at `/metrics` is the Phase 60+ bootstrap (there is no `internal/server/` yet). (4) The master-plan "§11 Q-5" citation: RFC §11's Q-5 is the skill-versioning question; the metrics-exporter question is brief 06 Q-2, resolved by RFC §6.14 — "§11 Q-5" is read as "the §11-tracked metrics-exporter question is settled".
 
 ### 57 — Durable event log driver (RFC §6.13)
 
