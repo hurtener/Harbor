@@ -24,11 +24,12 @@ state:
   driver: inmem
 
 llm:
-  # `mock` (Phase 32 default — test-grade, no network) or `bifrost`
-  # (Phase 33 — pure-Go gateway against OpenAI / Anthropic / Google /
-  # OpenRouter / etc.). Operators ship `bifrost` in production;
-  # `mock` is the safety default when no driver is configured.
-  driver: mock
+  # `bifrost` (Phase 33 — pure-Go gateway against OpenAI / Anthropic /
+  # Google / OpenRouter / etc.) is the production default Phase 64
+  # (D-089) flipped to. The `mock` driver (Phase 32 — test-grade, no
+  # network) is reachable ONLY via the `HARBOR_DEV_ALLOW_MOCK=1` env
+  # var when running `harbor dev` (the §13 dev-only escape hatch).
+  driver: bifrost
   # Bifrost knobs — required when `driver: bifrost`. The mock driver
   # ignores these.
   #

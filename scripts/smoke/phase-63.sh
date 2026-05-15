@@ -99,13 +99,14 @@ fi
 # Each of these must exit non-zero with code "not_implemented" and a hint
 # mentioning a phase number.
 #
-# `scaffold` (Phase 67 / D-087) and `validate` (Phase 68 / D-088) graduated
-# out of this stub table as their phases landed — they emit subcommand-specific
-# error codes (e.g. CodeInvalidProjectName, validation findings) on invalid
-# input, not CodeNotImplemented. Per §17.6 the cross-phase smoke maintenance
-# lives in whichever PR moves the subcommand out of stub status; future PRs
-# that ship `inspect-*` will trim this list further.
-stubs=(dev inspect-events inspect-runs inspect-topology)
+# `scaffold` (Phase 67 / D-087), `validate` (Phase 68 / D-088), and `dev`
+# (Phase 64 / D-089) graduated out of this stub table as their phases
+# landed — they emit subcommand-specific error codes (e.g.
+# CodeInvalidProjectName, validation findings, CodeBootLLMRequired) on
+# invalid input, not CodeNotImplemented. Per §17.6 the cross-phase smoke
+# maintenance lives in whichever PR moves the subcommand out of stub
+# status; future PRs that ship `inspect-*` will trim this list further.
+stubs=(inspect-events inspect-runs inspect-topology)
 for sub in "${stubs[@]}"; do
     if "${BIN}" "${sub}" --json >/dev/null 2>&1; then
         fail "phase 63: harbor ${sub} --json exited 0 — stub subcommands MUST exit non-zero (§13 amendment)"
@@ -150,10 +151,10 @@ else
     ok 'phase 63: cmd/harbor does not import internal/protocol/errors (CLI structured-error surface kept distinct from Protocol wire error codes)'
 fi
 
-# Phase 63 ships no live HTTP server — harbor dev is a stub pointing to
-# Phase 64. Skip the live-wire assertions per the 404/405/501 -> SKIP
-# convention; the substantive surface assertions above run against the
+# Phase 63 ships the cobra skeleton itself; the wire-side `harbor dev`
+# live-server assertions live in `scripts/smoke/phase-64.sh` (the
+# subcommand graduated to a real implementation in Phase 64 / D-089).
+# The substantive Phase 63 surface assertions above run against the
 # binary directly, no listener needed.
-skip 'phase 63: the cobra skeleton ships no HTTP server; harbor dev is a non-zero-exit stub pointing to phase 64; preflight tolerates the stub via its structured-error detection'
 
 smoke_summary
