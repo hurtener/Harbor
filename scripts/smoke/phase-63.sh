@@ -90,7 +90,12 @@ fi
 # 6. Stub subcommand exit codes and structured-error shape.
 # Each of these must exit non-zero with code "not_implemented" and a hint
 # mentioning a phase number.
-stubs=(dev scaffold validate inspect-events inspect-runs inspect-topology)
+#
+# Phase 68 (D-088) shipped `harbor validate`, so `validate` is NO longer
+# a stub — its own smoke (scripts/smoke/phase-68.sh) covers that surface.
+# Drop `validate` from this list as a §17.6 cross-phase fix the same PR
+# that turned validate into a real subcommand.
+stubs=(dev scaffold inspect-events inspect-runs inspect-topology)
 for sub in "${stubs[@]}"; do
     if "${BIN}" "${sub}" --json >/dev/null 2>&1; then
         fail "phase 63: harbor ${sub} --json exited 0 — stub subcommands MUST exit non-zero (§13 amendment)"
