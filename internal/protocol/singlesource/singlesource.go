@@ -126,15 +126,22 @@ var CanonicalMethods = map[string]struct{}{
 // type"). Single-sourcing means "exactly one home", not "all in the
 // same directory" — the map records the home per type.
 //
+// Version, Deprecation, and VersionHandshake are the Phase 59 (D-077)
+// versioning-discipline wire types — all in internal/protocol/types
+// alongside the ProtocolVersion pin.
+//
 // Kept in lockstep with the canonical packages by
 // TestSingleSource_CanonicalWireTypesInLockstep.
 var CanonicalWireTypes = map[string]string{
-	"IdentityScope":   "types",
-	"StartRequest":    "types",
-	"StartResponse":   "types",
-	"ControlRequest":  "types",
-	"ControlResponse": "types",
-	"Error":           "errors",
+	"IdentityScope":    "types",
+	"StartRequest":     "types",
+	"StartResponse":    "types",
+	"ControlRequest":   "types",
+	"ControlResponse":  "types",
+	"Version":          "types",
+	"Deprecation":      "types",
+	"VersionHandshake": "types",
+	"Error":            "errors",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path
