@@ -256,6 +256,22 @@ func TestApply_ApprovalWrapper_ApproveCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("echo_tool not in catalog after Apply")
 	}
+	// Subscribe BEFORE kicking Invoke. The bus is fan-out: a subscriber
+	// that arrives after the publish never sees the event. Under load
+	// (preflight gate, parallel packages) the goroutine's Invoke can
+	// reach the gate's publish step before Subscribe completes — the
+	// previous ordering flaked under the preflight smoke and surfaced
+	// as "no approval requested event" (§17.6).
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  catalogTestID.TenantID,
+		User:    catalogTestID.UserID,
+		Session: catalogTestID.SessionID,
+		Types:   []events.EventType{approval.EventTypeToolApprovalRequested},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
 	// Drive Invoke in a goroutine; resolve from the test thread.
 	type out struct {
 		res tools.ToolResult
@@ -267,26 +283,8 @@ func TestApply_ApprovalWrapper_ApproveCycle(t *testing.T) {
 		r, err := d.Invoke(ctxWithID(t, catalogTestID), args)
 		resCh <- out{res: r, err: err}
 	}()
-	// Subscribe to the request event so we capture the pause token.
-	sub, err := bus.Subscribe(context.Background(), events.Filter{
-		Tenant:  catalogTestID.TenantID,
-		User:    catalogTestID.UserID,
-		Session: catalogTestID.SessionID,
-		Types:   []events.EventType{approval.EventTypeToolApprovalRequested},
-	})
-	if err != nil {
-		// Filter shape mismatch is the only realistic failure here; surface.
-		t.Fatalf("bus.Subscribe: %v", err)
-	}
-	defer sub.Cancel()
-	// The Invoke was kicked AFTER Subscribe completed? Actually
-	// Invoke runs first; the request event is fan-out so subscribers
-	// later in the pipeline may have missed it. To avoid race-flake
-	// we instead poll the gate's coordinator for a parked pause.
 	var token pauseresume.Token
 	for i := 0; i < 50; i++ {
-		// Poll Coordinator.Status of all known pauses; we don't have
-		// a direct token surface, so we observe via the event sub.
 		select {
 		case ev := <-sub.Events():
 			p, ok := ev.Payload.(approval.ToolApprovalRequestedPayload)
@@ -338,14 +336,7 @@ func TestApply_ApprovalWrapper_RejectCycle(t *testing.T) {
 	}
 	gate := applied["delete_doc"]
 	d, _ := cat.Resolve("delete_doc")
-	type out struct {
-		err error
-	}
-	resCh := make(chan out, 1)
-	go func() {
-		_, err := d.Invoke(ctxWithID(t, catalogTestID), json.RawMessage(`{}`))
-		resCh <- out{err: err}
-	}()
+	// Subscribe BEFORE kicking Invoke (fan-out bus; see HappyPath note).
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
 		Tenant: catalogTestID.TenantID, User: catalogTestID.UserID, Session: catalogTestID.SessionID,
 		Types: []events.EventType{approval.EventTypeToolApprovalRequested},
@@ -354,6 +345,14 @@ func TestApply_ApprovalWrapper_RejectCycle(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	defer sub.Cancel()
+	type out struct {
+		err error
+	}
+	resCh := make(chan out, 1)
+	go func() {
+		_, err := d.Invoke(ctxWithID(t, catalogTestID), json.RawMessage(`{}`))
+		resCh <- out{err: err}
+	}()
 	var token pauseresume.Token
 	for i := 0; i < 50; i++ {
 		select {
@@ -532,6 +531,15 @@ func TestApply_BothMiddleware_ApprovalIsOutermost(t *testing.T) {
 	}
 	gate := applied["delete_doc"]
 	d, _ := cat.Resolve("delete_doc")
+	// Subscribe BEFORE kicking Invoke (fan-out bus; see HappyPath note).
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: catalogTestID.TenantID, User: catalogTestID.UserID, Session: catalogTestID.SessionID,
+		Types: []events.EventType{approval.EventTypeToolApprovalRequested},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
 	type out struct {
 		err error
 	}
@@ -540,11 +548,6 @@ func TestApply_BothMiddleware_ApprovalIsOutermost(t *testing.T) {
 		_, err := d.Invoke(ctxWithID(t, catalogTestID), json.RawMessage(`{}`))
 		resCh <- out{err: err}
 	}()
-	sub, _ := bus.Subscribe(context.Background(), events.Filter{
-		Tenant: catalogTestID.TenantID, User: catalogTestID.UserID, Session: catalogTestID.SessionID,
-		Types: []events.EventType{approval.EventTypeToolApprovalRequested},
-	})
-	defer sub.Cancel()
 	var token pauseresume.Token
 	for i := 0; i < 50; i++ {
 		select {
