@@ -47,7 +47,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 80%  | Shipped  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 80%  | Shipped  |
 | 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50, 53a           | 85%  | Shipped  |
-| 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
+| 31 | Tool-side approval gates                      | tools/approval       | §6.4, §3.3  | 30                    | 80%  | Shipped  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Shipped  |
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
 | 33a| Custom OpenAI-compatible providers + timeouts | llm                  | §6.5        | 33                    | 80%  | Shipped  |
@@ -369,6 +369,9 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** APPROVE/REJECT round-trip via the protocol; reject path raises typed `tool.rejected` events.
 **Tests.** Integration.
 **Deps.** 30.
+**§4.3 deviation (shipped).** The master-plan row's owning-subsystem `tools/auth` was the right home for "approval as another consumer of the OAuth machinery." The implementation chose a SIBLING package `internal/tools/approval` under `internal/tools/` so the approval gate has zero OAuth baggage (no `TokenStore`, no `Sealer`, no PKCE / RFC 7591 / discovery surface — none of which an HITL approval gate needs). The two siblings (`auth/` + `approval/`) share the Coordinator + bus + redactor seams via the public `pauseresume` / `events` / `audit` packages; nothing else. The master-plan row's subsystem column was updated `tools/auth → tools/approval` in the same PR. Documented in D-086 §1 ("the approval-gate package is a SIBLING of `internal/tools/auth`, not a subpackage").
+**Settled decisions:** D-086.
+**See also.** `docs/plans/phase-31-tool-approval-gates.md`.
 
 ### 32 — LLM client core (RFC §6.5)
 
