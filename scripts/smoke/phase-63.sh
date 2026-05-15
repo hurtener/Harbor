@@ -90,7 +90,14 @@ fi
 # 6. Stub subcommand exit codes and structured-error shape.
 # Each of these must exit non-zero with code "not_implemented" and a hint
 # mentioning a phase number.
-stubs=(dev scaffold validate inspect-events inspect-runs inspect-topology)
+#
+# `scaffold` was a Phase 63 stub; Phase 67 (D-087) replaced it with the
+# real subcommand — it now emits CodeInvalidProjectName when invoked
+# with no --name, not CodeNotImplemented. The shipped subcommands
+# graduate out of this stub table as their phases land. Per §17.6 the
+# cross-phase smoke maintenance lives in whichever PR moves the
+# subcommand out of stub status.
+stubs=(dev validate inspect-events inspect-runs inspect-topology)
 for sub in "${stubs[@]}"; do
     if "${BIN}" "${sub}" --json >/dev/null 2>&1; then
         fail "phase 63: harbor ${sub} --json exited 0 — stub subcommands MUST exit non-zero (§13 amendment)"
