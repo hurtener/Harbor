@@ -1,0 +1,2 @@
+Error: harbor validate: 1 validation error in testdata/validate/missing-llm-provider.yaml (see RFC §10 (Configuration) and CLAUDE.md §10)
+testdata/validate/missing-llm-provider.yaml:22: config.semantic: config.llm.provider: must not be empty (see examples/harbor.yaml under `llm:`)
