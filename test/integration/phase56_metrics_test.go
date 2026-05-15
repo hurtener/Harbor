@@ -73,27 +73,17 @@ func scrapeMetrics(t *testing.T, h http.Handler) string {
 	return string(b)
 }
 
-// drainToMetrics subscribes a goroutine to the bus that calls
-// RegisterEvent for every delivered event — the real events→metrics
-// bridge wiring. It returns a stop func that cancels the subscription
-// and joins the drain goroutine; callers defer it.
+// drainToMetrics consumes the production telemetry.BridgeBusToMetrics
+// helper (PR #91 / D-082) so the integration test exercises the
+// canonical events→metrics wiring shape rather than a test-local
+// drain reimplementation. Returns a stop func; callers defer it.
 func drainToMetrics(t *testing.T, ctx context.Context, bus events.EventBus, reg *telemetry.MetricsRegistry, f events.Filter) (stop func()) {
 	t.Helper()
-	sub, err := bus.Subscribe(ctx, f)
+	stop, err := telemetry.BridgeBusToMetrics(ctx, bus, reg, f)
 	if err != nil {
-		t.Fatalf("bus.Subscribe: %v", err)
+		t.Fatalf("telemetry.BridgeBusToMetrics: %v", err)
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range sub.Events() {
-			reg.RegisterEvent(context.Background(), ev)
-		}
-	}()
-	return func() {
-		sub.Cancel()
-		<-done
-	}
+	return stop
 }
 
 func TestE2E_Phase56_Metrics_EventToMetricWiring(t *testing.T) {

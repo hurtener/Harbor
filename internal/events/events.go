@@ -245,8 +245,15 @@ type Filter struct {
 	Tenant  string
 	User    string
 	Session string
-	Types   []EventType
-	Admin   bool
+	// Run, when non-empty, narrows the subscription to a single run
+	// inside the (tenant, user, session) scope. An empty Run means
+	// "every run in the session" (session-scoped subscription) — the
+	// Phase 60 default. The wire transport carries this via the
+	// optional `X-Harbor-Run` (stream/HeaderRun) carrier header.
+	// PR #91 / D-082 (Wave 10 audit WARN-5).
+	Run   string
+	Types []EventType
+	Admin bool
 }
 
 // HasFullTriple reports whether the filter specifies all three
@@ -257,7 +264,8 @@ func (f Filter) HasFullTriple() bool {
 
 // Matches reports whether ev satisfies the filter's identity gates
 // and event-type selector. Admin filters bypass the identity match
-// (cross-tenant fan-in); Types empty matches every type.
+// (cross-tenant fan-in); Types empty matches every type. A non-empty
+// Run additionally narrows to events whose RunID matches.
 func (f Filter) Matches(ev Event) bool {
 	if !f.Admin {
 		if ev.Identity.TenantID != f.Tenant {
@@ -267,6 +275,9 @@ func (f Filter) Matches(ev Event) bool {
 			return false
 		}
 		if ev.Identity.SessionID != f.Session {
+			return false
+		}
+		if f.Run != "" && ev.Identity.RunID != f.Run {
 			return false
 		}
 	}

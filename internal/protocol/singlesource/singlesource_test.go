@@ -303,15 +303,35 @@ func TestSingleSource_ViolationString(t *testing.T) {
 // checker.
 func TestSingleSource_CanonicalMethodsInLockstep(t *testing.T) {
 	canonical := methods.Methods()
-	if len(canonical) != len(singlesource.CanonicalMethods) {
-		t.Fatalf("singlesource.CanonicalMethods has %d entries, internal/protocol/methods has %d — "+
-			"a new Protocol method landed without updating the single-source checker (D-075)",
-			len(singlesource.CanonicalMethods), len(canonical))
-	}
+	canonicalSet := make(map[string]struct{}, len(canonical))
 	for _, m := range canonical {
-		if _, ok := singlesource.CanonicalMethods[string(m)]; !ok {
-			t.Errorf("method %q is canonical in internal/protocol/methods but missing from singlesource.CanonicalMethods", m)
+		canonicalSet[string(m)] = struct{}{}
+	}
+
+	// Missing in checker map: a method canonical in methods.Methods()
+	// that has no entry in singlesource.CanonicalMethods.
+	missing := make([]string, 0)
+	for name := range canonicalSet {
+		if _, ok := singlesource.CanonicalMethods[name]; !ok {
+			missing = append(missing, name)
 		}
+	}
+
+	// Extra in checker map: a method recorded in singlesource.CanonicalMethods
+	// that is not in methods.Methods() — usually a stale entry left over
+	// from a method rename or removal.
+	extra := make([]string, 0)
+	for name := range singlesource.CanonicalMethods {
+		if _, ok := canonicalSet[name]; !ok {
+			extra = append(extra, name)
+		}
+	}
+
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("singlesource.CanonicalMethods drifted from internal/protocol/methods (D-075):\n"+
+			"  missing in checker map: %v\n"+
+			"  extra in checker map:   %v",
+			missing, extra)
 	}
 }
 

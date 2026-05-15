@@ -242,6 +242,16 @@ func NewHandler(bus events.EventBus, opts ...Option) (http.Handler, error)
   `httptest`-backed package + integration tests that exercise the real wire
   framing both directions — the same posture phase-54.sh took.
 
+### Post-PR amendments
+
+- **PR #91 / D-082 (Wave 10 audit WARN-5)** — the SSE transport gained
+  an optional `X-Harbor-Run` identity-carrier header. When present, the
+  subscription is run-scoped (`events.Filter.Run` is set, so only events
+  with a matching `RunID` flow through); when absent, the subscription
+  is session-scoped (the original Phase 60 default). The
+  conformance suite's event-filter matrix gained the
+  `RunScoped_StreamOpens` scenario.
+
 ## Glossary additions
 
 - **SSE stream** — the Protocol's server→client event channel: a long-lived
