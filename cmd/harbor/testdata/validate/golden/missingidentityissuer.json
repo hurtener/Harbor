@@ -1,0 +1,1 @@
+{"error":"1 validation error in testdata/validate/missing-identity-issuer.yaml","code":"validation_failed","hint":"see RFC §10 (Configuration) and CLAUDE.md §10","errors":[{"category":"config.semantic","file":"testdata/validate/missing-identity-issuer.yaml","line":8,"message":"config.identity.issuer: must not be empty","hint":"see examples/harbor.yaml under `identity:`"}]}

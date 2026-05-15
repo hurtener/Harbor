@@ -1,0 +1,57 @@
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+
+identity:
+  jwt_algorithms:
+    - RS256
+    - ES256
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: harbor-validate-fixture
+
+state:
+  driver: inmem
+
+llm:
+  driver: mock
+  context_window_reserve: 0.05
+
+governance:
+  repair_attempts: 3
+
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+
+memory:
+  driver: inmem
+  strategy: none
+  recovery_backlog_max: 16

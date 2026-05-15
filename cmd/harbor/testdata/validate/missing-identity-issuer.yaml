@@ -1,0 +1,28 @@
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+
+identity:
+  jwt_algorithms:
+    - RS256
+  issuer: ""
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: harbor
+
+state:
+  driver: inmem
+
+llm:
+  driver: mock
+
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s

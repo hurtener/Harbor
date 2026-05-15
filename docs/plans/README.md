@@ -88,7 +88,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
 | 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
 | 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Shipped  |
-| 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Pending  |
+| 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Shipped  |
 | 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
 | 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
 | 71 | `harbortest` test kit package                 | testing              | §6.13       | 05, 09, 07            | 85%  | Shipped  |

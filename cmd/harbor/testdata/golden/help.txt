@@ -21,7 +21,7 @@ Available Commands:
   inspect-runs     list recent runs and inspect a run's trajectory (Phase 69)
   inspect-topology render a run's node graph as ASCII (Phase 70)
   scaffold         generate a new agent skeleton from a template
-  validate         validate config / skills / agent definitions without booting (Phase 68)
+  validate         validate config / skills / agent definitions without booting
   version          print harbor semver, protocol version, and build hash
 
 Flags:

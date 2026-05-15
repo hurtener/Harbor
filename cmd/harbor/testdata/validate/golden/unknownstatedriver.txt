@@ -1,0 +1,2 @@
+Error: harbor validate: 1 validation error in testdata/validate/unknown-state-driver.yaml (see RFC §10 (Configuration) and CLAUDE.md §10)
+testdata/validate/unknown-state-driver.yaml:18: config.semantic: config.state.driver: must be one of inmem,postgres,sqlite, got "cassandra" (see examples/harbor.yaml under `state:`)

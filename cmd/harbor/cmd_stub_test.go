@@ -29,10 +29,9 @@ type stubCase struct {
 
 var stubCases = []stubCase{
 	{"dev", regexp.MustCompile(`phase 64`)},
-	// Phase 67 (D-087) replaced the `scaffold` stub with the real
-	// implementation; the cobra-driver tests live in
-	// cmd_scaffold_test.go.
-	{"validate", regexp.MustCompile(`phase 68`)},
+	// `scaffold` (Phase 67 / D-087) and `validate` (Phase 68 / D-088) graduated
+	// out of the stub table — their cobra-driver tests live in
+	// cmd_scaffold_test.go and validate_test.go respectively.
 	{"inspect-events", regexp.MustCompile(`phase 69`)},
 	{"inspect-runs", regexp.MustCompile(`phase 69`)},
 	{"inspect-topology", regexp.MustCompile(`phase 70`)},
