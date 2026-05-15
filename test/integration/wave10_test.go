@@ -99,9 +99,10 @@ import (
 )
 
 // fixedNowWave10 is the deterministic clock the Wave 10 E2E shares
-// across token-minting and the validator's WithClock. Reproducible
-// exp/nbf behaviour across runs.
-var fixedNowWave10 = time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+// across token-minting and the validator's WithClock. Aliases
+// `conformance.FixedNow` so the two sides cannot drift (PR #91 /
+// Wave 10 audit NIT-3 — one canonical instant home).
+var fixedNowWave10 = conformance.FixedNow
 
 const wave10Kid = "harbor-wave10-k1"
 
@@ -189,7 +190,7 @@ func newWave10Deps(t *testing.T) *wave10Deps {
 	}
 	keys := &wave10KeySet{kid: wave10Kid, pub: pub}
 	now := func() time.Time { return fixedNowWave10 }
-	validator, err := auth.NewValidator(keys, auth.WithClock(now))
+	validator, err := auth.NewValidator(keys, auth.WithClock(now), auth.WithRedactor(red))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())

@@ -81,10 +81,17 @@ const RoutePattern = "GET /v1/events"
 // Identity-carrier header names. The triple travels in headers, not a
 // query string, so it does not land in access logs by default and so
 // Phase 61's JWT validation replaces a single resolve step.
+//
+// HeaderRun is optional — when present, the subscription is
+// run-scoped (events.Filter.Run is set, so only events with a
+// matching RunID flow through). When absent, the subscription is
+// session-scoped (the Phase 60 default; every run in the session is
+// observed). Added in PR #91 / D-082 per Wave 10 audit WARN-5.
 const (
 	HeaderTenant    = "X-Harbor-Tenant"
 	HeaderUser      = "X-Harbor-User"
 	HeaderSession   = "X-Harbor-Session"
+	HeaderRun       = "X-Harbor-Run"
 	HeaderEventType = "X-Harbor-Event-Type"
 )
 
@@ -212,6 +219,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Tenant:  id.TenantID,
 		User:    id.UserID,
 		Session: id.SessionID,
+		Run:     r.Header.Get(HeaderRun),
 		Types:   parseEventTypes(r),
 		Admin:   wantAdmin,
 	}

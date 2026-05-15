@@ -58,10 +58,16 @@ import (
 
 // muxConfig holds the optional knobs NewMux threads into the two
 // transport handlers. Set once at construction; never mutated after.
+//
+// withoutAuth is the explicit, test-only escape hatch — see
+// WithoutValidator. A nil validator + withoutAuth=false fails closed
+// at NewMux per CLAUDE.md §13 ("Test stubs as production defaults on
+// operator-facing seams"; PR #91 amendment).
 type muxConfig struct {
-	logger    *slog.Logger
-	keepalive time.Duration
-	validator auth.Validator
+	logger      *slog.Logger
+	keepalive   time.Duration
+	validator   auth.Validator
+	withoutAuth bool
 }
 
 // Option configures NewMux.
@@ -88,29 +94,41 @@ func WithKeepalive(d time.Duration) Option {
 }
 
 // WithValidator wires the Phase 61 JWT auth.Validator into NewMux.
-// When set, BOTH transport handlers (REST control + SSE stream) are
-// wrapped in auth.Middleware: every request must carry a verified
+// BOTH transport handlers (REST control + SSE stream) are wrapped in
+// auth.Middleware: every request must carry a verified
 // `Authorization: Bearer <jwt>`; the middleware injects the verified
 // identity + scopes into the request context.Context before the
 // underlying handler runs.
 //
-// When NOT set, the transports operate in their Phase 60 trust-based
-// posture — the REST handler inherits the ControlSurface.Dispatch
-// identity-from-body gate, the SSE handler resolves identity from
-// the X-Harbor-* carrier headers via resolveIdentity. This is what
-// keeps the Phase 60 tests passing verbatim and makes the auth
-// surface an additive, opt-in extension (the same posture Phase 60
-// took for WebSocket as an alternate transport).
-//
-// A nil validator is treated as "no auth" — the option is a no-op.
-// Building NewMux with WithValidator(nil) is the same as not
-// supplying the option at all.
+// A validator is **mandatory** — `NewMux` returns `ErrMisconfigured`
+// when neither `WithValidator` nor `WithoutValidator` is supplied
+// (PR #91 amendment to D-078 / CLAUDE.md §13 "Test stubs as
+// production defaults on operator-facing seams"). A nil validator is
+// treated as "WithValidator not supplied"; tests that legitimately
+// need the unauthenticated path use `WithoutValidator()` explicitly.
 func WithValidator(v auth.Validator) Option {
 	return func(c *muxConfig) {
 		if v != nil {
 			c.validator = v
 		}
 	}
+}
+
+// WithoutValidator is the explicit, test-only escape hatch for cases
+// that legitimately need the Phase 60 trust-based posture (the REST
+// handler inherits `ControlSurface.Dispatch`'s identity-from-body
+// gate, the SSE handler resolves identity from the `X-Harbor-*`
+// carrier headers via `resolveIdentity`). It is used by Phase 60's
+// own package tests + `test/integration/phase60_wire_transport_test.go`
+// to assert the pre-auth transport surface still works.
+//
+// PRODUCTION CODE MUST NEVER USE THIS OPTION. A Runtime that boots
+// with `WithoutValidator` exposes an unauthenticated Protocol surface,
+// which violates CLAUDE.md §13's "Test stubs as production defaults"
+// rule. The option is named for grepability: an audit can find every
+// production-side WithoutValidator call site at compile time.
+func WithoutValidator() Option {
+	return func(c *muxConfig) { c.withoutAuth = true }
 }
 
 // ErrMisconfigured — NewMux was called with a nil ControlSurface or a
@@ -125,11 +143,22 @@ var ErrMisconfigured = errors.New("transports: NewMux missing a mandatory depend
 //   - POST /v1/control/{method} — the REST/JSON control surface.
 //   - GET  /v1/events           — the SSE event stream.
 //
-// Both dependencies are mandatory; a nil either fails loud with
-// ErrMisconfigured. The returned mux is immutable after construction
-// (D-025) and safe to share across N concurrent requests — a future
-// server (`harbor dev`, Phase 64) mounts it and owns the listen /
-// shutdown lifecycle.
+// All three configuration choices are mandatory:
+//   - a non-nil ControlSurface,
+//   - a non-nil EventBus,
+//   - and EITHER `WithValidator(v)` (the production posture — JWT
+//     bearer auth at the edge) OR `WithoutValidator()` (the explicit,
+//     test-only escape hatch for the Phase 60 trust-based posture).
+//
+// A missing dependency — including the auth choice — fails loud with
+// ErrMisconfigured rather than mounting a half-built mux or an
+// unauthenticated production surface (CLAUDE.md §13 "Test stubs as
+// production defaults on operator-facing seams"; PR #91).
+//
+// The returned mux is immutable after construction (D-025) and safe
+// to share across N concurrent requests — a future server
+// (`harbor dev`, Phase 64) mounts it and owns the listen / shutdown
+// lifecycle.
 func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*http.ServeMux, error) {
 	if cs == nil {
 		return nil, fmt.Errorf("%w: protocol.ControlSurface is nil", ErrMisconfigured)
@@ -141,6 +170,12 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	cfg := muxConfig{logger: slog.Default()}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+
+	// Auth posture is mandatory: WithValidator OR WithoutValidator.
+	// Neither = fail loud (CLAUDE.md §13 / PR #91).
+	if cfg.validator == nil && !cfg.withoutAuth {
+		return nil, fmt.Errorf("%w: WithValidator is required (or WithoutValidator() for the explicit test-only escape hatch — see CLAUDE.md §13)", ErrMisconfigured)
 	}
 
 	controlOpts := []control.Option{control.WithLogger(cfg.logger)}

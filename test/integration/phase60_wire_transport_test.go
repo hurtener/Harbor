@@ -94,7 +94,13 @@ func newPhase60Deps(t *testing.T) *phase60Deps {
 		_ = bus.Close(context.Background())
 		t.Fatalf("protocol.NewControlSurface: %v", err)
 	}
-	mux, err := transports.NewMux(surface, bus, transports.WithKeepalive(50*time.Millisecond))
+	mux, err := transports.NewMux(surface, bus,
+		transports.WithKeepalive(50*time.Millisecond),
+		// Phase 60 surface predates the Phase 61 auth wrapping; the
+		// integration test asserts the trust-based posture, so we
+		// opt out of auth via the test-only escape hatch (PR #91).
+		transports.WithoutValidator(),
+	)
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())

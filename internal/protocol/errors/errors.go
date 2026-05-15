@@ -31,7 +31,10 @@
 // their own phases.
 package errors
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Code is a stable, client-facing Protocol error code. It is part of the
 // versioned Protocol surface — the set of codes is stable across a
@@ -105,6 +108,27 @@ var canonicalCodes = map[Code]struct{}{
 func IsValidCode(c Code) bool {
 	_, ok := canonicalCodes[c]
 	return ok
+}
+
+// Codes returns a deterministic snapshot of every canonical Protocol
+// error code, lexicographically sorted. Mirrors the
+// `methods.Methods()` shape so a CI build gate (e.g. the Phase 62
+// conformance suite's error-code matrix exhaustiveness check) can
+// derive the canonical set from this function rather than hardcoding
+// the count.
+//
+// PR #91 / D-082: added per the Wave 10 audit's WARN-4. The previous
+// shape (the conformance suite hardcoding `len(errorCodeMatrix) != 8`)
+// would have allowed a new canonical code to land WITHOUT a matrix
+// entry as long as the count happened to match; deriving from
+// `errors.Codes()` makes the assertion structurally exhaustive.
+func Codes() []Code {
+	out := make([]Code, 0, len(canonicalCodes))
+	for c := range canonicalCodes {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return string(out[i]) < string(out[j]) })
+	return out
 }
 
 // Error is the Protocol error wire type: a stable client-facing Code

@@ -131,7 +131,7 @@ func newPhase61Deps(t *testing.T) *phase61Deps {
 
 	keys := newES256KeySet("k1", pub)
 	now := func() time.Time { return fixedNowPhase61 }
-	v, err := auth.NewValidator(keys, auth.WithClock(now))
+	v, err := auth.NewValidator(keys, auth.WithClock(now), auth.WithRedactor(red))
 	if err != nil {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
