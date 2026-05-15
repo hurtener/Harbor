@@ -30,6 +30,11 @@ import (
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	// Events driver — Phase 57 StateStore-backed durable event log,
+	// registered via init(). Opens its StateStore from
+	// EventsConfig.StateDriver / StateDSN; an empty StateDriver
+	// auto-degrades to a best-effort ring buffer with a loud warning.
+	_ "github.com/hurtener/Harbor/internal/events/drivers/durable"
 	// LLM corrections — Phase 34 per-provider correction layer (RFC §6.5,
 	// brief 03 §4 + brief 08). Self-registers a wrapper hook in
 	// internal/llm via init() so `llm.Open()` composes
