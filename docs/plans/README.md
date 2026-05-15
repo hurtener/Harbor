@@ -662,6 +662,30 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Tests.** Integration (boot, smoke, teardown).
 **Deps.** 63, 60.
 
+### Phase 64 — `harbor dev` v1 (pre-plan scoping note — BINDING when the plan is authored)
+
+Phase 64 is the moment `cmd/harbor/main.go` stops being a driver-registration stub and starts instantiating an LLM-backed runtime for the first time. Before this phase, no production code path resolves the LLM client — every "test stub as default" call (the `mock` LLM driver, `EchoSummarizer`, `staticSummariser`) is dormant. Phase 64 is the moment they go live.
+
+The §13 entry **"Test stubs as production defaults on operator-facing seams"** is pre-settled for this phase. The plan author MUST satisfy the constraints below — they are not re-litigable inside the phase plan:
+
+1. **Default LLM driver is `bifrost`, not `mock`.** Phase 64 flips `llm.DefaultDriver` from `"mock"` to `"bifrost"` (`internal/llm/registry.go:172`) and updates `examples/*.yaml` so `driver: bifrost` is the demonstrated path. The `mock` driver subpackage (`internal/llm/mock/`) moves under a `harbor_testfixtures` build tag (or to a `testfixtures/` subdirectory) so it is unreachable from `cmd/harbor/main.go`'s blank-import block in a normal build. Production tests that need a deterministic LLM consume it via the build-tagged path or via `*_test.go`-local fixtures.
+
+2. **Boot fails loudly when no LLM provider is configured.** Missing API key, missing `bifrost` provider section, or an empty `llm:` block → `harbor dev` prints a one-line error that names the missing config key (e.g. `config.llm.providers[0].api_key: required when driver=bifrost`) and points to `examples/dev.yaml`, then exits non-zero. Silent fallback to the mock is forbidden — this is the §13 "fail loudly at boot" consequence.
+
+3. **LLM-backed defaults for `memory.Summarizer` and `planner.Summariser`.** When `memory.strategy: rolling_summary` is configured and no custom `Summarizer` is injected, Phase 64 (or a same-wave sibling phase) provides a default LLM-backed `Summarizer` that composes an `llm.LLMClient` with a versioned compaction prompt template. Same shape for `planner.Summariser` consumed by `CompressionRunner`. `EchoSummarizer` and `staticSummariser` move to `testfixtures` and are no longer reachable from the production wiring path. If the author chooses to split this into a sibling phase (e.g. Phase 64a), that phase MUST ship in the same wave as Phase 64 — the §13 primitive-with-consumer rule applies recursively: a `harbor dev` that defaults to `rolling_summary` but has no Summarizer wired is the same failure mode one layer down.
+
+4. **Dev-only escape hatch is explicit and banner'd.** A `--mock` flag on `harbor dev` (or `HARBOR_DEV_ALLOW_MOCK=1` env var — Phase 64's plan picks ONE and pins the choice in a `D-NNN` decisions entry) is the ONLY path to the mock LLM at runtime. When the escape hatch fires, every boot prints a stderr banner: `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]`. The README's quickstart MAY use this path but must label it as a dev shortcut, not the production install — `examples/dev.yaml` shows the production-shaped config and the README's "5-minute quickstart" demonstrates the escape-hatch path with a one-line note.
+
+5. **`scripts/smoke/phase-64.sh` exercises the LLM seam, not just `/healthz`.** A smoke that only checks `GET /healthz` is insufficient — the phase exists to wire the LLM, so the smoke MUST exercise the LLM. The script boots `harbor dev` against a recorded bifrost fixture (no live network — use `httptest.Server` or a recorded-cassette pattern), submits one task over the Phase 60 REST handler, and asserts the SSE stream emits a planner Decision derived from a real `LLMClient.Complete` call. A second smoke assertion: boot with no provider configured and assert the non-zero exit with the expected error message.
+
+6. **The §18 mirror invariant applies in spirit.** Phase 64 introduces a binary that real users will run. The README's `## Status` table, `cmd/harbor`'s godoc, and any "Quick start" prose are updated in the same PR — no aspirational claims like "harbor dev boots the Console" that land before the Console-boot phases (72–75) ship. If §3's "Harbor CLI" bullet describes a command that doesn't yet exist, the bullet says so in future tense with a phase reference.
+
+**Mandatory reading before authoring this plan** (per §16): RFC §5 (Protocol surface), RFC §6.5 (LLM client), RFC §6.6 (Memory + Summarizer), `docs/research/brief-02-trajectory-compression.md`, `docs/research/brief-04-memory-strategies.md` (or whichever brief indexes summariser design — `docs/research/INDEX.md` resolves), `docs/decisions.md` (D-026 LLM-edge safety, D-035 rolling summary, D-044 latent governance, D-055 trajectory compression rendering rule), the shipped `internal/llm/registry.go` (the default-driver flip site) and `internal/memory/strategy/` (the Summarizer wiring site).
+
+**Pre-assigned decisions slot:** Phase 64's plan claims a `D-NNN` number when dispatched and records: (a) the `mock` → `bifrost` default flip; (b) the chosen escape-hatch mechanism (`--mock` flag vs env var); (c) the LLM-backed default `Summarizer` location (in-package vs new `internal/llm/summarizer/` subpackage); (d) any deliberate carve-out from the §13 entry above (requires an RFC PR — bake the carve-out into the RFC, then reference it here).
+
+**Departures from this note require an RFC PR.** This note is binding, not advisory — it encodes a Wave 10 audit finding (the §13 amendment above) that future plan-authors do not have visibility into. Treat it as the equivalent weight of an RFC section.
+
 ### 65 — `harbor dev` hot-reload (RFC §8)
 
 **Goal.** fsnotify watcher; graceful-drain restart on Go-source change; configurable retain-in-flight policy.
