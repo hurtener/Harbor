@@ -8,6 +8,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**Algorithm-confusion attack** — a JWT CVE family (CVE-2015-9235 and similar) where an attacker takes a server's RSA / ECDSA public key (which is, by definition, public) and re-signs a JWT with `HS*` using the public-key bytes as the HMAC secret; a verifier that does not pin the algorithm calls `hmac.Verify(pubKeyBytes, token)` and incorrectly accepts. Phase 61's mitigation is parser-level: `jwt.WithValidMethods` configured with the asymmetric allowlist rejects HS\* (and `alg:none`) BEFORE the keyfunc runs, so the HS-signed token never reaches the verification step. `auth/security_test.go` pins the exact attack shape. D-079.
+
+**Asymmetric-algorithm allowlist** — Harbor's six accepted JWT signing algorithms — `RS256` / `RS384` / `RS512` / `ES256` / `ES384` / `ES512`. Encoded as `auth.AllowedAlgorithms` and enforced at the JWT parser level via `jwt.WithValidMethods`, so HS\* and `alg:none` are structurally rejected before any keyfunc runs. The closed list is what makes the algorithm-confusion CVE family impossible. CLAUDE.md §7 rule 1 + §13. D-079.
+
 **`_await_task`** — Phase 47 (D-056) reserved tool name the LLM emits to block the foreground turn on a previously-spawned task. The ReAct `mapDecision` translates `{"tool":"_await_task","args":{"task_id":"<id>"}}` into a typed `planner.AwaitTask{TaskID}` Decision; empty task_id fails loud with `planner.ErrInvalidDecision`. The reserved name is a prompt-time convention (the leading underscore marks it as planner-internal); the Decision sum stays sealed per D-047.
 
 **`_spawn_task`** — Phase 47 (D-056) reserved tool name the LLM emits to spawn a background task. The ReAct `mapDecision` translates `{"tool":"_spawn_task","args":{"kind":"...", "spec":{...}, "group_id":"..."}}` into a typed `planner.SpawnTask{Kind, Spec, GroupID}` Decision. `kind` defaults to `background`; `spec.retain_turn` defaults to false (push-wake per D-032). Malformed args fail loud with wrapped `planner.ErrInvalidDecision`.
@@ -234,6 +238,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## J
 
+**JWT bearer** — the `Authorization: Bearer <token>` HTTP header carrying a Harbor Protocol JWT. Phase 61's `auth.Middleware` reads the bearer at the Phase 60 transport edge, calls `Validator.Validate`, and on success injects the verified `(tenant, user, session)` triple into `r.Context()`. A missing / malformed bearer is rejected `401 identity_required`; a present-but-invalid bearer is `401 auth_rejected`. RFC §5.5, D-079.
+
 **JSON action envelope** — the wire shape the Phase 45 ReAct planner asks the LLM to emit per step: `{"tool": "<name>", "args": {...}, "reasoning": "..."}` for tool calls; `{"tool": "_finish", "args": {"answer": "..."}, "reasoning": "..."}` for completion. Parsed by Phase 44's tolerant `ActionParser` (fenced JSON, prose-wrap, multi-object scan, bare array). Three reserved tool names today (Phase 47 / D-056): `_finish` (completion), `_spawn_task` (background spawn), `_await_task` (block on a spawned task) — all translated to typed Decisions before return; the Decision sum stays sealed per D-047. RFC §6.2, D-051, D-056.
 
 **`JoinK`** — Concurrency utility (Phase 14) that reads exactly K envelopes from a channel and cancels remaining producers. Short-read returns `ErrJoinKShortRead`. RFC §6.1, brief 01 §2.
@@ -249,6 +255,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## K
 
 **Keepalive comment** — an SSE comment line (`: keepalive`) the Phase 60 stream transport emits on an interval (default 15s) to keep an idle `text/event-stream` connection — and any intermediary proxy — from treating the stream as dead and reaping it. Clients ignore SSE comment lines; the frame exists purely to keep the connection warm. RFC §5.4, D-078.
+
+**Key set** (`auth.KeySet`) — the Phase 61 interface mapping a JWT `kid` (key id) header to its public key + algorithm name. `KeyByID(kid) (key crypto.PublicKey, alg string, err error)`. The static implementation suffices for V1 + the `harbor dev` dev-token use case; a JWKS-URI-fetching driver behind the same interface stays additive for a later phase, no reshape. The keyfunc validates the resolved key shape (`*rsa.PublicKey` or `*ecdsa.PublicKey` only) — a non-asymmetric resolution is an algorithm-confusion vector and is treated as `ErrUnknownKey`. D-079.
 
 ## L
 
@@ -489,6 +497,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **SchemaSanitizationMode** — enum on `CorrectionsProfile.SchemaMode`. Values: `""` (default — passthrough); `"openai_strict"` (insert structured-output required fields); `"permissive"` (strip them). Brief 03 §4 documents the per-provider variation. RFC §6.5, D-041.
 
 **ScopedArtifacts** — immutable facade carrying a fixed `ArtifactScope`; auto-stamps writes, scope-checks reads (returns `ErrScopeMismatch` if the underlying ref's scope ever differs). Tools and runtime use the facade exclusively — they never see raw `ArtifactScope`. `NewScoped` panics on invalid scope at construction (fail loud, AGENTS.md §5). RFC §6.10.
+
+**Scope claim** — a verified JWT scope value (`auth.ScopeAdmin` = `"admin"`, `auth.ScopeConsoleFleet` = `"console:fleet"`) the Protocol consults when granting cross-session / cross-tenant subscriptions or fleet-control privileges. Scopes are NOT isolation principals — the `(tenant, user, session)` triple stays the isolation key (CLAUDE.md §6 rule 1); a scope is an *additional* entitlement carried alongside the triple. The closed set means an attacker-injected unknown scope is silently dropped from the verified set, never honoured as a privilege. The SSE handler's `?admin=1` query is the first consumer (RFC §6.13 admin subscriptions); the Phase 30 OAuth callback's admin-bound flow is the second. RFC §4.2 + §5.5, D-079.
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
 

@@ -49,6 +49,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -148,6 +149,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Phase 61: when auth.Middleware ran before us, r.Context() carries
+	// the verified identity (via identity.With). The body's
+	// IdentityScope MUST match the verified one — defence in depth so a
+	// caller cannot present a valid JWT for tenant T1 while submitting
+	// a control body claiming tenant T2. Mismatch fails closed (401)
+	// with CodeIdentityRequired before Dispatch is called.
+	//
+	// When NO middleware ran (Phase 60 trust-based posture), there is
+	// no ctx-identity and the check is a no-op — Dispatch's existing
+	// identity-from-body gate covers it.
+	if perr := assertBodyMatchesAuthedIdentity(r, req); perr != nil {
+		h.writeError(w, r, perr)
+		return
+	}
+
 	// Dispatch is the transport-agnostic surface; the wire transport is
 	// a thin adapter over it. Identity-scope enforcement, scope checks,
 	// payload validation all live inside Dispatch — the handler does not
@@ -204,6 +220,60 @@ func (h *Handler) writeDispatchError(w http.ResponseWriter, r *http.Request, met
 // mapped HTTP status.
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, perr *protoerrors.Error) {
 	h.writeJSON(w, r, httpStatus(perr.Code), perr)
+}
+
+// assertBodyMatchesAuthedIdentity is the Phase 61 defence-in-depth
+// check: when auth.Middleware ran before this handler, r.Context()
+// carries the verified identity, and the request body's IdentityScope
+// MUST match it. A mismatch is a malicious / buggy client trying to
+// borrow another tenant's identity using a valid token — fail closed.
+//
+// When no middleware ran (Phase 60 trust-based posture), ctx carries
+// no identity and the check returns nil — Dispatch's existing
+// identity-from-body gate is authoritative.
+//
+// req is the decoded *types.StartRequest or *types.ControlRequest.
+func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Error {
+	authed, ok := identity.From(r.Context())
+	if !ok {
+		return nil
+	}
+	var bodyScope types.IdentityScope
+	switch v := req.(type) {
+	case *types.StartRequest:
+		bodyScope = v.Identity
+	case *types.ControlRequest:
+		bodyScope = v.Identity
+	default:
+		return nil
+	}
+	// An empty body identity is permitted when ctx carries one — the
+	// body-side gate in Dispatch will see the JWT-derived identity via
+	// the request body once we backfill it. To keep Phase 60's flat
+	// IdentityScope-on-the-body contract, callers SHOULD echo the
+	// JWT identity in the body; we backfill the body when the body's
+	// IdentityScope is empty so the existing Dispatch gate sees a
+	// matching identity. When the body DOES carry an identity, every
+	// non-empty component MUST match the JWT-verified one.
+	if bodyScope.Tenant == "" && bodyScope.User == "" && bodyScope.Session == "" {
+		// Backfill — the JWT is the source of truth. The body's
+		// `Run` and `Scope` fields are independent and stay as-is.
+		bodyScope.Tenant = authed.TenantID
+		bodyScope.User = authed.UserID
+		bodyScope.Session = authed.SessionID
+		switch v := req.(type) {
+		case *types.StartRequest:
+			v.Identity = bodyScope
+		case *types.ControlRequest:
+			v.Identity = bodyScope
+		}
+		return nil
+	}
+	if bodyScope.Tenant != authed.TenantID || bodyScope.User != authed.UserID || bodyScope.Session != authed.SessionID {
+		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"body identity scope does not match the verified JWT identity")
+	}
+	return nil
 }
 
 // writeJSON encodes v as a JSON body with the given status. A marshal
