@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
@@ -33,7 +34,7 @@ func TestMapSteeringError_AllBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapSteeringError("cancel", tc.err)
+			got := mapSteeringError(string(methods.MethodCancel), tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Fatalf("mapSteeringError(nil) = %v, want nil", got)
@@ -70,7 +71,7 @@ func TestMapTaskError_AllBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mapTaskError("start", tc.err)
+			got := mapTaskError(string(methods.MethodStart), tc.err)
 			if tc.err == nil {
 				if got != nil {
 					t.Fatalf("mapTaskError(nil) = %v, want nil", got)

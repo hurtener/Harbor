@@ -78,7 +78,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 55 | OTel traces + propagation conventions         | telemetry            | §6.14       | 04, 05                | 85%  | Pending  |
 | 56 | Metrics + OTLP + Prometheus drivers           | telemetry            | §6.14, §11Q5| 55, 05                | 85%  | Pending  |
 | 57 | Durable event log driver (StateStore-backed)  | events               | §6.13       | 05, 07, 15, 16        | 85%  | Shipped  |
-| 58 | Protocol types/methods/errors single source   | protocol             | §5, §8      | 01                    | 90%  | Pending  |
+| 58 | Protocol types/methods/errors single source   | protocol             | §5, §8      | 01                    | 90%  | Shipped  |
 | 59 | Protocol versioning + deprecation policy      | protocol             | §5.3        | 58                    | 85%  | Pending  |
 | 60 | Protocol wire transport (SSE + REST)          | protocol             | §5.4, §11Q1 | 58, 05                | 85%  | Pending  |
 | 61 | Protocol auth + identity-scope enforcement    | protocol             | §5.5, §4    | 58, 60, 01            | 90%  | Pending  |
@@ -615,6 +615,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** Build succeeds with the lint check active; new methods land only in `methods/`.
 **Tests.** Lint test (CI).
 **Deps.** 01.
+**Status.** Shipped — D-075. Phase 54 (D-072 §1) already laid the `methods`/`errors`/`types` single-source layout, so Phase 58 is the *enforcement*: `internal/protocol/singlesource` ships `ScanProtocolTree`, a `go/parser` AST-walking checker, and `TestSingleSource_ProtocolTreeIsClean` is the build-gating `go test` (the same AST-lint pattern as `internal/planner/conformance/importgraph_test.go` — zero external-tool dependency, no `golangci-lint` plugin). The checker lints `internal/protocol/` only (method-name *strings* are legitimate unrelated vocabulary in other subsystems — a repo-wide scan would be all false positives) and lints `_test.go` files too. It surfaced and consolidated three pre-existing hardcoded method literals (`control.go`'s `dispatchStart`, two `_test.go` fixtures) — now re-derived from the `methods` constants. **Citation note (§4.3):** the row's "§8" is **CLAUDE.md §8** ("Harbor Protocol rules") — RFC-001 has no §8; RFC §5 is the design anchor, CLAUDE.md §8 is the rule the checker enforces. Coverage on `internal/protocol/singlesource` 94.5% (target 90%).
 
 ### 59 — Protocol versioning + deprecation policy (RFC §5.3)
 
@@ -625,11 +626,11 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 
 ### 60 — Protocol wire transport (SSE + REST) (RFC §5.4, §11 Q-1)
 
-**Goal.** SSE stream for events; REST/JSON for control surface. Identity-scope enforcement at edge. **Tentative — Q-1.** If WebSocket+JSON-RPC or gRPC server-streaming wins, this phase forks accordingly.
-**Acceptance.** Console can stream events and submit control over the chosen transport; smoke covers both directions.
+**Goal.** SSE stream for events; REST/JSON for control surface. Identity-scope enforcement at edge. **Q-1 RESOLVED 2026-05-14 — SSE + REST** (owner sign-off given; RFC §5.4 + §11 Q-1 updated). Phase 60 is now a normal implementation phase, not a decision gate. WebSocket remains an additive alternate transport for a later phase via the `internal/protocol/transports/` seam — not a fork of this phase.
+**Acceptance.** Console can stream events and submit control over SSE+REST; smoke covers both directions.
 **Tests.** Integration; full duplex stress.
 **Deps.** 58, 05.
-**Risks.** Q-1 is the load-bearing decision. Owner sign-off required before this phase ships.
+**Risks.** Q-1 resolved — the load-bearing decision is settled. Remaining risk is ordinary implementation risk (SSE keepalive/reconnect discipline, identity-scope enforcement at the edge).
 
 ### 61 — Protocol auth + identity-scope enforcement (RFC §5.5, §4)
 

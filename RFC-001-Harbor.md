@@ -23,7 +23,7 @@ Harbor is a Go-native runtime SDK for durable, steerable, event-driven AI agents
 V1 ships:
 
 - The Runtime layer with **all** of the subsystems listed in §6.
-- The Protocol layer with one wire transport (Settled in §5; Tentative — see §11 Q-1).
+- The Protocol layer with one wire transport (Settled in §5; Q-1 RESOLVED 2026-05-14 — SSE + REST).
 - The CLI with `harbor dev`, `harbor scaffold`, `harbor validate`, `harbor inspect-events`, `harbor inspect-runs`, `harbor version`.
 - A persistence triad (in-memory / SQLite / Postgres) behind every persistence-shaped interface.
 - The reference `react` planner; the `Planner` interface; one second concrete (`deterministic`) to prove the seam.
@@ -213,16 +213,16 @@ The Protocol version is pinned in `internal/protocol/types/version.go`. Bumping 
 
 ### 5.4 Wire transport
 
-**Tentative — see §11 Q-1.** The Protocol surface is consumable from a browser, a TUI, an IDE extension, a third-party Console, and an observability vendor. Candidate transports:
+**Q-1 RESOLVED (2026-05-14) — SSE + REST.** The Protocol surface is consumable from a browser, a TUI, an IDE extension, a third-party Console, and an observability vendor. The candidate transports considered were:
 
-- **gRPC server-streaming**: native streaming, language-mature, but TUI/browser ergonomics weak without grpc-web shim.
+- **gRPC server-streaming**: native streaming, language-mature, but TUI/browser ergonomics weak without grpc-web shim; heaviest dependency add.
 - **SSE + REST hybrid**: trivial browser support, simple to operate, no native multiplexing, half-duplex.
 - **WebSocket + JSON-RPC**: full duplex, browser-native, schema discipline weaker without an external IDL.
 - **NDJSON over chunked HTTP**: simplest to debug; weak multiplexing.
 
-V1 must ship one. The current lean: **SSE for the event stream + REST/JSON for the control surface**, both server-enforced for identity. Rationale: lowest implementation cost, browser-native, matches the gateway sibling project's patterns, and the streaming-only direction (server→client) covers events; the request-response direction (client→server) covers control. WebSocket can be added as an alternate transport in a later phase if multiplexing or full-duplex becomes load-bearing.
+**The resolution: SSE for the event stream + REST/JSON for the control surface**, both server-enforced for identity. Rationale: lowest implementation cost, browser-native (no proxy/shim), matches the gateway sibling project's patterns, no extra dependency; the streaming-only direction (server→client) covers events, the request-response direction (client→server) covers control. WebSocket can be added as an *alternate* transport in a later phase if multiplexing or full-duplex becomes load-bearing — the `internal/protocol/transports/` seam makes that additive, not a migration.
 
-The transport choice is settled in this RFC subject to Q-1; the relevant phase (Protocol-1) blocks until it resolves.
+Phase 60 (Protocol wire transport) is no longer a decision gate; it is a normal implementation phase.
 
 ### 5.5 Authentication
 
@@ -1332,7 +1332,7 @@ All three pass the same conformance suite. Designing the interface against three
 | YAML | `goccy/go-yaml` | Settled |
 | CLI | `cobra` | Settled |
 | Console | SvelteKit + adapter-static + Skeleton | Settled |
-| Protocol wire | SSE + REST (event stream + control surface) | Tentative — see Q-1 |
+| Protocol wire | SSE + REST (event stream + control surface) | Settled — Q-1 RESOLVED 2026-05-14 |
 
 Additions to this surface require an RFC PR (see `AGENTS.md` §13).
 
@@ -1358,7 +1358,7 @@ Harbor is published under **Apache License 2.0**. The full text lives in `/LICEN
 
 These must be resolved before the relevant phase ships. Each Q-N is referenced inline in §5/§6/§10 above.
 
-- **Q-1 (Protocol wire transport).** SSE + REST is the lean, but WebSocket + JSON-RPC and gRPC server-streaming remain viable. Decide before Protocol-1 phase ships. *Owner:* hurtener.
+- **Q-1 (Protocol wire transport) — RESOLVED (2026-05-14).** The Protocol wire transport is **SSE for the event stream + REST/JSON for the control surface** (see §5.4). WebSocket + JSON-RPC and gRPC server-streaming were considered and not chosen for V1: SSE+REST is the lowest-cost, browser-native option needing no proxy/shim or extra dependency, and the `internal/protocol/transports/` seam keeps an alternate transport additive rather than a v1→v2 migration. Phase 60 is no longer a decision gate. *Owner:* hurtener.
 - **Q-2 (A2A northbound at V1).** Is exposing Harbor as an A2A *server* in V1 scope, or V1.1? Lean: V1.1 unless an early adopter demands it. *Owner:* hurtener.
 - **Q-3 (LLM client choice) — RESOLVED (2026-05-08).** The original CGo-required candidate is rejected (conflict with `AGENTS.md` §5/§13). Replacement: `github.com/maximhq/bifrost/core` — pure Go, 23 first-class providers, empirically validated against six OpenRouter-routed models (23 of 24 gating items pass; the lone non-pass is a cancellation-timing measurement artifact, not a defect). Validation harness and full results in `docs/research/08-llm-client-validation.md`. The L-2 phase is no longer a decision gate; it is a normal implementation phase.
 - **Q-4 (Episodic memory tier).** Is a durable summaries-promoted-to-user-scope tier a V1 feature or post-V1? Lean: post-V1 unless V1 user feedback demands otherwise.
