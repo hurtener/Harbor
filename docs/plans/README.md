@@ -80,7 +80,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 57 | Durable event log driver (StateStore-backed)  | events               | §6.13       | 05, 07, 15, 16        | 85%  | Shipped  |
 | 58 | Protocol types/methods/errors single source   | protocol             | §5, §8      | 01                    | 90%  | Shipped  |
 | 59 | Protocol versioning + deprecation policy      | protocol             | §5.3        | 58                    | 85%  | Shipped  |
-| 60 | Protocol wire transport (SSE + REST)          | protocol             | §5.4, §11Q1 | 58, 05                | 85%  | Pending  |
+| 60 | Protocol wire transport (SSE + REST)          | protocol             | §5.4, §11Q1 | 58, 05                | 85%  | Shipped  |
 | 61 | Protocol auth + identity-scope enforcement    | protocol             | §5.5, §4    | 58, 60, 01            | 90%  | Pending  |
 | 62 | Protocol conformance suite                    | protocol             | §5          | 58, 60, 61            | 85%  | Pending  |
 | 63 | Harbor CLI skeleton (`harbor` + cobra)        | cmd/harbor           | §8          | 60                    | 70%  | Pending  |
