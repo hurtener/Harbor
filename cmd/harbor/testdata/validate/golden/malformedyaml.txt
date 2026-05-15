@@ -1,0 +1,2 @@
+Error: harbor validate: 1 validation error in testdata/validate/malformed-yaml.yaml (see RFC §10 (Configuration) and CLAUDE.md §10)
+testdata/validate/malformed-yaml.yaml:2: config.parse: yaml AST parse: [2:3] unexpected key name (fix the YAML at the indicated line)

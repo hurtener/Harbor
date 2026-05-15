@@ -1,0 +1,2 @@
+Error: harbor validate: file not found: testdata/validate/this-file-does-not-exist.yaml (check the file path and permissions; the file must be a YAML config)
+testdata/validate/this-file-does-not-exist.yaml: io.not_found: file not found: testdata/validate/this-file-does-not-exist.yaml (create the config file or pass an explicit path)

@@ -76,6 +76,18 @@ jobs:
           check-latest: true
       - name: Run preflight
         run: make preflight
+      # Phase 68 (D-088) — `harbor validate` as a CI pre-flight check
+      # for the example configs we ship. This closes the master-plan
+      # acceptance loop ("CI uses validate as a pre-flight check") and
+      # catches drift between example fixtures and the loader's rules
+      # before it lands on `main`. Make preflight already builds
+      # ./bin/harbor; we just run the new subcommand here.
+      - name: harbor validate examples/*.yaml
+        run: |
+          set -euxo pipefail
+          for f in examples/*.yaml; do
+            ./bin/harbor validate "$f"
+          done
 
   state-postgres:
     name: state/postgres conformance (postgres:16)

@@ -129,12 +129,29 @@ func main() {
 	// the error is NOT a CLIError (e.g. flag-parse failure before any
 	// RunE ran), surface a structured error here so the operator
 	// never sees a bare cobra trace. Fail loudly per CLAUDE.md §5.
-	if _, ok := asCLIError(err); !ok {
+	cli, ok := asCLIError(err)
+	if !ok {
 		fallback := CLIError{
 			Message: fmt.Sprintf("invocation error: %s", err.Error()),
 			Code:    "invocation_error",
 		}
 		_ = PrintCLIError(os.Stderr, false, fallback)
+		os.Exit(1)
 	}
-	os.Exit(1)
+	os.Exit(exitCodeFor(cli))
+}
+
+// exitCodeFor maps a CLIError.Code to the binary's exit code. Phase 68
+// introduced the distinction between "validation found issues" (exit 1)
+// and "unexpected / internal error" (exit 2). All other codes
+// (`not_implemented`, `invocation_error`, ...) collapse to exit 1.
+// The mapping is centralised here so future codes pick a deliberate
+// exit slot rather than inheriting "1" by accident.
+func exitCodeFor(cli CLIError) int {
+	switch cli.Code {
+	case CodeValidationInternal:
+		return 2
+	default:
+		return 1
+	}
 }

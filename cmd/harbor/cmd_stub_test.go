@@ -30,7 +30,8 @@ type stubCase struct {
 var stubCases = []stubCase{
 	{"dev", regexp.MustCompile(`phase 64`)},
 	{"scaffold", regexp.MustCompile(`phase 67`)},
-	{"validate", regexp.MustCompile(`phase 68`)},
+	// "validate" is no longer a stub — Phase 68 / D-088 shipped the body;
+	// see cmd_validate.go + validate_test.go.
 	{"inspect-events", regexp.MustCompile(`phase 69`)},
 	{"inspect-runs", regexp.MustCompile(`phase 69`)},
 	{"inspect-topology", regexp.MustCompile(`phase 70`)},

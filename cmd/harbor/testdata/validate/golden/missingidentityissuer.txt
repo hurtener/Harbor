@@ -1,0 +1,2 @@
+Error: harbor validate: 1 validation error in testdata/validate/missing-identity-issuer.yaml (see RFC §10 (Configuration) and CLAUDE.md §10)
+testdata/validate/missing-identity-issuer.yaml:8: config.semantic: config.identity.issuer: must not be empty (see examples/harbor.yaml under `identity:`)
