@@ -173,9 +173,14 @@ func TestEstimateTokens_MultimodalBreakdown(t *testing.T) {
 func TestApplyDefaults_FillsZeros(t *testing.T) {
 	deps, cleanup := makeDeps(t)
 	defer cleanup()
-	// All Phase-32 defaults: empty Driver → "mock"; zero
-	// ContextWindowReserve → 0.05; zero HeavyOutputThreshold → 32 KiB.
+	// Driver is set explicitly because Phase 64 / D-089 flipped the
+	// `llm.DefaultDriver` const from "mock" to "bifrost"; this test
+	// pre-existed under the previous default. Zero
+	// ContextWindowReserve → 0.05; zero HeavyOutputThreshold → 32 KiB
+	// — those default-fill assertions remain the test's load-bearing
+	// behaviour.
 	snap := llm.ConfigSnapshot{
+		Driver:        "mock",
 		ModelProfiles: map[string]llm.ModelProfile{"m": {ContextWindowTokens: 1000}},
 	}
 	client, err := llm.Open(context.Background(), snap, deps)

@@ -1576,3 +1576,58 @@ This distinction is documented in the phase plan ("Goals" / "Non-goals") and in 
 - `exitCodeFor` (in `main.go`) → indirectly verified by `assertValidateExit` in `validate_test.go`.
 
 Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `go test -coverprofile`). The race detector is the CI gate; every test runs under `-race`. The Phase 68 smoke (`scripts/smoke/phase-68.sh`) runs the package tests under `-race` plus the built-binary exit-code matrix and the Phase 67 cross-phase probe (SKIPing per §17.6 until scaffold merges).
+
+---
+
+## D-089 — Phase 64 `harbor dev` v1: LLM-default flip + dev-only mock escape hatch + LLM-backed Summarizer + dev signer
+
+**Date:** 2026-05-15
+**Status:** Settled
+
+**Where it lives:**
+
+- `internal/llm/registry.go` (flips `DefaultDriver` from `"mock"` to `"bifrost"`)
+- `internal/config/loader.go` (`defaults().LLM.Driver` → `"bifrost"`)
+- `internal/config/validate.go` (driver-default comment updated; allowlist unchanged so test fixtures keep working)
+- `internal/llm/summarizer/` (new: production LLM-backed `memory.Summarizer` + unit tests + D-025 N=100 concurrent reuse)
+- `cmd/harbor/cmd_dev.go` (real `harbor dev` implementation — boot stack, fail-loud, dev-token mint, graceful shutdown)
+- `cmd/harbor/cmd_dev_test.go` (unit tests for `validateLLMProvider`, `parsePortFromBind`, `newDevSigner`, `SignDevToken`, `bootErrorToCLIError`)
+- `cmd/harbor/devauth.go` (ephemeral ES256 keypair + `auth.KeySet` + JWT signer)
+- `cmd/harbor/devmock.go` (conditional mock blank-import + banner helper)
+- `cmd/harbor/cmd_stub_test.go` (`dev` removed from the stubs table)
+- `cmd/harbor/testdata/golden/help.txt` (dev short description updated)
+- `examples/dev.yaml` (new: canonical `harbor dev` config; demonstrates `driver: bifrost` + `api_key: env.OPENROUTER_API_KEY`)
+- `examples/harbor.yaml` (flipped from `driver: mock` to `driver: bifrost`)
+- `scripts/preflight.sh` (exports `HARBOR_DATA_DIR`; passes `--config examples/dev.yaml`; sets `HARBOR_DEV_ALLOW_MOCK=1`)
+- `scripts/smoke/phase-63.sh` (`dev` graduated out of the stub table; `dev` live-server assertions moved to phase-64.sh)
+- `scripts/smoke/phase-64.sh` (new: 6-assertion smoke including LLM-seam round-trip + fail-loud-no-config)
+- `test/integration/phase64_harbor_dev_test.go` + `phase64_harbor_dev_helpers_test.go` (cross-subsystem E2E)
+- `docs/plans/phase-64-harbor-dev.md` (per-phase plan)
+- `docs/plans/README.md` (Phase 64 row Status flipped to Shipped)
+- `docs/glossary.md` (4 new entries — `harbor dev`, `HARBOR_DEV_ALLOW_MOCK`, `HARBOR_DEV_TOKEN`, `dev signer`)
+- `README.md` (Status row Phase 64 → Shipped; Quick Start updated)
+
+**The decision (cluster, recorded so a future planner cannot relitigate):**
+
+- **`llm.DefaultDriver = "bifrost"`.** The Phase 64 pre-plan note's constraint #1 settles this. A binary built before this PR with no `llm:` block resolved `"mock"`; after this PR the same config resolves `"bifrost"`. The mock driver is not blank-imported in `cmd/harbor/main.go`, so a production binary that does NOT also build `cmd_dev.go` would not even have the mock registered — but every binary DOES build the dev cmd (it's part of the unified `harbor` binary), so the mock IS in the registry; what gates it is the `validateLLMProvider` runtime check which rejects `driver: mock` unless `HARBOR_DEV_ALLOW_MOCK=1` fires. **A "stricter" alternative — build-tagging the mock package — was scoped out because every test importing `internal/llm/mock` (≈7 files across `internal/llm`, `internal/governance`, `internal/planner`, `test/integration/wave7b_test.go`, `test/integration/wave8_test.go`) would need the same build tag, expanding the blast radius beyond the phase's scope.** A later refactor that prefers the strict path is one PR; the §13 amendment in spirit is satisfied today because the mock cannot run as the default and the only path is the explicit env-var escape hatch with a banner.
+- **Escape hatch = env var, not flag.** `HARBOR_DEV_ALLOW_MOCK=1` (the env var) was chosen over `--mock` (the flag) because the preflight harness invokes `./bin/harbor dev` without arguments — an env var lets the preflight gate work without changing the harness. The flag form is one diff away if a future operator surface demands it.
+- **Banner emit is unconditional, single-source.** When `HARBOR_DEV_ALLOW_MOCK=1` fires, the banner `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` is printed exactly once on stderr at boot. The emit lives in `cmd/harbor/devmock.go::registerMockIfDevAllowMock`. Tests can inject a `bytes.Buffer` as the stderr sink and assert the banner literal.
+- **LLM-backed `Summarizer` lives in `internal/llm/summarizer/`** (in-package — not a new top-level directory). The Summarizer is a thin compose over the existing `LLMClient` + a versioned compaction prompt (`PromptVersion = "v1"`). When the operator picks `memory.strategy: rolling_summary`, the dev cmd reaches for `inmem.New(cfg, deps, Options{Summarizer: summarizer.New(client)})` directly — the registry-path `memory.Open` does not accept a Summarizer injection (Phase 23 omission). Operators on `sqlite` / `postgres` memory drivers + `rolling_summary` are rejected at boot with a clear "not yet wired" error pointing to docs/plans/phase-25 — a follow-up issue.
+- **`EchoSummarizer` stays in `internal/memory/strategy/`** (NOT moved to a `testfixtures/` subdir). The §13 amendment's "test stubs as production defaults" gate is satisfied because: (a) the production dev cmd never imports `internal/memory/strategy.EchoSummarizer`; (b) the rolling_summary path runs through `llm/summarizer.New` instead. Tests that need `EchoSummarizer` keep working without changes. Moving the type to a build-tagged subpackage would force every consuming test to declare the tag — scope creep without a real safety win.
+- **Dev signer is ephemeral ES256.** A fresh keypair on every `harbor dev` boot. The matching default-identity dev token is printed to stderr as `HARBOR_DEV_TOKEN=<jwt>`. The dev key is in-memory only — never persisted, never exposed via any Protocol endpoint. The token's identity triple is `(tenant=dev, user=dev, session=dev)` plus `admin` + `console:fleet` scopes so an operator can subscribe to fleet events out of the box. ES256 (vs RS256) for fast keygen — the dev loop regenerates per boot.
+- **Smoke exercises the LLM seam, not just /healthz.** `scripts/smoke/phase-64.sh` boots `harbor dev` with `HARBOR_DEV_ALLOW_MOCK=1`, parses `HARBOR_DEV_TOKEN` out of the preflight server log, submits a `start` over `/v1/control/start` with the Bearer token, and asserts a non-empty `task_id` in the JSON response. The mock LLM is the deterministic, network-free driver underneath the safety + corrections + downgrade + retry + governance chain — same wiring path bifrost uses. A second assertion boots a fresh `bin/harbor` in a tmp dir with no config and asserts non-zero exit + named-field error (constraint #5 fail-loud half).
+- **The Protocol mux mounts under `/v1/`.** The dev cmd builds a fresh `http.ServeMux` exposing `/healthz` + `/readyz` + a catch-all `/v1/` delegating to `transports.NewMux(surface, bus, WithValidator(validator))`. The auth middleware fail-closes any request without a Bearer token. The Phase 60 trust-based identity carrier headers (`X-Harbor-*`) are still read but treated as a fallback by the middleware.
+- **Preflight env-var contract.** `scripts/preflight.sh` now exports `HARBOR_DATA_DIR` so per-phase smoke scripts (Phase 64+) can read the dev server's log file (`${HARBOR_DATA_DIR}/server.log`) to parse the dev token. Older smokes ignore the env; new ones read it. This is the §17.6 fix-it-where-you-find-it pattern: the smoke gate needed a way to surface the token without a separate HTTP endpoint.
+- **§17.6 cross-phase fixes landed in this PR:** `internal/llm/coverage_test.go::TestApplyDefaults_FillsZeros` was pinned to the pre-Phase-64 default (`mock`); after the flip the test fixture needed `Driver: "mock"` explicitly. The PR includes the one-line fix.
+
+**Phase 64a — sibling phase for catalog OAuth + approval wiring (D-090).** Pre-plan constraint #7 (tool catalog wires Phase 30 OAuth + Phase 31 approval gates from operator config — issue #104) was scoped out of Phase 64 because the tool catalog extension touches `internal/tools/catalog.go` + every tool registration site + a new operator-facing config block. The split was permitted by the master-plan pre-plan note's "may split into sibling phase" clause. Phase 64a is dispatched in the same wave (Stage 3b); its decision entry is D-090 (pre-assigned but not yet authored).
+
+**Departures from the pre-plan note:**
+
+- Constraint #1 — kept the mock package importable from the test surface (no `harbor_testfixtures` build tag). The pragmatic justification is recorded above; the §13 amendment in spirit is satisfied because the mock cannot run as the default and the only operator path is the explicit env-var escape hatch with a banner.
+
+**§13 primitive-with-consumer rule discharge:**
+
+- The Phase 60 SSE/REST mux primitive (no first production consumer until now) is the consumer of choice. `cmd/harbor/cmd_dev.go::bootDevStack` builds a `transports.NewMux(...)`, mounts it under `/v1/`, and serves under a real `http.Server`.
+- The Phase 61 JWT auth validator primitive is the consumer of choice. The same dev stack builds a `auth.NewValidator(devSigner.KeySet(), WithRedactor(red), WithEventBus(bus))` and passes it to `transports.NewMux(..., WithValidator(validator))`.
+- The `memory.Summarizer` interface (declared by Phase 23, no production implementation until now) is the consumer of choice. `internal/llm/summarizer.New(client)` is the first non-test implementation; `harbor dev` is the first non-test caller.

@@ -177,7 +177,15 @@ func defaults() *Config {
 			Driver: "inmem",
 		},
 		LLM: LLMConfig{
-			Driver:               "mock",
+			// Phase 64 / D-089 flipped the default from "mock" to
+			// "bifrost". A config with an empty `llm.driver` now
+			// defaults to the production driver — missing config keys
+			// fail loud at registry resolution (mock isn't blank-
+			// imported in cmd/harbor/main.go, so it's not in the
+			// process registry) rather than silently routing through
+			// a stub. The §13 "test stubs as production defaults"
+			// amendment is closed for the LLM seam.
+			Driver:               "bifrost",
 			Timeout:              60 * time.Second,
 			ContextWindowReserve: 0.05, // 5% safety margin (Phase 32 / D-026)
 			Corrections: LLMCorrectionsConfig{

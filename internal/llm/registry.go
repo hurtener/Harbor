@@ -166,10 +166,28 @@ type NetworkDefaults struct {
 // Drivers expose one `Factory` each via `init()` → `Register`.
 type Factory func(cfg ConfigSnapshot, deps Deps) (Driver, error)
 
-// DefaultDriver is Phase 32's mock driver. Operators wire `bifrost`
-// (Phase 33) explicitly; the default is the test-grade driver so a
-// missing config doesn't silently route real LLM traffic.
-const DefaultDriver = "mock"
+// DefaultDriver names the production LLM driver Phase 64 (D-089)
+// flipped this constant to point at — `"bifrost"`, the pure-Go LLM
+// gateway shipped by Phase 33. Before Phase 64 this was `"mock"`; the
+// flip closes the §13 "test stubs as production defaults" amendment
+// for the LLM seam.
+//
+// Operators in production set `llm.driver` explicitly to `"bifrost"`
+// (the same value the config defaults to). The `mock` driver still
+// self-registers via init() — its package init runs when an importer
+// (a test that builds a deterministic LLM stack) blank-imports it —
+// but the production `cmd/harbor` binary never imports the mock
+// package, so a config that lists `driver: mock` in a production
+// build hits `ErrUnknownDriver: "mock" (registered: bifrost)` rather
+// than silently routing through a stub.
+//
+// Dev-only escape hatch (D-089): the `harbor dev` subcommand reads
+// `HARBOR_DEV_ALLOW_MOCK=1` and, when set, blank-imports the mock
+// driver itself (the conditional blank-import lives at the
+// subcommand boundary, not in `main.go`) AND prints a stderr banner
+// `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` on every boot.
+// Outside that one explicit dev path, the mock is unreachable.
+const DefaultDriver = "bifrost"
 
 // Defaults applied when the snapshot's corresponding field is zero.
 // Kept here (not in `validate.go`) so an operator who constructs a

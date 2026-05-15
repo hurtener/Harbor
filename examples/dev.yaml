@@ -1,0 +1,129 @@
+# Harbor — `harbor dev` example configuration (Phase 64, D-089).
+#
+# This is the canonical config for the local-dev loop. It points at
+# the production bifrost LLM driver — Phase 64 (D-089) flipped the
+# default from "mock" to "bifrost" so a missing `llm.driver` is the
+# fail-loud case, not a silent stub. Operators copy this file to
+# `harbor.yaml` at their project root and edit:
+#
+#   1. `identity.issuer` / `identity.audience` / `identity.jwks_url`
+#      to point at a real OIDC provider. The default `harbor dev`
+#      mints an ephemeral ES256 dev token for local convenience —
+#      production deployments need a real JWKS source.
+#
+#   2. `llm.api_key` — the example uses `env.OPENROUTER_API_KEY`. The
+#      bifrost driver resolves `env.NAME` references via os.Getenv()
+#      at construction time; missing env var → fail closed with
+#      ErrMissingAPIKey at boot. Pick whichever env var your secret
+#      store populates.
+#
+#   3. Optional: `llm.model` if the default `anthropic/claude-sonnet-4`
+#      isn't what your deployment routes through.
+#
+# Once edited, run:
+#
+#   harbor dev               # boots against ./harbor.yaml on :18080
+#   harbor dev --port 8080   # custom port
+#
+# For the dev-only escape hatch (the §13 amendment surface):
+#
+#   HARBOR_DEV_ALLOW_MOCK=1 harbor dev
+#
+# The escape hatch prints a stderr banner [DEV-ONLY MOCK LLM — DO
+# NOT USE IN PRODUCTION] on every boot. The default path with no
+# flag set demands a real provider.
+
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+
+identity:
+  # Asymmetric algorithms only (Harbor §7 security rule 1). The
+  # validator's parser rejects HS* and `none` at the algorithm
+  # allowlist BEFORE the keyfunc runs.
+  jwt_algorithms:
+    - RS256
+    - ES256
+  # Replace these with your OIDC provider's values for non-local
+  # deployments. The `harbor dev` ephemeral dev-token bypass uses
+  # its own in-memory keypair (issuer=harbor-dev, audience=harbor);
+  # production wiring through jwks_url lands in a later release-
+  # engineering phase.
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: text
+  log_level: info
+  service_name: harbor-dev
+
+state:
+  # In-memory state for the dev loop. Production switches to sqlite
+  # (single-node) or postgres (multi-replica). The Phase 57 durable
+  # event log requires a non-inmem state driver — flip both together.
+  driver: inmem
+
+llm:
+  # Production driver — the Phase 33 bifrost gateway. Phase 64 /
+  # D-089 made this the default; a missing `driver:` field defaults
+  # to bifrost. The mock LLM is only available via the `HARBOR_DEV_ALLOW_MOCK=1`
+  # env var (the §13 dev-only escape hatch).
+  driver: bifrost
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # Resolved as os.Getenv("OPENROUTER_API_KEY") at driver construction
+  # time. Pick whichever env var your secret store populates. NEVER
+  # commit a literal API key here — the validator accepts a literal
+  # value but the linter / reviewer SHOULD reject the PR.
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+      reasoning_effort: low
+
+governance:
+  repair_attempts: 3
+
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+
+memory:
+  # `none` (Phase 23 default — AddTurn is a no-op) is the safest
+  # starting point. Flip to `rolling_summary` once you have a working
+  # agent and need conversation compaction; Phase 64 wires an
+  # LLM-backed Summarizer through llm/summarizer when this is set.
+  driver: inmem
+  strategy: none
+  recovery_backlog_max: 16
+
+tools:
+  http_manifests: []
+  mcp_servers: []

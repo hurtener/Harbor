@@ -28,10 +28,10 @@ type stubCase struct {
 }
 
 var stubCases = []stubCase{
-	{"dev", regexp.MustCompile(`phase 64`)},
-	// `scaffold` (Phase 67 / D-087) and `validate` (Phase 68 / D-088) graduated
-	// out of the stub table — their cobra-driver tests live in
-	// cmd_scaffold_test.go and validate_test.go respectively.
+	// `scaffold` (Phase 67 / D-087), `validate` (Phase 68 / D-088), and
+	// `dev` (Phase 64 / D-089) graduated out of the stub table — their
+	// cobra-driver tests live in cmd_scaffold_test.go, validate_test.go,
+	// and cmd_dev_test.go respectively.
 	{"inspect-events", regexp.MustCompile(`phase 69`)},
 	{"inspect-runs", regexp.MustCompile(`phase 69`)},
 	{"inspect-topology", regexp.MustCompile(`phase 70`)},
@@ -131,18 +131,20 @@ func TestStubSubcommands_JSON_StructuredErrorShape(t *testing.T) {
 
 // TestStubSubcommands_QuietFlag_DoesNotSuppressErrors pins the
 // observed behaviour: --quiet suppresses *informational* output, NEVER
-// error output. Errors always emit (acceptance criterion 5).
+// error output. Errors always emit (acceptance criterion 5). We
+// exercise this against `inspect-events` (one of the remaining
+// Phase 63 stubs) — `dev` graduated out of stub status in Phase 64.
 func TestStubSubcommands_QuietFlag_DoesNotSuppressErrors(t *testing.T) {
 	t.Parallel()
 	root := NewRootCmd()
 	var out, errBuf bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errBuf)
-	root.SetArgs([]string{"dev", "--quiet"})
+	root.SetArgs([]string{"inspect-events", "--quiet"})
 	if err := root.Execute(); err == nil {
-		t.Fatal("`harbor dev --quiet` returned nil error — stubs must exit non-zero even with --quiet")
+		t.Fatal("`harbor inspect-events --quiet` returned nil error — stubs must exit non-zero even with --quiet")
 	}
 	if errBuf.String() == "" {
-		t.Fatal("`harbor dev --quiet` suppressed the error body — --quiet must not silence errors (acceptance criterion 5)")
+		t.Fatal("`harbor inspect-events --quiet` suppressed the error body — --quiet must not silence errors (acceptance criterion 5)")
 	}
 }

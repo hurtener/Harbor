@@ -1,35 +1,722 @@
-// cmd/harbor/cmd_dev.go — `harbor dev` stub.
+// cmd/harbor/cmd_dev.go — `harbor dev` v1 (Phase 64, D-089).
 //
-// Phase 63 ships the subcommand registration; Phase 64 (per the
-// pre-plan note in docs/plans/README.md) populates the body — boot
-// the embedded Runtime, open the Phase 60 Protocol transports onto a
-// real net.Listener, and serve `/healthz`. The stub exits non-zero
-// with CLIError{Code: CodeNotImplemented} so scripts get the §13
-// fail-loud signal.
+// `harbor dev` boots an embedded Harbor Runtime + opens the Phase 60
+// Protocol transports on `127.0.0.1:<port>`. This is the moment the
+// binary stops being a driver-registration stub and starts running a
+// real LLM-backed runtime — the §13 "test stubs as production
+// defaults on operator-facing seams" amendment closure for the LLM
+// seam.
+//
+// # The boot stack
+//
+// The subcommand assembles, in dependency order:
+//
+//  1. The config (default `harbor.yaml`, overridable via `--config`).
+//  2. The audit Redactor (`audit/drivers/patterns`).
+//  3. The event bus (`events/drivers/inmem` or `events/drivers/durable`
+//     per config).
+//  4. The state store (`state/drivers/{inmem,sqlite,postgres}`).
+//  5. The artifact store (`artifacts/drivers/{inmem,fs,sqlite,postgres,s3}`).
+//  6. The LLM client (`llm/drivers/bifrost` by default; the mock
+//     blank-import is conditionally pulled in by `HARBOR_DEV_ALLOW_MOCK=1`).
+//  7. The memory store (`memory/drivers/{inmem,sqlite,postgres}`) +
+//     when `memory.strategy: rolling_summary`, an `llm/summarizer.New`
+//     Summarizer.
+//  8. The task registry (`tasks/drivers/inprocess`).
+//  9. The steering registry (process-wide).
+// 10. The Protocol ControlSurface + the SSE/REST mux from
+//     `internal/protocol/transports`.
+// 11. The Phase 61 JWT auth.Validator (mandatory at the edge) +
+//     the dev-only ephemeral ES256 KeySet + a default-identity dev
+//     token printed at startup.
+// 12. An http.Server bound to `127.0.0.1:<port>` with /healthz +
+//     /readyz + the mounted Protocol mux.
+//
+// # Fail-loud at boot
+//
+// CLAUDE.md §13 "fail loudly at boot": missing LLM provider, missing
+// API key, missing required config field → the boot prints a
+// one-line error naming the field and points to `examples/dev.yaml`,
+// then exits non-zero. No silent fallback to the mock; the only path
+// to the mock at runtime is the explicit `HARBOR_DEV_ALLOW_MOCK=1`
+// escape hatch (D-089).
+//
+// # The dev-only escape hatch
+//
+// `HARBOR_DEV_ALLOW_MOCK=1` (env var, not a CLI flag — pinned in
+// D-089) tells the dev subcommand to:
+//   - blank-import the mock LLM driver so its init() registration
+//     fires and `llm.Open(cfg{Driver:"mock"})` resolves;
+//   - skip the bifrost-knobs validation gate that would otherwise
+//     reject a config with `driver: mock`;
+//   - print a stderr banner `[DEV-ONLY MOCK LLM — DO NOT USE IN
+//     PRODUCTION]` on every boot.
+// The banner is unconditional when the env var is set — no operator
+// can "quiet" it; the §13 amendment is explicit about that.
+//
+// # Graceful shutdown
+//
+// SIGINT / SIGTERM trigger a graceful drain: the http.Server stops
+// accepting new connections, in-flight requests get
+// `Server.ShutdownGracePeriod` to complete (default 30s), then the
+// subsystems Close in reverse dependency order. A second signal
+// during shutdown forces an immediate exit (operators stuck in a
+// deadlocked drain can ctrl-C twice).
 
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
+	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
+	"github.com/hurtener/Harbor/internal/memory"
+	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/transports"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/state"
+	"github.com/hurtener/Harbor/internal/tasks"
+)
+
+// Stable CLI error codes for `harbor dev`. New codes ADD entries to
+// this block; existing codes are wire contracts.
+const (
+	// CodeBootConfigInvalid fires when the config file fails to load or
+	// validate (parse error, missing required, bad enum). Exit 1.
+	CodeBootConfigInvalid = "boot_config_invalid"
+	// CodeBootLLMRequired fires when the LLM seam cannot be opened
+	// because no provider is configured. Exit 1. Surfaced as a
+	// one-line message naming the missing knob.
+	CodeBootLLMRequired = "boot_llm_required"
+	// CodeBootInternal is the catch-all for unexpected wiring failures
+	// (a driver Open returning error, a listen failure). Exit 2.
+	CodeBootInternal = "boot_internal_error"
+)
+
+// Flag names declared as constants so the dev cmd body, tests, and the
+// help golden reference one spelling.
+const (
+	flagDevConfig = "config"
+	flagDevPort   = "port"
+)
+
+// EnvDevAllowMock is the env var name that unlocks the dev-only mock
+// LLM path. Pinned in D-089. The choice between an env var and a CLI
+// flag was settled on the env var because preflight invokes
+// `./bin/harbor dev` without arguments — an env var lets the smoke
+// flow without changing the preflight harness.
+const EnvDevAllowMock = "HARBOR_DEV_ALLOW_MOCK"
+
+// MockBanner is the unconditional stderr banner printed on every
+// `harbor dev` boot when the mock-LLM escape hatch is active. §13
+// amendment: "every boot prints a stderr banner".
+const MockBanner = "[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]"
+
+// DefaultDevPort is the loopback port `harbor dev` listens on when
+// the operator does not override via `--port` or env. Matches the
+// preflight harness default.
+const DefaultDevPort = 18080
+
+// DefaultDevConfig is the config path `harbor dev` resolves when the
+// operator does not pass `--config`. Mirrors `harbor validate`.
+const DefaultDevConfig = "harbor.yaml"
+
+// newDevCmd builds the `dev` cobra subcommand. Flags:
+//
+//	--config <path>  default `harbor.yaml`
+//	--port <int>     default 18080 (also overridable via HARBOR_BIND env).
+//
+// The escape hatch is an env var (`HARBOR_DEV_ALLOW_MOCK=1`), not a
+// flag — see D-089.
 func newDevCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dev",
-		Short: "boot the local Runtime + Protocol server (Phase 64)",
+		Short: "boot the local Runtime + Protocol server",
 		Long: `Boot a local Harbor Runtime, open the Phase 60 Protocol transports
-onto a 127.0.0.1 listener, and (later) embed the Console.
+onto a 127.0.0.1 listener, and serve until SIGINT / SIGTERM.
 
-This subcommand is registered but not yet implemented. The behaviour
-above lands in phase 64 — see docs/plans/README.md and the Phase 64
-pre-plan note for the binding constraints (LLM-default flip, dev-only
-escape hatch, identity injection, /healthz).`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return emitCLIError(cmd, CLIError{
-				Subcommand: "dev",
-				Message:    "not yet implemented",
-				Code:       CodeNotImplemented,
-				Hint:       "see phase 64 — harbor dev v1",
-			})
-		},
+The default port is ` + fmt.Sprintf("%d", DefaultDevPort) + `; override via --port or
+HARBOR_BIND=host:port.
+
+Identity injection is via an ephemeral ES256 dev-token printed to
+stderr at boot. The token carries (tenant=` + DevTenant + `,user=` + DevUser + `,session=` + DevSession + `)
+plus admin scope and lives for 24h. Operators wiring a real OIDC
+provider should set identity.jwks_url in harbor.yaml (production
+wiring lands in a later release-engineering phase).
+
+The LLM seam fails closed: a missing provider exits non-zero with a
+named-field error. Operators MUST configure llm.driver=bifrost +
+llm.api_key (or env.NAME) in production. The dev-only escape hatch
+` + EnvDevAllowMock + `=1 unlocks the mock LLM driver for first-clone
+convenience; every boot prints a stderr banner when it fires.
+
+Examples:
+  harbor dev
+  harbor dev --config ./my-agent/harbor.yaml --port 8080
+  HARBOR_DEV_ALLOW_MOCK=1 harbor dev   # dev shortcut; not for production`,
+		Args: cobra.NoArgs,
+		RunE: runDev,
 	}
+	cmd.Flags().String(flagDevConfig, DefaultDevConfig, "path to harbor.yaml")
+	cmd.Flags().Int(flagDevPort, DefaultDevPort, "loopback port for the Protocol server")
 	return cmd
 }
+
+// runDev is the cobra RunE entry. It assembles the boot stack, mounts
+// the Protocol mux, serves until a termination signal, then drains.
+// Every failure path returns a CLIError so the structured-error
+// surface routes through the root.
+func runDev(cmd *cobra.Command, _ []string) error {
+	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)
+	port, _ := cmd.Flags().GetInt(flagDevPort)
+	if bind := os.Getenv("HARBOR_BIND"); bind != "" {
+		// HARBOR_BIND=host:port overrides --port (used by preflight).
+		// The override is a single env var so an operator who needs to
+		// bind beyond 127.0.0.1 can drive both host AND port from the
+		// same surface. We parse the port out for the bind addr but
+		// keep the full host:port as the listen string.
+		if p, ok := parsePortFromBind(bind); ok {
+			port = p
+		}
+	}
+	allowMock := os.Getenv(EnvDevAllowMock) == "1"
+
+	// Boot logger — text handler on stderr so a dev operator's terminal
+	// shows readable lines. JSON-handler under a future production
+	// `harbor server` subcommand.
+	logger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	stack, err := bootDevStack(ctx, devBootOptions{
+		cfgPath:   cfgPath,
+		port:      port,
+		allowMock: allowMock,
+		logger:    logger,
+		stderr:    cmd.ErrOrStderr(),
+	})
+	if err != nil {
+		return emitCLIError(cmd, bootErrorToCLIError(err))
+	}
+	defer stack.close(context.Background())
+
+	// Serve until signal. Any serve error wraps as a CLIError.
+	if err := stack.serve(ctx); err != nil {
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("dev server stopped: %v", err),
+			Code:       CodeBootInternal,
+			Hint:       "check the server log lines above for the originating subsystem",
+		})
+	}
+	return nil
+}
+
+// devBootOptions bundles the inputs `bootDevStack` consumes. Kept as
+// a struct so tests can drive the boot in isolation (Phase 64
+// integration test) without re-creating cobra wiring.
+type devBootOptions struct {
+	cfgPath   string
+	port      int
+	allowMock bool
+	logger    *slog.Logger
+	stderr    interface{ Write(p []byte) (int, error) }
+}
+
+// bootDevStack does the heavy lifting: it reads the config, opens
+// every subsystem, composes the Protocol surface, and returns a
+// `devStack` whose `serve` method binds the listener and runs until
+// ctx cancels.
+//
+// On any error, every successfully-opened subsystem is Close'd
+// before returning. The caller MUST call `stack.close` after a
+// successful boot to drain the listen loop + close every dep.
+func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
+	cfg, err := config.Load(ctx, opts.cfgPath, config.WithLogger(opts.logger))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
+	// Construct subsystems in dependency order. Every "close everything
+	// we've opened so far" path is funneled through `closers`.
+	var closers []func(context.Context) error
+	closeAll := func(ctx context.Context) {
+		for i := len(closers) - 1; i >= 0; i-- {
+			_ = closers[i](ctx)
+		}
+	}
+
+	red, err := audit.Open(ctx, cfg.Audit)
+	if err != nil {
+		return nil, fmt.Errorf("audit: %w", err)
+	}
+	// `audit.Redactor` has no Close in the current interface — nothing
+	// to register here.
+
+	bus, err := events.Open(ctx, cfg.Events, red)
+	if err != nil {
+		return nil, fmt.Errorf("events: %w", err)
+	}
+	closers = append(closers, bus.Close)
+
+	stateStore, err := state.Open(ctx, cfg.State)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("state: %w", err)
+	}
+	closers = append(closers, stateStore.Close)
+
+	artStore, err := artifacts.Open(ctx, cfg.Artifacts)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("artifacts: %w", err)
+	}
+	closers = append(closers, artStore.Close)
+
+	// LLM seam — fail loud per §13 when no provider configured AND
+	// the operator did not explicitly opt into the mock.
+	if err := validateLLMProvider(cfg, opts.allowMock); err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("llm: %w", err)
+	}
+	// The dev binary blank-imports the mock LLM driver via
+	// `cmd/harbor/devmock.go` so its init() seats the registration in
+	// the llm.factories map. The conditional import is NOT in main.go
+	// (that's the §13 "unreachable from main.go's blank-import block"
+	// surface); it lives at the dev-cmd boundary. The runtime gate —
+	// `validateLLMProvider` above — refuses to start the runtime
+	// against `driver: mock` UNLESS allowMock is true. The
+	// unconditional stderr banner emit on every boot when the env var
+	// fires is the "do not use in production" surfacing the §13
+	// amendment mandates.
+	registerMockIfDevAllowMock(opts.allowMock, opts.stderr)
+
+	// Build the LLM ConfigSnapshot. When the dev-only escape hatch
+	// fired, override the driver to "mock" regardless of what
+	// harbor.yaml said — the operator's intent ("give me the mock")
+	// is explicit via the env var, and bypassing the bifrost knobs
+	// avoids the operator having to maintain two separate yaml files
+	// (one for prod, one for dev). The override is local to the
+	// snapshot; the original config.Config is unchanged.
+	driverName := cfg.LLM.Driver
+	apiKey := cfg.LLM.APIKey
+	if opts.allowMock {
+		driverName = "mock"
+		apiKey = ""
+	}
+	llmCfg := llm.ConfigSnapshot{
+		Driver:               driverName,
+		Provider:             cfg.LLM.Provider,
+		Model:                cfg.LLM.Model,
+		APIKey:               apiKey,
+		BaseURL:              cfg.LLM.BaseURL,
+		Timeout:              cfg.LLM.Timeout,
+		ContextWindowReserve: cfg.LLM.ContextWindowReserve,
+		HeavyOutputThreshold: cfg.Artifacts.HeavyOutputThresholdBytes,
+		ModelProfiles:        copyModelProfiles(cfg.LLM.ModelProfiles),
+	}
+	llmClient, err := llm.Open(ctx, llmCfg, llm.Deps{
+		Artifacts: artStore,
+		Bus:       bus,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("llm: %w", err)
+	}
+	closers = append(closers, llmClient.Close)
+
+	// Memory subsystem. When the operator picked rolling_summary, wire
+	// the LLM-backed default Summarizer (constraint #3 — Phase 64 / D-089).
+	// The memory open path is configured even when strategy=none so the
+	// runtime has a memory store for future per-session reads.
+	//
+	// The Phase 23 registry path (`memory.Open`) does NOT accept a
+	// Summarizer injection; only strategy=none + strategy=truncation
+	// resolve through it. For strategy=rolling_summary we MUST call
+	// the driver's `inmem.New(...)` directly with `Options{Summarizer:
+	// llmsummarizer.New(client)}`. SQLite + Postgres memory drivers
+	// (Phase 25) have not yet been audited for this same shape — for
+	// now, rolling_summary on those drivers is rejected at boot with a
+	// clear "not yet wired" error.
+	var memStore memory.MemoryStore
+	if cfg.Memory.Driver != "" {
+		memCfg := memory.ConfigSnapshot{
+			Driver:             cfg.Memory.Driver,
+			DSN:                cfg.Memory.DSN,
+			Strategy:           memory.Strategy(cfg.Memory.Strategy),
+			BudgetTokens:       cfg.Memory.BudgetTokens,
+			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
+		}
+		if cfg.Memory.Strategy == "rolling_summary" {
+			if cfg.Memory.Driver != "inmem" {
+				closeAll(ctx)
+				return nil, fmt.Errorf("memory: rolling_summary is only wired against driver=inmem at Phase 64 (got driver=%q); see docs/plans/phase-25-memory-drivers.md for the SQLite/Postgres Summarizer-injection follow-up", cfg.Memory.Driver)
+			}
+			s, sErr := llmsummarizer.New(llmClient)
+			if sErr != nil {
+				closeAll(ctx)
+				return nil, fmt.Errorf("summarizer: %w", sErr)
+			}
+			ms, openErr := memoryinmem.New(memCfg, memory.Deps{
+				State: stateStore,
+				Bus:   bus,
+			}, memoryinmem.Options{
+				Summarizer: s,
+			})
+			if openErr != nil {
+				closeAll(ctx)
+				return nil, fmt.Errorf("memory: %w", openErr)
+			}
+			closers = append(closers, ms.Close)
+			memStore = ms
+		} else {
+			ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
+				State: stateStore,
+				Bus:   bus,
+			})
+			if openErr != nil {
+				closeAll(ctx)
+				return nil, fmt.Errorf("memory: %w", openErr)
+			}
+			closers = append(closers, ms.Close)
+			memStore = ms
+		}
+	}
+	_ = memStore // memory is wired but not yet consumed by ControlSurface; the wiring proves the seam.
+
+	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
+		Store:    stateStore,
+		Bus:      bus,
+		Redactor: red,
+		Cfg:      cfg.Tasks,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tasks: %w", err)
+	}
+	closers = append(closers, taskReg.Close)
+
+	steeringReg := steering.NewRegistry()
+
+	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("protocol: %w", err)
+	}
+
+	devSigner, err := newDevSigner()
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("dev signer: %w", err)
+	}
+	validator, err := auth.NewValidator(devSigner.KeySet(),
+		auth.WithRedactor(red),
+		auth.WithLogger(opts.logger),
+		auth.WithEventBus(bus),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+
+	mux, err := transports.NewMux(surface, bus,
+		transports.WithLogger(opts.logger),
+		transports.WithValidator(validator),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("transports: %w", err)
+	}
+
+	// Health / readiness — small in-process surface that the preflight
+	// gate hits to confirm boot. /healthz returns 200 with a JSON
+	// body once the server starts serving; /readyz is reserved for a
+	// later phase that gates "ready" on dep health (state migration
+	// applied, LLM provider reachable, etc.).
+	router := http.NewServeMux()
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","subcommand":"dev"}`))
+	})
+	router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
+	// Forward every Protocol-prefixed path to the Phase 60 mux. We
+	// mount the protocol mux under the canonical /v1/ paths via a
+	// catch-all handler that delegates to it.
+	router.Handle("/v1/", mux)
+
+	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
+	if bind := os.Getenv("HARBOR_BIND"); bind != "" {
+		bindAddr = bind
+	}
+
+	server := &http.Server{
+		Addr:              bindAddr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Long read/write timeouts because SSE streams hold the conn
+		// open. The dev server is not production-tuned — operators
+		// who need different limits can run their own Protocol server
+		// behind the runtime.
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
+		BaseContext:  func(_ net.Listener) context.Context { return ctx },
+	}
+
+	// Mint and print a default-identity dev token so an operator can
+	// curl the protocol surface without writing JWT-signing code.
+	token, err := devSigner.SignDevToken(time.Now(), DevTenant, DevUser, DevSession, []string{"admin", "console:fleet"})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("dev token: %w", err)
+	}
+
+	return &devStack{
+		cfg:             cfg,
+		logger:          opts.logger,
+		stderr:          opts.stderr,
+		server:          server,
+		bindAddr:        bindAddr,
+		devToken:        token,
+		allowMock:       opts.allowMock,
+		effectiveDriver: driverName,
+		closeFns:        closers,
+	}, nil
+}
+
+// devStack is the runtime bundle a successful bootDevStack returns.
+// `serve` binds the listener and runs until ctx cancels. `close`
+// runs every subsystem's Close in reverse dependency order.
+type devStack struct {
+	cfg             *config.Config
+	logger          *slog.Logger
+	stderr          interface{ Write(p []byte) (int, error) }
+	server          *http.Server
+	bindAddr        string
+	devToken        string
+	allowMock       bool
+	effectiveDriver string
+	closeFns        []func(context.Context) error
+}
+
+// serve binds the listener and runs the http.Server until ctx
+// cancels. On graceful-shutdown, the server gets
+// `cfg.Server.ShutdownGracePeriod` to drain.
+func (s *devStack) serve(ctx context.Context) error {
+	// Mock-LLM banner was printed at boot (registerMockIfDevAllowMock);
+	// we DO NOT repeat it here to avoid double-emission. The
+	// boot-time banner is the §13 amendment surface — every boot
+	// prints it exactly once on stderr.
+	s.logger.InfoContext(ctx, "harbor dev: starting Protocol server",
+		slog.String("bind", s.bindAddr),
+		slog.String("driver_llm", s.effectiveDriver),
+		slog.String("driver_state", s.cfg.State.Driver),
+		slog.String("driver_events", s.cfg.Events.Driver),
+		slog.String("driver_memory", s.cfg.Memory.Driver),
+		slog.String("memory_strategy", s.cfg.Memory.Strategy),
+		slog.Bool("dev_allow_mock", s.allowMock),
+	)
+	s.logger.InfoContext(ctx, "harbor dev: dev token minted",
+		slog.String("kid", DevKID),
+		slog.String("tenant", DevTenant),
+		slog.String("user", DevUser),
+		slog.String("session", DevSession),
+		slog.Duration("ttl", DevTokenTTL),
+	)
+	// Print the dev token to stderr so operators can `export
+	// HARBOR_DEV_TOKEN=$(harbor dev 2>&1 | grep ...` — wait, simpler:
+	// emit a single named-prefix line.
+	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_TOKEN=%s\n", s.devToken)
+
+	listenErr := make(chan error, 1)
+	go func() {
+		err := s.server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			listenErr <- err
+			return
+		}
+		listenErr <- nil
+	}()
+
+	select {
+	case err := <-listenErr:
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		grace := s.cfg.Server.ShutdownGracePeriod
+		if grace <= 0 {
+			grace = 30 * time.Second
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		s.logger.Info("harbor dev: draining", slog.Duration("grace", grace))
+		_ = s.server.Shutdown(shutdownCtx)
+		return nil
+	}
+}
+
+// close runs every subsystem's Close in reverse dependency order.
+// Idempotent — safe to call after `serve` returned normally.
+func (s *devStack) close(ctx context.Context) {
+	for i := len(s.closeFns) - 1; i >= 0; i-- {
+		_ = s.closeFns[i](ctx)
+	}
+}
+
+// validateLLMProvider enforces constraint #2: missing provider, missing
+// API key, or empty `llm:` block (driver=bifrost without provider/model/
+// api_key) fails closed with a one-line error naming the missing key
+// and pointing to `examples/dev.yaml`.
+//
+// When `allowMock` is true (HARBOR_DEV_ALLOW_MOCK=1), the function
+// short-circuits success — the mock driver ignores provider knobs.
+func validateLLMProvider(cfg *config.Config, allowMock bool) error {
+	if allowMock {
+		// Operator opted in. The escape hatch is the explicit signal;
+		// no validation runs on the bifrost knobs.
+		return nil
+	}
+	if cfg.LLM.Driver == "" || cfg.LLM.Driver == "mock" {
+		return fmt.Errorf("%w: config.llm.driver: must be %q (or set %s=1 for the dev-only mock; see examples/dev.yaml)",
+			ErrLLMRequired, "bifrost", EnvDevAllowMock)
+	}
+	if cfg.LLM.Driver == "bifrost" {
+		if cfg.LLM.Provider == "" {
+			return fmt.Errorf("%w: config.llm.provider: required when driver=bifrost (see examples/dev.yaml)", ErrLLMRequired)
+		}
+		if cfg.LLM.Model == "" {
+			return fmt.Errorf("%w: config.llm.model: required when driver=bifrost (see examples/dev.yaml)", ErrLLMRequired)
+		}
+		// API key — the bifrost driver resolves `env.NAME` references
+		// at construction time, so we accept ANY non-empty string at
+		// this layer (the driver will fail loud if the env var is
+		// unset). An EMPTY api_key is the boot-fail-loud case.
+		if cfg.LLM.APIKey == "" {
+			return fmt.Errorf("%w: config.llm.api_key: required when driver=bifrost (use env.NAME for env-var indirection; see examples/dev.yaml)", ErrLLMRequired)
+		}
+	}
+	return nil
+}
+
+// ErrLLMRequired is the typed sentinel constraint #2's fail-loud
+// surfaces. Tests compare via `errors.Is`.
+var ErrLLMRequired = errors.New("dev: LLM provider not configured")
+
+// bootErrorToCLIError maps a boot error onto a CLIError. The mapping
+// preserves the underlying error chain so callers can errors.Is back
+// to the sentinel.
+func bootErrorToCLIError(err error) CLIError {
+	switch {
+	case errors.Is(err, ErrLLMRequired):
+		return CLIError{
+			Subcommand: "dev",
+			Message:    err.Error(),
+			Code:       CodeBootLLMRequired,
+			Hint:       "see examples/dev.yaml for the canonical shape; set " + EnvDevAllowMock + "=1 for the dev-only mock escape hatch",
+		}
+	case errors.Is(err, config.ErrConfigNotFound):
+		return CLIError{
+			Subcommand: "dev",
+			Message:    err.Error(),
+			Code:       CodeBootConfigInvalid,
+			Hint:       "pass --config or create harbor.yaml in the working directory (try `harbor scaffold --name my-agent`)",
+		}
+	case errors.Is(err, config.ErrConfigInvalid):
+		return CLIError{
+			Subcommand: "dev",
+			Message:    err.Error(),
+			Code:       CodeBootConfigInvalid,
+			Hint:       "run `harbor validate` for file:line precision on the failing field",
+		}
+	default:
+		return CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("boot failed: %v", err),
+			Code:       CodeBootInternal,
+			Hint:       "check the server log lines above for the originating subsystem",
+		}
+	}
+}
+
+// parsePortFromBind extracts the port from a host:port bind string.
+// Used so HARBOR_BIND=host:port overrides --port consistently. Returns
+// (0, false) on malformed input — the caller keeps the supplied port.
+func parsePortFromBind(bind string) (int, bool) {
+	// Look for the LAST ':' so IPv6-shaped binds (`[::1]:18080`) parse.
+	i := strings.LastIndex(bind, ":")
+	if i < 0 || i == len(bind)-1 {
+		return 0, false
+	}
+	tail := bind[i+1:]
+	n := 0
+	for _, c := range tail {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// copyModelProfiles converts the config-package map shape into the
+// llm-package ModelProfile map. Each profile field is copied by
+// value — both packages own their own struct types so a copy keeps
+// the seam decoupled.
+func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]llm.ModelProfile {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]llm.ModelProfile, len(in))
+	for name, p := range in {
+		mp := llm.ModelProfile{
+			ContextWindowTokens: p.ContextWindowTokens,
+			TokenEstimator:      p.TokenEstimator,
+			JSONSchemaMode:      p.JSONSchemaMode,
+			ReasoningEffort:     llm.ReasoningEffort(p.ReasoningEffort),
+			MaxRetries:          p.MaxRetries,
+		}
+		if p.DefaultMaxTokens != nil {
+			v := *p.DefaultMaxTokens
+			mp.DefaultMaxTokens = &v
+		}
+		out[name] = mp
+	}
+	return out
+}
+
+// Compile-time ensure identity is imported (boot wiring reads
+// identity.Quadruple under the dev token's claims; the import is also
+// used by the dev-cmd integration test via the SignDevToken helper).
+var _ identity.Identity

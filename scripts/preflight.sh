@@ -21,6 +21,12 @@ PORT="${HARBOR_DEV_PORT:-18080}"
 DATA_DIR="$(mktemp -d -t harbor-preflight-XXXXXX)"
 PID=""
 
+# Export the data dir so phase smokes (Phase 64+ in particular) can
+# read the dev server's log file — the dev cmd prints HARBOR_DEV_TOKEN
+# to stderr at boot, and phase-64.sh parses it out to drive an
+# authenticated control-surface call.
+export HARBOR_DATA_DIR="${DATA_DIR}"
+
 cleanup() {
     if [ -n "${PID}" ]; then
         kill "${PID}" 2>/dev/null || true
@@ -41,10 +47,24 @@ fi
 # 2. Boot (skipped if binary is absent OR if the binary is a stub
 # that exits cleanly without opening the port — that condition holds
 # until the dev subcommand lands in a later phase).
+#
+# Phase 64 (D-089) makes `harbor dev` boot a real LLM-backed stack;
+# the §13 amendment requires a fail-loud at boot when no LLM provider
+# is configured. The preflight harness has no real provider, so we
+# always set HARBOR_DEV_ALLOW_MOCK=1 here — the dev cmd prints a
+# stderr banner [DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION] when
+# this fires, which the smoke captures via the server log. Production
+# operators NEVER set this env var; the only place it appears in this
+# repository is this preflight harness and the per-phase smoke tests.
 if [ -x bin/harbor ]; then
     echo "preflight: starting ./bin/harbor dev on 127.0.0.1:${PORT}"
+    # The config path: when examples/dev.yaml exists, pass it. The
+    # fail-loud-no-config smoke (phase-64.sh assertion 6) launches
+    # a SECOND short-lived dev binary against a tmp dir, so we DO
+    # need a config here for the long-lived preflight server.
     HARBOR_DATA_DIR="${DATA_DIR}" HARBOR_BIND="127.0.0.1:${PORT}" \
-        ./bin/harbor dev >"${DATA_DIR}/server.log" 2>&1 &
+    HARBOR_DEV_ALLOW_MOCK=1 \
+        ./bin/harbor dev --config examples/dev.yaml >"${DATA_DIR}/server.log" 2>&1 &
     PID=$!
     booted=0
     stub=0
