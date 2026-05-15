@@ -28,10 +28,18 @@ EXPECTED_PROTOCOL="0.1.0"
 # command tree (NewRootCmd construction), the version subcommand
 # (human + --json), each stub subcommand's structured-error shape
 # (human + --json), the CLIError JSON round-trip, the --help golden.
-if go test -race -count=1 -timeout 60s ./cmd/harbor/... >/dev/null 2>&1; then
+test_log=$(mktemp)
+if go test -race -count=1 -timeout 60s ./cmd/harbor/... >"${test_log}" 2>&1; then
     ok 'phase 63: cmd/harbor tests pass under -race (cobra root + version + stub subcommands + CLIError + golden)'
+    rm -f "${test_log}"
 else
+    # Surface what broke (§17.6 — the gate must show what it found,
+    # not just say "failed"). Silent >/dev/null masks intermittent races.
     fail 'phase 63: cmd/harbor tests failed (run: go test -race ./cmd/harbor/...)'
+    echo "    --- go test output (tail 60 lines) ---"
+    tail -60 "${test_log}" | sed 's/^/    /'
+    echo "    --- end ---"
+    rm -f "${test_log}"
 fi
 
 # 2. Built-binary checks. Preflight builds bin/harbor; if it is absent

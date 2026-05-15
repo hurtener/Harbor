@@ -23,10 +23,19 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if go test -race -count=1 -timeout 120s ./internal/tools/... >/dev/null 2>&1; then
+test_log=$(mktemp)
+if go test -race -count=1 -timeout 120s ./internal/tools/... >"${test_log}" 2>&1; then
     ok 'phase 26: internal/tools tests pass under -race (catalog + policy + inproc driver + conformance + D-025 concurrent-reuse)'
+    rm -f "${test_log}"
 else
+    # Surface what broke — silent `>/dev/null` masks intermittent
+    # races (§17.6: the gate must show what it found, not just say
+    # "failed"). Cap the tail so a long log doesn't drown the summary.
     fail 'phase 26: internal/tools tests failed (run `go test -race ./internal/tools/...` for detail)'
+    echo "    --- go test output (tail 60 lines) ---"
+    tail -60 "${test_log}" | sed 's/^/    /'
+    echo "    --- end ---"
+    rm -f "${test_log}"
 fi
 
 skip "phase 26: tool catalog has no HTTP/Protocol surface yet (lands in Phase 60+)"
