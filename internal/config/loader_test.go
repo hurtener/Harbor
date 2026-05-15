@@ -115,7 +115,6 @@ llm:
   api_key: k
   timeout: 30s
 governance:
-  default_max_tokens: 4096
   repair_attempts: 1
 `)
 	cfg, err := config.LoadFromBytes(context.Background(), yamlNoServer)
@@ -153,24 +152,24 @@ func TestEnvOverride_DurationField(t *testing.T) {
 }
 
 func TestEnvOverride_IntField(t *testing.T) {
-	t.Setenv("HARBOR_GOVERNANCE_DEFAULT_MAX_TOKENS", "16384")
+	t.Setenv("HARBOR_GOVERNANCE_REPAIR_ATTEMPTS", "5")
 	cfg, err := config.Load(context.Background(), validMinimalFixture)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Governance.DefaultMaxTokens != 16384 {
-		t.Errorf("DefaultMaxTokens = %d, want 16384", cfg.Governance.DefaultMaxTokens)
+	if cfg.Governance.RepairAttempts != 5 {
+		t.Errorf("RepairAttempts = %d, want 5", cfg.Governance.RepairAttempts)
 	}
 }
 
 func TestEnvOverride_FloatField(t *testing.T) {
-	t.Setenv("HARBOR_GOVERNANCE_COST_CEILING_USD", "12.5")
+	t.Setenv("HARBOR_LLM_CONTEXT_WINDOW_RESERVE", "0.1")
 	cfg, err := config.Load(context.Background(), validMinimalFixture)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Governance.CostCeilingUSD != 12.5 {
-		t.Errorf("CostCeilingUSD = %v, want 12.5", cfg.Governance.CostCeilingUSD)
+	if cfg.LLM.ContextWindowReserve != 0.1 {
+		t.Errorf("ContextWindowReserve = %v, want 0.1", cfg.LLM.ContextWindowReserve)
 	}
 }
 
@@ -201,7 +200,7 @@ func TestEnvOverride_PrecedenceOverYAML(t *testing.T) {
 }
 
 func TestEnvOverride_InvalidValueIsLoudFailure(t *testing.T) {
-	t.Setenv("HARBOR_GOVERNANCE_DEFAULT_MAX_TOKENS", "not-an-int")
+	t.Setenv("HARBOR_GOVERNANCE_REPAIR_ATTEMPTS", "not-an-int")
 	_, err := config.Load(context.Background(), validMinimalFixture)
 	if err == nil {
 		t.Fatal("Load returned nil for invalid env override")
@@ -209,7 +208,7 @@ func TestEnvOverride_InvalidValueIsLoudFailure(t *testing.T) {
 	if !errors.Is(err, config.ErrConfigInvalid) {
 		t.Fatalf("err=%v, want ErrConfigInvalid", err)
 	}
-	if !strings.Contains(err.Error(), "default_max_tokens") {
+	if !strings.Contains(err.Error(), "repair_attempts") {
 		t.Errorf("err=%q missing field name", err.Error())
 	}
 }
