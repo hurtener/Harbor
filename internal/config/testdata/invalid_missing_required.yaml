@@ -23,5 +23,4 @@ llm:
   timeout: 30s
 
 governance:
-  default_max_tokens: 8192
   repair_attempts: 2

@@ -33,7 +33,6 @@ llm:
       reasoning_effort: low
 
 governance:
-  default_max_tokens: 8192
   repair_attempts: 2
 
 events:

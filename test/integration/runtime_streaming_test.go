@@ -356,8 +356,7 @@ func phase12Config() *config.Config {
 			Timeout:  30 * time.Second,
 		},
 		Governance: config.GovernanceConfig{
-			DefaultMaxTokens: 4096,
-			RepairAttempts:   2,
+			RepairAttempts: 2,
 		},
 		Events: config.EventsConfig{
 			Driver:                   "inmem",

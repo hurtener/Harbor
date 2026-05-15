@@ -331,21 +331,16 @@ func validateCorrectionsProfile(name string, c *LLMCorrectionsProfileConfig) err
 }
 
 func (c *Config) validateGovernance() error {
-	if c.Governance.DefaultMaxTokens <= 0 {
-		return fieldError("governance.default_max_tokens", "must be > 0")
-	}
 	if c.Governance.RepairAttempts < 0 {
 		return fieldError("governance.repair_attempts", "must be >= 0")
 	}
-	if c.Governance.CostCeilingUSD < 0 {
-		return fieldError("governance.cost_ceiling_usd", "must be >= 0 (omit to disable)")
-	}
-	if c.Governance.RateLimitTPS < 0 {
-		return fieldError("governance.rate_limit_tps", "must be >= 0 (omit to disable)")
-	}
 	// Phase 36a / 36b — validate the IdentityTiers block. Empty map is
 	// the latent default (no enforcement); the validator rejects only
-	// malformed entries.
+	// malformed entries. The pre-Phase-36a single-knob fields
+	// (`default_max_tokens`, `cost_ceiling_usd`, `rate_limit_tps`)
+	// were removed in D-081 — the loader now emits a deprecation
+	// warning and drops them before this validator runs, so there is
+	// nothing left for `validateGovernance` to reject for those keys.
 	for name, tier := range c.Governance.IdentityTiers {
 		if name == "" {
 			return fieldError("governance.identity_tiers", "tier names must not be empty")

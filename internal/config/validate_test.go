@@ -130,24 +130,9 @@ func TestValidate_TableDriven(t *testing.T) {
 			"llm.timeout",
 		},
 		{
-			"zero default_max_tokens",
-			func(c *config.Config) { c.Governance.DefaultMaxTokens = 0 },
-			"governance.default_max_tokens",
-		},
-		{
 			"negative repair_attempts",
 			func(c *config.Config) { c.Governance.RepairAttempts = -1 },
 			"governance.repair_attempts",
-		},
-		{
-			"negative cost_ceiling_usd",
-			func(c *config.Config) { c.Governance.CostCeilingUSD = -1 },
-			"governance.cost_ceiling_usd",
-		},
-		{
-			"negative rate_limit_tps",
-			func(c *config.Config) { c.Governance.RateLimitTPS = -1 },
-			"governance.rate_limit_tps",
 		},
 		{
 			"empty artifacts driver",
