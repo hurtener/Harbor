@@ -55,9 +55,24 @@ if [ -x bin/harbor ]; then
         fi
         if ! kill -0 "${PID}" 2>/dev/null; then
             # Process exited before binding the port — stub binary.
-            wait "${PID}" 2>/dev/null
-            rc=$?
+            # `wait` returns the child's exit code; under `set -e` a
+            # non-zero exit would kill the script before we can branch
+            # on it, so we capture rc inside a conditional context.
+            rc=0
+            wait "${PID}" 2>/dev/null || rc=$?
             if [ "${rc}" -eq 0 ]; then
+                stub=1
+                PID=""
+                break
+            fi
+            # Phase 63+ stub: `harbor dev` exits non-zero with a
+            # structured CLIError {code: "not_implemented"} pointing to
+            # phase 64 (the §13 amendment). Treat that as the stub
+            # posture too — the binary is intentionally refusing to
+            # boot because the subcommand is not implemented yet. Look
+            # for the structured marker in the captured stderr/stdout
+            # log; if found, skip the boot step without failing.
+            if grep -q '"code":"not_implemented"\|not yet implemented (see phase 64' "${DATA_DIR}/server.log" 2>/dev/null; then
                 stub=1
                 PID=""
                 break
