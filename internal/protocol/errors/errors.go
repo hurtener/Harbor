@@ -73,6 +73,17 @@ const (
 	// classify into a more specific code. The catch-all; a transport
 	// adapter maps it to a 500.
 	CodeRuntimeError Code = "runtime_error"
+	// CodeAuthRejected — Phase 61 Protocol auth: the request carried a
+	// JWT bearer that failed cryptographic / structural verification —
+	// a malformed token, an `alg` outside the asymmetric allowlist
+	// (CLAUDE.md §7 rule 1), an invalid signature, an expired or
+	// not-yet-valid token, an unknown `kid`, an audience / issuer
+	// mismatch. Distinct from CodeIdentityRequired (which signals an
+	// absent identity scope, not a present-but-invalid one) — a client
+	// that gets CodeIdentityRequired needs to *attach* a token; a
+	// client that gets CodeAuthRejected has one but it failed to
+	// verify. Maps to HTTP 401.
+	CodeAuthRejected Code = "auth_rejected"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -86,6 +97,7 @@ var canonicalCodes = map[Code]struct{}{
 	CodeUnknownMethod:    {},
 	CodeNotFound:         {},
 	CodeRuntimeError:     {},
+	CodeAuthRejected:     {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

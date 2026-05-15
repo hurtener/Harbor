@@ -51,6 +51,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/protocol"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 )
@@ -60,6 +61,7 @@ import (
 type muxConfig struct {
 	logger    *slog.Logger
 	keepalive time.Duration
+	validator auth.Validator
 }
 
 // Option configures NewMux.
@@ -81,6 +83,32 @@ func WithKeepalive(d time.Duration) Option {
 	return func(c *muxConfig) {
 		if d > 0 {
 			c.keepalive = d
+		}
+	}
+}
+
+// WithValidator wires the Phase 61 JWT auth.Validator into NewMux.
+// When set, BOTH transport handlers (REST control + SSE stream) are
+// wrapped in auth.Middleware: every request must carry a verified
+// `Authorization: Bearer <jwt>`; the middleware injects the verified
+// identity + scopes into the request context.Context before the
+// underlying handler runs.
+//
+// When NOT set, the transports operate in their Phase 60 trust-based
+// posture — the REST handler inherits the ControlSurface.Dispatch
+// identity-from-body gate, the SSE handler resolves identity from
+// the X-Harbor-* carrier headers via resolveIdentity. This is what
+// keeps the Phase 60 tests passing verbatim and makes the auth
+// surface an additive, opt-in extension (the same posture Phase 60
+// took for WebSocket as an alternate transport).
+//
+// A nil validator is treated as "no auth" — the option is a no-op.
+// Building NewMux with WithValidator(nil) is the same as not
+// supplying the option at all.
+func WithValidator(v auth.Validator) Option {
+	return func(c *muxConfig) {
+		if v != nil {
+			c.validator = v
 		}
 	}
 }
@@ -131,7 +159,24 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(control.RoutePattern, controlHandler)
-	mux.Handle(stream.RoutePattern, streamHandler)
+
+	// Phase 61: when WithValidator was supplied, wrap both transport
+	// handlers in auth.Middleware. The middleware enforces the JWT
+	// bearer at the edge, injects the verified identity + scopes into
+	// r.Context(), and then calls the wrapped handler — which reads
+	// identity from ctx (preferred) or the Phase 60 trust-based
+	// carriers (fallback when WithValidator is not set).
+	var (
+		mountedControl http.Handler = controlHandler
+		mountedStream  http.Handler = streamHandler
+	)
+	if cfg.validator != nil {
+		mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+		mountedControl = mw(controlHandler)
+		mountedStream = mw(streamHandler)
+	}
+
+	mux.Handle(control.RoutePattern, mountedControl)
+	mux.Handle(stream.RoutePattern, mountedStream)
 	return mux, nil
 }

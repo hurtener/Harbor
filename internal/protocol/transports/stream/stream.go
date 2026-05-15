@@ -63,6 +63,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 )
 
 // minKeepalive is the floor WithKeepalive enforces. A keepalive interval
@@ -182,12 +183,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Identity at the edge — resolve the triple from the carrier
-	// headers. A missing component fails the request closed (401)
-	// before any subscription is opened (RFC §5.5, CLAUDE.md §6 rule 9).
+	// Identity at the edge — resolve the triple. Phase 61: when the
+	// auth.Middleware ran before us, the verified identity is in
+	// r.Context() (via identity.With) and we prefer it. Phase 60
+	// fallback: when no middleware ran, resolve from the X-Harbor-*
+	// carrier headers via resolveIdentity. A missing component on
+	// either path fails the request closed (401) before any
+	// subscription is opened (RFC §5.5, CLAUDE.md §6 rule 9).
 	id, err := resolveIdentity(r)
 	if err != nil {
 		writePlainError(w, http.StatusUnauthorized, "identity scope incomplete: "+err.Error())
+		return
+	}
+
+	// Phase 61: an `?admin=1` query param requests cross-tenant fan-in
+	// (events.Filter.Admin = true). This is gated on a verified scope
+	// claim — ScopeAdmin OR ScopeConsoleFleet. A request that asks for
+	// admin without the scope is rejected 403 (CodeScopeMismatch
+	// territory). A request that does NOT ask for admin is the default
+	// triple-scoped stream.
+	wantAdmin := r.URL.Query().Get("admin") == "1"
+	if wantAdmin && !(auth.HasScope(r.Context(), auth.ScopeAdmin) || auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
+		writePlainError(w, http.StatusForbidden, "scope_mismatch: admin fan-in requires a verified `admin` or `console:fleet` scope")
 		return
 	}
 
@@ -196,9 +213,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		User:    id.UserID,
 		Session: id.SessionID,
 		Types:   parseEventTypes(r),
-		// Admin is intentionally false — the wire stream is always
-		// triple-scoped in Phase 60 (cross-tenant fan-in needs Phase 61
-		// auth's cryptographic scope claim).
+		Admin:   wantAdmin,
 	}
 
 	sub, err := h.bus.Subscribe(r.Context(), filter)
@@ -375,11 +390,25 @@ func (h *Handler) surfaceReplayGap(
 	flusher.Flush()
 }
 
-// resolveIdentity reads the identity triple from the carrier headers and
-// validates it. This is the single identity choke point on the SSE
-// transport — Phase 61's JWT validation replaces the header reads with a
-// claims extraction without reshaping ServeHTTP.
+// resolveIdentity reads the identity triple. Phase 61: prefer the
+// verified identity attached to r.Context() by auth.Middleware
+// (identity.With). Phase 60 fallback: when no middleware ran, read
+// from the X-Harbor-* carrier headers and validate.
+//
+// This is the single identity choke point on the SSE transport — the
+// Phase 61 ctx-first preference is additive and does not reshape
+// ServeHTTP. When neither path produces a complete triple, the
+// request fails closed (401).
 func resolveIdentity(r *http.Request) (identity.Identity, error) {
+	if id, ok := identity.From(r.Context()); ok {
+		// auth.Middleware already ran identity.Validate against the
+		// JWT claims — but defence in depth, re-validate here in case
+		// some future caller attached an identity directly without
+		// going through the middleware.
+		if err := identity.Validate(id); err == nil {
+			return id, nil
+		}
+	}
 	id := identity.Identity{
 		TenantID:  r.Header.Get(HeaderTenant),
 		UserID:    r.Header.Get(HeaderUser),
