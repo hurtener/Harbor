@@ -8,8 +8,10 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 )
 
-// The canonical Phase 54 error codes — the test's independent source of
-// truth. If errors.go drifts, the stability test fails.
+// The canonical Protocol error codes — the test's independent source
+// of truth. The original seven landed in Phase 54; CodeAuthRejected
+// landed in Phase 61 (D-079). If errors.go drifts, the stability test
+// fails.
 var wantCodes = []protoerrors.Code{
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,
@@ -18,6 +20,7 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeUnknownMethod,
 	protoerrors.CodeNotFound,
 	protoerrors.CodeRuntimeError,
+	protoerrors.CodeAuthRejected,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -32,6 +35,7 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeUnknownMethod:    "unknown_method",
 		protoerrors.CodeNotFound:         "not_found",
 		protoerrors.CodeRuntimeError:     "runtime_error",
+		protoerrors.CodeAuthRejected:     "auth_rejected",
 	}
 	for code, want := range wire {
 		if string(code) != want {

@@ -72,13 +72,16 @@ fi
 # the wire transport (SSE+REST) is Phase 60; Phase 54 ships the
 # transport-agnostic surface only. The Phase 60 wire binding legitimately
 # lives under internal/protocol/transports/ and DOES import net/http
-# (D-078) — so the guard excludes that subtree: it asserts the
-# transport-AGNOSTIC packages (methods/errors/types + the ControlSurface)
-# stay net/http-free, not the transport tree built on top of them.
-if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -v '/transports/' | grep -q .; then
-    fail 'phase 54: the transport-agnostic Protocol layer imports net/http — the wire transport is Phase 60 and lives under internal/protocol/transports/ (RFC §5.4, D-072, D-078)'
+# (D-078); the Phase 61 auth middleware legitimately lives under
+# internal/protocol/auth/ and DOES import net/http (D-079, the
+# http.Handler decorator). The guard excludes both subtrees: it asserts
+# the transport-AGNOSTIC packages (methods/errors/types + the
+# ControlSurface) stay net/http-free, not the transport / auth trees
+# built on top of them.
+if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -v '/transports/' | grep -v '/auth/' | grep -q .; then
+    fail 'phase 54: the transport-agnostic Protocol layer imports net/http — the wire transport is Phase 60 and lives under internal/protocol/transports/ (RFC §5.4, D-072, D-078); the JWT middleware is Phase 61 and lives under internal/protocol/auth/ (D-079)'
 else
-    ok 'phase 54: the transport-agnostic Protocol layer does not import net/http (the SSE+REST wire binding is confined to internal/protocol/transports/ — Phase 60, D-078)'
+    ok 'phase 54: the transport-agnostic Protocol layer does not import net/http (the SSE+REST wire binding is confined to internal/protocol/transports/ — Phase 60, D-078; the JWT auth middleware is confined to internal/protocol/auth/ — Phase 61, D-079)'
 fi
 
 # Import-graph guard: the Protocol layer must NOT import the Console —
@@ -108,10 +111,10 @@ fi
 # protoerrors.Code TYPE in handler signatures + a Code→HTTP-status table
 # (it constructs no new Code constants, which the precise Phase 58 AST
 # lint — singlesource — gates exactly).
-if grep -rIn --include='*.go' 'protoerrors\.Code(' "${PROTO_PKG}/" 2>/dev/null | grep -v '/errors/' | grep -v '/transports/' | grep -q .; then
+if grep -rIn --include='*.go' 'protoerrors\.Code(' "${PROTO_PKG}/" 2>/dev/null | grep -v '/errors/' | grep -v '/transports/' | grep -v '/auth/' | grep -q .; then
     fail 'phase 54: a Protocol error Code is constructed outside internal/protocol/errors — error codes are single-sourced (CLAUDE.md §8)'
 else
-    ok 'phase 54: Protocol error codes are single-sourced in internal/protocol/errors (CLAUDE.md §8; Phase 58 formalises the AST lint, which also covers internal/protocol/transports/)'
+    ok 'phase 54: Protocol error codes are single-sourced in internal/protocol/errors (CLAUDE.md §8; Phase 58 formalises the AST lint, which also covers internal/protocol/transports/ and internal/protocol/auth/)'
 fi
 
 # §13 / §4.4 guard: the ControlSurface is an in-process handler with no

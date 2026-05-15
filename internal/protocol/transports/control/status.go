@@ -48,6 +48,13 @@ func httpStatus(code protoerrors.Code) int {
 	case protoerrors.CodeRuntimeError:
 		// An unclassified runtime-side failure — the catch-all.
 		return http.StatusInternalServerError // 500
+	case protoerrors.CodeAuthRejected:
+		// Phase 61 — the request carried a JWT bearer that failed
+		// cryptographic / structural verification. Distinct from
+		// CodeIdentityRequired (which signals no identity at all): the
+		// client supplied a token but it did not verify. 401 — the
+		// request is unauthenticated at the Protocol edge.
+		return http.StatusUnauthorized // 401
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it
