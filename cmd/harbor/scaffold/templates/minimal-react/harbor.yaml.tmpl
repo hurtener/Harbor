@@ -1,0 +1,93 @@
+# Harbor agent — {{.Name}}
+#
+# Production-shaped configuration scaffolded by `harbor scaffold`
+# (template: {{.Template}}). Before running this agent against a real
+# provider, set OPENROUTER_API_KEY in the environment OR rewrite the
+# `llm.api_key` field below to reference a different env var, and
+# review every other field for your deployment.
+#
+# This file passes Harbor's config validator with zero further edits;
+# the values are chosen to be safe defaults for a local-dev binding.
+
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+
+identity:
+  # Asymmetric algorithms only (Harbor §7 security rule 1).
+  jwt_algorithms:
+    - RS256
+    - ES256
+  # Replace issuer / audience / jwks_url with your OIDC provider's
+  # values before any non-local deployment.
+  issuer: https://issuer.example.com
+  audience: {{.Name}}
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: {{.Name}}
+
+state:
+  # Durable single-node default; flip to `postgres` (and set DSN) for
+  # multi-replica deployments.
+  driver: sqlite
+  dsn: ./{{.Name}}-state.sqlite
+
+llm:
+  # Production driver — pure-Go LLM gateway. Reads the API key from
+  # the named env var at boot; missing env var fails closed with
+  # ErrMissingAPIKey (Harbor §13 fail-loud posture).
+  driver: bifrost
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  # Resolved as os.Getenv("OPENROUTER_API_KEY") at driver construction
+  # time. Pick whichever env var your secret store populates.
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+      reasoning_effort: low
+
+governance:
+  repair_attempts: 3
+
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+
+memory:
+  driver: inmem
+  strategy: none
+  recovery_backlog_max: 16
+
+tools:
+  http_manifests: []
+  mcp_servers: []

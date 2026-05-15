@@ -51,11 +51,10 @@ Subcommands fall into three groups:
   Run inspection      inspect-events, inspect-runs, inspect-topology
   Build information   version
 
-Only ` + "`harbor version`" + ` is fully implemented at this phase; the other
-subcommands stub-fail with a structured error pointing to the phase
-that will implement them. See RFC-001-Harbor.md §8 for the settled
-subcommand surface and docs/plans/README.md for the implementation
-schedule.`,
+Subcommands without a real implementation yet stub-fail with a
+structured error pointing to the phase that will implement them. See
+RFC-001-Harbor.md §8 for the settled subcommand surface and
+docs/plans/README.md for the implementation schedule.`,
 		// SilenceUsage / SilenceErrors hand error printing to the
 		// PersistentPostRunE hook below so the structured-error
 		// shape goes through PrintCLIError (CLAUDE.md §5 "fail
