@@ -72,6 +72,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Route scoring** — Phase 29's deterministic selection of an A2A peer when more than one declares the same capability. Score formula at `internal/distributed/drivers/a2a/registry.go`: `(5 × TrustTier) + (1000 / max(1, LatencyTierMS)) + (10 × CapabilityScore)` — trust outranks latency; latency is the tie-breaker among similarly-trusted peers; capability match adds an additive boost. Tie-breakers: lower latency, then URL ascending so the result is reproducible. RFC §6.4, D-038.
 
+**`AssertNoLeaks`** — Phase 71 (`harbortest`) public assertion that walks a captured `EventLog`, derives RunID ownership per identity triple, and flags any event whose outer triple disagrees with the RunID owner (run-id cross-talk) OR whose payload embeds a foreign identity (payload cross-talk). The ergonomic, public-facing version of Harbor's cross-tenant / cross-session isolation contract. Calls `TestingT.Errorf` on failure naming the offending event + the triple disagreement. RFC §6.13, D-085.
+
+**`AssertSequence`** — Phase 71 (`harbortest`) public assertion that checks a list of `events.EventType` appears as an ordered subsequence of an `EventLog`'s captured events. Intervening event types are allowed; only the order of the want list is enforced. The right semantics for flow-level tests where bus-internal events (audit.admin_scope_used, bus.dropped) may interleave with the agent's emits. RFC §6.13, D-085.
+
 ## B
 
 **Brief** — a research artifact in `docs/research/NN-*.md`, distilled from predecessor source code and authoritative for context (not design). See `docs/research/INDEX.md`.
@@ -95,6 +99,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Capacity waiter (engine)** — Per-run `sync.Cond` the engine uses to gate `EmitChunk` when a run's pending-frame count has reached its `RunCapacity`. Released when the dispatcher drains a frame from the run's subqueue, or when `Stop` closes the engine with `ErrEngineStopped`. The mechanism that prevents the predecessor's deadlock-under-streaming sharp edge. RFC §6.1, brief 01 §4.
 
 **Circuit breaker** — Per-`(provider, key)` health monitor that trips when error rate exceeds threshold and auto-recovers on cool-down. Post-V1, phase 94. RFC §6.15.
+
+**CLIError** — the structured-error type for the Harbor CLI binary (`cmd/harbor/errors.go`, Phase 63). Carries `Subcommand` / `Message` / `Code` / `Hint`; emits a stable single-line JSON shape `{"error","code","hint"}` in `--json` mode (the `Subcommand` field is `json:"-"` — it never reaches the wire) and a human-readable `Error: harbor <subcommand>: <message> [(<hint>)]` form otherwise. `PrintCLIError(w, jsonMode, err)` is the single sink — subcommand bodies never hand-roll JSON. Distinct from `internal/protocol/errors.Error` (Protocol *wire* error codes consumed by Protocol clients); the CLI surface is operator-facing exit codes + stderr JSON, not Protocol responses, so the two have separate single-source homes — see CLAUDE.md §8. `CodeNotImplemented` is the only code Phase 63 ships; the six stub subcommands all emit it. D-084.
 
 **Code-level tool calling** — Harbor's elegance principle. The LLM emits text/JSON describing intent; the runtime parses, dispatches, and merges results. Provider-native tool calling APIs (`tools=[...]`, `tool_choice`, `function_call`) are NOT used. The runtime owns the protocol; providers don't need to. RFC §6.4 + brief 07.
 
@@ -180,6 +186,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **EventPayload** — the sealed Go interface every concrete bus payload type embeds (via `events.Sealed`) to satisfy. The seal is enforced at compile time — declaring a payload requires importing `internal/events` so external types can't bypass the contract. RFC §6.13, D-028.
 
+**`EventLog`** — Phase 71 (`harbortest`) captured event-stream surface. The result of a `RunOnce` invocation: a concurrent-safe slice of `events.Event` populated by the kit's Admin-scoped subscription to the run's bus. Exposes `All() []events.Event`, `Len() int`, and `RecordedEvents(runID) []events.Event` for per-run filtering. Producers and readers may concurrently mutate / iterate via the log's internal mutex. RFC §6.13, D-085.
+
 **Extensibility seam** — the `interface + factory + driver` pattern any subsystem with plausible alternate backends must follow. AGENTS.md §4.4.
 
 ## F
@@ -193,6 +201,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Filter (events)** — the server-enforced subscription predicate on `EventBus.Subscribe`. Mandates the identity triple (`Tenant`, `User`, `Session`) unless `Admin` is set; the bus rejects empty-triple non-admin filters with `ErrIdentityScopeRequired` and audit-emits `audit.admin_scope_used` whenever admin scope is exercised. Optional `Types` slice filters by `EventType`. RFC §6.13, brief 06 §3-§4.
 
 **Fleet control / fleet observation** — the two privilege tiers for a Console (or any Protocol client) managing one or more Harbor runtimes. *Fleet observation* — reading events, viewing topology, listing agents. *Fleet control* — pause / drain / restart / force-stop of agents. Control is a distinct, **more-elevated** privilege tier than observation (extending the §6 elevated-scope-claim concept); every control command is audit-redacted and emitted. A leaked read-only token must not be able to force-stop a fleet. RFC §6.16, §5.5, D-066.
+
+**`FaultInjector`** — Phase 71 (`harbortest`) wrapper around `tools.ToolCatalog` that lets a test author schedule per-tool failures before exercising an Agent. `harbortest.NewFaultInjector(cat)` wraps a catalog; `harbortest.SimulateFailure(inj, toolName, class, n)` queues N failures for the named tool; subsequent `Resolve(toolName).Invoke` calls pop the queue and short-circuit with a class-typed error (transient → `ErrSimulatedFailure`, permanent → `ErrToolInvalidArgs`, timeout → `context.DeadlineExceeded`). Concurrent-safe; the counter map is mutex-guarded. RFC §6.13, D-085.
 
 **Flow** — a typed DAG of `Node`s assembled into a runnable unit. Built on the same engine that powers subflows; can be registered as a Tool via `flow.RegisterAsTool(...)` so the planner invokes a multi-step orchestration the same way it invokes a single Tool. Per-node `NodePolicy` (retry / exponential backoff / timeout / validation) plus aggregate `flow.Budget` (deadline / hop budget / cost cap) compose with identity-tier Governance ceilings. RFC §6.1, D-023.
 
@@ -211,6 +221,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **FinishNoPath** — terminal `FinishReason` Phase 44's `RepairLoop` emits when the salvage / schema-repair ladder exhausts. The loop stamps `Metadata["followup"] = true` (brief 02 §6's `Followup` signal — Phase 44 carries via `Metadata` rather than adding a struct field; D-050), plus auxiliary `Metadata["repair_attempts"]`, `Metadata["repair_consecutive_arg_failures"]`, `Metadata["repair_chain"]`, `Metadata["repair_error"]` for observability. The `planner.repair_exhausted` event emit accompanies every `FinishNoPath` from the repair loop (§13 fail-loudly principle). RFC §6.2, D-050.
 
 ## G
+
+**Golden file (CLI)** — the `cmd/harbor/testdata/golden/*.txt` files the cobra golden-file tests diff against (Phase 63). `TestRoot_Help_MatchesGolden` is the canonical diff site — it runs `harbor --help` through a fresh cobra root, captures stdout, and compares against `testdata/golden/help.txt`. The `-update` flag on the test (`go test -update ./cmd/harbor/...`) regenerates the golden in place — every future phase that adds a subcommand mutates the help golden in the same PR, so the help surface stays in sync with the command tree. brief 06 §6, D-084.
 
 **Governance** — Harbor's middleware subsystem between the Runtime and the `LLMClient` driver. Owns identity-scoped policies: cost accumulators, ceilings, rate limits, MaxTokens, and (post-V1) key rotation, model swap, failover chains, circuit breakers, caching, PII redaction. The `LLMClient` interface stays one method; bifrost is unaware of identity scopes. RFC §6.15.
 
@@ -482,6 +494,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`RemoteTransport`** — Harbor's cross-process / cross-host call surface, designed end-to-end against the A2A v1 spec (`internal/distributed`). Every A2A `A2AService` RPC maps 1:1 to a Go method on this interface (Send / Stream / GetTask / ListTasks / Cancel / Subscribe / push-notification-config CRUD / GetExtendedAgentCard / Close). V1 ships an in-process loopback driver; the production A2A wire driver is Phase 29 (southbound). Identity-mandatory via `ctx`. RFC §6.12, D-031.
 
+**`RunOnce`** — Phase 71 (`harbortest`) one-shot agent runner. Constructs (or reuses) an in-mem `events.EventBus`, builds the identity quadruple, subscribes Admin-scope to capture every emit, invokes the caller's `Agent.Run(ctx, input)`, and returns the `(Output, *EventLog, error)` triple. Stack-construction errors fail loudly (`ErrStackConstruction` naming the missing component). Concurrent-safe: N=100 concurrent invocations against shared `Deps` is pinned by `harbortest/concurrent_test.go`. RFC §6.13, D-085.
+
+**`RecordedEvents(runID)`** — Phase 71 (`harbortest`) `EventLog` accessor returning the captured events whose `Identity.RunID == runID`, in arrival order. Used by test authors who share a `Deps.Bus` across multiple `RunOnce` calls and want per-run views. RFC §6.13, D-085.
+
 **`RemoteCallRequest`** — input shape for `RemoteTransport.Send` and `RemoteTransport.Stream`. Carries `AgentURL`, `Kind` (send / stream / subscribe), `ContextID`, `TaskID`, the A2A `Message`, optional `SendMessageConfiguration`, and a per-call `Timeout`. Wire-neutral; drivers translate to the configured A2A binding. RFC §6.12, D-031.
 
 **RedactedMap** — the post-redaction payload form for events whose `EventPayload` did not implement `SafePayload`. The audit redactor's reflective walk normalises a struct payload to `map[string]any`; the bus wraps that result in `RedactedMap` so it still satisfies `EventPayload` for delivery to subscribers. Subscribers extract redacted fields via `RedactedMap.Data`. RFC §6.13, D-028.
@@ -515,6 +531,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **ScopedArtifacts** — immutable facade carrying a fixed `ArtifactScope`; auto-stamps writes, scope-checks reads (returns `ErrScopeMismatch` if the underlying ref's scope ever differs). Tools and runtime use the facade exclusively — they never see raw `ArtifactScope`. `NewScoped` panics on invalid scope at construction (fail loud, AGENTS.md §5). RFC §6.10.
 
 **Scope claim** — a verified JWT scope value (`auth.ScopeAdmin` = `"admin"`, `auth.ScopeConsoleFleet` = `"console:fleet"`) the Protocol consults when granting cross-session / cross-tenant subscriptions or fleet-control privileges. Scopes are NOT isolation principals — the `(tenant, user, session)` triple stays the isolation key (CLAUDE.md §6 rule 1); a scope is an *additional* entitlement carried alongside the triple. The closed set means an attacker-injected unknown scope is silently dropped from the verified set, never honoured as a privilege. The SSE handler's `?admin=1` query is the first consumer (RFC §6.13 admin subscriptions); the Phase 30 OAuth callback's admin-bound flow is the second. RFC §4.2 + §5.5, D-079.
+
+**`SimulateFailure`** — Phase 71 (`harbortest`) public entry that schedules N failures on a wrapped tool inside a `FaultInjector`. Subsequent invocations of the named tool pop the FIFO and short-circuit with a class-typed error; once the queue empties the tool resumes normal behaviour. Stacks FIFO: two SimulateFailure calls on the same tool produce concatenated failure runs. RFC §6.13, D-085.
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
 
@@ -602,6 +620,8 @@ Additions to this set are RFC PRs.
 **Sealed (events)** — the empty `events.Sealed` struct embedded in concrete payload types to satisfy the `EventPayload` seal. Standard Go pattern (mirrors `net/netip.Addr`'s seal). External payload types compose `Sealed` directly; bus-internal types compose `SafeSealed` (which itself embeds `Sealed`) so they additionally implement `SafePayload`. RFC §6.13, D-028.
 
 **SafePayload** — a marker interface (composing `EventPayload`) for payloads whose contents are known not to carry secrets. The bus skips the audit redactor for `SafePayload` types — typed access is preserved on the subscriber side. Bus-internal payloads (`BusDroppedPayload`, `SubscriptionIdleClosedPayload`, `AuditRedactionFailedPayload`, `AdminScopeUsedPayload`) are SafePayload by construction; external payloads default to redactor-walked. RFC §6.13, D-028.
+
+**Stub subcommand** — a Phase 63 `harbor` subcommand whose body is a non-zero exit with a `CLIError{Code: CodeNotImplemented, Hint: "see phase NN — <slug>"}` (`cmd/harbor/cmd_dev.go` and the five sibling files). The pattern satisfies the §13 "test stubs as production defaults on operator-facing seams" amendment — the help text + non-zero exit code + structured stderr error make unambiguous that no work happened, so a script invoking `harbor dev` against a Phase 63 build is not fooled. The six stubs (`dev` → phase 64, `scaffold` → 67, `validate` → 68, `inspect-events` → 69, `inspect-runs` → 69, `inspect-topology` → 70) each have their `Hint` field's phase number pinned by `cmd_stub_test.go`'s table-driven assertion — a regression that re-points a subcommand to the wrong phase fails CI. `scripts/preflight.sh` is amended to recognise the §13-mandated non-zero stub exit (it greps the captured server log for `"code":"not_implemented"`) and treats it as the same posture as a clean-exit-zero stub binary — so the preflight gate stays green while Phase 63 ships. D-084.
 
 **Subscription (events)** — the typed handle returned by `EventBus.Subscribe`. Owns one bounded buffer per subscriber, drops the oldest event on saturation (emitting `bus.dropped` once per `DropWindow` with the dropped sequence range), and is reaped after `IdleTimeout` of un-drained backlog when the buffer is non-empty (a quiet bus does not trigger reaping; the reaper observes saturation, not silence). `Cancel()` is idempotent. RFC §6.13, brief 06 §4.
 

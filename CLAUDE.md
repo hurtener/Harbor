@@ -133,6 +133,7 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 ├── examples/
 │   ├── tools/                  # example tools (in-proc, HTTP, MCP, A2A)
 │   └── *.yaml                  # example configs
+├── harbortest/                 # public test kit — operator-importable from outside the module
 ├── test/integration/
 ├── scripts/
 │   ├── preflight.sh            # the preflight gate
