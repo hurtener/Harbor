@@ -76,11 +76,18 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 // via the Phase 20 tasks.TaskRegistry. A `start` request carries the
 // identity triple (RunID is ignored — Spawn assigns the TaskID) and no
 // steering scope (task creation is not a steering control).
+//
+// The method name is read from methods.MethodStart, never hardcoded —
+// the Phase 58 single-source lint forbids a Protocol method string
+// literal anywhere under internal/protocol/ outside the methods package
+// (CLAUDE.md §8; D-075).
 func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.StartResponse, error) {
+	method := methods.MethodStart
+
 	sr, ok := req.(*types.StartRequest)
 	if !ok || sr == nil {
-		return nil, protoerrors.New(protoerrors.CodeInvalidRequest,
-			"method \"start\": request is nil or not a *types.StartRequest")
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: request is nil or not a *types.StartRequest", string(method))
 	}
 
 	// Identity-mandatory at the Protocol edge (RFC §5.5). The triple is
@@ -92,7 +99,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	}
 	if err := identity.Validate(id); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
-			"method \"start\": identity scope incomplete: %v", err)
+			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
@@ -104,7 +111,7 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		IdempotencyKey: sr.IdempotencyKey,
 	})
 	if err != nil {
-		return nil, mapTaskError("start", err)
+		return nil, mapTaskError(string(method), err)
 	}
 
 	return &types.StartResponse{

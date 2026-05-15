@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
@@ -96,7 +97,7 @@ func TestControlRequest_JSONRoundTrip(t *testing.T) {
 func TestControlResponse_JSONRoundTrip(t *testing.T) {
 	in := types.ControlResponse{
 		Accepted:        true,
-		Method:          "pause",
+		Method:          string(methods.MethodPause),
 		ProtocolVersion: types.ProtocolVersion,
 	}
 	b, err := json.Marshal(in)
