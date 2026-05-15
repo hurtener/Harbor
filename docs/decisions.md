@@ -1682,3 +1682,58 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 **Wave-end E2E coupling:**
 
 - Wave 11 Stage 4's `test/integration/wave11_test.go` will exercise APPROVE/REJECT through the real `transports/control` HTTP handler. That E2E closes issue #104's Protocol-wire round-trip half. Phase 64a closes the catalog-wiring half (constraint #7).
+
+---
+
+## D-091 — Console deployment posture: separate `harbor console` subcommand serves the static build; `harbor dev` is headless at V1; shared chat module encapsulated for future packed dev UI
+
+**Date:** 2026-05-15
+**Status:** Settled (forward-binding — first consumer lands in the Console wave's `harbor console` phase)
+
+**Where it lives:** `CLAUDE.md` §4.5 (updated in this PR) + `AGENTS.md` §4.5 (mirror) + `docs/research/12-console-deployment-and-shared-ui.md` (the supporting brief, landed in this PR) + `docs/plans/README.md` (Console-wave deployment + shared-library posture pre-plan note, landed in this PR). Future code lands at `cmd/harbor/cmd_console.go`, `cmd/harbor/console_assets.go`, `web/console/`, `web/console/src/lib/chat/`.
+
+**The decision (recorded so a future planner cannot relitigate):**
+
+- **Two surfaces, one stack.** The full Console ships as a static SvelteKit build served by `harbor console`. A future single-agent developer UI (post-V1) ships embedded in `harbor dev` and reuses the Console's chat/playground components via a shared library. Both surfaces are Protocol clients (CLAUDE.md §4.5 #10); neither imports Runtime Go types.
+- **`harbor console` serves the static build via `embed.FS`.** One binary, no `--static-dir` flag in production (a developer-only escape hatch may be added later), no path-discovery bugs. The cost is a few-MB binary bloat — acceptable per CLAUDE.md §5 "Static binary." The subcommand stays foreground (ctrl-C exits, matches `npm run dev`'s shape); a future `--detach` flag is one diff away if operator pressure demands it.
+- **`harbor console` is multi-runtime by design.** It reads a `~/.harbor/console.yaml` listing runtime endpoints + auth, or `--runtime <name>=<url>` for ad-hoc additions, and bootstraps the browser-side multi-runtime context (Brief 11 §CC-1). The Console NEVER assumes a single runtime; the in-binary embedded build is identical to a remote-deployed build.
+- **`harbor dev` does NOT serve the full Console.** Phase 64 (shipped, D-089) is headless (Protocol + LLM seam only). Embedding the Console into `harbor dev` is rejected because it couples a developer's iteration loop to the operator-facing observability tool — wrong scope, wrong default. The future packed dev UI is a *subset* of the Console's surface (single-agent chat + traces + logs), shipped via a separate phase, opt-in via a `harbor dev --ui` flag (or equivalent). Post-V1.
+- **Shared chat module: encapsulate first, extract on second consumer.** The chat/playground/MCP-Apps-renderer module lives initially at `web/console/src/lib/chat/` with two hygiene rules enforced by the introducing phase: (a) no imports of other Console internals from the chat module (only the typed Protocol client, design tokens, Skeleton primitives, and the chat-module's own internals); (b) the chat module exposes a typed `ProtocolClient` interface the caller injects, never imports a Console-specific singleton. When the packed dev UI phase lands, the extraction to `web/shared/chat/` is mechanical (`git mv`). This pattern matches the §4.4 driver-seam rule: design as if multiple consumers exist; physically split when the second consumer arrives.
+- **§13 primitive-with-consumer applies.** The shared chat module's first consumer (the full Console's Playground or Live-Runtime page) lands in the SAME wave as the module itself; the module does not ship without its first call site. The future packed dev UI is the second consumer, not the first.
+- **Auth-storage model (Brief 11 §"Open architectural questions" #6 resolved).** Per-runtime JWTs stored in browser `localStorage` / `IndexedDB`, encrypted via WebCrypto with a passphrase the operator enters at first runtime-attach. Loss of passphrase invalidates stored tokens but does NOT corrupt other Console state. AES-GCM with PBKDF2-derived KEK is the obvious starting point; the `harbor console` phase plan owns the exact algorithm pin.
+- **Cross-runtime fleet view is a Console-side aggregator for V1** (Brief 11 §"Open architectural questions" #7 resolved). The `harbor console` subcommand maintains N persistent Protocol connections; fleet views aggregate client-side. Gateway pattern is post-V1.
+
+**Why these specifics matter.** The "embed the Console into `harbor dev`" trap is the natural-feeling default (one binary, one boot), but it violates CLAUDE.md §4.5 #2's decoupled-deployment principle and Brief 11 §CC-1's multi-runtime design. Pinning the posture now prevents a future Console-phase planner from re-deriving the same wrong-feeling-right answer.
+
+---
+
+## D-092 — `web/console/` pins Svelte 5 with runes mode; legacy Svelte 4 reactivity is forbidden
+
+**Date:** 2026-05-15
+**Status:** Settled (forward-binding — applies the first commit that creates `web/console/`)
+
+**Where it lives:** `CLAUDE.md` §4.5 #1 (updated in this PR) + `AGENTS.md` §4.5 #1 (mirror). Future code lands at `web/console/svelte.config.js` (`compilerOptions: { runes: true }`) and `web/console/package.json` (`"svelte": "^5.0.0"` exact pin).
+
+**The decision:**
+
+- **Svelte 5 + runes mode is the only supported reactivity model in `web/console/`.** Components use `$state`, `$derived`, `$effect`, `$props` exclusively. Legacy Svelte 4 syntax (`$:` reactive statements, top-level `let` as reactive state, `export let` props, store auto-subscription via `$store` in scripts) is rejected by `svelte-check --fail-on-warnings`.
+- **Rationale.** Svelte 5's runes model is the current major. Allowing a mixed codebase (some components in runes mode, some via `<svelte:options runes={false}>`) is the §13 "two parallel implementations" anti-pattern applied to reactivity. Pinning once at the start prevents parallel-agent dispatches from drifting silently: one agent uses `let count = 0; $: doubled = count*2`; another uses `let count = $state(0); let doubled = $derived(count*2)`. Both compile, but the codebase fragments before anyone notices.
+- **Mechanical enforcement.** The first Console phase that creates `web/console/` lands `svelte.config.js` with `compilerOptions: { runes: true }`; `package.json` pins `"svelte": "^5.0.0"`; `npm run check` in the `frontend` CI job uses `--fail-on-warnings` so any legacy-syntax usage fails the build.
+
+---
+
+## D-093 — Protocol TypeScript client generated from `internal/protocol/singlesource.CanonicalWireTypes`; never hand-written
+
+**Date:** 2026-05-15
+**Status:** Settled (forward-binding — generator + CI check land with the first Console SvelteKit phase that consumes `protocol.ts`)
+
+**Where it lives:** `CLAUDE.md` §4.5 #5 (updated in this PR) + `AGENTS.md` §4.5 #5 (mirror). Future code lands at `cmd/harbor-gen-protocol-ts/` (the generator), `web/console/src/lib/protocol.ts` (generated artifact, committed), and `Makefile` (the `protocol-ts-gen` + `protocol-ts-gen-check` targets).
+
+**The decision:**
+
+- **Generated, not hand-written.** The TS Protocol client is mirror-derived from Phase 58's `CanonicalWireTypes` registry (the Go-side single source). Hand-writing it creates the same mirror-drift trap §18 closes for `AGENTS.md` ↔ `CLAUDE.md`, but worse — Go field renames silently break the TS client at runtime, not at compile time.
+- **CI gate.** `make protocol-ts-gen-check` (called in the `frontend` CI job) re-runs the generator and asserts `git diff --exit-code` is clean. Any drift fails the build. Pattern: the Go-side primitive's owner regenerates in the same PR that changes the Go type.
+- **Generator scope.** Emit: (a) one TS interface per `CanonicalWireTypes` registered struct; (b) one method-call stub per `methods.go` constant; (c) one constant per `errors.go` error code. Do NOT emit: rendering logic, runtime helpers, or anything Console-specific. The generator is pure shape-translation; UX wrappers live in `web/console/src/lib/protocol-helpers.ts` (hand-written, calls into the generated types).
+- **§13 primitive-with-consumer.** The generator (primitive) and its first consumer (`protocol.ts` imported by the first Console SvelteKit page) ship in the same wave.
+- **Why not deferred.** "Hand-write now, switch to generated later" is the same trap as "stub now, real impl later" the §13 amendment closes: by the time the hand-written client has 80 method calls, the cost of switching is N×rewrites + drift backlog. Generating from t=0 amortises the tooling cost across the project's lifetime.
+- **Hand-edits forbidden.** The generated file's header carries `// CODE GENERATED BY cmd/harbor-gen-protocol-ts. DO NOT EDIT.`. Any commit that modifies `protocol.ts` without a corresponding regeneration fails the CI check.
