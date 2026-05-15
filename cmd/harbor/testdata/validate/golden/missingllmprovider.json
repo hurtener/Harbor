@@ -1,0 +1,1 @@
+{"error":"1 validation error in testdata/validate/missing-llm-provider.yaml","code":"validation_failed","hint":"see RFC §10 (Configuration) and CLAUDE.md §10","errors":[{"category":"config.semantic","file":"testdata/validate/missing-llm-provider.yaml","line":22,"message":"config.llm.provider: must not be empty","hint":"see examples/harbor.yaml under `llm:`"}]}

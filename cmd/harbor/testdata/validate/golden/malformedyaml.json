@@ -1,0 +1,1 @@
+{"error":"1 validation error in testdata/validate/malformed-yaml.yaml","code":"validation_failed","hint":"see RFC §10 (Configuration) and CLAUDE.md §10","errors":[{"category":"config.parse","file":"testdata/validate/malformed-yaml.yaml","line":2,"message":"yaml AST parse: [2:3] unexpected key name","hint":"fix the YAML at the indicated line"}]}
