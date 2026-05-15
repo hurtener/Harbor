@@ -1,0 +1,35 @@
+// agent_test.go — worked example of testing a Harbor agent via the
+// public `harbortest` package. RunOnce drives the agent under a
+// deterministic identity quadruple; AssertSequence pins the observed
+// event-type sequence; AssertNoLeaks catches cross-tenant / cross-
+// session payload leaks.
+//
+// See https://pkg.go.dev/github.com/hurtener/Harbor/harbortest for the
+// full surface.
+package {{.GoPackageName}}
+
+import (
+	"context"
+	"testing"
+
+	"github.com/hurtener/Harbor/harbortest"
+)
+
+// TestEchoAgent_RoundTrips exercises the scaffolded EchoAgent through
+// harbortest.RunOnce. Replace the assertions with whatever your real
+// agent emits.
+func TestEchoAgent_RoundTrips(t *testing.T) {
+	agent := &EchoAgent{}
+	out, log, err := harbortest.RunOnce(context.Background(), agent, "hello")
+	if err != nil {
+		t.Fatalf("RunOnce: unexpected error: %v", err)
+	}
+	if out != "hello" {
+		t.Errorf("RunOnce: output expected %q, got %v", "hello", out)
+	}
+	// AssertNoLeaks is the cross-session-isolation gate. Even with
+	// the scaffolded EchoAgent emitting no events, this assertion
+	// stays green — and surfaces a regression the moment your real
+	// agent emits an event under a foreign triple.
+	harbortest.AssertNoLeaks(t, log)
+}

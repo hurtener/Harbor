@@ -87,7 +87,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 64 | `harbor dev` v1 (boot runtime + protocol)     | cmd/harbor           | §8          | 63, 60                | 75%  | Pending  |
 | 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
 | 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
-| 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Pending  |
+| 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Shipped  |
 | 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Shipped  |
 | 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
 | 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
@@ -714,6 +714,8 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** `harbor scaffold my-agent` creates a buildable project; `harbor validate` returns 0.
 **Tests.** Golden output.
 **Deps.** 63.
+
+**§4.3 deviation (D-087).** Phase 67 was dispatched in parallel with Phase 68 (`harbor validate`) per CLAUDE.md §17.7 step 3. At scaffold-time, `harbor validate` is still a Phase 63 stub — calling it would exit non-zero with `not_implemented` regardless of the scaffolded config's validity. Phase 67's acceptance criterion is therefore verified against `internal/config.Load + Validate` directly (the shipped subsystem the future `harbor validate` will call), via `cmd/harbor/scaffold/scaffold_test.go::TestScaffold_RenderedConfig_PassesConfigValidate`. The cross-phase CLI integration smoke step (running `harbor validate ./harbor.yaml` after a scaffold, asserting exit 0) lands in Phase 68's PR per §17.6. The §13 primitive-with-consumer rule is satisfied — the consumer-of-the-config-validator is a real shipped subsystem (`internal/config`), not a future CLI surface.
 
 ### 68 — `harbor validate` (RFC §8)
 
