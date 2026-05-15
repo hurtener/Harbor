@@ -144,6 +144,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`DowngradeChain`** — Phase 35's structured-output retry-on-schema-error sequence. The wrapper steps the request's `OutputMode` (Harbor-side strategy) through `Native → Prompted → Text` when the inner call surfaces a schema-class failure (classified by `llm.IsInvalidJSONSchemaError`). Bounded at 3 attempts (initial + 2 downgrades); exhaustion surfaces `ErrDowngradeExhausted` wrapping the chain. Each step emits `llm.mode_downgraded` with identity + From/To/Reason. RFC §6.5; D-043.
 
+**Durable event log** — the `durable` events driver (`internal/events/drivers/durable`, Phase 57): an `EventBus` + `Replayer` that persists every published `Event` through a `StateStore`, keyed by `(SessionID, Sequence)`, so replay-from-cursor is exact and gap-free across a Runtime restart. Built from one mutable per-session head record plus one immutable entry record per event (the `StateStore` has no list/scan method). When no `StateStore` is configured the driver auto-degrades to a best-effort in-memory ring buffer and emits a LOUD `runtime.warning` — replay is then not durable across restarts. The load-bearing dependency for the post-V1 Evaluations program (D-064), which requires fully-replayable sessions. RFC §6.13, §9; brief 06 §"Roadmap"/§"Replay semantics"; D-074.
+
 ## E
 
 **`EmitChunk`** — `NodeContext` method (Phase 12) that emits a `StreamFrame`. Blocks when the originating run's pending-frame count has reached `Policy.RunCapacity`. Backpressure is per-run; one run's saturation never pauses another. The mechanism that makes streaming under parallel runs deadlock-free. RFC §6.1, brief 01 §4.

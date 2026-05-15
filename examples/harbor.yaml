@@ -195,6 +195,9 @@ governance:
   #     # No rate_limit — enterprise tier is unbounded.
 
 events:
+  # `inmem` (Phase 05/06 — in-process bus + ring-buffer replay) or
+  # `durable` (Phase 57 — StateStore-backed event log with exact,
+  # gap-free replay that survives a Runtime restart).
   driver: inmem
   # Per-session subscriber cap. The 17th subscribe in the same
   # (tenant, user, session) returns ErrSubscriberLimitReached.
@@ -208,6 +211,19 @@ events:
   # At most one bus.dropped event per subscriber per drop_window
   # — windows the drop notifications under saturation.
   drop_window: 1s
+  # Ring-buffer capacity for replay. On the `inmem` driver this is
+  # the replay ring (0 disables replay). On the `durable` driver it
+  # sizes ONLY the best-effort fallback ring used when no StateStore
+  # is configured.
+  replay_buffer_size: 10000
+  # StateStore selection for the `durable` driver — OPTIONAL and
+  # ignored by every other driver. When driver=durable and
+  # state_driver is empty, the durable driver auto-degrades to a
+  # best-effort in-memory ring buffer and emits a LOUD runtime.warning
+  # (replay is then NOT durable across restarts — D-074). state_dsn
+  # is required whenever state_driver is sqlite or postgres.
+  #   state_driver: sqlite
+  #   state_dsn: /var/lib/harbor/events.db
 
 artifacts:
   # `inmem` (per-process, dev/embedded floor), `fs` (single-binary
