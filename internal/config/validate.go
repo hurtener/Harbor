@@ -785,7 +785,71 @@ func (c *Config) validateTools() error {
 				"must be >= 0")
 		}
 	}
+	// Phase 64a catalog wiring entries (D-090). Empty list is valid;
+	// duplicate names are rejected; an entry whose Approval AND OAuth
+	// are both nil is a configuration typo (nothing to wire) and is
+	// rejected with a clear error. Policy / binding-scope strings are
+	// checked against the canonical allowlists so a typo fails at
+	// `harbor validate` time instead of at `harbor dev` boot.
+	seenEntries := make(map[string]struct{})
+	for i, e := range c.Tools.Entries {
+		prefix := fmt.Sprintf("tools.entries[%d]", i)
+		if e.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := seenEntries[e.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate entry for tool %q (must be unique)", e.Name))
+		}
+		seenEntries[e.Name] = struct{}{}
+		if e.Approval == nil && e.OAuth == nil {
+			return fieldError(prefix,
+				"at least one of `approval` or `oauth` must be set (an entry with no middleware is a configuration typo)")
+		}
+		if e.Approval != nil {
+			if _, ok := allowedApprovalPolicies[e.Approval.Policy]; !ok {
+				return fieldError(prefix+".approval.policy",
+					fmt.Sprintf("must be one of %s, got %q",
+						sortedKeys(allowedApprovalPolicies), e.Approval.Policy))
+			}
+			if e.Approval.Policy == "tagged" && len(e.Approval.RequireTags) == 0 {
+				return fieldError(prefix+".approval.require_tags",
+					"must be set when policy=\"tagged\" (a tagged policy with no tags would never trigger)")
+			}
+		}
+		if e.OAuth != nil {
+			if e.OAuth.Provider == "" {
+				return fieldError(prefix+".oauth.provider", "must not be empty")
+			}
+			if _, ok := allowedOAuthBindingScopes[e.OAuth.BindingScope]; !ok {
+				return fieldError(prefix+".oauth.binding_scope",
+					fmt.Sprintf("must be one of %s, got %q",
+						sortedKeys(allowedOAuthBindingScopes), e.OAuth.BindingScope))
+			}
+		}
+	}
 	return nil
+}
+
+// allowedApprovalPolicies mirrors the bundled `approval.ApprovalPolicy`
+// implementations (Phase 31 / D-086). Duplicated here (not imported)
+// because `internal/config` MUST NOT depend on a concrete tool-side
+// package (CLAUDE.md §4.4 — drivers depend on interfaces, not the
+// other way round). Drift between the two surfaces is caught by
+// `TestValidateTools_PolicyAllowlistMirrors_ApprovalPackage` in
+// `internal/tools/catalog`.
+var allowedApprovalPolicies = map[string]struct{}{
+	"deny-all":    {},
+	"approve-all": {},
+	"tagged":      {},
+}
+
+// allowedOAuthBindingScopes mirrors `auth.BindingScope` (Phase 30 /
+// D-083). Same duplication rationale as `allowedApprovalPolicies`.
+// Drift caught by `TestValidateTools_BindingScopeAllowlistMirrors_AuthPackage`.
+var allowedOAuthBindingScopes = map[string]struct{}{
+	"user":  {},
+	"agent": {},
 }
 
 // fieldError formats a validation error with the offending path so

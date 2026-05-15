@@ -1631,3 +1631,54 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 - The Phase 60 SSE/REST mux primitive (no first production consumer until now) is the consumer of choice. `cmd/harbor/cmd_dev.go::bootDevStack` builds a `transports.NewMux(...)`, mounts it under `/v1/`, and serves under a real `http.Server`.
 - The Phase 61 JWT auth validator primitive is the consumer of choice. The same dev stack builds a `auth.NewValidator(devSigner.KeySet(), WithRedactor(red), WithEventBus(bus))` and passes it to `transports.NewMux(..., WithValidator(validator))`.
 - The `memory.Summarizer` interface (declared by Phase 23, no production implementation until now) is the consumer of choice. `internal/llm/summarizer.New(client)` is the first non-test implementation; `harbor dev` is the first non-test caller.
+
+---
+
+## D-090 — Phase 64a tool catalog OAuth + approval wiring: per-tool `tools.entries[]` operator config + Builder + WrapWithApproval/WrapWithOAuth + approval-outermost composition order + §13 fail-loud on unknown policy/provider/tool + restart-required (hot reload deferred to Phase 65)
+
+**Date:** 2026-05-15
+**Status:** Settled
+
+**Where it lives:**
+
+- `internal/tools/catalog/catalog.go` (new package: `Builder` + `WrapWithApproval` + `WrapWithOAuth` + `Deps` + sentinels)
+- `internal/tools/catalog/catalog_test.go` (unit + allowlist mirror tests)
+- `internal/tools/catalog/concurrent_test.go` (D-025 N=128 concurrent-reuse under `-race`)
+- `internal/tools/tools.go` (new `CatalogReplacer` optional interface)
+- `internal/tools/catalog.go` (in-memory `*catalog` gains `Replace` method)
+- `internal/config/config.go` (`ToolsConfig.Entries` + `ToolEntryConfig` + `ToolApprovalConfig` + `ToolOAuthConfig`)
+- `internal/config/validate.go` (`tools.entries[]` invariants + `allowedApprovalPolicies` + `allowedOAuthBindingScopes`)
+- `internal/config/validate_test.go` (per-entry validation cases)
+- `cmd/harbor/cmd_dev.go` (boot-stack wiring: constructs catalog + Coordinator, applies `cfg.Tools.Entries`, exposes catalog + Coordinator on `devStack` for future phases)
+- `scripts/smoke/phase-64a.sh` (7 assertions: package + integration + `harbor validate` accept/reject + static guards)
+- `test/integration/phase64a_catalog_wiring_test.go` (cross-subsystem E2E: APPROVE/REJECT round-trips + OAuth happy/auth-required + composition-order pin + concurrency stress + leak)
+- `docs/plans/phase-64a-tool-catalog-wiring.md` (per-phase plan)
+- `docs/plans/README.md` (Phase 64a row appended + pre-plan note constraint #7 marked closed)
+- `README.md` (Status row Phase 64a → Shipped)
+
+**The decision (cluster, recorded so a future planner cannot relitigate):**
+
+- **Operator config shape is `tools.entries[]`.** Each entry is `{name, approval?, oauth?}`. The empty middleware block (`approval` AND `oauth` both nil) is rejected — an entry that wraps nothing is a configuration typo. Unknown policy / unknown binding scope / unknown OAuth provider / duplicate entry name / empty entry name all fail closed with a wrapped error naming the offending field path. Phase 68 `harbor validate` inherits every new rule through `internal/config.Validate` — no validator code in `cmd/harbor`.
+- **Wrapper composition order: approval outermost, OAuth innermost.** Rationale: approval is the gate operators expect to fire FIRST. A HITL "Approve call to <tool>?" prompt should pop BEFORE any OAuth dance starts; rejecting approval avoids consuming the user's OAuth-completion attention. OAuth's `*ErrAuthRequired` propagates UP through the approval wrapper unchanged (the gate's `RunGuarded` returns the inner tool's error verbatim post-APPROVE), so when OAuth is needed the planner still observes the typed sentinel and can pause. The reverse order (OAuth outermost) is rejected because it short-circuits the gate.
+- **`CatalogReplacer` interface for atomic per-tool swap.** The in-memory catalog adds a `Replace([]ToolDescriptor) error` method under its existing write lock — concurrent Resolve / List see either every old descriptor OR every new descriptor, never a partial mix. The optional interface ships on the `ToolCatalog` package surface; future catalog implementations either provide it OR document "no per-tool wiring at boot." `Deregister` is NOT added — the in-memory catalog stays write-once on Register; Replace is the seam for boot-time swap.
+- **`Builder` is one-shot.** `New(entries, deps).Apply(ctx)` runs once at boot; a second `Apply` returns `ErrAlreadyApplied`. Future hot reload (Phase 65) needs an `UnApply` path; the surface stays small for now.
+- **`AppliedGates` out-channel for in-process resolution.** The `Deps.AppliedGates` map is the optional surface that hands back the constructed gates keyed by tool name. The dev cmd captures this map so future phases (the dispatcher-side `ApprovalDispatcher` bridge) can route wire-side APPROVE/REJECT into the right gate's `pending` map. Phase 64a's integration test uses `AppliedGates` directly to drive the in-process `ResolveApproval` and exercise the wrapper end-to-end.
+- **Wire-side APPROVE/REJECT bridge deferred to the Wave 11 wave-end E2E (Stage 4).** The Protocol `approve` / `reject` methods route through steering → `Coordinator.Resume`; the gate's `pending` channels are NOT yet observed by the steering apply path. Wiring them up is a dispatcher-side `ApprovalDispatcher` or a gate-side `pause.resumed` subscriber — both substantive enough to warrant its own phase. Phase 64a's integration test exercises the gate's in-process `ResolveApproval` to PROVE the wrapper composition works end-to-end. Issue #104's Protocol-wire half is the wave-end E2E concern.
+- **OAuth provider construction deferred to a later phase.** Phase 64a wires the BINDING side (`tools.entries[].oauth.provider` resolves to a provider in `Deps.OAuthProviders`). The `tools.oauth_providers[]` operator config + the OAuth-provider-per-source construction lands when the OAuth-callback Protocol method ships. For now, the dev cmd hands `applyToolCatalogWiring` an empty providers map; an entry that declares `oauth` will fail closed at boot — the §13 fail-loud is the design.
+- **Identity is mandatory in every wrapper.** Both `WrapWithApproval` and `WrapWithOAuth` read identity via `identity.From(ctx)` at the wrapper boundary; a missing triple returns `approval.ErrIdentityRequired` / `auth.ErrIdentityRequired`. Defence in depth — the gate and the provider also enforce this, but the wrapper surfaces the error early.
+- **Coverage:** `internal/tools/catalog` lands at 89.3% (target 80%). Concurrent-reuse test under `-race` runs N=128 invocations against a single shared wrapped descriptor across both wrapper shapes; no leaks, no cross-talk.
+
+**Departures from the pre-plan note:**
+
+- Constraint #7 of the Phase 64 pre-plan note says the Wave 11 wave-end E2E exercises APPROVE/REJECT via the real `transports/control` HTTP handler. Phase 64a's integration test exercises the gate's `ResolveApproval` in-process — the wrapper composition + identity propagation + event emission are proven end-to-end, but the wire-side bridge from the steering apply path back into the gate's `pending` map is NOT in this PR. Rationale: that bridge is a substantive subsystem (a `pause.resumed` subscriber on the gate, OR a dispatcher-side `ApprovalDispatcher` owning gates) and its design touches the steering and pause/resume subsystems' contracts. Splitting it out keeps Phase 64a tractable. The Wave 11 wave-end E2E in Stage 4 is the right home for the wire-side round-trip.
+
+**§13 primitive-with-consumer rule discharge:**
+
+- The `approval.ApprovalGate` primitive (Phase 31 / D-086) gains its first non-test catalog consumer — every `tools.entries[].approval` entry constructs a gate via `approval.NewApprovalGate` and wraps the descriptor.
+- The `auth.OAuthProvider` primitive (Phase 30 / D-083) gains its first non-test catalog consumer — every `tools.entries[].oauth` entry binds the descriptor to a provider via the `WrapWithOAuth` wrapper.
+- The Phase 50 Coordinator gains a second catalog-shaped consumer (the gate routes pauses through it).
+- The Phase 26 `ToolCatalog` interface gains a sibling `CatalogReplacer` for atomic per-tool swap at boot.
+
+**Wave-end E2E coupling:**
+
+- Wave 11 Stage 4's `test/integration/wave11_test.go` will exercise APPROVE/REJECT through the real `transports/control` HTTP handler. That E2E closes issue #104's Protocol-wire round-trip half. Phase 64a closes the catalog-wiring half (constraint #7).
