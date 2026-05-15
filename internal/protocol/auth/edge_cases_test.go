@@ -67,21 +67,21 @@ func TestValidate_AuditPath_RedactorFailure_EmitsBareReason(t *testing.T) {
 	}
 }
 
-func TestValidate_WithRedactor_NilRedactor_KeepsDefault(t *testing.T) {
-	// WithRedactor(nil) must be a no-op; the validator still works.
-	priv, pub := loadTestRS256(t)
+func TestValidate_WithRedactor_NilRedactor_FailsLoud(t *testing.T) {
+	// PR #91 made WithRedactor mandatory: a nil redactor is treated
+	// as "WithRedactor not supplied" and NewValidator fails closed
+	// with ErrMisconfigured rather than building a Validator with a
+	// permissive stub default (CLAUDE.md §13 "Test stubs as
+	// production defaults on operator-facing seams").
+	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys,
+	_, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),
 		auth.WithRedactor(nil),
 	)
-	if err != nil {
-		t.Fatalf("NewValidator: %v", err)
-	}
-	tok := signRS256(t, priv, validClaims(fixedNow), "k1")
-	if _, err := v.Validate(context.Background(), tok); err != nil {
-		t.Fatalf("Validate: %v", err)
+	if !errors.Is(err, auth.ErrMisconfigured) {
+		t.Fatalf("expected ErrMisconfigured for WithRedactor(nil), got %v", err)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestValidate_ScopesShapes_Comprehensive(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}
@@ -176,6 +176,7 @@ func TestValidate_AudienceShapes_Comprehensive(t *testing.T) {
 	v, err := auth.NewValidator(keys,
 		auth.WithAudience("harbor-runtime"),
 		auth.WithClock(func() time.Time { return fixedNow }),
+		withTestRedactor(),
 	)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -234,7 +235,7 @@ func TestValidate_KIDHeaderMissing_RejectedAsUnknownKey(t *testing.T) {
 	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}

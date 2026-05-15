@@ -29,7 +29,8 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 	defer deps.cleanup()
 
 	mux, err := transports.NewMux(deps.surface, deps.bus,
-		transports.WithKeepalive(20*time.Millisecond))
+		transports.WithKeepalive(20*time.Millisecond),
+		transports.WithoutValidator())
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}
@@ -103,7 +104,8 @@ func TestGoroutineLeak_StreamsDrainAfterShutdown(t *testing.T) {
 	defer deps.cleanup()
 
 	mux, err := transports.NewMux(deps.surface, deps.bus,
-		transports.WithKeepalive(10*time.Millisecond))
+		transports.WithKeepalive(10*time.Millisecond),
+		transports.WithoutValidator())
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}

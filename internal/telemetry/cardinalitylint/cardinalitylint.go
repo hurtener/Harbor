@@ -58,6 +58,24 @@
 // root — no package-level mutable state, safe to call concurrently. The
 // Phase 56 test is the first consumer; a later phase (a `harbor lint`
 // subcommand) can call the same checker without a second implementation.
+//
+// # Scope note — the Prometheus-gatherer accessor seam
+//
+// The cardinality lint scopes its detection by lexical nesting inside
+// `metric.WithAttributes(...)` (see "Metric labels only" above). A
+// future contributor adding a Prometheus-specific instrument that
+// reaches the gatherer DIRECTLY through `telemetry.PrometheusHandler`'s
+// `PromGatherer` accessor — bypassing `metric.WithAttributes(...)` —
+// would build label sets outside the lint's detection frame. Such a
+// shape is structurally unusual (the production path goes through
+// `MetricsRegistry.RegisterEvent` → OTel SDK → the Prometheus
+// gatherer), but contributors adding a Prometheus-only collector
+// MUST re-evaluate this scope: a metric built via
+// `prometheus.NewCounterVec` directly will register labels the lint
+// never sees. The mitigation if that path lands: extend the lint's
+// detection set to also walk `prometheus.NewCounterVec` /
+// `prometheus.NewGaugeVec` (and their HistogramVec / SummaryVec
+// siblings) — the same shape this file uses for the OTel side.
 package cardinalitylint
 
 import (

@@ -100,7 +100,7 @@ func filterFor(id identity.Quadruple) events.Filter {
 // Registry + construction
 // ---------------------------------------------------------------------------
 
-func TestDurable_RegisteredDriver_OpensViaRegistry(t *testing.T) {
+func TestDurable_RegisteredDriver_IsRegistered(t *testing.T) {
 	found := false
 	for _, name := range events.RegisteredDrivers() {
 		if name == "durable" {
@@ -110,12 +110,34 @@ func TestDurable_RegisteredDriver_OpensViaRegistry(t *testing.T) {
 	if !found {
 		t.Fatalf("durable driver not in registry: %v", events.RegisteredDrivers())
 	}
-	// Registry-path Open with an empty StateDriver routes to
-	// best-effort mode (loud warning fires from New).
+}
+
+// TestDurable_RegistryOpen_EmptyStateDriver_FailsLoud — PR #91
+// amended D-074 per CLAUDE.md §13 ("Test stubs as production defaults
+// on operator-facing seams"). An operator who selects
+// `events.driver = "durable"` but leaves `events.state_driver` empty
+// MUST get a fail-loud boot error, not a silent in-memory ring.
+func TestDurable_RegistryOpen_EmptyStateDriver_FailsLoud(t *testing.T) {
 	cfg := durableCfg()
+	cfg.StateDriver = "" // explicit: no state driver
+	_, err := events.OpenDriver("durable", cfg, auditpatterns.New())
+	if err == nil {
+		t.Fatalf("expected fail-loud error for durable+empty StateDriver, got nil")
+	}
+	if !strings.Contains(err.Error(), "state_driver is required") {
+		t.Fatalf("expected error to name the missing config key, got %v", err)
+	}
+}
+
+// TestDurable_RegistryOpen_WithStateDriver_OpensSuccessfully — the
+// configured path: a real StateStore driver name opens cleanly and
+// yields a bus that satisfies events.Replayer.
+func TestDurable_RegistryOpen_WithStateDriver_OpensSuccessfully(t *testing.T) {
+	cfg := durableCfg()
+	cfg.StateDriver = "inmem"
 	bus, err := events.OpenDriver("durable", cfg, auditpatterns.New())
 	if err != nil {
-		t.Fatalf("OpenDriver(durable): %v", err)
+		t.Fatalf("OpenDriver(durable, inmem state): %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close(context.Background()) })
 	if _, ok := bus.(events.Replayer); !ok {

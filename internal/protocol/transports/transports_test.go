@@ -99,13 +99,29 @@ func TestNewMux_NilDeps_FailLoud(t *testing.T) {
 	}
 }
 
+// TestNewMux_MissingAuthChoice_FailLoud — PR #91 made the auth choice
+// mandatory: NewMux returns ErrMisconfigured when neither
+// WithValidator nor WithoutValidator is supplied (CLAUDE.md §13
+// "Test stubs as production defaults on operator-facing seams").
+func TestNewMux_MissingAuthChoice_FailLoud(t *testing.T) {
+	deps := newTestDeps(t)
+	defer deps.cleanup()
+	_, err := transports.NewMux(deps.surface, deps.bus)
+	if err == nil {
+		t.Fatal("NewMux without auth choice returned nil error; want ErrMisconfigured")
+	}
+	if !errors.Is(err, transports.ErrMisconfigured) {
+		t.Fatalf("error type = %v, want ErrMisconfigured", err)
+	}
+}
+
 // TestNewMux_RoutesBothTransports — the composed mux serves the REST
 // control route AND the SSE event route.
 func TestNewMux_RoutesBothTransports(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
 
-	mux, err := transports.NewMux(deps.surface, deps.bus)
+	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithoutValidator())
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}
@@ -163,6 +179,7 @@ func TestNewMux_Options(t *testing.T) {
 		transports.WithLogger(nil),  // ignored
 		transports.WithKeepalive(0), // ignored
 		transports.WithKeepalive(time.Second),
+		transports.WithoutValidator(),
 	)
 	if err != nil {
 		t.Fatalf("NewMux with options: %v", err)
@@ -345,22 +362,39 @@ func TestNewMux_WithValidator_BodyIdentityMismatch_Rejected(t *testing.T) {
 	}
 }
 
-// TestNewMux_WithValidator_NilValidator_NoAuthApplied — passing nil to
-// WithValidator is a no-op (the option is the same as not supplying
-// it at all). Phase 60 trust-based posture preserved.
-func TestNewMux_WithValidator_NilValidator_NoAuthApplied(t *testing.T) {
+// TestNewMux_WithValidator_NilValidator_FailsLoud — PR #91 changed
+// nil-handling on WithValidator: a nil now counts as "WithValidator
+// not supplied" and NewMux fails closed unless WithoutValidator is
+// also passed (CLAUDE.md §13 "Test stubs as production defaults on
+// operator-facing seams").
+func TestNewMux_WithValidator_NilValidator_FailsLoud(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
 
-	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithValidator(nil))
+	_, err := transports.NewMux(deps.surface, deps.bus, transports.WithValidator(nil))
+	if err == nil {
+		t.Fatal("NewMux with nil validator (no WithoutValidator) returned nil error; want ErrMisconfigured")
+	}
+	if !errors.Is(err, transports.ErrMisconfigured) {
+		t.Fatalf("error type = %v, want ErrMisconfigured", err)
+	}
+}
+
+// TestNewMux_WithoutValidator_OptInUnauthenticated — the explicit
+// test-only escape hatch lets the Phase 60 trust-based posture run
+// without a JWT validator. The body's identity is the source of
+// truth (the carrier-header / Dispatch identity-from-body gate).
+func TestNewMux_WithoutValidator_OptInUnauthenticated(t *testing.T) {
+	deps := newTestDeps(t)
+	defer deps.cleanup()
+
+	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithoutValidator())
 	if err != nil {
-		t.Fatalf("NewMux with nil validator: %v", err)
+		t.Fatalf("NewMux with WithoutValidator: %v", err)
 	}
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// No bearer — but Phase 60 trust-based posture means the body's
-	// identity is the source of truth. Should succeed.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
 	resp, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
 	if err != nil {
@@ -368,7 +402,7 @@ func TestNewMux_WithValidator_NilValidator_NoAuthApplied(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("WithValidator(nil): status %d, want 200 (Phase 60 trust-based posture preserved)", resp.StatusCode)
+		t.Errorf("WithoutValidator: status %d, want 200 (Phase 60 trust-based posture preserved)", resp.StatusCode)
 	}
 }
 
@@ -461,7 +495,7 @@ func TestNewMux_WithValidator_BearerRejected_ErrorBodyShape(t *testing.T) {
 func TestNewMux_UnknownRoute_404(t *testing.T) {
 	deps := newTestDeps(t)
 	defer deps.cleanup()
-	mux, err := transports.NewMux(deps.surface, deps.bus)
+	mux, err := transports.NewMux(deps.surface, deps.bus, transports.WithoutValidator())
 	if err != nil {
 		t.Fatalf("NewMux: %v", err)
 	}

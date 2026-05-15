@@ -262,6 +262,7 @@ func TestMiddleware_AuditOnRejection_DoesNotLeakToken(t *testing.T) {
 	v, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC) }),
 		auth.WithLogger(rec.slog()),
+		withTestRedactor(),
 	)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)

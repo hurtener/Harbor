@@ -686,6 +686,8 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 
 **Pre-assigned decisions slot:** Phase 64's plan claims a `D-NNN` number when dispatched and records: (a) the `mock` → `bifrost` default flip; (b) the chosen escape-hatch mechanism (`--mock` flag vs env var); (c) the LLM-backed default `Summarizer` location (in-package vs new `internal/llm/summarizer/` subpackage); (d) any deliberate carve-out from the §13 entry above (requires an RFC PR — bake the carve-out into the RFC, then reference it here).
 
+**First production consumer of Phase 55's W3C carriers.** Phase 64 is the first production consumer of `telemetry.InjectHTTP` / `telemetry.ExtractHTTP` (the HTTP carrier helpers Phase 55 shipped as standalone functions — see issue [#94](https://github.com/hurtener/Harbor/issues/94)). The plan threads `traceparent` through `tools/drivers/http` on outbound calls and extracts on inbound — `internal/protocol/transports/control` + `tools/drivers/mcp` follow the same shape. This is the §13 primitive-with-consumer obligation closed for the Phase 55 carriers; before Phase 64 they are dormant helpers exercised only by unit tests.
+
 **Departures from this note require an RFC PR.** This note is binding, not advisory — it encodes a Wave 10 audit finding (the §13 amendment above) that future plan-authors do not have visibility into. Treat it as the equivalent weight of an RFC section.
 
 ### 65 — `harbor dev` hot-reload (RFC §8)

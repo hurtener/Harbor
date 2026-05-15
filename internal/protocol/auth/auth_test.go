@@ -200,7 +200,7 @@ func newRSValidator(t *testing.T, fixedNow time.Time) (auth.Validator, *rsa.Priv
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}
@@ -212,7 +212,7 @@ func newESValidator(t *testing.T, fixedNow time.Time) (auth.Validator, *ecdsa.Pr
 	priv, pub := loadTestES256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "ES256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}
@@ -223,9 +223,24 @@ func newESValidator(t *testing.T, fixedNow time.Time) (auth.Validator, *ecdsa.Pr
 var fixedNow = time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
 func TestNewValidator_NilKeySet_FailsLoud(t *testing.T) {
-	_, err := auth.NewValidator(nil)
+	_, err := auth.NewValidator(nil, withTestRedactor())
 	if !errors.Is(err, auth.ErrMisconfigured) {
 		t.Fatalf("expected ErrMisconfigured, got %v", err)
+	}
+}
+
+// TestNewValidator_MissingRedactor_FailsLoud — the WithRedactor option
+// is mandatory after PR #91 (CLAUDE.md §13 "Test stubs as production
+// defaults on operator-facing seams"); construction without it must
+// fail closed with ErrMisconfigured rather than building a Validator
+// that uses a permissive in-process stub.
+func TestNewValidator_MissingRedactor_FailsLoud(t *testing.T) {
+	keys := newStaticKeySet()
+	_, pub := loadTestRS256(t)
+	keys.add("k1", "RS256", pub)
+	_, err := auth.NewValidator(keys)
+	if !errors.Is(err, auth.ErrMisconfigured) {
+		t.Fatalf("expected ErrMisconfigured (missing redactor), got %v", err)
 	}
 }
 
@@ -393,6 +408,7 @@ func TestValidate_IssuerMismatch(t *testing.T) {
 	v, err := auth.NewValidator(keys,
 		auth.WithIssuer("https://idp.expected"),
 		auth.WithClock(func() time.Time { return fixedNow }),
+		withTestRedactor(),
 	)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -411,6 +427,7 @@ func TestValidate_AudienceMismatch(t *testing.T) {
 	v, err := auth.NewValidator(keys,
 		auth.WithAudience("harbor-runtime"),
 		auth.WithClock(func() time.Time { return fixedNow }),
+		withTestRedactor(),
 	)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -431,6 +448,7 @@ func TestValidate_AudienceMatch_AcceptsArrayClaim(t *testing.T) {
 	v, err := auth.NewValidator(keys,
 		auth.WithAudience("harbor-runtime"),
 		auth.WithClock(func() time.Time { return fixedNow }),
+		withTestRedactor(),
 	)
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -492,7 +510,7 @@ func TestValidate_KeySetReturnsNonAsymmetric_RejectedAsUnknownKey(t *testing.T) 
 	// shape an algorithm-confusion attack would need.
 	keys := newStaticKeySet()
 	keys.add("k1", "HS256", []byte("not-asymmetric"))
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}
@@ -510,7 +528,7 @@ func TestValidate_KIDMismatchesAlg_KeySetSaysES256_TokenSaysRS256(t *testing.T) 
 	// Lie about the algorithm of kid k1 — the kid resolves to an
 	// ECDSA key but the KeySet says ES256, while the token uses RS256.
 	keys.add("k1", "ES256", ecPub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}

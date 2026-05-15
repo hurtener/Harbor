@@ -100,3 +100,31 @@ func TestError_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
 	}
 }
+
+// TestCodes_ReturnsCanonicalSetSorted — Codes() returns the canonical
+// set in deterministic lexicographic order, matching wantCodes
+// (modulo ordering). Added PR #91 / D-082 (Wave 10 audit WARN-4) so
+// the conformance suite's exhaustiveness check can derive from
+// Codes() rather than a hardcoded count.
+func TestCodes_ReturnsCanonicalSetSorted(t *testing.T) {
+	got := protoerrors.Codes()
+	if len(got) != len(wantCodes) {
+		t.Fatalf("Codes() length = %d, want %d (the canonical set size)", len(got), len(wantCodes))
+	}
+	// Every canonical code from wantCodes must appear in Codes().
+	gotSet := make(map[protoerrors.Code]struct{}, len(got))
+	for _, c := range got {
+		gotSet[c] = struct{}{}
+	}
+	for _, want := range wantCodes {
+		if _, ok := gotSet[want]; !ok {
+			t.Errorf("Codes() missing canonical code %q", want)
+		}
+	}
+	// Lexicographic order.
+	for i := 1; i < len(got); i++ {
+		if string(got[i-1]) > string(got[i]) {
+			t.Errorf("Codes() not lex-sorted: %q before %q", got[i-1], got[i])
+		}
+	}
+}

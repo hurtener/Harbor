@@ -45,7 +45,7 @@ func TestConcurrentReuse_Validator(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestConcurrentReuse_Validator_CancellationIsolated(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
 	keys.add("k1", "RS256", pub)
-	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }))
+	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
 	}

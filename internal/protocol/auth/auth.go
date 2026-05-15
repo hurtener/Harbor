@@ -82,6 +82,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
@@ -198,6 +199,7 @@ type validatorConfig struct {
 	now      func() time.Time
 	logger   *slog.Logger
 	redactor audit.Redactor
+	bus      events.EventBus
 }
 
 // Option configures NewValidator.
@@ -239,13 +241,37 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithRedactor sets the audit.Redactor the validator runs audit
-// payloads through before logging. A nil redactor keeps the default
-// (a no-op pass-through; the validator NEVER logs the raw token, so
-// the redactor is defence-in-depth for the issuer / kid / subject).
+// payloads through before logging. The redactor is **mandatory** —
+// NewValidator fails closed with ErrMisconfigured when this option is
+// not supplied (CLAUDE.md §7 rule 6: "every payload goes through
+// audit.Redactor"; CLAUDE.md §13 "Test stubs as production defaults
+// on operator-facing seams"). A nil redactor is treated as
+// "unsupplied" and is rejected by NewValidator the same way.
 func WithRedactor(r audit.Redactor) Option {
 	return func(c *validatorConfig) {
 		if r != nil {
 			c.redactor = r
+		}
+	}
+}
+
+// WithEventBus wires an events.EventBus into the Validator so the
+// audit emit on every rejection ALSO publishes a canonical
+// `auth.rejected` event onto the bus (PR #91 amendment to D-079).
+// The bus is OPTIONAL — when not supplied (or nil), rejections still
+// emit a structured slog.Warn through the configured Redactor; the
+// bus emit is an additive observability surface that lets a Console
+// subscribe to auth rejections through the Protocol's canonical
+// event channel rather than scraping logs.
+//
+// Production wiring (the registry-path NewMux path) SHOULD inject
+// the bus so the Console sees rejections; the test-only escape
+// hatch (a Validator constructed without a bus) keeps the existing
+// per-package tests pinning the slog-only contract.
+func WithEventBus(b events.EventBus) Option {
+	return func(c *validatorConfig) {
+		if b != nil {
+			c.bus = b
 		}
 	}
 }
@@ -271,13 +297,21 @@ type jwtValidator struct {
 	now      func() time.Time
 	logger   *slog.Logger
 	redactor audit.Redactor
+	bus      events.EventBus // nil ⇒ slog-only audit emit
 }
 
 // NewValidator builds a JWT Validator over the supplied KeySet.
 //
-// The KeySet is mandatory — a nil fails loud with ErrMisconfigured
-// rather than building a validator that would reject every token
-// (CLAUDE.md §5: fail closed).
+// Both the KeySet AND an audit.Redactor (via WithRedactor) are
+// mandatory. A nil KeySet — or omission of WithRedactor — fails loud
+// with ErrMisconfigured rather than building a validator that would
+// reject every token (KeySet) or log raw payloads unredacted
+// (Redactor; CLAUDE.md §7 rule 6 — "every payload goes through
+// audit.Redactor" — and CLAUDE.md §13 "Test stubs as production
+// defaults on operator-facing seams"). Production callers wire
+// `audit/drivers/patterns.New()` as the redactor; tests wire a
+// real or test-local Redactor via the `auth_test` package or a
+// _test.go-local stub.
 //
 // The returned Validator is immutable after construction (D-025) and
 // safe for concurrent use by N goroutines.
@@ -287,12 +321,16 @@ func NewValidator(keys KeySet, opts ...Option) (Validator, error) {
 	}
 
 	cfg := validatorConfig{
-		now:      time.Now,
-		logger:   slog.Default(),
-		redactor: noopRedactor{},
+		now:    time.Now,
+		logger: slog.Default(),
+		// redactor is intentionally left nil here so the post-opts
+		// guard below catches the "WithRedactor not supplied" case.
 	}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	if cfg.redactor == nil {
+		return nil, fmt.Errorf("%w: WithRedactor is required (CLAUDE.md §7 rule 6 — every payload goes through audit.Redactor)", ErrMisconfigured)
 	}
 
 	// jwt.WithValidMethods is the load-bearing parser-level allowlist:
@@ -316,6 +354,7 @@ func NewValidator(keys KeySet, opts ...Option) (Validator, error) {
 		now:      cfg.now,
 		logger:   cfg.logger,
 		redactor: cfg.redactor,
+		bus:      cfg.bus,
 	}, nil
 }
 
@@ -438,11 +477,18 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}, nil
 }
 
-// audit emits a redacted slog.Warn for a rejection. The raw token is
-// NEVER passed in — only the kid (already a public header), the iss /
-// sub (audited identifiers), and the rejection reason. The Redactor
-// runs the payload as defence-in-depth in case a custom kid happens to
-// match a secret-shaped pattern.
+// audit emits a redacted slog.Warn for a rejection AND (when
+// WithEventBus was supplied) publishes the canonical
+// `auth.rejected` event onto the bus. The raw token is NEVER passed
+// in — only the kid (already a public header), the iss / sub
+// (audited identifiers), and the rejection reason. The Redactor
+// runs the payload as defence-in-depth in case a custom kid happens
+// to match a secret-shaped pattern.
+//
+// PR #91 / D-082: the bus emit was added per the Wave 10 audit's
+// WARN-3 so a Console subscribing to the canonical event bus sees
+// auth rejections alongside every other rejection-class signal.
+// The bus is optional; the slog emit is unconditional.
 func (v *jwtValidator) audit(ctx context.Context, kid, iss, sub string, reason error) {
 	payload := map[string]any{
 		"kid":    kid,
@@ -450,16 +496,81 @@ func (v *jwtValidator) audit(ctx context.Context, kid, iss, sub string, reason e
 		"sub":    sub,
 		"reason": reason.Error(),
 	}
-	red, err := v.redactor.Redact(ctx, payload)
-	if err != nil {
+	red, redErr := v.redactor.Redact(ctx, payload)
+	if redErr != nil {
 		// Redactor failed loud: emit the bare reason without the
 		// payload — never silently degrade. CLAUDE.md §5.
 		v.logger.WarnContext(ctx, "auth: jwt rejected (redactor failed; bare reason emitted)",
 			slog.String("reason", reason.Error()),
-			slog.String("redactor_error", err.Error()))
+			slog.String("redactor_error", redErr.Error()))
 		return
 	}
 	v.logger.WarnContext(ctx, "auth: jwt rejected", slog.Any("audit", red))
+
+	// Bus emit (optional). The auth.rejected event uses a sentinel
+	// identity triple (authEdgeIdentity) because a rejected request
+	// has no verified identity yet — events.ValidateEvent requires
+	// the full triple, so the event is keyed to the auth-edge
+	// surface and a Console subscribes via the Admin filter or via
+	// the sentinel tenant directly. The payload IS SafePayload —
+	// no caller-controlled bytes — but defence-in-depth, the
+	// fields are derived from the redacted view (the redactor's
+	// output) rather than the raw inputs.
+	if v.bus == nil {
+		return
+	}
+	reasonStr := redactedString(red, "reason", reason.Error())
+	kidStr := redactedString(red, "kid", kid)
+	issStr := redactedString(red, "iss", iss)
+	subStr := redactedString(red, "sub", sub)
+	ev := events.Event{
+		Type:       EventTypeAuthRejected,
+		Identity:   authEdgeIdentity,
+		OccurredAt: v.now(),
+		Payload: AuthRejectedPayload{
+			Reason:  reasonStr,
+			KID:     kidStr,
+			Issuer:  issStr,
+			Subject: subStr,
+		},
+	}
+	// A Publish failure here MUST NOT propagate — auth-edge audit
+	// is best-effort observability and the rejection HTTP response
+	// has already been determined upstream. We log the failure
+	// loudly (CLAUDE.md §5) so an operator sees the bus drift.
+	if err := v.bus.Publish(ctx, ev); err != nil {
+		v.logger.WarnContext(ctx, "auth: failed to publish auth.rejected event",
+			slog.String("publish_error", err.Error()),
+			slog.String("reason", reasonStr))
+	}
+}
+
+// redactedString returns key's string value from the redactor's
+// output when present (and a string); falls back to the original
+// fallback value otherwise. This protects against a custom redactor
+// that returns a wholly-replaced object — the bus emit prefers the
+// redacted view, but never crashes when the shape is unexpected.
+func redactedString(red any, key, fallback string) string {
+	if m, ok := red.(map[string]any); ok {
+		if v, ok := m[key].(string); ok {
+			return v
+		}
+	}
+	return fallback
+}
+
+// authEdgeIdentity is the sentinel identity triple under which
+// `auth.rejected` events publish. A rejected request has no verified
+// identity — `events.ValidateEvent` requires the full triple, so the
+// audit emit lives under this surface and a Console subscribes by
+// matching the tenant (`harbor-auth`) or by using the Admin filter.
+// The values are documented constants — no operator data leaks in.
+var authEdgeIdentity = identity.Quadruple{
+	Identity: identity.Identity{
+		TenantID:  "harbor-auth",
+		UserID:    "auth-edge",
+		SessionID: "auth-edge",
+	},
 }
 
 // extractScopes pulls the `scopes` JWT claim into the typed Scope set.
@@ -591,15 +702,4 @@ func mapParserError(err error) error {
 		return ErrSignatureInvalid
 	}
 	return ErrTokenMalformed
-}
-
-// noopRedactor is a permissive Redactor used as the default when
-// WithRedactor is not supplied. It returns the payload unchanged —
-// the audit emit path NEVER passes the raw token in, so the noop is
-// safe; an operator who configures WithRedactor gets the canonical
-// patterns redactor as defence-in-depth on the kid / iss / sub.
-type noopRedactor struct{}
-
-func (noopRedactor) Redact(_ context.Context, payload any) (any, error) {
-	return payload, nil
 }

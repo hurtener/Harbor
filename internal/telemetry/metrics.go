@@ -433,3 +433,56 @@ func PrometheusHandler(reg *MetricsRegistry) (http.Handler, error) {
 	}
 	return promhttp.HandlerFor(pg.PrometheusGatherer(), promhttp.HandlerOpts{}), nil
 }
+
+// BridgeBusToMetrics wires an events.EventBus → MetricsRegistry
+// bridge: it subscribes to the bus with the supplied filter and
+// calls reg.RegisterEvent for every delivered event. The returned
+// `stop` function cancels the subscription and joins the drain
+// goroutine; production callers `defer stop()` at process teardown.
+//
+// PR #91 / D-082 (Wave 10 audit WARN-6): this helper pins the
+// events→metrics wiring shape in production code BEFORE the Phase 64
+// `harbor dev` bootstrap reinvents it. Phase 56 originally shipped
+// the bridge only as a test-local goroutine in
+// `test/integration/phase56_metrics_test.go::drainToMetrics`;
+// extracting it here exposes one canonical contract for the future
+// server bootstrap to consume.
+//
+// Both bus and reg are mandatory; a nil either returns
+// ErrBridgeMisconfigured. The filter is the standard events.Filter
+// shape — production wiring passes a triple-scoped filter for a
+// per-session bridge, or an Admin filter for a fleet-wide bridge
+// (the wire identity scope on the events.Filter is the caller's
+// responsibility — the bridge does NOT widen the boundary).
+//
+// The bridge is fail-soft on a per-event RegisterEvent (the OTel
+// counter Add is in-memory and cannot fail), so the drain goroutine
+// runs until the subscription channel closes — same lifecycle the
+// existing test-local drainToMetrics implementation pinned.
+func BridgeBusToMetrics(ctx context.Context, bus events.EventBus, reg *MetricsRegistry, f events.Filter) (stop func(), err error) {
+	if bus == nil {
+		return nil, fmt.Errorf("%w: events.EventBus is nil", ErrBridgeMisconfigured)
+	}
+	if reg == nil {
+		return nil, fmt.Errorf("%w: *MetricsRegistry is nil", ErrBridgeMisconfigured)
+	}
+	sub, err := bus.Subscribe(ctx, f)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: bridge subscribe failed: %w", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sub.Events() {
+			reg.RegisterEvent(context.Background(), ev)
+		}
+	}()
+	return func() {
+		sub.Cancel()
+		<-done
+	}, nil
+}
+
+// ErrBridgeMisconfigured — BridgeBusToMetrics was called with a nil
+// bus or registry. Fails closed (CLAUDE.md §5).
+var ErrBridgeMisconfigured = errors.New("telemetry: BridgeBusToMetrics missing a mandatory dependency")

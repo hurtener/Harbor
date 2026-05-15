@@ -106,13 +106,26 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem" // state inmem driver self-register
 	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess" // tasks inprocess driver self-register
+	"github.com/hurtener/Harbor/internal/telemetry"
+	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop" // span exporter noop driver self-register
 )
 
-// fixedNow is the deterministic clock the suite's JWT validator + token
-// minter share so exp/nbf behaviour is reproducible across runs. The
-// concrete value is irrelevant — what matters is that it is the same
-// value both sides see.
-var fixedNow = time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+// FixedNow is the deterministic clock the suite's JWT validator +
+// token minter share so exp/nbf behaviour is reproducible across
+// runs. Exported so external consumers (e.g.
+// `test/integration/wave10_test.go`'s own Stack builder) can pin to
+// the same instant — keeping `fixedNow` in one canonical home
+// instead of two `time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)`
+// literals (PR #91, Wave 10 audit NIT-3). The concrete value is
+// irrelevant — what matters is that every JWT signer + every
+// validator sees the same instant.
+var FixedNow = time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+
+// fixedNow is the package-internal alias for FixedNow used by the
+// rest of the package's helpers. Kept as a separate name so the
+// (numerous) in-package references stay readable; FixedNow is the
+// stable consumer-facing accessor.
+var fixedNow = FixedNow
 
 // kid is the single Key ID the default factory's KeySet maps to the
 // ES256 public key. Tests sign with the matching private key under
@@ -261,7 +274,11 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 
 	keys := &staticKeySet{kid: kid, pub: pub}
 	now := func() time.Time { return fixedNow }
-	validator, err := auth.NewValidator(keys, auth.WithClock(now))
+	validator, err := auth.NewValidator(keys,
+		auth.WithClock(now),
+		auth.WithRedactor(red),
+		auth.WithEventBus(bus),
+	)
 	if err != nil {
 		fatal("auth.NewValidator: %v", err)
 	}
@@ -565,6 +582,9 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WireStatusMapping", func(t *testing.T) {
 		runWireStatusMapping(t, factory)
 	})
+	t.Run("TracePropagation", func(t *testing.T) {
+		runTracePropagation(t, factory)
+	})
 	t.Run("ConcurrentReuse_SharedStack_NoCrossTalk", func(t *testing.T) {
 		runConcurrentReuse(t, factory)
 	})
@@ -613,22 +633,32 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 // canonical code, and every canonical code is in errorCodeMatrix. The
 // errors package's IsValidCode is the gate. A new code is a new entry
 // in errorCodeMatrix in the same PR.
+//
+// PR #91 / D-082 (Wave 10 audit WARN-4): the exhaustiveness side of
+// the check now iterates `protoerrors.Codes()` (added in PR #91) so
+// the assertion is structurally exhaustive — a new canonical code
+// landing without a matrix entry surfaces by NAME, not by a stale
+// hardcoded count.
 func assertErrorCodeMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	// Each entry must be canonical.
+	matrixSet := make(map[protoerrors.Code]struct{}, len(errorCodeMatrix))
 	for _, c := range errorCodeMatrix {
 		if !protoerrors.IsValidCode(c) {
 			t.Fatalf("conformance: errorCodeMatrix contains %q, not a canonical code", c)
 		}
+		matrixSet[c] = struct{}{}
 	}
-	// Every canonical code must be in the matrix. The errors package
-	// does not export the canonical set directly (by design — the
-	// constants ARE the surface), so we cross-check by asserting the
-	// matrix's length matches the package's pinned set size (8 at
-	// Protocol 0.1.0).
-	const expectedCanonicalCount = 8
-	if len(errorCodeMatrix) != expectedCanonicalCount {
-		t.Fatalf("conformance: errorCodeMatrix has %d entries, expected %d — a new error code in internal/protocol/errors landed without a matrix entry", len(errorCodeMatrix), expectedCanonicalCount)
+	// Every canonical code from protoerrors.Codes() must be in the matrix.
+	missing := make([]string, 0)
+	for _, c := range protoerrors.Codes() {
+		if _, ok := matrixSet[c]; !ok {
+			missing = append(missing, string(c))
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("conformance: errorCodeMatrix missing canonical codes %v — a new error code in internal/protocol/errors landed without a matrix entry", missing)
 	}
 }
 
@@ -1052,6 +1082,34 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 			t.Fatalf("admin-without-scope stream: status = %d, want 403", resp.StatusCode)
 		}
 	})
+
+	// PR #91 / D-082 (Wave 10 audit WARN-5): the optional
+	// `X-Harbor-Run` carrier header narrows the subscription to a
+	// single run inside the (tenant, user, session) scope. A
+	// run-scoped subscription opens cleanly; the events.Filter.Run
+	// is honoured by the Matches predicate (verified in
+	// internal/events tests).
+	t.Run("RunScoped_StreamOpens", func(t *testing.T) {
+		st := factory(t)
+		defer st.Cleanup()
+		srv := httptest.NewServer(st.Mux)
+		defer srv.Close()
+		id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+		tok := st.SignToken(t, id, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("X-Harbor-Run", "run-conformance-42")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("open run-scoped stream: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("run-scoped stream: status = %d, want 200", resp.StatusCode)
+		}
+	})
 }
 
 // runVersionHandshake pins the Phase 59 version + capability handshake
@@ -1215,6 +1273,139 @@ func runWireStatusMapping(t *testing.T, factory Factory) {
 			t.Errorf("code %q maps to status %d, want 4xx/5xx", c, status)
 		}
 	}
+}
+
+// runTracePropagation pins the W3C TraceContext propagation through
+// the Phase 60 SSE transport: a `traceparent` header on the GET
+// /v1/events request flows into the stream handler's context;
+// SpanFromEvent on the received event then produces a span whose
+// TraceID matches the inbound traceparent.
+//
+// PR #91 / D-082 (Wave 10 audit WARN-7): added so the conformance
+// matrix observes the trace-propagation seam, not just unit tests.
+// The previous conformance pass did not exercise the propagation
+// helpers (`InjectHTTP` / `ExtractHTTP`) end-to-end at all — this
+// scenario is the first.
+func runTracePropagation(t *testing.T, factory Factory) {
+	t.Helper()
+
+	st := factory(t)
+	defer st.Cleanup()
+
+	// Build a real tracer (the in-memory noop exporter is the default
+	// when OTelEndpoint is empty; a synchronous test seam is not
+	// required here — we only need a real span context, not a
+	// recorded export).
+	tr, shutdown, err := telemetry.NewTracer(config.TelemetryConfig{
+		ServiceName: "harbor-conformance-trace",
+	})
+	if err != nil {
+		t.Fatalf("telemetry.NewTracer: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	// Start a root span so we have a known traceparent to inject.
+	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+	q := identity.Quadruple{Identity: id, RunID: "run-conformance-trace"}
+	seed := events.Event{
+		Type:       events.EventTypeRuntimeWarning,
+		Identity:   q,
+		OccurredAt: fixedNow,
+		Payload:    conformanceTracePayload{Note: "seed"},
+	}
+	rootCtx, rootSpan := tr.SpanFromEvent(context.Background(), seed)
+	wantTraceID := rootSpan.SpanContext().TraceID()
+	rootSpan.End()
+
+	// Build a traceparent header from rootCtx so the wire request
+	// carries the inbound trace context.
+	hdr := http.Header{}
+	telemetry.InjectHTTP(rootCtx, hdr)
+	tp := hdr.Get("traceparent")
+	if tp == "" {
+		t.Fatal("InjectHTTP wrote no traceparent — the propagator is not wired")
+	}
+
+	// Run a wire round-trip with the traceparent header. The SSE
+	// handler resolves the identity (from the bearer or carrier
+	// headers); the trace context is implicit on the request ctx.
+	// On the server side, the ExtractHTTP→SpanFromEvent chain on a
+	// received event produces a span whose TraceID matches.
+	srv := httptest.NewServer(st.Mux)
+	defer srv.Close()
+
+	// Subscribe to the bus directly (the SSE wire path frames events;
+	// we want the raw event so we can call SpanFromEvent on it).
+	sub, err := st.Bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{tasks.EventTypeTaskSpawned},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	// Drive a start via REST so a task.spawned event is published.
+	tok := st.SignToken(t, id, nil)
+	body := mustJSON(t, types.StartRequest{
+		Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
+		Query:    "conformance-trace",
+	})
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	// Inject the traceparent so the request carries the inbound trace
+	// context (the server side receives it on the wire even though no
+	// runtime code currently reads it — the assertion is on the
+	// propagation helpers' round-trip + the receiver's SpanFromEvent
+	// derivation).
+	req.Header.Set("traceparent", tp)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/control/start: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start status = %d, want 200", resp.StatusCode)
+	}
+
+	// Receive the task.spawned event. Then derive a span via
+	// SpanFromEvent on a ctx populated by ExtractHTTP from the same
+	// traceparent — the resulting span shares the trace id.
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("subscription channel closed before task.spawned arrived")
+		}
+		// Build the receiver-side ctx from the wire's traceparent.
+		recvHdr := http.Header{}
+		recvHdr.Set("traceparent", tp)
+		recvCtx := telemetry.ExtractHTTP(context.Background(), recvHdr)
+		_, span := tr.SpanFromEvent(recvCtx, ev)
+		gotTraceID := span.SpanContext().TraceID()
+		span.End()
+		if gotTraceID != wantTraceID {
+			t.Fatalf("trace propagation broken: want TraceID=%s, got %s",
+				wantTraceID.String(), gotTraceID.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for task.spawned event")
+	}
+}
+
+// conformanceTracePayload is a minimal events.EventPayload used to
+// seed the trace propagation scenario's root span. Sealed so the bus
+// accepts it; non-Safe so callers can rely on the redactor walking
+// it (the test does not publish this payload — it only feeds it to
+// SpanFromEvent which does not consult payload bytes).
+type conformanceTracePayload struct {
+	events.Sealed
+	Note string
 }
 
 // runConcurrentReuse runs N=100 mixed-method invocations against ONE

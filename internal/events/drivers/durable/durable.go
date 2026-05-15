@@ -101,11 +101,14 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// withOwnStore marks the bus as the owner of the StateStore it was
-// handed — Close then closes the store. Used only by the registry
-// factory, which opens the store itself; the New-path leaves the
-// caller as the store owner.
-func withOwnStore() Option {
+// optWithOwnedStore marks the bus as the owner of the StateStore it
+// was handed — Close then closes the store. Registry-internal: the
+// registry-path factory below opens the store itself and uses this
+// option to tell Close to dispose of it; the public `New(...)` path
+// leaves the caller as the store owner. Name disambiguates from the
+// public `Option`-typed accessors (WithClock / WithLogger) which are
+// exported for tests + operator wiring.
+func optWithOwnedStore() Option {
 	return func(b *bus) { b.ownStore = true }
 }
 
@@ -157,13 +160,22 @@ func New(cfg config.EventsConfig, r audit.Redactor, store state.StateStore, opts
 
 // init registers the durable factory. Because events.Factory does not
 // carry a state.StateStore, the registry-path factory opens the
-// StateStore itself from EventsConfig.StateDriver / StateDSN. An empty
-// StateDriver routes to best-effort mode (the loud warning fires from
-// New).
+// StateStore itself from EventsConfig.StateDriver / StateDSN.
+//
+// PR #91 amended D-074 per the CLAUDE.md §13 "Test stubs as
+// production defaults on operator-facing seams" rule: the
+// registry-path factory now fails LOUD AT BOOT when StateDriver is
+// empty rather than auto-degrading to the in-memory ring. An
+// operator who explicitly selected `events.driver = "durable"` has
+// signalled they want durability; silently producing a non-durable
+// bus is exactly the operator-confusion failure mode §13 forbids.
+// Configurations that want the in-memory ring select
+// `events.driver = "inmem"`; tests that exercise the degraded mode
+// keep the in-process `New(..., store=nil, ...)` constructor below.
 func init() {
 	events.Register("durable", func(cfg config.EventsConfig, r audit.Redactor) (events.EventBus, error) {
 		if cfg.StateDriver == "" {
-			return New(cfg, r, nil)
+			return nil, fmt.Errorf("durable: events.state_driver is required when driver=durable; configure a state driver (e.g. inmem, sqlite, postgres) or pick events.driver=inmem")
 		}
 		store, err := state.Open(context.Background(), config.StateConfig{
 			Driver: cfg.StateDriver,
@@ -172,7 +184,7 @@ func init() {
 		if err != nil {
 			return nil, fmt.Errorf("durable: open StateStore driver %q: %w", cfg.StateDriver, err)
 		}
-		return New(cfg, r, store, withOwnStore())
+		return New(cfg, r, store, optWithOwnedStore())
 	})
 }
 
