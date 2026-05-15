@@ -1,18 +1,25 @@
 // Command harbor is the Harbor binary entry point.
 //
-// Wave 2 ships only the driver-registration blank-imports: every
-// production driver self-registers in its own init() so the
-// audit / events / state factories resolve when something Opens
-// them. The actual subcommand router (`harbor dev`, `harbor
-// scaffold`, …) plus full subsystem bootstrap lands in Phase 09+
-// per the master plan.
+// Phase 63 (RFC §8, D-084) turns this from a driver-registration stub
+// into a cobra-rooted CLI. The blank-import block below keeps every
+// production driver self-registering via its init() (so the audit /
+// events / state / artifacts / memory / skills / tools / telemetry /
+// llm / governance / distributed factories resolve when something
+// Opens them — the §4.4 seam pattern). The cobra command tree lives in
+// root.go (NewRootCmd) and is executed here.
 //
-// Until that lands, `./bin/harbor` builds, runs, and exits cleanly
-// — the preflight gate detects the clean exit and skips the boot
-// step (see scripts/preflight.sh).
+// Only `harbor version` is fully implemented at this phase. The other
+// six subcommands (`dev`, `scaffold`, `validate`, `inspect-events`,
+// `inspect-runs`, `inspect-topology`) are stubs that exit non-zero
+// with a structured CLIError pointing to their implementing phase —
+// the §13 "test stubs as production defaults" amendment is satisfied
+// by the structured error + non-zero exit.
 package main
 
 import (
+	"fmt"
+	"os"
+
 	// Artifacts drivers — content-addressed blob store. Each V1
 	// driver self-registers via init() so `artifacts.Open` can resolve
 	// them. Phase 17 ships fs + inmem; Phase 18 adds sqlite +
@@ -111,5 +118,23 @@ import (
 )
 
 func main() {
-	// Stub. Subcommand router + subsystem bootstrap lands in Phase 09+.
+	root := NewRootCmd()
+	err := root.Execute()
+	if err == nil {
+		return
+	}
+	// Cobra has already routed a CLIError through the subcommand's
+	// RunE → emitCLIError → PrintCLIError chain (SilenceErrors on the
+	// root suppresses cobra's own printing). Defensive fallback: if
+	// the error is NOT a CLIError (e.g. flag-parse failure before any
+	// RunE ran), surface a structured error here so the operator
+	// never sees a bare cobra trace. Fail loudly per CLAUDE.md §5.
+	if _, ok := asCLIError(err); !ok {
+		fallback := CLIError{
+			Message: fmt.Sprintf("invocation error: %s", err.Error()),
+			Code:    "invocation_error",
+		}
+		_ = PrintCLIError(os.Stderr, false, fallback)
+	}
+	os.Exit(1)
 }

@@ -83,7 +83,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 60 | Protocol wire transport (SSE + REST)          | protocol             | §5.4, §11Q1 | 58, 05                | 85%  | Shipped  |
 | 61 | Protocol auth + identity-scope enforcement    | protocol             | §5.5, §4    | 58, 60, 01            | 90%  | Shipped  |
 | 62 | Protocol conformance suite                    | protocol             | §5          | 58, 60, 61            | 85%  | Shipped  |
-| 63 | Harbor CLI skeleton (`harbor` + cobra)        | cmd/harbor           | §8          | 60                    | 70%  | Pending  |
+| 63 | Harbor CLI skeleton (`harbor` + cobra)        | cmd/harbor           | §8          | 60                    | 70%  | Shipped  |
 | 64 | `harbor dev` v1 (boot runtime + protocol)     | cmd/harbor           | §8          | 63, 60                | 75%  | Pending  |
 | 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
 | 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
