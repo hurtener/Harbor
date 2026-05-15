@@ -68,12 +68,17 @@ else
     fi
 fi
 
-# Static guard: the Protocol layer must NOT import net/http — the wire
-# transport (SSE+REST) is Phase 60; Phase 54 is transport-agnostic.
-if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -q .; then
-    fail 'phase 54: internal/protocol imports net/http — the wire transport is Phase 60; Phase 54 ships the transport-agnostic surface only (RFC §5.4, D-072)'
+# Static guard: the Phase 54 control surface must NOT import net/http —
+# the wire transport (SSE+REST) is Phase 60; Phase 54 ships the
+# transport-agnostic surface only. The Phase 60 wire binding legitimately
+# lives under internal/protocol/transports/ and DOES import net/http
+# (D-078) — so the guard excludes that subtree: it asserts the
+# transport-AGNOSTIC packages (methods/errors/types + the ControlSurface)
+# stay net/http-free, not the transport tree built on top of them.
+if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -v '/transports/' | grep -q .; then
+    fail 'phase 54: the transport-agnostic Protocol layer imports net/http — the wire transport is Phase 60 and lives under internal/protocol/transports/ (RFC §5.4, D-072, D-078)'
 else
-    ok 'phase 54: internal/protocol does not import net/http (transport-agnostic — the SSE+REST wire binding lands in Phase 60)'
+    ok 'phase 54: the transport-agnostic Protocol layer does not import net/http (the SSE+REST wire binding is confined to internal/protocol/transports/ — Phase 60, D-078)'
 fi
 
 # Import-graph guard: the Protocol layer must NOT import the Console —
@@ -98,11 +103,15 @@ fi
 # Single-source guard (CLAUDE.md §8): no Protocol error Code constant is
 # declared outside internal/protocol/errors. The codes are the
 # client-facing contract; a second definition site is the §13 anti-pattern
-# Phase 58 formalises a lint for.
-if grep -rIn --include='*.go' 'protoerrors\.Code(' "${PROTO_PKG}/" 2>/dev/null | grep -v '/errors/' | grep -q .; then
+# Phase 58 formalises a lint for. The grep excludes internal/protocol/
+# transports/ — the Phase 60 wire transport legitimately *consumes* the
+# protoerrors.Code TYPE in handler signatures + a Code→HTTP-status table
+# (it constructs no new Code constants, which the precise Phase 58 AST
+# lint — singlesource — gates exactly).
+if grep -rIn --include='*.go' 'protoerrors\.Code(' "${PROTO_PKG}/" 2>/dev/null | grep -v '/errors/' | grep -v '/transports/' | grep -q .; then
     fail 'phase 54: a Protocol error Code is constructed outside internal/protocol/errors — error codes are single-sourced (CLAUDE.md §8)'
 else
-    ok 'phase 54: Protocol error codes are single-sourced in internal/protocol/errors (CLAUDE.md §8; Phase 58 formalises the lint)'
+    ok 'phase 54: Protocol error codes are single-sourced in internal/protocol/errors (CLAUDE.md §8; Phase 58 formalises the AST lint, which also covers internal/protocol/transports/)'
 fi
 
 # §13 / §4.4 guard: the ControlSurface is an in-process handler with no
