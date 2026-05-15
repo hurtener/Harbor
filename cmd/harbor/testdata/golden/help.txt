@@ -1,0 +1,33 @@
+harbor is the command-line entry point for the Harbor agent runtime SDK.
+
+Subcommands fall into three groups:
+
+  Local dev loop      dev, scaffold, validate
+  Run inspection      inspect-events, inspect-runs, inspect-topology
+  Build information   version
+
+Only `harbor version` is fully implemented at this phase; the other
+subcommands stub-fail with a structured error pointing to the phase
+that will implement them. See RFC-001-Harbor.md §8 for the settled
+subcommand surface and docs/plans/README.md for the implementation
+schedule.
+
+Usage:
+  harbor [command]
+
+Available Commands:
+  dev              boot the local Runtime + Protocol server (Phase 64)
+  help             Help about any command
+  inspect-events   tail or filter the event bus of a running Runtime (Phase 69)
+  inspect-runs     list recent runs and inspect a run's trajectory (Phase 69)
+  inspect-topology render a run's node graph as ASCII (Phase 70)
+  scaffold         generate a new agent skeleton from a template (Phase 67)
+  validate         validate config / skills / agent definitions without booting (Phase 68)
+  version          print harbor semver, protocol version, and build hash
+
+Flags:
+  -h, --help    help for harbor
+      --json    emit machine-readable JSON output instead of human-readable text
+      --quiet   suppress informational output (errors still emit)
+
+Use "harbor [command] --help" for more information about a command.
