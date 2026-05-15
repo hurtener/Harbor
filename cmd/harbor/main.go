@@ -94,6 +94,14 @@ import (
 	// them.
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlp"
+	// Telemetry metric exporters — Phase 56 OTel metrics. The
+	// prometheus driver is the default (built-in /metrics pull
+	// endpoint, no collector); the otlpmetric driver pushes metrics to
+	// an OTLP/gRPC collector when telemetry.otel_endpoint is
+	// configured. Both self-register via init() so
+	// `telemetry.NewMetricsRegistry` resolves them.
+	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlpmetric"
+	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/prometheus"
 	// Tools driver — Phase 29 A2A southbound ToolProvider. The package
 	// has no init-time registration (catalogs are constructed in code,
 	// not from a factory registry); the blank import documents the
