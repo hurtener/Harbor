@@ -87,6 +87,13 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
 	// Tasks driver — production in-process TaskRegistry (Phase 20), registered via init().
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
+	// Telemetry span exporters — Phase 55 OTel traces. The noop driver
+	// is the default (no collector); the otlp driver ships spans to an
+	// OTLP/gRPC collector when telemetry.otel_endpoint is configured.
+	// Both self-register via init() so `telemetry.NewTracer` resolves
+	// them.
+	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop"
+	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlp"
 	// Tools driver — Phase 29 A2A southbound ToolProvider. The package
 	// has no init-time registration (catalogs are constructed in code,
 	// not from a factory registry); the blank import documents the
