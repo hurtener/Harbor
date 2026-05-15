@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"reflect"
 	"strconv"
@@ -33,12 +34,54 @@ var (
 // by joining sub-paths with another underscore.
 const envPrefix = "HARBOR_"
 
+// LoadOption customises a Load / LoadFromBytes call. Options compose
+// in declaration order; later options override earlier ones for the
+// same setting.
+type LoadOption func(*loadConfig)
+
+// loadConfig is the internal bundle a chain of LoadOption populates.
+type loadConfig struct {
+	logger *slog.Logger
+}
+
+// resolveLoadConfig walks the options chain and fills defaults for
+// any setting an option did not supply.
+func resolveLoadConfig(opts []LoadOption) loadConfig {
+	cfg := loadConfig{logger: slog.Default()}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.logger == nil {
+		cfg.logger = slog.Default()
+	}
+	return cfg
+}
+
+// WithLogger overrides the slog.Logger the config loader emits
+// structured warnings on (e.g. the `config.deprecated_field` warning
+// surfaced when a removed YAML key appears in a config — D-081). A
+// nil logger keeps the default (`slog.Default()`); callers that want
+// to capture the warnings in a test build a logger over a bytes
+// buffer and pass it here.
+func WithLogger(l *slog.Logger) LoadOption {
+	return func(c *loadConfig) {
+		if l != nil {
+			c.logger = l
+		}
+	}
+}
+
 // Load reads a YAML configuration file at path, applies
 // HARBOR_-prefixed environment overrides, runs Validate, and returns
 // an immutable *Config. The returned error is wrapped under either
 // ErrConfigNotFound (if the file is missing) or ErrConfigInvalid
 // (parse / override / validate failure).
-func Load(ctx context.Context, path string) (*Config, error) {
+//
+// Options customise the load (e.g. WithLogger to redirect the
+// deprecation-warning surface). No-option calls log via slog.Default().
+func Load(ctx context.Context, path string, opts ...LoadOption) (*Config, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -49,7 +92,7 @@ func Load(ctx context.Context, path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	cfg, err := loadFromBytesNamed(ctx, data, path)
+	cfg, err := loadFromBytesNamed(ctx, data, path, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -59,19 +102,29 @@ func Load(ctx context.Context, path string) (*Config, error) {
 // LoadFromBytes parses raw YAML bytes (typically from tests). It
 // applies the same env-var overrides and validation pipeline as Load,
 // but does not record a filesystem source — error messages will
-// include "(source: <bytes>)" instead of a path.
-func LoadFromBytes(ctx context.Context, data []byte) (*Config, error) {
-	return loadFromBytesNamed(ctx, data, "<bytes>")
+// include "(source: <bytes>)" instead of a path. Options mirror Load.
+func LoadFromBytes(ctx context.Context, data []byte, opts ...LoadOption) (*Config, error) {
+	return loadFromBytesNamed(ctx, data, "<bytes>", opts...)
 }
 
 // loadFromBytesNamed is the shared implementation. The name is used
 // only for error messages; it has no effect on parsing.
-func loadFromBytesNamed(ctx context.Context, data []byte, source string) (*Config, error) {
+func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ...LoadOption) (*Config, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	lc := resolveLoadConfig(opts)
+	// Strip deprecated governance keys from the byte stream BEFORE the
+	// strict decode would reject them. Each stripped key emits a single
+	// `config.deprecated_field` slog.Warn (D-081). Operators migrating
+	// from a pre-Phase-36a config rebuild the values under
+	// `governance.identity_tiers`.
+	cleaned, err := stripDeprecatedGovernanceKeys(data, source, lc.logger)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: parse: %w", ErrConfigInvalid, source, err)
+	}
 	cfg := defaults()
-	if err := yaml.UnmarshalWithOptions(data, cfg, yaml.Strict()); err != nil {
+	if err := yaml.UnmarshalWithOptions(cleaned, cfg, yaml.Strict()); err != nil {
 		return nil, fmt.Errorf("%w: %s: parse: %w", ErrConfigInvalid, source, err)
 	}
 	cfg.source = source
@@ -139,8 +192,7 @@ func defaults() *Config {
 			},
 		},
 		Governance: GovernanceConfig{
-			DefaultMaxTokens: 4096,
-			RepairAttempts:   3,
+			RepairAttempts: 3,
 		},
 		Events: EventsConfig{
 			Driver:                   "inmem",

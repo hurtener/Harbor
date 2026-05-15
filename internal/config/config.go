@@ -273,25 +273,30 @@ type LLMCostOverridesConfig struct {
 	Currency       string  `yaml:"currency,omitempty"`
 }
 
-// GovernanceConfig holds the V1 governance policy surface (cost
-// ceilings, rate limits, default MaxTokens). Hot-reload candidates
-// (CostCeilingUSD, RateLimitTPS) will opt in via `reload:"live"` when
-// the governance subsystem ships its hot-reload code path; not in V1.
+// GovernanceConfig holds the V1 governance policy surface — per-tier
+// cost ceilings, rate limits, and MaxTokens caps — all enforced
+// exclusively through `IdentityTiers` (Phase 36a + 36b). Hot-reload is
+// not yet wired; every field is restart-required.
 //
 // **Latent default (Wave 7b scoping):** an empty `IdentityTiers` map +
 // empty `DefaultTier` disables every per-policy enforcement. Operators
 // turn on enforcement per tier by populating `IdentityTiers` with at
 // least one `GovernanceTierConfig` entry and (optionally) setting
-// `DefaultTier`. The legacy single-knob fields (`DefaultMaxTokens`,
-// `CostCeilingUSD`, `RateLimitTPS`) are PRE-Phase-36a stubs preserved
-// so existing yaml files don't break — they are NOT consumed by the
-// Phase 36a/36b governance subsystem (which reads exclusively from
-// `IdentityTiers`).
+// `DefaultTier`.
+//
+// **Removed in D-081 (chore/governance-config-consolidation):** the
+// pre-Phase-36a single-knob fields `default_max_tokens`,
+// `cost_ceiling_usd`, and `rate_limit_tps` are no longer accepted on
+// `GovernanceConfig`. They were validated-but-ignored stubs: the
+// loader took them, the enforcement engine never consumed them, and an
+// operator setting `cost_ceiling_usd: 100` in YAML saw silent no-op
+// behaviour. The loader now emits a structured
+// `config.deprecated_field` slog warning when any of those keys
+// appears in YAML, drops the value, and proceeds. Operators migrating
+// from a pre-Phase-36a config build a `default` tier with the
+// equivalent values under `IdentityTiers`.
 type GovernanceConfig struct {
-	DefaultMaxTokens int     `yaml:"default_max_tokens"`
-	CostCeilingUSD   float64 `yaml:"cost_ceiling_usd,omitempty"`
-	RateLimitTPS     float64 `yaml:"rate_limit_tps,omitempty"`
-	RepairAttempts   int     `yaml:"repair_attempts"`
+	RepairAttempts int `yaml:"repair_attempts"`
 
 	// DefaultTier is the tier name applied to an identity that does
 	// not match a custom resolver mapping. Empty = no default tier =
@@ -300,7 +305,7 @@ type GovernanceConfig struct {
 
 	// IdentityTiers maps tier name to its policy bundle. Empty = no
 	// enforcement (latent default). Each entry's fields are
-	// independently opt-in — set `cost_ceiling_usd` only to enforce
+	// independently opt-in — set `budget_ceiling_usd` only to enforce
 	// cost ceilings, leaving rate-limit + MaxTokens latent.
 	IdentityTiers map[string]GovernanceTierConfig `yaml:"identity_tiers,omitempty"`
 }
