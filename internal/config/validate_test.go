@@ -762,6 +762,163 @@ func TestValidateTools_MCPServers(t *testing.T) {
 	}
 }
 
+// TestValidateTools_Entries exercises the per-tool catalog-wiring
+// declaration validator (Phase 64a / D-090). Covers: unknown policy,
+// invalid binding scope, duplicate name, empty middleware block, the
+// tagged-policy require_tags check, and the happy paths.
+func TestValidateTools_Entries(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantOK  bool
+		wantSub string
+	}{
+		{
+			name:   "empty entries passes",
+			mutate: func(c *config.Config) { c.Tools.Entries = nil },
+			wantOK: true,
+		},
+		{
+			name: "approval deny-all entry passes",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "delete_doc", Approval: &config.ToolApprovalConfig{Policy: "deny-all"}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "approval approve-all entry passes",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "read_doc", Approval: &config.ToolApprovalConfig{Policy: "approve-all"}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "approval tagged entry passes",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "write_prod", Approval: &config.ToolApprovalConfig{
+						Policy:      "tagged",
+						RequireTags: []string{"sensitive"},
+					}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "oauth entry passes",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "github_read", OAuth: &config.ToolOAuthConfig{
+						Provider: "github", BindingScope: "user",
+					}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "approval AND oauth on the same entry passes",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{
+						Name:     "github_write",
+						Approval: &config.ToolApprovalConfig{Policy: "deny-all"},
+						OAuth:    &config.ToolOAuthConfig{Provider: "github", BindingScope: "user"},
+					},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "empty name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Approval: &config.ToolApprovalConfig{Policy: "deny-all"}},
+				}
+			},
+			wantSub: "tools.entries[0].name",
+		},
+		{
+			name: "duplicate name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "x", Approval: &config.ToolApprovalConfig{Policy: "deny-all"}},
+					{Name: "x", Approval: &config.ToolApprovalConfig{Policy: "approve-all"}},
+				}
+			},
+			wantSub: "duplicate entry",
+		},
+		{
+			name: "no middleware (empty entry) rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{{Name: "x"}}
+			},
+			wantSub: "at least one of",
+		},
+		{
+			name: "unknown approval policy rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "x", Approval: &config.ToolApprovalConfig{Policy: "bogus"}},
+				}
+			},
+			wantSub: "tools.entries[0].approval.policy",
+		},
+		{
+			name: "tagged policy without require_tags rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "x", Approval: &config.ToolApprovalConfig{Policy: "tagged"}},
+				}
+			},
+			wantSub: "tools.entries[0].approval.require_tags",
+		},
+		{
+			name: "empty oauth provider rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "x", OAuth: &config.ToolOAuthConfig{BindingScope: "user"}},
+				}
+			},
+			wantSub: "tools.entries[0].oauth.provider",
+		},
+		{
+			name: "invalid oauth binding_scope rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "x", OAuth: &config.ToolOAuthConfig{
+						Provider: "p", BindingScope: "bogus",
+					}},
+				}
+			},
+			wantSub: "tools.entries[0].oauth.binding_scope",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected ok, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected validation failure, got nil")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
 func TestIsValidationError(t *testing.T) {
 	cfg := mustLoadValid(t)
 	cfg.Server.BindAddr = ""

@@ -77,3 +77,36 @@ func (c *catalog) List(filter CatalogFilter) []Tool {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// Replace implements the CatalogReplacer interface. It atomically
+// swaps each named descriptor in `wrapped` with its wrapped version
+// under the catalog's write lock — concurrent Resolve / List callers
+// see either every old descriptor OR every new descriptor, never a
+// partial mix.
+//
+// Phase 64a / D-090 — the catalog wiring builder calls this once at
+// boot AFTER every underlying tool registration has landed.
+//
+// Replace returns ErrToolNotFound (wrapped) when any `wrapped[i]`
+// names a tool not currently in the catalog. In that case NO
+// replacement happens — the failure is all-or-nothing.
+func (c *catalog) Replace(wrapped []ToolDescriptor) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Validate first; mutate second.
+	for _, d := range wrapped {
+		if d.Tool.Name == "" {
+			return wrap(ErrToolNotFound, "Replace: descriptor has empty Tool.Name")
+		}
+		if d.Invoke == nil {
+			return wrap(ErrToolNotFound, "Replace: descriptor %q has nil Invoke", d.Tool.Name)
+		}
+		if _, exists := c.byName[d.Tool.Name]; !exists {
+			return wrap(ErrToolNotFound, "Replace: tool %q is not registered", d.Tool.Name)
+		}
+	}
+	for _, d := range wrapped {
+		c.byName[d.Tool.Name] = d
+	}
+	return nil
+}

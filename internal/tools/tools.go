@@ -276,6 +276,33 @@ type ToolCatalog interface {
 	List(filter CatalogFilter) []Tool
 }
 
+// CatalogReplacer is the optional surface a ToolCatalog exposes when
+// it supports atomic per-tool descriptor replacement at boot. The
+// Phase 64a catalog wiring (internal/tools/catalog.Builder) uses
+// this to install wrapped descriptors over previously-registered
+// names without a Deregister+Register round trip (which would race
+// concurrent Resolve calls).
+//
+// Replacement semantics:
+//   - Each descriptor in `wrapped` MUST name an already-registered
+//     Tool (the builder enforces this via Resolve BEFORE calling
+//     Replace). Otherwise Replace returns ErrToolNotFound naming
+//     the offending tool.
+//   - Replacement is atomic from the catalog's external view: a
+//     concurrent Resolve sees EITHER every old descriptor OR every
+//     new descriptor, never a half-applied mix.
+//   - Descriptors NOT named in `wrapped` are untouched.
+//
+// A catalog implementation that does not support replacement skips
+// this interface. Callers branch on the type assertion; the absence
+// is the signal.
+type CatalogReplacer interface {
+	// Replace atomically swaps each named descriptor in `wrapped`
+	// with its wrapped version. Returns ErrToolNotFound (wrapped)
+	// when any name does not resolve.
+	Replace(wrapped []ToolDescriptor) error
+}
+
 // ToolProvider is the seam for external tool sources. Phase 27+
 // drivers (HTTP, MCP, A2A) implement Connect / Discover / Close to
 // pull in remote tools as ToolDescriptors. The in-process registrar

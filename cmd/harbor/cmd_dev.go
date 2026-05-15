@@ -92,9 +92,14 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
+	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 )
 
 // Stable CLI error codes for `harbor dev`. New codes ADD entries to
@@ -418,6 +423,40 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	closers = append(closers, taskReg.Close)
 
+	// Tool catalog + Phase 64a catalog wiring (D-090). The dev cmd
+	// constructs an empty catalog; operators register tools either via
+	// in-process Go code (their own embedding harness) or — once
+	// Phase 27/28/29 manifests are loaded — via the configured tool
+	// sources. The Phase 64a wiring step is applied LAST so any
+	// `tools.entries[]` declared in `harbor.yaml` auto-wraps its
+	// matching descriptors with the declared approval / OAuth
+	// middleware. An entry naming a tool that is not registered fails
+	// the boot loud (CLAUDE.md §13 amendment).
+	//
+	// The shared `pauseresume.Coordinator` is the unified pause/resume
+	// primitive (Phase 50 / D-067). Future phases that need to pause
+	// for OAuth or approval read this same Coordinator from
+	// `devStack.coordinator` — there is NEVER a second Coordinator
+	// instance (CLAUDE.md §13).
+	toolCat := tools.NewCatalog()
+	coord := pauseresume.New()
+	appliedGates, oauthProviders, applyErr := applyToolCatalogWiring(ctx, cfg, toolCat, coord, bus, red)
+	if applyErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tools/catalog: %w", applyErr)
+	}
+	// Approval gates close cleanly when the dev stack drains; close in
+	// reverse-dependency order with the rest of the subsystems.
+	for _, g := range appliedGates {
+		gate := g
+		closers = append(closers, func(closeCtx context.Context) error { return gate.Close(closeCtx) })
+	}
+	// OAuth providers also close cleanly.
+	for _, p := range oauthProviders {
+		prov := p
+		closers = append(closers, func(closeCtx context.Context) error { return prov.Close(closeCtx) })
+	}
+
 	steeringReg := steering.NewRegistry()
 
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
@@ -508,6 +547,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		allowMock:       opts.allowMock,
 		effectiveDriver: driverName,
 		closeFns:        closers,
+		toolCatalog:     toolCat,
+		coordinator:     coord,
+		appliedGates:    appliedGates,
 	}, nil
 }
 
@@ -524,6 +566,12 @@ type devStack struct {
 	allowMock       bool
 	effectiveDriver string
 	closeFns        []func(context.Context) error
+	// Phase 64a (D-090) surfaces — the tool catalog + Coordinator are
+	// constructed by bootDevStack; future phases that grow per-tool
+	// dispatch logic read these from the stack.
+	toolCatalog  tools.ToolCatalog
+	coordinator  pauseresume.Coordinator
+	appliedGates map[string]*toolapproval.ApprovalGate
 }
 
 // serve binds the listener and runs the http.Server until ctx
@@ -590,6 +638,52 @@ func (s *devStack) close(ctx context.Context) {
 	for i := len(s.closeFns) - 1; i >= 0; i-- {
 		_ = s.closeFns[i](ctx)
 	}
+}
+
+// applyToolCatalogWiring is the Phase 64a (D-090) integration point:
+// reads `cfg.Tools.Entries` and applies the catalog wiring builder
+// against `cat`. Returns the set of applied gates + OAuth providers
+// so the dev stack can register their Close functions.
+//
+// When `cfg.Tools.Entries` is empty, this is a no-op — the catalog
+// stays as the operator registered it (via in-process Go code,
+// Phase 27/28/29 manifests, etc.).
+//
+// Fail-loud semantics: every error path returns a wrapped error;
+// missing/unknown tool/policy/provider crashes boot. CLAUDE.md §13
+// amendment.
+//
+// NOTE: Phase 64a does NOT yet construct OAuth providers from
+// operator config (a `tools.oauth_providers` block lands in a later
+// phase). For now, if an entry declares OAuth, the wiring fails
+// because no providers are wired. The fail-loud is the design — an
+// operator who declares `tools.entries[].oauth` without configuring
+// a provider gets a clear error pointing at the gap.
+func applyToolCatalogWiring(
+	ctx context.Context,
+	cfg *config.Config,
+	cat tools.ToolCatalog,
+	coord pauseresume.Coordinator,
+	bus events.EventBus,
+	red audit.Redactor,
+) (map[string]*toolapproval.ApprovalGate, map[string]toolauth.OAuthProvider, error) {
+	gates := make(map[string]*toolapproval.ApprovalGate)
+	providers := make(map[string]toolauth.OAuthProvider)
+	if len(cfg.Tools.Entries) == 0 {
+		return gates, providers, nil
+	}
+	b := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
+		Catalog:        cat,
+		Coordinator:    coord,
+		Bus:            bus,
+		Redactor:       red,
+		OAuthProviders: providers,
+		AppliedGates:   gates,
+	})
+	if err := b.Apply(ctx); err != nil {
+		return nil, nil, err
+	}
+	return gates, providers, nil
 }
 
 // validateLLMProvider enforces constraint #2: missing provider, missing
