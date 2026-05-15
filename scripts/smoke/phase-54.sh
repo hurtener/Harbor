@@ -74,14 +74,17 @@ fi
 # lives under internal/protocol/transports/ and DOES import net/http
 # (D-078); the Phase 61 auth middleware legitimately lives under
 # internal/protocol/auth/ and DOES import net/http (D-079, the
-# http.Handler decorator). The guard excludes both subtrees: it asserts
+# http.Handler decorator); the Phase 62 conformance suite legitimately
+# lives under internal/protocol/conformance/ and DOES import net/http
+# (D-080, the over-the-wire scenarios round-trip through
+# httptest.Server). The guard excludes all three subtrees: it asserts
 # the transport-AGNOSTIC packages (methods/errors/types + the
-# ControlSurface) stay net/http-free, not the transport / auth trees
-# built on top of them.
-if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -v '/transports/' | grep -v '/auth/' | grep -q .; then
-    fail 'phase 54: the transport-agnostic Protocol layer imports net/http — the wire transport is Phase 60 and lives under internal/protocol/transports/ (RFC §5.4, D-072, D-078); the JWT middleware is Phase 61 and lives under internal/protocol/auth/ (D-079)'
+# ControlSurface) stay net/http-free, not the transport / auth /
+# conformance trees built on top of them.
+if grep -rIn --include='*.go' '"net/http"' "${PROTO_PKG}/" 2>/dev/null | grep -v '/transports/' | grep -v '/auth/' | grep -v '/conformance/' | grep -q .; then
+    fail 'phase 54: the transport-agnostic Protocol layer imports net/http — the wire transport is Phase 60 and lives under internal/protocol/transports/ (RFC §5.4, D-072, D-078); the JWT middleware is Phase 61 and lives under internal/protocol/auth/ (D-079); the conformance suite is Phase 62 and lives under internal/protocol/conformance/ (D-080)'
 else
-    ok 'phase 54: the transport-agnostic Protocol layer does not import net/http (the SSE+REST wire binding is confined to internal/protocol/transports/ — Phase 60, D-078; the JWT auth middleware is confined to internal/protocol/auth/ — Phase 61, D-079)'
+    ok 'phase 54: the transport-agnostic Protocol layer does not import net/http (the SSE+REST wire binding is confined to internal/protocol/transports/ — Phase 60, D-078; the JWT auth middleware is confined to internal/protocol/auth/ — Phase 61, D-079; the conformance suite is confined to internal/protocol/conformance/ — Phase 62, D-080)'
 fi
 
 # Import-graph guard: the Protocol layer must NOT import the Console —

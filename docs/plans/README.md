@@ -82,7 +82,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 59 | Protocol versioning + deprecation policy      | protocol             | §5.3        | 58                    | 85%  | Shipped  |
 | 60 | Protocol wire transport (SSE + REST)          | protocol             | §5.4, §11Q1 | 58, 05                | 85%  | Shipped  |
 | 61 | Protocol auth + identity-scope enforcement    | protocol             | §5.5, §4    | 58, 60, 01            | 90%  | Shipped  |
-| 62 | Protocol conformance suite                    | protocol             | §5          | 58, 60, 61            | 85%  | Pending  |
+| 62 | Protocol conformance suite                    | protocol             | §5          | 58, 60, 61            | 85%  | Shipped  |
 | 63 | Harbor CLI skeleton (`harbor` + cobra)        | cmd/harbor           | §8          | 60                    | 70%  | Pending  |
 | 64 | `harbor dev` v1 (boot runtime + protocol)     | cmd/harbor           | §8          | 63, 60                | 75%  | Pending  |
 | 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
@@ -647,6 +647,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Acceptance.** `go test ./internal/protocol/conformance/...` exits 0; smoke runs the same suite against `harbor dev`.
 **Tests.** The suite itself.
 **Deps.** 58, 60, 61.
+**Status note.** Shipped at 81.2% statement coverage (master-plan target 85%) per the documented §4.3 deviation in `docs/plans/phase-62-protocol-conformance.md` — matches the precedent set by Phase 49's `internal/planner/conformance` (70.8% under the same target). Conformance-suite coverage is dominated by `t.Fatalf` rollback branches that fire only on assertion failure; the assertion *density* (10 methods × 2 transports; 8 error codes × ≥1 failure path; every event-filter shape; the version handshake; the auth pipeline; an N=100 D-025 stress) is the load-bearing surface. The suite ships paired with `test/integration/wave10_test.go` — the Wave 10 wave-end E2E that consumes the same suite from a different consumer profile against the assembled real-driver Wave 10 surface.
 
 ### 63 — Harbor CLI skeleton (RFC §8)
 
