@@ -139,14 +139,16 @@ var allowedLLMDrivers = map[string]struct{}{
 }
 
 func (c *Config) validateLLM() error {
-	// Driver — empty is accepted and treated as "mock" by the
-	// runtime (`llm.DefaultDriver`). The loader's `defaults()`
-	// populates "mock" so any production config loaded from YAML
-	// carries an explicit driver; hand-constructed config values
-	// (e.g. in tests built before Phase 32) keep working.
+	// Driver — empty is accepted and treated as the runtime's
+	// `llm.DefaultDriver` (Phase 64 / D-089 flipped this to
+	// `"bifrost"`). The loader's `defaults()` populates the same
+	// string so any production config loaded from YAML carries an
+	// explicit driver; hand-constructed config values (e.g. in tests
+	// built before Phase 32) keep working with `"mock"` when the
+	// test blank-imports the mock package to seat its registration.
 	driver := c.LLM.Driver
 	if driver == "" {
-		driver = "mock"
+		driver = "bifrost"
 	}
 	if _, ok := allowedLLMDrivers[driver]; !ok {
 		return fieldError("llm.driver",
