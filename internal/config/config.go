@@ -501,13 +501,24 @@ type ArtifactsConfig struct {
 // EventsConfig configures the event bus driver and its in-process
 // limits. Phase 05 filled the previously-reserved slot with the
 // inmem driver's defaults; Phase 06 adds ReplayBufferSize for the
-// in-memory ring buffer that backs Replayer. Later phases
-// (durable-log Phase 57) register additional driver names without
-// changing the field shape.
+// in-memory ring buffer that backs Replayer. Phase 57 registers the
+// `durable` driver and adds the two optional StateStore-selection
+// fields below without changing the existing field shape.
 //
 // ReplayBufferSize=0 disables replay entirely on the inmem driver
 // (Replay returns ErrReplayUnavailable immediately). The default
-// applied by Load is 10000.
+// applied by Load is 10000. On the `durable` driver ReplayBufferSize
+// sizes the best-effort fallback ring used ONLY when no StateStore is
+// configured.
+//
+// StateDriver / StateDSN select the StateStore the `durable` driver
+// (Phase 57) persists events through. They are OPTIONAL and ignored
+// by every other driver: when Driver=="durable" and StateDriver is
+// empty, the durable driver auto-degrades to a best-effort in-memory
+// ring buffer and emits a loud runtime.warning (D-074) — replay is
+// then NOT durable across restarts. StateDSN is required whenever
+// StateDriver is a non-inmem driver (sqlite / postgres), mirroring
+// StateConfig's driver/DSN pairing.
 type EventsConfig struct {
 	Driver                   string        `yaml:"driver"`
 	MaxSubscribersPerSession int           `yaml:"max_subscribers_per_session"`
@@ -515,6 +526,8 @@ type EventsConfig struct {
 	IdleTimeout              time.Duration `yaml:"idle_timeout"`
 	DropWindow               time.Duration `yaml:"drop_window"`
 	ReplayBufferSize         int           `yaml:"replay_buffer_size"`
+	StateDriver              string        `yaml:"state_driver,omitempty"`
+	StateDSN                 string        `yaml:"state_dsn,omitempty" secret:"true"`
 }
 
 // AuditConfig is owned by Phase 03 + later audit phases.

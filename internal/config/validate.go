@@ -408,7 +408,10 @@ func (c *Config) validateGovernance() error {
 	return nil
 }
 
-var allowedEventDrivers = map[string]struct{}{"inmem": {}}
+// allowedEventDrivers is the registered-driver allowlist. Phase 05
+// shipped "inmem"; Phase 57 adds "durable" (the StateStore-backed
+// event log).
+var allowedEventDrivers = map[string]struct{}{"inmem": {}, "durable": {}}
 
 func (c *Config) validateEvents() error {
 	if c.Events.Driver == "" {
@@ -433,6 +436,23 @@ func (c *Config) validateEvents() error {
 	}
 	if c.Events.ReplayBufferSize < 0 {
 		return fieldError("events.replay_buffer_size", "must be >= 0 (zero disables replay)")
+	}
+	// StateDriver / StateDSN are optional and only meaningful for the
+	// `durable` driver. When set they must name a real StateStore
+	// driver and pair a DSN with any non-inmem backend (mirrors
+	// validateState). An empty StateDriver is valid even for the
+	// durable driver — it triggers the loud best-effort degradation
+	// (D-074), not a config error.
+	if c.Events.StateDriver != "" {
+		if _, ok := allowedDrivers[c.Events.StateDriver]; !ok {
+			return fieldError("events.state_driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedDrivers), c.Events.StateDriver))
+		}
+		if c.Events.StateDriver != "inmem" && c.Events.StateDSN == "" {
+			return fieldError("events.state_dsn",
+				fmt.Sprintf("must be set when events.state_driver=%q", c.Events.StateDriver))
+		}
 	}
 	return nil
 }
