@@ -46,7 +46,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 85%  | Shipped  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 80%  | Shipped  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 80%  | Shipped  |
-| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50, 53a           | 85%  | Pending  |
+| 30 | Tool-side OAuth + HITL via pause/resume       | tools/auth           | §6.4, §3.3  | 26, 50, 53a           | 85%  | Shipped  |
 | 31 | Tool-side approval gates                      | tools/auth           | §6.4, §3.3  | 30                    | 80%  | Pending  |
 | 32 | LLM client core + StreamSink contract         | llm                  | §6.5        | 09                    | 85%  | Shipped  |
 | 33 | bifrost integration                           | llm                  | §6.5, §11Q3 | 32                    | 80%  | Shipped  |
@@ -361,6 +361,7 @@ Format: **Phase NN — Name** (RFC §X.X). Each entry is the stub the per-PR pla
 **Tests.** Integration end-to-end (both binding scopes); conformance with phase 50; isolation conformance (cross-tenant/user/agent); encryption-at-rest driver conformance; goroutine-leak (initiate-then-cancel).
 **Deps.** 26, 50, 53a.
 **Briefs.** **brief 09** (`docs/research/09-mcp-oauth-from-bifrost.md`) — documents bifrost's OAuth surface (`OAuth2Provider`, `OAuth2Config`, `OAuth2Token`, `OAuth2FlowInitiation`, `MCPUserOAuthRequiredError`, `MCPClientConfig` OAuth fields) as a Go-shaped reference for what to lift, what to leave, and what Harbor must add. **Bring back into the conversation when authoring the per-phase plan file** (§"Re-discussion checklist" at the bottom of the brief).
+**§4.3 deviation (shipped).** The master-plan line "TokenStore (InMem + SQLite + Postgres drivers)" was implemented as a typed wrapper over the existing `state.StateStore` §4.4 seam (D-027) — the same approach Phase 50 (D-067) and Phase 53a (D-068) took for their persistence layers. Driver pluralism (in-mem / SQLite / Postgres) is inherited from the `StateStore` triad; the Phase 30 conformance suite runs the same `TokenStore` assertions against every `StateStore` driver to prove parity. This avoids the §13 two-parallel-implementations smell. Documented in D-083.
 
 ### 31 — Tool-side approval gates (RFC §6.4, §3.3)
 
