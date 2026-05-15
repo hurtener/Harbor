@@ -1501,6 +1501,9 @@ The §13 obligation is closed in-PR for every new shape; no consumer is deferred
 **§13 "Test stubs as production defaults" amendment — observed.** `NewApprovalGate(GateDeps{})` with a nil `Policy` field fails-loud at construction with `ErrPolicyRequired`. Approval gates with no policy attached would auto-approve every call (the worst-case posture for an HITL surface) OR pass-through with no gate (the §13 amendment's "silent stub default" footgun). The constructor REFUSES both. Smoke-script static guard `grep ErrPolicyRequired && grep 'deps.Policy == nil'` on `gate.go` mechanically enforces the trip-wire.
 
 **Coverage** on `internal/tools/approval`: `go test -race -cover` reports 88.9% statement coverage on the touched package against the master-plan 80% target. The test surface is dense (per-method happy path + per-method failure mode + cross-scope conformance + D-025 + goroutine-leak + the integration test's wave-shape stress).
+
+---
+
 ## D-088 — Phase 68 `harbor validate`: pre-boot CLI surface over `internal/config`'s validator; stable error categories (`config.parse` / `config.semantic` / `io.not_found` / `io.read`); file:line precision from goccy AST + dotted-path lookup; tri-state exit codes (0/1/2); `--json` body is `{error, code, hint, errors[]}` parseable by `jq`; cross-phase Phase 67 integration deferred via SKIPing smoke step (§17.6)
 
 **Date:** 2026-05-15
