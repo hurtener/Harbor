@@ -90,6 +90,7 @@ import (
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -460,11 +461,73 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 
 	steeringReg := steering.NewRegistry()
 
+	// Planner — the swappable reasoning policy the RunLoop drives.
+	// V1 ships the reference ReAct planner backed by the configured
+	// LLM client. Future phases will read a planner choice from the
+	// config (cfg.Planner) and switch concretes (Plan-Execute,
+	// Deterministic, etc.) per CLAUDE.md §1; until then, ReAct is the
+	// only production-ready concrete. The planner is reusable across
+	// concurrent runs (D-025); one instance backs every spawned task's
+	// RunLoop.
+	plnr := react.New(llmClient)
+
+	// RunLoop — the per-run planner-step loop (Phase 53 / D-071) that
+	// drives the planner to a terminal Finish, draining the steering
+	// inbox between steps and routing pause decisions through the
+	// unified Coordinator. ONE RunLoop instance is constructed at
+	// boot and shared across N concurrent goroutines (D-025); each
+	// goroutine's per-run state lives on its own stack + ctx. The
+	// WithApprovalGates option wires the D-097 steering→gate bridge:
+	// a wire-side APPROVE / REJECT control that reaches the run's
+	// steering inbox is routed to the matching gate's pending map,
+	// unblocking the wrapped tool's Invoke.
+	runLoop, err := steering.NewRunLoop(steeringReg, coord,
+		steering.WithRunLoopBus(bus),
+		steering.WithTaskRegistry(taskReg),
+		steering.WithApprovalGates(appliedGates),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("steering.RunLoop: %w", err)
+	}
+
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
+
+	// Per-task RunLoop driver — subscribes to `task.spawned` events
+	// across every tenant/user/session (the dev binary serves them
+	// all) and launches a goroutine per spawned foreground task that
+	// calls `runLoop.Run` with the task's identity quadruple. This is
+	// the wiring that closes issue #114 (Phase 53's RunLoop had zero
+	// production consumers before D-097). The driver shuts down with
+	// the rest of the stack — its closer cancels the subscription's
+	// ctx and waits for every in-flight goroutine to drain.
+	//
+	// Subscription is admin-scoped because the driver listens across
+	// every (tenant, user, session) — task.spawned filtering by triple
+	// would force per-session subscriptions and a registry-side hook,
+	// which the V1 design has not yet introduced. The admin
+	// subscription is the §6 rule 5 carve-out for runtime-internal
+	// fan-in.
+	runLoopDriver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		logger:   opts.logger,
+		bus:      bus,
+		runLoop:  runLoop,
+		planner:  plnr,
+		taskKind: tasks.KindForeground,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("steering.RunLoop driver: %w", err)
+	}
+	if err := runLoopDriver.Start(ctx); err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("steering.RunLoop driver start: %w", err)
+	}
+	closers = append(closers, runLoopDriver.Close)
 
 	devSigner, err := newDevSigner()
 	if err != nil {
@@ -551,6 +614,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		toolCatalog:     toolCat,
 		coordinator:     coord,
 		appliedGates:    appliedGates,
+		runLoop:         runLoop,
+		runLoopDriver:   runLoopDriver,
 	}, nil
 }
 
@@ -573,6 +638,12 @@ type devStack struct {
 	toolCatalog  tools.ToolCatalog
 	coordinator  pauseresume.Coordinator
 	appliedGates map[string]*toolapproval.ApprovalGate
+	// D-097 surfaces — the shared `steering.RunLoop` and its per-task
+	// driver. The driver's lifecycle is tied to the stack via its
+	// Close func registered in closers; tests inspect the RunLoop
+	// directly for the wire-side APPROVE/REJECT bridge invariants.
+	runLoop       *steering.RunLoop
+	runLoopDriver *perTaskRunLoopDriver
 }
 
 // serve binds the listener and runs the http.Server until ctx
