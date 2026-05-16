@@ -785,12 +785,65 @@ func (c *Config) validateTools() error {
 				"must be >= 0")
 		}
 	}
+	// D-095 — `tools.oauth_providers[]` operator-config block (closes
+	// issue #116 + D-090's deferred construction gap). Empty list is
+	// valid (no OAuth-bound entries → no providers needed). When the
+	// list is non-empty:
+	//   - every Name is unique within the slice;
+	//   - Driver / ClientIDEnv / ClientSecretEnv are non-empty (the
+	//     driver registry resolves Driver at boot; ClientIDEnv /
+	//     ClientSecretEnv name the env vars the driver reads via
+	//     os.Getenv at construction time per §7 rule 2);
+	//   - Driver must be in the bundled driver allowlist. An unknown
+	//     driver fails validate (rather than boot) so an operator
+	//     typoing the driver name gets a clear pre-boot error.
+	// Operators who declare any `tools.oauth_providers[]` entry MUST
+	// also set `tools.oauth_token_kek_env`; the dev stack constructs a
+	// single AES-256-GCM Sealer over the named env var (§7 Phase 30).
+	oauthProviderNames := make(map[string]struct{}, len(c.Tools.OAuthProviders))
+	for i, p := range c.Tools.OAuthProviders {
+		prefix := fmt.Sprintf("tools.oauth_providers[%d]", i)
+		if p.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := oauthProviderNames[p.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate provider name %q (must be unique within tools.oauth_providers[])", p.Name))
+		}
+		oauthProviderNames[p.Name] = struct{}{}
+		if p.Driver == "" {
+			return fieldError(prefix+".driver", "must not be empty")
+		}
+		if _, ok := allowedOAuthDrivers[p.Driver]; !ok {
+			return fieldError(prefix+".driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedOAuthDrivers), p.Driver))
+		}
+		if p.ClientIDEnv == "" {
+			return fieldError(prefix+".client_id_env",
+				"must not be empty (env var name holding the client_id; §7 rule 2 — never hardcoded)")
+		}
+		if p.ClientSecretEnv == "" {
+			return fieldError(prefix+".client_secret_env",
+				"must not be empty (env var name holding the client_secret; §7 rule 2 — never hardcoded)")
+		}
+	}
+	if len(c.Tools.OAuthProviders) > 0 && c.Tools.OAuthTokenKEKEnv == "" {
+		return fieldError("tools.oauth_token_kek_env",
+			"must not be empty when tools.oauth_providers[] is set (names env var holding the 32-byte hex KEK for AES-256-GCM token encryption at rest; §7 rule 2)")
+	}
+
 	// Phase 64a catalog wiring entries (D-090). Empty list is valid;
 	// duplicate names are rejected; an entry whose Approval AND OAuth
 	// are both nil is a configuration typo (nothing to wire) and is
 	// rejected with a clear error. Policy / binding-scope strings are
 	// checked against the canonical allowlists so a typo fails at
 	// `harbor validate` time instead of at `harbor dev` boot.
+	//
+	// D-095 cross-validation: every `entries[].oauth.provider` value
+	// MUST resolve to a `tools.oauth_providers[].name` declared above.
+	// An unresolved reference fails loud with both the entry and the
+	// unknown provider name in the error message.
 	seenEntries := make(map[string]struct{})
 	for i, e := range c.Tools.Entries {
 		prefix := fmt.Sprintf("tools.entries[%d]", i)
@@ -826,6 +879,13 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("must be one of %s, got %q",
 						sortedKeys(allowedOAuthBindingScopes), e.OAuth.BindingScope))
 			}
+			// D-095 cross-validation — entry's provider name MUST
+			// resolve to a configured tools.oauth_providers[].name.
+			if _, ok := oauthProviderNames[e.OAuth.Provider]; !ok {
+				return fieldError(prefix+".oauth.provider",
+					fmt.Sprintf("references unknown OAuth provider %q (declared providers: %s; declare via tools.oauth_providers[])",
+						e.OAuth.Provider, sortedKeysFromSet(oauthProviderNames)))
+			}
 		}
 	}
 	return nil
@@ -850,6 +910,19 @@ var allowedApprovalPolicies = map[string]struct{}{
 var allowedOAuthBindingScopes = map[string]struct{}{
 	"user":  {},
 	"agent": {},
+}
+
+// allowedOAuthDrivers mirrors the `internal/tools/auth` driver
+// registry (D-095). V1 ships only the `oauth2` driver (generic OAuth2/
+// PKCE Authorization Code flow). New drivers under
+// `internal/tools/auth/drivers/<name>/` add a row here in the same PR.
+// Same duplication rationale as `allowedApprovalPolicies` — the
+// `internal/config` package MUST NOT import a concrete driver package
+// (§4.4 — drivers depend on interfaces, not the other way round). The
+// auth-package test `TestRegisteredDriversMatchConfigAllowlist`
+// asserts no drift between the two surfaces.
+var allowedOAuthDrivers = map[string]struct{}{
+	"oauth2": {},
 }
 
 // fieldError formats a validation error with the offending path so

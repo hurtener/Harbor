@@ -115,6 +115,13 @@ import (
 	// driver's presence in the binary so deployment-time reviewers can
 	// confirm it's wired.
 	_ "github.com/hurtener/Harbor/internal/tools/drivers/a2a"
+	// Tools OAuth driver — D-095 (closes issue #116). The `oauth2`
+	// driver self-registers under that name via init() so
+	// `tools.oauth_providers[].driver: oauth2` resolves at boot. New
+	// OAuth flow strategies (device-code, vendor-specific) add a new
+	// driver under `internal/tools/auth/drivers/<name>/` + a blank
+	// import here, per the §4.4 seam pattern.
+	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"
 )
 
 func main() {

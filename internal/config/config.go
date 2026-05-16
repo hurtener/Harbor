@@ -566,11 +566,90 @@ type AuditConfig struct{}
 //
 // Restart-required (no `reload:"live"` tag): adding / removing tool
 // providers at runtime is a Phase 91+ Protocol surface concern.
+//
+// `OAuthProviders` closes D-090's deferred "OAuth provider construction"
+// gap (issue #116 / D-095). Each entry declares one named OAuth provider
+// resolved at boot through the `internal/tools/auth` driver registry
+// (§4.4 seam). The V1 default driver is `oauth2` (generic OAuth2/PKCE
+// Authorization Code flow). When any `tools.entries[].oauth.provider`
+// references a name, that name MUST appear in `OAuthProviders` —
+// validateTools enforces.
+//
+// `OAuthTokenKEKEnv` names the env var holding the 32-byte hex-encoded
+// key-encryption key (KEK) the OAuth token store consumes for
+// AES-256-GCM encryption at rest (§7 + Phase 30). Required whenever
+// `OAuthProviders` is non-empty; the dev-stack reads the env at boot
+// and fails closed when the env value is empty or wrong-length.
 type ToolsConfig struct {
-	HTTPManifests []string          `yaml:"http_manifests,omitempty"`
-	MCPServers    []MCPServerConfig `yaml:"mcp_servers,omitempty"`
-	A2APeers      []A2APeerConfig   `yaml:"a2a_peers,omitempty"`
-	Entries       []ToolEntryConfig `yaml:"entries,omitempty"`
+	HTTPManifests    []string                  `yaml:"http_manifests,omitempty"`
+	MCPServers       []MCPServerConfig         `yaml:"mcp_servers,omitempty"`
+	A2APeers         []A2APeerConfig           `yaml:"a2a_peers,omitempty"`
+	Entries          []ToolEntryConfig         `yaml:"entries,omitempty"`
+	OAuthProviders   []ToolOAuthProviderConfig `yaml:"oauth_providers,omitempty"`
+	OAuthTokenKEKEnv string                    `yaml:"oauth_token_kek_env,omitempty"`
+}
+
+// ToolOAuthProviderConfig declares one operator-configured OAuth
+// provider (D-095, closes issue #116 and D-090's deferred construction
+// gap). Each entry resolves to a self-registered driver in
+// `internal/tools/auth/drivers/<name>/` via the §4.4 seam pattern. The
+// constructed `auth.OAuthProvider` is keyed by `Name` in the catalog
+// builder's `Deps.OAuthProviders` map; `tools.entries[].oauth.provider`
+// references the same `Name`.
+//
+// The V1 default driver is `oauth2` — generic OAuth2/PKCE Authorization
+// Code flow. Future flow types (device-code, client-credentials,
+// per-vendor extensions) add a new driver under
+// `internal/tools/auth/drivers/<name>/` without changing this shape.
+//
+// Credentials enter via env-var indirection (§7 rule 2 — never
+// hardcoded, never logged). `ClientIDEnv` / `ClientSecretEnv` name the
+// env vars; the driver resolves `os.Getenv` at construction and fails
+// closed when either is empty.
+//
+// Layout in YAML:
+//
+//	tools:
+//	  oauth_token_kek_env: HARBOR_OAUTH_TOKEN_KEK
+//	  oauth_providers:
+//	    - name: github
+//	      driver: oauth2
+//	      client_id_env: GITHUB_OAUTH_CLIENT_ID
+//	      client_secret_env: GITHUB_OAUTH_CLIENT_SECRET
+//	      scopes: ["repo", "read:user"]
+//	      auth_url: https://github.com/login/oauth/authorize
+//	      token_url: https://github.com/login/oauth/access_token
+//	      redirect_url: https://example.com/oauth/callback
+//
+// Fields:
+//   - `Name` — operator-facing identifier (must be unique across the
+//     slice; referenced by `tools.entries[].oauth.provider`).
+//   - `Driver` — names a self-registered driver under
+//     `internal/tools/auth/drivers/<name>/`. Required. Unknown driver
+//     names fail validation with the registered-driver list in the
+//     error message.
+//   - `ClientIDEnv` / `ClientSecretEnv` — env-var names the driver
+//     reads at construction. Both required.
+//   - `Scopes` — requested OAuth scopes. Optional.
+//   - `AuthURL` / `TokenURL` — authorization-server endpoints. Used by
+//     the generic `oauth2` driver; driver-specific drivers may ignore.
+//   - `RedirectURL` — the redirect URI the operator hosts (the Harbor
+//     Protocol callback handler). Required for the `oauth2` driver.
+//   - `Extra` — driver-specific extras map. Reserved for future
+//     drivers' per-flow knobs (e.g. device-code's verification URI,
+//     vendor-specific tenant ID). Unused by the V1 `oauth2` driver.
+//
+// Restart-required.
+type ToolOAuthProviderConfig struct {
+	Name            string            `yaml:"name"`
+	Driver          string            `yaml:"driver"`
+	ClientIDEnv     string            `yaml:"client_id_env"`
+	ClientSecretEnv string            `yaml:"client_secret_env"`
+	Scopes          []string          `yaml:"scopes,omitempty"`
+	AuthURL         string            `yaml:"auth_url,omitempty"`
+	TokenURL        string            `yaml:"token_url,omitempty"`
+	RedirectURL     string            `yaml:"redirect_url,omitempty"`
+	Extra           map[string]string `yaml:"extra,omitempty"`
 }
 
 // ToolEntryConfig is one per-tool catalog wiring declaration. Phase

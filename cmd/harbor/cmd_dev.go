@@ -67,6 +67,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -440,7 +441,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// instance (CLAUDE.md §13).
 	toolCat := tools.NewCatalog()
 	coord := pauseresume.New()
-	appliedGates, oauthProviders, applyErr := applyToolCatalogWiring(ctx, cfg, toolCat, coord, bus, red)
+	appliedGates, oauthProviders, applyErr := applyToolCatalogWiring(ctx, cfg, toolCat, coord, bus, red, stateStore)
 	if applyErr != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tools/catalog: %w", applyErr)
@@ -653,13 +654,19 @@ func (s *devStack) close(ctx context.Context) {
 // missing/unknown tool/policy/provider crashes boot. CLAUDE.md §13
 // amendment.
 //
-// NOTE: Phase 64a does NOT yet construct OAuth providers from
-// operator config (a `tools.oauth_providers` block lands in a later
-// phase — tracked in issue #116). For now, if an entry declares
-// OAuth, the wiring fails because no providers are wired. The
-// fail-loud is the design — an operator who declares
-// `tools.entries[].oauth` without configuring a provider gets a clear
-// error pointing at the gap.
+// OAuth provider construction lands here per D-095 (closes issue
+// #116 and D-090's "OAuth provider construction deferred" deferral).
+// The function walks `cfg.Tools.OAuthProviders[]`, dispatches each
+// entry to the `internal/tools/auth` driver registry by `Driver`
+// name, and populates the catalog Builder's `Deps.OAuthProviders`
+// map keyed by `Name`. Credentials enter via env-var indirection
+// (§7 rule 2 — never hardcoded, never logged) — `os.Getenv` resolves
+// `ClientIDEnv` / `ClientSecretEnv` at this boundary and the dev
+// stack reads the KEK from the env var named in
+// `cfg.Tools.OAuthTokenKEKEnv` (32 hex bytes; the Sealer enforces
+// length). Every failure is loud: empty / wrong-length KEK, missing
+// env-var contents, unknown driver, or factory errors all crash
+// boot with a wrapped error naming the offending field.
 func applyToolCatalogWiring(
 	ctx context.Context,
 	cfg *config.Config,
@@ -667,9 +674,67 @@ func applyToolCatalogWiring(
 	coord pauseresume.Coordinator,
 	bus events.EventBus,
 	red audit.Redactor,
+	stateStore state.StateStore,
 ) (map[string]*toolapproval.ApprovalGate, map[string]toolauth.OAuthProvider, error) {
 	gates := make(map[string]*toolapproval.ApprovalGate)
 	providers := make(map[string]toolauth.OAuthProvider)
+
+	// D-095 — construct OAuth providers BEFORE the catalog Builder
+	// runs so the Builder's `Deps.OAuthProviders` lookup resolves.
+	// The dev stack constructs one TokenStore + Sealer (shared across
+	// every provider, single operator-supplied KEK) and passes them
+	// into every driver factory. An empty `OAuthProviders` list is a
+	// no-op — the binary still boots cleanly when no operator
+	// declares OAuth bindings.
+	if len(cfg.Tools.OAuthProviders) > 0 {
+		kek, err := resolveOAuthTokenKEK(cfg.Tools.OAuthTokenKEKEnv)
+		if err != nil {
+			return nil, nil, err
+		}
+		sealer, err := toolauth.NewAESGCMSealer(kek)
+		if err != nil {
+			return nil, nil, fmt.Errorf("tools/oauth: sealer: %w", err)
+		}
+		tokenStore, err := toolauth.NewTokenStore(stateStore, sealer)
+		if err != nil {
+			return nil, nil, fmt.Errorf("tools/oauth: token store: %w", err)
+		}
+		deps := toolauth.FactoryDeps{
+			Store:       tokenStore,
+			Bus:         bus,
+			Redactor:    red,
+			Coordinator: coord,
+		}
+		for i, p := range cfg.Tools.OAuthProviders {
+			clientID := os.Getenv(p.ClientIDEnv)
+			if clientID == "" {
+				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_id_env) is unset or empty",
+					p.Name, i, p.ClientIDEnv)
+			}
+			clientSecret := os.Getenv(p.ClientSecretEnv)
+			if clientSecret == "" {
+				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_secret_env) is unset or empty",
+					p.Name, i, p.ClientSecretEnv)
+			}
+			pcfg := toolauth.ProviderConfig{
+				Name:         p.Name,
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+				Scopes:       append([]string(nil), p.Scopes...),
+				AuthURL:      p.AuthURL,
+				TokenURL:     p.TokenURL,
+				RedirectURL:  p.RedirectURL,
+				Extra:        p.Extra,
+			}
+			prov, err := toolauth.Resolve(ctx, p.Driver, pcfg, deps)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d], driver=%q): %w",
+					p.Name, i, p.Driver, err)
+			}
+			providers[p.Name] = prov
+		}
+	}
+
 	if len(cfg.Tools.Entries) == 0 {
 		return gates, providers, nil
 	}
@@ -685,6 +750,31 @@ func applyToolCatalogWiring(
 		return nil, nil, err
 	}
 	return gates, providers, nil
+}
+
+// resolveOAuthTokenKEK reads the named env var and decodes its value
+// as a 32-byte hex-encoded key-encryption key for AES-256-GCM token
+// encryption at rest. Fail-loud per §13 amendment: empty env or
+// wrong-length decoded key crashes boot with a wrapped error naming
+// the env var.
+func resolveOAuthTokenKEK(envName string) ([]byte, error) {
+	if envName == "" {
+		return nil, fmt.Errorf("tools/oauth: tools.oauth_token_kek_env must be set (validated upstream — this is a sanity check)")
+	}
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return nil, fmt.Errorf("tools/oauth: env var %q (named by tools.oauth_token_kek_env) is unset or empty — operator must populate a 32-byte hex-encoded KEK",
+			envName)
+	}
+	kek, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("tools/oauth: env var %q is not valid hex: %w", envName, err)
+	}
+	if len(kek) != toolauth.KEKSizeBytes {
+		return nil, fmt.Errorf("tools/oauth: env var %q decoded to %d bytes, want %d (AES-256-GCM)",
+			envName, len(kek), toolauth.KEKSizeBytes)
+	}
+	return kek, nil
 }
 
 // validateLLMProvider enforces constraint #2: missing provider, missing
