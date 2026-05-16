@@ -612,9 +612,12 @@ func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token,
 		return Token{}, err
 	}
 
-	// Resume the parked run. A failure here is loud — the pause
-	// would otherwise linger as a record nobody can claim.
-	if err := p.coordinator.Resume(ctx, rec.PauseToken, map[string]any{
+	// Resume the parked run with a typed `DecisionResume` marker —
+	// this is a generic resume of a non-approval pause (the OAuth flow
+	// completed), distinct from approve / reject / timeout (issue #113,
+	// D-096). A failure here is loud — the pause would otherwise
+	// linger as a record nobody can claim.
+	if err := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionResume, map[string]any{
 		"source":       string(cfg.Source),
 		"binding":      string(cfg.BindingScope),
 		"completed_at": p.now().Format(time.RFC3339),

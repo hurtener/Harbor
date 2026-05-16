@@ -317,8 +317,11 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 //  2. Validate the decision is Approve or Reject (Pending is
 //     rejected with `ErrInvalidDecision`).
 //
-//  3. Call `Coordinator.Resume(ctx, token, {rejected: bool})`. This
-//     is where cross-identity rejection happens — the Coordinator's
+//  3. Call `Coordinator.Resume(ctx, token, decision, {rejected: bool})`
+//     with the typed `pauseresume.Decision` (Approve or Reject) so the
+//     emitted `pause.resumed` event carries a typed marker wire
+//     consumers branch on (issue #113, D-096). This is where
+//     cross-identity rejection happens — the Coordinator's
 //     `ErrScopeMismatch` propagates verbatim if the caller's
 //     identity does not match the original pause's identity. For
 //     elevated callers, the Phase 50 Coordinator's `sameScope`
@@ -368,7 +371,9 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	// Drive the Coordinator. The Coordinator's scope check enforces
 	// identity-tuple equality. For REJECT, the convention (mirrored
 	// from the steering apply path) is `rejected: true` on the
-	// resume payload — observers can branch on it.
+	// resume payload — observers can branch on it; the typed
+	// `pauseresume.Decision` (issue #113, D-096) is the load-bearing
+	// channel wire consumers actually switch on.
 	payload := map[string]any{}
 	if decision == DecisionReject {
 		payload["rejected"] = true
@@ -376,7 +381,15 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	if err := g.coordinator.Resume(ctx, token, payload); err != nil {
+	// Map the gate-internal ApprovalDecision (approve/reject/pending)
+	// onto the broader pauseresume.Decision (approve/reject/resume/
+	// timeout). The IsValidDecision pre-check above already rejected
+	// Pending; only Approve and Reject reach this point.
+	prDecision := pauseresume.DecisionApprove
+	if decision == DecisionReject {
+		prDecision = pauseresume.DecisionReject
+	}
+	if err := g.coordinator.Resume(ctx, token, prDecision, payload); err != nil {
 		// Put the entry back so a retry can land — Coordinator.Resume
 		// errors are NOT terminal for the gate's pending state. A
 		// scope-mismatch caller can retry from the right ctx; an

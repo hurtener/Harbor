@@ -155,7 +155,7 @@ func TestE2E_PauseResume_DurabilityAcrossDrivers(t *testing.T) {
 
 			// Resume on the restarted coordinator. Identity propagation:
 			// the resume scope must match the pause's recorded triple.
-			if err := c2.Resume(ctx, p.Token, map[string]any{"approved": true}); err != nil {
+			if err := c2.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
 				t.Fatalf("Resume on restarted coordinator: %v", err)
 			}
 			st, err = c2.Status(ctx, p.Token)
@@ -211,12 +211,12 @@ func TestE2E_PauseResume_ScopeIsolationAcrossDrivers(t *testing.T) {
 				t.Fatalf("identity.WithRun(intruder): %v", err)
 			}
 			c2 := pauseresume.New(pauseresume.WithCheckpointStore(store))
-			if err := c2.Resume(intruderCtx, p.Token, nil); !errors.Is(err, pauseresume.ErrScopeMismatch) {
+			if err := c2.Resume(intruderCtx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, pauseresume.ErrScopeMismatch) {
 				t.Fatalf("cross-tenant Resume: err=%v, want ErrScopeMismatch", err)
 			}
 
 			// The legitimate owner can still resume.
-			if err := c2.Resume(pauseCtx, p.Token, nil); err != nil {
+			if err := c2.Resume(pauseCtx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 				t.Fatalf("owner Resume after intruder rejection: %v", err)
 			}
 		})
@@ -265,7 +265,7 @@ func TestE2E_PauseResume_LostHandleFailsLoud(t *testing.T) {
 		pauseresume.WithCheckpointStore(store),
 		pauseresume.WithHandleRegistry(freshReg),
 	)
-	err = c2.Resume(ctx, p.Token, nil)
+	err = c2.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 	var lost trajectory.ErrToolContextLost
 	if !errors.As(err, &lost) {
 		t.Fatalf("Resume with lost handle: err=%v, want trajectory.ErrToolContextLost", err)

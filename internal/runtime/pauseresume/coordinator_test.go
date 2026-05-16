@@ -40,7 +40,7 @@ func TestResume_ReattachesLiveHandle(t *testing.T) {
 		t.Fatalf("Request: %v", err)
 	}
 	// The handle is still live — Resume re-attaches it cleanly.
-	if err := c.Resume(ctx, p.Token, nil); err != nil {
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume with live handle: %v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestResume_FailsLoudlyOnLostHandle(t *testing.T) {
 		t.Fatalf("Request: %v", err)
 	}
 
-	err = c.Resume(ctx, p.Token, nil)
+	err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 	var lost trajectory.ErrToolContextLost
 	if !errors.As(err, &lost) {
 		t.Fatalf("Resume: err=%v, want trajectory.ErrToolContextLost", err)
@@ -113,7 +113,7 @@ func TestRequest_EmitsPauseRequestedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if err := c.Resume(ctx, p.Token, nil); err != nil {
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionApprove, nil); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 
@@ -133,6 +133,113 @@ func TestRequest_EmitsPauseRequestedEvent(t *testing.T) {
 	if resumed.Type != pauseresume.EventTypePauseResumed {
 		t.Fatalf("event #2 type = %q, want %q", resumed.Type, pauseresume.EventTypePauseResumed)
 	}
+	// D-096: the resumed payload carries the typed Decision marker so
+	// wire consumers do not have to parse free-form Reason strings.
+	rpp, ok := resumed.Payload.(pauseresume.PauseResumedPayload)
+	if !ok {
+		t.Fatalf("event #2 payload type = %T, want PauseResumedPayload", resumed.Payload)
+	}
+	if rpp.Decision != pauseresume.DecisionApprove {
+		t.Errorf("pause.resumed Decision = %q, want %q", rpp.Decision, pauseresume.DecisionApprove)
+	}
+	if rpp.Token != string(p.Token) {
+		t.Errorf("pause.resumed Token = %q, want %q", rpp.Token, p.Token)
+	}
+}
+
+// TestResume_EmitsTypedDecision pins the D-096 contract: every
+// Coordinator.Resume value (approve / reject / resume / timeout) is
+// faithfully carried on the emitted PauseResumedPayload so wire
+// consumers can switch on the typed marker rather than parse the
+// free-form Reason string.
+func TestResume_EmitsTypedDecision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		decision pauseresume.Decision
+	}{
+		{"approve", pauseresume.DecisionApprove},
+		{"reject", pauseresume.DecisionReject},
+		{"resume", pauseresume.DecisionResume},
+		{"timeout", pauseresume.DecisionTimeout},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bus := newBus(t)
+			sub, err := bus.Subscribe(context.Background(), events.Filter{
+				Tenant: testID.TenantID, User: testID.UserID, Session: testID.SessionID,
+				Types: []events.EventType{pauseresume.EventTypePauseResumed},
+			})
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			defer sub.Cancel()
+
+			c := pauseresume.New(pauseresume.WithBus(bus))
+			ctx := runCtx(t, testID, "run-1")
+			p, err := c.Request(ctx, pauseresume.PauseRequest{
+				Identity: testID,
+				Reason:   pauseresume.ReasonApprovalRequired,
+			})
+			if err != nil {
+				t.Fatalf("Request: %v", err)
+			}
+			if err := c.Resume(ctx, p.Token, tc.decision, nil); err != nil {
+				t.Fatalf("Resume(%s): %v", tc.decision, err)
+			}
+			ev := waitEvent(t, sub)
+			payload, ok := ev.Payload.(pauseresume.PauseResumedPayload)
+			if !ok {
+				t.Fatalf("payload type = %T, want PauseResumedPayload", ev.Payload)
+			}
+			if payload.Decision != tc.decision {
+				t.Errorf("Decision = %q, want %q", payload.Decision, tc.decision)
+			}
+			if payload.Token != string(p.Token) {
+				t.Errorf("Token = %q, want %q", payload.Token, p.Token)
+			}
+		})
+	}
+}
+
+// TestResume_RejectsUnknownDecision pins the fail-loudly contract: an
+// untyped or unknown Decision is rejected loud with ErrInvalidDecision,
+// not silently emitted on the pause.resumed event. Closes the
+// audit-flagged "overloaded Reason string" anti-pattern (issue #113,
+// D-096) — there is no untyped default for the load-bearing marker.
+func TestResume_RejectsUnknownDecision(t *testing.T) {
+	t.Parallel()
+	c := pauseresume.New()
+	ctx := runCtx(t, testID, "run-1")
+	p, err := c.Request(ctx, pauseresume.PauseRequest{
+		Identity: testID,
+		Reason:   pauseresume.ReasonApprovalRequired,
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	// An empty Decision is the zero-value gotcha the typed enum closes
+	// — a caller that forgets to set Decision must NOT silently emit a
+	// pause.resumed with Decision="".
+	if err := c.Resume(ctx, p.Token, pauseresume.Decision(""), nil); !errors.Is(err, pauseresume.ErrInvalidDecision) {
+		t.Fatalf("Resume(empty): err=%v, want ErrInvalidDecision", err)
+	}
+	// A typo / forward-incompatible value also fails loud.
+	if err := c.Resume(ctx, p.Token, pauseresume.Decision("bogus"), nil); !errors.Is(err, pauseresume.ErrInvalidDecision) {
+		t.Fatalf("Resume(bogus): err=%v, want ErrInvalidDecision", err)
+	}
+	// The pause is NOT marked resumed — the contract violation is a
+	// no-op on the record, mirroring the lost-handle test above.
+	st, serr := c.Status(ctx, p.Token)
+	if serr != nil {
+		t.Fatalf("Status: %v", serr)
+	}
+	if st.State != pauseresume.StatusPaused {
+		t.Errorf("Status.State = %q after invalid-Decision Resume, want %q",
+			st.State, pauseresume.StatusPaused)
+	}
 }
 
 func TestRequest_NoStore_NoCheckpointPersisted(t *testing.T) {
@@ -151,7 +258,7 @@ func TestRequest_NoStore_NoCheckpointPersisted(t *testing.T) {
 	if _, err := c.Status(ctx, p.Token); err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if err := c.Resume(ctx, p.Token, nil); err != nil {
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 }
@@ -168,6 +275,31 @@ func TestNew_ZeroOptions_FunctionsProcessLocal(t *testing.T) {
 		Reason:   pauseresume.ReasonConstraintsConflict,
 	}); err != nil {
 		t.Fatalf("Request on zero-option coordinator: %v", err)
+	}
+}
+
+func TestIsValidDecision(t *testing.T) {
+	t.Parallel()
+	valid := []pauseresume.Decision{
+		pauseresume.DecisionApprove,
+		pauseresume.DecisionReject,
+		pauseresume.DecisionResume,
+		pauseresume.DecisionTimeout,
+	}
+	for _, d := range valid {
+		if !pauseresume.IsValidDecision(d) {
+			t.Errorf("IsValidDecision(%q) = false, want true", d)
+		}
+	}
+	invalid := []pauseresume.Decision{
+		pauseresume.Decision(""),
+		pauseresume.Decision("pending"),
+		pauseresume.Decision("bogus"),
+	}
+	for _, d := range invalid {
+		if pauseresume.IsValidDecision(d) {
+			t.Errorf("IsValidDecision(%q) = true, want false", d)
+		}
 	}
 }
 

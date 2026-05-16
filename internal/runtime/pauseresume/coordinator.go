@@ -242,9 +242,18 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 // consumer. Do not "fix" the missing post-resume-across-restart
 // Status — checkpoint_test.go / phase50_durability_test.go assert
 // this behaviour.
-func (c *coordinator) Resume(ctx context.Context, token Token, payload map[string]any) error {
+func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision, payload map[string]any) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("pauseresume: resume cancelled: %w", err)
+	}
+
+	// Fail loudly on an unknown Decision — a `pause.resumed` event with
+	// an untyped Decision defeats the marker the field exists for
+	// (issue #113, D-096). Validated BEFORE identity / token lookup so
+	// the contract violation surfaces verbatim without touching any
+	// pause record.
+	if !IsValidDecision(decision) {
+		return fmt.Errorf("%w: %q", ErrInvalidDecision, decision)
 	}
 
 	resumingID, err := identityFromContext(ctx)
@@ -319,8 +328,9 @@ func (c *coordinator) Resume(ctx context.Context, token Token, payload map[strin
 	}
 
 	c.emit(ctx, EventTypePauseResumed, &resumed, PauseResumedPayload{
-		Token:  string(token),
-		Reason: string(resumed.reason),
+		Token:    string(token),
+		Reason:   string(resumed.reason),
+		Decision: decision,
 	})
 
 	return nil
