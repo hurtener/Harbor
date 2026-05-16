@@ -67,13 +67,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/harbortest/devstack"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	_ "github.com/hurtener/Harbor/internal/llm/mock"
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 	"github.com/hurtener/Harbor/internal/tools/auth"
@@ -127,52 +132,110 @@ func (s *phase64aStubProvider) CompleteFlow(_ context.Context, _, _ string) (aut
 func (s *phase64aStubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 func (s *phase64aStubProvider) Close(_ context.Context) error                        { return nil }
 
-// buildPhase64aEnv wires the Phase 64a stack: catalog + Coordinator +
-// Bus + Redactor + catalog wiring builder applied against a real
-// in-memory catalog with pre-registered tools.
+// buildPhase64aEnv wires the Phase 64a stack via the centralised
+// harbortest/devstack helper (D-094). The four test tools are
+// pre-registered with the catalog BEFORE the Builder applies; the
+// helper drives the Builder against `cfg.Tools.Entries`, attaches
+// the gates to the closer chain, and exposes them via `stack.Gates`.
+//
+// SkipAuth / SkipTransports / SkipSteering — phase64a only exercises
+// the catalog wiring path; auth + transports + steering are unused.
 func buildPhase64aEnv(t *testing.T, entries []config.ToolEntryConfig, providers map[string]auth.OAuthProvider) *phase64aEnv {
 	t.Helper()
-	cat := tools.NewCatalog()
-	mustRegisterPhase64aEcho(t, cat, "gate_tool")
-	mustRegisterPhase64aEcho(t, cat, "oauth_tool")
-	mustRegisterPhase64aEcho(t, cat, "both_tool")
-	mustRegisterPhase64aEcho(t, cat, "stress_tool")
-	red := auditpatterns.New()
-	bus, err := eventsInmem.New(config.EventsConfig{
-		Driver:                   "inmem",
-		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     128,
-		IdleTimeout:              2 * time.Second,
-		DropWindow:               50 * time.Millisecond,
-	}, red)
-	if err != nil {
-		t.Fatalf("eventsInmem.New: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	coord := pauseresume.New()
-	gates := make(map[string]*approval.ApprovalGate)
-	b := catalog.New(entries, catalog.Deps{
-		Catalog:        cat,
-		Coordinator:    coord,
-		Bus:            bus,
-		Redactor:       red,
+	cfg := phase64aTestConfig(t, entries)
+	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
+		SkipAuth:       true,
+		SkipTransports: true,
+		SkipSteering:   true,
 		OAuthProviders: providers,
-		AppliedGates:   gates,
+		PreRegisterTools: []tools.ToolDescriptor{
+			phase64aEcho("gate_tool"),
+			phase64aEcho("oauth_tool"),
+			phase64aEcho("both_tool"),
+			phase64aEcho("stress_tool"),
+		},
 	})
-	if err := b.Apply(context.Background()); err != nil {
-		t.Fatalf("catalog.Apply: %v", err)
+	t.Cleanup(stack.Close)
+	return &phase64aEnv{
+		catalog: stack.Catalog,
+		bus:     stack.Bus,
+		coord:   stack.Coordinator,
+		gates:   stack.Gates,
 	}
-	t.Cleanup(func() {
-		for _, g := range gates {
-			_ = g.Close(context.Background())
-		}
-	})
-	return &phase64aEnv{catalog: cat, bus: bus, coord: coord, gates: gates}
 }
 
-func mustRegisterPhase64aEcho(t *testing.T, cat tools.ToolCatalog, name string) {
+// phase64aTestConfig builds the minimal *config.Config the devstack
+// helper needs for phase64a — the events knobs match the original
+// inline config shape exactly so test semantics do not drift.
+func phase64aTestConfig(t *testing.T, entries []config.ToolEntryConfig) *config.Config {
 	t.Helper()
-	d := tools.ToolDescriptor{
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BindAddr:            "127.0.0.1:0",
+			ShutdownGracePeriod: 1 * time.Second,
+		},
+		Identity: config.IdentityConfig{
+			JWTAlgorithms: []string{"ES256"},
+			Issuer:        "https://issuer.example.com",
+			Audience:      "harbor",
+			JWKSURL:       "https://issuer.example.com/.well-known/jwks.json",
+		},
+		Telemetry: config.TelemetryConfig{
+			LogFormat:   "text",
+			LogLevel:    "error",
+			ServiceName: "harbor-phase64a",
+		},
+		State: config.StateConfig{Driver: "inmem"},
+		LLM: config.LLMConfig{
+			Driver:               "mock",
+			Timeout:              5 * time.Second,
+			ContextWindowReserve: 0.05,
+		},
+		Events: config.EventsConfig{
+			Driver:                   "inmem",
+			MaxSubscribersPerSession: 16,
+			SubscriberBufferSize:     128,
+			IdleTimeout:              2 * time.Second,
+			DropWindow:               50 * time.Millisecond,
+			ReplayBufferSize:         256,
+		},
+		Sessions: config.SessionsConfig{
+			IdleTTL:       1 * time.Hour,
+			HardCap:       24 * time.Hour,
+			SweepInterval: 5 * time.Minute,
+		},
+		Artifacts: config.ArtifactsConfig{
+			Driver:                    "inmem",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
+		Tasks: config.TasksConfig{
+			Driver:               "inprocess",
+			RetainTurnTimeout:    1 * time.Minute,
+			ContinuationHopLimit: 4,
+		},
+		Distributed: config.DistributedConfig{
+			BusDriver:    "loopback",
+			RemoteDriver: "loopback",
+		},
+		Memory: config.MemoryConfig{
+			Driver:             "inmem",
+			Strategy:           "none",
+			RecoveryBacklogMax: 8,
+		},
+		Tools: config.ToolsConfig{Entries: entries},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("phase64aTestConfig: cfg.Validate(): %v", err)
+	}
+	return cfg
+}
+
+// phase64aEcho returns a typed ToolDescriptor for an in-memory echo
+// tool. The returned descriptor's Invoke surfaces the original args
+// as a string Value — letting the caller assert "the gate passes
+// through the original args" on APPROVE.
+func phase64aEcho(name string) tools.ToolDescriptor {
+	return tools.ToolDescriptor{
 		Tool: tools.Tool{
 			Name:        name,
 			Description: "echo (phase 64a test)",
@@ -182,9 +245,6 @@ func mustRegisterPhase64aEcho(t *testing.T, cat tools.ToolCatalog, name string) 
 		Invoke: func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
 			return tools.ToolResult{Value: string(args)}, nil
 		},
-	}
-	if err := cat.Register(d); err != nil {
-		t.Fatalf("Register(%q): %v", name, err)
 	}
 }
 
