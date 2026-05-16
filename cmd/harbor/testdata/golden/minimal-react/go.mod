@@ -3,3 +3,13 @@ module github.com/example/acme-agent
 go 1.26
 
 require github.com/hurtener/Harbor v0.0.0-dev
+
+// Harbor has not yet published a tagged module release. Until it does,
+// uncomment the `replace` directive below and point it at your local
+// Harbor checkout (clone github.com/hurtener/Harbor first):
+//
+//   replace github.com/hurtener/Harbor => ../Harbor
+//
+// Adjust the relative path if your Harbor clone is elsewhere. Once
+// Harbor v0.1.0 ships, delete the replace and run
+// `go get github.com/hurtener/Harbor@v0.1.0`.

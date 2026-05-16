@@ -40,7 +40,14 @@ import (
 func TestRunOnce_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	const n = 100
 
-	time.Sleep(50 * time.Millisecond)
+	// Yield a few times so the goroutine baseline reflects only the
+	// settled test runner, not goroutines that earlier tests are still
+	// tearing down. The growth tolerance below absorbs the rest of the
+	// scheduler noise (Wave 11 §17.5 audit, finding W7: replaced bare
+	// time.Sleep with Gosched-style settle matching the wave11 pattern).
+	for i := 0; i < 5; i++ {
+		runtime.Gosched()
+	}
 	baseline := runtime.NumGoroutine()
 
 	var wg sync.WaitGroup

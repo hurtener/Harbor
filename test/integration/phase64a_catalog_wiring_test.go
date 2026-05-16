@@ -497,6 +497,14 @@ func TestE2E_Phase64a_GoroutineLeak_InitiateThenCancel(t *testing.T) {
 	env := buildPhase64aEnv(t, entries, nil)
 	d, _ := env.catalog.Resolve("gate_tool")
 
+	// Subscribe BEFORE kicking Invoke so we can deterministically wait
+	// for the gate to register the pause before cancelling — the
+	// previous time.Sleep(50ms) was a race-prone sync-via-sleep that
+	// §17.4 forbids (Wave 11 §17.5 audit, finding W4).
+	requestedSub, cancelReq := phase64aSubFor(t, env.bus, phase64aID,
+		approval.EventTypeToolApprovalRequested)
+	defer cancelReq()
+
 	baseline := runtime.NumGoroutine()
 	ctx, cancel := context.WithCancel(phase64aCtx(t, phase64aID))
 	done := make(chan struct{})
@@ -504,8 +512,9 @@ func TestE2E_Phase64a_GoroutineLeak_InitiateThenCancel(t *testing.T) {
 		defer close(done)
 		_, _ = d.Invoke(ctx, json.RawMessage(`{}`))
 	}()
-	// Give the goroutine time to register on the gate.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the gate to publish the approval-requested event
+	// (= the pause is registered and the goroutine is parked).
+	phase64aWaitEv(t, requestedSub, 2*time.Second)
 	cancel()
 	select {
 	case <-done:
