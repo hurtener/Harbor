@@ -811,6 +811,17 @@ func TestValidateTools_Entries(t *testing.T) {
 		{
 			name: "oauth entry passes",
 			mutate: func(c *config.Config) {
+				// D-095: an entry's `oauth.provider` MUST resolve to a
+				// `tools.oauth_providers[].name` declared in the same
+				// config — declare the provider so the cross-check
+				// passes.
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{
+					{
+						Name: "github", Driver: "oauth2",
+						ClientIDEnv: "GITHUB_OAUTH_CLIENT_ID", ClientSecretEnv: "GITHUB_OAUTH_CLIENT_SECRET",
+					},
+				}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
 				c.Tools.Entries = []config.ToolEntryConfig{
 					{Name: "github_read", OAuth: &config.ToolOAuthConfig{
 						Provider: "github", BindingScope: "user",
@@ -822,6 +833,13 @@ func TestValidateTools_Entries(t *testing.T) {
 		{
 			name: "approval AND oauth on the same entry passes",
 			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{
+					{
+						Name: "github", Driver: "oauth2",
+						ClientIDEnv: "GITHUB_OAUTH_CLIENT_ID", ClientSecretEnv: "GITHUB_OAUTH_CLIENT_SECRET",
+					},
+				}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
 				c.Tools.Entries = []config.ToolEntryConfig{
 					{
 						Name:     "github_write",
@@ -895,6 +913,152 @@ func TestValidateTools_Entries(t *testing.T) {
 				}
 			},
 			wantSub: "tools.entries[0].oauth.binding_scope",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("expected ok, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected validation failure, got nil")
+			}
+			if tc.wantSub != "" && !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+
+// TestValidateTools_OAuthProviders exercises the D-095 operator-config
+// validator: per-provider invariants + the cross-validation that every
+// `tools.entries[].oauth.provider` reference resolves.
+func TestValidateTools_OAuthProviders(t *testing.T) {
+	validProvider := config.ToolOAuthProviderConfig{
+		Name: "github", Driver: "oauth2",
+		ClientIDEnv: "GITHUB_OAUTH_CLIENT_ID", ClientSecretEnv: "GITHUB_OAUTH_CLIENT_SECRET",
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantOK  bool
+		wantSub string
+	}{
+		{
+			name:   "empty providers passes",
+			mutate: func(c *config.Config) { c.Tools.OAuthProviders = nil; c.Tools.OAuthTokenKEKEnv = "" },
+			wantOK: true,
+		},
+		{
+			name: "valid single provider passes",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{validProvider}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantOK: true,
+		},
+		{
+			name: "missing KEK env when providers declared rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{validProvider}
+				c.Tools.OAuthTokenKEKEnv = ""
+			},
+			wantSub: "tools.oauth_token_kek_env",
+		},
+		{
+			name: "empty provider name rejected",
+			mutate: func(c *config.Config) {
+				p := validProvider
+				p.Name = ""
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "tools.oauth_providers[0].name",
+		},
+		{
+			name: "duplicate provider name rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{validProvider, validProvider}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "duplicate provider name",
+		},
+		{
+			name: "empty driver rejected",
+			mutate: func(c *config.Config) {
+				p := validProvider
+				p.Driver = ""
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "tools.oauth_providers[0].driver",
+		},
+		{
+			name: "unknown driver rejected",
+			mutate: func(c *config.Config) {
+				p := validProvider
+				p.Driver = "no-such-driver"
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "no-such-driver",
+		},
+		{
+			name: "empty client_id_env rejected",
+			mutate: func(c *config.Config) {
+				p := validProvider
+				p.ClientIDEnv = ""
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "tools.oauth_providers[0].client_id_env",
+		},
+		{
+			name: "empty client_secret_env rejected",
+			mutate: func(c *config.Config) {
+				p := validProvider
+				p.ClientSecretEnv = ""
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{p}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+			},
+			wantSub: "tools.oauth_providers[0].client_secret_env",
+		},
+		{
+			name: "entry referencing unknown provider rejected",
+			mutate: func(c *config.Config) {
+				// Provider list declares "github" but the entry
+				// references "google" — the cross-validation surfaces a
+				// clear error naming both entry index and unknown
+				// provider name.
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{validProvider}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "google_read", OAuth: &config.ToolOAuthConfig{
+						Provider: "google", BindingScope: "user",
+					}},
+				}
+			},
+			wantSub: `unknown OAuth provider "google"`,
+		},
+		{
+			name: "entry referencing declared provider passes",
+			mutate: func(c *config.Config) {
+				c.Tools.OAuthProviders = []config.ToolOAuthProviderConfig{validProvider}
+				c.Tools.OAuthTokenKEKEnv = "HARBOR_OAUTH_TOKEN_KEK"
+				c.Tools.Entries = []config.ToolEntryConfig{
+					{Name: "github_read", OAuth: &config.ToolOAuthConfig{
+						Provider: "github", BindingScope: "user",
+					}},
+				}
+			},
+			wantOK: true,
 		},
 	}
 	for _, tc := range cases {
