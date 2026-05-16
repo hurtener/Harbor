@@ -241,9 +241,6 @@ func runValidate(cmd *cobra.Command, args []string) error {
 // a future enhancement that gathers all errors will round-trip through
 // this slice).
 func validatePath(ctx context.Context, path string) (findings []validationFinding, internalErr error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// I/O failures (including file-not-found) are internal — exit
