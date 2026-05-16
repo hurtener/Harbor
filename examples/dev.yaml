@@ -127,3 +127,33 @@ memory:
 tools:
   http_manifests: []
   mcp_servers: []
+
+  # D-095 — Operator-config-driven OAuth provider declarations (closes
+  # issue #116 + D-090's deferred construction gap). Uncomment and
+  # populate to attach OAuth-bound tools to a real authorization
+  # server. The V1 default driver is `oauth2` (generic OAuth2/PKCE
+  # Authorization Code flow); future per-vendor drivers
+  # (`google-workspace`, `github-app`, ...) add a new entry under
+  # `internal/tools/auth/drivers/<name>/` + a blank import in
+  # `cmd/harbor/main.go`.
+  #
+  # Credentials enter via env-var indirection (§7 rule 2 — never
+  # hardcoded, never logged). The dev stack resolves `os.Getenv(NAME)`
+  # at boot and fails closed when the env var is unset or empty.
+  #
+  # `oauth_token_kek_env` names the env var holding the 32-byte
+  # hex-encoded key-encryption key (KEK) for AES-256-GCM token
+  # encryption at rest. Required whenever `oauth_providers[]` is
+  # non-empty. Generate via e.g. `openssl rand -hex 32`. NEVER commit
+  # the literal KEK.
+  #
+  # oauth_token_kek_env: HARBOR_OAUTH_TOKEN_KEK
+  # oauth_providers:
+  #   - name: github
+  #     driver: oauth2
+  #     client_id_env: GITHUB_OAUTH_CLIENT_ID
+  #     client_secret_env: GITHUB_OAUTH_CLIENT_SECRET
+  #     scopes: ["repo", "read:user"]
+  #     auth_url: https://github.com/login/oauth/authorize
+  #     token_url: https://github.com/login/oauth/access_token
+  #     redirect_url: https://your-deployment.example.com/oauth/callback

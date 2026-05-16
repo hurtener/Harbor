@@ -132,6 +132,12 @@ memory:
   driver: inmem
   strategy: none
 tools:
+  oauth_token_kek_env: HARBOR_TEST_OAUTH_KEK
+  oauth_providers:
+    - name: github
+      driver: oauth2
+      client_id_env: GITHUB_OAUTH_CLIENT_ID
+      client_secret_env: GITHUB_OAUTH_CLIENT_SECRET
   entries:
     - name: delete_doc
       approval:
@@ -221,6 +227,157 @@ YAML2
         fail 'phase 64a: `harbor validate` rejected the config but the error lacks the expected field hint'
         echo "    --- validate output ---"
         cat "${tmp_dir}/validate-bad.log" | sed 's/^/    /'
+        echo "    --- end ---"
+    fi
+
+    # D-095 — `harbor validate` rejects a config naming an unknown
+    # OAuth provider in `tools.entries[].oauth.provider`. The error
+    # message must name both the entry and the unknown provider so
+    # the operator sees the typo (closes issue #116).
+    cat > "${tmp_dir}/bad-oauth-provider.yaml" <<'YAML3'
+server:
+  bind_addr: 127.0.0.1:0
+  shutdown_grace_period: 5s
+identity:
+  jwt_algorithms: [RS256, ES256]
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+telemetry:
+  log_format: text
+  log_level: info
+  service_name: harbor-test
+state:
+  driver: inmem
+llm:
+  driver: bifrost
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  api_key: env.HARBOR_TEST_FAKE
+  timeout: 60s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+governance:
+  repair_attempts: 3
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+memory:
+  driver: inmem
+  strategy: none
+tools:
+  entries:
+    - name: github_read
+      oauth:
+        provider: not-declared-anywhere
+        binding_scope: user
+YAML3
+    if "${ROOT}/bin/harbor" validate "${tmp_dir}/bad-oauth-provider.yaml" >"${tmp_dir}/validate-bad-oauth.log" 2>&1; then
+        fail 'phase 64a (D-095): `harbor validate` accepted an unknown oauth provider reference (should fail closed)'
+    elif grep -qE 'unknown OAuth provider|not-declared-anywhere' "${tmp_dir}/validate-bad-oauth.log"; then
+        ok 'phase 64a (D-095): `harbor validate` rejects unknown oauth provider reference with named-field error (closes #116)'
+    else
+        fail 'phase 64a (D-095): `harbor validate` rejected the config but the error lacks the unknown-provider hint'
+        echo "    --- validate output ---"
+        cat "${tmp_dir}/validate-bad-oauth.log" | sed 's/^/    /'
+        echo "    --- end ---"
+    fi
+
+    # D-095 — `harbor validate` rejects a config that declares
+    # `tools.oauth_providers[]` but omits `tools.oauth_token_kek_env`.
+    # Operator MUST supply the env var name so the dev stack can
+    # resolve a 32-byte KEK at boot for AES-256-GCM token encryption
+    # at rest (§7 + Phase 30).
+    cat > "${tmp_dir}/missing-kek-env.yaml" <<'YAML4'
+server:
+  bind_addr: 127.0.0.1:0
+  shutdown_grace_period: 5s
+identity:
+  jwt_algorithms: [RS256, ES256]
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+telemetry:
+  log_format: text
+  log_level: info
+  service_name: harbor-test
+state:
+  driver: inmem
+llm:
+  driver: bifrost
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  api_key: env.HARBOR_TEST_FAKE
+  timeout: 60s
+  context_window_reserve: 0.05
+  model_profiles:
+    anthropic/claude-sonnet-4:
+      context_window_tokens: 200000
+      token_estimator: chars_div_4
+      json_schema_mode: native
+governance:
+  repair_attempts: 3
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+memory:
+  driver: inmem
+  strategy: none
+tools:
+  oauth_providers:
+    - name: github
+      driver: oauth2
+      client_id_env: GITHUB_OAUTH_CLIENT_ID
+      client_secret_env: GITHUB_OAUTH_CLIENT_SECRET
+YAML4
+    if "${ROOT}/bin/harbor" validate "${tmp_dir}/missing-kek-env.yaml" >"${tmp_dir}/validate-missing-kek.log" 2>&1; then
+        fail 'phase 64a (D-095): `harbor validate` accepted oauth_providers without oauth_token_kek_env (should fail closed)'
+    elif grep -qE 'oauth_token_kek_env' "${tmp_dir}/validate-missing-kek.log"; then
+        ok 'phase 64a (D-095): `harbor validate` rejects oauth_providers without oauth_token_kek_env (closes #116)'
+    else
+        fail 'phase 64a (D-095): `harbor validate` rejected the config but the error lacks the kek-env hint'
+        echo "    --- validate output ---"
+        cat "${tmp_dir}/validate-missing-kek.log" | sed 's/^/    /'
         echo "    --- end ---"
     fi
 else
