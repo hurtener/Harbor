@@ -36,14 +36,19 @@ import (
 	"testing"
 	"time"
 
-	patternsAudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/harbortest/devstack"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
-	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	_ "github.com/hurtener/Harbor/internal/llm/mock"
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 )
@@ -67,28 +72,117 @@ type phase31Env struct {
 
 func buildPhase31Env(t *testing.T, policy approval.ApprovalPolicy) *phase31Env {
 	t.Helper()
-	red := patternsAudit.New()
-	bus, err := eventsInmem.New(config.EventsConfig{
-		Driver:                   "inmem",
-		MaxSubscribersPerSession: 16,
-		SubscriberBufferSize:     64,
-		IdleTimeout:              2 * time.Second,
-		DropWindow:               50 * time.Millisecond,
-	}, red)
-	if err != nil {
-		t.Fatalf("eventsInmem.New: %v", err)
-	}
-	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	// Per D-094, the per-test stack assembly is centralised in
+	// harbortest/devstack.Assemble. Phase 31 only exercises the
+	// approval gate against real bus + redactor + coordinator +
+	// steering — every higher layer (catalog, auth, transports) is
+	// skipped. The gate itself is constructed locally because it
+	// is the artifact-under-test; the helper's role is to provide
+	// the production-shaped collaborators.
+	cfg := phase31TestConfig(t)
+	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
+		SkipAuth:       true,
+		SkipTransports: true,
+		SkipCatalog:    true,
+		// Steering stays ON — the env exposes a steering.Registry
+		// even though phase31 doesn't drive it through the inbox
+		// today (the field is kept for the §17.6 future-proofing
+		// note in the godoc above).
+	})
+	t.Cleanup(stack.Close)
+	// Construct the Coordinator locally so we can pass the same
+	// instance to BOTH the gate's GateDeps and the env (the tests
+	// call coordinator.Status against the gate's parked tokens).
 	coord := pauseresume.New()
 	gate, err := approval.NewApprovalGate(approval.GateDeps{
-		Policy: policy, Coordinator: coord, Bus: bus, Redactor: red,
+		Policy:      policy,
+		Coordinator: coord,
+		Bus:         stack.Bus,
+		Redactor:    stack.Audit,
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
 	}
 	t.Cleanup(func() { _ = gate.Close(context.Background()) })
-	reg := steering.NewRegistry()
-	return &phase31Env{bus: bus, coordinator: coord, gate: gate, registry: reg}
+	return &phase31Env{
+		bus:         stack.Bus,
+		coordinator: coord,
+		gate:        gate,
+		registry:    stack.Steering,
+	}
+}
+
+// phase31TestConfig builds the minimal *config.Config the devstack
+// helper needs for phase31. All drivers are inmem; LLM and memory
+// are unset (the helper skips them on empty drivers). The events
+// buffer / drop-window match the original phase31 inline config
+// shape so semantics do not drift.
+func phase31TestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			BindAddr:            "127.0.0.1:0",
+			ShutdownGracePeriod: 1 * time.Second,
+		},
+		Identity: config.IdentityConfig{
+			JWTAlgorithms: []string{"ES256"},
+			Issuer:        "https://issuer.example.com",
+			Audience:      "harbor",
+			JWKSURL:       "https://issuer.example.com/.well-known/jwks.json",
+		},
+		Telemetry: config.TelemetryConfig{
+			LogFormat:   "text",
+			LogLevel:    "error",
+			ServiceName: "harbor-phase31",
+		},
+		State: config.StateConfig{Driver: "inmem"},
+		LLM: config.LLMConfig{
+			// driver=mock keeps cfg.Validate happy without forcing
+			// us to plumb a bifrost provider/model/api_key — phase31
+			// does not exercise the LLM seam. The devstack helper
+			// still skips LLM.Open when the test doesn't blank-
+			// import the mock driver; we DO blank-import it via the
+			// test package's import block (no-op when unused).
+			Driver:               "mock",
+			Timeout:              5 * time.Second,
+			ContextWindowReserve: 0.05,
+		},
+		Events: config.EventsConfig{
+			Driver:                   "inmem",
+			MaxSubscribersPerSession: 16,
+			SubscriberBufferSize:     64,
+			IdleTimeout:              2 * time.Second,
+			DropWindow:               50 * time.Millisecond,
+			ReplayBufferSize:         256,
+		},
+		Sessions: config.SessionsConfig{
+			IdleTTL:       1 * time.Hour,
+			HardCap:       24 * time.Hour,
+			SweepInterval: 5 * time.Minute,
+		},
+		Artifacts: config.ArtifactsConfig{
+			Driver:                    "inmem",
+			HeavyOutputThresholdBytes: 32 * 1024,
+		},
+		Tasks: config.TasksConfig{
+			Driver:               "inprocess",
+			RetainTurnTimeout:    1 * time.Minute,
+			ContinuationHopLimit: 4,
+		},
+		Distributed: config.DistributedConfig{
+			BusDriver:    "loopback",
+			RemoteDriver: "loopback",
+		},
+		Memory: config.MemoryConfig{
+			Driver:             "inmem",
+			Strategy:           "none",
+			RecoveryBacklogMax: 8,
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("phase31TestConfig: cfg.Validate(): %v", err)
+	}
+	return cfg
 }
 
 func phase31Ctx(t *testing.T, id identity.Identity) context.Context {

@@ -100,7 +100,6 @@ package integration_test
 import (
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -121,10 +120,9 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/harbortest/devstack"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
-	"github.com/hurtener/Harbor/internal/audit"
-	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
@@ -138,7 +136,6 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
-	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -230,19 +227,6 @@ func (s *wave11StubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) err
 
 func (s *wave11StubProvider) Close(_ context.Context) error { return nil }
 
-// wave11KeySet mirrors cmd/harbor's devKeySet — kid → (pub, alg).
-type wave11KeySet struct {
-	kid string
-	pub *ecdsa.PublicKey
-}
-
-func (k *wave11KeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
-	if kid != k.kid {
-		return nil, "", fmt.Errorf("kid %q not known", kid)
-	}
-	return k.pub, "ES256", nil
-}
-
 // buildWave11Stack assembles the assembled dev-shaped stack with
 // `tools.entries[]` declaring at least one approval-gated tool, one
 // OAuth-bound tool, and one echo tool. The caller drives wire requests
@@ -251,172 +235,41 @@ func (k *wave11KeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 //
 // `oauthProvider` is the shared stub OAuth provider — the test toggles
 // its `needsAuth` flag between happy path and pause path.
+//
+// Per D-094, the heavy lifting lives in `harbortest/devstack.Assemble`;
+// this wrapper picks the canonical dev-stack opts and exposes the
+// fields the wave11 tests reach for.
 func buildWave11Stack(t *testing.T, oauthProvider toolauth.OAuthProvider) *wave11Stack {
 	t.Helper()
 	cfg := writeWave11Config(t)
-
-	var closers []func(context.Context) error
-
-	red := auditpatterns.New()
-
-	bus, err := events.Open(context.Background(), cfg.Events, audit.Redactor(red))
-	if err != nil {
-		t.Fatalf("events.Open: %v", err)
-	}
-	closers = append(closers, bus.Close)
-
-	stateStore, err := state.Open(context.Background(), cfg.State)
-	if err != nil {
-		_ = bus.Close(context.Background())
-		t.Fatalf("state.Open: %v", err)
-	}
-	closers = append(closers, stateStore.Close)
-
-	artStore, err := artifacts.Open(context.Background(), cfg.Artifacts)
-	if err != nil {
-		_ = stateStore.Close(context.Background())
-		_ = bus.Close(context.Background())
-		t.Fatalf("artifacts.Open: %v", err)
-	}
-	closers = append(closers, artStore.Close)
-
-	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
-		Store:    stateStore,
-		Bus:      bus,
-		Redactor: audit.Redactor(red),
-		Cfg:      cfg.Tasks,
-	})
-	if err != nil {
-		_ = artStore.Close(context.Background())
-		_ = stateStore.Close(context.Background())
-		_ = bus.Close(context.Background())
-		t.Fatalf("tasks.Open: %v", err)
-	}
-	closers = append(closers, taskReg.Close)
-
-	// Tool catalog + Phase 64a wiring. Register the three test tools
-	// BEFORE calling Builder.Apply — the builder Resolves them by name
-	// to wrap them.
-	cat := tools.NewCatalog()
-	registerWave11Tool(t, cat, "gate_tool")
-	registerWave11Tool(t, cat, "oauth_tool")
-	registerWave11Tool(t, cat, "echo_tool")
-
-	coord := pauseresume.New()
-	gates := make(map[string]*approval.ApprovalGate)
 	providers := map[string]toolauth.OAuthProvider{
 		"wave11-stub": oauthProvider,
 	}
-	builder := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
-		Catalog:        cat,
-		Coordinator:    coord,
-		Bus:            bus,
-		Redactor:       audit.Redactor(red),
+	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
+		// wave11 exercises EVERY layer the production dev cmd
+		// composes — no Skip flags. The dev-token's identity is the
+		// canonical (dev, dev, dev) which matches wave11ID, so the
+		// helper's default identity is correct.
 		OAuthProviders: providers,
-		AppliedGates:   gates,
+		PreRegisterTools: []tools.ToolDescriptor{
+			wave11ToolDesc("gate_tool"),
+			wave11ToolDesc("oauth_tool"),
+			wave11ToolDesc("echo_tool"),
+		},
 	})
-	if err := builder.Apply(context.Background()); err != nil {
-		_ = taskReg.Close(context.Background())
-		_ = artStore.Close(context.Background())
-		_ = stateStore.Close(context.Background())
-		_ = bus.Close(context.Background())
-		t.Fatalf("catalog.Builder.Apply: %v", err)
-	}
-	for _, g := range gates {
-		gate := g
-		closers = append(closers, func(ctx context.Context) error { return gate.Close(ctx) })
-	}
-
-	steerReg := steering.NewRegistry()
-	surface, err := protocol.NewControlSurface(taskReg, steerReg)
-	if err != nil {
-		// close already-registered closers
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](context.Background())
-		}
-		t.Fatalf("protocol.NewControlSurface: %v", err)
-	}
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](context.Background())
-		}
-		t.Fatalf("generate key: %v", err)
-	}
-	keys := &wave11KeySet{kid: wave11Kid, pub: &priv.PublicKey}
-	validator, err := auth.NewValidator(keys,
-		auth.WithRedactor(audit.Redactor(red)),
-		auth.WithEventBus(bus),
-	)
-	if err != nil {
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](context.Background())
-		}
-		t.Fatalf("auth.NewValidator: %v", err)
-	}
-
-	mux, err := transports.NewMux(surface, bus,
-		transports.WithValidator(validator),
-	)
-	if err != nil {
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](context.Background())
-		}
-		t.Fatalf("transports.NewMux: %v", err)
-	}
-
-	router := http.NewServeMux()
-	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","subcommand":"dev"}`))
-	})
-	router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
-	})
-	router.Handle("/v1/", mux)
-
-	// Mint the dev-shaped Bearer token — kid=harbor-test, identity
-	// triple (dev, dev, dev), scopes admin + console:fleet (the latter
-	// is required by approval.ResolveApproval).
-	now := time.Now()
-	tokObj := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iss":     "harbor-test",
-		"sub":     wave11ID.UserID,
-		"aud":     "harbor",
-		"exp":     now.Add(1 * time.Hour).Unix(),
-		"nbf":     now.Add(-1 * time.Minute).Unix(),
-		"iat":     now.Unix(),
-		"tenant":  wave11ID.TenantID,
-		"user":    wave11ID.UserID,
-		"session": wave11ID.SessionID,
-		"scopes":  []string{"admin", "console:fleet"},
-	})
-	tokObj.Header["kid"] = wave11Kid
-	token, err := tokObj.SignedString(priv)
-	if err != nil {
-		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](context.Background())
-		}
-		t.Fatalf("sign dev token: %v", err)
-	}
-
 	return &wave11Stack{
-		handler:  router,
-		token:    token,
-		priv:     priv,
-		bus:      bus,
-		state:    stateStore,
-		tasks:    taskReg,
-		surface:  surface,
-		steering: steerReg,
-		coord:    coord,
-		catalog:  cat,
-		gates:    gates,
-		closers:  closers,
+		handler:  stack.Handler,
+		token:    stack.Token,
+		priv:     stack.SigningKey,
+		bus:      stack.Bus,
+		state:    stack.State,
+		tasks:    stack.Tasks,
+		surface:  stack.Surface,
+		steering: stack.Steering,
+		coord:    stack.Coordinator,
+		catalog:  stack.Catalog,
+		gates:    stack.Gates,
+		closers:  []func(context.Context) error{func(context.Context) error { stack.Close(); return nil }},
 	}
 }
 
@@ -521,13 +374,11 @@ tools:
 	return cfg
 }
 
-// registerWave11Tool registers a simple echo descriptor in `cat` under
-// `name`. The descriptor's Invoke returns the args as the result —
-// allowing the test to verify that the gate passes original args
-// through on APPROVE.
-func registerWave11Tool(t *testing.T, cat tools.ToolCatalog, name string) {
-	t.Helper()
-	d := tools.ToolDescriptor{
+// wave11ToolDesc returns a simple echo descriptor named `name`. The
+// descriptor's Invoke returns the args as the result — allowing the
+// test to verify that the gate passes original args through on APPROVE.
+func wave11ToolDesc(name string) tools.ToolDescriptor {
+	return tools.ToolDescriptor{
 		Tool: tools.Tool{
 			Name:        name,
 			Description: "wave11 echo tool",
@@ -537,9 +388,6 @@ func registerWave11Tool(t *testing.T, cat tools.ToolCatalog, name string) {
 		Invoke: func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
 			return tools.ToolResult{Value: string(args)}, nil
 		},
-	}
-	if err := cat.Register(d); err != nil {
-		t.Fatalf("Register(%q): %v", name, err)
 	}
 }
 
