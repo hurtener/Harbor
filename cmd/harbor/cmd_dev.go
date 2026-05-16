@@ -655,10 +655,11 @@ func (s *devStack) close(ctx context.Context) {
 //
 // NOTE: Phase 64a does NOT yet construct OAuth providers from
 // operator config (a `tools.oauth_providers` block lands in a later
-// phase). For now, if an entry declares OAuth, the wiring fails
-// because no providers are wired. The fail-loud is the design — an
-// operator who declares `tools.entries[].oauth` without configuring
-// a provider gets a clear error pointing at the gap.
+// phase — tracked in issue #116). For now, if an entry declares
+// OAuth, the wiring fails because no providers are wired. The
+// fail-loud is the design — an operator who declares
+// `tools.entries[].oauth` without configuring a provider gets a clear
+// error pointing at the gap.
 func applyToolCatalogWiring(
 	ctx context.Context,
 	cfg *config.Config,
