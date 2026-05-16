@@ -226,7 +226,9 @@ README.md                   # Status row Phase 64 → Shipped
 - The dev token's identity triple is fixed (`tenant=dev, user=dev,
   session=dev`). An operator who wants to test multi-tenant
   isolation against the dev server needs a more general token-mint
-  surface — that's a follow-up issue.
+  surface (deferred; the dev-token surface is intentionally minimal —
+  operators wanting multi-tenant test tokens use the public Phase 61
+  `auth.Validator` directly).
 - The dev signer's keypair is in-memory and regenerated per boot.
   Operators relying on stable token values across restarts will
   notice; document in the README's quickstart.

@@ -705,6 +705,7 @@ func (p *Provider) PendingFlow(state string) bool {
 // redaction-rule hit even though SafePayload would otherwise let it
 // through.
 func (p *Provider) emitEvent(ctx context.Context, evType events.EventType, id identity.Identity, payload events.EventPayload) error {
+	// Defence in depth: bus.Publish also redacts (SafePayload bypass guard). The double pass is intentional — see godoc.
 	if _, err := p.redactor.Redact(ctx, payload); err != nil {
 		return fmt.Errorf("auth: redact emit: %w", err)
 	}

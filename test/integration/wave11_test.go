@@ -129,7 +129,11 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
-	_ "github.com/hurtener/Harbor/internal/llm/mock"
+	// No `_ "github.com/hurtener/Harbor/internal/llm/mock"` blank import:
+	// the wave-end E2E exercises only the tool-catalog path; the config's
+	// `llm.driver` is validated structurally against a static allowlist,
+	// not against the runtime registry, so the mock driver does not need
+	// to be registered for this test to pass.
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
