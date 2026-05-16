@@ -222,7 +222,28 @@ func phase64aTestConfig(t *testing.T, entries []config.ToolEntryConfig) *config.
 			Strategy:           "none",
 			RecoveryBacklogMax: 8,
 		},
-		Tools: config.ToolsConfig{Entries: entries},
+		Tools: config.ToolsConfig{
+			Entries: entries,
+			// D-095 validator: every entries[].oauth.provider
+			// reference must resolve to a declared provider here. The
+			// phase64a tests inject their own stub provider via
+			// devstack.AssembleOpts.OAuthProviders (runtime path
+			// bypasses the factory), so the named env vars below are
+			// never read — only the structural validator runs.
+			OAuthTokenKEKEnv: "PHASE64A_TEST_OAUTH_KEK",
+			OAuthProviders: []config.ToolOAuthProviderConfig{
+				{
+					Name:            "phase64a-stub",
+					Driver:          "oauth2",
+					ClientIDEnv:     "PHASE64A_TEST_OAUTH_CLIENT_ID",
+					ClientSecretEnv: "PHASE64A_TEST_OAUTH_CLIENT_SECRET",
+					AuthURL:         "https://phase64a.example.com/authorize",
+					TokenURL:        "https://phase64a.example.com/token",
+					RedirectURL:     "https://phase64a.example.com/callback",
+					Scopes:          []string{"phase64a"},
+				},
+			},
+		},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("phase64aTestConfig: cfg.Validate(): %v", err)
