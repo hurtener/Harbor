@@ -152,18 +152,18 @@ func TestE2E_Phase64_ConfigLoadsAndValidates(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase64_BootStackFailsLoud_OnMissingLLM — constraint #2:
-// the dev boot pipeline (config.Load → validateLLMProvider) rejects
-// a config with `driver: mock` UNLESS the allowMock signal is set.
-// We exercise the validator surface directly (no real cobra body)
-// because the failure happens in `bootDevStack` before any server
-// starts.
-//
-// The constraint #2 path is also covered end-to-end by the smoke
-// script's assertion 6 (`harbor dev` against an empty tmp dir).
-func TestE2E_Phase64_BootStackFailsLoud_OnMissingLLM(t *testing.T) {
-	// Build a config with driver=mock and no API key. This is the
-	// "operator forgot to configure LLM" shape.
+// TestE2E_Phase64_MockDriver_AllowedAtConfigLayer — at the config
+// layer (internal/config), driver=mock with an empty api_key parses
+// and validates: the mock driver intentionally has no per-driver
+// requirements so test fixtures that import it keep working. The
+// runtime-level fail-loud (constraint #2: cmd/harbor's
+// validateLLMProvider rejects driver=mock unless HARBOR_DEV_ALLOW_MOCK
+// is set) cannot be exercised from this external package because
+// cmd/harbor is `package main` and validateLLMProvider is unexported.
+// It is covered by cmd/harbor/cmd_dev_test.go::TestValidateLLMProvider_*
+// (full unit matrix: NoMockEscape × Bifrost/Mock × Reject/Accept) and
+// end-to-end by scripts/smoke/phase-64.sh assertion 6.
+func TestE2E_Phase64_MockDriver_AllowedAtConfigLayer(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "harbor.yaml")
 	body := strings.ReplaceAll(devSmokeYAML, "driver: bifrost", "driver: mock")
@@ -175,23 +175,9 @@ func TestE2E_Phase64_BootStackFailsLoud_OnMissingLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	// Now exercise the boot validator. We can't import cmd/harbor (it's
-	// `package main`); the equivalent fail-loud is what
-	// validateLLMProvider in cmd_dev.go enforces. Instead, we assert
-	// the config itself rejects driver=mock with empty api_key — Phase
-	// 64 leaves the mock-allowed-in-validator gate as-is (so tests
-	// that import the mock package keep working) but the dev cmd's
-	// validateLLMProvider DOES reject. Since we can't reach that
-	// helper from a black-box test, we just confirm config validity
-	// for the mock path (the validator allows mock at the config
-	// layer) and document that the dev cmd's runtime gate is covered
-	// by the smoke script. The §17.6 fix-it-where-you-find-it rule
-	// suggests the dev cmd's validateLLMProvider should be a public
-	// helper — that's a follow-up issue (#TBD).
 	if cfg.LLM.Driver != "mock" {
 		t.Errorf("cfg.LLM.Driver = %q, want mock", cfg.LLM.Driver)
 	}
-	// The smoke script's assertion 6 covers the runtime-level fail-loud.
 }
 
 // TestE2E_Phase64_ProtocolSurface_Boots_AndAcceptsBearerToken — the

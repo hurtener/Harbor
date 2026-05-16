@@ -688,8 +688,14 @@ func runWave11WireBridge(t *testing.T, stack *wave11Stack, q identity.Quadruple)
 				}
 				// ResolveApproval calls Coordinator.Resume; the
 				// gate.pending channel sends the resolution to the
-				// blocked RunGuarded waiter.
-				_ = gate.ResolveApproval(bridgeCtx, pauseresume.Token(tokenStr), decision, reason)
+				// blocked RunGuarded waiter. Surface bridge errors:
+				// scope mismatch, already-resolved token, missing
+				// pause record — any of these would otherwise look
+				// like a 3-second wait timeout downstream (Wave 11
+				// §17.5 audit, finding W1).
+				if err := gate.ResolveApproval(bridgeCtx, pauseresume.Token(tokenStr), decision, reason); err != nil {
+					t.Errorf("wave11 bridge: ResolveApproval(token=%s, decision=%v): %v", tokenStr, decision, err)
+				}
 			}
 		}
 	}()
@@ -1052,11 +1058,13 @@ func TestE2E_Wave11_FailureMode_Unauthenticated_Rejected(t *testing.T) {
 	var env struct {
 		Code protoerrors.Code `json:"code"`
 	}
-	if err := json.Unmarshal(respBody, &env); err == nil {
-		if env.Code != protoerrors.CodeIdentityRequired {
-			t.Errorf("missing-bearer: error code = %q, want %q",
-				env.Code, protoerrors.CodeIdentityRequired)
-		}
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		t.Fatalf("missing-bearer: response body not parseable as error envelope (status=%d, body=%s): %v",
+			resp.StatusCode, respBody, err)
+	}
+	if env.Code != protoerrors.CodeIdentityRequired {
+		t.Errorf("missing-bearer: error code = %q, want %q",
+			env.Code, protoerrors.CodeIdentityRequired)
 	}
 
 	// --- sub-assertion 2: invalid bearer → 401 + auth_rejected + audit.
@@ -1115,11 +1123,13 @@ func TestE2E_Wave11_FailureMode_Unauthenticated_Rejected(t *testing.T) {
 	var env2 struct {
 		Code protoerrors.Code `json:"code"`
 	}
-	if err := json.Unmarshal(respBody2, &env2); err == nil {
-		if env2.Code != protoerrors.CodeAuthRejected {
-			t.Errorf("bogus-bearer: error code = %q, want %q",
-				env2.Code, protoerrors.CodeAuthRejected)
-		}
+	if err := json.Unmarshal(respBody2, &env2); err != nil {
+		t.Fatalf("bogus-bearer: response body not parseable as error envelope (status=%d, body=%s): %v",
+			resp2.StatusCode, respBody2, err)
+	}
+	if env2.Code != protoerrors.CodeAuthRejected {
+		t.Errorf("bogus-bearer: error code = %q, want %q",
+			env2.Code, protoerrors.CodeAuthRejected)
 	}
 
 	select {

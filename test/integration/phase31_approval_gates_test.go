@@ -413,39 +413,25 @@ func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase31_SteeringInbox_DispatchesApproveReject demonstrates
-// that the gate's resolution surface is compatible with the Phase 53
-// steering inbox: an APPROVE / REJECT control event flowing through
-// the inbox would call Coordinator.Resume with the same shape the
-// gate's ResolveApproval uses. We exercise that the Coordinator.Resume
-// from the admin-scope identity ctx (the Phase 53 RunLoop's ctx
-// after ctxWithIdentity) unblocks the gate.
-//
-// This is not a full Phase 53 runloop wiring (which is a downstream
-// concern); it is the contract test that the gate's pending-resolution
-// channel responds correctly to a Coordinator.Resume initiated outside
-// the gate package — which is exactly what Phase 53 does.
-func TestE2E_Phase31_SteeringInbox_DispatchesApproveReject(t *testing.T) {
+// TestE2E_Phase31_AdminCtx_UnblocksGate_ResolveApproval — contract
+// test that the gate's pending-resolution channel responds correctly
+// when ResolveApproval is invoked from the admin-scope identity ctx
+// that the Phase 53 RunLoop would hand to the gate's resolve path.
+// This is NOT a steering-inbox round-trip test (the inbox-drain →
+// gate.ResolveApproval wiring is tracked in issue #112); it pins the
+// gate's resolve-from-outside-the-package shape that Phase 53 relies
+// on.
+func TestE2E_Phase31_AdminCtx_UnblocksGate_ResolveApproval(t *testing.T) {
 	env := buildPhase31Env(t, approval.AlwaysDenyPolicy{})
-
-	// Open a steering inbox for the test run — this is the Phase 53
-	// surface; we use it to demonstrate the gate's pending-resolution
-	// channel responds correctly when ResolveApproval is called from
-	// the same identity ctx the inbox's apply path would produce.
-	q := identity.Quadruple{Identity: phase31ID, RunID: phase31RunID}
-	inbox, err := env.registry.Open(q)
-	if err != nil {
-		t.Fatalf("registry.Open: %v", err)
-	}
-	defer env.registry.Retire(q)
-	_ = inbox
 
 	requestedSub, cancelReq := phase31SubFor(t, env.bus, phase31ID,
 		approval.EventTypeToolApprovalRequested)
 	defer cancelReq()
 
 	args := json.RawMessage(`{"do":"thing"}`)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		out, err := env.gate.RunGuarded(phase31Ctx(t, phase31ID),
 			&approval.ApprovalRequest{
 				Tool:     tools.Tool{Name: "do_thing"},
@@ -473,8 +459,14 @@ func TestE2E_Phase31_SteeringInbox_DispatchesApproveReject(t *testing.T) {
 		approval.DecisionApprove, "steering APPROVE"); err != nil {
 		t.Fatalf("ResolveApproval (steering-shape): %v", err)
 	}
-	// Brief wait for goroutine cleanup.
-	time.Sleep(50 * time.Millisecond)
+	// Synchronous join — the RunGuarded goroutine returns when the
+	// resolution lands (Wave 11 §17.5 audit, finding W3: replaced
+	// time.Sleep-as-sync with a done channel).
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunGuarded did not return after ResolveApproval")
+	}
 }
 
 // TestE2E_Phase31_InitiateThenCancel_NoGoroutineLeak is the

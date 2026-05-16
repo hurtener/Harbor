@@ -18,6 +18,11 @@
 #   4. Every expected file is present in the scaffolded tree.
 #   5. A second scaffold against the same dir exits non-zero with
 #      .code == "output_dir_exists".
+#   6. The scaffolded project actually builds end-to-end:
+#      `go mod tidy && go build ./...` succeeds after appending a real
+#      `replace github.com/hurtener/Harbor => ${ROOT}` directive. Catches
+#      regressions where the template's go.mod or imports drift away
+#      from a buildable shape (Wave 11 §17.5 audit, finding F3).
 
 set -euo pipefail
 
@@ -113,6 +118,32 @@ else
         ok 'phase 67: second scaffold against pre-existing dir emits output_dir_exists code (substring check)'
     else
         fail "phase 67: second scaffold malformed: ${SECOND_BODY}"
+    fi
+fi
+
+# 6. Scaffolded project actually builds (catches go.mod / import / template
+# drift that the in-tree tests miss — Wave 11 §17.5 audit, finding F3).
+# Scaffolds a fresh project into a temp dir, appends a real `replace`
+# directive pointing at the in-tree Harbor checkout, then runs
+# `go mod tidy && go build ./...`.
+BUILD_OUT="${TMPDIR}/build-test-agent"
+if ! "${BIN}" scaffold --name build-test-agent --output "${BUILD_OUT}" >/dev/null 2>&1; then
+    fail 'phase 67: scaffold for build-check failed'
+else
+    {
+        printf '\n'
+        printf 'replace github.com/hurtener/Harbor => %s\n' "${ROOT}"
+    } >> "${BUILD_OUT}/go.mod"
+    build_log=$(mktemp)
+    if (cd "${BUILD_OUT}" && go mod tidy && go build ./...) >"${build_log}" 2>&1; then
+        ok 'phase 67: scaffolded project builds end-to-end (go mod tidy + go build ./... against in-tree Harbor)'
+        rm -f "${build_log}"
+    else
+        fail 'phase 67: scaffolded project does NOT build (template/import/go.mod regression — see tail below)'
+        echo "    --- go mod tidy / go build output (tail 40 lines) ---"
+        tail -40 "${build_log}" | sed 's/^/    /'
+        echo "    --- end ---"
+        rm -f "${build_log}"
     fi
 fi
 
