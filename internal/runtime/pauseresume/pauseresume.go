@@ -211,7 +211,15 @@ type Coordinator interface {
 	// lost handle), marks the record resumed, and clears the
 	// checkpoint. A second Resume of the same Token returns
 	// ErrAlreadyResumed.
-	Resume(ctx context.Context, token Token, payload map[string]any) error
+	//
+	// `decision` is the typed marker carried on the emitted
+	// `pause.resumed` event so wire consumers (the Console, third-party
+	// clients, integration tests) can distinguish approve from reject
+	// from generic resume from timeout without parsing free-form
+	// `Reason` strings. An invalid Decision is rejected loud with
+	// ErrInvalidDecision — there is no untyped default (§13 fail-loudly,
+	// D-096).
+	Resume(ctx context.Context, token Token, decision Decision, payload map[string]any) error
 
 	// Status returns a read-only snapshot of a pause record's
 	// lifecycle. When the Token is absent from the in-memory registry

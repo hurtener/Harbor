@@ -53,7 +53,7 @@ func TestRestartSurvival_WithTrajectory(t *testing.T) {
 	if st.State != pauseresume.StatusPaused {
 		t.Fatalf("Status.State = %q, want paused", st.State)
 	}
-	if err := c2.Resume(ctx, p.Token, nil); err != nil {
+	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume on restarted coordinator: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestResume_BareIdentityContextAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	if err := c.Resume(bareCtx, p.Token, nil); err != nil {
+	if err := c.Resume(bareCtx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume with bare-identity ctx: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestResume_IncompleteIdentityInContextRejected(t *testing.T) {
 	// confirm Status / Resume both honour a cancelled context.
 	cctx, cancel := context.WithCancel(pauseCtx)
 	cancel()
-	if err := c.Resume(cctx, p.Token, nil); !errors.Is(err, context.Canceled) {
+	if err := c.Resume(cctx, p.Token, pauseresume.DecisionResume, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Resume on cancelled ctx: err=%v, want context.Canceled", err)
 	}
 	if _, err := c.Status(cctx, p.Token); !errors.Is(err, context.Canceled) {

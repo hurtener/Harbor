@@ -441,7 +441,15 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("PreRegisterTools[%q]: %w", d.Tool.Name, regErr)
 			}
 		}
-		coord := pauseresume.New()
+		// Wire the bus into the Coordinator so pause.requested /
+		// pause.resumed events land on the bus — wire consumers
+		// (integration tests, the Console) need the typed Decision
+		// marker (D-096) to discriminate approve/reject without
+		// parsing free-form Reason strings. Bare pauseresume.New()
+		// was the gap that motivated issue #113's audit finding;
+		// fix lives at the helper boundary so every test stack
+		// inherits the wiring instead of repeating the omission.
+		coord := pauseresume.New(pauseresume.WithBus(bus))
 		gates := make(map[string]*toolapproval.ApprovalGate)
 		providers := opts.OAuthProviders
 		if providers == nil {

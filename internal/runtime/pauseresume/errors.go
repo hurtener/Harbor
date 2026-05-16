@@ -48,6 +48,13 @@ var (
 	// loud rather than resuming with a half-decoded record.
 	ErrCheckpointCorrupt = errors.New("pauseresume: checkpoint record is corrupt")
 
+	// ErrInvalidDecision — Resume was called with a Decision that is
+	// not one of the four canonical values (approve / reject / resume
+	// / timeout). Fails closed rather than emitting a `pause.resumed`
+	// event with an untyped Decision — the §13 fail-loudly contract
+	// the typed Decision marker exists to enforce (issue #113, D-096).
+	ErrInvalidDecision = errors.New("pauseresume: invalid resume decision")
+
 	// ErrUnsupportedFormatVersion — a pause record loaded from the
 	// StateStore carries a format_version this Runtime does not
 	// recognise (a zero/absent version, or a higher version written by

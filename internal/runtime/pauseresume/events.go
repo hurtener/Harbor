@@ -36,11 +36,25 @@ type PauseRequestedPayload struct {
 }
 
 // PauseResumedPayload is the typed payload for a pause.resumed event.
-// SafePayload by construction — Token + Reason only, no caller bytes.
+// SafePayload by construction — Token + Reason + Decision only, no
+// caller bytes.
+//
+// `Decision` is the load-bearing typed marker wire consumers (the
+// Console, third-party clients, integration tests) switch on to
+// distinguish approve from reject from generic resume from timeout —
+// the §13 "overloaded `Reason` string" anti-pattern issue #113 / D-096
+// closes. `Reason` is the human-readable pause-reason classification
+// preserved for context; `Decision` is the typed channel observers
+// branch on.
 type PauseResumedPayload struct {
 	events.SafeSealed
 	// Token is the opaque pause Token.
 	Token string
-	// Reason is the canonical pause reason string.
+	// Reason is the canonical pause reason string (one of the four
+	// canonical pause reasons — the reason the pause was *requested*).
 	Reason string
+	// Decision is the typed marker indicating *how* the pause resumed
+	// (approve / reject / resume / timeout). Wire consumers switch on
+	// this value rather than parsing `Reason` strings. See D-096.
+	Decision Decision
 }

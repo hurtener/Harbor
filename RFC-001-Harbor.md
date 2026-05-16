@@ -111,6 +111,8 @@ A run can pause for many reasons that look distinct on the surface:
 
 These are **one primitive** at the Runtime level, exposed on the Protocol — not four parallel implementations. The Runtime owns the pause coordinator; planners and tools both *signal* "I need a pause" by returning `RequestPause` or emitting an authn request event; the Runtime drives the protocol-level event + resume token. Authentication on resume is checked against the original pause's identity scope.
 
+The canonical `pause.resumed` event carries a typed `Decision` marker (one of `approve` / `reject` / `resume` / `timeout`) so wire consumers (the Console, third-party clients, integration tests) can distinguish the *kind* of resume without parsing free-form `Reason` strings. The Wave 11 §17.5 audit (issue #113, D-096) pinned the "overloaded `Reason` string" anti-pattern as a §13 violation — a single event type carrying overloaded shape against a typed enum that should exist. The typed `Decision` is the load-bearing channel; `Reason` stays for human-readable context.
+
 This is the cleanest single-point-of-truth in the design and the strongest test of the swappable-planner property: a deterministic / workflow planner inherits pause/resume because it is a Runtime feature, not a planner feature. (Settled.)
 
 ### 3.4 The fail-loudly principle

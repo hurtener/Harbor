@@ -158,10 +158,16 @@ func (a *applier) applyEvent(ctx context.Context, sc *stepControl, ev ControlEve
 }
 
 // advancePause calls Coordinator.Resume for a RESUME / APPROVE / REJECT
-// control event. A REJECT carries a rejected:true marker into the resume
-// payload so a Coordinator subscriber (and the pause record) can tell an
-// approval from a rejection. A run with no outstanding pause Token fails
-// loud with ErrNoOutstandingPause.
+// control event. The typed `pauseresume.Decision` is derived from the
+// ControlType (RESUME→Resume, APPROVE→Approve, REJECT→Reject) and
+// carried on the emitted `pause.resumed` event so wire consumers can
+// distinguish the kind of resume without parsing free-form `Reason`
+// strings (issue #113, D-096). A run with no outstanding pause Token
+// fails loud with ErrNoOutstandingPause.
+//
+// REJECT additionally stamps `rejected: true` on the resume payload
+// map for backward-compatible payload observers; the typed Decision is
+// the load-bearing channel.
 func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pauseresume.Token) error {
 	if token == "" {
 		return fmt.Errorf("%w: %s control for run %q",
@@ -178,10 +184,20 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 		payload["rejected"] = true
 	}
 
+	// Map ControlType → typed Decision. The mapping is exhaustive over
+	// the three ControlType values applyEvent dispatches here; an
+	// unreachable default fails loud rather than silently emitting a
+	// `pause.resumed` event without a Decision (the §13 fail-loudly
+	// contract the typed marker exists to enforce).
+	decision, err := decisionFromControlType(ev.Type)
+	if err != nil {
+		return fmt.Errorf("steering: advancing pause: %w", err)
+	}
+
 	// Coordinator.Resume reads the resuming identity from ctx; the
 	// RunLoop hands applyEvent a ctx carrying the run's quadruple, so the
 	// scope check inside Resume sees the right triple.
-	if err := a.coord.Resume(ctx, token, payload); err != nil {
+	if err := a.coord.Resume(ctx, token, decision, payload); err != nil {
 		// pauseresume sentinels (ErrAlreadyResumed, ErrScopeMismatch,
 		// ErrPauseNotFound, trajectory.ErrToolContextLost) propagate
 		// verbatim — the caller reaches them via errors.Is / errors.As.
@@ -189,6 +205,26 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 		return fmt.Errorf("steering: advancing pause via Coordinator.Resume (%s): %w", ev.Type, err)
 	}
 	return nil
+}
+
+// decisionFromControlType maps the steering inbox's resume-shaped
+// ControlType (RESUME / APPROVE / REJECT) onto the runtime-level
+// `pauseresume.Decision` enum. Any other ControlType is a programmer
+// error — applyEvent only dispatches the three resume-shaped types into
+// advancePause — and surfaces loud rather than silently picking a
+// default.
+func decisionFromControlType(t ControlType) (pauseresume.Decision, error) {
+	switch t {
+	case ControlResume:
+		return pauseresume.DecisionResume, nil
+	case ControlApprove:
+		return pauseresume.DecisionApprove, nil
+	case ControlReject:
+		return pauseresume.DecisionReject, nil
+	default:
+		return "", fmt.Errorf("%w: %q is not a resume-shaped control",
+			ErrUnknownControlType, string(t))
+	}
 }
 
 // prioritize applies a PRIORITIZE side effect: it calls
