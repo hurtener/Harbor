@@ -106,7 +106,7 @@ func TestCoordinator_ConcurrentReuse_D025(t *testing.T) {
 				return
 			}
 
-			if err := c.Resume(ctx, p.Token, map[string]any{"resumed_by": runID}); err != nil {
+			if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, map[string]any{"resumed_by": runID}); err != nil {
 				errCh <- fmt.Errorf("g%d: Resume: %w", i, err)
 				return
 			}
@@ -163,7 +163,7 @@ func TestCoordinator_ConcurrentResumeSameToken(t *testing.T) {
 	for i := 0; i < racers; i++ {
 		go func() {
 			defer wg.Done()
-			results <- c.Resume(ctx, p.Token, nil)
+			results <- c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 		}()
 	}
 	wg.Wait()

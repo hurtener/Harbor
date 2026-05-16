@@ -177,6 +177,14 @@ func TestApplyEvent_Resume_CallsCoordinatorResume(t *testing.T) {
 	if sc.resumeKind != ControlResume {
 		t.Errorf("sc.resumeKind = %q, want RESUME", sc.resumeKind)
 	}
+	// D-096: the typed pauseresume.Decision is derived from the
+	// ControlType and threaded into Coordinator.Resume.
+	coord.mu.Lock()
+	got := coord.lastResumeDecision
+	coord.mu.Unlock()
+	if got != pauseresume.DecisionResume {
+		t.Errorf("Coordinator.Resume Decision = %q, want %q", got, pauseresume.DecisionResume)
+	}
 }
 
 func TestApplyEvent_Approve_CallsCoordinatorResume(t *testing.T) {
@@ -193,6 +201,13 @@ func TestApplyEvent_Approve_CallsCoordinatorResume(t *testing.T) {
 	if sc.resumeKind != ControlApprove {
 		t.Errorf("sc.resumeKind = %q, want APPROVE", sc.resumeKind)
 	}
+	// D-096: APPROVE control → DecisionApprove on the wire.
+	coord.mu.Lock()
+	got := coord.lastResumeDecision
+	coord.mu.Unlock()
+	if got != pauseresume.DecisionApprove {
+		t.Errorf("Coordinator.Resume Decision = %q, want %q", got, pauseresume.DecisionApprove)
+	}
 }
 
 func TestApplyEvent_Reject_StampsRejectedInPayload(t *testing.T) {
@@ -205,12 +220,19 @@ func TestApplyEvent_Reject_StampsRejectedInPayload(t *testing.T) {
 	}
 	coord.mu.Lock()
 	pay := coord.lastResumePay
+	got := coord.lastResumeDecision
 	coord.mu.Unlock()
 	if rejected, _ := pay["rejected"].(bool); !rejected {
 		t.Error("REJECT did not stamp rejected:true into the resume payload")
 	}
 	if pay["why"] != "bad plan" {
 		t.Error("REJECT dropped the caller's payload fields")
+	}
+	// D-096: REJECT control → DecisionReject on the wire; the typed
+	// Decision is the load-bearing channel, the rejected:true payload
+	// stamp is for backward-compatible map observers only.
+	if got != pauseresume.DecisionReject {
+		t.Errorf("Coordinator.Resume Decision = %q, want %q", got, pauseresume.DecisionReject)
 	}
 }
 

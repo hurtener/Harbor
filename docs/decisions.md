@@ -1774,6 +1774,9 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 - `phase31` and `phase64a` originally constructed `events.EventBus` directly via `eventsInmem.New(EventsConfig{...}, redactor)` with tight per-test buffer knobs. The migration synthesises a full `*config.Config` per test and reuses the matching `cfg.Events` knobs verbatim — behaviour is unchanged; the indirection is acceptable per CLAUDE.md §4.3 ("a phase plan that deviated permanently … reflects the deviation in the master plan's detail block").
 
 **§13 primitive-with-consumer.** The helper (primitive) ships with four consumers in the same PR. No deferred consumer.
+
+---
+
 ## D-095 — `tools.oauth_providers[]` operator config + OAuth provider driver registry (closes #116, closes D-090's deferral)
 
 **Date:** 2026-05-16
@@ -1807,3 +1810,32 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 **§13 primitive-with-consumer.** The primitive (registry + iface + driver) and its first consumer (`cmd/harbor/cmd_dev.go::applyToolCatalogWiring` populating the catalog builder's `Deps.OAuthProviders`) ship in the same PR. The smoke surface exercises both the validator (pre-boot) and the boot path (`harbor dev` constructs the providers from config or fails loud).
 
 **Source-binding scope (V1 simplification).** Phase 30's `*auth.Provider.Token(ctx, source)` API keys by `tools.ToolSourceID`. The V1 `oauth2` driver constructs ONE `*Provider` per `tools.oauth_providers[]` entry with a single `OAuthConfig` whose `Source = ToolSourceID(cfg.Name)`. The catalog wrapper (`internal/tools/catalog.WrapWithOAuth`) passes the underlying tool's source ID, which may not match the provider name; the driver transparently retargets every `Token` / `Revoke` / `InitiateFlow` call onto the operator-configured source. Future per-vendor drivers (e.g. `google-workspace`, `github-app`) may implement more sophisticated multi-source mappings; the V1 default keeps the operator's mental model simple: one provider declaration → one OAuth attachment.
+
+---
+
+## D-096 — `PauseResumedPayload.Decision` typed marker (closes #113)
+
+**Date:** 2026-05-16
+**Status:** Settled (binding — landed in the PR that closes issue #113)
+
+**Where it lives:** `internal/runtime/pauseresume/decision.go` (the new typed enum), `internal/runtime/pauseresume/events.go` (the `Decision Decision` field on `PauseResumedPayload`), `internal/runtime/pauseresume/coordinator.go` (the extended `Resume` signature), `RFC-001-Harbor.md` §3.3 (the canonical-event-shape note).
+
+**Decision.** `internal/runtime/pauseresume.PauseResumedPayload` gains a typed `Decision` field (values: `approve`, `reject`, `resume`, `timeout`). `Coordinator.Resume`'s signature is extended to take the typed `Decision` parameter; all in-tree producers (`steering.applier.advancePause` for RESUME/APPROVE/REJECT controls; `approval.ApprovalGate.ResolveApproval` for HITL gates; `auth.Provider.HandleCallback` for OAuth flow completion) populate it. An unknown / empty `Decision` is rejected loud with the new `ErrInvalidDecision` sentinel — there is no untyped default. The wave-end E2E (`test/integration/wave11_test.go`) and any other consumer that previously parsed free-form `Reason` strings now switches on the typed field.
+
+**Why.** PR #110's wave-end E2E worked around the gap by subscribing to `tool.approved` / `tool.rejected` and inferring the resolution kind from the per-tool event type. Wave 11 §17.5 audit (issue #113) pinned that as a §13 violation — overloading the typed event shape against a non-existent typed enum is a "parallel implementation of the same conceptual feature" smell read sideways: the typed enum that *should* exist gets simulated by tag dispatch on a sibling event. The runtime-level `pause.resumed` event is the *canonical* place to learn how a pause terminated; the per-tool events are routing surfaces, not classification surfaces.
+
+**Why a new enum (not reusing `approval.ApprovalDecision`).** The approval package already exports `ApprovalDecision` with values `approve` / `reject` / `pending`. That enum is approval-specific by design — `pending` is the gate's implicit parked state. The pause/resume Coordinator needs a *broader* enum that covers tool-side OAuth completion (`resume`) and deadline-driven resumes (`timeout`) — neither belongs in an approval-decision vocabulary. Adding `resume` / `timeout` to `ApprovalDecision` would pollute approval-gate code with values that are nonsensical there; defining a parallel "ApprovalDecision vs PauseResumeDecision" split with overlapping `approve`/`reject` values would be the §13 two-parallel-implementations smell. The right factoring keeps the gate-internal enum narrow and the coordinator-edge enum broad; the approval gate maps its internal `Approve`/`Reject` onto `pauseresume.DecisionApprove`/`DecisionReject` at the Coordinator seam.
+
+**How to apply.** New producers populating a `pause.resumed` event MUST set `Decision`. Wire consumers (the Console, third-party clients, integration tests) consume the typed value; do not regress to `Reason`-string parsing. The `Reason` field stays for human-readable context; `Decision` is the load-bearing type. Test stubs that implement `pauseresume.Coordinator` (e.g. `steering.stubCoordinator`) update their `Resume` method signature in the same PR — no parallel "with-Decision / without-Decision" overload.
+
+**Acceptance.**
+
+- `PauseResumedPayload` carries `Decision Decision`.
+- `Coordinator.Resume(ctx, token, decision Decision, payload map[string]any)` is the new signature; an unknown/empty Decision is rejected with `ErrInvalidDecision`.
+- All in-tree producers populate the field: `steering.applier.advancePause` maps `ControlResume`/`ControlApprove`/`ControlReject` → `DecisionResume`/`DecisionApprove`/`DecisionReject`; `approval.ApprovalGate.ResolveApproval` maps `ApprovalDecision` → `pauseresume.Decision`; `auth.Provider.HandleCallback` populates `DecisionResume`.
+- `test/integration/wave11_test.go` subscribes to `pause.resumed` and switches on `Decision`, asserting the typed marker arrives alongside the per-tool events. The per-tool `tool.approved` / `tool.rejected` subscriptions are preserved because they carry the Tool name (the per-tool channel is orthogonal to the decision-discrimination channel); only the *decision-discrimination workaround* the audit flagged is removed.
+- `pauseresume.IsValidDecision` covers the four canonical values; a new unit test pins each emits the right typed marker on the `pause.resumed` event.
+- RFC §3.3 documents the typed `Decision` field as part of the canonical resume event shape.
+- All tests `-race` green.
+
+**Wave-11 cross-fix bundled.** The wave-end test stack previously constructed `pauseresume.New()` with no `WithBus(bus)` option, so `pause.requested` / `pause.resumed` never landed on the bus — the same gap that motivated the audit's `tool.approved` / `tool.rejected` workaround. After PR #120 (D-094) extracted `harbortest/devstack.Assemble`, the omission moved from `buildWave11Stack` to the helper at `harbortest/devstack/devstack.go:444`; this PR wires the bus into the Coordinator at the helper boundary so every devstack-built test inherits the fix (CLAUDE.md §17.6: integration tests fix what they find, regardless of which phase originally shipped the gap).

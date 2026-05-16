@@ -121,7 +121,7 @@ func TestStatus_ReportsPausedThenResumed(t *testing.T) {
 	}
 
 	clk.advance(5 * time.Second)
-	if err := c.Resume(ctx, p.Token, map[string]any{"approved": true}); err != nil {
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 
@@ -152,10 +152,10 @@ func TestResume_SecondResumeReturnsAlreadyResumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if err := c.Resume(ctx, p.Token, nil); err != nil {
+	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume #1: %v", err)
 	}
-	err = c.Resume(ctx, p.Token, nil)
+	err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrAlreadyResumed) {
 		t.Fatalf("Resume #2: err=%v, want ErrAlreadyResumed", err)
 	}
@@ -166,7 +166,7 @@ func TestResume_UnknownTokenReturnsPauseNotFound(t *testing.T) {
 	c := pauseresume.New()
 	ctx := runCtx(t, testID, "run-1")
 
-	err := c.Resume(ctx, pauseresume.Token("nonexistent"), nil)
+	err := c.Resume(ctx, pauseresume.Token("nonexistent"), pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrPauseNotFound) {
 		t.Fatalf("Resume: err=%v, want ErrPauseNotFound", err)
 	}
@@ -197,7 +197,7 @@ func TestResume_MissingIdentityReturnsIdentityRequired(t *testing.T) {
 	}
 
 	// Resume with a bare context — no identity attached.
-	err = c.Resume(context.Background(), p.Token, nil)
+	err = c.Resume(context.Background(), p.Token, pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrIdentityRequired) {
 		t.Fatalf("Resume: err=%v, want ErrIdentityRequired", err)
 	}
@@ -219,7 +219,7 @@ func TestResume_ScopeMismatchRejected(t *testing.T) {
 	// A different tenant attempts the resume.
 	otherID := identity.Identity{TenantID: "t2", UserID: "u1", SessionID: "s1"}
 	resumeCtx := runCtx(t, otherID, "run-1")
-	err = c.Resume(resumeCtx, p.Token, nil)
+	err = c.Resume(resumeCtx, p.Token, pauseresume.DecisionResume, nil)
 	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
 		t.Fatalf("Resume: err=%v, want ErrScopeMismatch", err)
 	}
@@ -241,7 +241,7 @@ func TestResume_DifferentRunSameTripleAccepted(t *testing.T) {
 	// Same triple, different RunID — the isolation boundary is the
 	// triple, not the run; the resume must be accepted.
 	resumeCtx := runCtx(t, testID, "run-2-resume")
-	if err := c.Resume(resumeCtx, p.Token, nil); err != nil {
+	if err := c.Resume(resumeCtx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume (different run, same triple): %v", err)
 	}
 }
@@ -300,7 +300,7 @@ func TestRestartSurvival_WithStore_PauseSurvives(t *testing.T) {
 	}
 
 	// And it can be resumed on the restarted coordinator.
-	if err := c2.Resume(ctx, p.Token, map[string]any{"approved": true}); err != nil {
+	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("Resume on restarted coordinator: %v", err)
 	}
 	st, err = c2.Status(ctx, p.Token)

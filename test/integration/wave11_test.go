@@ -653,13 +653,22 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 	stopBridge := runWave11WireBridge(t, stack, q)
 	defer stopBridge()
 
-	// Subscriptions — observe the gate's three event types.
+	// Subscriptions — observe the gate's per-tool events PLUS the
+	// runtime-level pause.resumed event. The per-tool events still
+	// carry the Tool name (required for per-tool routing), but the
+	// typed Decision marker on pause.resumed is what wire consumers
+	// switch on to distinguish approve from reject from generic resume
+	// (issue #113, D-096) — that's the channel the §17.5 audit
+	// flagged as missing from PR #110.
 	reqSub, cancelReqSub := wave11SubFor(t, stack.bus, wave11ID,
 		approval.EventTypeToolApprovalRequested)
 	defer cancelReqSub()
 	appSub, cancelAppSub := wave11SubFor(t, stack.bus, wave11ID,
 		approval.EventTypeToolApproved)
 	defer cancelAppSub()
+	resumedSub, cancelResumedSub := wave11SubFor(t, stack.bus, wave11ID,
+		pauseresume.EventTypePauseResumed)
+	defer cancelResumedSub()
 
 	// Invoke the gated tool in a goroutine. The gate parks via the
 	// Coordinator and the goroutine blocks on the gate's pending
@@ -719,7 +728,8 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 	}
 	_ = approveResp.Body.Close()
 
-	// Observe `tool.approved` on the bus.
+	// Observe `tool.approved` on the bus — carries the Tool name +
+	// PauseToken, the per-tool channel.
 	appEv := wave11WaitEv(t, appSub, 3*time.Second)
 	appPayload, ok := appEv.Payload.(approval.ToolApprovedPayload)
 	if !ok {
@@ -727,6 +737,23 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 	}
 	if appPayload.PauseToken != pauseToken {
 		t.Errorf("approved PauseToken = %q, want %q", appPayload.PauseToken, pauseToken)
+	}
+
+	// Observe `pause.resumed` on the bus — carries the typed Decision
+	// marker so wire consumers (the Console, third-party clients) can
+	// switch on the resolution kind WITHOUT parsing free-form Reason
+	// strings (the §13 anti-pattern issue #113 / D-096 closes).
+	resumedEv := wave11WaitEv(t, resumedSub, 3*time.Second)
+	resumedPayload, ok := resumedEv.Payload.(pauseresume.PauseResumedPayload)
+	if !ok {
+		t.Fatalf("pause.resumed payload type = %T, want PauseResumedPayload", resumedEv.Payload)
+	}
+	if resumedPayload.Decision != pauseresume.DecisionApprove {
+		t.Errorf("pause.resumed Decision = %q, want %q (typed approve marker)",
+			resumedPayload.Decision, pauseresume.DecisionApprove)
+	}
+	if resumedPayload.Token != pauseToken {
+		t.Errorf("pause.resumed Token = %q, want %q", resumedPayload.Token, pauseToken)
 	}
 
 	// The wrapped Invoke returns the original args.
@@ -770,6 +797,9 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 	rejSub, cancelRejSub := wave11SubFor(t, stack.bus, wave11ID,
 		approval.EventTypeToolRejected)
 	defer cancelRejSub()
+	resumedSub, cancelResumedSub := wave11SubFor(t, stack.bus, wave11ID,
+		pauseresume.EventTypePauseResumed)
+	defer cancelResumedSub()
 
 	gatedDesc, ok := stack.catalog.Resolve("gate_tool")
 	if !ok {
@@ -821,6 +851,20 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 	}
 	if rejPayload.PauseToken != pauseToken {
 		t.Errorf("rejected PauseToken = %q, want %q", rejPayload.PauseToken, pauseToken)
+	}
+
+	// D-096: assert the typed Decision marker on pause.resumed.
+	resumedEv := wave11WaitEv(t, resumedSub, 3*time.Second)
+	resumedPayload, ok := resumedEv.Payload.(pauseresume.PauseResumedPayload)
+	if !ok {
+		t.Fatalf("pause.resumed payload type = %T, want PauseResumedPayload", resumedEv.Payload)
+	}
+	if resumedPayload.Decision != pauseresume.DecisionReject {
+		t.Errorf("pause.resumed Decision = %q, want %q (typed reject marker)",
+			resumedPayload.Decision, pauseresume.DecisionReject)
+	}
+	if resumedPayload.Token != pauseToken {
+		t.Errorf("pause.resumed Token = %q, want %q", resumedPayload.Token, pauseToken)
 	}
 
 	select {

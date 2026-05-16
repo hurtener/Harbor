@@ -69,14 +69,15 @@ func (p *scriptedPlanner) stepCount() int {
 // results. It is NOT a re-implementation of pause coordination — it just
 // records that the RunLoop reached the ONE Coordinator.
 type stubCoordinator struct {
-	mu            sync.Mutex
-	requestCalls  int
-	resumeCalls   int
-	lastResumePay map[string]any
-	issueToken    pauseresume.Token
-	requestErr    error
-	resumeErr     error
-	resumedTokens []pauseresume.Token
+	mu                 sync.Mutex
+	requestCalls       int
+	resumeCalls        int
+	lastResumePay      map[string]any
+	lastResumeDecision pauseresume.Decision
+	issueToken         pauseresume.Token
+	requestErr         error
+	resumeErr          error
+	resumedTokens      []pauseresume.Token
 }
 
 func (c *stubCoordinator) Request(_ context.Context, req pauseresume.PauseRequest) (pauseresume.Pause, error) {
@@ -93,11 +94,12 @@ func (c *stubCoordinator) Request(_ context.Context, req pauseresume.PauseReques
 	return pauseresume.Pause{Token: tok, Reason: req.Reason, Identity: req.Identity}, nil
 }
 
-func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, payload map[string]any) error {
+func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, decision pauseresume.Decision, payload map[string]any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.resumeCalls++
 	c.lastResumePay = payload
+	c.lastResumeDecision = decision
 	c.resumedTokens = append(c.resumedTokens, token)
 	return c.resumeErr
 }
