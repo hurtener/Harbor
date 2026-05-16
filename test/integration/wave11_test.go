@@ -127,7 +127,11 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
-	_ "github.com/hurtener/Harbor/internal/llm/mock"
+	// No `_ "github.com/hurtener/Harbor/internal/llm/mock"` blank import:
+	// the wave-end E2E exercises only the tool-catalog path; the config's
+	// `llm.driver` is validated structurally against a static allowlist,
+	// not against the runtime registry, so the mock driver does not need
+	// to be registered for this test to pass.
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -329,6 +333,22 @@ memory:
   driver: inmem
   strategy: none
 tools:
+  oauth_token_kek_env: WAVE11_TEST_OAUTH_KEK
+  oauth_providers:
+    # The wave11 E2E injects its own stub OAuthProvider via the
+    # catalog Builder Deps (not via the registry-driven factory path),
+    # but D-095's validator requires every entries[].oauth.provider
+    # reference to resolve to a declared name here. The structural
+    # validator never reads the named env vars; the test bypasses the
+    # factory entirely.
+    - name: wave11-stub
+      driver: oauth2
+      client_id_env: WAVE11_TEST_OAUTH_CLIENT_ID
+      client_secret_env: WAVE11_TEST_OAUTH_CLIENT_SECRET
+      auth_url: https://wave11.example.com/authorize
+      token_url: https://wave11.example.com/token
+      redirect_url: https://wave11.example.com/callback
+      scopes: ["wave11"]
   entries:
     - name: gate_tool
       approval:

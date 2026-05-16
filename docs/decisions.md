@@ -1774,3 +1774,36 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 - `phase31` and `phase64a` originally constructed `events.EventBus` directly via `eventsInmem.New(EventsConfig{...}, redactor)` with tight per-test buffer knobs. The migration synthesises a full `*config.Config` per test and reuses the matching `cfg.Events` knobs verbatim — behaviour is unchanged; the indirection is acceptable per CLAUDE.md §4.3 ("a phase plan that deviated permanently … reflects the deviation in the master plan's detail block").
 
 **§13 primitive-with-consumer.** The helper (primitive) ships with four consumers in the same PR. No deferred consumer.
+## D-095 — `tools.oauth_providers[]` operator config + OAuth provider driver registry (closes #116, closes D-090's deferral)
+
+**Date:** 2026-05-16
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `internal/config/config.go` (`ToolsConfig.OAuthProviders` + `ToolOAuthProviderConfig` + `ToolsConfig.OAuthTokenKEKEnv`); `internal/config/validate.go` (`allowedOAuthDrivers` + the per-provider and cross-validation rules); `internal/tools/auth/registry.go` (driver registry); `internal/tools/auth/drivers/oauth2/oauth2.go` (V1 default driver); `cmd/harbor/cmd_dev.go::applyToolCatalogWiring` (the boundary that walks the config and populates the catalog builder's `Deps.OAuthProviders`); `cmd/harbor/main.go` (blank-import); `examples/dev.yaml` (operator-facing block).
+
+**Decision.** OAuth provider construction now flows from the operator config: `tools.oauth_providers[]` declares named providers; each entry resolves to a driver via the §4.4 registry pattern (`internal/tools/auth/drivers/<name>/`). The V1 default driver is `oauth2` — generic OAuth2/PKCE Authorization Code flow. `cmd/harbor/cmd_dev.go::applyToolCatalogWiring` walks the config and populates the catalog Builder's `Deps.OAuthProviders` map.
+
+**Why.** D-090 deferred the provider-construction surface ("a `tools.oauth_providers` block lands in a later phase"). That gap meant any operator declaring `tools.entries[].oauth` got a fail-loud at boot — correct but useless: there was no way to actually configure a provider. Issue #116 from the Wave 11 §17.5 audit pinned the gap.
+
+**How to apply.**
+
+- New OAuth flow types add a driver under `internal/tools/auth/drivers/<name>/` following the §4.4 seam pattern: self-register via `init() → auth.MustRegister(name, New)` and add the name to `internal/config/validate.go`'s `allowedOAuthDrivers` allowlist in the same PR.
+- Operators declare providers in `harbor.yaml` under `tools.oauth_providers[]`; each entry references its driver by name and uses env-var indirection for `client_id_env` / `client_secret_env` (§7 rule 2 — never hardcoded).
+- The KEK for AES-256-GCM token encryption at rest comes from one operator env var named in `tools.oauth_token_kek_env`. The dev stack constructs ONE shared `auth.TokenStore` + `auth.Sealer` and passes them into every factory call via `auth.FactoryDeps`.
+- Identity propagates through every provider call per §6; the registry never accepts a request without a triple.
+- Credentials enter via env-var indirection (`client_id_env`, `client_secret_env`); never hardcoded, never logged (§7).
+
+**Acceptance.**
+
+- `internal/config` schema declares `OAuthProviders[]` + `OAuthTokenKEKEnv` with a validator that rejects unknown drivers, duplicate names, empty env-var fields, the missing-KEK-env-when-providers-set case, and unresolved `entries[].oauth.provider` references.
+- `internal/tools/auth` adds the `Factory` type + `Register` / `MustRegister` / `Resolve` registry + `ProviderConfig` boundary type + `FactoryDeps`.
+- `internal/tools/auth/drivers/oauth2/` ships the V1 default driver with a fail-loud constructor (empty client_id / client_secret / endpoints / redirect_url all return typed errors) and a D-025 concurrent-reuse test (N≥128 concurrent invocations under `-race`).
+- `cmd/harbor/cmd_dev.go::applyToolCatalogWiring` populates the map from config; the function's godoc no longer carries the "Phase 64a does NOT yet construct OAuth providers" deferral note.
+- `cmd/harbor/main.go` blank-imports `_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"`.
+- `examples/dev.yaml` documents the block with one realistic GitHub entry.
+- `scripts/smoke/phase-64a.sh` asserts both the unknown-provider error path (`harbor validate` rejects with the unknown-provider name in the message) and the missing-KEK-env error path.
+- D-090's "Deferred" note about OAuth provider construction is now closed by D-095 (this entry); D-090 itself is left untouched as a historical record.
+
+**§13 primitive-with-consumer.** The primitive (registry + iface + driver) and its first consumer (`cmd/harbor/cmd_dev.go::applyToolCatalogWiring` populating the catalog builder's `Deps.OAuthProviders`) ship in the same PR. The smoke surface exercises both the validator (pre-boot) and the boot path (`harbor dev` constructs the providers from config or fails loud).
+
+**Source-binding scope (V1 simplification).** Phase 30's `*auth.Provider.Token(ctx, source)` API keys by `tools.ToolSourceID`. The V1 `oauth2` driver constructs ONE `*Provider` per `tools.oauth_providers[]` entry with a single `OAuthConfig` whose `Source = ToolSourceID(cfg.Name)`. The catalog wrapper (`internal/tools/catalog.WrapWithOAuth`) passes the underlying tool's source ID, which may not match the provider name; the driver transparently retargets every `Token` / `Revoke` / `InitiateFlow` call onto the operator-configured source. Future per-vendor drivers (e.g. `google-workspace`, `github-app`) may implement more sophisticated multi-source mappings; the V1 default keeps the operator's mental model simple: one provider declaration → one OAuth attachment.
