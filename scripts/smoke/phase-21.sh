@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 21 smoke — TaskGroup + retain-turn + patches + WatchGroup.
 #
 # Phase 21 extends internal/tasks with group governance (Open → Sealed

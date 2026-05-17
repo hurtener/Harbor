@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 38 — Skill planner tools (skill_search, skill_get, skill_list).
 #
 # Phase 38 ships three planner-callable Tools that wrap the Phase 37

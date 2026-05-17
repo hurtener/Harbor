@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 32 smoke — LLM client core + StreamSink contract + context safety net.
 #
 # Phase 32 ships the LLMClient interface, the multimodal sum-type

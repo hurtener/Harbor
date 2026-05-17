@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 55 smoke — OTel traces + propagation.
 #
 # Phase 55 ships the telemetry Tracer wrapper, the W3C TraceContext

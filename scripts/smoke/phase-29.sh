@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 29 smoke — A2A southbound driver (full v1 spec).
 #
 # Phase 29 ships the wire RemoteTransport driver for A2A (the JSON-RPC

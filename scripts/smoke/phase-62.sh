@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 62 smoke — Protocol conformance suite (RFC §5; master-plan Phase
 # 62 detail block; D-080).
 #

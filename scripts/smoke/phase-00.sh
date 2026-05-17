@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 00 — repo skeleton smoke checks.
 # Verifies the doc & mirror invariants. No runtime is required.
 

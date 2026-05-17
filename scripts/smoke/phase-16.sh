@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 16 smoke — Postgres StateStore driver.
 #
 # Runs the driver's Go tests under -race. When HARBOR_PG_DSN is unset

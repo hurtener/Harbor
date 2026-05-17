@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 53 smoke — Steering wiring (9 control events) (RFC §6.3;
 # master-plan Phase 53 detail block; D-071).
 #

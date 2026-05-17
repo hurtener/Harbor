@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 05 smoke — events subsystem.
 #
 # Phase 05 ships the typed event bus interface + the in-memory driver; no

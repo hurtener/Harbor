@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 47 smoke — Parallel-call executor + ReAct CallParallel /
 # SpawnTask / AwaitTask emission upgrade (RFC §6.2; master plan
 # Phase 47 detail block; D-056).

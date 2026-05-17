@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 03 — Audit redactor smoke checks.
 # This phase ships a Go package only (no HTTP / Protocol surface). Validation is via
 # `go test ./internal/audit/...`. Smoke records the surface state explicitly.

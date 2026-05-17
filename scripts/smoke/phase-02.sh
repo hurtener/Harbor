@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 02 — configuration loader smoke.
 # The config package has no HTTP surface; correctness is validated by go test.
 # This script exists so the drift-audit's plan↔smoke pairing rule is satisfied

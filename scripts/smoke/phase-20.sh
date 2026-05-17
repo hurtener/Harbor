@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 20 smoke — TaskRegistry interface + InProcess driver.
 #
 # Phase 20 ships internal/tasks: the unified TaskID namespace

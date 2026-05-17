@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
 # Phase 65 smoke — `harbor dev` hot-reload (D-099).
 #
 # The preflight harness boots `./bin/harbor dev` with hot-reload enabled

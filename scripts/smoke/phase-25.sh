@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 25 smoke — SQLite + Postgres MemoryStore drivers.
 #
 # Phase 25 lands `internal/memory/drivers/sqlite` + `internal/memory/drivers/postgres`,

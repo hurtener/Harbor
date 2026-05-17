@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 33a smoke — custom OpenAI-compatible providers + per-provider
 # timeouts (extension of Phase 33's bifrost driver).
 #
