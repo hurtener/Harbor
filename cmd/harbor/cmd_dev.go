@@ -124,8 +124,9 @@ const (
 // Flag names declared as constants so the dev cmd body, tests, and the
 // help golden reference one spelling.
 const (
-	flagDevConfig = "config"
-	flagDevPort   = "port"
+	flagDevConfig      = "config"
+	flagDevPort        = "port"
+	flagDevNoHotReload = "no-hot-reload"
 )
 
 // EnvDevAllowMock is the env var name that unlocks the dev-only mock
@@ -187,6 +188,13 @@ Examples:
 	}
 	cmd.Flags().String(flagDevConfig, DefaultDevConfig, "path to harbor.yaml")
 	cmd.Flags().Int(flagDevPort, DefaultDevPort, "loopback port for the Protocol server")
+	// Phase 65 (D-099) — operator-facing escape hatch for hot-reload.
+	// The default boot enables the watcher per cfg.CLI.DevHotReload.Enabled
+	// (which defaults to true via the loader); passing --no-hot-reload
+	// forces the watcher off regardless of config. The flag is the §13
+	// "dev-only escape hatch — explicit, never the default" surface
+	// applied in reverse: operators OPT OUT of a sensible default.
+	cmd.Flags().Bool(flagDevNoHotReload, false, "disable the fsnotify-driven hot-reload watcher (overrides cli.dev_hot_reload.enabled)")
 	return cmd
 }
 
@@ -197,6 +205,7 @@ Examples:
 func runDev(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)
 	port, _ := cmd.Flags().GetInt(flagDevPort)
+	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload)
 	if bind := os.Getenv("HARBOR_BIND"); bind != "" {
 		// HARBOR_BIND=host:port overrides --port (used by preflight).
 		// The override is a single env var so an operator who needs to
@@ -219,25 +228,89 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	stack, err := bootDevStack(ctx, devBootOptions{
+	bootOpts := devBootOptions{
 		cfgPath:   cfgPath,
 		port:      port,
 		allowMock: allowMock,
 		logger:    logger,
 		stderr:    cmd.ErrOrStderr(),
-	})
+	}
+	stack, err := bootDevStack(ctx, bootOpts)
 	if err != nil {
 		return emitCLIError(cmd, bootErrorToCLIError(err))
 	}
-	defer stack.close(context.Background())
 
-	// Serve until signal. Any serve error wraps as a CLIError.
-	if err := stack.serve(ctx); err != nil {
+	// Phase 65 (D-099) — hot-reload supervisor. The supervisor owns the
+	// active devStack lifecycle from this point: on a file change it
+	// drains the current stack per `cli.dev_hot_reload.policy`, calls
+	// `bootDevStack` again with the same opts, and swaps the result in.
+	// The supervisor exits cleanly on ctx-cancel (SIGINT/SIGTERM) and
+	// runs to completion alongside the stack's serve loop.
+	//
+	// The supervisor is OPTIONAL — disabled when:
+	//   - The operator passes `--no-hot-reload`.
+	//   - The config sets `cli.dev_hot_reload.enabled: false`.
+	//   - The config sets `cli.dev_hot_reload.policy: disabled`.
+	//
+	// In the disabled case, runDev falls back to the pre-Phase-65
+	// behaviour: serve the stack directly, drain on ctx-cancel.
+	hotReloadEnabled := !noHotReload
+	hrCfg := stack.cfg.CLI.DevHotReload
+	if hotReloadEnabled && hrCfg.Enabled != nil && !*hrCfg.Enabled {
+		hotReloadEnabled = false
+	}
+	if hotReloadEnabled && hrCfg.Policy == config.DevHotReloadPolicyDisabled {
+		hotReloadEnabled = false
+	}
+
+	if !hotReloadEnabled {
+		defer stack.close(context.Background())
+		if err := stack.serve(ctx); err != nil {
+			return emitCLIError(cmd, CLIError{
+				Subcommand: "dev",
+				Message:    fmt.Sprintf("dev server stopped: %v", err),
+				Code:       CodeBootInternal,
+				Hint:       "check the server log lines above for the originating subsystem",
+			})
+		}
+		return nil
+	}
+
+	// Construct the supervisor with the initial stack. The supervisor
+	// takes ownership of the stack — we drain via supervisor.CurrentStack()
+	// on the deferred shutdown so signal-driven AND rebuild-driven
+	// shutdowns share one drain path.
+	watchRoots := resolveHotReloadWatchRoots(hrCfg, cfgPath)
+	supervisor, err := newHotReloadSupervisor(logger, bootOpts, stack, hrCfg, watchRoots)
+	if err != nil {
+		stack.close(context.Background())
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "dev",
+			Message:    fmt.Sprintf("hot-reload supervisor: %v", err),
+			Code:       CodeBootInternal,
+			Hint:       "check cli.dev_hot_reload in harbor.yaml; pass --no-hot-reload to bypass",
+		})
+	}
+	defer func() {
+		// Drain the supervisor's current stack on shutdown. After
+		// supervisor.Run returns, CurrentStack() is the last
+		// successfully-booted stack — either the initial one (no
+		// rebuild ever fired) or the latest reboot.
+		current := supervisor.CurrentStack()
+		if current != nil {
+			current.close(context.Background())
+		}
+	}()
+
+	// The supervisor owns both the serve loop and the rebuild loop.
+	// Run blocks until ctx cancels OR a rebuild fails fatally OR the
+	// active serve goroutine exits with a non-nil error.
+	if err := supervisor.Run(ctx); err != nil {
 		return emitCLIError(cmd, CLIError{
 			Subcommand: "dev",
 			Message:    fmt.Sprintf("dev server stopped: %v", err),
 			Code:       CodeBootInternal,
-			Hint:       "check the server log lines above for the originating subsystem",
+			Hint:       "check the server log lines above for the originating subsystem; pass --no-hot-reload to disable the watcher",
 		})
 	}
 	return nil

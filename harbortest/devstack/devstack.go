@@ -50,6 +50,22 @@
 // field is concurrent-safe under N parallel invocations (the
 // underlying drivers' concurrent-reuse tests already gate this).
 // `DevStack.Close` is idempotent and safe to defer.
+//
+// # Phase 65 (D-099) hot-reload deliberately NOT mirrored
+//
+// The production `harbor dev` hot-reload supervisor
+// (`cmd/harbor/cmd_dev_hot_reload.go`) wraps `bootDevStack` — it lives
+// at the runDev level, not inside bootDevStack itself. The helper
+// mirrors bootDevStack's field-for-field assembly, NOT the surrounding
+// supervisor: integration tests that need to exercise the hot-reload
+// shape construct their own supervisor against the helper's assembled
+// stack (the supervisor's exported constructor takes the boot opts and
+// the initial stack — both reproducible here). Per D-094's
+// "helper-tracks-production" rule, this is a deliberate scope choice,
+// not drift: a hot-reload "helper" that owned the rebuild loop would
+// duplicate the cmd-side orchestrator with no test using it. When the
+// rebuild orchestrator's shape next changes, both files (this one and
+// `cmd/harbor/cmd_dev_hot_reload.go`) are revisited together.
 package devstack
 
 import (

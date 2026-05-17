@@ -172,3 +172,26 @@ tools:
   #     auth_url: https://github.com/login/oauth/authorize
   #     token_url: https://github.com/login/oauth/access_token
   #     redirect_url: https://your-deployment.example.com/oauth/callback
+
+# Phase 65 (D-099) — `harbor dev` hot-reload supervisor. The block is
+# opt-out: every field has a loader-applied default that mirrors the
+# values below; omit the block entirely to inherit them. Operators that
+# want hot-reload off pass `--no-hot-reload` to `harbor dev` OR set
+# `enabled: false` here OR set `policy: disabled`. Restart-required.
+cli:
+  dev_hot_reload:
+    # `enabled: true` is the default; flip to false to disable the
+    # watcher entirely (equivalent to passing `--no-hot-reload`).
+    enabled: true
+    # `policy: drain` (default) waits up to `drain_timeout` for in-
+    # flight RunLoops before forcing close. `policy: cancel`
+    # immediately cancels in-flight; `policy: disabled` opts out at
+    # the config layer (equivalent to `enabled: false`).
+    policy: drain
+    drain_timeout: 5s
+    # The watcher unions these paths with the loaded config file's
+    # parent directory, so a `harbor.yaml` edit always triggers a
+    # reload. Defaults to `[".harbor/agents"]` — the Phase 66
+    # project-local drafts directory.
+    watch_roots:
+      - .harbor/agents
