@@ -46,6 +46,7 @@ func (c *Config) Validate() error {
 		c.validateSkills,
 		c.validateTools,
 		c.validatePlanner,
+		c.validateCLI,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -1169,6 +1170,71 @@ func sortedKeys(m map[string]struct{}) string {
 		}
 	}
 	return strings.Join(keys, ",")
+}
+
+// allowedDevHotReloadPolicies enumerates the Phase 65 (D-099) retain-
+// in-flight policy values an operator may configure under
+// `cli.dev_hot_reload.policy`. Centralised here so both the validator
+// and the dev cmd reference one allowlist; unknown values fail loud at
+// load time per CLAUDE.md §13 ("fail loudly at boot").
+var allowedDevHotReloadPolicies = map[string]struct{}{
+	DevHotReloadPolicyDrain:    {},
+	DevHotReloadPolicyCancel:   {},
+	DevHotReloadPolicyDisabled: {},
+}
+
+// validateCLI checks the CLI section. Phase 65 (D-099) is the first
+// consumer — the `cli.dev_hot_reload` block configures the `harbor dev`
+// fsnotify watcher. Unknown policy values are rejected; a negative
+// drain timeout is rejected; an empty WatchRoots list is rejected when
+// the watcher is ENABLED via explicit operator opt-in. An entirely
+// zero-valued block (`Enabled == nil` AND `Policy == ""` AND no other
+// fields set) is accepted as the "operator didn't touch it" case —
+// the loader's `defaults()` seeds the production defaults when going
+// through `Load`, while library callers / tests that construct
+// `*config.Config` by hand are allowed to skip the CLI section without
+// tripping the watcher's enabled-but-rootless guard.
+func (c *Config) validateCLI() error {
+	hr := c.CLI.DevHotReload
+	if hr.Policy != "" {
+		if _, ok := allowedDevHotReloadPolicies[hr.Policy]; !ok {
+			return fieldError("cli.dev_hot_reload.policy",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedDevHotReloadPolicies), hr.Policy))
+		}
+	}
+	if hr.DrainTimeout < 0 {
+		return fieldError("cli.dev_hot_reload.drain_timeout",
+			fmt.Sprintf("must be >= 0, got %s", hr.DrainTimeout))
+	}
+	for i, root := range hr.WatchRoots {
+		if strings.TrimSpace(root) == "" {
+			return fieldError(fmt.Sprintf("cli.dev_hot_reload.watch_roots[%d]", i),
+				"path must not be empty")
+		}
+	}
+	// "Operator didn't touch it" zero-value detection: every field is
+	// at its zero. The loader's `defaults()` runs before yaml unmarshal,
+	// so any operator who LOADED a config (via `config.Load`) has
+	// non-zero defaults populated. Skipping the enabled-but-rootless
+	// check in this case lets hand-built test configs round-trip
+	// without per-test CLI seeding while still rejecting the
+	// production-typo case (an operator's yaml that explicitly sets
+	// `enabled: true` with `watch_roots: []`).
+	zeroValue := hr.Enabled == nil && hr.Policy == "" && hr.DrainTimeout == 0 && len(hr.WatchRoots) == 0
+	if zeroValue {
+		return nil
+	}
+	// An enabled watcher with no roots is rejected. After the loader's
+	// defaults pass + operator yaml merge, an explicit `enabled: true`
+	// (or implicit via leaving the loader's default) with `watch_roots:
+	// []` is a configuration typo per §13.
+	enabled := hr.Enabled == nil || *hr.Enabled
+	if enabled && hr.Policy != DevHotReloadPolicyDisabled && len(hr.WatchRoots) == 0 {
+		return fieldError("cli.dev_hot_reload.watch_roots",
+			"must list at least one path when hot-reload is enabled (set enabled: false or policy: disabled to opt out)")
+	}
+	return nil
 }
 
 // LiveReloadable returns dotted YAML paths for every field tagged

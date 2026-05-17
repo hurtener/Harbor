@@ -86,7 +86,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 63 | Harbor CLI skeleton (`harbor` + cobra)        | cmd/harbor           | §8          | 60                    | 70%  | Shipped  |
 | 64 | `harbor dev` v1 (boot runtime + protocol)     | cmd/harbor           | §8          | 63, 60                | 75%  | Shipped  |
 | 64a | Tool catalog OAuth + approval wiring         | tools/catalog        | §6.4        | 26, 30, 31, 50, 64    | 80%  | Shipped  |
-| 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
+| 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Shipped  |
 | 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Shipped  |
 | 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Shipped  |
 | 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Shipped  |
@@ -703,6 +703,8 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** File change triggers drain; in-flight runs cancel cleanly; new code picked up.
 **Tests.** Integration with file mutation.
 **Deps.** 64.
+
+**§4.3 shape decision (D-099).** In-process `bootDevStack` rebuild, NOT binary re-exec. Re-exec was considered and rejected for V1: it requires an out-of-process supervisor (the binary cannot re-exec itself without losing live http.Server connections), it costs a Go build per cycle (~5s on a warm machine — the developer feedback loop is the load-bearing UX here), and an operator iterating on YAML config does NOT need a binary rebuild. The in-process rebuild satisfies the "new code picked up" acceptance for every config / scaffold change; operators changing Go source rebuild + re-launch the binary manually (the same cycle they'd run today without hot-reload). A future opt-in `policy: rebuild` can layer binary-rebuild semantics on without changing the supervisor's shape.
 
 ### 66 — `harbor dev` draft-save scaffolding (RFC §8)
 

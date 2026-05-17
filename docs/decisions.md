@@ -1939,8 +1939,76 @@ If shape 1 turns out wrong for a reason a future PR can articulate, the driver-d
 
 ---
 
+## D-099 — `harbor dev` hot-reload supervisor (fsnotify-driven graceful-drain restart, Phase 65)
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `cmd/harbor/cmd_dev_hot_reload.go` (the supervisor + watcher + bus emission); `cmd/harbor/cmd_dev.go::runDev` (hands off to the supervisor when hot-reload is enabled; adds `--no-hot-reload` flag); `internal/config/config.go` (`CLIConfig.DevHotReload` + `DevHotReloadConfig` + policy constants); `internal/config/loader.go::defaults` (CLI.DevHotReload defaults); `internal/config/validate.go::validateCLI` (the new validator); `cmd/harbor/cmd_dev_hot_reload_test.go` (unit + in-package integration tests); `harbortest/devstack/devstack.go` (godoc carve-out note); `scripts/smoke/phase-65.sh`; `docs/plans/phase-65-harbor-dev-hot-reload.md`; `go.mod` (`github.com/fsnotify/fsnotify v1.10.1`).
+
+**Decision.** `harbor dev` boots an fsnotify-driven hot-reload supervisor that wraps `bootDevStack` and serves the active devStack until a watched file changes OR ctx cancels. On a file change the supervisor: (1) emits `dev.hot_reload.triggered` on the active bus; (2) drains the active stack per `cli.dev_hot_reload.policy` (`drain` / `cancel`); (3) calls `bootDevStack` again with the original boot opts; (4) starts a fresh serve goroutine against the new stack; (5) emits `dev.hot_reload.completed` on the new bus. The supervisor owns the serve loop AND the rebuild loop in one goroutine; a debounced (250ms) channel collapses fsnotify event bursts so an editor save fires one rebuild, not N.
+
+**Hot-reload shape: in-process devStack rebuild (NOT binary re-exec).** The §4.3 "smaller approach that still satisfies acceptance" carve-out applies. Acceptance criterion 1 is "new code picked up"; at dev-time granularity (operator edits a file, restart picks up the change), the in-process rebuild satisfies it for every config / scaffold change. Binary re-exec was considered and rejected:
+
+- It requires an out-of-process supervisor (the binary cannot re-exec itself without losing the current http.Server's connections).
+- It costs a Go build per cycle (~5s on a warm machine) — the developer feedback loop is the load-bearing UX here.
+- An operator iterating on a YAML config file does NOT need a binary rebuild; an operator iterating on Go source rebuilds + re-launches the binary manually (the same cycle they'd run today without hot-reload).
+
+A binary-rebuild path can be layered on as a future opt-in (`policy: rebuild` or similar) without changing the supervisor's shape — the rebuild step becomes "run `go build`, then re-exec" instead of "re-call `bootDevStack`". V1 ships the in-process shape only.
+
+**Why.** Phase 64 (`harbor dev` v1) closed the embedded-runtime + Protocol boot path; the §13 amendment for the LLM seam landed there. The remaining dev-loop UX item from RFC §8 is hot-reload: "watches the project directory for changes, hot-reloads on Go-source changes (graceful-stop in-flight runs first; configurable)." Without it, an operator iterating on a scaffolded agent kills + restarts `harbor dev` per change — slow, kills SSE subscribers, drops the dev token. The supervisor closes this surface.
+
+**Why fsnotify (RFC §10 confirmation).** fsnotify is the de-facto pure-Go FS-watching library (no CGo, no platform-specific extensions in the consuming code; the library handles inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows). It is the implicit RFC §10 candidate brief 06 §7 item 10 already named ("fsnotify watcher"). Added to `go.mod` as a direct dependency (was previously indirect via cobra/viper but cobra alone does not pull it).
+
+**How to apply.**
+
+- Operators declare hot-reload behaviour under `cli.dev_hot_reload` in `harbor.yaml`: `enabled` (default true), `policy` (`drain` / `cancel` / `disabled`; default `drain`), `drain_timeout` (default 5s), `watch_roots` (default `[".harbor/agents"]`).
+- The CLI flag `--no-hot-reload` is the operator-facing escape hatch — overrides the config's `enabled` to false for that boot.
+- Wire consumers (the Console, integration tests, third-party Protocol clients) subscribe to `dev.hot_reload.triggered` / `dev.hot_reload.completed` on the canonical bus to observe the restart cycle. The events carry the dev identity triple (`tenant=dev`, `user=dev`, `session=dev`) so subscribers consume them via the standard triple-scoped filter or via the §6 rule 5 admin path.
+- A reboot failure returns up to `runDev`; the operator sees a CLIError with code `boot_internal_error`. Per §13, the supervisor does NOT silently degrade to "stay on the old stack" on a reboot failure — the old stack is already drained at that point and the operator's intent (pick up the new state) is unsatisfiable.
+
+**Bus events — canonical shapes.** Both payloads are SafePayload by construction (every field is internal bookkeeping; no secrets).
+
+```text
+EventTypeDevHotReloadTriggered = "dev.hot_reload.triggered"
+DevHotReloadTriggeredPayload { Path string; Op string; Policy string }
+
+EventTypeDevHotReloadCompleted = "dev.hot_reload.completed"
+DevHotReloadCompletedPayload {
+    Path string; Op string; Policy string;
+    DurationMS int64; Success bool; ErrorMessage string
+}
+```
+
+**§13 primitive-with-consumer.** The primitive (the supervisor + the canonical bus events) ships with its first consumer in the same PR: `runDev` constructs and runs the supervisor when hot-reload is enabled. The `TestHotReloadSupervisor_FileChangeTriggersRebuild` test is the first wire-side consumer of the canonical events — it subscribes to `dev.hot_reload.triggered` against a real bus and asserts the typed payload arrives. No deferred consumer; the supervisor is dead code without `runDev`'s integration.
+
+**§13 silent-degradation discipline.** Three fail-loud surfaces in the supervisor:
+
+1. fsnotify.NewWatcher errors fail the boot loud.
+2. `watcher.Add(path)` errors on a watch root fail the boot loud — except `os.ErrNotExist`, which is logged Info and skipped (the default `.harbor/agents` does not exist for first-time projects; failing-loud there would block the dev loop on day one).
+3. A reboot failure propagates up; the supervisor exits with the wrapped error. The operator sees the CLIError. No "silently keep the old stack" fallback.
+
+**D-094 helper-tracks-production carve-out.** The supervisor wraps `bootDevStack` at the `runDev` layer (not inside `bootDevStack` itself). The `harbortest/devstack` helper mirrors `bootDevStack` per D-094's source-of-truth invariant, NOT the surrounding supervisor: a "helper that owns the rebuild loop" would duplicate the cmd-side orchestrator with no integration test consuming it. The devstack package's godoc documents this scope choice explicitly so the next contributor doesn't read the omission as drift. When the supervisor's shape next changes, both files are revisited together — same precedent as D-094's invariant, applied to a scope where the helper deliberately does NOT mirror.
+
+**Concurrency contract.** The supervisor's `Run` method runs ONE goroutine that owns both the fsnotify event loop and the serve-goroutine spawning. A second serve goroutine is spawned per rebuild (against the new stack); the previous serve goroutine is cancelled before the rebuild starts and drained via the shared `serveErr` channel. At any instant exactly one serve goroutine is active (or zero, during a rebuild). Per CLAUDE.md §5 "Concurrent reuse contract": the supervisor IS a per-boot artifact (not shared across boots), so D-025's "N concurrent invocations against a single shared instance" does not apply — the relevant test is the lifecycle-drain test, which `TestHotReloadSupervisor_CtxCancel_ReturnsCleanly` covers.
+
+**Acceptance:**
+
+- `cli.dev_hot_reload` config block + loader defaults + validator land in `internal/config`.
+- `cmd/harbor/cmd_dev_hot_reload.go` implements the supervisor; `cmd/harbor/cmd_dev.go::runDev` constructs and runs it when enabled.
+- `--no-hot-reload` flag added to `harbor dev`.
+- `dev.hot_reload.triggered` / `dev.hot_reload.completed` registered as canonical event types.
+- Unit tests + in-package integration test under `cmd/harbor/cmd_dev_hot_reload_test.go`.
+- `scripts/smoke/phase-65.sh` asserts the watcher log line + the `--no-hot-reload` flag + the canonical event-type strings in the binary.
+- `docs/plans/phase-65-harbor-dev-hot-reload.md` documents the phase per §16.
+- `docs/plans/README.md` + `README.md` flip Phase 65 to Shipped.
+- `harbortest/devstack/devstack.go` godoc documents the supervisor-scope carve-out.
+- `go.mod` adds `github.com/fsnotify/fsnotify v1.10.1` as a direct dependency.
+- All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
+
+---
+
 ## D-100 — Phase 66 `harbor dev` draft-save scaffolding: `/v1/dev/drafts/` over the existing dev mux + identity-scoped on-disk layout + Phase 67 scaffold engine round-trip
-## D-103 — `cfg.Planner` schema + `internal/planner` driver registry (closes #126, closes D-097's "future phases will read cfg.Planner" note)
 
 **Date:** 2026-05-17
 **Status:** Settled (shipping with this PR)
@@ -1992,53 +2060,6 @@ Five lifecycle events land on the canonical event bus per round-trip — `dev.dr
 - `scripts/smoke/phase-66.sh` exercises the round-trip against the live binary; the 404/405/501 → SKIP convention keeps the smoke harmless on builds that pre-date Phase 66.
 - `harbortest/devstack/devstack.go::Assemble` mirrors the production wiring per D-094.
 - `internal/devdraft/concurrent_test.go::TestStore_ConcurrentReuse_NoRaceUnderLoad` passes under `-race` with N=128.
-**Where it lives:** `internal/config/config.go` (`PlannerConfig` + the top-level `Config.Planner` field); `internal/config/validate.go` (`allowedPlannerDrivers` + `validatePlanner`); `internal/config/loader.go::defaults` (the `Planner: PlannerConfig{Driver: "react"}` default); `internal/planner/registry.go` (the driver registry — `Factory` + `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` + `PlannerConfig` + `FactoryDeps` boundary types + the four sentinel errors); `internal/planner/registry_test.go` (registry-bookkeeping tests); `internal/planner/react/init.go` (the `react` driver's self-registration via `init() → planner.MustRegister("react", factory)`); `internal/planner/react/registry_allowlist_test.go` (the drift guard between the planner registry and the config validator's allowlist); `cmd/harbor/main.go` (blank-import `_ "github.com/hurtener/Harbor/internal/planner/react"`); `cmd/harbor/cmd_dev.go::bootDevStack` (the hardcoded `react.New(llmClient)` call is replaced with `planner.Resolve(ctx, plannerConfigFromConfig(cfg.Planner), planner.FactoryDeps{LLM: llmClient})`); `cmd/harbor/cmd_dev.go::plannerConfigFromConfig` (the boundary mapper from `config.PlannerConfig` → `planner.PlannerConfig`); `harbortest/devstack/devstack.go` (mirrors the production wiring per D-094 — adds `AssembleOpts.PlannerOverride` for tests that need a stub planner; constructs via `planner.Resolve` otherwise); `examples/dev.yaml` and `examples/harbor.yaml` (operator-facing `planner:` block with the `react` default and a commented `max_steps:` knob); `test/integration/phase_d103_planner_registry_test.go` (end-to-end coverage); `test/integration/wave11_test.go` + `harbortest/devstack/devstack_test.go` (the new `_ "github.com/hurtener/Harbor/internal/planner/react"` blank imports the tests need now that devstack reaches the planner only through the registry).
-
-**Decision.** The planner concrete is resolved at boot via the `internal/planner` driver registry: operators declare `planner.driver: <name>` in `harbor.yaml`; the binary's blank-import block in `cmd/harbor/main.go` self-registers each available driver; `cmd/harbor/cmd_dev.go::bootDevStack` calls `planner.Resolve(ctx, cfg.Planner, planner.FactoryDeps{LLM: llmClient})` to construct the concrete. The V1 default driver is `react` (the reference LLM-driven ReAct planner — Phase 45 / D-051) and remains the no-config-needed default: `cfg.Planner.Driver == ""` resolves to `"react"` at both the loader-side `defaults()` and the validator-side default branch, so an operator config that omits the `planner:` block boots unchanged from the pre-D-103 hardcoded path. `cfg.Planner.MaxSteps` is the optional planner-side circuit-breaker step cap; zero means "use the driver's internal default" (the react driver's `react.DefaultMaxSteps = 12`); negative is rejected at the validator edge. The registry mirrors D-095's OAuth-provider registry structurally — same shape, same sentinel set, same `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` quartet, same allowlist-mirror pattern in the config validator. The structural precedent is deliberate.
-
-**Why.** CLAUDE.md §1.3 names the swappable planner one of the three non-negotiable product properties of Harbor's runtime — yet the V1 boot path hardcoded the concrete via `react.New(llmClient)` in `cmd/harbor/cmd_dev.go::bootDevStack`. D-097's planner-construction site explicitly carried the note "the cfg.Planner schema + driver registry (per the §4.4 seam pattern that D-095 uses for OAuth providers) is tracked in issue #126 — until it lands, ReAct is hardcoded here." Issue #126 (surfaced by the Wave 11.5 §17.5 closeout audit's finding N2) is that gap. Closing it closes the product-property gap and the §13 "shipping a primitive without its first consumer" smell, twice: (a) the §4.4 seam pattern is now exercised on the planner subsystem the same way it's exercised on tools/auth, memory, state, artifacts, events, telemetry, and tasks; (b) the registry's first consumer (`cmd/harbor/cmd_dev.go::bootDevStack`'s production planner construction) ships in the same PR as the primitive.
-
-**How to apply.**
-
-- New planner concretes add a package under `internal/planner/<name>/` and a `func init() { planner.MustRegister(DriverName, factory) }` block following the §4.4 seam pattern. The factory adapter maps the `planner.FactoryDeps` + `planner.PlannerConfig` boundary onto the concrete's option-applied constructor (the react driver's `init.go` is the reference shape).
-- The driver's canonical name MUST be added to `internal/config/validate.go`'s `allowedPlannerDrivers` allowlist in the same PR. The `internal/planner/<name>/registry_allowlist_test.go` drift guard mirrors the D-095 OAuth-provider pattern (every test loads `_ "internal/config"` AND `_ "internal/planner/<name>"`, then asserts the validator accepts the driver's name).
-- `cmd/harbor/main.go` blank-imports the new driver package: `_ "github.com/hurtener/Harbor/internal/planner/<name>"`.
-- Operators opt into a new driver by setting `planner.driver: <name>` in `harbor.yaml`. The V1 reference planner (`react`) stays the no-config-needed default for the foreseeable future — flipping the default to a different concrete would be a §13 violation of the operator-stability contract.
-- Per-driver tuning knobs land in `planner.PlannerConfig.Extra` (opaque `map[string]string`); a driver that grows tuning beyond `MaxSteps` reads from `Extra` at factory time. Future drivers may petition for a typed `Extras` block on the YAML schema (the same shape D-095 considered for OAuth providers); the V1 register-side surface stays narrow on purpose.
-
-**§4.4 conformance.** Interface lives in `internal/planner/planner.go` (`Planner.Next`). Drivers live in `internal/planner/<name>/` — Phase 45's `react/` is the V1 default; Phase 48's `deterministic/` is the existing second concrete (deterministic planner — see D-073 + the spawn-await scenario test); `finish/` ships the stub planner used by the conformance pack. Factory + registry live in `internal/planner/registry.go`. Blank-import in `cmd/harbor/main.go` fires the self-registration. The factory's error message lists registered drivers so misconfigurations are obvious. **The `internal/config` package MUST NOT import `internal/planner` (§4.4 — drivers depend on interfaces, not the other way round).** The `allowedPlannerDrivers` allowlist in the validator is a deliberate duplication; the `internal/planner/react/registry_allowlist_test.go` test catches drift between the two surfaces.
-
-**§13 fail-loud.** Three loud-failure paths land in this PR:
-
-1. **Unknown driver names rejected at `internal/config/validate.go`.** The pre-boot validator surfaces a clear error (`config.planner.driver: must be one of [react], got "..."`) so `harbor validate` flags the typo before the binary attempts to boot. The error message lists the allowed values so the operator sees the fix.
-2. **Negative `MaxSteps` rejected at the same place.** Zero is the documented "use driver default" sentinel; positive integers are honoured.
-3. **The factory rejects missing required deps.** The react driver's factory returns `fmt.Errorf("planner/react: LLM client is required (FactoryDeps.LLM was nil)")` when `deps.LLM == nil`; silent fallback to a stub is forbidden. The registry's own `Resolve` rejects unknown / empty driver names with `ErrDriverUnknown` and includes the registered-driver list in the error message.
-
-**§13 primitive-with-consumer.** The primitive (the `internal/planner` driver registry — `Factory` + `Register` / `MustRegister` / `Resolve` + the `PlannerConfig` / `FactoryDeps` boundary types) lands with its first consumer (`cmd/harbor/cmd_dev.go::bootDevStack`'s production planner construction) in the same PR. The wave-end E2E (`test/integration/phase_d103_planner_registry_test.go`) exercises the registry round-trip end-to-end through `devstack.Assemble` — the production wiring per D-094's source-of-truth invariant. No deferred consumer.
-
-**`MaxSteps` knob over per-driver `Extras`.** The V1 schema ships a typed `MaxSteps int` field at the top level of `PlannerConfig` rather than burying it inside the opaque `Extra map[string]string`. Two reasons: (a) `MaxSteps` is the one knob the V1 reference planner already exposes via `react.WithMaxSteps(n)` — surfacing it as a typed field lets operators tune the circuit breaker without per-driver Extras ceremony; (b) future drivers (Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval per RFC §6.2) will likely all carry a step-cap-equivalent knob, so the field captures a cross-driver universal rather than a react-specific quirk. Per-driver knobs (a deterministic planner's scripted step sequence, a supervisor planner's sub-agent list) land in `Extras` until a future RFC pulls them up.
-
-**Devstack mirror shape (`PlannerOverride`, not `SkipPlanner`).** `harbortest/devstack.Assemble` reaches the planner only through the registry now. The test escape hatch is `AssembleOpts.PlannerOverride planner.Planner` — when non-nil, the helper uses the injected instance instead of calling `planner.Resolve`. There is NO `SkipPlanner` knob: skipping the planner entirely would leave `stack.RunLoop` / `stack.RunLoopDriver` nil even when the caller has not opted out via the existing `SkipRunLoop` / `SkipCatalog` / `SkipSteering` flags, which would be a confusing failure mode. The `PlannerOverride` shape is the minimal escape hatch tests that need a stub / scripted / pausing planner can use without re-implementing the wiring; production code never sets the override. The existing `SkipRunLoop` flag remains the way to opt out of the entire planner-RunLoop construction stack.
-
-**Acceptance.**
-
-- `internal/config/config.go` declares `Config.Planner` + `PlannerConfig{Driver, MaxSteps, Extra}` with the documented defaults.
-- `internal/config/validate.go` adds `validatePlanner` to the validator chain + the `allowedPlannerDrivers` allowlist; rejects unknown drivers + negative MaxSteps; accepts empty Driver as the "use default" sentinel.
-- `internal/config/loader.go::defaults` populates `Planner: PlannerConfig{Driver: "react"}`.
-- `internal/planner/registry.go` adds the `Factory` type + `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` quartet + the four sentinel errors + the `PlannerConfig` / `FactoryDeps` boundary types.
-- `internal/planner/react/init.go` self-registers the `react` driver via `init() → planner.MustRegister("react", factory)`. The factory adapter rejects nil LLM clients.
-- `cmd/harbor/main.go` blank-imports `_ "github.com/hurtener/Harbor/internal/planner/react"`.
-- `cmd/harbor/cmd_dev.go::bootDevStack` replaces `plnr := react.New(llmClient)` with `plnr, err := planner.Resolve(ctx, plannerConfigFromConfig(cfg.Planner), planner.FactoryDeps{LLM: llmClient})`; the direct `internal/planner/react` import is dropped from `cmd_dev.go` (it's reached via the registry now).
-- `harbortest/devstack/devstack.go` mirrors the production wiring per D-094; adds `AssembleOpts.PlannerOverride` for tests that need a stub planner.
-- `examples/dev.yaml` and `examples/harbor.yaml` document the `planner:` block with the `react` default + a commented `max_steps:` knob.
-- `internal/planner/registry_test.go` pins the registry's bookkeeping behaviour (empty-name / nil-factory / duplicate-name rejection; unknown-driver / empty-driver loud failure with the registered-driver list; ctx-cancellation honoured; MustRegister panics on error; RegisteredDrivers sorted; factory dispatch).
-- `internal/planner/react/registry_allowlist_test.go` pins the validator↔registry drift guard: the validator accepts `react`, rejects unknowns, accepts empty as default, rejects negative MaxSteps; the registry's `Resolve(react)` returns a non-nil planner; the factory rejects nil LLM.
-- `internal/config/validate_test.go` adds six planner-specific assertions covering the same paths from the config side.
-- `test/integration/phase_d103_planner_registry_test.go` exercises the registry round-trip end-to-end through `devstack.Assemble` (the production wiring per D-094) — a config with `planner.driver: react` boots the devstack and produces a non-nil RunLoop; an unknown driver is rejected pre-boot; the direct `planner.Resolve(react)` call succeeds.
-- D-097's "Where it lives" paragraph + `cmd/harbor/cmd_dev.go::bootDevStack`'s comment are updated to point at D-103 as the closure.
-- All tests `-race` green; `make vet` clean; `go build ./...` clean.
-
-**Structural precedents.** D-095 (`tools.oauth_providers[]` + `internal/tools/auth/registry.go`) is the direct structural precedent — same shape, same sentinel set, same allowlist-mirror pattern, same `Register` / `MustRegister` / `Resolve` quartet. D-090 (`tools.entries[]` operator config + the `Deps.OAuthProviders` construction pattern) is the broader §4.4 boundary precedent. D-097 (the RunLoop wrap around the planner) is the consumer the new registry path feeds; D-098 (the per-task FSM bridge) is the downstream driver that closes the RunLoop's exit shape onto the task FSM. All three settled the cmd_dev wiring this PR retargets.
 
 ---
 
@@ -2129,4 +2150,58 @@ The CLI is a Protocol client per CLAUDE.md §8 + RFC §7: it consumes the canoni
 - `scripts/smoke/phase-63.sh` drops `inspect-topology` from the stubs array; `cmd/harbor/cmd_stub_test.go::stubCases` mirrors the drop.
 - `cmd/harbor/testdata/golden/help.txt` regenerated; the `(Phase 70)` suffix drops from the `inspect-topology` row.
 - `docs/plans/README.md` Phase 70 row flips to Shipped; `README.md` Status table flips Phase 70 row to Shipped.
-- All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
+
+---
+
+## D-103 — `cfg.Planner` schema + `internal/planner` driver registry (closes #126, closes D-097's "future phases will read cfg.Planner" note)
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `internal/config/config.go` (`PlannerConfig` + the top-level `Config.Planner` field); `internal/config/validate.go` (`allowedPlannerDrivers` + `validatePlanner`); `internal/config/loader.go::defaults` (the `Planner: PlannerConfig{Driver: "react"}` default); `internal/planner/registry.go` (the driver registry — `Factory` + `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` + `PlannerConfig` + `FactoryDeps` boundary types + the four sentinel errors); `internal/planner/registry_test.go` (registry-bookkeeping tests); `internal/planner/react/init.go` (the `react` driver's self-registration via `init() → planner.MustRegister("react", factory)`); `internal/planner/react/registry_allowlist_test.go` (the drift guard between the planner registry and the config validator's allowlist); `cmd/harbor/main.go` (blank-import `_ "github.com/hurtener/Harbor/internal/planner/react"`); `cmd/harbor/cmd_dev.go::bootDevStack` (the hardcoded `react.New(llmClient)` call is replaced with `planner.Resolve(ctx, plannerConfigFromConfig(cfg.Planner), planner.FactoryDeps{LLM: llmClient})`); `cmd/harbor/cmd_dev.go::plannerConfigFromConfig` (the boundary mapper from `config.PlannerConfig` → `planner.PlannerConfig`); `harbortest/devstack/devstack.go` (mirrors the production wiring per D-094 — adds `AssembleOpts.PlannerOverride` for tests that need a stub planner; constructs via `planner.Resolve` otherwise); `examples/dev.yaml` and `examples/harbor.yaml` (operator-facing `planner:` block with the `react` default and a commented `max_steps:` knob); `test/integration/phase_d103_planner_registry_test.go` (end-to-end coverage); `test/integration/wave11_test.go` + `harbortest/devstack/devstack_test.go` (the new `_ "github.com/hurtener/Harbor/internal/planner/react"` blank imports the tests need now that devstack reaches the planner only through the registry).
+
+**Decision.** The planner concrete is resolved at boot via the `internal/planner` driver registry: operators declare `planner.driver: <name>` in `harbor.yaml`; the binary's blank-import block in `cmd/harbor/main.go` self-registers each available driver; `cmd/harbor/cmd_dev.go::bootDevStack` calls `planner.Resolve(ctx, cfg.Planner, planner.FactoryDeps{LLM: llmClient})` to construct the concrete. The V1 default driver is `react` (the reference LLM-driven ReAct planner — Phase 45 / D-051) and remains the no-config-needed default: `cfg.Planner.Driver == ""` resolves to `"react"` at both the loader-side `defaults()` and the validator-side default branch, so an operator config that omits the `planner:` block boots unchanged from the pre-D-103 hardcoded path. `cfg.Planner.MaxSteps` is the optional planner-side circuit-breaker step cap; zero means "use the driver's internal default" (the react driver's `react.DefaultMaxSteps = 12`); negative is rejected at the validator edge. The registry mirrors D-095's OAuth-provider registry structurally — same shape, same sentinel set, same `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` quartet, same allowlist-mirror pattern in the config validator. The structural precedent is deliberate.
+
+**Why.** CLAUDE.md §1.3 names the swappable planner one of the three non-negotiable product properties of Harbor's runtime — yet the V1 boot path hardcoded the concrete via `react.New(llmClient)` in `cmd/harbor/cmd_dev.go::bootDevStack`. D-097's planner-construction site explicitly carried the note "the cfg.Planner schema + driver registry (per the §4.4 seam pattern that D-095 uses for OAuth providers) is tracked in issue #126 — until it lands, ReAct is hardcoded here." Issue #126 (surfaced by the Wave 11.5 §17.5 closeout audit's finding N2) is that gap. Closing it closes the product-property gap and the §13 "shipping a primitive without its first consumer" smell, twice: (a) the §4.4 seam pattern is now exercised on the planner subsystem the same way it's exercised on tools/auth, memory, state, artifacts, events, telemetry, and tasks; (b) the registry's first consumer (`cmd/harbor/cmd_dev.go::bootDevStack`'s production planner construction) ships in the same PR as the primitive.
+
+**How to apply.**
+
+- New planner concretes add a package under `internal/planner/<name>/` and a `func init() { planner.MustRegister(DriverName, factory) }` block following the §4.4 seam pattern. The factory adapter maps the `planner.FactoryDeps` + `planner.PlannerConfig` boundary onto the concrete's option-applied constructor (the react driver's `init.go` is the reference shape).
+- The driver's canonical name MUST be added to `internal/config/validate.go`'s `allowedPlannerDrivers` allowlist in the same PR. The `internal/planner/<name>/registry_allowlist_test.go` drift guard mirrors the D-095 OAuth-provider pattern (every test loads `_ "internal/config"` AND `_ "internal/planner/<name>"`, then asserts the validator accepts the driver's name).
+- `cmd/harbor/main.go` blank-imports the new driver package: `_ "github.com/hurtener/Harbor/internal/planner/<name>"`.
+- Operators opt into a new driver by setting `planner.driver: <name>` in `harbor.yaml`. The V1 reference planner (`react`) stays the no-config-needed default for the foreseeable future — flipping the default to a different concrete would be a §13 violation of the operator-stability contract.
+- Per-driver tuning knobs land in `planner.PlannerConfig.Extra` (opaque `map[string]string`); a driver that grows tuning beyond `MaxSteps` reads from `Extra` at factory time. Future drivers may petition for a typed `Extras` block on the YAML schema (the same shape D-095 considered for OAuth providers); the V1 register-side surface stays narrow on purpose.
+
+**§4.4 conformance.** Interface lives in `internal/planner/planner.go` (`Planner.Next`). Drivers live in `internal/planner/<name>/` — Phase 45's `react/` is the V1 default; Phase 48's `deterministic/` is the existing second concrete (deterministic planner — see D-073 + the spawn-await scenario test); `finish/` ships the stub planner used by the conformance pack. Factory + registry live in `internal/planner/registry.go`. Blank-import in `cmd/harbor/main.go` fires the self-registration. The factory's error message lists registered drivers so misconfigurations are obvious. **The `internal/config` package MUST NOT import `internal/planner` (§4.4 — drivers depend on interfaces, not the other way round).** The `allowedPlannerDrivers` allowlist in the validator is a deliberate duplication; the `internal/planner/react/registry_allowlist_test.go` test catches drift between the two surfaces.
+
+**§13 fail-loud.** Three loud-failure paths land in this PR:
+
+1. **Unknown driver names rejected at `internal/config/validate.go`.** The pre-boot validator surfaces a clear error (`config.planner.driver: must be one of [react], got "..."`) so `harbor validate` flags the typo before the binary attempts to boot. The error message lists the allowed values so the operator sees the fix.
+2. **Negative `MaxSteps` rejected at the same place.** Zero is the documented "use driver default" sentinel; positive integers are honoured.
+3. **The factory rejects missing required deps.** The react driver's factory returns `fmt.Errorf("planner/react: LLM client is required (FactoryDeps.LLM was nil)")` when `deps.LLM == nil`; silent fallback to a stub is forbidden. The registry's own `Resolve` rejects unknown / empty driver names with `ErrDriverUnknown` and includes the registered-driver list in the error message.
+
+**§13 primitive-with-consumer.** The primitive (the `internal/planner` driver registry — `Factory` + `Register` / `MustRegister` / `Resolve` + the `PlannerConfig` / `FactoryDeps` boundary types) lands with its first consumer (`cmd/harbor/cmd_dev.go::bootDevStack`'s production planner construction) in the same PR. The wave-end E2E (`test/integration/phase_d103_planner_registry_test.go`) exercises the registry round-trip end-to-end through `devstack.Assemble` — the production wiring per D-094's source-of-truth invariant. No deferred consumer.
+
+**`MaxSteps` knob over per-driver `Extras`.** The V1 schema ships a typed `MaxSteps int` field at the top level of `PlannerConfig` rather than burying it inside the opaque `Extra map[string]string`. Two reasons: (a) `MaxSteps` is the one knob the V1 reference planner already exposes via `react.WithMaxSteps(n)` — surfacing it as a typed field lets operators tune the circuit breaker without per-driver Extras ceremony; (b) future drivers (Plan-Execute, Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval per RFC §6.2) will likely all carry a step-cap-equivalent knob, so the field captures a cross-driver universal rather than a react-specific quirk. Per-driver knobs (a deterministic planner's scripted step sequence, a supervisor planner's sub-agent list) land in `Extras` until a future RFC pulls them up.
+
+**Devstack mirror shape (`PlannerOverride`, not `SkipPlanner`).** `harbortest/devstack.Assemble` reaches the planner only through the registry now. The test escape hatch is `AssembleOpts.PlannerOverride planner.Planner` — when non-nil, the helper uses the injected instance instead of calling `planner.Resolve`. There is NO `SkipPlanner` knob: skipping the planner entirely would leave `stack.RunLoop` / `stack.RunLoopDriver` nil even when the caller has not opted out via the existing `SkipRunLoop` / `SkipCatalog` / `SkipSteering` flags, which would be a confusing failure mode. The `PlannerOverride` shape is the minimal escape hatch tests that need a stub / scripted / pausing planner can use without re-implementing the wiring; production code never sets the override. The existing `SkipRunLoop` flag remains the way to opt out of the entire planner-RunLoop construction stack.
+
+**Acceptance.**
+
+- `internal/config/config.go` declares `Config.Planner` + `PlannerConfig{Driver, MaxSteps, Extra}` with the documented defaults.
+- `internal/config/validate.go` adds `validatePlanner` to the validator chain + the `allowedPlannerDrivers` allowlist; rejects unknown drivers + negative MaxSteps; accepts empty Driver as the "use default" sentinel.
+- `internal/config/loader.go::defaults` populates `Planner: PlannerConfig{Driver: "react"}`.
+- `internal/planner/registry.go` adds the `Factory` type + `Register` / `MustRegister` / `Resolve` / `RegisteredDrivers` quartet + the four sentinel errors + the `PlannerConfig` / `FactoryDeps` boundary types.
+- `internal/planner/react/init.go` self-registers the `react` driver via `init() → planner.MustRegister("react", factory)`. The factory adapter rejects nil LLM clients.
+- `cmd/harbor/main.go` blank-imports `_ "github.com/hurtener/Harbor/internal/planner/react"`.
+- `cmd/harbor/cmd_dev.go::bootDevStack` replaces `plnr := react.New(llmClient)` with `plnr, err := planner.Resolve(ctx, plannerConfigFromConfig(cfg.Planner), planner.FactoryDeps{LLM: llmClient})`; the direct `internal/planner/react` import is dropped from `cmd_dev.go` (it's reached via the registry now).
+- `harbortest/devstack/devstack.go` mirrors the production wiring per D-094; adds `AssembleOpts.PlannerOverride` for tests that need a stub planner.
+- `examples/dev.yaml` and `examples/harbor.yaml` document the `planner:` block with the `react` default + a commented `max_steps:` knob.
+- `internal/planner/registry_test.go` pins the registry's bookkeeping behaviour (empty-name / nil-factory / duplicate-name rejection; unknown-driver / empty-driver loud failure with the registered-driver list; ctx-cancellation honoured; MustRegister panics on error; RegisteredDrivers sorted; factory dispatch).
+- `internal/planner/react/registry_allowlist_test.go` pins the validator↔registry drift guard: the validator accepts `react`, rejects unknowns, accepts empty as default, rejects negative MaxSteps; the registry's `Resolve(react)` returns a non-nil planner; the factory rejects nil LLM.
+- `internal/config/validate_test.go` adds six planner-specific assertions covering the same paths from the config side.
+- `test/integration/phase_d103_planner_registry_test.go` exercises the registry round-trip end-to-end through `devstack.Assemble` (the production wiring per D-094) — a config with `planner.driver: react` boots the devstack and produces a non-nil RunLoop; an unknown driver is rejected pre-boot; the direct `planner.Resolve(react)` call succeeds.
+- D-097's "Where it lives" paragraph + `cmd/harbor/cmd_dev.go::bootDevStack`'s comment are updated to point at D-103 as the closure.
+- All tests `-race` green; `make vet` clean; `go build ./...` clean.
+
+**Structural precedents.** D-095 (`tools.oauth_providers[]` + `internal/tools/auth/registry.go`) is the direct structural precedent — same shape, same sentinel set, same allowlist-mirror pattern, same `Register` / `MustRegister` / `Resolve` quartet. D-090 (`tools.entries[]` operator config + the `Deps.OAuthProviders` construction pattern) is the broader §4.4 boundary precedent. D-097 (the RunLoop wrap around the planner) is the consumer the new registry path feeds; D-098 (the per-task FSM bridge) is the downstream driver that closes the RunLoop's exit shape onto the task FSM. All three settled the cmd_dev wiring this PR retargets.
