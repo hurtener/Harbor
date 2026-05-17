@@ -1936,3 +1936,59 @@ If shape 1 turns out wrong for a reason a future PR can articulate, the driver-d
 - New integration test `TestTaskFSMBridge_ProductionPath_ReachesTerminalState` exercises the bridge end-to-end through `devstack.Assemble` with a real ReAct planner + mock LLM, asserting the FSM reaches a terminal state within a bounded timeout.
 - Issue #123 closed; D-097's "deliberate carve-out" note updated to point at D-098.
 - All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
+
+---
+
+## D-100 — Phase 66 `harbor dev` draft-save scaffolding: `/v1/dev/drafts/` over the existing dev mux + identity-scoped on-disk layout + Phase 67 scaffold engine round-trip
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `internal/devdraft/` (new package — `devdraft.go` Store + sentinels, `events.go` 5 EventTypes + SafePayload structs, `http.go` Handler + wire shapes + error mapping, `path_safety.go` §7 rule 5 helper mirror of `internal/skills/importer/path_safety.go`, `devdraft_test.go` + `http_test.go` + `concurrent_test.go`); `cmd/harbor/cmd_dev.go::bootDevStack` (the draftStore + draftHandler are constructed and mounted on the dev router at `devdraft.RoutePrefix` under the same `auth.Middleware` wrapper the Phase 60 transports use); `harbortest/devstack/devstack.go` (D-094 mirror — `Assemble` always constructs a `DraftStore` and mounts the handler when transports are enabled); `test/integration/phase66_draft_save_test.go` (cross-subsystem E2E through the devstack helper); `scripts/smoke/phase-66.sh` (live-binary smoke).
+
+**Decision.** The draft scratchpad surface is an HTTP-only subsystem mounted on the existing `harbor dev` server at `/v1/dev/drafts/`. The on-disk layout is `<root>/<tenant>/<user>/<session>/<draft_id>/` where root is `<cwd>/.harbor/drafts` by default — identity-scoped so concurrent `harbor dev` instances against the same operator working directory cannot collide. The save path round-trips through the Phase 67 scaffold engine: `Store.Create` invokes `scaffold.Scaffold` to seed the draft tree (so a freshly-created draft IS a `harbor scaffold`-shaped output); `Store.Save` runs `internal/config.Load + Validate` against the rendered `harbor.yaml` BEFORE any promoted output is written, then copies the draft tree byte-for-byte to the operator-supplied output dir (preserving the operator's PATCH edits). The HTTP surface is five endpoints:
+
+- `POST /v1/dev/drafts/` — create a fresh draft from a name + template.
+- `GET /v1/dev/drafts/{id}` — list files + content for the Console editor.
+- `PATCH /v1/dev/drafts/{id}/files/{path}` — write a file's content.
+- `POST /v1/dev/drafts/{id}/preview` — validation-only dry-run.
+- `POST /v1/dev/drafts/{id}/save` — promote to scaffold layout.
+- `DELETE /v1/dev/drafts/{id}` — discard (idempotent).
+
+Five lifecycle events land on the canonical event bus per round-trip — `dev.draft.created`, `dev.draft.updated`, `dev.draft.previewed`, `dev.draft.saved`, `dev.draft.discarded` — registered with `internal/events`'s exhaustive registry at init(); SafePayload by construction (no file contents on the bus).
+
+**Why HTTP-only at V1 (no `harbor dev draft ...` CLI sub-CLI).** The intended V1 consumer is the Console editor that lands in Phases 72–75; a CLI surface would add operator friction without solving a load-bearing use case at V1 (operators who want to script the flow can `curl` the JSON surface directly — the dev-token surface already supports it). A future PR can add a sub-CLI in `cmd/harbor/cmd_dev_draft.go` against the same `Store` without breaking the wire contract.
+
+**Why identity-scoped on disk (and not via opaque ULIDs alone).** The operator's working directory is a shared filesystem surface: two concurrent `harbor dev` instances bound to different (tenant, user, session) triples MUST be able to author drafts under the same `.harbor/drafts/` root without seeing each other's work. The `<tenant>/<user>/<session>/` subpath enforces isolation at the filesystem layer — `Store.Get` cannot return another identity's draft because the path is composed from the identity before any file open. CLAUDE.md §6 rule 2 ("Every storage method that touches an identity-scoped table takes the triple and filters with the appropriate `WHERE` clause") applied to a filesystem-backed store: the equivalent of a `WHERE` clause is the path-component prefix.
+
+**Path-traversal safety (CLAUDE.md §7 rule 5).** Every operator-supplied path component — the `{path}` in `PATCH /v1/dev/drafts/{id}/files/{path}`, the operator-supplied output dir on save, the identity-component subpath — is filtered through `internal/devdraft.resolveSafe`, which mirrors `internal/skills/importer/path_safety.go`'s shape: `filepath.Clean` + lexical-prefix verification + a symlink-evaluation pass. Escape attempts fail loud with `ErrUnsafePath` (HTTP 400 + `CodeUnsafePath` on the wire). The importer helper is unexported so we duplicate; a future refactor that lifts the helper into a shared package collapses both call sites.
+
+**Pre-promotion validation (fail-loud at the seam).** `Store.Save` runs `internal/config.Load + Validate` against the draft's `harbor.yaml` BEFORE any file is written to the operator-supplied output dir. An invalid draft is refused with `ErrValidationFailed` (HTTP 400 + `CodeValidationFailed`) and the wire envelope's `hint` points the operator at the preview surface. This closes the seam at the boundary instead of "save succeeds but the next `harbor validate` fails" — the §13 "fail loudly at boot" posture extended to the next operator-facing seam.
+
+**§13 primitive-with-consumer.** The wave that introduces the draft endpoints (the primitive) ships the same wave's consumer that exercises every endpoint end-to-end — the `test/integration/phase66_draft_save_test.go` round-trip drives create → patch → preview → save → delete through the real HTTP handler under a real Bearer token, observes all five lifecycle events on the bus, and exercises the path-traversal + missing-bearer failure modes. The handler's wire contract is therefore validated against a real call site in the same PR that lands it.
+
+**§13 fail-loud (no test-stub-as-default).** `NewStore` fails loud at construction when either `Options.Root` or `Options.Bus` is missing — a Store with no bus would silently drop the observability surface (the Wave 11.5 §17.6 F1 lesson applied here). The Store has no fallback to an in-memory backing store: the filesystem is the load-bearing surface (operators inspect drafts via their text editor; an in-memory fallback would silently break that affordance). `NewHandler` fails loud at construction when the Store is nil.
+
+**Composition order on the dev router.** The handler is registered BEFORE the `router.Handle("/v1/", mux)` Protocol catch-all. Go's `http.ServeMux` resolves longest-prefix-match, so `/v1/dev/drafts/...` routes to the draft handler and the rest of `/v1/` flows to the Protocol mux — the two surfaces are non-overlapping by design.
+
+**Auth-wrap inherited from the Protocol mux.** The draft handler is wrapped in `auth.Middleware(validator, auth.MWLogger(logger))` — the same wrapper the Phase 60 transports use. Every draft request requires a Bearer token; the middleware injects the verified identity into ctx; the Store's `mustIdentity` helper reads it via `identity.From` and rejects missing-triple requests with `ErrIdentityMissing` (HTTP 401 + `CodeIdentityRequired`). There is no "skip auth in dev" knob — the §13 amendment closes that surface.
+
+**D-094 helper-tracks-production rule.** `harbortest/devstack/devstack.go::Assemble` now always constructs a `DraftStore` (under a per-test `os.MkdirTemp` root) and mounts the handler on the helper's router when transports are enabled — the helper mirrors production. The wave-end E2E (`test/integration/phase66_draft_save_test.go`) and every future integration test that touches the draft surface inherits the wiring; skipping the helper update would have left the test silently divergent from production. `AssembleOpts.DraftRoot` lets a test override the root when it needs to assert specific on-disk paths.
+
+**Concurrent-reuse contract (D-025).** The Store is a compiled artifact — every field is set at construction and immutable afterwards (the `entropyMu` guards the ULID entropy reader, which is not goroutine-safe per its godoc; everything else is set-once). `internal/devdraft/concurrent_test.go::TestStore_ConcurrentReuse_NoRaceUnderLoad` runs N=128 concurrent invocations against one shared Store under `-race`, each goroutine creating + writing + previewing + getting + cross-identity-probing its own draft. The test also asserts `runtime.NumGoroutine` returns to baseline after every invocation returns (no goroutine leak).
+
+**`dev.draft.previewed` semantics.** The V1 preview path is a config-validation pass against the rendered `harbor.yaml` — not a real dry-run that boots the draft against a sandboxed runtime. The bus event + the wire shape (`{ok, errors[]}`) are stable across a future upgrade that adds the dry-run; the surface is forward-compatible.
+
+**Acceptance:**
+
+- Five HTTP endpoint shapes under `/v1/dev/drafts/` with stable wire codes (`identity_required`, `invalid_request`, `not_found`, `unsafe_path`, `unknown_template`, `output_dir_exists`, `validation_failed`, `internal_error`).
+- On-disk layout `<root>/<tenant>/<user>/<session>/<draft_id>/` per CLAUDE.md §6.
+- Cross-identity reads return `ErrNotFound` (pinned by `TestStore_Get_CrossIdentityIsolation`).
+- Path-traversal attempts return 400 + `CodeUnsafePath` (pinned by `TestStore_WriteFile_RejectsPathTraversal` + `TestHandler_Patch_RejectsTraversal`).
+- Save refuses to promote an invalid draft with `ErrValidationFailed` (pinned by `TestStore_Save_RejectsInvalidYAML` + `TestHandler_Save_InvalidYAML_Returns400_WithCodeValidationFailed`).
+- Save round-trips through the Phase 67 scaffold engine; the promoted `harbor.yaml` passes `internal/config.Load` (pinned by `TestStore_Save_RoundTrip` + `TestE2E_Phase66_DraftSave_RoundTripThroughHTTP`).
+- Five lifecycle events emit per round-trip (pinned by `TestStore_LifecycleEvents` + the integration test's bus-event drain).
+- `scripts/smoke/phase-66.sh` exercises the round-trip against the live binary; the 404/405/501 → SKIP convention keeps the smoke harmless on builds that pre-date Phase 66.
+- `harbortest/devstack/devstack.go::Assemble` mirrors the production wiring per D-094.
+- `internal/devdraft/concurrent_test.go::TestStore_ConcurrentReuse_NoRaceUnderLoad` passes under `-race` with N=128.
+- All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
