@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
@@ -534,4 +535,103 @@ func bridgeCallerCtx(t *testing.T) context.Context {
 		t.Fatalf("identity.With: %v", err)
 	}
 	return ctx
+}
+
+// TestBridge_IdentityElevation_DoesNotLeakBackToCaller — W3 from the
+// Wave 11.5 §17.5 audit. D-097's "Identity flow" clause: the bridge
+// stamps admin scope on a DERIVED ctx so gate.ResolveApproval's scope
+// check passes; that elevation MUST NOT propagate back to the caller's
+// ctx. Verifies:
+//
+//  1. A caller ctx with identity I + NO scopes drives an APPROVE
+//     successfully (the gate's scope check passes — proves the bridge
+//     elevated).
+//  2. After applyEvent returns, the caller's original ctx still carries
+//     ZERO scopes (proves the elevation was scoped to the bridge call).
+//  3. The identity tuple flowing into the gate is the same I from the
+//     caller's ctx (proves the bridge preserves the (tenant,user,session)
+//     triple across the elevation).
+func TestBridge_IdentityElevation_DoesNotLeakBackToCaller(t *testing.T) {
+	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+
+	sub, cancelSub := subscribeForApprovalRequested(t, fx.bus, bridgeTestID)
+	defer cancelSub()
+
+	a := &applier{
+		coord: fx.coord,
+		gates: map[string]*approval.ApprovalGate{"bridge-tool": fx.gate},
+	}
+
+	// Park via the real gate, using a CALLER ctx with identity + NO
+	// scopes. If the bridge does not elevate, the gate's defence-in-
+	// depth scope check fails and ResolveApproval returns scope error;
+	// the RunGuarded goroutine never unblocks.
+	originalArgs := json.RawMessage(`{"input":"bridge-identity"}`)
+	type outcome struct {
+		args json.RawMessage
+		err  error
+	}
+	resCh := make(chan outcome, 1)
+	go func() {
+		args, err := fx.gate.RunGuarded(bridgeCallerCtx(t), &approval.ApprovalRequest{
+			Tool:     tools.Tool{Name: "bridge-tool"},
+			Args:     originalArgs,
+			Identity: bridgeTestID,
+		})
+		resCh <- outcome{args: args, err: err}
+	}()
+
+	token := waitForApprovalRequested(t, sub, 2*time.Second)
+
+	// Caller ctx: identity attached, ZERO scopes. This is the shape
+	// the steering apply path would receive after Phase 54's
+	// Inbox.Enqueue handed off a control event — the scope was vetted
+	// at the wire edge; the apply-path ctx itself carries no scopes
+	// until the bridge stamps them on its derived ctx.
+	q := identity.Quadruple{Identity: bridgeTestID, RunID: "run-bridge-identity"}
+	callerCtx := ctxWithIdentity(context.Background(), q)
+	if before, ok := protocolauth.ScopesFrom(callerCtx); ok && len(before) != 0 {
+		t.Fatalf("test precondition: caller ctx has scopes %v, want none", before)
+	}
+
+	sc := &stepControl{}
+	ev := ControlEvent{
+		Type:     ControlApprove,
+		Identity: q,
+		Payload:  map[string]any{"token": string(token), "reason": "elevated by bridge"},
+	}
+	if err := a.applyEvent(callerCtx, sc, ev, token); err != nil {
+		t.Fatalf("applyEvent: %v", err)
+	}
+
+	// 1. The gate resolved — proves the bridge's elevation worked
+	//    (without admin scope on the bridge's derived ctx, the gate's
+	//    scope check rejects).
+	select {
+	case o := <-resCh:
+		if o.err != nil {
+			t.Fatalf("RunGuarded err (bridge did not elevate?): %v", o.err)
+		}
+		if string(o.args) != string(originalArgs) {
+			t.Errorf("RunGuarded args = %s, want %s", o.args, originalArgs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunGuarded did not return — bridge elevation likely failed")
+	}
+
+	// 2. The caller's ctx is UNCHANGED. context.WithValue returns a
+	//    new ctx; the original is immutable by construction. Asserting
+	//    explicitly so a future refactor that accidentally swaps in a
+	//    mutable storage (e.g. a sync.Map keyed by ctx) trips this.
+	if after, ok := protocolauth.ScopesFrom(callerCtx); ok && len(after) != 0 {
+		t.Errorf("caller ctx scopes mutated after applyEvent: got %v, want none", after)
+	}
+
+	// 3. The identity triple in the caller's ctx is the same I. The
+	//    bridge's derived ctx inherited it; nothing should have
+	//    swapped it out.
+	gotID := identity.MustFrom(callerCtx)
+	if gotID != bridgeTestID {
+		t.Errorf("identity triple drifted: got %+v, want %+v", gotID, bridgeTestID)
+	}
 }

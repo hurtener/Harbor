@@ -8,11 +8,19 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // TestValidateLLMProvider_NoMockEscape_Bifrost_RejectsEmptyProvider —
@@ -214,4 +222,149 @@ func countDots(s string) int {
 		}
 	}
 	return n
+}
+
+// bootDevStackBusWiredYAML is the minimal config TestBootDevStack_*
+// fixtures consume. Driver knobs match `examples/dev.yaml` shape
+// (validated by config.Load) but everything is in-memory so the
+// test stays hermetic.
+const bootDevStackBusWiredYAML = `
+server:
+  bind_addr: 127.0.0.1:0
+  shutdown_grace_period: 5s
+identity:
+  jwt_algorithms:
+    - ES256
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+telemetry:
+  log_format: text
+  log_level: error
+  service_name: harbor-test
+state:
+  driver: inmem
+llm:
+  driver: mock
+  timeout: 30s
+  context_window_reserve: 0.05
+governance:
+  repair_attempts: 1
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 1024
+sessions:
+  idle_ttl: 24h
+  hard_cap: 720h
+  sweep_interval: 15m
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback
+memory:
+  driver: inmem
+  strategy: none
+`
+
+// TestBootDevStack_CoordinatorEmitsPauseResumedOnBus pins F1 from the
+// Wave 11.5 §17.5 closeout audit: the production `bootDevStack` MUST
+// construct its pauseresume.Coordinator with WithBus(bus) so the
+// canonical pause.resumed event (carrying D-096's typed Decision
+// marker) reaches subscribers. A bare pauseresume.New() short-
+// circuits emit when bus == nil — the regression this test guards.
+//
+// The test boots the production bootDevStack, subscribes to
+// pause.resumed under the (tenant=dev, user=dev, session=dev) triple
+// (which matches the dev token bootDevStack mints), drives a
+// Request + Resume round-trip on stack.coordinator, and asserts the
+// event lands with the typed Decision marker populated.
+func TestBootDevStack_CoordinatorEmitsPauseResumedOnBus(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stack, err := bootDevStack(ctx, devBootOptions{
+		cfgPath:   cfgPath,
+		allowMock: true, // mock-driver escape per §13 amendment
+		logger:    logger,
+		stderr:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("bootDevStack: %v", err)
+	}
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		for i := len(stack.closeFns) - 1; i >= 0; i-- {
+			_ = stack.closeFns[i](closeCtx)
+		}
+	}()
+
+	// Subscribe BEFORE driving the Request so the fan-out bus does not
+	// race the publish (pattern PR #111 / the catalog tests pinned).
+	id := identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "dev"}
+	sub, err := stack.bus.Subscribe(ctx, events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{pauseresume.EventTypePauseResumed},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	idCtx, err := identity.With(ctx, id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	pause, err := stack.coordinator.Request(idCtx, pauseresume.PauseRequest{
+		Identity: id,
+		Reason:   pauseresume.ReasonApprovalRequired,
+	})
+	if err != nil {
+		t.Fatalf("coordinator.Request: %v", err)
+	}
+	if err := stack.coordinator.Resume(idCtx, pause.Token, pauseresume.DecisionApprove, nil); err != nil {
+		t.Fatalf("coordinator.Resume: %v", err)
+	}
+
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("subscription closed before pause.resumed observed")
+		}
+		if ev.Type != pauseresume.EventTypePauseResumed {
+			t.Fatalf("event type = %q, want %q", ev.Type, pauseresume.EventTypePauseResumed)
+		}
+		p, ok := ev.Payload.(pauseresume.PauseResumedPayload)
+		if !ok {
+			t.Fatalf("payload type = %T, want pauseresume.PauseResumedPayload", ev.Payload)
+		}
+		if p.Decision != pauseresume.DecisionApprove {
+			t.Errorf("payload.Decision = %q, want %q", p.Decision, pauseresume.DecisionApprove)
+		}
+		if p.Token != string(pause.Token) {
+			t.Errorf("payload.Token = %q, want %q", p.Token, string(pause.Token))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pause.resumed event did not arrive on bus — F1 regression: " +
+			"bootDevStack must construct pauseresume.New(WithBus(bus))")
+	}
 }
