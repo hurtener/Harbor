@@ -60,6 +60,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,9 +71,12 @@ import (
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -138,6 +142,27 @@ type AssembleOpts struct {
 	// ControlSurface.
 	SkipSteering bool
 
+	// SkipRunLoop disables the `steering.RunLoop` construction and
+	// the per-task driver that subscribes to `task.spawned` to drive
+	// it (D-097, the production wiring that closes #114). When set,
+	// `DevStack.RunLoop` / `DevStack.RunLoopDriver` are nil. Tests
+	// that don't need the planner-step loop (anything that doesn't
+	// drive a `start` request to completion) set this to opt out;
+	// `wave11_test.go`'s post-D-097 wire-side approve E2E LEAVES the
+	// flag false so the production RunLoop fires.
+	//
+	// SkipRunLoop implies the in-test bridge for APPROVE/REJECT
+	// resolution is no longer needed (the production bridge in
+	// `steering.applier.routeThroughGate` fires from the RunLoop's
+	// drain), so callers that previously installed
+	// `runWave11WireBridge`-shaped goroutines can drop them.
+	//
+	// SkipRunLoop has no effect when SkipSteering or SkipCatalog is
+	// set: the RunLoop requires both the steering Registry and the
+	// catalog-applied gates map (the §13 primitive-with-consumer
+	// rule applied to the V1 wiring).
+	SkipRunLoop bool
+
 	// OAuthProviders pre-populates the OAuth-provider map the
 	// catalog Builder consults when an entry declares
 	// `tools.entries[].oauth`. Empty by default.
@@ -190,6 +215,15 @@ type DevStack struct {
 	// Steering / Surface are nil when SkipSteering is set.
 	Steering *steering.Registry
 	Surface  *protocol.ControlSurface
+
+	// RunLoop / RunLoopDriver are nil when SkipRunLoop is set OR when
+	// SkipSteering / SkipCatalog forces the construction to be
+	// skipped (the RunLoop needs both the steering Registry and the
+	// catalog-applied gates map). Tests that drive a `start` request
+	// rely on these — without RunLoop, the spawned task sits at
+	// StatusPending forever and the planner never runs.
+	RunLoop       *steering.RunLoop
+	RunLoopDriver *DevStackRunLoopDriver
 
 	// Catalog / Coordinator / Gates / OAuthProviders are nil when
 	// SkipCatalog is set. The Gates map is keyed by tool name and
@@ -493,6 +527,40 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.Steering = steerReg
 		stack.Surface = surface
+
+		// D-097 — production wiring: a `steering.RunLoop` per spawned
+		// task. Mirrors `cmd/harbor/cmd_dev.go::bootDevStack` (the
+		// source-of-truth invariant per D-094). Skip-aware: the
+		// RunLoop requires both the steering Registry (constructed
+		// above) and the catalog-applied gates map (so SkipCatalog
+		// also disables the loop), and the caller can opt out via
+		// SkipRunLoop.
+		if !opts.SkipRunLoop && !opts.SkipCatalog && stack.LLMClient != nil {
+			plnr := react.New(stack.LLMClient)
+			rl, rlErr := steering.NewRunLoop(steerReg, stack.Coordinator,
+				steering.WithRunLoopBus(bus),
+				steering.WithTaskRegistry(taskReg),
+				steering.WithApprovalGates(stack.Gates),
+			)
+			if rlErr != nil {
+				return stack, fmt.Errorf("steering.NewRunLoop: %w", rlErr)
+			}
+			stack.RunLoop = rl
+
+			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
+				bus:     bus,
+				runLoop: rl,
+				planner: plnr,
+			})
+			if drvErr != nil {
+				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
+			}
+			if startErr := driver.start(context.Background()); startErr != nil {
+				return stack, fmt.Errorf("devstack RunLoop driver start: %w", startErr)
+			}
+			stack.RunLoopDriver = driver
+			stack.closeFns = append(stack.closeFns, driver.close)
+		}
 	}
 
 	// Auth. The dev signer mints an ephemeral ES256 keypair + a
@@ -590,6 +658,135 @@ func signDevToken(priv *ecdsa.PrivateKey, tenant, user, session string) (string,
 	})
 	tok.Header["kid"] = DefaultKID
 	return tok.SignedString(priv)
+}
+
+// DevStackRunLoopDriver mirrors `cmd/harbor`'s package-private
+// `perTaskRunLoopDriver`. The duplication is intentional per D-094's
+// source-of-truth invariant: both ship the same shape (subscribe to
+// `task.spawned`, launch a goroutine per spawned foreground task,
+// drive the planner via `RunLoop.Run`, drain on Close). When the
+// production shape evolves, both move in the same PR.
+//
+// The driver is exported as a pointer-shaped opaque type — tests
+// inspect via the `RunLoop` field rather than reaching into the
+// driver's internals.
+type DevStackRunLoopDriver struct {
+	bus     events.EventBus
+	runLoop *steering.RunLoop
+	planner planner.Planner
+
+	subCtx     context.Context
+	subCancel  context.CancelFunc
+	sub        events.Subscription
+	subLoopWG  sync.WaitGroup
+	runsWG     sync.WaitGroup
+	started    bool
+	closedOnce sync.Once
+}
+
+type devStackRunLoopDriverOpts struct {
+	bus     events.EventBus
+	runLoop *steering.RunLoop
+	planner planner.Planner
+}
+
+func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
+	if opts.bus == nil {
+		return nil, fmt.Errorf("devstack RunLoop driver: bus is nil")
+	}
+	if opts.runLoop == nil {
+		return nil, fmt.Errorf("devstack RunLoop driver: runLoop is nil")
+	}
+	if opts.planner == nil {
+		return nil, fmt.Errorf("devstack RunLoop driver: planner is nil")
+	}
+	return &DevStackRunLoopDriver{
+		bus:     opts.bus,
+		runLoop: opts.runLoop,
+		planner: opts.planner,
+	}, nil
+}
+
+func (d *DevStackRunLoopDriver) start(ctx context.Context) error {
+	if d.started {
+		return nil
+	}
+	d.subCtx, d.subCancel = context.WithCancel(context.Background())
+	sub, err := d.bus.Subscribe(d.subCtx, events.Filter{
+		Admin: true,
+		Types: []events.EventType{tasks.EventTypeTaskSpawned},
+	})
+	if err != nil {
+		d.subCancel()
+		return fmt.Errorf("subscribe(task.spawned): %w", err)
+	}
+	d.sub = sub
+	d.started = true
+
+	// Anchor subCtx to the supplied ctx so a stack teardown that
+	// cancels the boot ctx propagates into the driver.
+	go func() {
+		select {
+		case <-ctx.Done():
+			d.subCancel()
+		case <-d.subCtx.Done():
+		}
+	}()
+
+	d.subLoopWG.Add(1)
+	go d.subscribeLoop()
+	return nil
+}
+
+func (d *DevStackRunLoopDriver) subscribeLoop() {
+	defer d.subLoopWG.Done()
+	for ev := range d.sub.Events() {
+		d.handleEvent(ev)
+	}
+}
+
+func (d *DevStackRunLoopDriver) handleEvent(ev events.Event) {
+	payload, ok := ev.Payload.(tasks.TaskSpawnedPayload)
+	if !ok {
+		return
+	}
+	if payload.Kind != tasks.KindForeground {
+		return
+	}
+	q := identity.Quadruple{
+		Identity: ev.Identity.Identity,
+		RunID:    string(payload.TaskID),
+	}
+	if err := identity.Validate(q.Identity); err != nil {
+		return
+	}
+	d.runsWG.Add(1)
+	go func() {
+		defer d.runsWG.Done()
+		spec := steering.RunSpec{
+			Planner: d.planner,
+			Base: planner.RunContext{
+				Quadruple: q,
+			},
+			TaskID: payload.TaskID,
+		}
+		_, _ = d.runLoop.Run(d.subCtx, spec)
+	}()
+}
+
+func (d *DevStackRunLoopDriver) close(_ context.Context) error {
+	d.closedOnce.Do(func() {
+		if !d.started {
+			return
+		}
+		d.subCancel()
+		if d.sub != nil {
+			d.sub.Cancel()
+		}
+		d.subLoopWG.Wait()
+		d.runsWG.Wait()
+	})
+	return nil
 }
 
 // copyModelProfiles converts the config-package map shape into the

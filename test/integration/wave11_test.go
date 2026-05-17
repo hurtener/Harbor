@@ -24,11 +24,15 @@
 //  2. Protocol-wire APPROVE round-trip — the catalog-wired approval
 //     gate fires, a `tool.approval_requested` event arrives on SSE
 //     with the pause Token, a `POST /v1/control/approve` request
-//     lands on the run's steering inbox, the in-test gate-bridge
-//     delivers the resolution into the gate's pending map, the
-//     tool's invocation completes with the original args, and a
+//     lands on the run's steering inbox, the production
+//     steering→gate bridge (`steering.applier.routeThroughGate`,
+//     D-097) delivers the resolution into the gate's pending map,
+//     the tool's invocation completes with the original args, and a
 //     `tool.approved` event arrives on the bus. This closes the
 //     wire-side half of issue #104 (deferred from PR #107 / D-090).
+//     The Wave 11 §17.5 audit's `runWave11WireBridge` in-test bridge
+//     was DROPPED in PR #122 (D-097); the production wiring now
+//     fires from the dev-stack's RunLoop.
 //  3. Protocol-wire REJECT round-trip — same shape, REJECT decision;
 //     the wrapped invocation returns `*approval.ErrToolRejected` and
 //     `tool.rejected` arrives on the bus.
@@ -71,30 +75,23 @@
 //     bounded timeouts; the goroutine-baseline settle is scheduler
 //     noise tolerance, not synchronisation.
 //
-// # The wire-side approve/reject bridge
+// # The wire-side approve/reject bridge (production wiring, D-097)
 //
-// The production Protocol `approve` / `reject` path routes through
-// the steering Registry → Inbox.Enqueue → RunLoop.Drain → applyEvent
-// → Coordinator.Resume. The gate's `pending` map is currently
-// unblocked only by `ApprovalGate.ResolveApproval`. Phase 64a / D-090
-// deferred the wire-side bridge ("from Protocol `approve` / `reject`
-// methods back into the gate's pending map") to this wave-end E2E.
+// The Protocol `approve` / `reject` path routes through the steering
+// Registry → Inbox.Enqueue → RunLoop.Drain → applier.advancePause
+// → applier.routeThroughGate → gate.ResolveApproval. The bridge is
+// PRODUCTION code in `internal/runtime/steering/apply.go` (D-097,
+// closes issues #112 + #114). The dev stack (and this test stack,
+// via `harbortest/devstack.Assemble`) wires the catalog's
+// `AppliedGates` map into the RunLoop's drain, so an APPROVE control
+// arriving on the run's steering inbox unblocks the matching gate's
+// pending waiter without any in-test bridging.
 //
-// The bridge is implemented in this test as a small goroutine that:
-//
-//   - opens a steering Inbox per active run quadruple so wire-side
-//     control requests have somewhere to land;
-//   - subscribes to the bus for `tool.approval_requested` events to
-//     learn (Token, ToolName) pairs;
-//   - drains the steering Inbox in a loop; when an APPROVE or REJECT
-//     event arrives carrying a `token` key in its payload, the bridge
-//     looks up the matching gate and calls `gate.ResolveApproval`.
-//
-// The bridge is in-test rather than production because the design
-// surface for the steering-inbox-aware bridge is still being scoped
-// (RFC §6.3 + issue #104 + D-090 carve-out). The bridge faithfully
-// reproduces what the production wiring will eventually do, so this
-// E2E exercises the same wire-side surface a Console will hit.
+// PR #110 shipped this test with a ~100-LOC `runWave11WireBridge`
+// goroutine that substituted for the missing production wiring
+// (D-090 deferred the bridge). PR #122 / D-097 closes that gap; the
+// in-test bridge is gone and the E2E now exercises the production
+// path end-to-end.
 package integration_test
 
 import (
@@ -132,6 +129,7 @@ import (
 	// `llm.driver` is validated structurally against a static allowlist,
 	// not against the runtime registry, so the mock driver does not need
 	// to be registered for this test to pass.
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -428,152 +426,77 @@ func wave11WaitEv(t *testing.T, sub events.Subscription, d time.Duration) events
 	}
 }
 
-// runWave11WireBridge starts the wire-side approve/reject bridge. The
-// bridge opens a steering Inbox for the supplied quadruple, drains
-// the inbox in a goroutine, and for each APPROVE/REJECT event drained
-// looks up the matching gate (by tool name carried in the event) and
-// calls `gate.ResolveApproval`.
+// startWave11RunLoopForRun spawns a steering.RunLoop driving a
+// scripted "request-pause-then-finish" planner for the supplied run
+// quadruple. The RunLoop opens the run's steering inbox; the
+// production steering→gate bridge (`steering.applier.routeThroughGate`,
+// D-097) fires when an APPROVE/REJECT event drains. Returns a stop
+// function that joins the RunLoop goroutine.
 //
-// The bridge maintains a Token registry it learns by subscribing to
-// `tool.approval_requested` events on the bus — the gate publishes
-// (PauseToken, ToolName) pairs the bridge consults when a wire-side
-// `approve` arrives.
+// This helper REPLACES the pre-D-097 in-test bridge (`runWave11WireBridge`).
+// The substitution proves the production bridge code path: every
+// gate-routing concern (token lookup, gate resolution, double-resume
+// guard, admin-scope elevation) lives in `internal/runtime/steering`
+// now — this helper only constructs a RunLoop with the production
+// `WithApprovalGates` wiring and runs it under a planner that holds
+// the run open long enough for the wire-side APPROVE to land.
 //
-// Returns a stop function that retires the steering inbox and joins
-// the bridge goroutine.
-//
-// The bridge is in-test (NOT production) — Phase 64a / D-090 deferred
-// the production bridge design to this E2E. The bridge faithfully
-// reproduces the wire route: `POST /v1/control/approve` →
-// ControlSurface → steering Inbox.Enqueue → in-test drain → gate.ResolveApproval.
-func runWave11WireBridge(t *testing.T, stack *wave11Stack, q identity.Quadruple) func() {
+// The scripted planner emits a single `RequestPause`; the RunLoop
+// blocks at `inbox.WaitForEvent`; the wire approve drains; the
+// bridge resolves the gate's pause; the RunLoop's own pause (a
+// distinct Token) clears via the `sc.resumeKind` projection; the
+// planner re-enters and returns `Finish` — the RunLoop exits cleanly.
+func startWave11RunLoopForRun(t *testing.T, stack *wave11Stack, q identity.Quadruple) func() {
 	t.Helper()
-
-	// 1. Open a steering inbox for the run quadruple. The wire-side
-	//    `POST /v1/control/approve` calls ControlSurface.Dispatch
-	//    which calls Registry.Lookup(q) — without an open inbox the
-	//    request would fail with CodeNotFound.
-	inbox, err := stack.steering.Open(q)
+	rl, err := steering.NewRunLoop(stack.steering, stack.coord,
+		steering.WithRunLoopBus(stack.bus),
+		steering.WithApprovalGates(stack.gates),
+	)
 	if err != nil {
-		t.Fatalf("steering.Open: %v", err)
+		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
-
-	// 2. Subscribe to `tool.approval_requested` so the bridge learns
-	//    the Token → ToolName mapping as the gate publishes it. The
-	//    subscription filter is identity-scoped to the run's tuple.
-	reqSub, cancelReqSub := wave11SubFor(t, stack.bus, q.Identity,
-		approval.EventTypeToolApprovalRequested)
-
-	// 3. The bridge's Token → ToolName map. Guarded by mu so the
-	//    subscription goroutine and the drain goroutine can read/write
-	//    without racing.
-	var mu sync.Mutex
-	tokenToTool := make(map[string]string)
-
-	stopCh := make(chan struct{})
-	var wg sync.WaitGroup
-
-	// 4. Subscription goroutine — learns (Token, ToolName) pairs.
-	wg.Add(1)
+	p := &wave11PausingPlanner{}
+	spec := steering.RunSpec{
+		Planner: p,
+		Base: planner.RunContext{
+			Quadruple: q,
+		},
+		MaxSteps: 4,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stopCh:
-				return
-			case ev, ok := <-reqSub.Events():
-				if !ok {
-					return
-				}
-				p, ok := ev.Payload.(approval.ToolApprovalRequestedPayload)
-				if !ok {
-					continue
-				}
-				mu.Lock()
-				tokenToTool[p.PauseToken] = p.Tool
-				mu.Unlock()
-			}
-		}
+		defer close(done)
+		_, _ = rl.Run(ctx, spec)
 	}()
-
-	// 5. Drain goroutine — pulls control events from the steering
-	//    inbox and routes APPROVE/REJECT to the matching gate.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		bridgeCtx := wave11IdentityCtx(t, q.Identity)
-		// Admin scope so ResolveApproval's scope check passes.
-		bridgeCtx = auth.WithScopes(bridgeCtx,
-			[]auth.Scope{auth.ScopeAdmin, auth.ScopeConsoleFleet})
-		for {
-			select {
-			case <-stopCh:
-				return
-			default:
-			}
-			// WaitForEvent honours a deadline ctx; we use a short
-			// deadline so the loop can observe stopCh.
-			waitCtx, waitCancel := context.WithTimeout(bridgeCtx, 100*time.Millisecond)
-			werr := inbox.WaitForEvent(waitCtx)
-			waitCancel()
-			if werr != nil {
-				// Timeout is benign — loop back and check stopCh.
-				continue
-			}
-			drained, derr := inbox.Drain()
-			if derr != nil {
-				return
-			}
-			for _, ev := range drained {
-				if ev.Type != steering.ControlApprove && ev.Type != steering.ControlReject {
-					continue
-				}
-				tokenRaw, ok := ev.Payload["token"]
-				if !ok {
-					continue
-				}
-				tokenStr, ok := tokenRaw.(string)
-				if !ok || tokenStr == "" {
-					continue
-				}
-				mu.Lock()
-				toolName, hasTool := tokenToTool[tokenStr]
-				mu.Unlock()
-				if !hasTool {
-					continue
-				}
-				gate, hasGate := stack.gates[toolName]
-				if !hasGate {
-					continue
-				}
-				decision := approval.DecisionApprove
-				reason := ""
-				if ev.Type == steering.ControlReject {
-					decision = approval.DecisionReject
-				}
-				if r, ok := ev.Payload["reason"].(string); ok {
-					reason = r
-				}
-				// ResolveApproval calls Coordinator.Resume; the
-				// gate.pending channel sends the resolution to the
-				// blocked RunGuarded waiter. Surface bridge errors:
-				// scope mismatch, already-resolved token, missing
-				// pause record — any of these would otherwise look
-				// like a 3-second wait timeout downstream (Wave 11
-				// §17.5 audit, finding W1).
-				if err := gate.ResolveApproval(bridgeCtx, pauseresume.Token(tokenStr), decision, reason); err != nil {
-					t.Errorf("wave11 bridge: ResolveApproval(token=%s, decision=%v): %v", tokenStr, decision, err)
-				}
-			}
-		}
-	}()
-
 	return func() {
-		close(stopCh)
-		cancelReqSub()
-		_ = stack.steering.Retire(q)
-		wg.Wait()
+		cancel()
+		<-done
 	}
+}
+
+// wave11PausingPlanner emits exactly one RequestPause (step 0), then
+// Finish on every later step. The pause holds the RunLoop at the
+// inbox.WaitForEvent boundary so a wire-side APPROVE has time to
+// arrive; the drained APPROVE drives the bridge AND clears the
+// RunLoop's own pause via `sc.resumeKind`.
+type wave11PausingPlanner struct {
+	mu   sync.Mutex
+	step int
+}
+
+func (p *wave11PausingPlanner) Next(_ context.Context, _ planner.RunContext) (planner.Decision, error) {
+	p.mu.Lock()
+	p.step++
+	step := p.step
+	p.mu.Unlock()
+	if step == 1 {
+		return planner.RequestPause{
+			Reason:  planner.PauseApprovalRequired,
+			Payload: map[string]any{"wave11": "scripted-pause-for-bridge"},
+		}, nil
+	}
+	return planner.Finish{Reason: planner.FinishGoal}, nil
 }
 
 // wave11IdentityCtx returns a ctx carrying the supplied identity.
@@ -650,8 +573,8 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 
 	runID := "wave11-approve-run-1"
 	q := identity.Quadruple{Identity: wave11ID, RunID: runID}
-	stopBridge := runWave11WireBridge(t, stack, q)
-	defer stopBridge()
+	stopLoop := startWave11RunLoopForRun(t, stack, q)
+	defer stopLoop()
 
 	// Subscriptions — observe the gate's per-tool events PLUS the
 	// runtime-level pause.resumed event. The per-tool events still
@@ -788,8 +711,8 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 
 	runID := "wave11-reject-run-1"
 	q := identity.Quadruple{Identity: wave11ID, RunID: runID}
-	stopBridge := runWave11WireBridge(t, stack, q)
-	defer stopBridge()
+	stopLoop := startWave11RunLoopForRun(t, stack, q)
+	defer stopLoop()
 
 	reqSub, cancelReqSub := wave11SubFor(t, stack.bus, wave11ID,
 		approval.EventTypeToolApprovalRequested)
