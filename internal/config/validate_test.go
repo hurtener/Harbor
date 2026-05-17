@@ -1187,3 +1187,97 @@ func mustLoadValid(t *testing.T) *config.Config {
 	}
 	return cfg
 }
+
+// TestValidateCLI_DevHotReload exercises the Phase 65 (D-099)
+// `cli.dev_hot_reload` validator: unknown policy rejected, negative
+// drain timeout rejected, enabled+empty roots rejected, blank root
+// rejected, defaults pass.
+func TestValidateCLI_DevHotReload(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(*config.Config)
+		wantErr   bool
+		errFragment string
+	}{
+		{
+			name:    "defaults_from_loader_pass",
+			mutate:  func(_ *config.Config) {},
+			wantErr: false,
+		},
+		{
+			name: "unknown_policy_rejected",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.Policy = "rebuild-the-universe"
+			},
+			wantErr:     true,
+			errFragment: "cli.dev_hot_reload.policy",
+		},
+		{
+			name: "negative_drain_timeout_rejected",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.DrainTimeout = -1 * time.Second
+			},
+			wantErr:     true,
+			errFragment: "cli.dev_hot_reload.drain_timeout",
+		},
+		{
+			name: "zero_drain_timeout_accepted_treated_as_default",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.DrainTimeout = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "enabled_with_no_roots_rejected",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.WatchRoots = nil
+			},
+			wantErr:     true,
+			errFragment: "cli.dev_hot_reload.watch_roots",
+		},
+		{
+			name: "disabled_via_enabled_false_accepts_empty_roots",
+			mutate: func(c *config.Config) {
+				f := false
+				c.CLI.DevHotReload.Enabled = &f
+				c.CLI.DevHotReload.WatchRoots = nil
+			},
+			wantErr: false,
+		},
+		{
+			name: "disabled_via_policy_disabled_accepts_empty_roots",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.Policy = config.DevHotReloadPolicyDisabled
+				c.CLI.DevHotReload.WatchRoots = nil
+			},
+			wantErr: false,
+		},
+		{
+			name: "blank_root_rejected",
+			mutate: func(c *config.Config) {
+				c.CLI.DevHotReload.WatchRoots = []string{".harbor/agents", "   "}
+			},
+			wantErr:     true,
+			errFragment: "cli.dev_hot_reload.watch_roots[1]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustLoadValid(t)
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() = nil, want non-nil")
+				}
+				if tc.errFragment != "" && !strings.Contains(err.Error(), tc.errFragment) {
+					t.Errorf("Validate() = %q, want fragment %q", err.Error(), tc.errFragment)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+			}
+		})
+	}
+}

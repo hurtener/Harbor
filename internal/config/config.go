@@ -786,7 +786,67 @@ type A2APeerConfig struct {
 type ProtocolConfig struct{}
 
 // CLIConfig is owned by the CLI phases.
-type CLIConfig struct{}
+//
+// `DevHotReload` configures the Phase 65 (D-099) `harbor dev` hot-reload
+// watcher: fsnotify-driven graceful-drain restart when a watched file
+// changes. The block is opt-out (`Enabled: true` is the default applied
+// by the loader). Restart-required at the harbor-dev level (a change to
+// the block takes effect on the next `harbor dev` boot).
+type CLIConfig struct {
+	DevHotReload DevHotReloadConfig `yaml:"dev_hot_reload,omitempty"`
+}
+
+// DevHotReloadConfig configures the Phase 65 (D-099) `harbor dev`
+// hot-reload watcher. The block is opt-out — the loader populates
+// defaults that match the §13 "test stubs as production defaults"
+// amendment for dev seams: on by default, fail-loud at boot when the
+// configured watch root is unreadable, never silently disabled.
+//
+// Fields:
+//
+//   - `Enabled` — `*bool` so the loader can distinguish "operator didn't
+//     set the field" (nil → defaults to true) from "operator explicitly
+//     disabled" (&false). The CLI flag `harbor dev --no-hot-reload` is
+//     the operator-facing escape hatch — it overrides this value at
+//     boot. Default: true.
+//   - `Policy` — retain-in-flight policy on a triggered restart:
+//     `"drain"` (wait for in-flight RunLoops up to `DrainTimeout` before
+//     forcing close; the default), `"cancel"` (immediately cancel
+//     in-flight; no drain), or `"disabled"` (no hot-reload — equivalent
+//     to `Enabled: false`). Unknown values fail validation.
+//   - `DrainTimeout` — bounds the `drain` policy's wait for in-flight
+//     RunLoops. Zero / negative rejected. Default: 5s.
+//   - `WatchRoots` — list of paths (absolute or relative to the working
+//     directory) the fsnotify watcher monitors. The dev cmd unions this
+//     with the loaded config file's directory so a config edit also
+//     triggers a reload. Default: `[".harbor/agents"]` — the
+//     project-local Phase 66 draft-save directory.
+//
+// Restart-required (no `reload:"live"` tag): the watcher itself is the
+// reload mechanism; reconfiguring the watcher at runtime would race the
+// watcher's own goroutine.
+type DevHotReloadConfig struct {
+	Enabled      *bool         `yaml:"enabled,omitempty"`
+	Policy       string        `yaml:"policy,omitempty"`
+	DrainTimeout time.Duration `yaml:"drain_timeout,omitempty"`
+	WatchRoots   []string      `yaml:"watch_roots,omitempty"`
+}
+
+// Canonical retain-in-flight policy values for DevHotReloadConfig.
+// Centralised so cmd/harbor and the validator reference one spelling.
+const (
+	// DevHotReloadPolicyDrain waits for in-flight RunLoops to drain up
+	// to DrainTimeout before forcing a stack restart. The default.
+	DevHotReloadPolicyDrain = "drain"
+	// DevHotReloadPolicyCancel cancels in-flight RunLoops immediately
+	// on a triggered restart — no drain wait.
+	DevHotReloadPolicyCancel = "cancel"
+	// DevHotReloadPolicyDisabled is equivalent to Enabled: false; the
+	// watcher is not started. Listed as a canonical value so an operator
+	// can disable hot-reload via a single explicit field rather than
+	// flipping the *bool.
+	DevHotReloadPolicyDisabled = "disabled"
+)
 
 // PlannerConfig selects the planner concrete the runtime constructs at
 // boot. The §4.4 seam pattern applied to the planner — closes D-097's

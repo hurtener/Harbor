@@ -252,6 +252,20 @@ func defaults() *Config {
 		Planner: PlannerConfig{
 			Driver: "react",
 		},
+		CLI: CLIConfig{
+			// Phase 65 / D-099 — `harbor dev` hot-reload defaults. The
+			// block is opt-out: Enabled defaults to true; the `--no-hot-
+			// reload` CLI flag is the operator-facing escape hatch.
+			// Policy `drain` waits for in-flight RunLoops to finish up to
+			// DrainTimeout before restarting. WatchRoots defaults to the
+			// Phase 66 project-local drafts directory.
+			DevHotReload: DevHotReloadConfig{
+				Enabled:      boolPtr(true),
+				Policy:       DevHotReloadPolicyDrain,
+				DrainTimeout: 5 * time.Second,
+				WatchRoots:   []string{".harbor/agents"},
+			},
+		},
 	}
 }
 
