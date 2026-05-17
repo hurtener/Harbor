@@ -1,0 +1,11 @@
+run run-abc-123
+tenant=tenant-a user=user-a session=session-a
+source: events.synthesised
+
+[task    ] task-foreground-1 (foreground)
+[tool    ] echo_tool [ok] (12ms)
+[tool    ] search_tool [pending]
+  +- [approval] search_tool (reason=tagged)
+  +- [auth    ] wave11-stub (scope=user)
+  +- [pause   ] approval_required (token-xyz)
+[finish  ] goal

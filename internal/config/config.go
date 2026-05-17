@@ -45,6 +45,7 @@ type Config struct {
 	Protocol  ProtocolConfig  `yaml:"protocol,omitempty"`  // owned by protocol phases
 	CLI       CLIConfig       `yaml:"cli,omitempty"`       // owned by CLI phases
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
+	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
 
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
@@ -786,3 +787,39 @@ type ProtocolConfig struct{}
 
 // CLIConfig is owned by the CLI phases.
 type CLIConfig struct{}
+
+// PlannerConfig selects the planner concrete the runtime constructs at
+// boot. The §4.4 seam pattern applied to the planner — closes D-097's
+// "future phases will read cfg.Planner" note and CLAUDE.md §1.3's
+// swappable-planner property gap (D-103, closes issue #126). Mirrors
+// D-095's `ToolOAuthProviderConfig` structurally — same shape, same
+// validator pattern, same registry pattern (`internal/planner` driver
+// registry; `cmd/harbor/main.go` blank-imports each driver).
+//
+// `Driver` selects a self-registered planner driver in
+// `internal/planner/<name>/`. V1 ships only the `react` driver (the
+// reference LLM-driven ReAct planner — Phase 45 / D-051). Empty
+// defaults to `react` so a missing configuration value boots with the
+// V1 reference planner unchanged; operators opt into alternates
+// explicitly when later phases land them (Plan-Execute, Workflow,
+// Graph, Deterministic, Supervisor, MultiAgent, HumanApproval per
+// RFC §6.2).
+//
+// `MaxSteps` overrides the driver-side circuit-breaker step cap. Zero
+// (the default) means "use the driver's internal default" — e.g. the
+// react driver's `react.DefaultMaxSteps` (12). The validator rejects
+// negative values pre-boot.
+//
+// `Extra` is the per-driver opaque extras map. Reserved for future
+// drivers' per-flow knobs (e.g. a deterministic planner's scripted
+// step sequence, a supervisor planner's sub-agent list). The V1 `react`
+// driver ignores it.
+//
+// Restart-required (no `reload:"live"` tag): swapping a planner at
+// runtime would race with in-flight RunLoop goroutines holding the old
+// concrete.
+type PlannerConfig struct {
+	Driver   string            `yaml:"driver,omitempty"`
+	MaxSteps int               `yaml:"max_steps,omitempty"`
+	Extra    map[string]string `yaml:"extra,omitempty"`
+}

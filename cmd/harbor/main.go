@@ -122,6 +122,15 @@ import (
 	// driver under `internal/tools/auth/drivers/<name>/` + a blank
 	// import here, per the §4.4 seam pattern.
 	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"
+	// Planner driver — D-103 (closes issue #126). The `react` driver
+	// self-registers under that name via init() so
+	// `planner.driver: react` resolves at boot. New planner concretes
+	// (Plan-Execute, Workflow, Graph, Deterministic, Supervisor,
+	// MultiAgent, HumanApproval per RFC §6.2) add a new driver under
+	// `internal/planner/<name>/` + a blank import here, per the §4.4
+	// seam pattern that D-095 uses for OAuth providers. The V1
+	// reference planner remains the no-config-needed default.
+	_ "github.com/hurtener/Harbor/internal/planner/react"
 )
 
 func main() {

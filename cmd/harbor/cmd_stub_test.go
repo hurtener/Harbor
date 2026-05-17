@@ -28,13 +28,14 @@ type stubCase struct {
 }
 
 var stubCases = []stubCase{
-	// `scaffold` (Phase 67 / D-087), `validate` (Phase 68 / D-088), and
-	// `dev` (Phase 64 / D-089) graduated out of the stub table — their
-	// cobra-driver tests live in cmd_scaffold_test.go, validate_test.go,
-	// and cmd_dev_test.go respectively.
-	{"inspect-events", regexp.MustCompile(`phase 69`)},
-	{"inspect-runs", regexp.MustCompile(`phase 69`)},
-	{"inspect-topology", regexp.MustCompile(`phase 70`)},
+	// `scaffold` (Phase 67 / D-087), `validate` (Phase 68 / D-088),
+	// `dev` (Phase 64 / D-089), `inspect-events` / `inspect-runs`
+	// (Phase 69 / D-101), and `inspect-topology` (Phase 70 / D-102)
+	// all graduated out of the stub table — their cobra-driver tests
+	// live in their respective cmd_*_test.go files. The stubCases
+	// table is now empty; the Test* loops below are no-ops in that
+	// state, which is the intended terminal shape until a future
+	// phase introduces a new stub subcommand.
 }
 
 // TestStubSubcommands_Human_ReturnsCLIError pins the human-mode output:
@@ -129,22 +130,10 @@ func TestStubSubcommands_JSON_StructuredErrorShape(t *testing.T) {
 	}
 }
 
-// TestStubSubcommands_QuietFlag_DoesNotSuppressErrors pins the
-// observed behaviour: --quiet suppresses *informational* output, NEVER
-// error output. Errors always emit (acceptance criterion 5). We
-// exercise this against `inspect-events` (one of the remaining
-// Phase 63 stubs) — `dev` graduated out of stub status in Phase 64.
-func TestStubSubcommands_QuietFlag_DoesNotSuppressErrors(t *testing.T) {
-	t.Parallel()
-	root := NewRootCmd()
-	var out, errBuf bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&errBuf)
-	root.SetArgs([]string{"inspect-events", "--quiet"})
-	if err := root.Execute(); err == nil {
-		t.Fatal("`harbor inspect-events --quiet` returned nil error — stubs must exit non-zero even with --quiet")
-	}
-	if errBuf.String() == "" {
-		t.Fatal("`harbor inspect-events --quiet` suppressed the error body — --quiet must not silence errors (acceptance criterion 5)")
-	}
-}
+// TestStubSubcommands_QuietFlag_DoesNotSuppressErrors was removed
+// when `inspect-topology` (the last remaining Phase 63 stub)
+// graduated in Phase 70 / D-102. The --quiet-doesn't-silence-errors
+// behaviour is now exercised by each graduated subcommand's own test
+// file (cmd_dev_test.go, cmd_inspect_topology_test.go, etc.) against
+// their real error paths instead of synthetic stub errors. Restore
+// this test if a new stub subcommand is introduced.

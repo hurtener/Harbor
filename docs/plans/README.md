@@ -90,8 +90,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Shipped  |
 | 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Shipped  |
 | 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Shipped  |
-| 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
-| 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Pending  |
+| 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
+| 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
 | 71 | `harbortest` test kit package                 | testing              | §6.13       | 05, 09, 07            | 85%  | Shipped  |
 | 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Pending  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |

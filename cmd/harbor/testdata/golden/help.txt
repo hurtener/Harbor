@@ -17,9 +17,9 @@ Usage:
 Available Commands:
   dev              boot the local Runtime + Protocol server
   help             Help about any command
-  inspect-events   tail or filter the event bus of a running Runtime (Phase 69)
-  inspect-runs     list recent runs and inspect a run's trajectory (Phase 69)
-  inspect-topology render a run's node graph as ASCII (Phase 70)
+  inspect-events   tail or filter the event bus of a running Runtime
+  inspect-runs     list recent runs and inspect a run's trajectory
+  inspect-topology render a run's node graph as ASCII
   scaffold         generate a new agent skeleton from a template
   validate         validate config / skills / agent definitions without booting
   version          print harbor semver, protocol version, and build hash

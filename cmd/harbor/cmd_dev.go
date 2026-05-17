@@ -92,7 +92,7 @@ import (
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-	"github.com/hurtener/Harbor/internal/planner/react"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -472,13 +472,24 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	steeringReg := steering.NewRegistry()
 
 	// Planner — the swappable reasoning policy the RunLoop drives.
-	// V1 ships the reference ReAct planner backed by the configured
-	// LLM client. The cfg.Planner schema + driver registry (per the
-	// §4.4 seam pattern that D-095 uses for OAuth providers) is
-	// tracked in issue #126 — until it lands, ReAct is hardcoded
-	// here. The planner is reusable across concurrent runs (D-025);
-	// one instance backs every spawned task's RunLoop.
-	plnr := react.New(llmClient)
+	// D-103 (closes issue #126) — the planner concrete is resolved via
+	// the `internal/planner` driver registry (the §4.4 seam pattern
+	// that D-095 uses for OAuth providers). `cmd/harbor/main.go`
+	// blank-imports each driver so its init() registration fires; the
+	// `cfg.Planner.Driver` allowlist in `internal/config/validate.go`
+	// pre-boots an unknown driver name. The V1 reference driver
+	// (`react`) backs the no-config-needed default; future concretes
+	// (Plan-Execute, Workflow, Graph, Deterministic, Supervisor,
+	// MultiAgent, HumanApproval per RFC §6.2) opt in via
+	// `planner.driver: <name>` in `harbor.yaml`. The planner is reusable
+	// across concurrent runs (D-025); one instance backs every spawned
+	// task's RunLoop.
+	plannerCfg := plannerConfigFromConfig(cfg.Planner)
+	plnr, err := planner.Resolve(ctx, plannerCfg, planner.FactoryDeps{LLM: llmClient})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("planner: %w", err)
+	}
 
 	// RunLoop — the per-run planner-step loop (Phase 53 / D-071) that
 	// drives the planner to a terminal Finish, draining the steering
@@ -877,6 +888,32 @@ func applyToolCatalogWiring(
 		return nil, nil, err
 	}
 	return gates, providers, nil
+}
+
+// plannerConfigFromConfig maps the operator-facing `config.PlannerConfig`
+// onto the registry-facing `planner.PlannerConfig` boundary. D-103
+// (closes issue #126). Empty Driver defaults to "react" — the V1
+// reference planner — so a config that omits the planner block boots
+// unchanged from the pre-D-103 hardcoded path. The boundary copy
+// matches the D-095 OAuth-provider precedent (`internal/config` keeps
+// its own struct shape so it doesn't import `internal/planner`).
+func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
+	driver := cfg.Driver
+	if driver == "" {
+		driver = "react"
+	}
+	var extra map[string]string
+	if len(cfg.Extra) > 0 {
+		extra = make(map[string]string, len(cfg.Extra))
+		for k, v := range cfg.Extra {
+			extra[k] = v
+		}
+	}
+	return planner.PlannerConfig{
+		Driver:   driver,
+		MaxSteps: cfg.MaxSteps,
+		Extra:    extra,
+	}
 }
 
 // resolveOAuthTokenKEK reads the named env var and decodes its value
