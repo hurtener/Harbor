@@ -525,6 +525,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		bus:      bus,
 		runLoop:  runLoop,
 		planner:  plnr,
+		tasks:    taskReg, // D-098: the FSM the driver advances on RunLoop exit (closes #123)
 		taskKind: tasks.KindForeground,
 	})
 	if err != nil {
