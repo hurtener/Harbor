@@ -61,6 +61,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +73,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -200,6 +203,13 @@ type AssembleOpts struct {
 		User    string
 		Session string
 	}
+
+	// DraftRoot overrides the on-disk root the Phase 66 / D-100
+	// draft Store materialises drafts under. Empty falls back to a
+	// per-test temp dir (the helper picks one via testing.TempDir).
+	// Tests that want to share a root across multiple Assemble calls
+	// (rare) supply the same string twice.
+	DraftRoot string
 }
 
 // DevStack is the bundle Assemble returns. Fields are nil when the
@@ -259,6 +269,14 @@ type DevStack struct {
 	// is the value tests pass to httptest.NewServer.
 	Mux     *http.ServeMux
 	Handler http.Handler
+
+	// DraftStore is the Phase 66 / D-100 draft scratchpad. Always
+	// non-nil after a successful Assemble — the helper mirrors
+	// production (D-094 source-of-truth invariant). Tests that
+	// exercise the draft surface read DraftStore.Root() for the on-
+	// disk path or drive the HTTP handler mounted at
+	// devdraft.RoutePrefix.
+	DraftStore *devdraft.Store
 
 	// Close runs every subsystem's Close in reverse dependency
 	// order. Idempotent: safe to defer; safe to call multiple
@@ -629,6 +647,31 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.Token = token
 	}
 
+	// Phase 66 / D-100 — draft-save scaffolding. Constructed before
+	// transports so the helper-owned cleanup walks the on-disk
+	// scratch dir on Close. The Store itself has no Close (the on-
+	// disk dir is operator-owned in production); we register an os.
+	// RemoveAll cleanup so per-test temp dirs do not accumulate.
+	draftRoot := opts.DraftRoot
+	if strings.TrimSpace(draftRoot) == "" {
+		tmp, tmpErr := os.MkdirTemp("", "harbortest-devdraft-")
+		if tmpErr != nil {
+			return stack, fmt.Errorf("devdraft: mkdir temp root: %w", tmpErr)
+		}
+		draftRoot = tmp
+		stack.closeFns = append(stack.closeFns, func(_ context.Context) error {
+			return os.RemoveAll(tmp)
+		})
+	}
+	draftStore, dsErr := devdraft.NewStore(devdraft.Options{
+		Root: draftRoot,
+		Bus:  bus,
+	})
+	if dsErr != nil {
+		return stack, fmt.Errorf("devdraft.NewStore: %w", dsErr)
+	}
+	stack.DraftStore = draftStore
+
 	// Transports + router. Requires the Surface + Validator (when
 	// auth is enabled). SkipTransports OR SkipSteering both leave
 	// these nil — a Mux without a Surface is meaningless.
@@ -659,6 +702,26 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ready"}`))
 		})
+		// Phase 66 / D-100 — mirror production: mount the draft
+		// handler at devdraft.RoutePrefix under the same auth
+		// middleware as the Protocol mux. The handler is registered
+		// BEFORE the /v1/ catch-all so Go's longest-prefix-match
+		// routes /v1/dev/drafts/* to the draft handler. The DraftStore
+		// is always constructed (the helper carries the same shape
+		// production does — D-094 source-of-truth invariant); when
+		// SkipAuth is set, the draft handler is mounted bare so tests
+		// can inject identity themselves.
+		if stack.DraftStore != nil {
+			draftHandler, dErr := devdraft.NewHandler(stack.DraftStore, nil)
+			if dErr != nil {
+				return stack, fmt.Errorf("devdraft.NewHandler: %w", dErr)
+			}
+			var mounted http.Handler = draftHandler
+			if stack.Validator != nil {
+				mounted = auth.Middleware(stack.Validator)(draftHandler)
+			}
+			router.Handle(devdraft.RoutePrefix+"/", mounted)
+		}
 		router.Handle("/v1/", mux)
 		stack.Mux = router
 		stack.Handler = router
