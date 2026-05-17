@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 24 smoke — Memory strategies (truncation, rolling_summary).
 #
 # Phase 24 is a pure Go package extension (internal/memory/strategy +

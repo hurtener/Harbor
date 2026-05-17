@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 14 smoke — Routers + concurrency + Subflow.
 #
 # Phase 14 lands internal/runtime/routers (PredicateRouter,

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 53a smoke — Agent Registry (registration identity + three-ID model).
 #
 # Phase 53a lands internal/runtime/registry as a typed subsystem over

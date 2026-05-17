@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 12 smoke — Streaming + per-run capacity backpressure.
 #
 # Phase 12 layers StreamFrame + EmitChunk + per-run capacity waiters

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 57 smoke — durable event log driver (StateStore-backed).
 #
 # Phase 57 ships internal/events/drivers/durable: an EventBus +

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 50 smoke — Pause/Resume Coordinator + handle registry
 # (RFC §6.3 + §3.3; master-plan Phase 50 detail block; D-067).
 #

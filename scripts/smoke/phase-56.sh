@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 56 smoke — metrics + OTLP + Prometheus drivers.
 #
 # Phase 56 ships the telemetry MetricsRegistry (canonical counters

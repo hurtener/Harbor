@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 36 smoke — retry with feedback (RFC §6.5; master plan Phase
 # 36 detail block; D-043).
 #

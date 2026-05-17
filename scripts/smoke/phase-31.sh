@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 31 smoke — Tool-side approval gates (RFC §6.4 + §3.3;
 # master-plan Phase 31 detail block; D-086).
 #

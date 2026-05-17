@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
 # Phase 70 smoke — `harbor inspect-topology` (D-102).
 #
 # Phase 70 graduates `harbor inspect-topology` out of the Phase 63 stub.
@@ -92,10 +93,13 @@ fi
 
 # 2e. live-server run-not-found path.
 #
-# We use the preflight-booted dev server at HARBOR_BASE_URL (default
-# http://127.0.0.1:18080). The dev server prints the dev token to
-# stderr as `HARBOR_DEV_TOKEN=...`. The preflight harness captures
-# that and exposes it via the HARBOR_DEV_TOKEN env (see scripts/preflight.sh).
+# We use the preflight-booted dev server at HARBOR_BASE_URL (preflight
+# resolves the actual bound addr from the ephemeral-port default —
+# D-104 — and exports HARBOR_BASE_URL; the documented manual-fallback
+# default is http://127.0.0.1:18080 when the operator pins
+# HARBOR_DEV_PORT=18080). The dev server prints the dev token to stderr
+# as `HARBOR_DEV_TOKEN=...`. The preflight harness captures that and
+# exposes it via the HARBOR_DEV_TOKEN env (see scripts/preflight.sh).
 # When not running under preflight (manual `bash scripts/smoke/phase-70.sh`),
 # the operator sets HARBOR_DEV_TOKEN themselves.
 if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then

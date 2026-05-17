@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 22 smoke — MessageBus + RemoteTransport contracts (V1).
 #
 # Phase 22 ships internal/distributed: the at-least-once MessageBus

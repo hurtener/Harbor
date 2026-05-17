@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 26 smoke — Tool catalog core + InProcess registration + ToolPolicy
 # reliability shell.
 #

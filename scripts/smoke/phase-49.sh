@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 49 smoke — Planner conformance pack (RFC §6.2; master plan
 # Phase 49 detail block; D-058).
 #

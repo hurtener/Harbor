@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 36a smoke — governance Subsystem + cost accumulator (RFC §6.15,
 # master plan Phase 36a detail block, D-044).
 #

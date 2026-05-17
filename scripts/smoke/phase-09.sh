@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 09 smoke — Envelopes, Headers, Identity quadruple.
 #
 # Phase 09 is a types-only package (internal/runtime/messages) — no

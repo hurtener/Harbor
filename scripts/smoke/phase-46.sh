@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 46 smoke — Trajectory compression / summariser (RFC §6.2;
 # master plan Phase 46 detail block; D-055).
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 01 smoke — identity foundation.
 #
 # Phase 01 is a pure Go package (internal/identity) with no HTTP / Protocol
