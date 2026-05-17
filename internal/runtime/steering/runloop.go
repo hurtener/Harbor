@@ -9,6 +9,7 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools/approval"
 )
 
 // RunLoop is Harbor's per-run planner-step loop — the runtime component
@@ -77,6 +78,7 @@ type runLoopConfig struct {
 	hardCancelHook    func(ctx context.Context, runID string) error
 	clock             Clock
 	maxControlHistory int
+	gates             map[string]*approval.ApprovalGate
 }
 
 // RunLoopOption configures a RunLoop at construction. Options are applied
@@ -142,6 +144,32 @@ func WithMaxControlHistory(n int) RunLoopOption {
 	return func(c *runLoopConfig) { c.maxControlHistory = n }
 }
 
+// WithApprovalGates hands the RunLoop the catalog-applied approval gates
+// keyed by tool name (Phase 64a `applyToolCatalogWiring` produces this
+// map via the `Deps.AppliedGates` out-channel — D-090, D-097). When a
+// drained CONTROL_APPROVE / CONTROL_REJECT event references a `token`
+// the bridge tries each gate's `ResolveApproval` in turn; the gate that
+// owns the token resumes its `pending` waiter so the wrapped tool's
+// `Invoke` unblocks. When no gate owns the token (a plain RESUME or an
+// OAuth-pause APPROVE), the apply path falls back to the direct
+// `Coordinator.Resume`. A nil / empty map disables the bridge — the
+// loop behaves exactly as before D-097 (direct Resume only). See
+// `applier.advancePause` for the routing.
+//
+// Coupling note (acceptable; D-097): `internal/runtime/steering`
+// imports `internal/tools/approval` for the gate type. Both packages
+// are runtime mechanism — the boundary is acceptable because the
+// bridge IS the runtime-side wiring the gate needs to receive
+// wire-side decisions.
+func WithApprovalGates(gates map[string]*approval.ApprovalGate) RunLoopOption {
+	return func(c *runLoopConfig) {
+		// Nil/empty is tolerated: the bridge is inert when no gates
+		// are wired. A boot that registers zero approval-gated tools
+		// stays correct.
+		c.gates = gates
+	}
+}
+
 // NewRunLoop builds a RunLoop. The Registry (Phase 52 — owns the per-run
 // inboxes the loop drains) and the Coordinator (Phase 50 — the ONE
 // pause/resume primitive PAUSE / RESUME / APPROVE / REJECT converge on)
@@ -171,6 +199,7 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 			coord:          coord,
 			taskRegistry:   cfg.taskRegistry,
 			hardCancelHook: cfg.hardCancelHook,
+			gates:          cfg.gates,
 		},
 		history: newControlHistory(cfg.maxControlHistory),
 		bus:     cfg.bus,

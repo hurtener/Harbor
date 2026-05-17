@@ -113,6 +113,8 @@ These are **one primitive** at the Runtime level, exposed on the Protocol — no
 
 The canonical `pause.resumed` event carries a typed `Decision` marker (one of `approve` / `reject` / `resume` / `timeout`) so wire consumers (the Console, third-party clients, integration tests) can distinguish the *kind* of resume without parsing free-form `Reason` strings. The Wave 11 §17.5 audit (issue #113, D-096) pinned the "overloaded `Reason` string" anti-pattern as a §13 violation — a single event type carrying overloaded shape against a typed enum that should exist. The typed `Decision` is the load-bearing channel; `Reason` stays for human-readable context.
 
+**Steering→gate bridge (D-097).** The wire-side `POST /v1/control/approve` and `/reject` paths route through the steering Registry → Inbox.Enqueue → RunLoop.Drain → `applier.routeThroughGate` → `gate.ResolveApproval`. The bridge lives in the RunLoop's apply path (the drain that already routes the nine canonical control types); it looks up the matching `ApprovalGate` by the wire payload's `token` key (the gate-minted pause token, distinct from any planner-side RequestPause token), calls `ResolveApproval`, and skips the direct `Coordinator.Resume` so the gate's own call lands a single, correctly-typed `pause.resumed`. A wire payload with no `token` key targets the RunLoop's own pause (the canonical OAuth / A2A `AUTH_REQUIRED` shape), preserving the pre-D-097 direct-Resume behaviour for non-gate flows.
+
 This is the cleanest single-point-of-truth in the design and the strongest test of the swappable-planner property: a deterministic / workflow planner inherits pause/resume because it is a Runtime feature, not a planner feature. (Settled.)
 
 ### 3.4 The fail-loudly principle

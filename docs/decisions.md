@@ -1839,3 +1839,51 @@ Coverage: cmd/harbor lands at ≥75% (master-plan target 75% — verified via `g
 - All tests `-race` green.
 
 **Wave-11 cross-fix bundled.** The wave-end test stack previously constructed `pauseresume.New()` with no `WithBus(bus)` option, so `pause.requested` / `pause.resumed` never landed on the bus — the same gap that motivated the audit's `tool.approved` / `tool.rejected` workaround. After PR #120 (D-094) extracted `harbortest/devstack.Assemble`, the omission moved from `buildWave11Stack` to the helper at `harbortest/devstack/devstack.go:444`; this PR wires the bus into the Coordinator at the helper boundary so every devstack-built test inherits the fix (CLAUDE.md §17.6: integration tests fix what they find, regardless of which phase originally shipped the gap).
+
+---
+
+## D-097 — `steering.RunLoop` wired into `harbor dev` + bridges APPROVE/REJECT into `ApprovalGate` (closes #112 + #114)
+
+**Date:** 2026-05-16
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `internal/runtime/steering/runloop.go` (the new `WithApprovalGates` option); `internal/runtime/steering/apply.go` (`applier.gates` + `routeThroughGate` + `wireGateTokenFromPayload` + the option-A bridge wiring in `advancePause`); `internal/runtime/steering/bridge_test.go` (the in-package bridge tests against real gate + real Coordinator); `cmd/harbor/cmd_dev.go::bootDevStack` (constructs the planner via `react.New(llmClient)`, wires `WithApprovalGates(appliedGates)` into the per-stack RunLoop, hands the RunLoop to the new per-task driver); `cmd/harbor/cmd_dev_runloop.go` (the new `perTaskRunLoopDriver` that subscribes to `task.spawned` and runs the RunLoop per spawned foreground task); `cmd/harbor/cmd_dev_runloop_test.go` (driver unit tests against real bus + real RunLoop); `harbortest/devstack/devstack.go` (mirrors the production wiring per D-094 — adds `SkipRunLoop` + `RunLoop` + `RunLoopDriver` fields, constructs both via `newDevStackRunLoopDriver`); `test/integration/wave11_test.go` (the in-test `runWave11WireBridge` ~100 LOC bridge is GONE; replaced with `startWave11RunLoopForRun` — a small helper that constructs a production RunLoop with a scripted pausing planner so the production bridge fires); `RFC-001-Harbor.md` §3 (one-paragraph note on the bridge).
+
+**Decision.** `cmd/harbor/cmd_dev.go::bootDevStack` now constructs a `steering.RunLoop` per spawned task: a per-stack RunLoop (shared, concurrent-safe per D-025) is wired with `WithApprovalGates(appliedGates)`, and a new `perTaskRunLoopDriver` subscribes to `task.spawned` events bus-wide and launches a goroutine per spawned foreground task that calls `runLoop.Run(ctx, spec)` with the task's identity quadruple. The RunLoop's drain path observes `ControlApprove` / `ControlReject` from the steering inbox; for each event carrying a `token` key in its wire payload, the new `routeThroughGate` helper looks up the matching `*approval.ApprovalGate` in the gates map and calls `gate.ResolveApproval(ctx, token, decision, reason)`. The map is sourced from `applyToolCatalogWiring`'s `AppliedGates` out-channel (D-090).
+
+**Why.** Two gaps closed at once:
+
+- **#114**: `steering.RunLoop` had zero production consumers — `harbor dev` advertised itself as a runtime but the planner-step loop was unwired. A `start` request reached `tasks.TaskRegistry.Spawn` and the task sat there forever (the wave-11 §17.5 audit finding A3, applied to the broader composition: §13's "test stubs as production defaults on operator-facing seams" amendment, read sideways).
+- **#112**: a Console operator approving a paused tool got 200 OK from the wire and a `steering.applied` event, but the gate's `pending` map never saw the resume — the wrapped tool's `Invoke` stayed parked forever. PR #110's wave-end E2E worked around this with a ~100-LOC in-test bridge (`runWave11WireBridge`).
+
+The audit recommended these ship together because A1's bridge is naturally the RunLoop's drain; splitting them creates either a primitive-without-consumer window (Phase 114 ships with no gate resolution) or a parallel `ApprovalDispatcher` service that duplicates the inbox-drain.
+
+**Bridge shape (decided, not re-litigated).** Issue #112 named three valid shapes:
+
+1. **RunLoop owns the bridge (DECIDED — this entry's implementation).** The drain path inside `RunLoop.Run` → `applier.applyEvent` → `applier.advancePause` → `applier.routeThroughGate` is the wiring. `internal/runtime/steering` imports `internal/tools/approval` for the gate type. Both are runtime mechanism; the boundary is acceptable.
+2. Gate subscribes to `pause.resumed` events (rejected — adds bus dependency to every gate; D-096's typed Decision marker makes shape 2 possible later if needed, but YAGNI).
+3. Separate `ApprovalDispatcher` service (rejected — duplicates RunLoop's inbox drain).
+
+**How to apply.**
+
+- New steering-driven side effects (HITL approval, future OAuth callback completion, future A2A `INPUT_REQUIRED`) follow the same pattern: extend the apply path with a typed look-up, call the relevant resolver, identity flows via ctx.
+- The `AppliedGates` map handed into RunLoop is the SAME map the catalog Builder populates (no copy, no shadow). Tests that exercise the bridge can inject their own gates via the same surface.
+- `harbortest/devstack.Assemble` constructs the RunLoop by default; `SkipRunLoop: true` opts out for tests that don't need it.
+
+**Double-resume guard (option A — gate-owned resume).** `gate.ResolveApproval` calls `Coordinator.Resume` for the gate's pause token (`wireToken`). The RunLoop's own outstanding pause (`token`) is a DIFFERENT pause — the planner-side `RequestPause` token. When the bridge routes through a gate, the direct `Coordinator.Resume` call below would EITHER resume the RunLoop's own pause (different token — safe; two separate Resumes) OR — when `wireToken == token` (the planner itself RequestPaused AND the planner happened to wrap a tool call in an approval gate, sharing the token) — would trigger `pauseresume.ErrAlreadyResumed`. The bridge guards against the second case with an explicit `wireToken == token` early-return after routing. For the common shape (planner runs idle, gate's pause is independent), both pauses resume cleanly in sequence: gate.ResolveApproval first, then the direct path on the RunLoop's token. The wire-side `token` payload key is the canonical channel — its absence means the APPROVE/REJECT targets the RunLoop's own pause (OAuth, A2A `AUTH_REQUIRED`), preserving the pre-D-097 behaviour.
+
+**Identity flow.** The bridge runs in the steering apply path's identity ctx (the RunLoop hands `runCtx` carrying the run's quadruple). `gate.ResolveApproval` enforces `protocolauth.HasScope(ctx, ScopeAdmin) || HasScope(ctx, ScopeConsoleFleet)` as defence-in-depth. The Phase 54 Protocol edge already vetted the caller's scope at inbox-Enqueue time via `CheckScope`; `routeThroughGate` re-stamps the ctx with `WithScopes([ScopeAdmin, ScopeConsoleFleet])` so the gate's check passes. The elevation is scoped to this single ResolveApproval call (a derived ctx, never propagated back to the caller). The Coordinator's identity-tuple scope check is unchanged — the run's triple already matches the gate's pause-identity tuple by construction.
+
+**§13 primitive-with-consumer.** Stage B's primitive (the bridge in `routeThroughGate` + `WithApprovalGates`) ships with its consumer (production `harbor dev` wires it in `bootDevStack`; the wave-end E2E exercises it WITHOUT the in-test bridge). The new `cmd_dev_runloop_test.go` pins the driver-side wiring; the new `bridge_test.go` pins the apply-side routing against the REAL approval gate + REAL Coordinator. No deferred consumer.
+
+**Bundled cross-fix — RunLoop lifecycle gotcha.** The driver subscribes to `task.spawned` events with `events.Filter{Admin: true}` (per CLAUDE.md §6 rule 5's runtime-internal fan-in carve-out — the driver listens across every `(tenant, user, session)` triple). Per-task RunLoop goroutines inherit the driver's `subCtx`; `driver.Close` cancels that ctx and waits for the WaitGroup to drain. `Close` is idempotent. The task FSM bridge — translating a RunLoop's `Finish` decision into `Mark{Complete,Failed}` on the task — is intentionally NOT in this PR; the dispatch executor that owns that transition is a Wave 12+ phase. Foreground tasks complete their planner loop but stay at `StatusPending`; this is a documented limitation, not a regression (Phase 64 already had no path from spawn to completion).
+
+**Acceptance:**
+
+- `steering.RunLoop` accepts `Gates map[string]*approval.ApprovalGate` at construction via `WithApprovalGates`.
+- `cmd/harbor/cmd_dev.go::bootDevStack` constructs and drives the RunLoop per spawned task, with the AppliedGates wired.
+- `harbortest/devstack.Assemble` mirrors the production wiring; `SkipRunLoop` knob added.
+- `test/integration/wave11_test.go` drops `runWave11WireBridge` entirely; the production path is exercised end-to-end.
+- New `bridge_test.go` asserts the wire-side APPROVE/REJECT routes through the gate against the REAL Coordinator with NO in-test substitution.
+- New `cmd_dev_runloop_test.go` asserts the driver picks up `task.spawned`, drives the RunLoop, skips background tasks, drains cleanly on Close.
+- D-090 §"Deferred" recorded the wire-side bridge gap; this entry closes it (D-090 is left untouched as historical record).
