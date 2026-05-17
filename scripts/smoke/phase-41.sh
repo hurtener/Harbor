@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 41 — In-runtime skill generator with persistence.
 #
 # Phase 41 ships the planner-callable `skill_propose` tool that

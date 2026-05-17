@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 06 smoke — bus replay + ring buffer + cursor.
 #
 # Phase 06 extends internal/events with the Replayer capability interface

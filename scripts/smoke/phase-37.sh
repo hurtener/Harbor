@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 37 — Skill store + LocalDB driver + FTS5 ladder.
 #
 # Phase 37 ships the SkillStore interface + the SQLite-backed

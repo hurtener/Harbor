@@ -2205,3 +2205,68 @@ The CLI is a Protocol client per CLAUDE.md §8 + RFC §7: it consumes the canoni
 - All tests `-race` green; `make vet` clean; `go build ./...` clean.
 
 **Structural precedents.** D-095 (`tools.oauth_providers[]` + `internal/tools/auth/registry.go`) is the direct structural precedent — same shape, same sentinel set, same allowlist-mirror pattern, same `Register` / `MustRegister` / `Resolve` quartet. D-090 (`tools.entries[]` operator config + the `Deps.OAuthProviders` construction pattern) is the broader §4.4 boundary precedent. D-097 (the RunLoop wrap around the planner) is the consumer the new registry path feeds; D-098 (the per-task FSM bridge) is the downstream driver that closes the RunLoop's exit shape onto the task FSM. All three settled the cmd_dev wiring this PR retargets.
+
+---
+
+## D-104 — preflight parallelisation + ephemeral-port allocation (closes #135)
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `cmd/harbor/cmd_dev.go::devStack.serve` (replaces `http.Server.ListenAndServe` with an explicit `net.Listen` + `server.Serve(listener)`; emits the parseable `HARBOR_DEV_BOUND=<host:port>` line on stderr exactly once per boot; refreshes `s.bindAddr` to the OS-resolved address so `host:0` binds report the actual port to subsequent loggers); `scripts/preflight.sh` (the orchestrator — classifies smokes by header, runs `static-only` + `unit-tests` batches in parallel before the dev boot, boots `harbor dev` ONCE on `HARBOR_BIND=127.0.0.1:0`, parses the bound port from the server log, exports `HARBOR_BIND` / `HARBOR_PORT` / `HARBOR_BASE_URL` / `HARBOR_DEV_PORT` / `HARBOR_DEV_TOKEN` to every live-server smoke, runs the `live-server` batch serially, tears down); `scripts/drift-audit.sh` (check 9 — every `scripts/smoke/phase-*.sh` MUST carry one of the three classification values, FAIL with a clear directive on miss); `scripts/smoke/_template.sh` (new `# PREFLIGHT_REQUIRES:` header line + a paragraph documenting the three values); every `scripts/smoke/phase-NN.sh` and `phase-NNa.sh` / `phase-NNb.sh` (78 files — the `# PREFLIGHT_REQUIRES:` header lands on line 2 of each; 6 are `live-server`, 11 are `static-only`, 61 are `unit-tests`); `scripts/smoke/phase-64.sh` (the fail-loud-no-config secondary boot now passes `HARBOR_BIND=127.0.0.1:0` rather than `--port 18198` so two sibling worktrees running preflight concurrently cannot collide on the pinned port); `scripts/smoke/phase-69.sh` (replaces the hardcoded `--bind "127.0.0.1:${HARBOR_DEV_PORT:-18080}"` with `--bind "${HARBOR_BIND:-127.0.0.1:18080}"` at the three `inspect-events` / `inspect-runs` invocations); `scripts/smoke/phase-70.sh` + `scripts/smoke/phase-64.sh` (docstring updates pointing at the ephemeral-port default).
+
+**Decision.** Preflight's wall time and its port-pinning are the same problem viewed from two angles, and the fix is one structural change. Three intertwined design calls land here.
+
+**1. Ephemeral-port allocation by default.** The harness binds `127.0.0.1:0` and reads the actual bound port back from the server log. The dev binary emits a parseable `HARBOR_DEV_BOUND=<host:port>` line on stderr immediately after `net.Listen` returns — this is a NEW contract on the dev binary, single-source: the line is emitted exactly once, with that exact prefix, on stderr. Preflight greps it out of the captured log and exports `HARBOR_BIND`, `HARBOR_PORT`, `HARBOR_BASE_URL`, and `HARBOR_DEV_PORT` (mirrored for any legacy reader) to every live-server smoke. `scripts/smoke/common.sh::api_url` already reads `HARBOR_BASE_URL`, so the existing live-server smokes flow through unchanged once the env is set. Two sibling worktrees running `make preflight` concurrently no longer collide because each binds an OS-assigned port. Operators who NEED a pinned port (an external integration test attaching to a known address) can still set `HARBOR_DEV_PORT=18080` explicitly; the orchestrator honours the override and the resolution-from-log path works either way (the bound port matches the requested port when it's free; the harness reports whichever the OS hands back).
+
+**2. Smoke classification via the `# PREFLIGHT_REQUIRES:` header.** Every `scripts/smoke/phase-*.sh` carries one classification on line 2:
+
+- `static-only` — pure file/text greps, golden compares, file-existence assertions. Runs in the parallel batch BEFORE the dev server boots; needs no shared state.
+- `live-server` — hits the booted dev server over HTTP (`api_url`, `assert_status`, `skip_if_404`, `assert_json_path`) or reads the preflight server log. Runs serially against the booted instance because the smokes observe and sometimes mutate shared dev state (SSE streams, the in-mem bus, the singleton draft store).
+- `unit-tests` — runs `go test` for one or more packages. Parallelisable at the bash-fan-out level; `go test` schedules its own internal parallelism on top.
+
+The grammar is INTENTIONALLY inflexible: the orchestrator parses the header with a single `grep` + `sed` and demands one of the three exact values. A missing or unrecognised header fails preflight loud (and the same check fires in `make drift-audit` standalone). The fail-loud is per §13: silent classification defaults are forbidden because a server-mutating smoke misclassified as `static-only` would land in the parallel batch and produce nondeterministic flakes — exactly the failure mode the wave-end checkpoint audits (Wave 12 §17.5 N1) keep surfacing one PR late. Phases that ship a new smoke MUST classify it correctly in the same PR (the §4.2 phase-implementor contract grows item 12 in spirit; the template at `scripts/smoke/_template.sh` documents the convention).
+
+**3. Two-batch parallel driver in `scripts/preflight.sh`.** The orchestrator:
+
+1. Builds `./bin/harbor` (unchanged from pre-D-104).
+2. Classifies every `scripts/smoke/phase-*.sh` by header; FAILs loud on any missing / unrecognised header before doing further work.
+3. Runs `scripts/drift-audit.sh` (unchanged).
+4. Runs the `static-only` batch in parallel — no server needed, so the wall-time win is the full parallelism. Cap defaults to `sysctl -n hw.ncpu` (macOS) / `nproc` (Linux) / `4` (last-resort fallback). Override via `MAX_PARALLEL_SMOKES=N`. Outputs are captured per-smoke and replayed in sorted (deterministic) order after the batch finishes so the operator sees a consistent log layout.
+5. Runs the `unit-tests` batch in parallel using the same machinery. These run BEFORE the boot because they don't need it and the wall-time win compounds with batch 1.
+6. Boots `./bin/harbor dev` ONCE on `HARBOR_BIND=127.0.0.1:0` (or the pinned `HARBOR_DEV_PORT` if the operator set it). Parses `HARBOR_DEV_BOUND=` from the server log to discover the actual bound address. Waits for `/healthz` to return 200 against THAT address (not a hardcoded `:18080`). The pre-Phase-64 stub-binary branch is preserved unchanged — when the binary exits cleanly OR emits `"code":"not_implemented"` matching the Phase 63 stub, the boot is skipped without failure.
+7. Exports `HARBOR_BIND`, `HARBOR_PORT`, `HARBOR_BASE_URL`, `HARBOR_DEV_PORT`, `HARBOR_DEV_TOKEN` to every `live-server` smoke.
+8. Runs the `live-server` batch SERIALLY. Serial because the smokes observe shared dev-server state and a parallel run would produce nondeterministic order-dependent failures (an inspect-events snapshot from one smoke would carry the prior smoke's task.spawned events; a draft round-trip from one smoke would race against another smoke's draft GET). The N=6 live-server smokes finish in a few seconds combined; the wall-time win is concentrated on the parallel batches above.
+9. Tears down (graceful TERM, then KILL, then cleanup) — unchanged.
+
+The bash-3.2-compatible fan-out (drain-head rather than `wait -n`) is deliberate: macOS still ships bash 3.2 as `/bin/bash` and a chunk of Harbor's contributors run there. The harness MUST work without a `bash 4+` install.
+
+**Why.** Two coupled operator-facing problems:
+
+1. **Wall time.** ~70+ phase smokes ran serially against one shared `harbor dev` instance. Each new wave added 1–5s per smoke; cumulative wall time was substantial, sometimes longer than the development cycle. Wave 12 §17.5 closeout audit's "Recommendations for Wave 13" pinned this as a structural item ("Recommend scheduling early in Wave 13 — every wave that lands without this added another 10–20s to the gate"). The parallel-batch path drops the wall time by the typical bash-fan-out factor (~3–5x on a 4-core laptop), which is the issue's ≥50% target.
+2. **Port collision across worktrees.** Two sibling worktrees running `make preflight` concurrently both tried to bind `127.0.0.1:18080` and one would fail. Wave 12 used `HARBOR_PREFLIGHT_SKIP=1` three times for this reason (PRs #129, #130, #131); the Wave 12 §17.5 closeout audit itself couldn't run preflight cleanly. The ephemeral-port default removes the contention class entirely — N concurrent worktrees each get a distinct OS-assigned port.
+
+**Helper-tracks-production invariant (per D-094).** `cmd/harbor/cmd_dev.go::devStack.serve` and `harbortest/devstack.Assemble`'s test-side serve path use the same `net.Listen` + `Serve(listener)` shape. The dev binary is the only producer of the `HARBOR_DEV_BOUND=` log line; tests that need the bound port from the helper read it the same way the harness does. No second source of truth.
+
+**§13 fail-loud.** Three loud-failure paths land in this PR:
+
+1. **Missing classification header** rejects preflight before the dev boot. Error message names the offending file(s) and points to `scripts/smoke/_template.sh` + CLAUDE.md §4.2.
+2. **Unrecognised classification value** rejects at the same gate with the same shape. Silent defaults to `static-only` would let a server-touching smoke leak into the parallel batch — exactly the nondeterministic-flake source we're closing.
+3. **Drift between drift-audit and preflight.** The same classification check runs in `scripts/drift-audit.sh` (check 9) so `make drift-audit` standalone surfaces the issue without needing a full preflight run. A header drift is caught at the cheapest possible gate.
+
+**§13 primitive-with-consumer.** The primitive (the `# PREFLIGHT_REQUIRES:` header grammar + the orchestrator's batch dispatcher) lands with its first consumer (the orchestrator parses, classifies, and parallelises 78 existing smokes) in the same PR. The grammar is exercised end-to-end the moment the PR lands; there is no "header without consumer" window. The ephemeral-port primitive (the `HARBOR_DEV_BOUND=` log line + the `net.Listen` switch) lands with its first consumer (the preflight orchestrator reads the line and resolves the port from it) in the same PR — no orphan primitive.
+
+**CI matrix sharding (issue #135 step 4) deferred.** The four-step plan in #135's body included a CI matrix-sharding step ("GitHub Actions can shard the static batch across runners"). Step 4 is deferred to a follow-up issue because (a) the primary win is local-dev wall time, where this PR's parallel-batch path delivers the bulk of the gain; (b) CI's preflight job already runs on a single runner without operator-perceived wall time (the GitHub Actions queue dwarfs the test runtime), so the marginal benefit of sharding is small; (c) sharding adds matrix-bookkeeping complexity (per-shard result aggregation, shared `bin/harbor` build, deterministic shard assignment) that is best evaluated standalone. The follow-up issue tracks the work without blocking the local-dev win.
+
+**Recurring-failure-mode pre-empts** (per §17.7 step 3): the orchestrator uses the `${arr[@]+"${arr[@]}"}` empty-array guard everywhere a classification bucket might be empty (so `set -u` doesn't trip on an absent `STATIC_ONLY` bucket — the same shape that bit Phase 63's smoke in Wave 12); the fan-out drain uses the drain-head pattern rather than `wait -n` (bash 3.2 compatibility on macOS); per-smoke output capture writes to a tempfile so SIGPIPE-shaped early-exit failures don't corrupt the aggregated log; the `HARBOR_DEV_BOUND` parse handles both IPv4 and IPv6-bracketed forms (the existing dev-bind LastIndex(':') convention applies).
+
+**Acceptance:**
+
+- `scripts/preflight.sh` boots `harbor dev` with `HARBOR_BIND=127.0.0.1:0` by default; two sibling worktrees can run `make preflight` simultaneously without collision (the PR body documents the cross-worktree concurrency test).
+- Every `scripts/smoke/phase-*.sh` carries exactly one `# PREFLIGHT_REQUIRES: live-server|static-only|unit-tests` header on line 2.
+- A missing or unrecognised header fails `make preflight` AND `make drift-audit` loud, with an actionable error message naming the file(s).
+- The `static-only` and `unit-tests` batches run in parallel up to `MAX_PARALLEL_SMOKES` (CPU-count default); the `live-server` batch runs serially after the dev boot.
+- Total preflight wall time drops by ≥50% on a clean checkout (the PR body reports before/after numbers from `time make preflight`).
+- `scripts/smoke/_template.sh` documents the classification convention so new phases inherit the rule.
+- The `HARBOR_DEV_BOUND=<host:port>` line is emitted exactly once per `harbor dev` boot, on stderr, with that exact prefix.
+- CI matrix sharding is deferred to a follow-up issue; this PR's body links the issue.

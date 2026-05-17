@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 54 smoke — Protocol task control surface (RFC §5.2, §6.3;
 # master-plan Phase 54 detail block; D-072).
 #

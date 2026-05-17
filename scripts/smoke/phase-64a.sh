@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 64a smoke — Tool catalog OAuth + approval wiring (D-090).
 #
 # Phase 64a ships `internal/tools/catalog` — the operator-config-driven

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 15 smoke — SQLite StateStore driver.
 #
 # Phase 15 lands internal/state/drivers/sqlite — the second leg of the

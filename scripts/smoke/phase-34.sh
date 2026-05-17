@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 34 smoke — provider correction layer + SchemaSanitizer
 # (RFC §6.5; master plan Phase 34 detail block).
 #

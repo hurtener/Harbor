@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
 # Phase 66 smoke — `harbor dev` draft-save scaffolding (D-100).
 #
 # The draft surface lives at `/v1/dev/drafts/` under the same auth

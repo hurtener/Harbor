@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 27 smoke — HTTP tool driver (inline + manifest + static auth).
 #
 # Phase 27 ships the first out-of-process tool transport: an HTTP

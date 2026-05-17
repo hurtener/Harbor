@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 11 smoke — Reliability shell.
 #
 # Phase 11 layers the reliability shell (NodePolicy / RunError /

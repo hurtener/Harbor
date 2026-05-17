@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
 # Phase 64 smoke — `harbor dev` v1 (D-089).
 #
-# The preflight harness boots `./bin/harbor dev` against the dev port
-# (defaults to 18080) and runs this script against the live server.
+# The preflight harness boots `./bin/harbor dev` on an ephemeral
+# port (`HARBOR_BIND=127.0.0.1:0` — D-104; the actual bound port is
+# parsed from the server log and exported as HARBOR_BASE_URL /
+# HARBOR_BIND / HARBOR_PORT) and runs this script against the live
+# server.
 # The harness sets HARBOR_DEV_ALLOW_MOCK=1 implicitly via the
 # environment so the binary boots without a real LLM provider. The
 # constraint #5 assertions exercise:
@@ -134,7 +138,14 @@ if [ -x "${ROOT}/bin/harbor" ]; then
     # check before any listener is bound). Use a background process
     # plus a watchdog kill — `timeout` is missing on macOS by
     # default, so we avoid the dependency.
-    (cd "${tmp_dir}" && "${ROOT}/bin/harbor" dev --port 18198 > "${tmp_dir}/fail.log" 2>&1) &
+    #
+    # Bind explicitly to `127.0.0.1:0` (ephemeral) so two sibling
+    # worktrees running preflight concurrently can't collide on a
+    # pinned port — D-104. The binary fails on config-not-found
+    # BEFORE the listener binds, so the port choice never actually
+    # opens a socket; the ephemeral default keeps the failure path
+    # hermetic anyway.
+    (cd "${tmp_dir}" && HARBOR_BIND="127.0.0.1:0" "${ROOT}/bin/harbor" dev > "${tmp_dir}/fail.log" 2>&1) &
     boot_pid=$!
     # Watchdog: if the process is still alive after 5 seconds, kill it.
     (sleep 5; kill -KILL "${boot_pid}" 2>/dev/null || true) &

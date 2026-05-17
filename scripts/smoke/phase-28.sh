@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 28 smoke — MCP southbound driver (stdio + SSE + streamable-HTTP).
 #
 # Phase 28 ships `internal/tools/drivers/mcp/` as a `ToolProvider`

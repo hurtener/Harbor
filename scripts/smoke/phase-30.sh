@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 30 smoke — Tool-side OAuth + HITL via pause/resume
 # (RFC §6.4 + §3.3; master-plan Phase 30 detail block; D-083).
 #

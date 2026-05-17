@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 40 — Skills.md importer (gap-closer).
 #
 # Phase 40 ships Harbor's spec-compliant Skills.md importer:

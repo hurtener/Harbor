@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 48 smoke — Deterministic planner (RFC §6.2 + RFC §11 Q-6;
 # master plan Phase 48 detail block; D-057).
 #

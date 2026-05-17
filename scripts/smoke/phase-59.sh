@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 59 smoke — Protocol versioning + deprecation policy
 # (RFC §5.3; CLAUDE.md §8; master-plan Phase 59 detail block; D-077).
 #

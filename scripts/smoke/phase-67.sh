@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 67 smoke — `harbor scaffold` (RFC §8; master-plan Phase 67
 # detail block; D-087).
 #

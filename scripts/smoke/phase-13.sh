@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 13 smoke — Cancellation + per-run fetch dispatcher.
 #
 # Phase 13 fills Phase 10's Cancel + FetchByRun stubs. Cancel performs

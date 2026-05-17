@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 23 smoke — MemoryStore foundation.
 #
 # Phase 23 is a pure Go package (internal/memory + drivers/inmem +

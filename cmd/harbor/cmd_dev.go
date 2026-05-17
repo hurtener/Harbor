@@ -206,13 +206,18 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)
 	port, _ := cmd.Flags().GetInt(flagDevPort)
 	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload)
-	if bind := os.Getenv("HARBOR_BIND"); bind != "" {
-		// HARBOR_BIND=host:port overrides --port (used by preflight).
-		// The override is a single env var so an operator who needs to
-		// bind beyond 127.0.0.1 can drive both host AND port from the
-		// same surface. We parse the port out for the bind addr but
-		// keep the full host:port as the listen string.
-		if p, ok := parsePortFromBind(bind); ok {
+	bindAddrOverride := os.Getenv("HARBOR_BIND")
+	if bindAddrOverride != "" {
+		// HARBOR_BIND=host:port overrides --port (used by preflight,
+		// D-104 in particular — `HARBOR_BIND=127.0.0.1:0` requests an
+		// ephemeral port). The override is a single env var so an
+		// operator who needs to bind beyond 127.0.0.1 can drive both
+		// host AND port from the same surface. We parse the port out
+		// for the bind addr but keep the full host:port as the listen
+		// string. parsePortFromBind rejects port 0 (the sentinel),
+		// which is correct — port 0 stays in `bindAddrOverride` so the
+		// listener sees `host:0` and the OS hands back a real port.
+		if p, ok := parsePortFromBind(bindAddrOverride); ok {
 			port = p
 		}
 	}
@@ -231,6 +236,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	bootOpts := devBootOptions{
 		cfgPath:   cfgPath,
 		port:      port,
+		bindAddr:  bindAddrOverride,
 		allowMock: allowMock,
 		logger:    logger,
 		stderr:    cmd.ErrOrStderr(),
@@ -319,9 +325,20 @@ func runDev(cmd *cobra.Command, _ []string) error {
 // devBootOptions bundles the inputs `bootDevStack` consumes. Kept as
 // a struct so tests can drive the boot in isolation (Phase 64
 // integration test) without re-creating cobra wiring.
+//
+// `bindAddr` is the operator override path for the listener address.
+// It's read by `runDev` from the `HARBOR_BIND` env var (D-104 — the
+// preflight harness sets `HARBOR_BIND=127.0.0.1:0` so a non-zero
+// ephemeral port is OS-assigned) and threaded explicitly here so
+// `bootDevStack` does NOT read the env var directly. Tests that
+// construct `devBootOptions` with `port: 0` and an empty `bindAddr`
+// get an ephemeral port regardless of whatever HARBOR_BIND the
+// surrounding process inherits — a leak that previously caused
+// cmd/harbor tests to bind the preflight server's port under load.
 type devBootOptions struct {
 	cfgPath   string
 	port      int
+	bindAddr  string
 	allowMock bool
 	logger    *slog.Logger
 	stderr    interface{ Write(p []byte) (int, error) }
@@ -701,8 +718,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	router.Handle("/v1/", mux)
 
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
-	if bind := os.Getenv("HARBOR_BIND"); bind != "" {
-		bindAddr = bind
+	if opts.bindAddr != "" {
+		// runDev's `HARBOR_BIND` parse threads the override here.
+		// bootDevStack itself does NOT read HARBOR_BIND from env —
+		// the read happens once in `runDev` and propagates via the
+		// explicit opts field (D-104). Reading the env directly here
+		// caused cmd/harbor tests that construct `devBootOptions`
+		// with `port: 0` to leak-inherit the preflight harness's
+		// HARBOR_BIND value and try to bind the preflight server's
+		// port under parallel-batch load.
+		bindAddr = opts.bindAddr
 	}
 
 	server := &http.Server{
@@ -815,9 +840,29 @@ func (s *devStack) serve(ctx context.Context) error {
 	// emit a single named-prefix line.
 	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_TOKEN=%s\n", s.devToken)
 
+	// Bind the listener up front (rather than using ListenAndServe) so
+	// (a) we can support HARBOR_BIND=host:0 ephemeral-port allocation
+	// — `scripts/preflight.sh` uses this so sibling worktrees can run
+	// the gate concurrently without colliding on a hardcoded
+	// `:18080` — and (b) we can emit a parseable
+	// `HARBOR_DEV_BOUND=<host:port>` line on stderr that the preflight
+	// harness reads to discover the actual port the OS handed us.
+	// D-104 pins this contract; the line MUST appear exactly once per
+	// boot, on stderr, with that exact prefix.
+	listener, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.server.Addr, err)
+	}
+	boundAddr := listener.Addr().String()
+	// Refresh s.bindAddr so any subsequent log / observability surface
+	// reflects the actual bound addr (matters when Addr was host:0).
+	s.bindAddr = boundAddr
+	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_BOUND=%s\n", boundAddr)
+	s.logger.InfoContext(ctx, "harbor dev: listener bound", slog.String("bind", boundAddr))
+
 	listenErr := make(chan error, 1)
 	go func() {
-		err := s.server.ListenAndServe()
+		err := s.server.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err
 			return

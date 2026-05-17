@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 52 smoke — Steering inbox + control taxonomy (RFC §6.3;
 # master-plan Phase 52 detail block; D-070).
 #

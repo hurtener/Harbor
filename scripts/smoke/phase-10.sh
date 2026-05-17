@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 10 smoke — Engine + workers + cycle detection.
 #
 # Phase 10 lands internal/runtime/engine: the typed, async, queue-

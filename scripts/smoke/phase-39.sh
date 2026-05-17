@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 39 — Virtual directory subsystem.
 #
 # Phase 39 ships `Directory(cfg)` + `pinned_then_recent` /

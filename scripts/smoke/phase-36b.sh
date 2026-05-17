@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 36b smoke — token-bucket rate limiter + per-call MaxTokens
 # (RFC §6.15, master plan Phase 36b detail block, D-044).
 #

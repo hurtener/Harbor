@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 71 smoke — harbortest test kit self-tests.
 #
 # The kit has no HTTP / Protocol surface: its self-tests ARE its smoke.

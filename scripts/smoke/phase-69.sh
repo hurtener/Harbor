@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: live-server
 # Phase 69 smoke — `harbor inspect-events` + `harbor inspect-runs`
 # (Phase 69 / D-101).
 #
 # Both subcommands are SSE-client consumers of the Phase 60 Protocol
 # event stream. The preflight harness boots `bin/harbor dev` against
-# 127.0.0.1:${HARBOR_DEV_PORT} (default 18080) with HARBOR_DEV_ALLOW_MOCK=1;
-# this smoke:
+# 127.0.0.1:${HARBOR_BIND} (ephemeral port by default — D-104) with
+# HARBOR_DEV_ALLOW_MOCK=1; this smoke:
 #
 #   1. Runs the cmd/harbor package tests under -race (unit + golden
 #      coverage for inspect-events + inspect-runs, plus the existing
@@ -115,7 +116,7 @@ rm -f "${START_RESP}"
 EVENTS_LOG="$(mktemp)"
 events_status=0
 "${BIN}" inspect-events \
-    --bind "127.0.0.1:${HARBOR_DEV_PORT:-18080}" \
+    --bind "${HARBOR_BIND:-127.0.0.1:18080}" \
     --tenant dev --user dev --session dev \
     --type task.spawned \
     --since 0 \
@@ -142,7 +143,7 @@ rm -f "${EVENTS_LOG}"
 RUNS_LOG="$(mktemp)"
 runs_status=0
 "${BIN}" inspect-runs \
-    --bind "127.0.0.1:${HARBOR_DEV_PORT:-18080}" \
+    --bind "${HARBOR_BIND:-127.0.0.1:18080}" \
     --tenant dev --user dev --session dev \
     --since 0 \
     --json \
@@ -177,7 +178,7 @@ if [[ -n "${TASK_ID}" ]]; then
     TRAJ_LOG="$(mktemp)"
     traj_status=0
     "${BIN}" inspect-runs "${TASK_ID}" \
-        --bind "127.0.0.1:${HARBOR_DEV_PORT:-18080}" \
+        --bind "${HARBOR_BIND:-127.0.0.1:18080}" \
         --tenant dev --user dev --session dev \
         --since 0 \
         --json \

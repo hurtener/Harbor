@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 58 smoke — Protocol types/methods/errors single source
 # (RFC §5.1/§5.2/§5.3; CLAUDE.md §8, §13; master-plan Phase 58 detail
 # block; D-075).

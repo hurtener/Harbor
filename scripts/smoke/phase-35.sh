@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 35 smoke — structured-output strategies + downgrade chain
 # (RFC §6.5; master plan Phase 35 detail block; D-043).
 #

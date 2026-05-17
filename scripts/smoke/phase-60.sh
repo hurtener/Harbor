@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 60 smoke — Protocol wire transport (SSE + REST) (RFC §5.4, §11
 # Q-1; master-plan Phase 60 detail block; D-078).
 #

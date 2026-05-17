@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 61 smoke — Protocol auth + identity-scope enforcement (RFC §5.5,
 # §4; master-plan Phase 61 detail block; D-079).
 #

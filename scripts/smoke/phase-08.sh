@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 08 smoke — SessionRegistry + lifecycle + GC.
 #
 # Phase 08 lands internal/sessions as a typed wrapper over Phase 07's

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 43 smoke — Trajectory + fail-loudly Serialize contract.
 #
 # Phase 43 closes the predecessor's silent-context-loss bug

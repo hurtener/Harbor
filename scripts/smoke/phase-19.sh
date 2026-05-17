@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 19 smoke — ArtifactStore S3-style driver.
 #
 # Runs the driver's Go tests under -race. When HARBOR_TEST_S3_DSN (or

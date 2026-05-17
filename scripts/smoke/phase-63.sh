@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 63 smoke — Harbor CLI skeleton (harbor + cobra) (RFC §8;
 # master-plan Phase 63 detail block; D-084).
 #

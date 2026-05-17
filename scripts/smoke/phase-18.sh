@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 18 smoke — ArtifactStore SQLite-blob + Postgres-blob drivers.
 #
 # Phase 18 ships internal/artifacts/drivers/{sqlite,postgres} — the

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 17 smoke — ArtifactStore iface + InMem + FS drivers.
 #
 # Phase 17 ships internal/artifacts: the content-addressed blob store

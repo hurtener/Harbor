@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 26a smoke — Flow-as-Tool registration + per-flow Budget.
 #
 # Phase 26a ships `flow.Definition` (entry/exit + node specs +

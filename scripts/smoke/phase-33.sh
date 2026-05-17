@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 33 smoke — bifrost integration.
 #
 # Phase 33 ships the bifrost-backed LLM driver: a thin adapter that

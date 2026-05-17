@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 07 smoke — StateStore foundation.
 #
 # Phase 07 is a pure Go package (internal/state + drivers/inmem +

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 45 smoke — Reference ReAct planner (RFC §6.2; master plan
 # Phase 45 detail block; D-051).
 #

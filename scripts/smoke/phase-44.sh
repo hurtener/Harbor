@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 44 smoke — schema repair pipeline (RFC §6.2; master plan
 # Phase 44 detail block; D-050).
 #

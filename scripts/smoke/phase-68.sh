@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 68 smoke — `harbor validate` (RFC §8; master-plan Phase 68
 # detail block; D-088).
 #

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: unit-tests
 # Phase 51 smoke — Pause-state serialise contract (fail-loud)
 # (RFC §6.3 + §3.4; master-plan Phase 51 detail block; D-069).
 #

@@ -170,6 +170,40 @@ else
     warn 'Makefile is missing a drift-audit target — recommended: make drift-audit'
 fi
 
+# 9. PREFLIGHT_REQUIRES header is present + recognised on every
+# scripts/smoke/phase-*.sh (D-104). The preflight orchestrator
+# parallelises smokes by this header; a missing or unrecognised value
+# would silently misroute a smoke into the wrong batch (a server-
+# touching smoke into the parallel batch is the worst case — it
+# produces nondeterministic flakes). Failing here gives the same loud
+# signal at `make drift-audit` time as preflight does, so a missing
+# header surfaces before the gate runs.
+classify_drift_count=0
+shopt -s nullglob
+for smoke in scripts/smoke/phase-*.sh; do
+    header=$(grep -E '^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:' "$smoke" \
+        | head -1 \
+        | sed -E 's/^[[:space:]]*#[[:space:]]*PREFLIGHT_REQUIRES:[[:space:]]*//' \
+        | tr -d '[:space:]')
+    case "$header" in
+        live-server|static-only|unit-tests)
+            : # ok
+            ;;
+        '')
+            fail "${smoke}: missing '# PREFLIGHT_REQUIRES: live-server|static-only|unit-tests' header (D-104)"
+            classify_drift_count=$((classify_drift_count + 1))
+            ;;
+        *)
+            fail "${smoke}: unrecognised PREFLIGHT_REQUIRES value '${header}' (want live-server|static-only|unit-tests) — D-104"
+            classify_drift_count=$((classify_drift_count + 1))
+            ;;
+    esac
+done
+shopt -u nullglob
+if [ "${classify_drift_count}" -eq 0 ]; then
+    ok 'PREFLIGHT_REQUIRES header present + recognised on every phase smoke (D-104)'
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

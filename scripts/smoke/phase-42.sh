@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 42 smoke — planner interface + Decision sum + RunContext.
 #
 # Phase 42 is a PURE CODE phase: it ships the Planner interface, the

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# PREFLIGHT_REQUIRES: static-only
 # Phase 04 smoke — slog Logger + standard attribute set.
 #
 # Phase 04 is a pure Go package (internal/telemetry) with no HTTP /
