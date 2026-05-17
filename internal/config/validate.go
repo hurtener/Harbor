@@ -45,6 +45,7 @@ func (c *Config) Validate() error {
 		c.validateMemory,
 		c.validateSkills,
 		c.validateTools,
+		c.validatePlanner,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -923,6 +924,45 @@ var allowedOAuthBindingScopes = map[string]struct{}{
 // asserts no drift between the two surfaces.
 var allowedOAuthDrivers = map[string]struct{}{
 	"oauth2": {},
+}
+
+// allowedPlannerDrivers mirrors the `internal/planner` driver registry
+// (D-103, closes issue #126). V1 ships only the `react` driver (the
+// reference LLM-driven ReAct planner — Phase 45 / D-051). New drivers
+// under `internal/planner/<name>/` add a row here in the same PR. Same
+// duplication rationale as `allowedOAuthDrivers` — the `internal/config`
+// package MUST NOT import a concrete driver package (§4.4 — drivers
+// depend on interfaces, not the other way round). The planner-package
+// test `TestRegisteredPlannerDriversMatchConfigAllowlist` asserts no
+// drift between the two surfaces.
+var allowedPlannerDrivers = map[string]struct{}{
+	"react": {},
+}
+
+// validatePlanner checks the D-103 planner-config block. Empty Driver
+// defaults to "react" (the V1 reference planner — see PlannerConfig
+// godoc). Unknown driver names fail loud pre-boot with the registered
+// allowlist in the error message; negative MaxSteps is rejected.
+//
+// The allowlist mirror is intentional — `internal/config` MUST NOT
+// import a concrete driver package (§4.4). A drift between the two
+// surfaces is caught by `TestRegisteredPlannerDriversMatchConfigAllowlist`
+// in `internal/planner`.
+func (c *Config) validatePlanner() error {
+	driver := c.Planner.Driver
+	if driver == "" {
+		driver = "react"
+	}
+	if _, ok := allowedPlannerDrivers[driver]; !ok {
+		return fieldError("planner.driver",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedPlannerDrivers), c.Planner.Driver))
+	}
+	if c.Planner.MaxSteps < 0 {
+		return fieldError("planner.max_steps",
+			fmt.Sprintf("must be >= 0 (0 = use driver default), got %d", c.Planner.MaxSteps))
+	}
+	return nil
 }
 
 // fieldError formats a validation error with the offending path so

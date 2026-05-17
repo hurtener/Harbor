@@ -1099,6 +1099,84 @@ func TestIsValidationError(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_AcceptsReact exercises D-103 — the V1 default
+// planner driver. A drift (the validator dropping `react`) would break
+// every operator config that omits the planner block (the loader's
+// `defaults()` populates `Driver: "react"`).
+func TestValidate_Planner_AcceptsReact(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.driver=react): %v", err)
+	}
+}
+
+// TestValidate_Planner_AcceptsEmptyDefault pins the validator's empty
+// → "react" default. A config that omits the planner block (zero-value
+// `config.PlannerConfig{}`) MUST validate so the loader's default
+// landing path stays consistent with operator yaml that just leaves
+// the block off.
+func TestValidate_Planner_AcceptsEmptyDefault(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.driver=\"\") rejected empty-default: %v", err)
+	}
+}
+
+// TestValidate_Planner_RejectsUnknownDriver pins the §13 fail-loud
+// rejection of a typoed driver name. The validator catches this
+// pre-boot so `harbor validate` flags the typo.
+func TestValidate_Planner_RejectsUnknownDriver(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "no-such-driver-zzz"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.driver=no-such-driver-zzz) returned nil, want error")
+	}
+	// The error message MUST list the allowed values so the operator
+	// sees the fix.
+	if !strings.Contains(err.Error(), "react") {
+		t.Fatalf("Validate err = %q, want it to list allowed drivers", err.Error())
+	}
+}
+
+// TestValidate_Planner_RejectsNegativeMaxSteps pins the loud rejection
+// of nonsensical MaxSteps values.
+func TestValidate_Planner_RejectsNegativeMaxSteps(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", MaxSteps: -1}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.max_steps=-1) returned nil, want error")
+	}
+}
+
+// TestValidate_Planner_AcceptsZeroMaxSteps_AsDriverDefault confirms
+// MaxSteps=0 is the documented "use driver default" sentinel.
+func TestValidate_Planner_AcceptsZeroMaxSteps_AsDriverDefault(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", MaxSteps: 0}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.max_steps=0) rejected the driver-default sentinel: %v", err)
+	}
+}
+
+// TestValidate_Planner_AcceptsPositiveMaxSteps pins the happy path.
+func TestValidate_Planner_AcceptsPositiveMaxSteps(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", MaxSteps: 24}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.max_steps=24): %v", err)
+	}
+}
+
 // mustLoadValid loads the canonical valid fixture and returns a
 // mutable copy callers can break in subtests.
 func mustLoadValid(t *testing.T) *config.Config {

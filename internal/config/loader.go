@@ -240,6 +240,18 @@ func defaults() *Config {
 			Strategy:           "none",
 			RecoveryBacklogMax: 16,
 		},
+		// D-103 — closes issue #126. The V1 planner-driver default is
+		// "react" (the reference LLM-driven ReAct concrete — Phase 45 /
+		// D-051). A config with an empty `planner.driver` boots with
+		// the reference planner unchanged; operators opt into
+		// alternates explicitly when later phases land them (Plan-
+		// Execute, Workflow, Graph, Deterministic, Supervisor,
+		// MultiAgent, HumanApproval per RFC §6.2). MaxSteps=0 means
+		// "use the driver's internal default" (react.DefaultMaxSteps
+		// = 12).
+		Planner: PlannerConfig{
+			Driver: "react",
+		},
 	}
 }
 
