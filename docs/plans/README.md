@@ -918,6 +918,16 @@ Practical reading: with three or four engineers (or three concurrent worker suba
 
 ---
 
+## Open architectural follow-ups feeding next-wave scoping
+
+The Wave 11 §17.5 audit (PR #117) surfaced four architectural gaps tracked as GitHub issues. Three closed in Wave 11.5 (issues #112, #113, #114, #115 via PRs #119, #120, #121, #122; the wave-end E2E now exercises production end-to-end). Issue #116 (`tools.oauth_providers[]` operator config) shipped in PR #119 alongside Wave 11.5 Stage A. One open follow-up remains:
+
+- **[#123 — task FSM bridge: translate RunLoop `Finish` into `TaskRegistry.Mark{Complete,Failed}`](https://github.com/hurtener/Harbor/issues/123)**. Surfaced by PR #122 (D-097). The `perTaskRunLoopDriver` runs the planner per spawned task but leaves the task at `StatusPending` after the planner exits. Documented in D-097 as a deliberate Stage B carve-out; cover directly in Wave 12 scoping or land as a small `feat(tasks)` follow-up before it.
+
+This section accumulates audit-surfaced follow-ups that warrant tracking issues but haven't been promoted to phase plans yet. When the next wave scopes, this is the first list to reconcile against `docs/plans/README.md`'s pending-phase block.
+
+---
+
 ## V1 cut line
 
 **V1 ships phases 01–82 + 36a + 36b + 53a.** Seventeen follow-ups (83–99) are intentionally deferred to post-V1: eight original (83–90), six Governance (91–96), and three Multimodality follow-ups (97–99) for media-input tool wrappers, media-output tool wrappers, and vision-aware memory summarization. Multimodal **inputs** ship in V1 (RFC §6.5 + D-021); only multimodal **outputs** and richer memory handling are post-V1. The Evaluations subsystem and code-mode (Starlark) are also post-V1 — see RFC §12.
