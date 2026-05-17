@@ -77,6 +77,35 @@ type WireEventFrame struct {
 	Extra      map[string]string      `json:"extra,omitempty"`
 }
 
+// runIDFromFrame extracts the run identifier from a WireEventFrame
+// using the same projection Phase 69's `runIDFromEvent` applies to
+// `wireEvent` (D-101). The frame's `Run` field (i.e.
+// `Event.Identity.RunID`) is empty on the load-bearing `task.spawned`
+// event — the `start` Protocol method dispatches `Quadruple{Identity:
+// id}` and the per-task RunLoop driver sets `RunID = TaskID` only AFTER
+// the task starts running. For task.spawned (and other early events
+// that pre-date RunID assignment) we fall back to the payload's TaskID
+// field, which the inprocess driver populates on every spawn. Returns
+// "" when no run identifier can be derived.
+//
+// Distinct from `cmd_inspect_runs.go::runIDFromEvent` only because the
+// two CLI-side wire shapes (`wireEvent` vs `WireEventFrame`) diverge on
+// the Payload field type (`any` vs `map[string]interface{}`). The
+// projection logic is identical and a future consolidation collapses
+// the duplication.
+func runIDFromFrame(f WireEventFrame) string {
+	if f.Run != "" {
+		return f.Run
+	}
+	if id, ok := f.Payload["TaskID"].(string); ok && id != "" {
+		return id
+	}
+	if id, ok := f.Payload["task_id"].(string); ok && id != "" {
+		return id
+	}
+	return ""
+}
+
 // BuildTopologyFromEvents synthesises a Topology from a list of wire
 // frames filtered to a single run (caller's responsibility — the
 // synthesiser does not re-filter). The resulting Topology carries the
@@ -391,7 +420,7 @@ func ParseSSEFrames(body []byte, runFilter string) (frames []WireEventFrame, kee
 			// surface or swallow.
 			return frames, keepaliveCount, fmt.Errorf("topology: parse SSE frame: %w", jsonErr)
 		}
-		if runFilter != "" && frame.Run != runFilter {
+		if runFilter != "" && runIDFromFrame(frame) != runFilter {
 			continue
 		}
 		frames = append(frames, frame)

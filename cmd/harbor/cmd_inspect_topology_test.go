@@ -129,11 +129,20 @@ func TestInspectTopology_MissingToken(t *testing.T) {
 // SSE stream — asserts the rendered output contains expected
 // substrings.
 func TestInspectTopology_HappyPath_RoundTripsAgainstFakeServer(t *testing.T) {
+	// Production-shape fixture: task.spawned has EMPTY `run` (the `start`
+	// Protocol method dispatches Quadruple{Identity: id} only — the
+	// per-task RunLoop driver sets RunID = TaskID later, D-098). The
+	// payload's TaskID = "task-A" so `runIDFromFrame`'s payload fallback
+	// resolves the spawn event. Subsequent events carry `run: "task-A"`
+	// because the RunLoop driver sets `Identity.RunID = TaskID`. The
+	// caller asks for `--run task-A` mirroring production semantics.
+	// The §17.6 worked example — fixture must mirror production or the
+	// test silently diverges (audit's F2 finding).
 	srv := newFakeSSEServer(t, []string{
-		`{"type":"task.spawned","sequence":1,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"r1","payload":{"TaskID":"task-A","Kind":"foreground"}}`,
-		`{"type":"tool.invoked","sequence":2,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"r1","payload":{"ToolName":"echo"}}`,
-		`{"type":"tool.completed","sequence":3,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"r1","payload":{"ToolName":"echo","DurationMS":12}}`,
-		`{"type":"planner.finish","sequence":4,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"r1","payload":{"Reason":"goal"}}`,
+		`{"type":"task.spawned","sequence":1,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","payload":{"TaskID":"task-A","Kind":"foreground"}}`,
+		`{"type":"tool.invoked","sequence":2,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"task-A","payload":{"ToolName":"echo"}}`,
+		`{"type":"tool.completed","sequence":3,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"task-A","payload":{"ToolName":"echo","DurationMS":12}}`,
+		`{"type":"planner.finish","sequence":4,"occurred_at":"2026-05-17T00:00:00.000000000Z","tenant":"t","user":"u","session":"s","run":"task-A","payload":{"Reason":"goal"}}`,
 	})
 	defer srv.Close()
 	bind := strings.TrimPrefix(srv.URL, "http://")
@@ -142,13 +151,13 @@ func TestInspectTopology_HappyPath_RoundTripsAgainstFakeServer(t *testing.T) {
 	stdout, errBuf, err := runInspectTopologyTest(t,
 		"--bind", bind,
 		"--idle-timeout", "500ms",
-		"r1",
+		"task-A",
 	)
 	if err != nil {
 		t.Fatalf("inspect-topology returned error: %v (stderr: %s)", err, errBuf)
 	}
-	if !strings.Contains(stdout, "run r1") {
-		t.Errorf("stdout missing `run r1` header: %s", stdout)
+	if !strings.Contains(stdout, "run task-A") {
+		t.Errorf("stdout missing `run task-A` header: %s", stdout)
 	}
 	if !strings.Contains(stdout, "echo") {
 		t.Errorf("stdout missing `echo` tool: %s", stdout)

@@ -59,8 +59,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -120,12 +118,18 @@ const DefaultInspectTopologyIdleTimeout = 1500 * time.Millisecond
 // Bearer token from. Mirrors the convention `harbor dev` uses when
 // it prints `HARBOR_DEV_TOKEN=...` to stderr; operators are expected
 // to set HARBOR_TOKEN=$HARBOR_DEV_TOKEN in their shell.
-const EnvInspectTopologyToken = "HARBOR_TOKEN"
+// Alias for `envHarborToken` (inspect_common.go). The two constants
+// share the same string; the topology cmd kept its own name so its
+// test surface stays self-contained.
+const EnvInspectTopologyToken = envHarborToken
 
 // DefaultTokenPath is the on-disk fallback path the cmd consults when
 // the env var is unset. `~/.harbor/token` matches the convention CLI
 // tools use (kubectl, gh, etc.).
-const DefaultTokenPath = ".harbor/token"
+// Alias for `tokenFileRel` (inspect_common.go). Same string; kept
+// here so the topology test surface doesn't depend on an unexported
+// const in a different file.
+const DefaultTokenPath = tokenFileRel
 
 // newInspectTopologyCmd builds the cobra command.
 func newInspectTopologyCmd() *cobra.Command {
@@ -294,9 +298,18 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 // dev cmd applies to HARBOR_BIND; the function is local so cmd/harbor
 // does not depend on a shared helper file (the parallel-worktree merge
 // constraint named in the prompt).
+// W3 partial — `resolveInspectToken` and the constants collapsed to
+// the Phase 69 canonical helpers (inspect_common.go). The bind
+// validator is intentionally NOT collapsed: `inspectEndpoint` (Phase
+// 69) is a URL composer that accepts any non-empty `bind` and prefixes
+// `http://...`; it does NOT enforce host:port shape. The topology cmd
+// uses a strict host:port shape check so a malformed bind surfaces
+// CodeInspectTopologyBindInvalid at the CLI edge BEFORE any network
+// call. The two helpers serve different purposes — the duplication
+// the audit flagged was over-broad on this one.
 func validateInspectBind(bind string) error {
 	if bind == "" {
-		return errors.New("--bind is empty")
+		return fmt.Errorf("--bind is empty")
 	}
 	i := strings.LastIndex(bind, ":")
 	if i < 0 || i == len(bind)-1 {
@@ -312,29 +325,19 @@ func validateInspectBind(bind string) error {
 }
 
 // resolveInspectToken reads the Bearer token from the standard
-// locations (env var → ~/.harbor/token). Returns an error when both
-// are empty / unreadable so the caller can surface CodeAuthMissing.
+// locations (env var → ~/.harbor/token). Delegates to the Phase 69
+// canonical helper. Returns an error when both sources are empty /
+// unreadable so the caller can surface CodeAuthMissing.
 func resolveInspectToken() (string, error) {
-	if t := strings.TrimSpace(os.Getenv(EnvInspectTopologyToken)); t != "" {
-		return t, nil
-	}
-	home, err := os.UserHomeDir()
+	auth, err := resolveTokenFromOS()
 	if err != nil {
-		return "", fmt.Errorf("no HARBOR_TOKEN env var and could not resolve home dir: %w", err)
-	}
-	tokenPath := filepath.Join(home, DefaultTokenPath)
-	raw, err := os.ReadFile(tokenPath) // #nosec G304 — path is fixed under HOME
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("no HARBOR_TOKEN env var and no token at %s", tokenPath)
+		if ce, ok := err.(CLIError); ok {
+			// Preserve the rich Phase 69 message + hint.
+			return "", errors.New(ce.Message)
 		}
-		return "", fmt.Errorf("read token file %s: %w", tokenPath, err)
+		return "", err
 	}
-	t := strings.TrimSpace(string(raw))
-	if t == "" {
-		return "", fmt.Errorf("token file %s is empty", tokenPath)
-	}
-	return t, nil
+	return auth.Token, nil
 }
 
 // sseFetchOpts bundles the inputs to fetchSSEUntilIdle. Kept as a
@@ -383,9 +386,18 @@ func fetchSSEUntilIdle(ctx context.Context, opts sseFetchOpts) ([]byte, error) {
 	// which the bus driver replays everything strictly greater than
 	// — i.e. the whole run.
 	req.Header.Set("Last-Event-ID", "0")
-	// Run filter — narrows the bus subscription to a single run
-	// inside the (tenant, user, session) scope (Phase 60 / D-082).
-	req.Header.Set("X-Harbor-Run", opts.RunID)
+	// Run filter is INTENTIONALLY NOT set via X-Harbor-Run. The Phase 60
+	// SSE handler filters server-side by `Event.Identity.RunID`, which
+	// is EMPTY on the load-bearing `task.spawned` event (the `start`
+	// Protocol method dispatches `Quadruple{Identity: id}` — RunID is
+	// populated later by the per-task RunLoop driver from the TaskID).
+	// Setting the server-side filter would drop the spawn event from
+	// the stream, leaving the topology synthesiser with no Task node
+	// to render. The CLI filters client-side via `runIDFromFrame` in
+	// `ParseSSEFrames` (TaskID-payload fallback) — same projection
+	// Phase 69's inspect-runs uses (D-101). Tracked: extend the Phase
+	// 60 stream to fall back to payload TaskID for task.spawned in a
+	// future PR; until then the CLI carries the projection.
 	if opts.Tenant != "" {
 		req.Header.Set("X-Harbor-Tenant", opts.Tenant)
 	}

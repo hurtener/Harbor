@@ -76,6 +76,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -202,6 +203,13 @@ type AssembleOpts struct {
 	// snapshot to flip the driver without re-writing the yaml.
 	LLMConfigSnapshot *llm.ConfigSnapshot
 
+	// Logger, when non-nil, is threaded through the auth.Middleware
+	// wrapper for the draft handler so the helper's auth-rejection
+	// log lines match production exactly (D-094 helper-tracks-
+	// production rule; audit W2). When nil, the wrapper omits the
+	// MWLogger option — silent rejection in tests is fine.
+	Logger *slog.Logger
+
 	// PlannerOverride, when non-nil, replaces the registry-resolved
 	// planner concrete the helper would otherwise build from
 	// `cfg.Planner` (D-103). Tests that need a stub / scripted /
@@ -225,6 +233,14 @@ type AssembleOpts struct {
 	// per-test temp dir (the helper picks one via testing.TempDir).
 	// Tests that want to share a root across multiple Assemble calls
 	// (rare) supply the same string twice.
+	//
+	// Cleanup responsibility (audit W5): when DraftRoot is empty, the
+	// helper picks the temp dir AND registers an os.RemoveAll cleanup
+	// on stack.Close. When DraftRoot is supplied explicitly, the
+	// caller OWNS the directory and is responsible for cleanup — the
+	// helper does NOT call os.RemoveAll on an operator-supplied path
+	// (it would clobber a caller-managed scratch dir). Use t.TempDir
+	// + DraftRoot together if you want both control and auto-cleanup.
 	DraftRoot string
 }
 
@@ -734,7 +750,16 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			var mounted http.Handler = draftHandler
 			if stack.Validator != nil {
-				mounted = auth.Middleware(stack.Validator)(draftHandler)
+				// D-094 mirror: production threads opts.logger via
+				// auth.MWLogger so auth-rejection lines show up in
+				// operator logs. The helper threads opts.Logger when
+				// non-nil; nil is the silent-rejection test default
+				// (audit W2).
+				var mwOpts []auth.MiddlewareOption
+				if opts.Logger != nil {
+					mwOpts = append(mwOpts, auth.MWLogger(opts.Logger))
+				}
+				mounted = auth.Middleware(stack.Validator, mwOpts...)(draftHandler)
 			}
 			router.Handle(devdraft.RoutePrefix+"/", mounted)
 		}
@@ -809,6 +834,7 @@ type DevStackRunLoopDriver struct {
 	runLoop *steering.RunLoop
 	planner planner.Planner
 	tasks   tasks.TaskRegistry // D-098: the FSM the driver advances on Run exit
+	logger  *slog.Logger       // audit N5: opt-in; matches production's Warn logging when supplied
 
 	subCtx     context.Context
 	subCancel  context.CancelFunc
@@ -824,6 +850,7 @@ type devStackRunLoopDriverOpts struct {
 	runLoop *steering.RunLoop
 	planner planner.Planner
 	tasks   tasks.TaskRegistry
+	logger  *slog.Logger // optional; when non-nil, Mark* failures log Warn (matches production)
 }
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
@@ -844,6 +871,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		runLoop: opts.runLoop,
 		planner: opts.planner,
 		tasks:   opts.tasks,
+		logger:  opts.logger,
 	}, nil
 }
 
@@ -927,7 +955,13 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	if err := d.tasks.MarkRunning(taskCtx, taskID); err != nil {
 		// Pending → Running failed (raced with Cancel, or registry
 		// unhealthy). Skip Run — the eventual terminal Mark* would
-		// fail too.
+		// fail too. Match production's logging when a logger was
+		// supplied (audit N5; D-094 helper-tracks-production).
+		if d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkRunning failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", err.Error()))
+		}
 		return
 	}
 	spec := steering.RunSpec{

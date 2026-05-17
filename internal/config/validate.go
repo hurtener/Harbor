@@ -934,7 +934,7 @@ var allowedOAuthDrivers = map[string]struct{}{
 // duplication rationale as `allowedOAuthDrivers` — the `internal/config`
 // package MUST NOT import a concrete driver package (§4.4 — drivers
 // depend on interfaces, not the other way round). The planner-package
-// test `TestRegisteredPlannerDriversMatchConfigAllowlist` asserts no
+// test `TestConfigAllowlist_AcceptsReactDriver + TestConfigAllowlist_RejectsUnknownDriver` asserts no
 // drift between the two surfaces.
 var allowedPlannerDrivers = map[string]struct{}{
 	"react": {},
@@ -947,7 +947,7 @@ var allowedPlannerDrivers = map[string]struct{}{
 //
 // The allowlist mirror is intentional — `internal/config` MUST NOT
 // import a concrete driver package (§4.4). A drift between the two
-// surfaces is caught by `TestRegisteredPlannerDriversMatchConfigAllowlist`
+// surfaces is caught by `TestConfigAllowlist_AcceptsReactDriver + TestConfigAllowlist_RejectsUnknownDriver`
 // in `internal/planner`.
 func (c *Config) validatePlanner() error {
 	driver := c.Planner.Driver

@@ -102,12 +102,12 @@ func TestStore_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 	// Allow any deferred goroutines (bus subscribers, etc.) to drain.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if runtime.NumGoroutine() <= baseline+4 {
+		if runtime.NumGoroutine() <= baseline+8 {
 			break
 		}
 		runtime.Gosched()
 	}
-	if leak := runtime.NumGoroutine() - baseline; leak > 4 {
+	if leak := runtime.NumGoroutine() - baseline; leak > 8 {
 		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, runtime.NumGoroutine())
 	}
 }

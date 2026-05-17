@@ -162,6 +162,14 @@ func Resolve(ctx context.Context, cfg PlannerConfig, deps FactoryDeps) (Planner,
 		return nil, fmt.Errorf("planner: Resolve cancelled: %w", err)
 	}
 	if cfg.Driver == "" {
+		// Explicit empty branch (audit N3): the OAuth registry
+		// relies on the map-miss path for the same outcome; this
+		// branch produces a slightly clearer error message
+		// (`<empty>` vs `""`) so operators see "driver was
+		// blank" rather than "driver was the literal empty
+		// string." Both shapes are fail-loud per §13; the
+		// divergence is cosmetic and documented here so a future
+		// reader doesn't read it as drift.
 		return nil, fmt.Errorf("%w: <empty> (registered: %s)",
 			ErrDriverUnknown, registeredDriverNames())
 	}

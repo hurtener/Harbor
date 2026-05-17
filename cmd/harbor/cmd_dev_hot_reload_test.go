@@ -261,19 +261,16 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 	// Touch a file under watchDir to trigger fsnotify. Use a write to
 	// a fresh file so the event is unambiguously Create-or-Write.
 	target := filepath.Join(watchDir, "trigger.txt")
-	// Wait briefly for the watcher to register the Add — the
-	// supervisor's Run sets up fsnotify synchronously, but the
-	// goroutine scheduling means the Add can race with our write.
-	// We wait by polling for the OS to register the watcher; in
-	// practice 50ms is enough on every supported OS.
-	if !waitForCondition(500*time.Millisecond, func() bool {
-		// Probe: try to write and see if we get any triggered event
-		// within a tight window. If not, the watcher is not up yet.
-		return true
-	}) {
-		t.Fatal("watcher did not come up within 500ms")
-	}
-	time.Sleep(100 * time.Millisecond) // small grace for the watcher Add
+	// Watcher-Add grace: there's no observable "fsnotify watcher
+	// ready" signal — supervisor.Run installs the watcher in its
+	// goroutine and the OS-level Add is asynchronous. We can't poll
+	// for readiness without writing a test file (which would race
+	// our real test write). A fixed 100ms is the smallest cross-OS-
+	// stable window. §17.4 carve-out documented: no observable signal
+	// exists to convert this to an eventually-poll. Tracked for a
+	// future supervisor enhancement (add a "watcher-ready" channel
+	// the test can wait on).
+	time.Sleep(100 * time.Millisecond)
 
 	if err := os.WriteFile(target, []byte("hello"), 0o600); err != nil {
 		t.Fatalf("write trigger file: %v", err)
@@ -315,6 +312,160 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 		return sup.CurrentStack() != nil && sup.CurrentStack() != stack
 	}) {
 		t.Fatal("supervisor did not swap in a new stack within 5s after the trigger")
+	}
+}
+
+// TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus — the audit's
+// F4 regression test. The `dev.hot_reload.completed` canonical event
+// was registered + emitted but had ZERO consumer test (the existing
+// FileChangeTriggersRebuild test stops at `triggered` and only
+// pointer-compares the swapped stack). §13 primitive-with-consumer
+// requires the wave that introduces a canonical event to ship at
+// least one test that observes it end-to-end on the bus.
+//
+// Approach: boot supervisor, fire a first rebuild to swap to the new
+// bus, then subscribe on the NEW bus before firing a second rebuild
+// and asserting the typed `completed` payload arrives with Success=
+// true, Path populated, Policy=drain.
+func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	watchDir := filepath.Join(dir, "watch")
+	if err := os.MkdirAll(watchDir, 0o755); err != nil {
+		t.Fatalf("mkdir watch: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bootCtx := context.Background()
+	stack, err := bootDevStack(bootCtx, devBootOptions{
+		cfgPath: cfgPath, allowMock: true, logger: logger, stderr: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("bootDevStack: %v", err)
+	}
+	bootOpts := devBootOptions{
+		cfgPath: cfgPath, allowMock: true, logger: logger, stderr: io.Discard,
+	}
+	hrCfg := config.DevHotReloadConfig{
+		Policy:       config.DevHotReloadPolicyDrain,
+		DrainTimeout: 2 * time.Second,
+	}
+	sup, err := newHotReloadSupervisor(logger, bootOpts, stack, hrCfg, []string{watchDir})
+	if err != nil {
+		t.Fatalf("newHotReloadSupervisor: %v", err)
+	}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(runCtx) }()
+	t.Cleanup(func() {
+		runCancel()
+		<-runDone
+		final := sup.CurrentStack()
+		if final != nil && final != stack {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			final.close(closeCtx)
+		}
+	})
+
+	// Phase 1 — fire the first rebuild so CurrentStack swaps to a new bus.
+	// Brief grace period for the fsnotify watcher to register the Add
+	// (the Run goroutine's watcher.Add can race with our immediate write
+	// — there's no observable "watcher ready" event to poll on, so a
+	// small fixed wait is unavoidable). Matches the existing test's
+	// pattern.
+	time.Sleep(100 * time.Millisecond)
+	target1 := filepath.Join(watchDir, "trigger1.txt")
+	if err := os.WriteFile(target1, []byte("phase1"), 0o600); err != nil {
+		t.Fatalf("write trigger1: %v", err)
+	}
+	if !waitForCondition(5*time.Second, func() bool {
+		cur := sup.CurrentStack()
+		return cur != nil && cur != stack
+	}) {
+		t.Fatal("first rebuild did not complete within 5s — supervisor did not swap stacks")
+	}
+	newStack := sup.CurrentStack()
+	if newStack == nil || newStack.bus == nil {
+		t.Fatal("supervisor's new stack has no bus")
+	}
+
+	// Phase 2 — fire a second rebuild. The supervisor emits
+	// `completed` on the newly-built stack's bus immediately after
+	// the rebuild succeeds (line 447 — emitCompleted gets the new
+	// stack as the bus target). Use the bus's Replayer interface to
+	// recover the completed event from cursor 0 — Subscribe is pure
+	// live-tail and would race the emit; Replay is the deterministic
+	// recovery path the §13 fail-loud surface requires.
+	time.Sleep(100 * time.Millisecond) // watcher-Add grace; see note above
+	target2 := filepath.Join(watchDir, "trigger2.txt")
+	if err := os.WriteFile(target2, []byte("phase2"), 0o600); err != nil {
+		t.Fatalf("write trigger2: %v", err)
+	}
+
+	// Wait for the second rebuild's stack swap.
+	if !waitForCondition(5*time.Second, func() bool {
+		cur := sup.CurrentStack()
+		return cur != nil && cur != newStack
+	}) {
+		t.Fatal("second rebuild did not complete within 5s")
+	}
+	finalStack := sup.CurrentStack()
+	if finalStack == nil || finalStack.bus == nil {
+		t.Fatal("supervisor's final stack has no bus")
+	}
+
+	// Recover the completed event via Replay. The inmem bus
+	// implements events.Replayer (Phase 06 / D-022); cursor {Sequence:
+	// 0} returns every event strictly newer than zero — i.e. the
+	// whole post-rebuild stream.
+	id := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
+	replayer, ok := finalStack.bus.(events.Replayer)
+	if !ok {
+		t.Fatalf("final bus does not implement events.Replayer (%T)", finalStack.bus)
+	}
+	// Poll for the completed event — it may take a few ms after the
+	// stack swap for the emit to land. Bounded by the same 5s window.
+	var completed *events.Event
+	if !waitForCondition(5*time.Second, func() bool {
+		evs, err := replayer.Replay(bootCtx, events.Cursor{}, events.Filter{
+			Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
+			Types: []events.EventType{EventTypeDevHotReloadCompleted},
+		})
+		if err != nil {
+			return false
+		}
+		for i := range evs {
+			ev := evs[i]
+			completed = &ev
+			return true
+		}
+		return false
+	}) {
+		t.Fatal("dev.hot_reload.completed did not arrive on the final bus within 5s — F4 regression")
+	}
+	if completed.Type != EventTypeDevHotReloadCompleted {
+		t.Fatalf("event type = %q, want %q", completed.Type, EventTypeDevHotReloadCompleted)
+	}
+	p, ok := completed.Payload.(DevHotReloadCompletedPayload)
+	if !ok {
+		t.Fatalf("payload type = %T, want DevHotReloadCompletedPayload", completed.Payload)
+	}
+	if !p.Success {
+		t.Errorf("payload.Success = false, want true (err=%q)", p.ErrorMessage)
+	}
+	if p.Path == "" {
+		t.Error("payload.Path is empty")
+	}
+	if p.Policy != config.DevHotReloadPolicyDrain {
+		t.Errorf("payload.Policy = %q, want %q", p.Policy, config.DevHotReloadPolicyDrain)
+	}
+	if p.DurationMS < 0 {
+		t.Errorf("payload.DurationMS = %d, want >= 0", p.DurationMS)
 	}
 }
 

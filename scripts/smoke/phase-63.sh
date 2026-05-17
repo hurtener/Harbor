@@ -111,7 +111,12 @@ fi
 # the cross-phase smoke maintenance lives in whichever PR moves the
 # subcommand out of stub status.
 stubs=()
-for sub in "${stubs[@]}"; do
+# `set -u` (line 15) makes ${stubs[@]} on an empty bash array raise
+# unbound-variable. The `${stubs[@]+...}` parameter-expansion guard
+# expands to nothing when the array is empty, so the loop is safely
+# skipped (fix surfaced by Wave 12 §17.5 audit's preflight run, where
+# every stub graduated and the array hit empty for the first time).
+for sub in ${stubs[@]+"${stubs[@]}"}; do
     if "${BIN}" "${sub}" --json >/dev/null 2>&1; then
         fail "phase 63: harbor ${sub} --json exited 0 — stub subcommands MUST exit non-zero (§13 amendment)"
         continue
