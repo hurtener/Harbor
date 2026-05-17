@@ -1940,7 +1940,6 @@ If shape 1 turns out wrong for a reason a future PR can articulate, the driver-d
 ---
 
 ## D-103 — `cfg.Planner` schema + `internal/planner` driver registry (closes #126, closes D-097's "future phases will read cfg.Planner" note)
-## D-101 — Phase 69 `harbor inspect-events` + `harbor inspect-runs`: graduate the two Phase 63 inspect-* stubs into SSE Protocol-client consumers; auth via HARBOR_TOKEN env or `~/.harbor/token` file; no new Protocol methods (consume existing Phase 60 surface)
 
 **Date:** 2026-05-17
 **Status:** Settled (shipping with this PR)
@@ -1992,6 +1991,14 @@ If shape 1 turns out wrong for a reason a future PR can articulate, the driver-d
 - All tests `-race` green; `make vet` clean; `go build ./...` clean.
 
 **Structural precedents.** D-095 (`tools.oauth_providers[]` + `internal/tools/auth/registry.go`) is the direct structural precedent — same shape, same sentinel set, same allowlist-mirror pattern, same `Register` / `MustRegister` / `Resolve` quartet. D-090 (`tools.entries[]` operator config + the `Deps.OAuthProviders` construction pattern) is the broader §4.4 boundary precedent. D-097 (the RunLoop wrap around the planner) is the consumer the new registry path feeds; D-098 (the per-task FSM bridge) is the downstream driver that closes the RunLoop's exit shape onto the task FSM. All three settled the cmd_dev wiring this PR retargets.
+
+---
+
+## D-101 — Phase 69 `harbor inspect-events` + `harbor inspect-runs`: graduate the two Phase 63 inspect-* stubs into SSE Protocol-client consumers; auth via HARBOR_TOKEN env or `~/.harbor/token` file; no new Protocol methods (consume existing Phase 60 surface)
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
 **Where it lives:** `cmd/harbor/inspect_common.go` (shared token discovery, endpoint composition, SSE parser, identity-header injection, fail-loud CLIError codes — `CodeAuthRequired` / `CodeBindInvalid` / `CodeStreamFailed` / `CodeIdentityIncomplete` / `CodeRunNotFound`); `cmd/harbor/cmd_inspect_events.go` (the SSE consumer + human/JSON renderers); `cmd/harbor/cmd_inspect_runs.go` (per-run aggregator for list mode + trajectory replay for single-run mode); `cmd/harbor/testdata/golden/inspect-{events,runs}-*.txt` (six new goldens locking the human + JSON shapes for both subcommands); `cmd/harbor/inspect_common_test.go` + `cmd_inspect_events_test.go` + `cmd_inspect_runs_test.go` (unit + golden coverage); `test/integration/phase69_inspect_cli_test.go` (wire round-trip: builds bin/harbor, exec's it against an httptest Protocol mux, asserts a real task.spawned arrives in the CLI's stdout); `scripts/smoke/phase-69.sh` (new smoke); `scripts/smoke/phase-63.sh` (graduated subcommands removed from the stubs array — §17.6 cross-phase fix); `docs/plans/phase-69-harbor-inspect.md`.
 
 **Decision.** The Phase 63 stubs `harbor inspect-events` and `harbor inspect-runs` graduate to real implementations that consume the Phase 60 SSE event stream as Protocol clients. Two shape decisions land here:
@@ -2019,4 +2026,59 @@ If shape 1 turns out wrong for a reason a future PR can articulate, the driver-d
 - Six new goldens (`cmd/harbor/testdata/golden/inspect-{events,runs}-*.txt`) lock both human and `--json` shapes for both subcommands. `go test -update ./cmd/harbor/...` regenerates them.
 - The Phase 63 stubs array in `scripts/smoke/phase-63.sh` no longer includes `inspect-events` / `inspect-runs` (§17.6 cross-phase smoke maintenance).
 - `test/integration/phase69_inspect_cli_test.go` builds `bin/harbor`, stands up an httptest Protocol mux over real `events` / `state` / `tasks` drivers, drives a real `start`, exec's the binary, and asserts the canonical `task.spawned` event surfaces in the CLI's stdout. Includes a fail-loud-no-token assertion.
+- All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
+
+---
+
+## D-102 — `harbor inspect-topology` renderer + trajectory-synthesised source + Wave 12 wave-end E2E (closes Phase 70)
+
+**Date:** 2026-05-17
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `cmd/harbor/cmd_inspect_topology.go` (the cobra body — replaces the Phase 63 stub); `cmd/harbor/topology_render.go` (the pure ASCII + JSON renderer); `cmd/harbor/topology_synthesise.go` (the wire-frame → `Topology` builder); `cmd/harbor/topology_render_test.go` (renderer + synthesiser unit tests + golden round-trip); `cmd/harbor/cmd_inspect_topology_test.go` (cobra-driver + transport-layer tests); `cmd/harbor/testdata/golden/inspect-topology-happy.{txt,json}` (the golden pinning the renderer shape — regeneratable via `go test -update`); `cmd/harbor/testdata/golden/help.txt` (regenerated — `(Phase 70)` suffix dropped from the subcommand's Short); `cmd/harbor/cmd_stub_test.go` (drops `inspect-topology` from `stubCases`); `scripts/smoke/phase-70.sh` (new); `scripts/smoke/phase-63.sh` (drops `inspect-topology` from the stub-subcommands array); `test/integration/wave12_test.go` (the new Wave 12 wave-end E2E per §17.7 step 5); `docs/plans/phase-70-inspect-topology.md` (the phase plan); `docs/plans/README.md` (Phase 70 flips to Shipped); `README.md` (Status table flip + Phase 70 row).
+
+**Decision.** Two intertwined design calls land in this PR — the renderer shape AND the topology source. Both are documented here so a future PR cannot quietly retrofit them.
+
+**1. Renderer shape — indent-based ASCII, not box-drawing.** Two valid shapes for run graphs: box-drawing (`├──`, `└──`, `│`) and indent-based (`+--`, plain spaces). Indent-based wins on three operational criteria the Phase 70 prompt asked us to settle:
+
+- **Terminal portability**: indent + `+--` renders on every terminal — Windows cmd's CP437, Linux TTYs without ncurses, CI log capture tools that strip ANSI / Unicode. Box-drawing characters are multi-byte UTF-8 that some captures mangle.
+- **Deterministic byte length**: fixed-width ASCII makes the golden comparison trivial under `diff`; multi-byte UTF-8 bloats the golden's byte surface and complicates the truncation rule (we'd need rune-aware width math instead of `len()`).
+- **Readability**: the visual hierarchy is one space per level + the `+--` connector; readers from a wider terminal family see the same shape as readers in an 80-col SSH window.
+
+Sort order is `(Sequence, EventID)` — `Sequence` is per-bus monotonic + gap-free (events.Event.Sequence), so two snapshots of the same run produce byte-stable ASCII. `EventID` (ULID-shaped) is the tie-break if a future driver ever issues parallel sequences. The renderer applies the sort defensively at render time so an out-of-order input slice still produces deterministic output (the renderer test `TestRender_OutOfOrderNodes_SortedDeterministically` pins this).
+
+**2. Topology source — trajectory-synthesised from existing events, NOT `topology.snapshot`.** The master-plan Phase 70 goal cites "`topology.snapshot` events"; the canonical producer of those is Phase 74 (Console topology projection events, RFC §6.13), which has not yet landed. Two source options were on the table:
+
+- **(a) Extend an existing event with topology fields** — rejected. Topology is its own concern; bolting it onto e.g. `tool.invoked` couples two payload schemas and makes Phase 74's later canonical producer awkward (it would need a back-compat path against the bolt-on shape).
+- **(b) Trajectory-synthesise from existing event types — CHOSEN.** The synthesiser (`BuildTopologyFromEvents`) walks `tool.invoked` / `tool.completed` / `tool.failed` / `tool.invalid_args` / `tool.approval_requested` / `tool.auth_required` / `task.spawned` / `pause.requested` / `planner.finish` and produces a `Topology` value. Paired events merge (tool.invoked + tool.completed → one node with `Status=ok`); depth is inferred (`tool.approval_requested` is a child of the last open `tool.invoked`). When Phase 74 lands, the synthesiser gains one additional case branch for `topology.snapshot`, and the renderer prefers that source when present — the V1 path stays as a fallback for older runs.
+
+The CLI is a Protocol client per CLAUDE.md §8 + RFC §7: it consumes the canonical wire shape (`internal/protocol/transports/stream.wireEvent`), not the in-process `events.Event` struct. The wire shape is re-declared as `WireEventFrame` in `cmd/harbor/topology_synthesise.go` so the cmd does not import `internal/protocol/transports/stream` — the contract is the WIRE shape, not the Go struct (a future third-party CLI in any language can synthesise the same topology from the same SSE bytes).
+
+**Why.** Closes Phase 70 acceptance ("Sample run produces stable ASCII matching golden") AND closes the §13 primitive-with-consumer rule for the topology subsystem: shipping the renderer now (with a synthesise-from-existing-events source) means the operator-facing subcommand WORKS the day it lands, instead of waiting for Phase 74 and risking the renderer drifting from the design that motivated it. When Phase 74 ships, the renderer's existing test surface validates the new event-kind case.
+
+**Wave 12 wave-end E2E (per CLAUDE.md §17.7 step 5).** `test/integration/wave12_test.go` boots the assembled dev stack via `harbortest/devstack.Assemble` (D-094) and exercises the composed Wave 12 surface end-to-end. Scenarios:
+
+- **TestE2E_Wave12_InspectTopology_HappyPath** — boot devstack; spawn a foreground task (`POST /v1/control/start`); the per-task RunLoop drives the planner; tool/finish events flow on the bus; `inspect-topology` against the live runtime produces non-empty ASCII naming the run id and at least one tool node.
+- **TestE2E_Wave12_InspectTopology_CrossTenantIsolation** — two distinct identity-triple stacks share the SAME assembled runtime; each tenant's `inspect-topology` sees ONLY its own run's events. Asserts the identity-tuple flow through SSE filter → bus subscribe → renderer header.
+- **TestE2E_Wave12_InspectTopology_RunNotFound_FailureMode** — invoke `inspect-topology` against a deliberately nonexistent run-id; assert the structured `CodeInspectTopologyRunNotFound` exit (≥1 failure mode per §17.3).
+- **TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk** — N=10 concurrent operators run `inspect-topology` against the same runtime (each with their own identity tuple); assert no goroutine leak after all clients close, no cross-tenant data appearing in any client's output (the §17.3 concurrency-stress shape, ratchet from the §17.3 minimum N≥10).
+
+**Parallel-PR coverage caveat.** Wave 12 also contains Phase 65 (hot-reload events), Phase 66 (draft endpoints), Phase 69 (inspect-events / inspect-runs), and #126 (cfg.Planner driver registry). Per the prompt's "Strategy" note, the wave-end E2E exercises ONLY the surface this PR ships (inspect-topology + the inherited Phase 60/63/64 dev stack). When the parallel PRs merge, the audit follow-up `chore(checkpoint): wave-12 audit fixes` PR extends the wave-end E2E with scenarios that exercise the merged surfaces — not in this PR, because the Stage-2 PRs may land in any order and a fragile cross-PR dependency here would block this PR's merge on theirs. Documented here so the audit owner knows to backfill.
+
+**§13 primitive-with-consumer.** The renderer (the primitive) and the cmd (the consumer) ship in the same PR. The renderer's pure-function shape AND the cmd's transport-layer SSE integration are BOTH exercised end-to-end by the wave-end E2E. The §13 rule is discharged: no "renderer without consumer" or "cmd without renderer" window exists.
+
+**§17.6 cross-phase smoke maintenance.** `scripts/smoke/phase-63.sh`'s stub-subcommands array drops `inspect-topology`. Phase 69 (parallel-merge) will drop `inspect-events` / `inspect-runs` from the same array in its own PR; whichever PR lands first wins, and the second rebases. The array goes to empty when Phase 69 merges. `cmd/harbor/cmd_stub_test.go`'s `stubCases` table mirrors the same drop.
+
+**Recurring-failure-mode pre-empt.** The cmd's SSE fetcher (`fetchSSEUntilIdle`) owns ONE reader goroutine per invocation; that goroutine is joined via ctx-cancel when the fetcher returns. The wave-end E2E's N=10 concurrent invocations + post-test goroutine-baseline assertion is the D-025 stress proof for the cmd's reusable shape. No mutable state on any cmd-side artifact; the renderer + synthesiser are pure.
+
+**Acceptance:**
+
+- `cmd/harbor/cmd_inspect_topology.go::runInspectTopology` graduates from the Phase 63 `not_implemented` stub; renders a run's node graph as deterministic ASCII (golden-pinned) and JSON (`--json`).
+- `cmd/harbor/topology_render.go::Render` + `RenderJSON` are byte-stable for a given input (the renderer test asserts forward vs reverse input ordering yields identical output).
+- Every failure mode emits a stable `CLIError` code (`inspect_topology_bind_invalid`, `inspect_topology_width_invalid`, `inspect_topology_auth_missing`, `inspect_topology_run_id_missing`, `inspect_topology_connect_failed`, `inspect_topology_http_status`, `inspect_topology_run_not_found`).
+- `test/integration/wave12_test.go` ships with this PR — real drivers, identity propagation, ≥1 failure mode, N=10 concurrency stress, all `-race` green.
+- `scripts/smoke/phase-70.sh` runs the cmd/harbor tests + binary-mode assertions + (when HARBOR_DEV_TOKEN set in env) live-server run-not-found check; OK > 0, FAIL = 0.
+- `scripts/smoke/phase-63.sh` drops `inspect-topology` from the stubs array; `cmd/harbor/cmd_stub_test.go::stubCases` mirrors the drop.
+- `cmd/harbor/testdata/golden/help.txt` regenerated; the `(Phase 70)` suffix drops from the `inspect-topology` row.
+- `docs/plans/README.md` Phase 70 row flips to Shipped; `README.md` Status table flips Phase 70 row to Shipped.
 - All tests `-race` green; `make preflight` PASS; `make drift-audit` clean; `make check-mirror` clean; `npx markdownlint-cli2 docs/decisions.md` 0 errors.
