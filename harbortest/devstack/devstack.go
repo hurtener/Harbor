@@ -77,7 +77,6 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
-	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -183,6 +182,16 @@ type AssembleOpts struct {
 	// integration test does the same thing. Pass an explicit
 	// snapshot to flip the driver without re-writing the yaml.
 	LLMConfigSnapshot *llm.ConfigSnapshot
+
+	// PlannerOverride, when non-nil, replaces the registry-resolved
+	// planner concrete the helper would otherwise build from
+	// `cfg.Planner` (D-103). Tests that need a stub / scripted /
+	// pausing planner pass their own instance here; production code
+	// never sets this field (the registry path is the only way to
+	// reach a planner concrete in `harbor dev`). The override is
+	// applied AFTER the LLM client is built so the same `stack.LLMClient`
+	// the registry would have used is still available to the test.
+	PlannerOverride planner.Planner
 
 	// Identity overrides the dev-token's identity triple. Empty
 	// fields fall back to DefaultDev{Tenant,User,Session}.
@@ -537,7 +546,25 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// also disables the loop), and the caller can opt out via
 		// SkipRunLoop.
 		if !opts.SkipRunLoop && !opts.SkipCatalog && stack.LLMClient != nil {
-			plnr := react.New(stack.LLMClient)
+			// D-103 (closes #126) — the planner concrete is resolved via
+			// the `internal/planner` driver registry, mirroring the
+			// production `cmd/harbor/cmd_dev.go::bootDevStack` path per
+			// D-094's helper-tracks-production rule. PlannerOverride
+			// lets tests inject a stub / scripted / pausing planner
+			// without re-implementing the wiring; production code never
+			// sets the override.
+			var plnr planner.Planner
+			if opts.PlannerOverride != nil {
+				plnr = opts.PlannerOverride
+			} else {
+				plannerCfg := plannerConfigFromConfig(cfg.Planner)
+				resolved, plnrErr := planner.Resolve(context.Background(), plannerCfg,
+					planner.FactoryDeps{LLM: stack.LLMClient})
+				if plnrErr != nil {
+					return stack, fmt.Errorf("planner.Resolve: %w", plnrErr)
+				}
+				plnr = resolved
+			}
 			rl, rlErr := steering.NewRunLoop(steerReg, stack.Coordinator,
 				steering.WithRunLoopBus(bus),
 				steering.WithTaskRegistry(taskReg),
@@ -660,6 +687,32 @@ func signDevToken(priv *ecdsa.PrivateKey, tenant, user, session string) (string,
 	})
 	tok.Header["kid"] = DefaultKID
 	return tok.SignedString(priv)
+}
+
+// plannerConfigFromConfig mirrors `cmd/harbor/cmd_dev.go`'s
+// helper of the same name (D-094 source-of-truth invariant). Maps the
+// operator-facing `config.PlannerConfig` onto the registry-facing
+// `planner.PlannerConfig` boundary. D-103 (closes issue #126). Empty
+// Driver defaults to "react" — the V1 reference planner — so a config
+// that omits the planner block boots unchanged from the pre-D-103
+// hardcoded path.
+func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
+	driver := cfg.Driver
+	if driver == "" {
+		driver = "react"
+	}
+	var extra map[string]string
+	if len(cfg.Extra) > 0 {
+		extra = make(map[string]string, len(cfg.Extra))
+		for k, v := range cfg.Extra {
+			extra[k] = v
+		}
+	}
+	return planner.PlannerConfig{
+		Driver:   driver,
+		MaxSteps: cfg.MaxSteps,
+		Extra:    extra,
+	}
 }
 
 // DevStackRunLoopDriver mirrors `cmd/harbor`'s package-private

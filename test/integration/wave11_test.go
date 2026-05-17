@@ -130,6 +130,12 @@ import (
 	// not against the runtime registry, so the mock driver does not need
 	// to be registered for this test to pass.
 	"github.com/hurtener/Harbor/internal/planner"
+	// D-103 — `internal/planner/react` self-registers under "react" via
+	// init() so `planner.Resolve` can construct the V1 reference planner
+	// from the cfg. devstack.Assemble drives the registry path now;
+	// without this blank import the test would `panic: planner driver not
+	// registered`.
+	_ "github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
