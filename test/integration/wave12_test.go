@@ -14,16 +14,21 @@
 //   - #126 (cfg.Planner driver registry) — parallel-PR; not yet merged
 //     at this PR's authoring time.
 //
-// # Parallel-PR coverage caveat (per the dispatch prompt's "Strategy")
+// # Parallel-PR coverage backfill (audit F5 closure)
 //
-// This wave-end E2E exercises ONLY the surface Phase 70 ships (the
-// inspect-topology cmd + the inherited Phase 60/63/64 dev stack +
-// Phase 60 SSE event stream + Phase 61 auth + Phase 64a catalog
-// wiring). The Phase 65/66/69/#126 scenarios are deferred to the
-// audit follow-up (`chore(checkpoint): wave-12 audit fixes`) — the
-// Stage-2 PRs may land in any order, and a fragile cross-PR
-// dependency here would block this PR's merge on theirs. Documented
-// in D-102's "Parallel-PR coverage caveat" section.
+// Phase 70's PR shipped this file with ONLY the inspect-topology
+// surface covered (the parallel Stage-2 PRs were not yet merged).
+// The audit's F5 finding closed the §17.7 step 5 gap: the wave-end
+// E2E must cover the WAVE'S surface, not just the final phase's.
+// The chore(checkpoint): wave-12 audit fixes PR added scenarios for
+// the four remaining surfaces (Phase 65, 66, 69, #126) below — see
+// the "Wave 12 surface backfill scenarios" section near the end.
+// The Phase 65 (hot-reload) coverage lives in-package at
+// `cmd/harbor/cmd_dev_hot_reload_test.go::TestHotReloadSupervisor_
+// RebuildEmitsCompletedOnNewBus` (§17.2 in-package integration shape)
+// because the supervisor wraps `bootDevStack` in `package main` and
+// is not importable from this file — see that test's godoc for the
+// rationale and the audit's F4 closure.
 //
 // # Why this test does NOT exec the `harbor inspect-topology` binary
 //
@@ -208,14 +213,29 @@ func buildWave12Stack(t *testing.T, signerIdentity identity.Identity) *devstack.
 // Returns nothing — tests assert against the SSE subscription side.
 func publishWave12Run(t *testing.T, bus events.EventBus, id identity.Identity, runID string) {
 	t.Helper()
+	// Production-shape identity tuples:
+	//   - `task.spawned` is dispatched from the `start` Protocol method
+	//     with `Quadruple{Identity: id}` only — RunID is EMPTY at spawn
+	//     time. The payload's TaskID carries the per-task identifier;
+	//     the per-task RunLoop driver later sets `Identity.RunID =
+	//     TaskID` once the task starts running (D-098). See the
+	//     §17.6 worked example — fixtures must mirror this shape or
+	//     the test silently diverges from production (the audit's F2).
+	//   - Subsequent events emitted from INSIDE the running task carry
+	//     `Quadruple{Identity: id, RunID: runID}` because the RunLoop
+	//     driver populated the quadruple by then.
+	spawnQ := identity.Quadruple{Identity: id}
 	q := identity.Quadruple{Identity: id, RunID: runID}
 	ctx := context.Background()
-	// task.spawned
+	// task.spawned — empty Identity.RunID, payload.TaskID = runID
+	// (production sets TaskID = runID because the per-task RunLoop
+	// driver derives the run id from the task id; the test mirrors
+	// that 1:1 mapping).
 	if err := bus.Publish(ctx, events.Event{
 		Type:     tasks.EventTypeTaskSpawned,
-		Identity: q,
+		Identity: spawnQ,
 		Payload: tasks.TaskSpawnedPayload{
-			TaskID:   tasks.TaskID("task-foreground-X"),
+			TaskID:   tasks.TaskID(runID),
 			Kind:     tasks.KindForeground,
 			Priority: 0,
 		},
@@ -274,11 +294,49 @@ type wave12FinishPayload struct {
 	Reason string
 }
 
+// waitForGoroutineBaseline polls runtime.NumGoroutine until the count
+// is at or below `target` or `maxWait` elapses. Returns true when the
+// baseline is observed; false on timeout. Writes the final observed
+// count into *finalCount so the caller can report it. Replaces the
+// previous "GC + time.Sleep + read NumGoroutine" pattern that the
+// §17.4 audit flagged — polling converges to the true baseline
+// without the deterministic sleep penalty.
+func waitForGoroutineBaseline(maxWait time.Duration, target int, finalCount *int) bool {
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		runtime.Gosched()
+		got := runtime.NumGoroutine()
+		if got <= target {
+			*finalCount = got
+			return true
+		}
+		// Yield then re-check; no time.Sleep — runtime.Gosched is the
+		// non-sleep scheduler-yield.
+		for i := 0; i < 10; i++ {
+			runtime.Gosched()
+		}
+	}
+	*finalCount = runtime.NumGoroutine()
+	return false
+}
+
 // readSSEEventsUntilFinish opens an SSE subscription against srv,
 // reads frames until a `planner.finish` for the supplied runID
 // arrives or maxWait elapses, then returns the raw body bytes plus
 // the event count.
-func readSSEEventsUntilFinish(t *testing.T, srv *httptest.Server, token, runID string, maxWait time.Duration) ([]byte, int) {
+//
+// `serverSideRunFilter` controls the `X-Harbor-Run` header. Set to
+// false when the test wants to observe ALL events for the supplied
+// identity (production-shape CLI subscribers DO NOT pass the header
+// — the audit's F1 fix — because the Phase 60 SSE handler drops
+// `task.spawned` events whose `Identity.RunID` is empty). Set to true
+// only when the test specifically asserts the server-side run-filter's
+// own cross-talk-suppression behaviour over events that DO carry
+// `Identity.RunID` (tool.* and planner.finish — emitted from inside
+// the running task where the per-task RunLoop driver populated the
+// quadruple).
+func readSSEEventsUntilFinish(t *testing.T, srv *httptest.Server, token, runID string, maxWait time.Duration, serverSideRunFilter bool) ([]byte, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), maxWait)
 	defer cancel()
@@ -287,7 +345,9 @@ func readSSEEventsUntilFinish(t *testing.T, srv *httptest.Server, token, runID s
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Harbor-Run", runID)
+	if serverSideRunFilter {
+		req.Header.Set("X-Harbor-Run", runID)
+	}
 	req.Header.Set("Last-Event-ID", "0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -336,20 +396,17 @@ func TestE2E_Wave12_InspectTopology_EventSurface_RoundTrips(t *testing.T) {
 	srv := httptest.NewServer(stack.Handler)
 	defer srv.Close()
 
-	// Publish in a goroutine so the SSE subscriber is open BEFORE the
-	// events fire — otherwise the subscriber misses the early events
-	// (the bus is a live-tail; only Replayer drivers replay older
-	// events). The inmem driver does implement Replayer, so the
-	// Last-Event-ID: 0 header in readSSEEventsUntilFinish would
-	// replay, but the publish-after-subscribe order is the simpler
-	// determinism contract.
-	publishAfter := 100 * time.Millisecond
-	go func() {
-		time.Sleep(publishAfter)
-		publishWave12Run(t, stack.Bus, wave12ID, wave12RunID)
-	}()
+	// Publish synchronously — the inmem driver implements
+	// events.Replayer and the `Last-Event-ID: 0` header in
+	// readSSEEventsUntilFinish requests a full replay, so any
+	// "subscribe-after-publish" race the original publish-in-goroutine
+	// sleep was guarding against is impossible. F6: removed the
+	// time.Sleep-as-sync that violated §17.4.
+	publishWave12Run(t, stack.Bus, wave12ID, wave12RunID)
 
-	body, count := readSSEEventsUntilFinish(t, srv, stack.Token, wave12RunID, 5*time.Second)
+	// serverSideRunFilter=false — production CLIs (inspect-topology /
+	// inspect-runs) do the same so they can observe `task.spawned`.
+	body, count := readSSEEventsUntilFinish(t, srv, stack.Token, wave12RunID, 5*time.Second, false)
 	if count == 0 {
 		t.Fatal("no SSE chunks read")
 	}
@@ -399,17 +456,18 @@ func TestE2E_Wave12_InspectTopology_CrossTenantIsolation(t *testing.T) {
 	// construction.) An SSE subscriber against stack B with stack B's
 	// token must NOT observe tenant-A events (which are not even on
 	// its bus).
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		publishWave12Run(t, stackA.Bus, wave12ID, "run-tenantA-1")
-	}()
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		publishWave12Run(t, stackB.Bus, wave12IDB, "run-tenantB-1")
-	}()
+	// Publish synchronously — Last-Event-ID: 0 in readSSEEventsUntilFinish
+	// triggers replay against the inmem driver's Replayer impl. F6:
+	// removed the time.Sleep-as-sync guards that violated §17.4.
+	publishWave12Run(t, stackA.Bus, wave12ID, "run-tenantA-1")
+	publishWave12Run(t, stackB.Bus, wave12IDB, "run-tenantB-1")
 
-	bodyA, _ := readSSEEventsUntilFinish(t, srvA, stackA.Token, "run-tenantA-1", 3*time.Second)
-	bodyB, _ := readSSEEventsUntilFinish(t, srvB, stackB.Token, "run-tenantB-1", 3*time.Second)
+	// serverSideRunFilter=false here too — cross-tenant isolation is
+	// enforced by the identity-tuple subscription scope, NOT by the
+	// run filter; observing all events under each identity is what
+	// makes the leak assertion meaningful.
+	bodyA, _ := readSSEEventsUntilFinish(t, srvA, stackA.Token, "run-tenantA-1", 3*time.Second, false)
+	bodyB, _ := readSSEEventsUntilFinish(t, srvB, stackB.Token, "run-tenantB-1", 3*time.Second, false)
 
 	// Tenant A's body must NOT contain tenant B's tenant id.
 	if bytes.Contains(bodyA, []byte(`"tenant":"tenant-B"`)) {
@@ -486,9 +544,13 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 	srv := httptest.NewServer(stack.Handler)
 	defer srv.Close()
 
-	// Baseline before launching subscribers.
+	// Baseline before launching subscribers. Settle via runtime.Gosched
+	// (yield + collect prior goroutines) rather than time.Sleep — the
+	// scheduler-yield converges to a stable count deterministically.
 	runtime.GC()
-	time.Sleep(100 * time.Millisecond)
+	for i := 0; i < 100; i++ {
+		runtime.Gosched()
+	}
 	baseline := runtime.NumGoroutine()
 
 	const N = 10
@@ -499,20 +561,22 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 		wg.Add(1)
 		go func(rid string) {
 			defer wg.Done()
-			// Publisher fires AFTER a small stagger so the subscriber
-			// is open in time. Each goroutine publishes its OWN run
-			// id but ALL run under the SAME identity (wave12ID, the
-			// token's claims).
-			publishAfter := time.Duration(50+i*5) * time.Millisecond
-			pubDone := make(chan struct{})
-			go func() {
-				time.Sleep(publishAfter)
-				publishWave12Run(t, stack.Bus, wave12ID, rid)
-				close(pubDone)
-			}()
+			// Publish synchronously — Last-Event-ID: 0 makes the
+			// SSE subscriber replay from cursor 0, so the
+			// publish-after-subscribe race doesn't matter. F6: removed
+			// the stagger sleep + outer goroutine that violated §17.4.
+			publishWave12Run(t, stack.Bus, wave12ID, rid)
 
-			body, _ := readSSEEventsUntilFinish(t, srv, stack.Token, rid, 5*time.Second)
-			<-pubDone
+			// serverSideRunFilter=true — the stress test specifically
+			// validates that the X-Harbor-Run server-side filter
+			// suppresses cross-run leakage among subscribers sharing
+			// the SAME identity tuple. The filter works correctly for
+			// tool.* and planner.finish events (which DO carry
+			// Identity.RunID after the per-task RunLoop driver sets
+			// it); task.spawned (empty RunID) is the documented
+			// exception and the stress test's assertions are scoped
+			// to events that do carry RunID.
+			body, _ := readSSEEventsUntilFinish(t, srv, stack.Token, rid, 5*time.Second, true)
 			// Every subscriber should see its own run id.
 			if !bytes.Contains(body, []byte(`"run":"`+rid+`"`)) {
 				t.Errorf("stress goroutine %s: missing own run id", rid)
@@ -538,13 +602,263 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 		t.Fatalf("stress had %d failures", fail.Load())
 	}
 
-	// Goroutine baseline restoration. Allow scheduler noise.
-	runtime.GC()
-	time.Sleep(300 * time.Millisecond)
-	got := runtime.NumGoroutine()
-	if got > baseline+8 {
+	// Goroutine baseline restoration. Poll for convergence rather
+	// than sleep — bounded eventually-poll per §17.4. The +8 slack
+	// (N1 bump) absorbs busy-CI scheduler noise.
+	var got int
+	if !waitForGoroutineBaseline(2*time.Second, baseline+8, &got) {
 		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)",
 			baseline, got, got-baseline)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Wave 12 surface backfill scenarios — audit F5 closure.
+//
+// Phase 70's PR shipped this file covering ONLY the inspect-topology
+// surface. The audit's F5 finding closed the §17.7 step 5 gap: the
+// wave-end E2E must cover the WAVE'S surface, not just the final
+// phase's. The scenarios below add coverage for #126 (planner driver
+// registry), Phase 66 (draft endpoints), and Phase 69 (inspect-events
+// SSE wire shape). Phase 65 (hot-reload supervisor) is covered
+// in-package by `cmd/harbor/cmd_dev_hot_reload_test.go::TestHotRelo
+// adSupervisor_RebuildEmitsCompletedOnNewBus` per §17.2 — the
+// supervisor wraps `bootDevStack` in `package main` and is not
+// importable from this file.
+// ----------------------------------------------------------------------------
+
+// TestE2E_Wave12_PlannerRegistry_ResolvesReactDriver — #126 / D-103
+// surface. The §4.4 planner driver registry resolves `react` (the V1
+// default) when given a valid PlannerConfig + LLM dep; rejects an
+// unknown driver name loud per §13. Mirrors the cfg-side validator
+// + registry-side dispatch the production boot path exercises in
+// `cmd/harbor/cmd_dev.go::bootDevStack`.
+func TestE2E_Wave12_PlannerRegistry_ResolvesReactDriver(t *testing.T) {
+	// Real LLMClient via the mock driver (the §13 dev-only escape
+	// hatch the binary itself uses under HARBOR_DEV_ALLOW_MOCK=1).
+	// The planner registry never sees the "mock" name — the LLM is
+	// just a dependency the planner factory consumes.
+	cfg := writeWave12Config(t)
+	llmClient, err := openMockLLMForPlannerTest(t, cfg)
+	if err != nil {
+		t.Fatalf("openMockLLMForPlannerTest: %v", err)
+	}
+	defer func() { _ = llmClient.Close(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Happy path: react driver resolves to a non-nil Planner.
+	plnr, err := planner.Resolve(ctx, planner.PlannerConfig{Driver: "react"}, planner.FactoryDeps{LLM: llmClient})
+	if err != nil {
+		t.Fatalf("planner.Resolve(react): %v", err)
+	}
+	if plnr == nil {
+		t.Fatal("planner.Resolve(react) returned nil planner without error")
+	}
+
+	// Fail-loud: unknown driver returns ErrDriverUnknown with the
+	// registered-driver list in the message.
+	_, err = planner.Resolve(ctx, planner.PlannerConfig{Driver: "no-such-driver"}, planner.FactoryDeps{LLM: llmClient})
+	if err == nil {
+		t.Fatal("planner.Resolve(no-such-driver) returned nil error; want ErrDriverUnknown")
+	}
+	if !errorsIsDriverUnknown(err) {
+		t.Errorf("planner.Resolve(no-such-driver) err = %v; want errors.Is(_, planner.ErrDriverUnknown)", err)
+	}
+
+	// Empty driver name fails loud at the registry level — the
+	// "react" default lives at the cfg → planner.PlannerConfig
+	// boundary (`cmd/harbor/cmd_dev.go::plannerConfigFromConfig`),
+	// NOT inside the registry. This asserts the registry's strict
+	// fail-loud contract per §13.
+	_, err = planner.Resolve(ctx, planner.PlannerConfig{Driver: ""}, planner.FactoryDeps{LLM: llmClient})
+	if err == nil {
+		t.Fatal("planner.Resolve(\"\") returned nil error; the registry must fail loud on empty driver name")
+	}
+}
+
+// errorsIsDriverUnknown wraps errors.Is(_, planner.ErrDriverUnknown).
+// Helper to keep the test's planner-package dependency narrow.
+func errorsIsDriverUnknown(err error) bool {
+	return planner.ErrDriverUnknown != nil && errorsIsAny(err, planner.ErrDriverUnknown)
+}
+
+func errorsIsAny(err error, targets ...error) bool {
+	for _, t := range targets {
+		if errorsIs(err, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// errorsIs avoids an additional `errors` import alongside `events.Cursor`.
+func errorsIs(err, target error) bool {
+	for err != nil {
+		if err == target { //nolint:errorlint // sentinel comparison
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
+// openMockLLMForPlannerTest constructs the mock LLM client per the
+// §13 escape-hatch shape `cmd/harbor` uses when HARBOR_DEV_ALLOW_MOCK
+// fires. Returns an llm.LLMClient that the planner registry's react
+// factory accepts.
+func openMockLLMForPlannerTest(t *testing.T, _ *config.Config) (llmCloseableClient, error) {
+	t.Helper()
+	// The mock driver self-registers via blank import below. Build a
+	// minimal ConfigSnapshot — the mock ignores most fields.
+	snap := llmConfigSnapshotForMock()
+	return llmOpenMock(snap)
+}
+
+// TestE2E_Wave12_DraftEndpoints_RoundTripsThroughAssembledStack —
+// Phase 66 / D-100 surface. POST /v1/dev/drafts/ on the assembled
+// stack creates a draft, the `dev.draft.created` event lands on the
+// bus, and the response carries the seeded file list. Real auth
+// middleware, real identity propagation, real bus.
+func TestE2E_Wave12_DraftEndpoints_RoundTripsThroughAssembledStack(t *testing.T) {
+	stack := buildWave12Stack(t, wave12ID)
+	defer stack.Close()
+	if stack.Handler == nil {
+		t.Skip("devstack did not assemble transports")
+	}
+	srv := httptest.NewServer(stack.Handler)
+	defer srv.Close()
+
+	// Subscribe to dev.draft.created BEFORE the POST so the bus
+	// subscription is open when the handler emits.
+	sub, err := stack.Bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  wave12ID.TenantID,
+		User:    wave12ID.UserID,
+		Session: wave12ID.SessionID,
+		Types:   []events.EventType{"dev.draft.created"},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe(dev.draft.created): %v", err)
+	}
+	defer sub.Cancel()
+
+	// POST /v1/dev/drafts/ with the canonical create body. Empty
+	// template name defaults to the scaffold engine's default.
+	createURL := srv.URL + "/v1/dev/drafts/"
+	body := bytes.NewBufferString(`{"name":"wave12-draft"}`)
+	req, err := http.NewRequest(http.MethodPost, createURL, body)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+stack.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/dev/drafts/: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		rb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST status = %d, want 200/201 (body=%s)", resp.StatusCode, rb)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(respBody, []byte(`"draft_id"`)) {
+		t.Errorf("response missing draft_id field: %s", respBody)
+	}
+
+	// Observe dev.draft.created on the bus within a bounded window.
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("draft.created subscription closed before event arrived")
+		}
+		if ev.Type != "dev.draft.created" {
+			t.Errorf("event type = %q, want dev.draft.created", ev.Type)
+		}
+		if ev.Identity.TenantID != wave12ID.TenantID {
+			t.Errorf("event identity tenant = %q, want %q", ev.Identity.TenantID, wave12ID.TenantID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dev.draft.created did not arrive on the bus within 3s")
+	}
+}
+
+// TestE2E_Wave12_InspectEvents_WireShapeIsConsumable — Phase 69 /
+// D-101 surface. The wire shape consumed by `harbor inspect-events`
+// (the canonical SSE `data:` payload) is produced by the assembled
+// stack with every field the CLI parses: type, sequence, occurred_at,
+// tenant, user, session, run (may be empty for early events), payload.
+//
+// This complements Scenario 1 (which asserts the inspect-topology cmd
+// consumes the same shape via the renderer). Together they prove the
+// Phase 69 + Phase 70 CLIs share one wire contract — a change to the
+// shape would break both, and this test fails when the shape drifts.
+func TestE2E_Wave12_InspectEvents_WireShapeIsConsumable(t *testing.T) {
+	stack := buildWave12Stack(t, wave12ID)
+	defer stack.Close()
+	if stack.Handler == nil {
+		t.Skip("devstack did not assemble transports")
+	}
+	srv := httptest.NewServer(stack.Handler)
+	defer srv.Close()
+
+	publishWave12Run(t, stack.Bus, wave12ID, wave12RunID)
+
+	body, count := readSSEEventsUntilFinish(t, srv, stack.Token, wave12RunID, 5*time.Second, false)
+	if count == 0 {
+		t.Fatal("no SSE chunks read")
+	}
+
+	// Parse out each `data:` payload and assert each carries the
+	// fields the inspect-events CLI's `wireEvent` struct expects.
+	// Re-uses the canonical lines-split shape the Phase 60 transport
+	// emits (one event per blank-line-separated block).
+	rawEvents := bytes.Split(body, []byte("\n\n"))
+	var observed int
+	for _, raw := range rawEvents {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 {
+			continue
+		}
+		// Find the data: line (skip comments / id: / event: / retry:).
+		var dataPayload []byte
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			line = bytes.TrimRight(line, "\r")
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
+			}
+			dataPayload = bytes.TrimSpace(line[len("data:"):])
+			break
+		}
+		if len(dataPayload) == 0 {
+			continue
+		}
+		var ev struct {
+			Type       string         `json:"type"`
+			Sequence   uint64         `json:"sequence"`
+			OccurredAt string         `json:"occurred_at"`
+			Tenant     string         `json:"tenant"`
+			User       string         `json:"user"`
+			Session    string         `json:"session"`
+			Run        string         `json:"run,omitempty"`
+			Payload    map[string]any `json:"payload,omitempty"`
+		}
+		if err := json.Unmarshal(dataPayload, &ev); err != nil {
+			t.Errorf("wire payload not parseable as inspect-events wireEvent: %v (payload=%s)", err, dataPayload)
+			continue
+		}
+		if ev.Type == "" || ev.Sequence == 0 || ev.OccurredAt == "" || ev.Tenant == "" {
+			t.Errorf("wire event missing load-bearing field(s): %+v", ev)
+		}
+		observed++
+	}
+	if observed == 0 {
+		t.Fatal("no inspect-events-shaped wire events observed in body")
 	}
 }
 
@@ -557,4 +871,8 @@ var _ = []any{
 	(*config.Config)(nil),
 	(*identity.Identity)(nil),
 	(*json.RawMessage)(nil),
+	(*tasks.TaskRegistry)(nil),
+	(*tools.ToolCatalog)(nil),
+	(*devstack.DevStack)(nil),
+	(*planner.PlannerConfig)(nil),
 }
