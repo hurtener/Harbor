@@ -1,0 +1,58 @@
+{
+  "run_id": "run-abc-123",
+  "tenant": "tenant-a",
+  "user": "user-a",
+  "session": "session-a",
+  "source_mode": "events.synthesised",
+  "nodes": [
+    {
+      "sequence": 1,
+      "kind": "task",
+      "label": "task-foreground-1",
+      "detail": "foreground",
+      "depth": 0
+    },
+    {
+      "sequence": 2,
+      "kind": "tool",
+      "label": "echo_tool",
+      "status": "ok",
+      "detail": "12ms",
+      "depth": 0
+    },
+    {
+      "sequence": 3,
+      "kind": "tool",
+      "label": "search_tool",
+      "status": "pending",
+      "depth": 0
+    },
+    {
+      "sequence": 4,
+      "kind": "approval",
+      "label": "search_tool",
+      "detail": "reason=tagged",
+      "depth": 1
+    },
+    {
+      "sequence": 5,
+      "kind": "auth",
+      "label": "wave11-stub",
+      "detail": "scope=user",
+      "depth": 1
+    },
+    {
+      "sequence": 6,
+      "kind": "pause",
+      "label": "approval_required",
+      "detail": "token-xyz",
+      "depth": 1
+    },
+    {
+      "sequence": 7,
+      "kind": "finish",
+      "label": "goal",
+      "depth": 0
+    }
+  ]
+}

@@ -100,15 +100,17 @@ fi
 # mentioning a phase number.
 #
 # `scaffold` (Phase 67 / D-087), `validate` (Phase 68 / D-088),
-# `dev` (Phase 64 / D-089), `inspect-events` and `inspect-runs`
-# (Phase 69 / D-101) graduated out of this stub table as their phases
-# landed — they emit subcommand-specific error codes (e.g.
-# CodeInvalidProjectName, validation findings, CodeBootLLMRequired,
-# CodeAuthRequired, CodeStreamFailed) on invalid input, not
-# CodeNotImplemented. Per §17.6 the cross-phase smoke maintenance
-# lives in whichever PR moves the subcommand out of stub status;
-# Phase 70 will trim `inspect-topology` from this list.
-stubs=(inspect-topology)
+# `dev` (Phase 64 / D-089), `inspect-events` / `inspect-runs`
+# (Phase 69 / D-101), and `inspect-topology` (Phase 70 / D-102) all
+# graduated out of this stub table as their phases landed — each
+# emits subcommand-specific error codes (e.g. CodeInvalidProjectName,
+# validation findings, CodeBootLLMRequired, CodeAuthRequired,
+# CodeStreamFailed, CodeInspectTopologyBindInvalid) on invalid input,
+# not CodeNotImplemented. The `stubs` array is now empty; the loop is
+# a no-op until the next stub-flavoured subcommand lands. Per §17.6,
+# the cross-phase smoke maintenance lives in whichever PR moves the
+# subcommand out of stub status.
+stubs=()
 for sub in "${stubs[@]}"; do
     if "${BIN}" "${sub}" --json >/dev/null 2>&1; then
         fail "phase 63: harbor ${sub} --json exited 0 — stub subcommands MUST exit non-zero (§13 amendment)"
