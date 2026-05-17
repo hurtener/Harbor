@@ -75,6 +75,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -84,6 +85,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -589,9 +591,40 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
-	// Forward every Protocol-prefixed path to the Phase 60 mux. We
-	// mount the protocol mux under the canonical /v1/ paths via a
-	// catch-all handler that delegates to it.
+	// Phase 66 / D-100 — `harbor dev` draft-save scaffolding. The
+	// draft store materialises agent skeletons under `.harbor/drafts/
+	// <tenant>/<user>/<session>/<draft_id>/` (operator's working dir;
+	// scoped by identity to keep concurrent operators isolated per §6).
+	// The handler is wrapped in the same auth.Middleware as the Phase
+	// 60 transports so every draft endpoint inherits the JWT
+	// validator + identity-in-ctx invariant. Mounted on
+	// `/v1/dev/drafts/` — Go's http.ServeMux longest-prefix-match
+	// resolves this BEFORE the `/v1/` Protocol catch-all below.
+	draftRoot := filepath.Join(".", ".harbor", "drafts")
+	draftStore, err := devdraft.NewStore(devdraft.Options{
+		Root:   draftRoot,
+		Bus:    bus,
+		Logger: opts.logger,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("devdraft: %w", err)
+	}
+	draftHandler, err := devdraft.NewHandler(draftStore, opts.logger)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("devdraft: handler: %w", err)
+	}
+	// Auth-wrap so the draft handler reads identity from ctx via the
+	// same path the Protocol transports do — keeps the §6 identity-
+	// is-mandatory invariant uniform across every authenticated
+	// surface mounted on the dev mux.
+	draftMW := auth.Middleware(validator, auth.MWLogger(opts.logger))
+	router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
+
+	// Forward every other Protocol-prefixed path to the Phase 60 mux.
+	// The draft handler is registered above; this catch-all picks up
+	// everything else under /v1/.
 	router.Handle("/v1/", mux)
 
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
@@ -637,6 +670,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		appliedGates:    appliedGates,
 		runLoop:         runLoop,
 		runLoopDriver:   runLoopDriver,
+		draftStore:      draftStore,
 	}, nil
 }
 
@@ -670,6 +704,13 @@ type devStack struct {
 	// directly for the wire-side APPROVE/REJECT bridge invariants.
 	runLoop       *steering.RunLoop
 	runLoopDriver *perTaskRunLoopDriver
+
+	// Phase 66 / D-100 — the draft-save scaffolding store. Exposed
+	// so tests + the devstack helper can inspect / probe the on-disk
+	// state without going through the HTTP surface. Production code
+	// reaches the store ONLY via the HTTP handler the dev mux mounts
+	// at devdraft.RoutePrefix.
+	draftStore *devdraft.Store
 }
 
 // serve binds the listener and runs the http.Server until ctx

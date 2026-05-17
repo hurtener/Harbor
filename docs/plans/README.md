@@ -87,7 +87,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 64 | `harbor dev` v1 (boot runtime + protocol)     | cmd/harbor           | §8          | 63, 60                | 75%  | Shipped  |
 | 64a | Tool catalog OAuth + approval wiring         | tools/catalog        | §6.4        | 26, 30, 31, 50, 64    | 80%  | Shipped  |
 | 65 | `harbor dev` hot-reload                       | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
-| 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Pending  |
+| 66 | `harbor dev` draft-save scaffolding           | cmd/harbor           | §8          | 64                    | 75%  | Shipped  |
 | 67 | `harbor scaffold`                             | cmd/harbor           | §8          | 63                    | 70%  | Shipped  |
 | 68 | `harbor validate`                             | cmd/harbor           | §8          | 63, 02                | 75%  | Shipped  |
 | 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
@@ -710,6 +710,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** Draft round-trip: edit → preview run → save → resulting scaffold passes `harbor validate`.
 **Tests.** Integration + golden.
 **Deps.** 64.
+**Status.** Shipped — D-100. `internal/devdraft` package ships the filesystem-backed `Store` + the `http.Handler` mounted at `/v1/dev/drafts/` on the `harbor dev` mux behind the Phase 61 JWT validator. On-disk layout is `<root>/<tenant>/<user>/<session>/<draft_id>/` so concurrent operators sharing the same `.harbor/drafts/` root cannot collide (CLAUDE.md §6 applied to a filesystem-backed store). Five endpoints: `POST /` (create + seed via the Phase 67 scaffold engine), `GET /{id}` (list files + content for the Console editor), `PATCH /{id}/files/{path}` (path-traversal-safe per §7 rule 5), `POST /{id}/preview` (validation-only dry-run via `internal/config.Load`), `POST /{id}/save` (promote to operator-supplied output dir; refuses with `ErrValidationFailed` when the rendered `harbor.yaml` fails the validator), `DELETE /{id}` (idempotent discard). Five SafePayload bus events land per round-trip — `dev.draft.{created,updated,previewed,saved,discarded}` — registered with `internal/events`'s exhaustive registry at init(). `harbortest/devstack/devstack.go::Assemble` mirrors the production wiring per D-094 (always constructs a `DraftStore`; mounts the handler when transports are enabled). `test/integration/phase66_draft_save_test.go` exercises the round-trip through the devstack helper with a real Bearer token, observes the five bus events, exercises path-traversal + missing-bearer failure modes, and runs an N=10 concurrency stress under `-race`. `internal/devdraft/concurrent_test.go` runs the D-025 N=128 concurrent-reuse test against one shared Store. `scripts/smoke/phase-66.sh` drives the round-trip against the live binary; the 404/405/501 → SKIP convention keeps the smoke harmless on builds that pre-date Phase 66. Coverage on `internal/devdraft`: ≥80% (master-plan target 75%).
 
 ### 67 — `harbor scaffold` (RFC §8)
 
