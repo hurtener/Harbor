@@ -200,9 +200,13 @@ func RegisteredDrivers() []string {
 	return out
 }
 
-// unregisterForTest removes a driver registration. Test-only —
-// production code never unregisters. Exported under an unexported
-// name so production callers cannot reach for it.
+// unregisterForTest removes a driver registration. Exists solely for
+// in-package test cleanup so registration tests can re-run without
+// leaking driver-table state into sibling subtests (the registry is
+// process-global per §4.4 — a left-behind registration corrupts the
+// next test's misconfiguration assertions). Unexported so no
+// production caller can reach for it; production code never
+// unregisters.
 func unregisterForTest(name string) {
 	factoriesMu.Lock()
 	delete(factories, name)

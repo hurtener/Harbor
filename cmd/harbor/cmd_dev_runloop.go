@@ -11,8 +11,12 @@
 //
 // This file ships the production driver. The driver:
 //
-//  1. Subscribes to `task.spawned` events bus-wide (admin filter, per
-//     CLAUDE.md §6 rule 5's runtime-internal fan-in carve-out).
+//  1. Subscribes to `task.spawned` events bus-wide via the §6 rule 5
+//     elevated-subscription path — admin scope, audit-trail emission.
+//     A per-triple filter would force per-session subscriptions and a
+//     registry-side hook the V1 design hasn't introduced; the admin
+//     subscription is what the rule authorizes for runtime-internal
+//     fan-in subscribers (vs. caller-driven cross-session queries).
 //  2. For each spawned foreground task, launches a goroutine that
 //     constructs a planner.RunContext from the event's identity +
 //     payload and calls `runLoop.Run(ctx, spec)`.
@@ -148,10 +152,10 @@ func (d *perTaskRunLoopDriver) Start(ctx context.Context) error {
 	}
 	d.subCtx, d.subCancel = context.WithCancel(context.Background())
 	// Admin-scoped subscription: the driver listens across every
-	// (tenant, user, session) triple. CLAUDE.md §6 rule 5 carves out
-	// runtime-internal fan-in (the bus auto-emits
-	// `audit.admin_scope_used` per Phase 05 — observability of every
-	// admin-scoped subscribe is the audit trail).
+	// (tenant, user, session) triple via §6 rule 5's elevated-
+	// subscription path. The bus auto-emits `audit.admin_scope_used`
+	// per Phase 05 — observability of every admin-scoped subscribe is
+	// the audit trail the rule requires.
 	sub, err := d.bus.Subscribe(d.subCtx, events.Filter{
 		Admin: true,
 		Types: []events.EventType{tasks.EventTypeTaskSpawned},

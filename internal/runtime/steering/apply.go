@@ -242,29 +242,29 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 				// gate's pause (`wireToken`). The RunLoop's own
 				// outstanding pause (`token`) is a DIFFERENT pause —
 				// it gets resumed below via the direct Coordinator.
-				// Resume path so the planner re-enters. (When the
-				// gate's pause IS the RunLoop's pause — i.e. the
-				// planner itself emitted `RequestPause(
-				// ApprovalRequired)` and a gate happened to also park
-				// on the same token — `wireToken == token` and the
-				// "double-resume" below becomes ErrAlreadyResumed,
-				// which the direct path surfaces loud. That case is
-				// pathological — the planner shouldn't both
-				// RequestPause AND wrap its own tool call in an
-				// approval gate; the typical shape is one or the
-				// other.)
+				// Resume path so the planner re-enters.
 				//
-				// For the common shape (planner runs idle, gate's
-				// pause is independent), the bridge resolves the
-				// gate's pause and the direct path below resolves
-				// the RunLoop's own pause — two distinct Coordinator.
-				// Resume calls against two distinct Tokens. No
-				// double-resume.
+				// When the gate's pause IS the RunLoop's outstanding
+				// pause (same Token), `wireToken == token` and the
+				// fast-path return below skips the direct path to
+				// avoid ErrAlreadyResumed. Two shapes exercise this:
+				// (a) the wave-end bridge tests (see TestBridge_NoDoubleResume
+				// in bridge_test.go) explicitly pass `outstandingToken`
+				// as the gate's token so the fast-path is verified,
+				// and (b) the runtime case where a planner wraps its
+				// own tool call in an approval gate AND emits
+				// `RequestPause(ApprovalRequired)` against the same
+				// token — atypical but possible.
+				//
+				// For the common shape (planner idle, gate's pause is
+				// independent), the bridge resolves the gate's pause
+				// and the direct path below resolves the RunLoop's
+				// own pause — two distinct Coordinator.Resume calls
+				// against two distinct Tokens. No double-resume.
 				if wireToken == token {
-					// Edge case: the gate's pause IS the RunLoop's
-					// outstanding pause (same Token). The gate
-					// already resumed it; skip the direct path to
-					// avoid ErrAlreadyResumed.
+					// Gate's pause IS the RunLoop's outstanding
+					// pause (same Token). The gate already resumed it;
+					// skip the direct path.
 					return nil
 				}
 				// Fall through to the direct path so the RunLoop's

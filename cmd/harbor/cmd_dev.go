@@ -441,7 +441,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `devStack.coordinator` — there is NEVER a second Coordinator
 	// instance (CLAUDE.md §13).
 	toolCat := tools.NewCatalog()
-	coord := pauseresume.New()
+	// WithBus(bus) is mandatory in production: it is what makes
+	// pause.requested / pause.resumed land on the canonical event
+	// stream so wire consumers (Console, third-party Protocol clients,
+	// integration tests) observe D-096's typed Decision marker. Bare
+	// pauseresume.New() short-circuits emit when bus == nil — the same
+	// shape the Wave 11.5 §17.5 closeout audit flagged as F1.
+	// harbortest/devstack.Assemble carries the matching wiring per
+	// D-094's "helper tracks production" rule.
+	coord := pauseresume.New(pauseresume.WithBus(bus))
 	appliedGates, oauthProviders, applyErr := applyToolCatalogWiring(ctx, cfg, toolCat, coord, bus, red, stateStore)
 	if applyErr != nil {
 		closeAll(ctx)
@@ -463,12 +471,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 
 	// Planner — the swappable reasoning policy the RunLoop drives.
 	// V1 ships the reference ReAct planner backed by the configured
-	// LLM client. Future phases will read a planner choice from the
-	// config (cfg.Planner) and switch concretes (Plan-Execute,
-	// Deterministic, etc.) per CLAUDE.md §1; until then, ReAct is the
-	// only production-ready concrete. The planner is reusable across
-	// concurrent runs (D-025); one instance backs every spawned task's
-	// RunLoop.
+	// LLM client. The cfg.Planner schema + driver registry (per the
+	// §4.4 seam pattern that D-095 uses for OAuth providers) is
+	// tracked in issue #126 — until it lands, ReAct is hardcoded
+	// here. The planner is reusable across concurrent runs (D-025);
+	// one instance backs every spawned task's RunLoop.
 	plnr := react.New(llmClient)
 
 	// RunLoop — the per-run planner-step loop (Phase 53 / D-071) that
@@ -506,12 +513,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// the rest of the stack — its closer cancels the subscription's
 	// ctx and waits for every in-flight goroutine to drain.
 	//
-	// Subscription is admin-scoped because the driver listens across
-	// every (tenant, user, session) — task.spawned filtering by triple
-	// would force per-session subscriptions and a registry-side hook,
-	// which the V1 design has not yet introduced. The admin
-	// subscription is the §6 rule 5 carve-out for runtime-internal
-	// fan-in.
+	// Subscription is admin-scoped via §6 rule 5's elevated-subscription
+	// path — the driver listens across every (tenant, user, session)
+	// because task.spawned filtering by triple would force per-session
+	// subscriptions and a registry-side hook the V1 design hasn't
+	// introduced. The rule authorizes this for runtime-internal fan-in
+	// subscribers; the bus emits `audit.admin_scope_used` for the
+	// trail.
 	runLoopDriver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
 		logger:   opts.logger,
 		bus:      bus,
@@ -611,6 +619,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		allowMock:       opts.allowMock,
 		effectiveDriver: driverName,
 		closeFns:        closers,
+		bus:             bus,
 		toolCatalog:     toolCat,
 		coordinator:     coord,
 		appliedGates:    appliedGates,
@@ -632,6 +641,11 @@ type devStack struct {
 	allowMock       bool
 	effectiveDriver string
 	closeFns        []func(context.Context) error
+	// bus is the canonical event bus. Exposed so regression tests
+	// can assert wire-side invariants — F1 from the Wave 11.5 §17.5
+	// audit (pauseresume.New must be bus-wired in production so
+	// D-096's typed Decision marker reaches subscribers).
+	bus events.EventBus
 	// Phase 64a (D-090) surfaces — the tool catalog + Coordinator are
 	// constructed by bootDevStack; future phases that grow per-tool
 	// dispatch logic read these from the stack.
