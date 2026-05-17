@@ -328,6 +328,22 @@ memory:
   # be >= 0.
   recovery_backlog_max: 16
 
+# D-103 — Planner driver selection (closes issue #126). The §4.4 seam
+# pattern that D-095 uses for OAuth providers, applied to the planner
+# concrete. V1 ships only the `react` driver (the reference LLM-driven
+# ReAct concrete from Phase 45 / D-051). Future drivers (Plan-Execute,
+# Workflow, Graph, Deterministic, Supervisor, MultiAgent, HumanApproval
+# per RFC §6.2) self-register under `internal/planner/<name>/` + a
+# blank import in `cmd/harbor/main.go`; flip `driver:` to opt in.
+#
+# `max_steps` overrides the driver-side circuit-breaker step cap. Zero
+# (the default) means "use the driver's internal default" —
+# `react.DefaultMaxSteps` (12) for the V1 reference driver. Raise for
+# longer trajectories; lower to fail fast in tests.
+planner:
+  driver: react
+  # max_steps: 12
+
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`
 # and `dsn` are required.
