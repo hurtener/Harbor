@@ -1,0 +1,1 @@
+{"run_id":"r-1","steps":[{"sequence":1,"occurred_at":"2026-05-17T12:00:00.000Z","type":"task.spawned","payload":{"Kind":"foreground","TaskID":"r-1"}},{"sequence":2,"occurred_at":"2026-05-17T12:00:01.000Z","type":"task.completed","payload":{"TaskID":"r-1"}}]}

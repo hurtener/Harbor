@@ -1,0 +1,3 @@
+{"type":"task.spawned","sequence":1,"occurred_at":"2026-05-17T12:00:00.000Z","tenant":"t1","user":"u1","session":"s1","run":"r-1","payload":{"Kind":"foreground","Priority":0,"TaskID":"r-1"}}
+{"type":"task.completed","sequence":2,"occurred_at":"2026-05-17T12:00:01.000Z","tenant":"t1","user":"u1","session":"s1","run":"r-1","payload":{"TaskID":"r-1"}}
+{"type":"task.spawned","sequence":3,"occurred_at":"2026-05-17T12:00:02.000Z","tenant":"t1","user":"u1","session":"s1","run":"r-2","payload":{"Kind":"background","TaskID":"r-2"}}

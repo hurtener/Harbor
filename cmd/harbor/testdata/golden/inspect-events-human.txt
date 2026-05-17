@@ -1,0 +1,3 @@
+2026-05-17T12:00:00.000Z t1/u1/s1/r-1 task.spawned {Kind=foreground Priority=0 TaskID=r-1}
+2026-05-17T12:00:01.000Z t1/u1/s1/r-1 task.completed {TaskID=r-1}
+2026-05-17T12:00:02.000Z t1/u1/s1/r-2 task.spawned {Kind=background TaskID=r-2}

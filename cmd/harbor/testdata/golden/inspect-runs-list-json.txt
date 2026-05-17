@@ -1,0 +1,1 @@
+[{"run_id":"r-1","status":"completed","started_at":"2026-05-17T12:00:00.000Z","last_event_at":"2026-05-17T12:00:01.000Z","event_count":2},{"run_id":"r-2","status":"failed","started_at":"2026-05-17T12:00:02.000Z","last_event_at":"2026-05-17T12:00:03.000Z","event_count":2,"failure_code":"tool_error"}]
