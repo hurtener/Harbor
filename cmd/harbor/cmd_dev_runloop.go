@@ -1,5 +1,5 @@
 // cmd/harbor/cmd_dev_runloop.go — the per-task RunLoop driver
-// (D-097, closes issue #114).
+// (D-097, closes issue #114; D-098, closes issue #123).
 //
 // `harbor dev` previously had no production consumer for
 // `steering.RunLoop` — a `start` request reached
@@ -19,12 +19,25 @@
 //     fan-in subscribers (vs. caller-driven cross-session queries).
 //  2. For each spawned foreground task, launches a goroutine that
 //     constructs a planner.RunContext from the event's identity +
-//     payload and calls `runLoop.Run(ctx, spec)`.
+//     payload, calls `tasks.MarkRunning` to advance the task FSM
+//     out of `StatusPending`, calls `runLoop.Run(ctx, spec)`, and
+//     translates the RunLoop's exit shape into `tasks.MarkComplete` /
+//     `tasks.MarkFailed` so the task FSM reaches a terminal state.
+//     This bridge is the D-098 closure of D-097's deliberate carve-out:
+//     the per-task goroutine owns the FSM transition because it ALREADY
+//     owns the per-task lifecycle (it spawned the goroutine, it
+//     observes the Run return shape) — shape 1 of the two shapes
+//     issue #123 named; the bus-driven shape would have required
+//     RunLoop to emit a typed exit event plus a separate subscriber
+//     that owns the task-keyed mapping the driver already has (more
+//     moving parts for marginal separation).
 //  3. Tracks every in-flight goroutine via a WaitGroup. Close cancels
 //     the subscription ctx (subscription channel closes; the
 //     subscribe-loop returns) and waits for every in-flight RunLoop
 //     to drain before returning — no goroutine leak across stack
-//     teardown (§11 goroutine-leak rule).
+//     teardown (§11 goroutine-leak rule). The per-task goroutine now
+//     blocks on Run + Mark*; both honour the driver's subCtx so Close
+//     remains bounded.
 //
 // # Per-task RunLoop lifecycle
 //
@@ -77,14 +90,18 @@ import (
 )
 
 // perTaskRunLoopDriverOpts bundles the dependencies the driver
-// consumes. Bus + RunLoop + Planner are all mandatory; a nil any of
-// them returns ErrPerTaskRunLoopMisconfigured from newPerTaskRunLoopDriver.
+// consumes. Bus + RunLoop + Planner + TaskRegistry are all mandatory;
+// a nil any of them returns ErrPerTaskRunLoopMisconfigured from
+// newPerTaskRunLoopDriver. The TaskRegistry is what the driver calls
+// MarkRunning / MarkComplete / MarkFailed on to advance the FSM
+// (D-098, closes issue #123).
 type perTaskRunLoopDriverOpts struct {
 	logger   *slog.Logger
 	bus      events.EventBus
 	runLoop  *steering.RunLoop
 	planner  planner.Planner
-	taskKind tasks.TaskKind // KindForeground at V1; the driver only spawns RunLoops for matching kinds
+	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit (D-098)
+	taskKind tasks.TaskKind     // KindForeground at V1; the driver only spawns RunLoops for matching kinds
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -95,6 +112,7 @@ type perTaskRunLoopDriver struct {
 	bus      events.EventBus
 	runLoop  *steering.RunLoop
 	planner  planner.Planner
+	tasks    tasks.TaskRegistry
 	taskKind tasks.TaskKind
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
@@ -126,6 +144,9 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 	if opts.planner == nil {
 		return nil, fmt.Errorf("%w: planner is nil", ErrPerTaskRunLoopMisconfigured)
 	}
+	if opts.tasks == nil {
+		return nil, fmt.Errorf("%w: tasks is nil", ErrPerTaskRunLoopMisconfigured)
+	}
 	if opts.logger == nil {
 		opts.logger = slog.Default()
 	}
@@ -137,6 +158,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		bus:      opts.bus,
 		runLoop:  opts.runLoop,
 		planner:  opts.planner,
+		tasks:    opts.tasks,
 		taskKind: opts.taskKind,
 	}, nil
 }
@@ -234,9 +256,11 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 }
 
 // runOne is the per-task RunLoop driver. It constructs a planner.
-// RunContext from the task's identity and calls runLoop.Run. The
-// run's ctx is derived from d.subCtx so Close cancels every
-// in-flight run.
+// RunContext from the task's identity, advances the task FSM out of
+// StatusPending via MarkRunning, calls runLoop.Run, and translates
+// the Run exit shape into MarkComplete / MarkFailed so the task
+// reaches a terminal FSM state. The run's ctx is derived from
+// d.subCtx so Close cancels every in-flight run.
 //
 // The planner Goal is left empty at this layer: TaskSpawnedPayload
 // (a SafeSealed struct, D-020) does not carry the user-facing Query.
@@ -247,17 +271,85 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // ReAct planner falls through to its default prompt builder which
 // surfaces this case cleanly via the LLM's "I have no goal" response.
 //
-// On RunLoop completion (Finish OR error), the function logs the
-// outcome and returns. The task's lifecycle FSM (Mark{Complete,
-// Failed}) is intentionally NOT advanced here — the runtime executor
-// (a later phase) owns that transition. The bridge between the
-// RunLoop's Finish decision and the task FSM is filed as a Wave
-// 12+ follow-up; until then, foreground tasks complete the planner
-// loop but remain at StatusPending. This is the documented
-// limitation the PR description names; closing it requires extending
-// the task registry's update surface to accept a "planner finished
-// with outcome X" signal.
+// # FSM bridge (D-098, closes issue #123)
+//
+// The task FSM is Pending → Running → {Complete, Failed} (the inprocess
+// driver's isValidTransition table). The driver therefore must:
+//
+//  1. Call MarkRunning BEFORE runLoop.Run, otherwise the eventual
+//     MarkComplete / MarkFailed would error with ErrInvalidTransition
+//     (Pending → Complete is not in the table). MarkRunning failure
+//     fails this run loud: a registry that cannot advance Pending →
+//     Running cannot satisfy the bridge and we should not let the
+//     RunLoop run only to find the FSM stuck.
+//  2. Map runLoop.Run's exit to a Mark* call. Three shapes:
+//     - Run returned nil + Finish.Reason == FinishGoal → MarkComplete.
+//     - Run returned nil + Finish.Reason ∈ {NoPath, Cancelled,
+//       DeadlineExceeded, ConstraintsConflict} → MarkFailed with the
+//       reason as the error code. These are RunLoop-side terminal
+//       states that DID reach Finish; they are not goal-satisfied so
+//       the task FSM transitions to Failed (the FSM has no
+//       "no-path-but-not-failed" status; Failed is the closest match).
+//     - Run returned a non-nil error → MarkFailed with code
+//       "runloop_error" (or "cancelled" for context.Canceled, per
+//       below) and the error string as the message.
+//  3. ctx.Canceled is the third terminal shape (driver shutdown OR an
+//     explicit cancel of the run's ctx). The FSM has no
+//     "auto-cancelled by ctx" path — Cancel(ctx, id, reason) is the
+//     external-caller surface and requires a reason. We map ctx.Canceled
+//     to MarkFailed with code="cancelled". Rationale (documented in
+//     D-098): the run did not reach a successful goal; Failed is the
+//     correct terminal state. An operator who wants explicit cancellation
+//     semantics calls TaskRegistry.Cancel directly (which routes through
+//     the Cancel path and uses StatusCancelled); the driver's ctx-cancel
+//     is a forced-shutdown signal, not a deliberate cancel decision.
+//
+// On any Mark* error after Run returns, the driver logs Warn but does
+// NOT panic — the per-task goroutine returns cleanly so the next
+// spawned task can still be processed. A Mark* error means the task
+// is already terminal (raced with an external Cancel) or identity
+// mismatch (programmer error); neither warrants tearing down the
+// driver.
+//
+// The Mark* calls use a ctx derived from d.subCtx with the task's
+// identity triple attached (TaskRegistry rejects calls missing the
+// triple per CLAUDE.md §6). When d.subCtx itself is already cancelled
+// (driver shutdown raced with Run return), the Mark* call may fail
+// with a context error; this is logged at Debug — the FSM transition
+// the operator wanted is moot because the binary is shutting down.
 func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
+	// Build the identity-scoped ctx the TaskRegistry needs. We attach
+	// the triple via identity.With (the same call site §6 mandates for
+	// every identity-scoped storage method). The ctx is derived from
+	// d.subCtx so Close still bounds the Mark* calls.
+	taskCtx, idErr := identity.With(d.subCtx, q.Identity)
+	if idErr != nil {
+		// Pre-Run identity attachment failed — the run never starts.
+		// This is a programmer error: handleEvent already validated the
+		// identity. Log loud and bail.
+		d.logger.Warn("perTaskRunLoopDriver: identity.With failed before Run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", idErr.Error()))
+		return
+	}
+
+	// MarkRunning advances Pending → Running. The RunLoop's FSM
+	// transitions (Complete/Failed) are not in the Pending → ? table —
+	// the task MUST be Running before we can mark it terminal.
+	if err := d.tasks.MarkRunning(taskCtx, taskID); err != nil {
+		// A MarkRunning failure means either (a) the task was cancelled
+		// before we got to it (Pending → Cancelled raced), or (b) the
+		// registry is unhealthy. Either way, do not run the planner —
+		// the eventual terminal Mark* would fail and we would have
+		// burned LLM cycles for no FSM transition. Log Warn and bail.
+		d.logger.Warn("perTaskRunLoopDriver: MarkRunning failed; skipping Run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", err.Error()))
+		return
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -267,23 +359,73 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
-		// Cancellation-shaped errors are benign (the driver is
-		// shutting down or the run's ctx cancelled). All others are
-		// surfaced as Warn — the task did not reach a terminal
-		// Finish. The runtime executor that bridges Finish → task
-		// FSM is the right place to escalate; we just log here.
+		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
+		// The FSM has no auto-cancelled status (Cancel is the external-
+		// caller surface and requires a reason); Failed is the closest
+		// terminal match for a ctx-cancelled run that did not reach a
+		// goal. See D-098 for the full rationale.
+		code := "runloop_error"
 		if errors.Is(err, context.Canceled) {
+			code = "cancelled"
 			d.logger.Debug("perTaskRunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
-			return
+		} else {
+			d.logger.Warn("perTaskRunLoopDriver: RunLoop.Run failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", err.Error()))
 		}
-		d.logger.Warn("perTaskRunLoopDriver: RunLoop.Run failed",
-			slog.String("task_id", string(taskID)),
-			slog.String("run_id", q.RunID),
-			slog.String("err", err.Error()))
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    code,
+			Message: err.Error(),
+		}); mErr != nil {
+			// A Mark* failure post-Run is logged but not escalated:
+			// either the task was concurrently transitioned terminal
+			// (raced with an external Cancel) or the registry is
+			// unhealthy. The driver continues serving subsequent
+			// spawn events.
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed after Run error failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+		}
 		return
 	}
-	d.logger.Info("perTaskRunLoopDriver: run finished",
+
+	// Run returned a terminal Finish. Map Finish.Reason to MarkComplete
+	// / MarkFailed. Only FinishGoal maps to Complete; every other reason
+	// is a non-success terminal (the run finished but did not satisfy
+	// the goal) and maps to Failed with the reason as the error code.
+	if fin.Reason == planner.FinishGoal {
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkComplete failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+			return
+		}
+		d.logger.Info("perTaskRunLoopDriver: run finished (complete)",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("reason", string(fin.Reason)))
+		return
+	}
+	// Non-goal terminal Finish (NoPath, Cancelled, DeadlineExceeded,
+	// ConstraintsConflict). The run reached Finish so the planner did
+	// not raise an error; the FSM transitions to Failed with the
+	// FinishReason as the error code so the Console / operator sees
+	// WHY the run ended without a goal.
+	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		Code:    string(fin.Reason),
+		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
+	}); mErr != nil {
+		d.logger.Warn("perTaskRunLoopDriver: MarkFailed after non-goal Finish failed",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", mErr.Error()))
+		return
+	}
+	d.logger.Info("perTaskRunLoopDriver: run finished (failed)",
 		slog.String("task_id", string(taskID)),
 		slog.String("run_id", q.RunID),
 		slog.String("reason", string(fin.Reason)))

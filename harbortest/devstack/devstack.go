@@ -58,6 +58,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -551,6 +552,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				bus:     bus,
 				runLoop: rl,
 				planner: plnr,
+				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -674,6 +676,7 @@ type DevStackRunLoopDriver struct {
 	bus     events.EventBus
 	runLoop *steering.RunLoop
 	planner planner.Planner
+	tasks   tasks.TaskRegistry // D-098: the FSM the driver advances on Run exit
 
 	subCtx     context.Context
 	subCancel  context.CancelFunc
@@ -688,6 +691,7 @@ type devStackRunLoopDriverOpts struct {
 	bus     events.EventBus
 	runLoop *steering.RunLoop
 	planner planner.Planner
+	tasks   tasks.TaskRegistry
 }
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
@@ -700,10 +704,14 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 	if opts.planner == nil {
 		return nil, fmt.Errorf("devstack RunLoop driver: planner is nil")
 	}
+	if opts.tasks == nil {
+		return nil, fmt.Errorf("devstack RunLoop driver: tasks is nil")
+	}
 	return &DevStackRunLoopDriver{
 		bus:     opts.bus,
 		runLoop: opts.runLoop,
 		planner: opts.planner,
+		tasks:   opts.tasks,
 	}, nil
 }
 
@@ -763,15 +771,60 @@ func (d *DevStackRunLoopDriver) handleEvent(ev events.Event) {
 	d.runsWG.Add(1)
 	go func() {
 		defer d.runsWG.Done()
-		spec := steering.RunSpec{
-			Planner: d.planner,
-			Base: planner.RunContext{
-				Quadruple: q,
-			},
-			TaskID: payload.TaskID,
-		}
-		_, _ = d.runLoop.Run(d.subCtx, spec)
+		d.runOne(q, payload.TaskID)
 	}()
+}
+
+// runOne mirrors cmd/harbor/cmd_dev_runloop.go::perTaskRunLoopDriver.
+// runOne (D-098). The helper is a 1:1 reflection of the production
+// bridge per D-094's source-of-truth invariant: integration tests
+// must observe the same FSM transitions production observes.
+//
+// The bridge advances the task FSM Pending → Running → {Complete,
+// Failed} based on the RunLoop's exit shape. See the production
+// implementation's docstring for the full Reason → Mark* mapping.
+// Errors from Mark* are silently dropped here (the helper does not
+// hold a slog.Logger; production's bridge logs Warn instead): a Mark*
+// failure post-Run is benign for the helper because the test asserts
+// on the FSM state directly, not on driver logs.
+func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID) {
+	taskCtx, idErr := identity.With(d.subCtx, q.Identity)
+	if idErr != nil {
+		return
+	}
+	if err := d.tasks.MarkRunning(taskCtx, taskID); err != nil {
+		// Pending → Running failed (raced with Cancel, or registry
+		// unhealthy). Skip Run — the eventual terminal Mark* would
+		// fail too.
+		return
+	}
+	spec := steering.RunSpec{
+		Planner: d.planner,
+		Base: planner.RunContext{
+			Quadruple: q,
+		},
+		TaskID: taskID,
+	}
+	fin, err := d.runLoop.Run(d.subCtx, spec)
+	if err != nil {
+		code := "runloop_error"
+		if errors.Is(err, context.Canceled) {
+			code = "cancelled"
+		}
+		_ = d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    code,
+			Message: err.Error(),
+		})
+		return
+	}
+	if fin.Reason == planner.FinishGoal {
+		_ = d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{})
+		return
+	}
+	_ = d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		Code:    string(fin.Reason),
+		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
+	})
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {
