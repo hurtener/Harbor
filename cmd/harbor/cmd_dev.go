@@ -486,7 +486,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			memStore = ms
 		}
 	}
-	_ = memStore // memory is wired but not yet consumed by ControlSurface; the wiring proves the seam.
+	_ = memStore // memory wired but not yet consumed by ControlSurface; tracked: https://github.com/hurtener/Harbor/issues/134
 
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
 		Store:    stateStore,

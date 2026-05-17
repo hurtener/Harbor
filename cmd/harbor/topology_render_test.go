@@ -286,6 +286,49 @@ func TestBuildTopology_IdentityFromFirstFrame(t *testing.T) {
 	}
 }
 
+// TestBuildTopology_SpawnWithEmptyRunID_FiltersOnPayloadTaskID is the
+// regression test for the audit's F1+F2 finding. Production emits
+// `task.spawned` with EMPTY `Identity.RunID` because the `start`
+// Protocol method dispatches `Quadruple{Identity: id}` only — the
+// per-task RunLoop driver populates `Identity.RunID = TaskID` AFTER
+// the task starts running (D-098). The CLI's run filter MUST therefore
+// resolve `task.spawned` via the payload's TaskID fallback. Before
+// the F1 fix the spawn event was dropped server-side (X-Harbor-Run
+// header) AND client-side (ParseSSEFrames filter on frame.Run only),
+// leaving the topology synthesiser with no Task node to render.
+func TestBuildTopology_SpawnWithEmptyRunID_FiltersOnPayloadTaskID(t *testing.T) {
+	t.Parallel()
+	// task.spawned has EMPTY Run on the identity tuple (matches
+	// production). The payload's TaskID is the run identifier the
+	// per-task RunLoop driver will use; later events carry that as
+	// Identity.RunID.
+	raw := `data: {"type":"task.spawned","sequence":1,"tenant":"t","user":"u","session":"s","payload":{"TaskID":"task-A","Kind":"foreground"}}
+
+data: {"type":"tool.invoked","sequence":2,"tenant":"t","user":"u","session":"s","run":"task-A","payload":{"ToolName":"echo"}}
+
+data: {"type":"planner.finish","sequence":3,"tenant":"t","user":"u","session":"s","run":"task-A","payload":{"Reason":"goal"}}
+
+`
+	frames, _, err := ParseSSEFrames([]byte(raw), "task-A")
+	if err != nil {
+		t.Fatalf("ParseSSEFrames: %v", err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("expected 3 frames (spawn+invoked+finish); got %d — the spawn event was dropped, F1 regression", len(frames))
+	}
+	top := BuildTopologyFromEvents("task-A", frames)
+	var hasTask bool
+	for _, n := range top.Nodes {
+		if n.Kind == TopologyNodeTask && n.Label == "task-A" {
+			hasTask = true
+			break
+		}
+	}
+	if !hasTask {
+		t.Errorf("topology missing Task node for task-A — F1 regression: %+v", top.Nodes)
+	}
+}
+
 // TestParseSSEFrames_SingleFrame_RoundTrips asserts the parser
 // recovers a single canonical SSE frame.
 func TestParseSSEFrames_SingleFrame_RoundTrips(t *testing.T) {

@@ -261,6 +261,15 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 		// observed (fsnotify can't watch a non-existent dir), but the
 		// supervisor exits cleanly on ctx-cancel without blocking the
 		// boot. Log Warn so the operator sees the no-op shape.
+		//
+		// First-clone vs §13 rationale (audit N4): the §13 fail-loud
+		// principle would argue this should `return error`. We accept
+		// the Warn-then-no-op because the default watch root is
+		// `.harbor/agents`, which does NOT exist in a freshly-cloned
+		// project. Failing-loud here would block `harbor dev` from
+		// booting in a fresh checkout — a strictly worse UX than
+		// silently running the supervisor as a no-op until the
+		// operator creates an agent.
 		s.logger.Warn("hot-reload: no watch roots exist; supervisor is a no-op until paths appear")
 	}
 
@@ -349,7 +358,7 @@ func (s *hotReloadSupervisor) Run(ctx context.Context) error {
 				slog.String("err", err.Error()))
 		case <-debounceFired:
 			newServeCtx, newServeCancel, rebuildErr := s.handleRebuildAndRestartServe(
-				ctx, serveCtx, serveCancel, serveErr, lastPath, lastOp)
+				ctx, serveCancel, serveErr, lastPath, lastOp)
 			if rebuildErr != nil {
 				return rebuildErr
 			}
@@ -379,12 +388,10 @@ func (s *hotReloadSupervisor) CurrentStack() *devStack {
 // exits.
 func (s *hotReloadSupervisor) handleRebuildAndRestartServe(
 	ctx context.Context,
-	oldServeCtx context.Context, //nolint:revive // explicit param documents the ctx-handoff shape
 	oldServeCancel context.CancelFunc,
 	serveErr chan error,
 	path, op string,
 ) (context.Context, context.CancelFunc, error) {
-	_ = oldServeCtx
 	s.logger.Info("hot-reload: file change observed",
 		slog.String("path", path),
 		slog.String("op", op),
