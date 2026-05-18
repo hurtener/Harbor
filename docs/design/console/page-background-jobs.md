@@ -22,7 +22,7 @@ Background Jobs sits last under the **Execution** cluster (Execution → Session
 - **Pause job.** `[shipped]` `pause` Protocol method.
 - **Resume job.** `[shipped]` `resume` Protocol method.
 - **Prioritize job (raise / lower numeric priority).** `[shipped]` `prioritize` Protocol method (`types.ControlRequest` with `Payload.priority`); emits `task.prioritised` (`tasks.TaskPrioritisedPayload`).
-- **Retry / Requeue — re-spawn the job with the same inputs.** `[shipped]` Invoke `start` Protocol method with the same `Query` / `Description` (the original is fetched via `tasks.get`); the new job id is minted by the runtime.
+- **Retry / Requeue — re-spawn the job with the same inputs.** `[wave-13-extends]` Invoke `start` Protocol method (shipped) but the original `Query` / `Description` is fetched via `tasks.get` (NEW Phase 73 method) — the bullet's net feasibility depends on Wave 13. The new job id is minted by the runtime.
 - **Bulk actions — Cancel selected, Pause selected, Prioritize selected.** `[shipped]` Per-row method invocations.
 - **`AwaitTask` orphan detector — highlight background jobs whose parent task is no longer alive (a planner `SpawnTask` that was never joined via `AwaitTask`).** `[wave-13-extends]` Derived from `tasks.list` (parent-task field) cross-checked against the runtime's active-task set; surfaces the §13 binding rule that `SpawnTask` + `AwaitTask` MUST emit in the same phase (Phase 47 / D-056 closed this for ReAct).
 - **Per-job artifacts-so-far rollup.** `[wave-13-extends]` `artifacts.list` (NEW Phase 73 method) filtered to job's `(tenant, user, session)` + the job's run id.

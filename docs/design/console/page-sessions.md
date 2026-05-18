@@ -29,7 +29,7 @@ Sessions is the first entry under the **Execution** cluster (Execution → Sessi
 - **"Convert to Evaluation" — stage this session as an eval case.** `[deferred]` D-064: Evaluations is post-V1; the action is mocked-as-future on the mockup but not in V1.
 - **"Replay trajectory" — step-by-step playback of the session's `state.history` slice.** `[wave-13-extends]` `state.history` Protocol method (Phase 73 `Pending`); UI is Console-local.
 - **"Share read-only link" — generate a scoped read-only URL.** `[deferred]` Brief 11 §"Open architectural questions" #10; requires a session-share-token Protocol primitive; post-V1.
-- **Export transcript (Markdown / JSONL).** `[shipped]` Client-side aggregation of `state.history` + chat messages — no new Protocol surface.
+- **Export transcript (Markdown / JSONL).** `[wave-13-extends]` Client-side aggregation of `state.history` (NEW Phase 73 method) + chat messages — depends on Wave 13's state inspection surface.
 - **Cancel an active session (cancel every live task).** `[shipped]` Invoke `cancel` per active task in the session; or a future `sessions.cancel` convenience method (consider `[wave-13-extends]` if added).
 - **No Priority field on session cards or detail header.** `[deferred]` D-065 dropped session-level priority from V1.
 - **Saved filter chips (e.g. "failed in last hour").** `[shipped]` Console DB holds Console-local state only per D-061; saved filters are Console-local.

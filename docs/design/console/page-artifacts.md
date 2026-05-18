@@ -19,8 +19,8 @@ Artifacts sits last under the **Resources** cluster (Resources → Flows, Memory
 - **Free-text search (filename / content-hash).** `[shipped]` Console-side index per Brief 11 §CC-4 — artifacts catalog is moderate-cardinality; large stores may need runtime-side via a `search.artifacts` Protocol method (Wave 13 to decide).
 - **Per-artifact preview — per-mime-type renderer (image / PDF / audio / video / JSON tree / CSV table / Markdown / plain text / hex dump for binary).** `[wave-13-extends]` `artifacts.get_ref` Protocol method (Phase 73 acceptance) returning a presigned URL (or in-band bytes for small artifacts) per D-022. Heavy bytes never travel inline through the Protocol.
 - **Per-artifact "Where used" — list of sessions / tasks that reference this artifact.** `[wave-13-extends]` `artifacts.usages` Protocol method (NEW) joining the artifact id against state-store references.
-- **Download — fetch the artifact bytes via the presigned URL.** `[shipped]` Via `artifacts.get_ref` (`Presigner.PresignGet` capability per `internal/artifacts/artifacts.go` glossary entry — read-side only; bounded [1 min, 7 days]; identity mandatory).
-- **Share — copy a time-bounded presigned URL.** `[shipped]` Same `artifacts.get_ref` mechanism with explicit expiry; the Console UI lets the operator pick the expiry window within the [1 min, 7 days] bound.
+- **Download — fetch the artifact bytes via the presigned URL.** `[wave-13-extends]` Via `artifacts.get_ref` (`Presigner.PresignGet` capability per `internal/artifacts/artifacts.go` glossary entry — read-side only; bounded [1 min, 7 days]; identity mandatory).
+- **Share — copy a time-bounded presigned URL.** `[wave-13-extends]` Same `artifacts.get_ref` mechanism with explicit expiry; the Console UI lets the operator pick the expiry window within the [1 min, 7 days] bound.
 - **Delete — admin-only.** `[wave-13-extends]` `artifacts.delete` Protocol method (Phase 73 acceptance).
 - **Per-mime renderer registry — markdown, image, audio, video, link, embedded resource, code-block highlight, JSON tree, CSV table.** `[shipped]` Reuses the same canonical renderer registry the chat / playground module uses per Brief 11 §PG-4 + Brief 12 §"The shared chat / playground library" (`web/console/src/lib/chat/renderers/`); no Protocol surface.
 - **Artifact lineage — show the producing task + the parent session + the artifact's `Hash` for dedup detection.** `[wave-13-extends]` `artifacts.list` extended fields (source-task, hash) + client-side rendering.
@@ -54,8 +54,8 @@ Artifacts sits last under the **Resources** cluster (Resources → Flows, Memory
 | Search box | Console-side index OR `search.artifacts` (NEW) | Submit | `[shipped]` |
 | Artifact detail header | `artifacts.get` (Phase 73 — `artifacts.get`) | Copy id / hash; click source-task → Tasks detail | `[wave-13-extends]` |
 | Preview viewport | `artifacts.get_ref` (Phase 73 acceptance) returning presigned URL | Renderer-dispatched (Markdown / image / PDF / audio / video / JSON tree / CSV table / hex) | `[wave-13-extends]` |
-| Download button | `artifacts.get_ref` (presigned URL) | Fetch + save | `[shipped]` |
-| Share button | `artifacts.get_ref` with expiry | Copy URL to clipboard (local UI state) | `[shipped]` |
+| Download button | `artifacts.get_ref` (presigned URL) | Fetch + save | `[wave-13-extends]` |
+| Share button | `artifacts.get_ref` with expiry | Copy URL to clipboard (local UI state) | `[wave-13-extends]` |
 | Delete button (admin) | `artifacts.delete` (Phase 73 acceptance) | Submit (confirms first) | `[wave-13-extends]` |
 | Metadata card (right rail) | `artifacts.get` extended fields | Copy fields (local) | `[wave-13-extends]` |
 | "Where used" list | `artifacts.usages` (NEW) | Click → Sessions / Tasks detail | `[wave-13-extends]` |

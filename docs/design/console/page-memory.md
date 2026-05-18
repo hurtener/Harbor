@@ -24,7 +24,7 @@ Memory sits second under the **Resources** cluster (Resources → Flows, Memory,
 - **Manual edit — admin-only; replace an existing item.** `[wave-13-extends]` `memory.put` (idempotent on identity + key) Protocol method.
 - **Manual evict — admin-only; remove a memory item.** `[wave-13-extends]` `memory.delete` Protocol method (NEW).
 - **Cross-session promotion viewer — list of explicit declared promotions (session → user / user → tenant), each with the audit trail.** `[wave-13-extends]` `memory.promotions` Protocol method (NEW). The page surfaces the declared promotion policies; memory promotion itself is a runtime concern.
-- **Driver-comparison rollup — when a tenant uses different drivers per scope (in-mem for session, postgres for tenant-level), surface the active per-scope driver.** `[shipped]` Derived from `memory.list` payload's `driver` field.
+- **Driver-comparison rollup — when a tenant uses different drivers per scope (in-mem for session, postgres for tenant-level), surface the active per-scope driver.** `[wave-13-extends]` Derived from `memory.list` (NEW) payload's `driver` field.
 - **Export memory snapshot (JSONL).** `[shipped]` Client-side aggregation.
 - **No Priority field rendered.** `[deferred]` D-065 invariant preserved.
 - **Saved filter chips.** `[shipped]` Console-local per D-061.
@@ -55,8 +55,8 @@ Memory sits second under the **Resources** cluster (Resources → Flows, Memory,
 | Memory health card (right rail) | `memory.health_changed` / `memory.identity_rejected` / `memory.recovery_dropped` events | Click → Events page filtered to type | `[shipped]` |
 | Selected-item detail (right rail) | `memory.list` selected row | Copy content (local); Edit (admin → `memory.put`); Evict (admin → `memory.delete`) | `[wave-13-extends]` |
 | Add memory composer | `memory.put` (NEW) (admin) | Submit | `[wave-13-extends]` |
-| Driver-comparison rollup chip | derived from `memory.list` payload | Click → show per-scope driver detail (local UI state) | `[shipped]` |
-| Export snapshot | `memory.list` aggregated client-side | Submit → file download | `[shipped]` |
+| Driver-comparison rollup chip | derived from `memory.list` (NEW) payload | Click → show per-scope driver detail (local UI state) | `[wave-13-extends]` |
+| Export snapshot | `memory.list` (NEW) aggregated client-side | Submit → file download | `[wave-13-extends]` |
 
 ## 6. Controls + actions
 

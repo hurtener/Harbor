@@ -58,10 +58,10 @@ MCP Connections sits third under the **Resources** cluster (Resources → Flows,
 | Tools tab | filtered `tools.list` (NEW) by MCP source | Click tool → Tools page detail | `[wave-13-extends]` |
 | Resources tab | `mcp.resources` (NEW) | Click resource → preview (renderer dispatched) | `[wave-13-extends]` |
 | Prompts tab | `mcp.prompts` (NEW) | Click prompt → preview | `[wave-13-extends]` |
-| OAuth bindings tab | per-server bindings from `mcp.get` + live `tool.auth_required` / `tool.auth_completed` events | Connect / Reconnect / Revoke per binding | `[shipped]` |
+| OAuth bindings tab | per-server bindings from `mcp.get` (NEW) + live `tool.auth_required` / `tool.auth_completed` events | Connect / Reconnect / Revoke per binding | `[wave-13-extends]` |
 | Policy tab | `mcp.get` returns `ToolPolicy` projection | none in V1 | `[wave-13-extends]` |
 | Recent events card (right rail) | `mcp.resource_updated` + filtered `tool.auth_required` + transport-error subset of `tool.failed` | Click → Events page filtered | `[shipped]` |
-| Per-binding-scope status (right rail) | `auth.BindingScope` from `mcp.get` + live event status | Click → OAuth bindings tab | `[shipped]` |
+| Per-binding-scope status (right rail) | `auth.BindingScope` from `mcp.get` (NEW) + live event status | Click → OAuth bindings tab | `[wave-13-extends]` |
 | "Refresh discovery" button | `mcp.refresh_discovery` (NEW) | Submit | `[wave-13-extends]` |
 | "Test connection" button | `mcp.test_connection` (NEW) | Submit | `[wave-13-extends]` |
 | Raw-HTML opt-in toggle | Console DB (per-server trust) + audit event (NEW: `mcp.raw_html_trust_toggled`) | Toggle on/off (admin-gated, audited) | `[wave-13-extends]` |

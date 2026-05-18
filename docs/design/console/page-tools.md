@@ -22,7 +22,7 @@ Tools sits fourth under the **Execution** cluster (Execution → Sessions, Tasks
 - **Per-tool error breakdown — invalid-args count, policy-exhausted count, transport-error count, source-error count in window.** `[shipped]` Same event streams aggregated client-side.
 - **"Try this tool" form — developer-scope gated; renders schema-driven form; invokes tool through the same path the planner uses; emits canonical events.** `[wave-13-extends]` Requires a `tools.invoke` Protocol method (NEW) that wraps the catalog's `Invoke` behind the same `ToolPolicy` reliability shell and identity propagation. Brief 11 §"Tools view" + §"Playground / direct interaction" PG-1..PG-7 constraints apply: not a side channel, full audit, ceilings honored.
 - **OAuth status badge per tool — when the tool requires OAuth, render "Connected" / "Reconnect required" / "Not connected" with deep-link to the binding configurator (lives in Agents or MCP Connections per source).** `[shipped]` Derived from `tool.auth_required` (`auth.ToolAuthRequiredPayload`) and `tool.auth_completed` events plus the binding scope from the tool's `auth.BindingScope`.
-- **Approval-gate badge — when the tool's `ToolPolicy` requires HITL approval per D-086.** `[shipped]` Derived from the `tools.ToolDescriptor` projection (`tools.get`) and the historical `tool.approval_requested` / `tool.approved` / `tool.rejected` events.
+- **Approval-gate badge — when the tool's `ToolPolicy` requires HITL approval per D-086.** `[wave-13-extends]` Derived from the `tools.ToolDescriptor` projection (`tools.get` NEW) and the historical `tool.approval_requested` / `tool.approved` / `tool.rejected` events (shipped).
 - **MCP-Apps content shapes inventory — when the tool's transport is mcp, list which canonical content shapes the tool returns (`string` / `ImageRef` / `AudioRef` / `LinkRef` / `EmbeddedRef`).** `[wave-13-extends]` `tools.get` extended fields; mockup may gesture as a "renders as: …" mini-summary.
 - **MCP `DisplayMode` indicator — `inline` / `fullscreen` / `pip` per D-062.** `[wave-13-extends]` `tools.get` returns the `DisplayMode` declared in `internal/protocol/types/`.
 - **Source-provenance link — for MCP-sourced tools, deep-link to MCP Connections page detail; for HTTP / A2A tools, render the configured URL/peer.** `[shipped]` Local navigation.
@@ -59,8 +59,8 @@ Tools sits fourth under the **Execution** cluster (Execution → Sessions, Tasks
 | Source provenance tab | `tools.get` (for MCP / A2A: deep-link to source page) | Click link → source detail | `[wave-13-extends]` |
 | Recent invocations tab | `tool.invoked` / `tool.completed` / `tool.failed` / `tool.invalid_args` / `tool.policy_exhausted` events filtered to tool | Click row → parent task detail | `[shipped]` |
 | "Try this tool" form | `tools.invoke` (NEW) | Submit → invokes the tool through `ToolPolicy` shell; renders streaming events | `[wave-13-extends]` |
-| OAuth status badge | `tool.auth_required` / `tool.auth_completed` events + `tools.get` binding scope | Click → page-mcp-connections.md or page-agents.md for binding | `[shipped]` |
-| Approval-gate badge | `tools.get` + `tool.approval_requested` / `tool.approved` / `tool.rejected` events | none (informational) | `[shipped]` |
+| OAuth status badge | `tool.auth_required` / `tool.auth_completed` events + `tools.get` (NEW) binding scope | Click → page-mcp-connections.md or page-agents.md for binding | `[wave-13-extends]` |
+| Approval-gate badge | `tools.get` (NEW) + `tool.approval_requested` / `tool.approved` / `tool.rejected` events | none (informational) | `[wave-13-extends]` |
 | Statistics card | event aggregation client-side | none | `[shipped]` |
 
 ## 6. Controls + actions
