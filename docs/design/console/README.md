@@ -2,7 +2,9 @@
 
 This directory holds one self-contained design specification per Harbor Console page. Each spec captures the page's purpose, IA position, functionality matrix, anatomy, components, controls, empty/loading/error/unauthorized states, multi-tenant / multi-runtime nuances, identity scope claims, and V1 deferrals — at enough depth that an operator can author a mockup against it without re-reading every research brief.
 
-The 14 specs feed the Wave 13 Console-wave mockup-authoring work. They are NOT phase plans (those follow the §16 phase-authoring ritual when Wave 13 re-decomposes phases 72–75 against the full 14-page IA). The Wave 13 dispatch prompt will use these specs as the per-page mandatory-reading anchor, alongside Brief 11 (`docs/research/11-console-feature-surface.md`), Brief 12 (`docs/research/12-console-deployment-and-shared-ui.md`), the two existing mockup assets (`docs/research/console-mockup-runtime-view.png` and `docs/rfc/assets/console-agents-page.png`), CLAUDE.md §4.5, and decisions D-091 / D-092 / D-093.
+The 14 specs feed the Wave 13 Console-wave mockup-authoring work. They are NOT phase plans (those follow the §16 phase-authoring ritual when Wave 13 re-decomposes phases 72–75 against the full 14-page IA). The Wave 13 dispatch prompt will use these specs as the per-page mandatory-reading anchor, alongside Brief 11 (`docs/research/11-console-feature-surface.md`), Brief 12 (`docs/research/12-console-deployment-and-shared-ui.md`), the canonical mockup assets in `docs/rfc/assets/console-*-page.png` (one per page, except Evaluations which is post-V1), CLAUDE.md §4.5, and decisions D-091 / D-092 / D-093.
+
+The mockup inventory is **complete for V1**: 14 canonical PNGs at `docs/rfc/assets/console-<slug>-page.png` cover the full IA (Evaluations excluded per D-064). Each spec's §12 reconciles its mockup against §3-§7 and is the binding source of truth for any Wave 13 phase that consumes the page.
 
 The Console-wave pre-plan note in `docs/plans/README.md` (around lines 754–764) points to this directory as the authoritative per-page spec source for Wave 13 mockup work.
 
@@ -10,20 +12,20 @@ The Console-wave pre-plan note in `docs/plans/README.md` (around lines 754–764
 
 | # | Spec file | Page | Sidebar cluster | Mockup status |
 |---|---|---|---|---|
-| 1 | [`page-overview.md`](page-overview.md) | Overview | Runtime | TBD — drives mockup |
-| 2 | [`page-live-runtime.md`](page-live-runtime.md) | Live Runtime | Runtime | `docs/research/console-mockup-runtime-view.png` (legacy location per Brief 12) |
-| 3 | [`page-sessions.md`](page-sessions.md) | Sessions | Execution | TBD — drives mockup |
-| 4 | [`page-tasks.md`](page-tasks.md) | Tasks | Execution | TBD — drives mockup |
+| 1 | [`page-overview.md`](page-overview.md) | Overview | Runtime | `docs/rfc/assets/console-overview-page.png` (canonical, 2026-05-18) |
+| 2 | [`page-live-runtime.md`](page-live-runtime.md) | Live Runtime | Runtime | `docs/rfc/assets/console-live-runtime-page.png` (canonical, 2026-05-18; supersedes legacy `docs/research/console-mockup-runtime-view.png` which pre-dates D-065 compliance) |
+| 3 | [`page-sessions.md`](page-sessions.md) | Sessions | Execution | `docs/rfc/assets/console-sessions-page.png` (canonical, 2026-05-18) |
+| 4 | [`page-tasks.md`](page-tasks.md) | Tasks | Execution | `docs/rfc/assets/console-tasks-page.png` (canonical, 2026-05-18) |
 | 5 | [`page-agents.md`](page-agents.md) | Agents | Execution | `docs/rfc/assets/console-agents-page.png` (canonical) |
-| 6 | [`page-tools.md`](page-tools.md) | Tools | Execution | TBD — drives mockup |
-| 7 | [`page-events.md`](page-events.md) | Events | Execution | TBD — drives mockup |
-| 8 | [`page-background-jobs.md`](page-background-jobs.md) | Background Jobs | Execution | TBD — drives mockup |
-| 9 | [`page-flows.md`](page-flows.md) | Flows | Resources | TBD — drives mockup |
-| 10 | [`page-memory.md`](page-memory.md) | Memory | Resources | TBD — drives mockup |
-| 11 | [`page-mcp-connections.md`](page-mcp-connections.md) | MCP Connections | Resources | TBD — drives mockup |
-| 12 | [`page-artifacts.md`](page-artifacts.md) | Artifacts | Resources | TBD — drives mockup |
-| 13 | [`page-settings.md`](page-settings.md) | Settings | Settings | TBD — drives mockup |
-| 14 | [`page-playground.md`](page-playground.md) | Playground (session-level surface) | n/a (not a sidebar entry) | TBD — drives mockup |
+| 6 | [`page-tools.md`](page-tools.md) | Tools | Execution | `docs/rfc/assets/console-tools-page.png` (canonical, 2026-05-18) |
+| 7 | [`page-events.md`](page-events.md) | Events | Execution | `docs/rfc/assets/console-events-page.png` (canonical, 2026-05-18) |
+| 8 | [`page-background-jobs.md`](page-background-jobs.md) | Background Jobs | Execution | `docs/rfc/assets/console-background-jobs-page.png` (canonical, 2026-05-18) |
+| 9 | [`page-flows.md`](page-flows.md) | Flows | Resources | `docs/rfc/assets/console-flows-page.png` (canonical, 2026-05-18) |
+| 10 | [`page-memory.md`](page-memory.md) | Memory | Resources | `docs/rfc/assets/console-memory-page.png` (canonical, 2026-05-18) |
+| 11 | [`page-mcp-connections.md`](page-mcp-connections.md) | MCP Connections | Resources | `docs/rfc/assets/console-mcp-connections-page.png` (canonical, 2026-05-18) |
+| 12 | [`page-artifacts.md`](page-artifacts.md) | Artifacts | Resources | `docs/rfc/assets/console-artifacts-page.png` (canonical, 2026-05-18) |
+| 13 | [`page-settings.md`](page-settings.md) | Settings | Settings | `docs/rfc/assets/console-settings-page.png` (canonical, 2026-05-18) |
+| 14 | [`page-playground.md`](page-playground.md) | Playground (session-level surface) | n/a (not a sidebar entry) | `docs/rfc/assets/console-playground-page.png` (canonical, 2026-05-18) |
 
 ## How the specs are organised
 
@@ -55,8 +57,8 @@ Per the §17.7 wave-delivery cadence, the Wave 13 dispatch prompt will:
 
 - `docs/research/11-console-feature-surface.md` — the verbal decomposition of Live Runtime + Playground + 12 other views.
 - `docs/research/12-console-deployment-and-shared-ui.md` — deployment posture, shared chat module, mockup asset inventory.
-- `docs/rfc/assets/console-agents-page.png` — Agents page mockup (canonical).
-- `docs/research/console-mockup-runtime-view.png` — Live Runtime page mockup (legacy location per Brief 12).
+- `docs/rfc/assets/console-*-page.png` — 14 canonical page mockups (one per V1 IA page; Evaluations excluded per D-064).
+- `docs/research/console-mockup-runtime-view.png` — superseded legacy Live Runtime mockup; retained as a research artifact only (the canonical Live Runtime mockup is `docs/rfc/assets/console-live-runtime-page.png`).
 - `RFC-001-Harbor.md` §5 (Harbor Protocol), §7 (Console layer).
 - `CLAUDE.md` §4.5 (Console / Protocol-client conventions), §13 (Forbidden practices — frontend bullets).
 - `docs/decisions.md` — D-002, D-061, D-062, D-063, D-064, D-065, D-066, D-091, D-092, D-093.

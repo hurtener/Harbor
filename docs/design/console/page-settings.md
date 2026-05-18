@@ -1,7 +1,7 @@
 # Console page — Settings
 
 **Slug:** `settings` &middot; **Sidebar cluster:** Settings &middot; **Route:** `/console/settings`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-settings-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -109,3 +109,55 @@ Settings is the page where the multi-runtime model is most exposed: the Connecte
 - Decisions: D-014 (Apache-2.0 license), D-061 (Console DB local-only), D-065 (no session priority — invariant), D-066 (control claim), D-077 (Protocol versioning + capabilities + deprecations), D-079 (Protocol auth scope claims), D-081 (governance config consolidation — `IdentityTiers`), D-089 (`harbor dev` LLM-default + mock escape hatch — surfaces as the LLM-posture banner), D-091 (Console deployment posture — served by `harbor console` via `embed.FS`, NOT `harbor dev`), D-092 (Svelte 5 + runes — not exposed in UI), D-093 (`protocol.ts` generated — not exposed in UI).
 - Phase plan: phase 36a (Cost accumulator + per-identity ceilings — `Shipped`), phase 36b (Per-identity rate limits + MaxTokens — `Shipped`), phase 59 (Protocol versioning + deprecation policy — `Shipped`), phase 61 (Protocol auth — `Shipped`), phase 91 (Console-driven key rotation — `Post-V1`), phase 92 (Console-driven mid-session model swap — `Post-V1`).
 - Glossary terms used: `Console`, `Console DB`, `Protocol`, `Protocol version`, `Deprecation window`, `Scope claim`, `Fleet control / fleet observation`, `HARBOR_DEV_TOKEN`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-settings-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Left sub-nav rail (sticky).** Section anchors that mirror the mockup's card grid: `Connected Runtimes`, `Per-Runtime Auth`, `API Tokens (Console-local)`, `Appearance`, `Time & Locale`, `Keybindings`, `Notifications Routing`, `Runtime Info`, `Governance Posture`, `Storage Drivers`, `LLM-Provider Posture`, `About`. Anchors scroll to their cards; the rail tracks scroll position.
+- **Connected Runtimes card (top-left, primary surface).** Per-runtime row: name + base URL + transport chip + status pill + Protocol version chip + connected-since timestamp + row actions (`Reconnect`, `Edit`, `Remove`, `Set as default`). `+ Add Runtime` button at the card header opens a Console-local form (saves into Console DB per D-061). Multi-runtime cluster summary (count + currently-active) renders above the table.
+- **Per-Runtime Auth card (top-right).** Per-runtime auth posture: identity provider (JWT issuer / OIDC / `HARBOR_DEV_TOKEN`-bypass), allowed JWT algorithms (RS256/RS384/RS512/ES256/ES384/ES512 chips per §7), scope-claim summary (`tasks.control`, `tools.approve`, `events.crosstenant`, `memory.crosstenant`, ...) per the operator's session. `Rotate token` / `Sign in to other Runtime` buttons; rotation is gated by `console.admin` claim per D-066. Encrypted at rest in Console DB per Brief 12 auth-storage threat model.
+- **API Tokens (Console-local) card.** Lists Console-local Personal Access Tokens used for embedding the Console in third-party clients (e.g. browser extensions). Per-token: label, scope summary, last used, expiration. Create / Revoke gated by `console.admin`. Never displays the raw token after creation (one-time reveal in the create flow).
+- **Appearance card.** Theme picker (Light / Dark / System), density toggle (Compact / Comfortable), high-contrast toggle, reduced-motion toggle (Brief 11 §CC-6). All Console-local per D-061.
+- **Time & Locale card.** Timezone picker (defaults to browser tz; override pinned per Console-local profile), locale picker (date/number format), `Use 24-hour clock` toggle. Console-local.
+- **Keybindings card.** Lists default keybindings for global shortcuts (open palette, focus search, navigate sessions, navigate tasks, ...). Per-binding `Edit` opens an in-row capture; `Reset to defaults` per row and bulk. Console-local; binding sets stored per Console-local profile.
+- **Notifications Routing card.** Per-notification-class toggle matrix (in-Console toast / browser notification / email / webhook). Rules-engine-lite per Brief 11 §CC-3 mapper: each row picks which transport(s) fire for events matching a class (`task.failed`, `tool.approval_requested`, `pause.requested`, `governance.budget_exceeded`, `auth.required`). Email and webhook transports gated by `console.admin`.
+- **Runtime Info card (bottom-left).** Read-only fields for the currently selected runtime: build version, Protocol version + deprecated method list (per D-077), git commit, uptime, host OS, persistence drivers in use (StateStore / ArtifactStore / MemoryStore — each per D-061 carve-outs). All sourced from `runtime.info` Protocol method.
+- **Governance Posture card.** Read-only view of the runtime's governance configuration (D-081's `IdentityTiers`): cost ceilings per tier (per-tenant / per-user / per-session), rate limits, MaxTokens caps. Edit is post-V1 per §10. Includes a `LLM provider posture` banner — when the runtime booted via `HARBOR_DEV_ALLOW_MOCK=1` per D-089, a yellow banner reads `DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION`.
+- **Storage Drivers card.** Read-only view of the persistence triad (in-mem / SQLite / Postgres) per subsystem (StateStore, ArtifactStore, MemoryStore, plus any post-V1 drivers). Per-row driver name + connection string (masked) + migration version + last-migrated timestamp. Sourced from `runtime.storage` Protocol method.
+- **LLM-Provider Posture card.** Read-only view of the LLM provider currently bound (provider name, model id, region/endpoint, mock-mode flag per D-089). The dev mock-mode banner repeats here for clarity.
+- **About card (bottom-right).** Static content per D-014: Apache-2.0 license link, third-party-licenses link, project home link, version of the Console (build SHA + npm version), `Report an issue` link. Console-local content.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Connected Runtimes table + `+ Add Runtime` | Console DB local table | Add / Edit / Remove / Reconnect / Set as default | `[Console-local]` (D-061) |
+| Per-Runtime Auth — identity provider + JWT algorithm chips + scope summary | `runtime.info` + Console DB auth profile | View; `Rotate token`, `Sign in to other Runtime` | `[Console-local]` (Console DB auth profile per D-061) + `[wave-13-extends]` (`auth.rotate_token` Protocol method TBD) |
+| API Tokens (Console-local PAT) — create / list / revoke | Console DB local table | Create / Revoke (one-time reveal) | `[Console-local]` (D-061) |
+| Appearance card (theme / density / contrast / motion) | Console DB profile | Toggle | `[Console-local]` (D-061) |
+| Time & Locale card | Console DB profile | Set | `[Console-local]` (D-061) |
+| Keybindings card (per-action edit + reset) | Console DB profile | Re-bind / Reset | `[Console-local]` (D-061) |
+| Notifications Routing matrix (rules-engine-lite mapper) | Console DB profile + `events.subscribe` taxonomy | Toggle transport per class | `[Console-local]` (D-061; transports email / webhook gated by `console.admin`) |
+| Runtime Info card | `runtime.info` Protocol response | None | `[wave-13-extends]` (`runtime.info` Protocol method TBD) |
+| Governance Posture card (read-only view of `IdentityTiers`) | `governance.posture` Protocol response | None at V1 (edit post-V1 per §10) | `[wave-13-extends]` (`governance.posture` read method TBD) |
+| Storage Drivers card | `runtime.storage` Protocol response | None | `[wave-13-extends]` (`runtime.storage` Protocol method TBD) |
+| LLM-Provider Posture card + mock-mode banner | `runtime.llm.posture` Protocol response | None | `[wave-13-extends]` (`runtime.llm.posture` Protocol method TBD) |
+| About card | Static Console content | Click links | `[Console-local]` (D-061) |
+
+### No mockup violations of binding carve-outs
+
+- **D-014 (Apache-2.0 license).** About card surfaces the license link and a third-party-licenses link.
+- **D-061 (Console DB local-only).** All preference cards (Appearance, Time & Locale, Keybindings, Notifications Routing, API Tokens, Connected Runtimes registry, Per-Runtime Auth profiles) persist into Console DB only — none of these mutate runtime entities. The Runtime Info / Governance Posture / Storage Drivers / LLM-Provider Posture cards are pure read of Protocol surfaces; they never shadow runtime state.
+- **D-065 (no session-level priority).** No priority field anywhere in Settings (governance config is per-identity-tier per D-081, not per-session).
+- **D-066 (control-scope claims).** `Rotate token`, email/webhook notification transports, runtime add/edit/remove, API token create/revoke all gate on `console.admin`; observation cards (Runtime Info / Governance Posture / Storage Drivers / LLM-Provider Posture / Appearance / Time & Locale / Keybindings) require only the read scope.
+- **D-077 (Protocol versioning + deprecations).** Runtime Info card surfaces the Protocol version chip and the deprecated-method list; deprecations are visible operator-side, not hidden.
+- **D-079 (Protocol auth scope claims).** Per-Runtime Auth card surfaces the operator's current scope chips — operators see what they can do, gated controls show why.
+- **D-081 (governance config consolidation — `IdentityTiers`).** Governance Posture card reads the consolidated `IdentityTiers` shape; no parallel governance model in the Console.
+- **D-089 (mock-mode banner).** Mock-mode banner appears in both Governance Posture and LLM-Provider Posture cards when the runtime boots with `HARBOR_DEV_ALLOW_MOCK=1`; the banner reads exactly the §13 stderr text (`DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION`).
+- **D-091 (Console deployment posture).** No "Embed Console in `harbor dev`" toggle; the Console is served by `harbor console` per the binding rule. Connected Runtimes treats every runtime as a remote peer (even local-host runtimes), which is consistent with the D-091 deployment shape.
+- **D-092 / D-093 (Svelte 5 runes + generated `protocol.ts`).** Implementation-detail decisions — not exposed in UI per spec.
+- **§13 forbidden practices.** No identity-downgrading knobs anywhere (Per-Runtime Auth never offers a "skip identity" toggle); no parallel implementation of governance (Governance Posture is read-only); no shadow source of truth for runtime entities (Console DB holds only Console-local preferences, runtimes registry, and auth profiles per D-061); mock-mode banner is loud and explicit per D-089.

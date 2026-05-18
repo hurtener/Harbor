@@ -1,7 +1,7 @@
 # Console page — Background Jobs
 
 **Slug:** `background-jobs` &middot; **Sidebar cluster:** Execution &middot; **Route:** `/console/background-jobs`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-background-jobs-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -107,3 +107,43 @@ Background jobs are tenant-scoped: each `tasks.list` call carries the operator's
 - Decisions: D-006 (background-task persistence in-process at V1), D-030 (TaskRegistry surface split), D-047 (`SpawnTask` / `AwaitTask` / `RequestPause` shapes), D-061 (Console DB local-only), D-065 (no session priority), D-066 (control claim), D-072 (Protocol task control surface).
 - Phase plan: phase 20 (TaskRegistry — `Shipped`), phase 21 (TaskGroup + retain-turn + patches — `Shipped`), phase 47 (parallel exec + ReAct emission upgrade — `Shipped`), phase 54 (task control surface — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `TaskRegistry`, `GroupCompletion`, `Console`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-background-jobs-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip.** Saved-filter chips (`Saved filters`, `Active only`, `High-priority`, `Stuck > 1h`, `Recently failed`) followed by faceted filter chips (`Tenant` ▾, `Session` ▾, `Status` ▾ — `Queued` / `Running` / `Paused` / `Completed` / `Failed` / `Cancelled` — `Has pending approval` ▾, `More filters` ▾). Right side: `Refresh`, `Cancel selected` (bulk control, gated by `tasks.control` scope), `Pause selected` (bulk control, gated by `tasks.control` scope).
+- **Main jobs table (primary surface).** Columns in mockup order: checkbox / **Job ID** (short hash + copyable) / **Title / Description** (one-line summary from the planner's spawn payload) / **Parent session** (chip with deep-link to `/console/sessions/<id>`) / **Status** chip / **Progress** mini-bar (when planner emits a numeric progress hint via the existing event stream) / **Started** (relative timestamp) / **Last activity** (relative timestamp) / **Tags** (parent task type / planner-emitted labels) / row-action menu. Virtualised; pagination footer `Page N of M | Show rows ▾`.
+- **Bulk-action toolbar.** Activates when ≥1 row is checked: `Cancel`, `Pause`, `Resume`, `Prioritize` (task-level only per D-072 — session-level priority remains dropped per D-065). All four invoke shipped Phase 54 control verbs; all four require the `tasks.control` claim per D-066 and degrade to disabled-with-tooltip when missing.
+- **Right rail — Selected job detail panel (full height when a row is selected).** Header: short hash + status chip + copy-id button. Tabbed sub-panels in mockup order:
+  - **Details** — full `task_id`, parent `run_id` + `session_id` + identity triple, planner of origin, spawn timestamp, attempt count, last-attempt outcome.
+  - **Progress** — timeline of state transitions (`Queued → Running → Paused → Resumed → …`) with timestamps; current `Progress` percentage when emitted.
+  - **Logs** — `task.*` / `tool.*` events filtered to this job (links into Events page with the filter pre-applied).
+  - **Pending approvals** — when the job's planner emitted `tool.approval_requested` or HITL `pause`, lists the open requests with Approve / Reject buttons (gated by `tools.approve` / `tasks.control` claims).
+  - **Artifacts for this Job** — list of artifacts produced by this task with mime-icon + filename + size; clicking opens via `artifacts.get`.
+  - **Related Sessions** — sibling tasks in the same `TaskGroup` (D-030 / D-047) and the parent session, with status pills.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Saved-filter chips (`Active only`, `High-priority`, `Stuck > 1h`, `Recently failed`) | Console-local saved views (D-061) | Apply / pin / unpin | `[Console-local]` (D-061) |
+| Faceted filter chips (Tenant / Session / Status / Has pending approval / More filters) | `tasks.list` filter params | Toggle facet | `[wave-13-extends]` (extended `tasks.list` filter shape) |
+| Progress mini-bar column | Planner-emitted progress events (no contract change — read from `events.subscribe`) | None | `[wave-13-extends]` (planner-progress event already on the bus; surfacing it requires a `tasks.list` enrichment) |
+| Tags column (parent task type / planner-emitted labels) | `tasks.list` row metadata | None | `[wave-13-extends]` (`tasks.list` row shape extension) |
+| Bulk `Cancel` / `Pause` / `Resume` / `Prioritize` | Selected row IDs | Invoke Phase 54 verb per row | `[shipped]` (`cancel` / `pause` / `resume` / `prioritize` — Phase 54) |
+| Pending-approvals tab in right rail (per-job) | `tool.approval_requested` events filtered by `task_id` | Approve (`approve`) / Reject (`reject`) | `[shipped]` (`approve` + `reject` — Phase 54) |
+| Artifacts-for-this-Job tab | `artifacts.list?task_id=…` | Open artifact via `artifacts.get` | `[wave-13-extends]` (`artifacts.list` filter by `task_id`) |
+| Related Sessions tab (sibling tasks in same `TaskGroup`) | `tasks.list?group_id=…` | Click row → navigate to sibling job | `[wave-13-extends]` (`tasks.list` filter by `group_id`) |
+| Stuck > 1h saved-filter chip | Console-local rule over `last_activity_at` | Apply filter | `[Console-local]` (D-061; pure client-side derivation) |
+
+### No mockup violations of binding carve-outs
+
+- **D-061 (Console DB local-only).** Saved-filter chips, the `Stuck > 1h` derivation, sort preferences, and column visibility are Console-local. The mockup never persists a Protocol-mutating shadow of background jobs — every row round-trips through `tasks.list`.
+- **D-065 (no session-level priority).** The Prioritize bulk action targets `task_id` only per D-072; no session-priority field appears on rows or in filters. The `High-priority` saved-filter chip filters on task-level priority (the only V1 surface), not session-level.
+- **D-066 (control-scope claims).** Cancel / Pause / Resume / Prioritize / Approve / Reject are all gated by the appropriate claim and disabled-with-tooltip when missing; observation (list, detail, logs, artifacts) requires only the read scope.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
+- **§13 forbidden practices.** The bulk control verbs invoke the same Phase 54 Protocol methods as the task / session views (no parallel implementation); approvals route through `approve` / `reject` (no shadow approval queue); the heavy-content threshold is respected for artifact rendering (`artifacts.get` link, no inline bytes — closes D-026).

@@ -1,7 +1,7 @@
 # Console page — Tools
 
 **Slug:** `tools` &middot; **Sidebar cluster:** Execution &middot; **Route:** `/console/tools`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-tools-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -110,3 +110,44 @@ The tools catalog is per-runtime — every runtime has its own registered set; m
 - Decisions: D-024 (`ToolPolicy` reliability shell), D-036 (HTTP tool driver), D-037 (MCP southbound driver), D-038 (A2A southbound driver), D-061 (Console DB local-only), D-062 (MCP-Apps `DisplayMode`), D-065 (no session priority — invariant), D-083 (tool-side OAuth — `auth.BindingScope`), D-086 (tool-side approval gates), D-090 + D-095 (tool catalog OAuth + approval wiring).
 - Phase plan: phase 26 (Tool catalog core — `Shipped`), phase 27 (HTTP driver — `Shipped`), phase 28 (MCP driver — `Shipped`), phase 29 (A2A driver — `Shipped`), phase 30 (tool-side OAuth — `Shipped`), phase 31 (tool-side approval — `Shipped`), phase 64a (tool catalog OAuth + approval wiring — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `Console`, `Runtime lens`, `auth.BindingScope`, `tool.approval_requested`, `tool.auth_required`, `DisplayMode`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-tools-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip (above the catalog table).** Saved-filter chips on the left (`Saved filters`, `Active only`, `Approval required`, `OAuth bound`, `Recent failures`) followed by faceted filter chips (`Scope`, `Transport`, `OAuth status`, `Approval policy`, `Reliability tier`) and a free-text `Search tools…` input. Right side carries a `Type ▾` quick-filter, `Refresh`, and `Export ▾` (CSV / JSON of the currently-filtered catalog rows — Console-local action; no Protocol mutation).
+- **Catalog table (top-left, primary surface).** Columns in mockup order: checkbox / **Name** / **Version** / **Scope** (`tenant` / `agent` / `session`) / **Transport** badge (`in-proc` / `HTTP` / `MCP` / `A2A`) / **OAuth status** chip (`Bound` / `Required` / `n/a` / `Expired`) / **Approval policy** chip (`auto` / `gated` / `denied`) / **Reliability tier** chip / **Last used** (relative timestamp) / **Owner** / row-action menu (`⋯`). Bulk-action toolbar appears when ≥1 row is selected (`Set approval policy`, `Revoke OAuth bindings`, `Export selection`); every bulk action requires the `tools.admin` control-scope claim per D-066.
+- **Right rail — Tool overview card (top).** Surfaces aggregate counters for the currently filtered view: `Total tools`, `Active`, `Pending approval`, `Awaiting OAuth`. Mini-sparklines beside `Active` and `Pending approval` plot the last 24 h.
+- **Right rail — Status + Error rate card (middle).** Per-tool error-rate gauge (last 1 h / 24 h / 7 d toggle) plus a status pill (`Healthy` / `Degraded` / `Offline`) for the row currently selected in the catalog. Drives the bottom-dock Recent invocations tab when the operator clicks through.
+- **Right rail — Content size + display mode card (bottom).** For the selected tool: distribution of recent invocation result sizes vs the heavy-content threshold (RFC §6.5 / D-026), and the negotiated `DisplayMode` for any MCP-Apps content the tool emits. Read-only.
+- **Bottom-left — Selected tool detail panel.** Tabbed: **Manifest** (read-only JSON of the registered descriptor — transport, version, scopes, OAuth binding scope, approval policy, reliability shell) / **Inputs** (JSON Schema + example payloads) / **Outputs** (JSON Schema + heavy-content threshold + `DisplayMode` matrix when MCP-Apps capable) / **Recent invocations** (last N invocations with `run_id`, `session_id`, identity triple, duration, outcome — links into the session's bottom dock) / **Approval** (current policy, pending approval requests for this tool with the same Approve / Reject controls as the session-level intervention card — gated by `tools.approve` control-scope claim).
+- **Bottom-right — Run history + Recent events panel.** Recent invocation timeline (success / failure / OAuth-pending / approval-pending icons) and a scrollable Recent-events list filtered to `tool.*` events for the selected tool. Both default to last 15 min; selector toggles to 1 h / 24 h / 7 d.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>` — matches the Overview footer (D-091, D-093).
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Saved-filter chips | Console-local saved views (D-061) | Select / pin / unpin a saved view | `[Console-local]` (D-061) |
+| Faceted filter chips (Scope / Transport / OAuth status / Approval policy / Reliability tier) | `tools.list` response fields | Toggle facet | `[wave-13-extends]` (`tools.list` filter params) |
+| Export ▾ (CSV / JSON of filtered catalog) | Already-loaded `tools.list` page | Client-side export of current page | `[Console-local]` (D-061; no Protocol mutation) |
+| Tool overview counter card | `tools.list` aggregate + sparkline data from `tool.*` event stream | None (read-only) | `[wave-13-extends]` (`tools.list` returns aggregates) |
+| Status + Error-rate card | `tool.invoked` / `tool.failed` event aggregates over selectable window | Toggle window (1 h / 24 h / 7 d) | `[wave-13-extends]` (`tools.metrics` or event-aggregate Protocol method TBD) |
+| Content size + display mode card | Per-tool result-size histogram (RFC §6.5 / D-026) + negotiated `DisplayMode` snapshot | None (read-only) | `[wave-13-extends]` (`tools.content_stats` method TBD) |
+| Manifest tab (read-only JSON of registered descriptor) | `tools.describe` / `tools.get` response | Copy-to-clipboard | `[wave-13-extends]` (`tools.describe` method) |
+| Recent invocations tab (per-tool, links to session bottom dock) | `tool.invoked` event stream filtered by `tool_id` | Click row → navigate to `/sessions/<id>?dock=events` | `[wave-13-extends]` (event-stream filter by `tool_id`) |
+| Per-tool Approval tab (lists pending approvals for this tool, Approve / Reject buttons) | `tool.approval_requested` events filtered by `tool_id` | Approve (`approve`) / Reject (`reject`) | `[shipped]` (`approve` + `reject` — Phase 54) |
+| Bulk `Set approval policy` action | Selected row IDs | Apply new policy | `[wave-13-extends]` (`tools.set_approval_policy` admin method TBD) |
+| Bulk `Revoke OAuth bindings` action | Selected row IDs | Revoke all bindings | `[wave-13-extends]` (`tools.revoke_oauth` admin method TBD) |
+| Run history strip (last N invocations of selected tool with status icons) | `tool.*` event stream filtered by `tool_id` | Hover for tooltip; click for jump-to-session | `[wave-13-extends]` (event-stream filter) |
+
+### No mockup violations of binding carve-outs
+
+- **D-061 (Console DB local-only).** Saved-filter chips, Export ▾, and any pin/sort preference are Console-local state; the mockup never persists a Protocol-mutating shadow of tools (no edit / register / unregister UI), satisfying §10's "Editing tool descriptors" carve-out.
+- **D-062 (MCP-Apps `DisplayMode` is Protocol-level).** The Content size + display mode card surfaces the negotiated `DisplayMode` for MCP-Apps content; the Console never renders MCP-sourced tool output through a bespoke renderer — the canonical renderer registry (`web/console/src/lib/chat/renderers/`) is the only path.
+- **D-065 (no session-level priority).** The mockup carries tool-level metadata only (scope, transport, approval policy, reliability tier). No session-priority field appears.
+- **D-066 (control-scope claims).** Approve / Reject and every bulk admin action are gated by the appropriate claim (`tools.approve`, `tools.admin`) and degrade to disabled-with-tooltip when missing; observation (catalog, status, run history) requires only the read scope.
+- **D-091 (`harbor console` deployment).** The footer's Protocol version + Console version + connected-runtime fields confirm the Console is talking to a Runtime over the Protocol — no embedded `harbor dev` path.
+- **§13 forbidden practices.** No hand-rolled renderers for MCP-sourced tool output; no `DisplayMode` toggle outside the canonical registry; no Console-side mutation of identity-scoped fields; no parallel implementations of approval (the Approve / Reject buttons here invoke the same `approve` / `reject` Protocol methods as the session/task views).

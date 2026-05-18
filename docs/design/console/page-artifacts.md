@@ -1,7 +1,7 @@
 # Console page — Artifacts
 
 **Slug:** `artifacts` &middot; **Sidebar cluster:** Resources &middot; **Route:** `/console/artifacts`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-artifacts-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -111,3 +111,46 @@ Artifacts is tenant-scoped: every `artifacts.list` / `artifacts.get_ref` carries
 - Decisions: D-021 (Multimodality scope: inputs V1, outputs post-V1 tool wrappers), D-022 (`ArtifactRef` is canonical binary representation), D-026 (Context-window safety net — `ArtifactStub` everywhere), D-061 (Console DB local-only), D-065 (no session priority — invariant), D-066 (control claim).
 - Phase plan: phase 17 (ArtifactStore iface + InMem + FS drivers — `Shipped`), phase 18 (SQLite + Postgres blob — `Shipped`), phase 19 (S3-style driver — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `Console`, `Runtime lens`, `PresignGet`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-artifacts-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip.** Faceted filter chips left-to-right: `MIME type` ▾ (image / pdf / text / json / binary / `*`), `Source` ▾ (`tool` / `planner` / `user-upload` / `system`), `Size` ▾ (configurable thresholds), `Tenant` ▾, `Session` ▾, `Task` ▾, `Created` ▾ (window picker — default last 7 d), `More filters` ▾. Right side: `Upload artifact` (gated by `artifacts.write` scope claim — Console-local upload path that routes through `artifacts.put` per Brief 11 §PG-2), `Export ▾` (CSV manifest of filtered page only — never the artifact blobs themselves).
+- **Saved-view chip row.** Color-coded saved-filter chips: `Saved views`, `Large > 10 MB`, `Stale > 7d`, `User uploads`, `Tool outputs`, `Pending deletion`. Console-local per D-061.
+- **Main artifacts table (primary surface).** Columns in mockup order: checkbox / **Name / Filename** (filename + mime icon) / **MIME type** chip / **Created** (relative timestamp) / **Owner** (compressed identity triple — agent + session + user; with run-id chip when present) / **Size** / **Source** chip / **Tags** / **Driver** chip (`inmem` / `fs` / `sqlite` / `postgres` / `s3`) / row-action menu. Virtualised; pagination footer `Rows per page ▾ | Page N of M`.
+- **Right rail — Selected artifact detail panel (full height when a row is selected).** Header: filename + mime icon + size + copyable artifact-id. Sub-sections in mockup order:
+  - **Preview** — inline preview when mime is renderable (image / pdf via embed / text snippet / json viewer / audio waveform). Renders via the canonical renderer registry at `web/console/src/lib/chat/renderers/` per Brief 12 — never a bespoke per-mime renderer. For mimes the registry can't render, shows a `Preview unavailable` placeholder with `Download` link.
+  - **Actions row** — `Download` (resolves `PresignGet` per D-022 / D-026 — Console never inlines blob bytes), `Save` (Console-local pin into a saved-views list), `Copy ref` (copies the `ArtifactRef` URI for use in other surfaces).
+  - **Artifact Metadata** — full artifact-id, full identity quadruple, source (`planner` / `tool` / `user-upload` / `system`), creation timestamp, last-accessed timestamp, driver, storage URL (when applicable), checksum, retention policy (when set).
+  - **Tags** — chip list of tags assigned by planner / tool emission; editing tags is deferred to post-V1 per §10.
+- **Bulk-action toolbar.** Activates when ≥1 row is checked: `Download (zip)` (Console-local zip-stream over the resolved `PresignGet` URLs — no Protocol mutation), `Copy refs`. Mutation actions (`Delete`, `Set retention`) render as disabled-with-tooltip ("Deferred — Phase 73") per §10.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Faceted filter chips (MIME / Source / Size / Tenant / Session / Task / Created / More filters) | `artifacts.list` filter params | Toggle facet | `[wave-13-extends]` (`artifacts.list` filter shape) |
+| Saved-view chips (`Large > 10 MB`, `Stale > 7d`, `User uploads`, `Tool outputs`, `Pending deletion`) | Console-local saved views (D-061) | Apply / pin / unpin | `[Console-local]` (D-061; pure client-side derivation against `artifacts.list` rows) |
+| Upload artifact button | Local file → `artifacts.put` | Open file picker | `[wave-13-extends]` (`artifacts.put` Protocol method — required for Brief 11 §PG-2 upload pipeline) |
+| Export ▾ (CSV manifest of filtered page) | Already-loaded page rows | Client-side export of metadata only (never blobs) | `[Console-local]` (D-061; no Protocol mutation) |
+| Preview pane (canonical renderer registry) | `PresignGet` URL per D-022 | Inline render via registry; fallback to `Download` for unsupported mimes | `[wave-13-extends]` (`artifacts.get` / `PresignGet` method) |
+| Download button (resolves `PresignGet`) | Selected artifact-id | Trigger browser download | `[wave-13-extends]` (`PresignGet` Protocol method) |
+| Save button (Console-local pin) | Selected artifact-id | Add to Console-local saved-views list | `[Console-local]` (D-061) |
+| Copy ref button | Selected artifact ref URI | Copy to clipboard | `[Console-local]` (D-061) |
+| Bulk Download (zip) | Selected artifact-ids | Client-side zip-stream over resolved `PresignGet` URLs | `[Console-local]` (D-061; routes each blob through `PresignGet`) |
+| Bulk Delete / Set retention (disabled-with-tooltip) | Selected artifact-ids | None at V1 (deferred per §10) | `[deferred-post-V1]` (artifact mutation surface — Phase 73) |
+| Tags column + chip rendering | `artifacts.list` row metadata | None (edit deferred per §10) | `[wave-13-extends]` (`artifacts.list` row shape extension) |
+
+### No mockup violations of binding carve-outs
+
+- **D-021 (Multimodality — inputs V1, outputs post-V1 tool wrappers).** Upload-artifact path lands a V1 input. The Preview pane renders outputs from planners/tools that already emit `ArtifactRef` — no Console-side generation of multimodal output.
+- **D-022 / D-026 (`ArtifactRef` is canonical; `ArtifactStub` everywhere on heavy content).** Preview, Download, and bulk Download all resolve through `PresignGet`; the Console **never** inlines blob bytes in row metadata, the preview pane, or Export CSVs. Export ships metadata only.
+- **D-061 (Console DB local-only).** Saved-view chips, the Save (pin) action, sort preferences, and the bulk-zip stream are Console-local. The mockup never persists a Protocol-mutating shadow of artifacts — every row round-trips through `artifacts.list` + `PresignGet`.
+- **D-065 (no session-level priority).** No priority field appears on rows or in the right rail.
+- **D-066 (control-scope claims).** Upload requires `artifacts.write`; mutation surfaces (Delete / Set retention) are deferred per §10 and rendered disabled-with-tooltip; observation requires only the read scope; cross-tenant inspection gates the `Tenant ▾` facet by scope per D-079.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
+- **§13 forbidden practices.** No hand-rolled per-mime renderer — the canonical renderer registry at `web/console/src/lib/chat/renderers/` is the only path (Brief 12); no parallel implementation of artifact mutation (deferred surfaces are explicitly disabled); no inline blob bytes anywhere — `PresignGet` is the only download path (closes D-026 leak shape).

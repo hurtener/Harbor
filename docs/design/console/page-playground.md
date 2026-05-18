@@ -1,7 +1,7 @@
 # Console page — Playground
 
 **Slug:** `playground` &middot; **Sidebar cluster:** session-level surface (not a sidebar entry) &middot; **Route:** `/console/playground/<session-id>` or `/console/live-runtime?playground=1&session=<session-id>` (Wave 13 to pick)
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-playground-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -126,3 +126,54 @@ A Playground session is tied to the operator's identity (or impersonated identit
 - Decisions: D-008 (sessions are multi-turn), D-021 (multimodality inputs V1), D-022 (`ArtifactRef`), D-026 (context-window safety net), D-061 (Console DB local-only), D-062 (Live Runtime ≠ Sessions; MCP-Apps `DisplayMode`), D-064 (Evaluations post-V1), D-065 (no session priority), D-066 (control claim), D-072 (Protocol task control surface — the ten methods including `user_message`), D-083 (tool-side OAuth — `auth.BindingScope`), D-086 (tool-side approval gates), D-089 (`harbor dev` LLM-default + mock escape hatch), D-091 (Console deployment posture + shared chat module), D-092 (Svelte 5 + runes), D-093 (`protocol.ts` generated).
 - Phase plan: phase 17–19 (Artifacts — `Shipped`), phase 26 (Tool catalog — `Shipped`), phase 28 (MCP southbound driver — `Shipped`), phase 30 (tool-side OAuth — `Shipped`), phase 31 (tool-side approval — `Shipped`), phase 32 (LLM client core + StreamSink — `Shipped`), phase 33 (bifrost integration + multimodality — `Shipped`), phase 36a (Cost accumulator + ceilings — `Shipped`), phase 50 (Pause/Resume Coordinator — `Shipped`), phase 52–53 (Steering — `Shipped`), phase 54 (Protocol task control surface — `Shipped`), phase 60 (Protocol wire transport — `Shipped`), phase 72 (Console subscription — `Pending`), phase 73 (state inspection — `Pending`), phase 74 (topology projection — `Pending`).
 - Glossary terms used: `Console`, `Live Runtime`, `Pause/Resume Coordinator`, `DisplayMode`, `Scope claim`, `Fleet control / fleet observation`, `Runtime lens`, `tool.approval_requested`, `tool.auth_required`, `HARBOR_DEV_TOKEN`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-playground-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Header**: breadcrumb `<runtime> / Playground / <session-id>` + agent picker dropdown (e.g., "Research Agent v3.2") + model badge (e.g., "Bedrock Claude 3.5 Sonnet") + token-count chip ("12,345 tokens") + cost chip ("$4.05") + **Cancel run** + **Restart** buttons. No Priority field anywhere (D-065).
+- **Main canvas — chat-style stream**: alternating user / agent message bubbles with avatars. Agent messages contain:
+  - Free text (Markdown / GFM / KaTeX / Mermaid per Brief 11 §PG-4)
+  - Expandable **tool-call trace cards** (showing tool name + args + duration + result snippet)
+  - **Diff view cards** (when output diffs a previous artifact)
+  - **Artifact-reference cards** (mime icon + filename + size + preview thumbnail + Open button → Artifacts page)
+  - **Code blocks** with copy / Shiki-highlight per language
+  - Streaming indicator (blinking cursor while tokens still arriving)
+- **Bottom — chat input composer**: multimodal upload (image/PDF/audio attach button) + free-text textarea + voice input button + **Send** button (Cmd-Enter). Token-count preview as the operator types.
+- **Right rail — three stacked cards**:
+  - **Controls** card: model selector / reasoning effort slider / temperature slider / max-tokens input / system-prompt-override textarea + drift-mode toggle (deferred — D-065-style "post-V1" tooltip)
+  - **Pending Interventions** card (mirrors Live Runtime's shape): Approve / Reject with reason + countdown.
+  - **Recent Artifacts** card (mime icons + size + age, capped to 3-5).
+- **Footer**: `Streaming | last bucket <X tokens/s> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Token-count chip (header) | live aggregation of `llm.cost.recorded` and chat-stream token deltas | Click → drill into cost breakdown | `[shipped]` (events) |
+| Cost chip (header) | `llm.cost.recorded` aggregated for this session | Click → drill into Settings → Governance | `[shipped]` |
+| Restart button (header) | spawns a fresh `start` with the same agent + system prompt | Confirm → `start` Protocol method | `[shipped]` |
+| Cancel-run button (header) | `cancel` Protocol method (soft default; Cmd-Shift-Backspace = hard) | Submit → `cancel` (`Payload.hard` toggles) | `[shipped]` |
+| Drift-mode toggle (right-rail Controls) | local UI flag (deferred surface) | Toggle (no-op in V1; tooltip "Post-V1") | `[deferred]` (Brief 11 §PG-5 — drift is post-V1) |
+| Reasoning-effort slider | local UI state → `runs.set_overrides` (NEW) | Slide → submit override on next message | `[wave-13-extends]` |
+| Token-count preview (input box) | local tokenizer estimate | Live update as operator types | `[shipped]` (local) |
+| Multimodal attach button | local file → Artifact upload via `artifacts.put` (NEW Phase 73) | Submit → artifact id + auto-include as `ArtifactStub` in next message | `[wave-13-extends]` |
+| Voice input button | browser SpeechRecognition / file-upload audio | Transcribe → insert into textarea (local UI state) | `[shipped]` (local) |
+
+### Refinements to §3 functionality matrix
+
+- **Restart button** — add as `[shipped]` (`start` Protocol method with same agent / system prompt).
+- **Cancel-run button** — add as `[shipped]` (`cancel` Protocol method).
+- **Token-count chip in header** — add as `[shipped]` (derived from `llm.cost.recorded` event token field).
+- **Drift-mode toggle (visible-but-disabled)** — the toggle renders in the Controls card with a tooltip explaining post-V1 deferral per Brief 11 §PG-5 and the existing `[deferred]` bullet in §3.
+
+### No mockup violations of binding carve-outs
+
+- **D-065** — no Priority field. Confirmed.
+- **D-091** — page lives under `/console/playground/<session-id>` (served via `harbor console`, not `harbor dev`). The Controls card's reasoning / temperature / system-prompt overrides live in the shared `web/console/src/lib/chat/` module per D-091's "encapsulate first, extract on second consumer."
+- **D-062** — Playground is a *session*, not a side channel. Every message ↔ `user_message` Protocol method; every tool call ↔ real `tool.invoked` event. Confirmed.
+- **D-066** — Cancel + Approve/Reject are control-scope-gated.
+- **D-061** — Console DB holds local state only (drift-mode toggle position, controls-panel collapse state); session / message / artifact / cost data sources from Protocol.
+- **§4.5 rule 4 (Skeleton component library)** — the chat-stream rendering, controls panel, and right-rail cards should map onto Skeleton primitives (Stack, Card, RangeSlider, Textarea, Avatar, ActionIcon); the artifact-reference card may need a small custom wrapper around Skeleton's Card primitive per §4.5 rule 4's "lean on Skeleton; justify wrappers in PR."

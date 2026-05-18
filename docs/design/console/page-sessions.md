@@ -1,7 +1,7 @@
 # Console page — Sessions
 
 **Slug:** `sessions` &middot; **Sidebar cluster:** Execution &middot; **Route:** `/console/sessions`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-sessions-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -120,3 +120,33 @@ Sessions is the page where cross-tenant viewing matters most. Default scope rend
 - Decisions: D-008 (sessions = longer-lived multi-turn conversations), D-061 (Console DB local-only), D-062 (Live Runtime ≠ Sessions), D-064 (Evaluations post-V1), D-065 (no session priority), D-066 (control claim), D-074 (durable event log).
 - Phase plan: phase 8 (SessionRegistry — `Shipped`), phase 57 (durable event log — `Shipped`), phase 73 (Console state inspection — `Pending`).
 - Glossary terms used: `Console`, `Live Runtime`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-sessions-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Top sub-header strip** between breadcrumb and table: filter chips — `Saved filters` dropdown + `Status: All|Running|Paused|Failed|Completed` + `Identity` (tenant/user picker; admin-only fan-out) + `Tenants: All` (admin) + `Date range: Last 24h` + `More filters` + free-text search box + `Refresh` + `Sort By`. Bulk-action toolbar appears when rows are checked.
+- **Main table** with columns: checkbox / session id (truncated, hover-to-reveal full) / status badge / agent name / user / started / last activity / events count / cost / row-action menu (⋯). Row-action menu items: Open in Live Runtime, View Trajectory, Clone, Export transcript, Cancel (control-scope-gated), Convert to Evaluation (disabled — D-064).
+- **Right rail (Session Summary card)**: id, status, started, duration, events, tasks, agent, user, tenant, cost, last activity. Below: **Recent Interventions** card (per-intervention with reason + outcome + countdown) + **Recent Artifacts** card (mime icon + filename + size + age, matches Live Runtime pattern).
+- **Bottom dock when a row is expanded** (or via Open / drilldown): tabs **Trajectory | Events | Cost History | Control History | Interventions**. Trajectory tab renders the planner-step timeline; Events tab is a filtered Event Stream; Cost History tab shows the per-step cost rollup; Control History tab shows the `control.received` / `control.applied` / `control.rejected` audit; Interventions tab shows the complete pause/approval history for the session.
+- **Footer**: `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Bulk-action toolbar (visible when rows selected) | local UI state | Bulk Cancel / Bulk Clone / Bulk Export (cancel is control-scope-gated; iterates `cancel` per row) | `[wave-13-extends]` (`cancel` per row is shipped; bulk wrapping is local UI) |
+| Recent Interventions card (right rail) | `pause.requested` / `pause.resumed` / `tool.approval_requested` / etc. events filtered to the session | Click → bottom-dock Interventions tab | `[shipped]` |
+| Recent Artifacts card (right rail) | `artifacts.list` (NEW Phase 73 method) filtered to session, sorted DESC, capped to 3-5 | Click → Artifacts page filtered to session | `[wave-13-extends]` |
+| Cost History tab (bottom dock) | `llm.cost.recorded` events aggregated per step | Local UI state (chart vs table toggle) | `[shipped]` |
+| Control History tab (bottom dock) | `control.received` / `control.applied` / `control.rejected` events | Click → bottom-dock Event Stream filtered to control.* events | `[shipped]` |
+| Convert-to-Evaluation row action | (disabled in V1) | (no action — D-064 deferral; tooltip explains) | `[deferred]` |
+
+### No mockup violations of binding carve-outs
+
+- **D-065** — no Priority column anywhere. Confirmed.
+- **D-061** — saved filters live in Console DB; session/intervention/artifact data sources from Protocol.
+- **D-066** — Cancel (and bulk-cancel) row actions gated on control-scope.
+- **D-064** — Convert-to-Evaluation is visible but disabled with tooltip; mockup respects.

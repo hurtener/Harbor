@@ -1,7 +1,7 @@
 # Console page — Events
 
 **Slug:** `events` &middot; **Sidebar cluster:** Execution &middot; **Route:** `/console/events`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-events-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -107,4 +107,42 @@ Events is the page where the admin / cross-tenant elevated subscription is most 
 - RFC-001-Harbor.md §5.2 (streaming events row), §6.13 (typed event bus), §7 (Console).
 - Decisions: D-028 (event bus surface), D-029 (`Replay` returns `[]Event`), D-061 (Console DB local-only), D-065 (no session priority — invariant), D-073 (OTel traces), D-074 (durable event log), D-079 (Protocol auth + scope claims).
 - Phase plan: phase 05 (event taxonomy + InMem EventBus — `Shipped`), phase 06 (Bus replay + cursor — `Shipped`), phase 57 (durable event log driver — `Shipped`), phase 60 (Protocol wire transport — `Shipped`), phase 72 (Console subscription protocol surface — `Pending`).
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-events-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header (above the table).** Faceted filter chips left-to-right: `Event type` ▾, `Tenant` ▾, `User` ▾, `Session` ▾, `Run` ▾, `Last <window>` ▾ (default 1 h; toggles 5 min / 1 h / 24 h / 7 d), `More filters` ▾ (transport, tool id, planner id, identity-triple combos). Right side: `Pause stream`, `Export ▾` (NDJSON / CSV — Console-local, snapshots the current filtered page). The `Pause stream` toggle is Console-local; while paused the stream buffer continues to fill the underlying cursor (per D-029 replay semantics) and unpausing flushes new events without dropping cursor position.
+- **Saved-view chip row (immediately below the sub-header).** Color-coded chips for operator-saved filter combinations (`tool.failed`, `governance.budget_exceeded`, `planner.repair_exhausted`, `auth.required`, custom). Saved views are Console-local per D-061; selecting one rewrites the filter chips above. Free-text `Search events…` input sits at the row's right edge and does substring match on event names + payload-JSON-string content (client-side over the loaded page).
+- **Event-rate sparkline (top of main canvas).** Per-event-type stacked area chart over the active window (last 1 h default; auto-rescales with window). Hovering a band highlights the corresponding row of the table; clicking it pins that event-type filter chip. Read-only; data is the same `events.subscribe` cursor that feeds the table.
+- **Main events table (primary surface).** Columns in mockup order: **Time** (absolute + `relative ago` tooltip) / **Event** (full dotted name with a color-coded category tag) / **Identity** (compressed `tenant/user/session` triple, with run-id chip if present) / **Source** (subsystem + driver, e.g. `tools/mcp`, `planner/react`) / **Span** (trace-id last-8 + `↪` link to trace tab when D-073 traceparent is present) / row-action menu. Rows are virtualised; pagination shows `Page N of M | Show rows ▾` (50 / 100 / 250 — Console-local).
+- **Right rail — Event Details card (sticky, full height when a row is selected).** Header: event name, severity pill, copyable event-id. Sub-sections in mockup order:
+  - **Source** — fully-qualified subsystem path + driver name.
+  - **Identity** — full `tenant_id` / `user_id` / `session_id` / `run_id` / `task_id` (when present), each copyable.
+  - **Payload (json)** — pretty-printed JSON viewer with collapsible nodes, copy-all, and a `Truncated` badge when the payload exceeds the heavy-content threshold (RFC §6.5 / D-026); large payloads render an `Open artifact` link that resolves via `artifacts.get` rather than inlining bytes.
+  - **Quick Actions** (bottom of the rail) — `Filter by event type` (pins the chip), `Filter by session` / `Filter by tenant` / `Filter by run` (pins those chips), `Open session` (navigates to `/console/sessions/<id>?dock=events`), `Open trace` (when traceparent present — post-V1 link per §10 deferred list, rendered as disabled-with-tooltip in V1).
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>` — when the stream is paused the chip flips to `Events Stream: PAUSED` in amber.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Faceted filter chips (Event type / Tenant / User / Session / Run / Window / More filters) | `events.subscribe` / `events.replay` filter params | Toggle facet | `[wave-13-extends]` (extended `events.subscribe` filter shape) |
+| Saved-view chip row | Console-local saved filters (D-061) | Apply / pin / unpin a saved view | `[Console-local]` (D-061) |
+| Pause-stream toggle | Local stream cursor; replay catch-up on resume | Pause / resume the visible stream | `[Console-local]` (D-061; cursor preserved per D-029) |
+| Export ▾ (NDJSON / CSV of filtered page) | Already-loaded events page | Client-side export | `[Console-local]` (D-061; no Protocol mutation) |
+| Event-rate sparkline (per-type stacked area) | Time-bucketed counts derived from `events.subscribe` stream | Hover to highlight row; click to pin filter | `[wave-13-extends]` (`events.aggregate` time-bucket method TBD) |
+| Truncated-payload `Open artifact` link | Payload exceeds heavy-content threshold (D-026); resolved via `artifacts.get` | Click to open artifact viewer | `[wave-13-extends]` (`artifacts.get` Protocol method) |
+| Trace deep-link (`Open trace` Quick Action) | `traceparent` field per D-073 | Open trace in OTel viewer | `[deferred-post-V1]` (rendered as disabled-with-tooltip in V1 — see §10) |
+| Quick-Actions chip-pinners (`Filter by event type / session / tenant / run`) | Current row identity | Apply filter | `[Console-local]` (D-061) |
+
+### No mockup violations of binding carve-outs
+
+- **D-061 (Console DB local-only).** Saved-view chips, pause-stream toggle, Export ▾, pagination size, and column layout are all Console-local. The mockup never persists a Protocol-mutating shadow of the event stream — every event view round-trips through `events.subscribe` / `events.replay`.
+- **D-065 (no session-level priority).** No priority field appears on event rows; rows are ordered by `Time` (default desc) with no priority sort option.
+- **D-066 (control-scope claims).** Events is observation-only at V1; Quick Actions are navigation/filter operations (no control verbs). Cross-tenant viewing requires the `events.crosstenant` claim per D-079; the `Tenant ▾` facet only lists tenants the operator's scope authorizes.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label; no embedded `harbor dev` path.
+- **§13 forbidden practices.** The Open-artifact link goes through `artifacts.get` rather than inlining heavy payload bytes (closes the D-026 leak shape); no parallel implementation of pause (the stream pause is a Console-local view toggle, not a runtime pause — distinct from `pause` Protocol method which is task-scoped).
 - Glossary terms used: `Console`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`, `Protocol`, `Deprecation window`.

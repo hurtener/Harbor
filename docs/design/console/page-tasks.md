@@ -1,7 +1,7 @@
 # Console page — Tasks
 
 **Slug:** `tasks` &middot; **Sidebar cluster:** Execution &middot; **Route:** `/console/tasks`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-tasks-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -123,3 +123,34 @@ Tasks lists are tenant-scoped by default — every `tasks.list` query carries th
 - Decisions: D-006 (background-task persistence in-process at V1), D-030 (TaskRegistry surface split), D-032 (wake-on-resolution = planner-concrete), D-047 (`SpawnTask` / `AwaitTask` / `RequestPause` shapes), D-061 (Console DB local-only), D-062 (14-page IA), D-065 (no session priority), D-066 (control claim), D-072 (Protocol task control surface).
 - Phase plan: phase 20 (TaskRegistry — `Shipped`), phase 21 (TaskGroup + retain-turn + patches — `Shipped`), phase 54 (task control surface — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `TaskRegistry`, `GroupCompletion`, `Console`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-tasks-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip**: filter chips — `Saved filters` + `Status` + `Identity` (admin) + `Date range: Last 24h` + `More filters` + free-text search + `Refresh` + `Export`. Plus list/board view-mode toggle.
+- **Main canvas — Kanban-style 4-column board**: Pending / Running / Paused / Failed (the mockup also shows what looks like a 5th implicit "Done" but the visible columns are these 4). Each card carries: task id (truncated) / type icon / identity chip / duration / parent session id / sub-task count. Cards are draggable across status columns (operator-driven control; back-end calls the matching control method — `pause` to move into Paused, `resume` to move out, `cancel` to move to Failed). Each card has a quick-action menu (⋯).
+- **Selected-task detail bar** (between board and bottom dock): id / status / identity / started / duration / **`Pause` / `Resume` / `Cancel` / `Prioritize` / `Approve` / `Reject`** action buttons (control-scope gated per D-066).
+- **Bottom dock**: tabs **Task metadata | Inputs | Logs | Events | Errors | Output**. Output tab renders artifact-card stubs (mime + size + preview when small + presigned-URL Download button).
+- **Right rail**: Summary card (id, status, started, duration, parent session, cost) + **Parent Session** card (clickable card to navigate to session detail) + **Cost Breakdown** card (per-step cost) + Recent Activity + Recent Artifacts.
+- **Footer**: standard `Connected to | Protocol v | Events Stream | Console v`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Kanban card-drag-to-status-column | local UI gesture + control-method invocation | Drag Pending → Running (no-op; Pending → Running is server-controlled); Drag Running → Paused (invokes `pause`); Drag Running → Failed (invokes `cancel`) | `[shipped]` (the underlying control methods); `[wave-13-extends]` (the per-task list query `tasks.list` that populates columns) |
+| Selected-task action bar | local selection + control-method invocations | All 6 buttons → matching Protocol method; gated on control-scope per D-066 | `[shipped]` |
+| Parent Session card (right rail) | `events.Event.Identity` of the selected task + `sessions.inspect` (NEW) | Click → Sessions page detail | `[wave-13-extends]` |
+| Cost Breakdown card (right rail) | `llm.cost.recorded` events aggregated per planner step within this task | Local UI state (chart vs table) | `[shipped]` |
+| Errors tab (bottom dock) | filtered Events stream to `*.failed` / `*.error` types within this task | Click row → detail | `[shipped]` |
+| Output tab (bottom dock) | `tasks.get` result field + `ArtifactStub` references resolved via `artifacts.get_ref` (NEW) | Click artifact → preview | `[wave-13-extends]` |
+
+### No mockup violations of binding carve-outs
+
+- **D-065** — Task-level priority (the `prioritize` control) IS shipped per D-072; the Kanban + the per-task Prioritize button render this. Session-level priority is NOT rendered anywhere. Mockup honors the carve-out.
+- **D-061** — task list / detail / cost all source from Protocol; saved filters are Console-local.
+- **D-066** — Pause/Resume/Cancel/Prioritize/Approve/Reject buttons are control-scope-gated; mockup shows elevated-operator view.
+- **D-047** — Kanban columns include Pending (covers spawned-but-not-acquired) — matches D-047's TaskRegistry state machine.

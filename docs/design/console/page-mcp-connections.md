@@ -1,7 +1,7 @@
 # Console page — MCP Connections
 
 **Slug:** `mcp-connections` &middot; **Sidebar cluster:** Resources &middot; **Route:** `/console/mcp-connections`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-mcp-connections-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -116,3 +116,53 @@ MCP servers are configured per-runtime; multi-runtime mode swaps the entire list
 - Decisions: D-037 (MCP southbound driver wraps `github.com/modelcontextprotocol/go-sdk@v1.6.0`; transport-reconnect via `ToolPolicy`), D-061 (Console DB local-only), D-062 (MCP-Apps `DisplayMode`), D-065 (no session priority — invariant), D-066 (control claim), D-083 (tool-side OAuth — `auth.BindingScope`), D-090 + D-095 (tool catalog OAuth + approval wiring).
 - Phase plan: phase 28 (MCP southbound driver — `Shipped`), phase 30 (tool-side OAuth — `Shipped`), phase 64a (tool catalog OAuth + approval wiring — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `Console`, `Runtime lens`, `auth.BindingScope`, `tool.auth_required`, `DisplayMode`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-mcp-connections-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip.** Saved-filter chips (`Saved filters`, `All servers`, `Online only`, `OAuth required`, `Errored`, `Stale handshake`) + faceted chips (`Tenant` ▾, `Transport` ▾ — `stdio` / `HTTP+SSE` / `WebSocket` — `OAuth status` ▾, `Filters` ▾). Right side: `Add MCP server` (Console-local config — Phase 73 `Pending`), `Refresh all`.
+- **Main servers table (primary surface).** Columns in mockup order: checkbox / **Server name** / **Status** chip (`Online` / `Reconnecting` / `Offline` / `Auth pending`) / **Endpoint URL** (transport-prefixed; truncated with copy-on-hover) / **Tenant** / **Tools exposed** (count + popover lists names) / **HTTP exposed** (count of HTTP endpoints surfaced when transport supports it) / **Last connect** (relative timestamp) / **Last error** (truncated; popover shows full payload) / **Total uptime** / **Approval policy** chip (`auto` / `gated` / `denied`) / row-action menu. Virtualised; pagination footer.
+- **Selected server detail panel (full width below the table).** Header: server name, status chip, `Refresh discovery`, `Test connection`. Tabbed sub-panels in mockup order:
+  - **Tools** — table of tools exposed by this server (name, schema preview, last invoked, approval-policy chip, OAuth-binding chip); rows deep-link to `/console/tools?server=<name>`.
+  - **Resources** — list of MCP resources advertised (URI, mime, size). Read-only.
+  - **OAuth & Auth** — current OAuth binding state per `auth.BindingScope` (D-083): bound principals, scope chips, refresh-token expiration timestamps. Operator actions: `Refresh binding`, `Revoke binding` (both gated by `tools.admin` scope claim).
+  - **Health** — handshake-latency sparkline, reconnect history, transport-error rate. Read-only.
+  - **Policy** — current `ToolPolicy` (D-024) for tools sourced from this server: retry caps, timeout, concurrency cap. Read-only at V1 (edit deferred to post-V1 policy admin UI).
+- **Right rail — Stacked status cards.**
+  - **Recent events** — `tool.*` events filtered to tools sourced from this server (last 15 min).
+  - **Binding scope summary** — counts per `auth.BindingScope` (`per-user` / `per-session` / `per-tenant`) for this server's tools.
+  - **Agent bindings** — list of agents currently bound against this server with status chips.
+  - **Audit log** — `audit.*` events for OAuth binding mutations on this server (creates, refreshes, revokes); filtered by `tenant_id`.
+  - **Need help?** — static link card pointing to operator docs (`Connect a new MCP server`, `Troubleshoot OAuth`, `Reset binding`). Console-local content.
+- **Bulk-action toolbar.** Activates when ≥1 server row is selected: `Refresh discovery`, `Revoke OAuth bindings`, `Disable` (sets server policy to `denied` for new invocations — `tools.admin`-gated, post-V1 carve-out flagged in §10 if not in the shipped surface).
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Saved-filter chips + faceted filter chips | Console-local saved views (D-061) + `mcp.servers.list` filter params | Apply / pin / unpin / toggle facet | `[Console-local]` (saved views) / `[wave-13-extends]` (`mcp.servers.list` filter shape) |
+| Add MCP server button | Console-local config form → writes to runtime config surface | Open form | `[wave-13-extends]` (`mcp.servers.register` Protocol method — depends on Phase 73 config surface) |
+| Refresh discovery (per-server or bulk) | Selected server IDs | Trigger `mcp.servers.refresh_discovery` | `[wave-13-extends]` (`mcp.servers.refresh_discovery` Protocol method TBD) |
+| Test connection button | Selected server endpoint | Invoke transport probe via `mcp.servers.probe` | `[wave-13-extends]` (`mcp.servers.probe` Protocol method TBD) |
+| Resources tab (MCP resources catalog per server) | `mcp.servers.resources` response | Browse; click for detail | `[wave-13-extends]` (`mcp.servers.resources` Protocol method TBD) |
+| OAuth & Auth tab — Refresh binding / Revoke binding | Selected server + binding principal | Invoke per-binding admin verbs | `[wave-13-extends]` (`mcp.servers.refresh_binding` / `mcp.servers.revoke_binding` — admin methods TBD) |
+| Health tab — handshake-latency sparkline + reconnect history | Aggregated from `tool.*` event stream filtered to server's tools | None (read-only) | `[wave-13-extends]` (`mcp.servers.health` aggregate method TBD) |
+| Policy tab — current `ToolPolicy` view | `mcp.servers.policy` response | None at V1 (edit deferred — §10) | `[wave-13-extends]` (`mcp.servers.policy` read method TBD) |
+| Binding scope summary card | Per-server binding aggregates | None | `[wave-13-extends]` (`mcp.servers.bindings.aggregate` method TBD) |
+| Agent bindings card | `mcp.servers.bindings.list?server_id=…` | Click row → navigate to agent detail | `[wave-13-extends]` (`mcp.servers.bindings.list` filter) |
+| Audit log card | `audit.*` events filtered to server-binding mutations | None | `[wave-13-extends]` (`audit.subscribe` filter by `subject_type=mcp_binding`) |
+| Need help? static link card | Static Console content | Click → operator docs | `[Console-local]` (D-061) |
+
+### No mockup violations of binding carve-outs
+
+- **D-061 (Console DB local-only).** Saved-filter chips, the `Need help?` card, sort preferences, and column visibility are Console-local. The mockup never persists a Protocol-mutating shadow of MCP servers — every row round-trips through `mcp.servers.list` and its sibling Protocol methods.
+- **D-062 (MCP-Apps `DisplayMode`).** The Resources tab surfaces advertised resources read-only; no bespoke rendering of MCP-Apps content — when a resource is opened it renders through the canonical renderer registry per D-062.
+- **D-065 (no session-level priority).** No priority field appears on servers or bindings.
+- **D-066 (control-scope claims).** `Refresh discovery`, `Test connection`, `Refresh binding`, `Revoke binding`, bulk admin actions all gate on `tools.admin`; observation (servers list, tools list, resources, health, policy view) requires only the read scope.
+- **D-083 (tool-side OAuth — `auth.BindingScope`).** The OAuth & Auth tab surfaces binding-scope chips per principal (per-user / per-session / per-tenant) consistent with D-083; no parallel binding-state model in the Console.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
+- **§13 forbidden practices.** No hand-rolled MCP-Apps renderer; OAuth admin actions invoke shipped/extended Protocol methods (no Console-side shadow binding store); audit events come from the shipped `audit.subscribe` surface (no parallel audit log).

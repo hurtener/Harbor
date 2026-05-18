@@ -1,7 +1,7 @@
 # Console page — Overview
 
 **Slug:** `overview` &middot; **Sidebar cluster:** Runtime &middot; **Route:** `/console/overview`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-overview-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -101,3 +101,42 @@ The Overview's counters and cost rollup are the page most affected by scope. In 
 - Decisions: D-002 (Console-as-Protocol-client), D-061 (Console DB is local-only), D-062 (14-page IA), D-065 (no session priority in V1), D-066 (fleet control elevated scope), D-091 (Console deployment posture).
 - Phase plan: phase 72 (Console subscription protocol surface — pending re-decomposition).
 - Glossary terms used: `Console`, `Console DB`, `Live Runtime`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-overview-page.png` against §3-§7 above. The agent-authored spec (sections 1-11) is the v1.0 surface; this section adds visual specifics the mockup made concrete.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip** between the top bar and the counter row, showing per-subsystem health chips: `Asset connected: <N> of <M>`, `Memory disk space ok`, `MCP service offline` (alert chip). This is the operator's at-a-glance posture answer — separate from the alerts strip in row 1. Renders chip-shape (not banner-shape). `[wave-13-extends]` — requires the `runtime.health` snapshot method (already noted in spec).
+- **Counter row carries sparklines.** Each of the 4 cards (Events/min, Tasks Running, Background Jobs, MCP Connections) renders a mini-sparkline showing the trend over the selected time window. Click → drill-down page (Tasks → `/console/tasks`, Background Jobs → `/console/background-jobs`, MCP → `/console/mcp-connections`, Events/min → `/console/events`).
+- **Cost rollup card (right column)** renders a per-agent breakdown by default (Research Agent / Support Agent / Code Reviewer / each with $X.XX). Per-tenant view is the admin elevation (the spec's existing wording was "by tenant / by agent (when admin)" — refine to "by-agent default, per-tenant on admin").
+- **Quick Links grid** is a 2x3 of 6 navigation tiles: Sessions / Tasks / Background Jobs / Agents / Tools / Settings. Settings tile is the entry point to `/console/settings`. Each tile carries an icon + page name + one-liner description.
+- **Top bar adds a `+ New` button** (right of the search box). Opens a quick-create dropdown menu: "New session", "Open Playground", "Run flow", "Add MCP server", "Connect runtime". Each menu entry deep-links into the relevant page's create flow. `[wave-13-extends]` for the menu surface; each individual create flow is owned by its page's spec.
+- **Footer carries the active runtime + Protocol version + Events Stream connection state + Console version**: `Connected to <runtime-name> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`. Replaces the spec's "footer counter strip" — counters live in the main canvas, footer carries connection posture.
+
+### Refinements to §3 functionality matrix
+
+- **Events/min units** — the mockup uses per-minute aggregation, not per-second. Update bullet 1 from `events/sec` to `events/min` (matches the operator's at-a-glance reading; per-second buckets are too noisy for a counter card and stay in the Events page's rate chart).
+- **Interventions panel renders 3 columns of action affordances** — Approve / Reject per row, plus a "View" link that deep-links into the paused session's Live Runtime page (one-click resolution from the hub). The spec's bullet covers this implicitly via the "operator action affordances" phrase; explicit here.
+- **Recent activity rows render a typed-event icon + session-id chip + free-text description + relative timestamp**. The bullet is `[shipped]` per spec; the rendering shape is canonical.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Health sub-header strip | `runtime.health` snapshot method (NEW) + per-driver `*.health_changed` events filtered | Click chip → relevant detail page (MCP → MCP Connections, Memory → Memory, etc.) | `[wave-13-extends]` |
+| `+ New` quick-create menu | local navigation | Menu items deep-link to their page's create flow | `[wave-13-extends]` |
+| Counter-card sparkline | local UI state (windowed event-rate aggregation) | hover → tooltip with last bucket value | `[shipped]` (subscription-derived; no new Protocol method) |
+
+### Refinements to §7 states
+
+- The "Page empty" state should still render the counter sparklines as flat-zero rather than hide them — operator gets "the runtime is up but quiet" rather than "the page didn't load."
+- The "Initial loading" skeleton mirrors the 4-card row + the 6-tile quick-links grid so the operator sees the page-shape before data arrives.
+
+### No mockup violations of binding carve-outs
+
+- D-065 (no session priority): mockup honors — no priority field anywhere on the page.
+- D-061 (Console DB local-only): mockup honors — every counter / feed / panel sources from Protocol events or snapshots, no Console-side runtime-entity mirroring.
+- D-091 (multi-runtime deployment): mockup honors — footer's "Connected to <runtime>" + runtime context chip in top bar.
+- D-066 (control-scope on intervention verbs): mockup shows Approve / Reject buttons; the spec's existing rule that these are gated on control-scope claim is preserved (the buttons are hidden when the JWT lacks the scope; mockup shows the elevated-operator view).

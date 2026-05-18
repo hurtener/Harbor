@@ -1,7 +1,7 @@
 # Console page — Flows
 
 **Slug:** `flows` &middot; **Sidebar cluster:** Resources &middot; **Route:** `/console/flows`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-flows-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -113,3 +113,44 @@ The flows catalog is per-runtime; the runtime switcher swaps the catalog. Flow d
 - Decisions: D-023 (Flow-as-Tool: Go-coded V1; YAML V1.1), D-061 (Console DB local-only), D-063 (Flows page = view over engine graphs; authoring post-V1), D-064 (Evaluations post-V1), D-065 (no session priority — invariant), D-066 (control claim).
 - Phase plan: phase 26a (Flow-as-Tool registration + per-flow Budget — `Shipped`), phase 73 (state inspection — `Pending`), phase 100 (Recipe loader — post-V1).
 - Glossary terms used: `Flows (Console page)`, `Console`, `Runtime lens`, `Scope claim`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-flows-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Flows catalog table (top of page).** Columns in mockup order: **Flow name** / **Owner** / **Version** / **Runs (24h)** / **p50 / p95 latency** / **Success rate** / **Last run** (relative timestamp) / **Per-flow Budget** (token cap + cost cap per D-023's per-flow `Budget`) / row-action menu. Right-side action: `Run flow` button per row (opens the inline runner — gated by `flows.run` scope claim per D-066). Top-right also surfaces a `Refresh`, `Run history`, and `Compare versions` action set.
+- **Flow Metrics card (top-right beside catalog table).** Aggregate sparklines for the selected flow: runs-per-hour, p95 latency over time, success-rate over time, per-flow budget consumption vs. cap. Read-only; data sourced from `flow.*` events aggregated client-side over the active window.
+- **Selected flow detail header (mid-page, full width).** Header row: flow name + version chip + `Run this flow ▶` button + `Save snapshot` (Console-local) + `Compare versions` (Console-local diff of two `flow.describe` snapshots). Status pill: `Healthy` / `Degraded` / `Errored` driven by the success-rate sparkline.
+- **Engine graph canvas (mid-page, primary surface for selected flow).** Read-only DAG render of the flow's engine graph: nodes (subflows / tools / pause points / artifact emitters) connected by edges. Layout uses the same renderer family as the Live Runtime topology (Brief 11 §LR shared component family). Node interactions: click for inline detail popover (input/output schemas, tool transport when applicable, ToolPolicy when applicable), double-click for `/console/tools/<id>` (when node is a tool). **No edit affordances** — Flows is view-only at V1 per D-063 (`Add node`, `Delete edge`, `Save graph` controls are absent, not just disabled).
+- **Budget meter (right rail beside graph).** Per-flow `Budget` (D-023): token cap progress bar, cost cap progress bar, request cap counter; refreshes each run. Edit is post-V1 per §10.
+- **Run history table (bottom-left, full width below graph).** Per-run rows: **Run ID** (short hash + copyable) / **Started** / **Duration** / **Status** chip / **Trigger** (user / planner / system) / **Cost** / row-action menu. Click a row to surface that run's trace in the bottom-right panel; deep-link button navigates to `/console/sessions/<id>?run=<run_id>` for full-fidelity session view.
+- **Selected run summary panel (bottom-right beside run history).** When a run row is selected: run-id header + status pill + per-node status timeline (which nodes succeeded, failed, retried) + final output preview (heavy content via `artifacts.get` per D-026) + `Open session` deep-link.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Flows catalog table (sortable + per-flow row metrics) | `flows.list` response with aggregate fields | Sort / click row | `[wave-13-extends]` (`flows.list` with aggregated metrics) |
+| `Run flow` button per row + detail-header `Run this flow ▶` | Selected flow id + input form | Open input modal → invoke `flows.run` | `[wave-13-extends]` (`flows.run` Protocol method) |
+| `Save snapshot` (Console-local pin of a flow version) | `flows.describe` snapshot | Pin into saved-views list | `[Console-local]` (D-061) |
+| `Compare versions` (Console-local diff of two `flows.describe` snapshots) | Two `flows.describe` snapshots | Open diff viewer | `[Console-local]` (D-061; pure client-side diff) |
+| Flow Metrics card (sparklines for runs-per-hour, p95 latency, success-rate, budget consumption) | Aggregated from `flow.*` event stream | None (read-only) | `[wave-13-extends]` (`flows.metrics` aggregate method TBD; events themselves on the bus) |
+| Engine graph canvas (read-only DAG render) | `flows.describe` graph payload | Click node for popover; double-click tool node → tools page | `[wave-13-extends]` (`flows.describe` Protocol method) |
+| Budget meter (right rail; per-flow `Budget` from D-023) | `flows.describe` Budget fields | None at V1 (edit deferred per §10) | `[wave-13-extends]` (`flows.describe` returns Budget; edit is `flows.set_budget` — post-V1) |
+| Run history table (per-run rows with status / cost / trigger) | `flows.runs.list?flow_id=…` | Click row → load summary panel | `[wave-13-extends]` (`flows.runs.list` Protocol method) |
+| Selected run summary panel (per-node timeline + output preview) | `flows.runs.describe?run_id=…` | `Open session` deep-link | `[wave-13-extends]` (`flows.runs.describe` Protocol method) |
+| Heavy run-output preview (via `artifacts.get`) | Output that exceeds heavy-content threshold (D-026) | Open artifact viewer | `[wave-13-extends]` (`artifacts.get` — already shipped surface) |
+
+### No mockup violations of binding carve-outs
+
+- **D-023 (Flow-as-Tool: Go-coded V1; YAML V1.1; per-flow `Budget`).** The Budget meter reflects the V1 Go-coded Budget surface; no YAML authoring UI in V1 (deferred per §10). Per-flow Budget displays only — edit is `flows.set_budget` which lands post-V1.
+- **D-061 (Console DB local-only).** Save snapshot, Compare versions, sort preferences, saved-view chips, and the run-summary annotations are Console-local. The mockup never persists a Protocol-mutating shadow of flow definitions or run history.
+- **D-063 (Flows page = view over engine graphs; authoring post-V1).** The engine graph canvas is read-only — `Add node`, `Delete edge`, `Save graph`, `New flow` actions are absent (not disabled-with-tooltip; the affordances themselves don't render at V1). `Run flow` is allowed (D-063 explicitly permits running existing flows). Compare versions is a diff of read-only snapshots, not an edit affordance.
+- **D-064 (Evaluations post-V1).** No "Convert to evaluation" / "Run benchmark" actions appear on the run history rows.
+- **D-065 (no session-level priority).** No priority field on flows, runs, or budgets.
+- **D-066 (control-scope claims).** `Run flow` requires the `flows.run` scope claim and degrades to disabled-with-tooltip; observation (catalog, graph, run history, metrics) requires only the read scope.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
+- **§13 forbidden practices.** No authoring UI dressed up as "view-only edit" — the graph canvas is pure render. Heavy run outputs route through `artifacts.get` (closes D-026). No parallel implementation of run execution — `flows.run` is the only path.

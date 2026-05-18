@@ -1,7 +1,7 @@
 # Console page — Memory
 
 **Slug:** `memory` &middot; **Sidebar cluster:** Resources &middot; **Route:** `/console/memory`
-**Mockup:** TBD — this spec drives mockup authoring
+**Mockup:** `docs/rfc/assets/console-memory-page.png` (canonical, 2026-05-18)
 
 ## 1. Purpose
 
@@ -107,3 +107,46 @@ Memory is the page where multi-isolation discipline is most visible. Default sco
 - Decisions: D-033 (memory identity-rejection emits `memory.identity_rejected` with `<missing>` substitution), D-034 (persistent memory drivers own their `memory_state` tables), D-035 (`OverflowDropOldest` only; recovery loop bounded), D-061 (Console DB local-only), D-065 (no session priority — invariant), D-066 (control claim).
 - Phase plan: phase 23 (MemoryStore iface + InMem + conformance — `Shipped`), phase 24 (Memory strategies — `Shipped`), phase 25 (SQLite + Postgres memory drivers — `Shipped`), phase 73 (state inspection — `Pending`).
 - Glossary terms used: `Console`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-memory-page.png` against §3-§7.
+
+### Refinements to §4 page anatomy
+
+- **Sub-header strip.** Saved-filter chips on the left (`Saved filters`, `By agent`, `Expiring soon`, `Identity-rejected`, `Last hour`) + faceted filter chips (`Agent` ▾, `Scope` ▾ — `session` / `user` / `tenant` — `Session` ▾, `Tenant` ▾, `Driver` ▾ — `inmem` / `sqlite` / `postgres` — `More filters` ▾). Right side: `Refresh`, `Export ▾` (NDJSON / CSV — Console-local snapshot of current filtered page).
+- **Strategy / overlay chip row (immediately below sub-header).** Color-coded chips for memory strategies (`Episodic`, `Recent`, `Pinned`, `Persistent`, `Working set`); selecting one applies an overlay filter. These render the V1 strategy taxonomy from Phase 24; chips for unshipped strategies are absent (no placeholder UI).
+- **Main memory table (primary surface).** Columns in mockup order: checkbox / **Name / Memory key** (truncated key + copy-on-hover) / **Strategy** chip / **Scope** chip / **Owner** (identity triple summary — agent + session + user) / **Created** (relative timestamp) / **Last updated** (relative timestamp) / **TTL / Expires** (relative; `—` when none) / **Size** (bytes; heavy-content threshold per D-026 flagged via icon) / **Driver** chip / row-action menu. Virtualised; pagination footer.
+- **Right rail — Stacked status cards.**
+  - **Memory health** — counters: total records, expiring in 1 h, identity-rejected count (last 24 h per D-033), `OverflowDropOldest` events (last 24 h per D-035). Read-only.
+  - **Recent identity rejections** — list of `memory.identity_rejected` events with the `<missing>` substitution per D-033; deep-links into the Events page with the filter pre-applied.
+  - **Recovery dropouts** — `OverflowDropOldest` event timeline per D-035, scoped to the active tenant filter. Read-only.
+  - **Selected item detail** — when a row is checked: full key, full identity quadruple, complete metadata (strategy, scope, TTL, size, driver), pretty-printed JSON value viewer with collapsible nodes and a `Truncated` badge + `Open artifact` link when size ≥ heavy-content threshold (D-026). Row actions: `Copy key`, `Copy value`, `Inspect related events` (deep-links to Events page).
+- **Bulk-action toolbar.** Activates when ≥1 row is checked. **V1 is read-only**: bulk actions present in the mockup (`Delete selected`, `Refresh TTL`, `Pin`) render as disabled-with-tooltip ("Memory mutation surface deferred — Phase 73") consistent with §3 functionality matrix item "Direct mutation (delete a record, edit a value, force TTL)" marked deferred.
+- **Footer.** `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Saved-filter chips (`By agent`, `Expiring soon`, `Identity-rejected`, `Last hour`) | Console-local saved views (D-061) | Apply / pin / unpin | `[Console-local]` (D-061) |
+| Faceted filter chips (Agent / Scope / Session / Tenant / Driver / More filters) | `memory.list` filter params | Toggle facet | `[wave-13-extends]` (`memory.list` filter shape) |
+| Strategy / overlay chip row | `memory.list?strategy=…` | Pin strategy filter | `[wave-13-extends]` (`memory.list` strategy filter) |
+| Export ▾ (NDJSON / CSV of filtered page) | Already-loaded page | Client-side export | `[Console-local]` (D-061; no Protocol mutation) |
+| Memory health card | `memory.health` aggregates | None (read-only) | `[wave-13-extends]` (`memory.health` aggregate method TBD) |
+| Recent identity rejections card | `memory.identity_rejected` events (D-033) | Deep-link to Events page | `[wave-13-extends]` (event-stream filter; event itself shipped per D-033) |
+| Recovery dropouts card | `memory.overflow_drop_oldest` events (D-035) | None | `[wave-13-extends]` (event-stream filter; event itself shipped per D-035) |
+| Selected item detail (JSON viewer + truncation handling) | `memory.get` response | Copy / Inspect related events | `[wave-13-extends]` (`memory.get` Protocol method TBD) |
+| Bulk-action toolbar (Delete / Refresh TTL / Pin — disabled-with-tooltip in V1) | Selected row IDs | None at V1 (deferred per §10) | `[deferred-post-V1]` (memory mutation surface — Phase 73 carve-out) |
+| Open-artifact link on heavy-content values | `artifacts.get` for value blob | Open artifact viewer | `[wave-13-extends]` (`artifacts.get` — already shipped surface; memory subsystem must produce artifact stubs for heavy values per D-026) |
+
+### No mockup violations of binding carve-outs
+
+- **D-033 (identity-rejection emits `memory.identity_rejected`).** The Recent identity rejections card surfaces exactly that event with the `<missing>` substitution; the Console never hides the rejection or substitutes a partial identity itself.
+- **D-034 (persistent memory drivers own their `memory_state` tables).** The Driver column and faceted filter expose the driver per row; no Console-side shadow of memory state.
+- **D-035 (`OverflowDropOldest`).** The Recovery dropouts card surfaces the event; the Console never inflates the in-memory buffer beyond runtime bounds.
+- **D-061 (Console DB local-only).** Saved filters, sort preferences, column visibility, and Export are Console-local. The mockup never persists a Protocol-mutating shadow of memory records.
+- **D-065 (no session-level priority).** No priority field renders on rows or in the right rail; the `Pinned` strategy chip is a Phase 24 strategy, not a priority field.
+- **D-066 (control-scope claims).** All mutation surfaces are disabled-with-tooltip at V1; observation requires the `memory.read` scope; cross-tenant inspection requires `memory.crosstenant` per D-079 and gates the `Tenant ▾` facet list to scope-authorised tenants only.
+- **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
+- **§13 forbidden practices.** Heavy memory values route through `artifacts.get` rather than inlining (closes D-026); the Console never bypasses identity rejection (no UI affordance to "view rejected memory anyway"); no parallel implementation of memory mutation (the deferred bulk actions are explicitly disabled until Phase 73 lands the Protocol surface).

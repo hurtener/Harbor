@@ -1,7 +1,7 @@
 # Console page — Live Runtime
 
 **Slug:** `live-runtime` &middot; **Sidebar cluster:** Runtime &middot; **Route:** `/console/live-runtime`
-**Mockup:** `docs/research/console-mockup-runtime-view.png` (legacy location per Brief 12; canonical home is `docs/rfc/assets/console-*.png` once migrated)
+**Mockup:** `docs/rfc/assets/console-live-runtime-page.png` (canonical, 2026-05-18). Supersedes the legacy `docs/research/console-mockup-runtime-view.png` which pre-dates D-065 compliance (the legacy shows a `Priority: Normal` field V1 drops) and lacks several Brief 11 §LR-4 / §LR-5 details (Cost, Last error, Tenant in the right rail; sparkline-rich Recent Artifacts; bottom-dock Trace tab). The legacy file stays at `docs/research/` as a research-era artifact (Brief 12 cites it by that path) but is no longer the canonical spec source.
 
 ## 1. Purpose
 
@@ -129,3 +129,54 @@ Live Runtime is always scoped to a specific session in a specific runtime — ne
 - Decisions: D-002, D-062 (Live Runtime ≠ Sessions), D-065 (no session priority), D-066 (control claim), D-067 (Pause/Resume Coordinator), D-070 (steering inbox), D-072 (Protocol task control surface — the ten methods), D-077 (versioning), D-078 (SSE + REST wire), D-091 (Console deployment posture).
 - Phase plan: phases 50–53 (steering / pause-resume — `Shipped`), phase 54 (task control surface — `Shipped`), phase 60 (Protocol wire transport — `Shipped`), phase 72 (Console subscription — `Pending`), phase 73 (state inspection — `Pending`), phase 74 (topology projection events — `Pending`).
 - Glossary terms used: `Live Runtime`, `Pause/Resume Coordinator`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`.
+
+## 12. Mockup-aligned refinements (2026-05-18)
+
+Reconciliation of `docs/rfc/assets/console-live-runtime-page.png` against §3-§7 above. The agent-authored spec (sections 1-11) is the v1.0 surface; this section adds the mockup-derived specifics that should drive the SvelteKit implementation.
+
+### Refinements to §4 page anatomy
+
+- **Header status counter strip** above the tab strip, showing 5 chips: `Pending <N>` / `Running <N>` / `Completed <N>` / `Paused <N>` / `Failed <N>`. The spec puts the status legend in the canvas corner; the mockup elevates these to a top-of-page bar so they survive every tab switch. Status legend in the canvas corner stays as a per-tab affordance (graph-only).
+- **Breadcrumb is three-segment**: `<runtime-name> / Live Runtime / <run-id>` (where `<run-id>` is the truncated 8-char id like `01KVR3D...`). Clicking the runtime name opens the runtime switcher; clicking "Live Runtime" navigates to a "pick a run" landing; clicking the run-id copies it.
+- **Right rail expands to include `Cost` and `Last error`** fields plus `Tenant` (in addition to Session ID / Status / Started / Duration / Tasks / Events / Agent / User the spec already lists). Cost is computed from `llm.cost.recorded` events aggregated for the run. Last error is the most recent `task.failed` / `tool.failed` / `planner.error` payload's error message + class. Tenant is the run's identity-tuple tenant (admin views may show non-default tenants).
+- **Recent Artifacts sub-panel renders mime icons + filename + size + relative timestamp** per row (not just filename / size / age the spec describes). Visual richness matches Brief 11 §LR-5's "preview cards" intent.
+- **Interventions sub-panel renders a per-intervention card** with: title (e.g., "Tool approval needed"), reason (the reason string from the `pause.requested` / `tool.approval_requested` payload), countdown (time-until-auto-timeout when one applies), and Approve / Reject buttons. The spec's "View" button is integrated into the card (the whole card is clickable).
+- **Bottom dock adds a "Trace" tab** in addition to Details / Input / Output / Logs (so the operator can see the per-task trace span tree without leaving the page). `[wave-13-extends]` requires a `tasks.trace` Protocol method or the existing `state.history` extended with span correlation.
+- **Footer carries Protocol version + Events Stream connection state + Console version**: `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`. Replaces the spec's generic "micro-counters" footer with concrete connection posture.
+- **Topology canvas controls**: Pause-stream toggle (top-right of canvas) + Reset-zoom button + filter chips (above canvas) for `Status: All|Pending|Running|Completed|Paused|Failed` and tool-name filter + time-range. Replaces the spec's lone "Pause-updates" + "filters" mentions with the concrete control surface.
+
+### Refinements to §3 functionality matrix
+
+- **Cost field on right rail** — add as `[shipped]` (derived from `llm.cost.recorded` events aggregated client-side; the event ships per `internal/llm/events.go::EventTypeLLMCostRecorded`).
+- **Last-error field on right rail** — add as `[shipped]` (latest `task.failed` / `tool.failed` / `planner.error` event payload — all shipped).
+- **Tenant field on right rail** — add as `[shipped]` (identity tuple from `events.Event.Identity.TenantID`).
+- **Trace tab in bottom dock** — add as `[wave-13-extends]` (Wave 13 to decide: extend `state.history` with span correlation OR new `tasks.trace` method).
+- **Status counter strip in header** — derive from the topology projection's node states (already `[wave-13-extends]` via Phase 74); refine to note this is a header-level vs canvas-level concern.
+- **Topology shows error/reject paths** (not just happy-path nodes) — the mockup's graph includes a `Reject` (failed) terminal node alongside the happy `Aggregate → Upload Artifact`. The spec's topology bullet implicitly covers this via "status pill"; explicit here: failed nodes render with a red border + failure code tag.
+
+### Components the mockup adds that the spec did not enumerate
+
+| Component | Data in | User actions | Tag |
+|---|---|---|---|
+| Header status counter strip | derived from `topology.snapshot` event (NEW) | Click chip → filter graph to that status (local UI state) | `[wave-13-extends]` |
+| Cost field (right rail) | `llm.cost.recorded` events aggregated client-side for the run | Click → drill into Cost overview (deep-link to Settings → Governance) | `[shipped]` |
+| Last-error field (right rail) | most recent `task.failed` / `tool.failed` / `planner.error` event payload | Click → bottom-dock detail filtered to errors | `[shipped]` |
+| Tenant field (right rail) | `events.Event.Identity.TenantID` | Click → no-op (single-tenant scope) or open scope-elevation dialog (multi-tenant) | `[shipped]` |
+| Trace tab (bottom dock) | `tasks.trace` (NEW) OR `state.history` with span correlation (NEW) | Expand / collapse spans (local UI state); click span → focus on its node in topology | `[wave-13-extends]` |
+| Intervention countdown | derived from `pause.requested` payload's optional `expires_at` field | Visual countdown only; expires resolves server-side via auto-reject | `[shipped]` (event surface) |
+| Filter chips above canvas | local UI state | Re-scope the topology rendering + event subscription | `[shipped]` |
+| Reset-zoom button | local UI state | Reset zoom + pan to default | `[shipped]` |
+
+### Refinements to §7 states
+
+- The "No live run yet" state should still show the runtime context + breadcrumb + (empty) status counter strip + Start composer — operator gets immediate orientation rather than a blank canvas.
+- The "Initial loading" state shows skeleton placeholders for topology + status counters + right rail; Event Stream shows the actual "Connecting…" line (matches Brief 11 §LR-2 streaming-indicator pattern).
+
+### No mockup violations of binding carve-outs
+
+- **D-065 (no session priority)** — mockup explicitly omits the field. Confirmed delta from the legacy mockup. Spec §3 bullet "No Priority field" stands.
+- **D-061 (Console DB local-only)** — mockup honors. Cost / Last error / Tenant all derive from Protocol events; nothing is mirrored Console-side.
+- **D-091 (multi-runtime deployment)** — mockup's breadcrumb pattern + footer's "Connected to <runtime>" makes the multi-runtime context explicit.
+- **D-066 (control-scope on intervention verbs)** — mockup shows the elevated-operator view (Approve/Reject visible). Spec's existing rule (buttons hidden when JWT lacks the claim) preserved.
+- **D-062 (Live Runtime ≠ Sessions, Agents ≠ chatbots)** — mockup shows the topology workbench, not a chat surface. Confirmed.
+- **Runtime-lens principle (§7.1)** — every panel sources from a Protocol surface (events / snapshots). No standalone Console-only features.
