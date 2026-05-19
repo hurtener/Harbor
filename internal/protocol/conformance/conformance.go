@@ -451,14 +451,15 @@ func signAlgNone(t *testing.T, claims jwt.MapClaims) string {
 // status.go; this table mirrors it so a future status reshuffle would
 // surface as a conformance failure rather than landing silently.
 var expectedHTTPStatus = map[protoerrors.Code]int{
-	protoerrors.CodeInvalidRequest:   http.StatusBadRequest,
-	protoerrors.CodeIdentityRequired: http.StatusUnauthorized,
-	protoerrors.CodeScopeMismatch:    http.StatusForbidden,
-	protoerrors.CodePayloadInvalid:   http.StatusUnprocessableEntity,
-	protoerrors.CodeUnknownMethod:    http.StatusNotFound,
-	protoerrors.CodeNotFound:         http.StatusNotFound,
-	protoerrors.CodeRuntimeError:     http.StatusInternalServerError,
-	protoerrors.CodeAuthRejected:     http.StatusUnauthorized,
+	protoerrors.CodeInvalidRequest:        http.StatusBadRequest,
+	protoerrors.CodeIdentityRequired:      http.StatusUnauthorized,
+	protoerrors.CodeScopeMismatch:         http.StatusForbidden,
+	protoerrors.CodePayloadInvalid:        http.StatusUnprocessableEntity,
+	protoerrors.CodeUnknownMethod:         http.StatusNotFound,
+	protoerrors.CodeNotFound:              http.StatusNotFound,
+	protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
+	protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
+	protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -475,6 +476,7 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeNotFound,
 	protoerrors.CodeRuntimeError,
 	protoerrors.CodeAuthRejected,
+	protoerrors.CodeIdentityScopeRequired,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -588,6 +590,9 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("ConcurrentReuse_SharedStack_NoCrossTalk", func(t *testing.T) {
 		runConcurrentReuse(t, factory)
 	})
+	t.Run("EventsSubscribe_HappyPath", func(t *testing.T) {
+		runEventsSubscribeNegotiation(t, factory)
+	})
 }
 
 // assertMethodMatrixExhaustive — every canonical method must be in
@@ -598,20 +603,23 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	if len(got) != 10 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 10 (Phase 54 task-control set)", len(got))
+	// Phase 54 task-control set (10) + Phase 72 streaming-events
+	// anchor (events.subscribe) = 11.
+	if len(got) != 11 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 11 (Phase 54 task-control + Phase 72 events.subscribe)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
-		methods.MethodStart:         {},
-		methods.MethodCancel:        {},
-		methods.MethodPause:         {},
-		methods.MethodResume:        {},
-		methods.MethodRedirect:      {},
-		methods.MethodInjectContext: {},
-		methods.MethodApprove:       {},
-		methods.MethodReject:        {},
-		methods.MethodPrioritize:    {},
-		methods.MethodUserMessage:   {},
+		methods.MethodStart:           {},
+		methods.MethodCancel:          {},
+		methods.MethodPause:           {},
+		methods.MethodResume:          {},
+		methods.MethodRedirect:        {},
+		methods.MethodInjectContext:   {},
+		methods.MethodApprove:         {},
+		methods.MethodReject:          {},
+		methods.MethodPrioritize:      {},
+		methods.MethodUserMessage:     {},
+		methods.MethodEventsSubscribe: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -664,11 +672,25 @@ func assertErrorCodeMatrixExhaustive(t *testing.T) {
 
 // runMethodMatrixHappyPath exercises every canonical method's
 // happy-path on BOTH transports.
+//
+// Phase 72 / D-105: MethodEventsSubscribe is a streaming-events method
+// served by the SSE transport (`GET /v1/events`), not by REST control.
+// Its happy-path lives under EventsSubscribe_HappyPath below;
+// runMethodMatrixHappyPath skips it so the matrix iteration stays
+// focused on task-control methods.
 func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 	t.Helper()
 
 	for _, m := range methods.Methods() {
 		m := m
+		if m == methods.MethodEventsSubscribe {
+			// Streaming-events method — covered by
+			// EventsSubscribe_HappyPath and the EventFilterMatrix
+			// scenarios. Dispatch returns CodeInvalidRequest if a
+			// caller hits the REST surface with this method (the
+			// "wrong transport for wrong vocabulary" guard).
+			continue
+		}
 		t.Run(string(m), func(t *testing.T) {
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -795,10 +817,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 // malformed-request rejection. A nil-or-wrong-type request body fails
 // the in-process Dispatch with CodeInvalidRequest; the wire path
 // surfaces it as HTTP 400.
+//
+// Phase 72 / D-105: MethodEventsSubscribe is intentionally skipped —
+// its "wrong transport" rejection is structurally CodeInvalidRequest
+// (the streaming-events method is hitting the REST control surface),
+// not "malformed JSON". A dedicated assertion lives below.
 func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 	t.Helper()
 	for _, m := range methods.Methods() {
 		m := m
+		if m == methods.MethodEventsSubscribe {
+			continue
+		}
 		t.Run(string(m), func(t *testing.T) {
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
@@ -955,6 +985,38 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 		}
 		assertWireErrorCode(t, decoded, protoerrors.CodeAuthRejected)
 	})
+
+	t.Run("CodeIdentityScopeRequired_CrossTenantWithoutScope", func(t *testing.T) {
+		// Phase 72 / D-105: a `?admin=1` request from a JWT lacking
+		// `auth.ScopeAdmin` AND `auth.ScopeConsoleFleet` is rejected
+		// 403 with the typed Code `identity_scope_required`. The wire
+		// surface is the Phase 60 `/v1/events` SSE route.
+		st := factory(t)
+		defer st.Cleanup()
+		srv := httptest.NewServer(st.Mux)
+		defer srv.Close()
+
+		id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+		tok := st.SignToken(t, id, nil) // no scopes
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET ?admin=1: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("cross-tenant without scope: status = %d, want 403", resp.StatusCode)
+		}
+		decoded, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		assertWireErrorCode(t, decoded, protoerrors.CodeIdentityScopeRequired)
+	})
 }
 
 // runEventFilterMatrix exercises every documented SSE event-filter
@@ -1108,6 +1170,75 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("run-scoped stream: status = %d, want 200", resp.StatusCode)
+		}
+	})
+}
+
+// runEventsSubscribeNegotiation pins the Phase 72 / D-105 method-name
+// surface: `events.subscribe` is a canonical Protocol method. The wire
+// transport is `GET /v1/events` (Phase 60 SSE); the method-name
+// constant is the contract a third-party Console branches on. The
+// happy-path scenario opens a triple-scoped SSE stream over the wire
+// and asserts HTTP 200 + the SSE Content-Type. The reject paths
+// (cross-tenant without scope → 403 + identity_scope_required;
+// `?admin=1` with the scope → 200) are already covered by the
+// EventFilterMatrix scenarios.
+//
+// The in-process scenario asserts the "wrong transport" guard: a
+// caller hitting the REST control surface with `events.subscribe`
+// gets CodeInvalidRequest (the streaming-events vocabulary is served
+// by the SSE transport).
+func runEventsSubscribeNegotiation(t *testing.T, factory Factory) {
+	t.Helper()
+
+	t.Run("Wire_TripleScopedSubscribe_200", func(t *testing.T) {
+		st := factory(t)
+		defer st.Cleanup()
+		srv := httptest.NewServer(st.Mux)
+		defer srv.Close()
+
+		id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
+		tok := st.SignToken(t, id, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("open events.subscribe stream: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("events.subscribe wire status = %d, want 200", resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+			t.Errorf("events.subscribe Content-Type = %q, want text/event-stream", ct)
+		}
+	})
+
+	t.Run("InProcess_WrongTransport_FailsClosed", func(t *testing.T) {
+		// The REST control surface rejects events.subscribe at the
+		// vocabulary boundary — it's a streaming-events method, not a
+		// task-control method.
+		st := factory(t)
+		defer st.Cleanup()
+		_, err := st.Surface.Dispatch(context.Background(), methods.MethodEventsSubscribe, &types.StartRequest{
+			Identity: types.IdentityScope{Tenant: "t1", User: "u1", Session: "s1"},
+		})
+		assertCode(t, err, protoerrors.CodeInvalidRequest)
+	})
+
+	t.Run("CanonicalMethodName_Registered", func(t *testing.T) {
+		// String-form pinning lives in internal/protocol/methods's own
+		// test (TestMethods_EventsSubscribe_Registered); here we pin
+		// the in-place registration so a refactor that drops the
+		// constant from canonicalMethods surfaces as a conformance
+		// failure.
+		if !methods.IsValidMethod(methods.MethodEventsSubscribe) {
+			t.Error("IsValidMethod(MethodEventsSubscribe) = false, want true")
+		}
+		if methods.IsControlMethod(methods.MethodEventsSubscribe) {
+			t.Error("IsControlMethod(MethodEventsSubscribe) = true, want false — streaming-events, not steering-control")
 		}
 	})
 }

@@ -25,6 +25,18 @@
 // deliberate — the Protocol surface owns its own method vocabulary
 // (brief 07's "the runtime owns the protocol it speaks").
 //
+// # The Phase 72 extension: the streaming-events method-name anchor
+//
+// Phase 72 elevates `events.subscribe` to a canonical method-name
+// constant. The wire-transport route is still `GET /v1/events` (Phase
+// 60 SSE), but the canonical method name is now the contract third-party
+// Console implementations branch on — same pattern as the Phase 54
+// task-control nine. `events.subscribe` is a streaming-events method,
+// NOT a task-control method: `IsControlMethod("events.subscribe")` is
+// false (the predicate stays exclusive to the Phase 54 steering-control
+// nine) and `Methods()` returns the augmented sorted set with the new
+// entry. See `docs/plans/phase-72-console-subscription-scope.md`.
+//
 // # No registration escape hatch
 //
 // canonicalMethods is a fixed package-level map, not a write-once
@@ -81,6 +93,18 @@ const (
 	// visible on the planner's next step. Maps onto the USER_MESSAGE
 	// steering control; the message is the payload's `message` string.
 	MethodUserMessage Method = "user_message"
+
+	// MethodEventsSubscribe opens a server-filtered event subscription
+	// (Phase 72 / D-105). The wire-transport route is `GET /v1/events`
+	// SSE (Phase 60); the canonical method name is the contract a
+	// third-party Console branches on. Identity-mandatory; a request
+	// with `?admin=1` (cross-tenant fan-in) requires the verified
+	// `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` scope claim
+	// (D-079). The reject path returns the canonical
+	// `errors.CodeIdentityScopeRequired` Code (HTTP 403). NOT a
+	// task-control method — IsControlMethod returns false; the Phase
+	// 54 control nine stays exclusive.
+	MethodEventsSubscribe Method = "events.subscribe"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -89,16 +113,17 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:         {},
-	MethodCancel:        {},
-	MethodPause:         {},
-	MethodResume:        {},
-	MethodRedirect:      {},
-	MethodInjectContext: {},
-	MethodApprove:       {},
-	MethodReject:        {},
-	MethodPrioritize:    {},
-	MethodUserMessage:   {},
+	MethodStart:           {},
+	MethodCancel:          {},
+	MethodPause:           {},
+	MethodResume:          {},
+	MethodRedirect:        {},
+	MethodInjectContext:   {},
+	MethodApprove:         {},
+	MethodReject:          {},
+	MethodPrioritize:      {},
+	MethodUserMessage:     {},
+	MethodEventsSubscribe: {},
 }
 
 // IsValidMethod reports whether m is one of the ten canonical
@@ -109,11 +134,17 @@ func IsValidMethod(m Method) bool {
 }
 
 // IsControlMethod reports whether m is one of the nine steering-control
-// methods — every canonical method except MethodStart. The
-// protocol.ControlSurface uses this to branch: a control method maps
-// onto a steering.ControlEvent; MethodStart maps onto the task registry.
+// methods. The set is closed at the Phase 54 nine: every canonical
+// method except MethodStart (which spawns a task) AND
+// MethodEventsSubscribe (which opens a streaming-events subscription —
+// Phase 72). The protocol.ControlSurface uses this to branch: a control
+// method maps onto a steering.ControlEvent; MethodStart maps onto the
+// task registry; MethodEventsSubscribe is served by the SSE transport.
+// A new non-control method (state inspection, topology, artifacts —
+// future phases) extends THIS predicate, NOT the steering-control
+// inbox.
 func IsControlMethod(m Method) bool {
-	return IsValidMethod(m) && m != MethodStart
+	return IsValidMethod(m) && m != MethodStart && m != MethodEventsSubscribe
 }
 
 // Methods returns a deterministic, lexicographically-sorted snapshot of

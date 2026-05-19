@@ -10,8 +10,8 @@ import (
 
 // The canonical Protocol error codes — the test's independent source
 // of truth. The original seven landed in Phase 54; CodeAuthRejected
-// landed in Phase 61 (D-079). If errors.go drifts, the stability test
-// fails.
+// landed in Phase 61 (D-079); CodeIdentityScopeRequired landed in
+// Phase 72 (D-105). If errors.go drifts, the stability test fails.
 var wantCodes = []protoerrors.Code{
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,
@@ -21,6 +21,7 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeNotFound,
 	protoerrors.CodeRuntimeError,
 	protoerrors.CodeAuthRejected,
+	protoerrors.CodeIdentityScopeRequired,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -28,14 +29,15 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 	// (RFC §5.3) — a Protocol client branches on them. A casual rename
 	// is a breaking change; this test pins the strings.
 	wire := map[protoerrors.Code]string{
-		protoerrors.CodeInvalidRequest:   "invalid_request",
-		protoerrors.CodeIdentityRequired: "identity_required",
-		protoerrors.CodeScopeMismatch:    "scope_mismatch",
-		protoerrors.CodePayloadInvalid:   "payload_invalid",
-		protoerrors.CodeUnknownMethod:    "unknown_method",
-		protoerrors.CodeNotFound:         "not_found",
-		protoerrors.CodeRuntimeError:     "runtime_error",
-		protoerrors.CodeAuthRejected:     "auth_rejected",
+		protoerrors.CodeInvalidRequest:        "invalid_request",
+		protoerrors.CodeIdentityRequired:      "identity_required",
+		protoerrors.CodeScopeMismatch:         "scope_mismatch",
+		protoerrors.CodePayloadInvalid:        "payload_invalid",
+		protoerrors.CodeUnknownMethod:         "unknown_method",
+		protoerrors.CodeNotFound:              "not_found",
+		protoerrors.CodeRuntimeError:          "runtime_error",
+		protoerrors.CodeAuthRejected:          "auth_rejected",
+		protoerrors.CodeIdentityScopeRequired: "identity_scope_required",
 	}
 	for code, want := range wire {
 		if string(code) != want {
@@ -98,6 +100,41 @@ func TestError_JSONRoundTrip(t *testing.T) {
 	}
 	if out != in {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
+	}
+}
+
+// TestCodes_IdentityScopeRequired — pins the Phase 72 / D-105 code:
+// IsValidCode reads back true, the wire string is exactly
+// "identity_scope_required" (third-party Consoles branch on it), and
+// Codes() returns it in the lexicographically-sorted snapshot.
+func TestCodes_IdentityScopeRequired(t *testing.T) {
+	if string(protoerrors.CodeIdentityScopeRequired) != "identity_scope_required" {
+		t.Fatalf("CodeIdentityScopeRequired wire string = %q, want %q",
+			string(protoerrors.CodeIdentityScopeRequired), "identity_scope_required")
+	}
+	if !protoerrors.IsValidCode(protoerrors.CodeIdentityScopeRequired) {
+		t.Error("IsValidCode(identity_scope_required) = false, want true")
+	}
+	// String-form stability: a third-party Console computes the
+	// canonical name as a literal and expects parity.
+	if !protoerrors.IsValidCode(protoerrors.Code("identity_scope_required")) {
+		t.Error(`IsValidCode(Code("identity_scope_required")) = false, want true — wire-string stability broken`)
+	}
+	// Lexicographic-order pin: the new code lands between
+	// "auth_rejected" and "invalid_request" in the canonical set.
+	got := protoerrors.Codes()
+	idx := -1
+	for i, c := range got {
+		if c == protoerrors.CodeIdentityScopeRequired {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("Codes() snapshot missing identity_scope_required")
+	}
+	if idx > 0 && string(got[idx-1]) > string(got[idx]) {
+		t.Errorf("Codes() not lex-sorted around identity_scope_required: %q before %q", got[idx-1], got[idx])
 	}
 }
 

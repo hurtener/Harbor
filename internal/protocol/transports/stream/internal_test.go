@@ -244,7 +244,11 @@ func TestServeHTTP_SubscribeClosedBus_503(t *testing.T) {
 }
 
 // scopeRequiredBus reports ErrIdentityScopeRequired from Subscribe —
-// exercises ServeHTTP's Subscribe-error -> 401 branch.
+// exercises ServeHTTP's Subscribe-error → 403 branch (Phase 72 /
+// D-105). The pre-Phase-72 mapping was 401; the wire status is now
+// 403 because the request IS authenticated (the auth middleware /
+// header carrier resolved the identity) — only the scope set was
+// insufficient for the requested fan-in.
 type scopeRequiredBus struct{}
 
 func (scopeRequiredBus) Publish(context.Context, events.Event) error { return nil }
@@ -253,7 +257,7 @@ func (scopeRequiredBus) Subscribe(context.Context, events.Filter) (events.Subscr
 }
 func (scopeRequiredBus) Close(context.Context) error { return nil }
 
-func TestServeHTTP_SubscribeScopeRequired_401(t *testing.T) {
+func TestServeHTTP_SubscribeScopeRequired_403(t *testing.T) {
 	h := &Handler{bus: scopeRequiredBus{}, logger: slog.Default()}
 	req := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
 	req.Header.Set(HeaderTenant, "t1")
@@ -261,8 +265,44 @@ func TestServeHTTP_SubscribeScopeRequired_401(t *testing.T) {
 	req.Header.Set(HeaderSession, "s1")
 	rec := newFlushRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("scope-required Subscribe status = %d, want 401", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("scope-required Subscribe status = %d, want 403 (Phase 72 / D-105)", rec.Code)
+	}
+	// The body must be the canonical Protocol error envelope with the
+	// new code (a third-party Console branches on the code, not the
+	// HTTP status alone).
+	body := rec.Body.String()
+	if !bytes.Contains([]byte(body), []byte(`"code":"identity_scope_required"`)) {
+		t.Errorf("body missing identity_scope_required code: %q", body)
+	}
+}
+
+// adminScopeRequiredBus reports ErrAdminScopeRequired from Subscribe —
+// defensive: Phase 61's `?admin=1` gate normally short-circuits before
+// Subscribe, but the bus-side sentinel must still map to the wire
+// code if a future filter variant lets it through.
+type adminScopeRequiredBus struct{}
+
+func (adminScopeRequiredBus) Publish(context.Context, events.Event) error { return nil }
+func (adminScopeRequiredBus) Subscribe(context.Context, events.Filter) (events.Subscription, error) {
+	return nil, events.ErrAdminScopeRequired
+}
+func (adminScopeRequiredBus) Close(context.Context) error { return nil }
+
+func TestServeHTTP_BusReturnsAdminScopeRequired_Maps403(t *testing.T) {
+	h := &Handler{bus: adminScopeRequiredBus{}, logger: slog.Default()}
+	req := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	req.Header.Set(HeaderTenant, "t1")
+	req.Header.Set(HeaderUser, "u1")
+	req.Header.Set(HeaderSession, "s1")
+	rec := newFlushRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("admin-scope-required Subscribe status = %d, want 403 (Phase 72 / D-105)", rec.Code)
+	}
+	body := rec.Body.String()
+	if !bytes.Contains([]byte(body), []byte(`"code":"identity_scope_required"`)) {
+		t.Errorf("body missing identity_scope_required code: %q", body)
 	}
 }
 

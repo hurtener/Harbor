@@ -55,6 +55,15 @@ func httpStatus(code protoerrors.Code) int {
 		// client supplied a token but it did not verify. 401 — the
 		// request is unauthenticated at the Protocol edge.
 		return http.StatusUnauthorized // 401
+	case protoerrors.CodeIdentityScopeRequired:
+		// Phase 72 / D-105 — the request is authenticated but the
+		// scope set does not authorize the requested fan-in. Returned
+		// when an `events.subscribe` (Phase 72) request asks for
+		// `?admin=1` without the `auth.ScopeAdmin` or
+		// `auth.ScopeConsoleFleet` claim (D-079). Distinct from
+		// CodeScopeMismatch (reserved for the steering-control scope
+		// path per RFC §6.3). 403 — authenticated but not authorized.
+		return http.StatusForbidden // 403
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

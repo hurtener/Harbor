@@ -93,7 +93,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 69 | `harbor inspect-events / inspect-runs`        | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
 | 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
 | 71 | `harbortest` test kit package                 | testing              | §6.13       | 05, 09, 07            | 85%  | Shipped  |
-| 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Pending  |
+| 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
 | 75 | Console e2e Playwright (CI gate)              | testing              | §7          | 64, 72, 73            | n/a  | Pending  |
@@ -775,6 +775,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** Console can subscribe to a session's events; cross-tenant call rejected unless scoped admin.
 **Tests.** Integration.
 **Deps.** 60, 05, 06.
+**Plan file.** `docs/plans/phase-72-console-subscription-scope.md` (shipped — D-105).
 
 ### 73 — Console state inspection surface (RFC §5.2, §7)
 
