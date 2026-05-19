@@ -194,3 +194,31 @@ Once signed off: this doc gets committed as-is to `docs/plans/wave-13-decomposit
 - `docs/decisions.md` — D-014, D-022, D-026, D-029, D-033, D-035, D-061, D-062, D-063, D-064, D-065, D-066, D-072, D-077, D-079, D-081, D-083, D-089, D-091, D-092, D-093.
 - `CLAUDE.md` §4.5 (Console / Protocol-client conventions), §13 (forbidden practices — frontend bullets + primitive-with-consumer + test-stubs-as-defaults), §17.7 (wave-delivery cadence).
 - PR #138 (`docs/console-page-specs` merged at `d7ab563`) — the 14 specs + 14 canonical mockups feeding this decomposition.
+
+---
+
+## 12. Locked answers (2026-05-19) — operator signoff
+
+Following operator review of §9 in PR #141 (merged at `4069955`), the eight open questions are resolved as below. **These answers are binding on all per-phase plans.** §9 above is preserved as the audit trail.
+
+1. **Letter-suffix scheme (72a-72h / 73a-73n / 75a).** **Confirmed.**
+2. **Stage 1 width (11 parallel agents).** **Split into two batches of 5-6.** Batch A: 72, 72a, 72b, 72c, 72d (5 — foundational primitives). Batch B: 72e, 72f, 72g, 72h, 74, 75 (6 — posture + Console DB + topology + Playwright). Operator merges Batch A's PRs before Batch B's agents dispatch.
+3. **73e Agents heaviest single phase.** **Keep as one heavy phase, allocate 2x agent time + mandatory coordinator-verify pass.** The coordinator MUST NOT trust the agent's finishing signal; the coordinator reads the produced files, greps for shipped-vs-`[wave-13-extends]` mistakes, audits the §13 primitive-with-consumer compliance, and only THEN advances. This rule is binding on every Wave 13 dispatch (not just 73e), but 73e carries the highest audit cost given its width.
+4. **`search.*` cluster shape (72c — 5 methods).** **Keep as one phase.** The methods share the same conformance surface (identity filtering, redaction, pagination, scope claim).
+5. **`notification.*` first consumer (72d).** **Add a Stage-1 test consumer that fires `notification.task_failed` from a deliberate `tool.failed` and asserts a subscriber receives it via the bus — BEFORE the UI ships.** This makes 72d §13-compliant without depending on 73a Overview's alert ribbon to land. The test consumer lives in `internal/runtime/notifications/notifications_test.go` (or equivalent — Phase 72d picks the package shape).
+6. **Console DB schema (72h).** **Accepted as Stage 1.** First UI consumer is 73f Tools (saved-filter chips); 72h ships the schema + a migration test + an integration smoke that 73f's saved-filter-chip handler can write/read a row through the Protocol client.
+7. **Playwright harness (75).** **Accepted with operator amendment: 75's baseline-only role lands in Stage 1 with deps 60, 72; per-page Playwright specs land alongside each 73x in Stage 2; the wave-end aggregator suite is 75a in Stage 3.** **Binding addition from operator: 75a MUST cover every single generated page (all 14 pages), with full coordinator validation that no page is skipped.** The coordinator verifies this by enumerating page-spec files and asserting a matching `*.spec.ts` exists in `web/console/tests/` for each.
+8. **Single PR for the decomposition vs many small PRs.** **Confirmed.** This decomposition doc landed as PR #141. Per-phase plan files land as a SECOND `docs(plans)` PR (this branch — `docs/wave-13-phase-plans`), one commit per phase plan file for reviewability. Implementation PRs follow §17.7 per-stage cadence after that second PR merges.
+9. **`harbor console` subcommand phase placement.** **Bundle into 73m Settings** per the recommendation. The Settings page is the first page where the Connected-Runtimes card has visible meaning, and the subcommand is the runtime side of that card. Concrete acceptance criterion on 73m: `harbor console` subcommand exists, serves the SvelteKit build via `embed.FS` per D-091, and is gated behind the same Protocol-auth + identity-scope surface as every other Runtime call.
+
+**Wire-shape decision left to me per the AskUserQuestion exhaustion:** the `notification.*` event family uses **per-class topic naming** (`notification.task_failed`, `notification.tool_approval_requested`, `notification.governance_budget_exceeded`, `notification.auth_required`) — NOT a per-instance `notification.emit` with a payload class field. Rationale: per-class topic composes naturally with the existing event taxonomy (`tool.failed`, `task.completed`, `governance.budget_exceeded` all use per-class topics) and with the `events.subscribe` topic-filter shape. Operator may redirect in Phase 72d's plan review; I'll flag it explicitly in 72d's "Risks / open questions" section.
+
+**Mandatory coordinator-verify protocol (binding on every Wave 13 implementation dispatch):**
+
+For every agent PR before it goes to operator review:
+
+1. **Quantitative-claim verification.** Re-count files, methods, tests, coverage % that the agent's PR description claims. Mismatches are a §13 rejection-on-sight signal.
+2. **Citation grep-verification.** Every `[shipped]` Protocol-method citation in the phase plan or PR body greps back to its declaration in `internal/protocol/methods/`, `internal/*/events.go`, or `internal/protocol/types/`. Every `[wave-13-extends]` citation matches a line in the spec's §12.
+3. **Code-side §13 read.** Read the actual code for: stub-as-default smell (godoc strings matching "test-grade", "canned responses", "deterministic for tests"), silent degradation (try/catch returning nil), identity-downgrading knobs, primitive without consumer, mutable artifact state.
+4. **Source-material cross-check.** Open the page spec's §12 component table; verify each `[wave-13-extends]` row that the agent claims is now `[shipped]` has a matching Protocol-method addition in `internal/protocol/methods/methods.go` AND a matching `assertJsonPath` in `scripts/smoke/phase-NN.sh`.
+5. **Only after all four pass: advance.** A FAIL on any of the four means: report the precise finding to the operator and either fix in-PR (coordinator side) or block the merge.
