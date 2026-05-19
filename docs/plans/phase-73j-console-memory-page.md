@@ -32,13 +32,11 @@ Bundles the Memory page Protocol surface and UI into a single phase per the Wave
 
 - Ship a complete, mockup-aligned Memory page (`/console/memory`) as a Protocol client per D-091 (served by `harbor console`, NEVER `harbor dev`).
 - Land three Protocol methods: `memory.list`, `memory.get`, `memory.health`. All read-only; no write methods land in this phase.
-- Introduce two new scope claims gated through the Phase 61 `auth.HasScope` primitive:
-  - `memory.read` — required for `memory.list` / `memory.get` / `memory.health` within the caller's own identity quadruple.
-  - `memory.crosstenant` — required to widen the identity-scope filter beyond the caller's own tenant (per page-memory.md §9 + D-079).
+- Scope-claim posture matches every other Stage-2 page (and Phase 72's closed-set principle per D-079): reading the caller's OWN identity quadruple requires only an authenticated JWT carrying `(tenant, user, session)` — NO additional scope claim. Cross-tenant filter widening requires `auth.ScopeAdmin` (or `auth.ScopeConsoleFleet`) from the D-079 closed two-scope set. **No new `memory.read` / `memory.crosstenant` scope is minted** (resolved per audit B1; Phase 72's Non-goals explicitly forbid a third scope).
 - Render the page anatomy from page-memory.md §4 + §12: sub-header strip, strategy / overlay chip row, main memory table, right rail status cards (Memory health / Recent identity rejections / Recovery dropouts / Selected item detail), bulk-action toolbar (V1 = disabled-with-tooltip).
 - Per-page Playwright spec at `web/console/tests/memory-page.spec.ts` covers list rendering, facet toggle, selected-item drill-down, identity-rejection surfacing, and heavy-value `artifacts.get` deep-link.
 - Heavy memory values (≥ heavy-content threshold per D-026) route through the already-shipped `artifacts.get` method via `ArtifactStub` references on `memory.get`'s response — **NEVER inline bytes** (§13 forbidden practice + D-026 closure).
-- The 14-page IA's Memory page works end-to-end under `harbor console`: an operator with `memory.read` lists items, opens one, sees its post-redaction value (or follows the `artifacts.get` link for heavy values), checks recent identity-rejection events on the right rail, and the bulk-action toolbar is visibly disabled with the "Memory mutation surface deferred — Phase 73" tooltip.
+- The 14-page IA's Memory page works end-to-end under `harbor console`: an authenticated operator lists items within their own identity quadruple (no extra scope required), opens one, sees its post-redaction value (or follows the `artifacts.get` link for heavy values), checks recent identity-rejection events on the right rail, and the bulk-action toolbar is visibly disabled with the "Memory mutation surface deferred — Phase 73" tooltip.
 
 ## Non-goals
 
@@ -53,11 +51,11 @@ Bundles the Memory page Protocol surface and UI into a single phase per the Wave
 
 - [ ] `internal/protocol/methods/methods.go` declares `memory.list`, `memory.get`, `memory.health` constants. The wire strings are lowercase snake_case (`memory/list`, `memory/get`, `memory/health` per the stream transport's routing convention).
 - [ ] `internal/protocol/types/memory.go` defines `MemoryItem`, `MemoryFilter`, `MemoryListResponse`, `MemoryItemDetail`, `MemoryHealthAggregate`, `MemoryHealthResponse` — single source of truth (D-002). The wire types are generated into `web/console/src/lib/protocol.ts` by `cmd/harbor-gen-protocol-ts` (D-093); the regeneration is part of this phase's PR (`make protocol-ts-gen-check` clean).
-- [ ] `memory.list` accepts `MemoryFilter` (`TenantIDs`, `UserIDs`, `SessionIDs`, `AgentIDs`, `Scopes` — `session | user | tenant` — `Drivers` — `inmem | sqlite | postgres` — `Strategies` — `none | truncation | rolling_summary`, future `Pinned` / `Episodic` / `Recent` / `Persistent` overlay chips reserved — `HasTTLExpiring bool`, `ContentSearch string`, `Page int`, `PageSize int`); returns paginated `MemoryItem` rows + aggregate counters (Total / Expiring1h / IdentityRejected24h / RecoveryDropped24h). Identity scope is mandatory; the filter widens beyond the caller's tenant ONLY when `memory.crosstenant` is granted.
+- [ ] `memory.list` accepts `MemoryFilter` (`TenantIDs`, `UserIDs`, `SessionIDs`, `AgentIDs`, `Scopes` — `session | user | tenant` — `Drivers` — `inmem | sqlite | postgres` — `Strategies` — `none | truncation | rolling_summary`, future `Pinned` / `Episodic` / `Recent` / `Persistent` overlay chips reserved — `HasTTLExpiring bool`, `ContentSearch string`, `Page int`, `PageSize int`); returns paginated `MemoryItem` rows + aggregate counters (Total / Expiring1h / IdentityRejected24h / RecoveryDropped24h). Identity scope is mandatory; the filter widens beyond the caller's tenant ONLY when `auth.ScopeAdmin` (or `auth.ScopeConsoleFleet`) is granted per D-079.
 - [ ] `memory.get` accepts `(MemoryKey, identity.Quadruple)` and returns `MemoryItemDetail` carrying the full key + identity quadruple + metadata (strategy, scope, TTL, size, driver) + post-redaction `Value` (when size < heavy-content threshold) OR `ValueArtifact ArtifactStub` (when size ≥ heavy-content threshold per D-026). **NEVER both populated; NEVER inline bytes above threshold.**
 - [ ] `memory.health` returns `MemoryHealthAggregate` with counters: total records, expiring in 1 h, identity-rejected count (last 24 h), recovery-dropped count (last 24 h, per D-035), plus the driver-comparison per-scope `driver_by_scope map[string]string` (e.g. `{"session": "inmem", "tenant": "postgres"}`). Counters derive from `events.aggregate` (Phase 72a) over `memory.identity_rejected` / `memory.recovery_dropped` / `memory.health_changed` event types — runtime-side aggregation per brief 11 §CC-4.
 - [ ] All three methods enforce identity-mandatory: missing `tenant_id` / `user_id` / `session_id` → fail loudly with `ErrIdentityRequired` (D-001 + §13 forbidden-practice "silent degradation"). The runtime emits `memory.identity_rejected` (D-033 shape — already shipped on the driver layer); the Protocol handler propagates the failure as Protocol error `CodeIdentityRequired` so the Console surfaces it on the Recent identity rejections card.
-- [ ] Two new scope claims registered: `memory.read` (required for all three methods) + `memory.crosstenant` (required to widen `TenantIDs` beyond the caller's own tenant). Violations rejected with `ErrControlScopeRequired` (or `ErrIdentityScopeRequired` — match the shipped sentinel from Phase 61 / 72a). Every rejection audited (D-079 pattern).
+- [ ] **NO new scope claims registered.** The closed two-scope set from D-079 (`auth.ScopeAdmin` + `auth.ScopeConsoleFleet`) is the canonical surface — Phase 72's Non-goals explicitly forbid a third scope. Reading the caller's OWN identity quadruple requires only an authenticated JWT carrying `(tenant, user, session)`; widening `TenantIDs` beyond the caller's own tenant requires `auth.ScopeAdmin`. Violations rejected with `ErrIdentityScopeRequired` (the shipped sentinel from Phase 61 / 72a). Every rejection audited per the D-079 pattern. (Resolved per audit B1.)
 - [ ] Heavy-value bypass: `memory.get` MUST NOT return raw bytes ≥ heavy-content threshold (D-026). Implementation produces an `ArtifactStub` via the shipped `artifacts.put` path on the runtime-side (when the materialised value crosses the threshold) and returns the stub on `memory.get.ValueArtifact`. **An LLM-edge enforcement pass already exists in `internal/llm/safety.go`; this phase mirrors the policy at the Protocol edge for memory inspection** — same shape, same `ErrContextLeak` posture if a driver ever returns raw heavy bytes via `memory.get`.
 - [ ] **D-033 invariant — identity-rejection events surface, never masked.** The page's Recent identity rejections card consumes `memory.identity_rejected` from the Phase 72a-extended subscription with `<missing>` substitution preserved. **The Console renders the rejection event verbatim — NO "view rejected memory anyway" affordance, NO partial-identity substitution Console-side** (§13 forbidden-practice + binding-carve-outs item D-033 in page-memory.md §12).
 - [ ] **D-065 invariant — no session-level priority.** No `Priority` field on `MemoryItem`, no priority column in the page table, no priority chip in the right rail. The `Pinned` strategy chip is a Phase 24 strategy filter (chip in the strategy / overlay chip row), NOT a priority dimension.
@@ -86,7 +84,7 @@ internal/memory/protocol/get_test.go
 internal/memory/protocol/health_test.go
 internal/memory/protocol/concurrent_reuse_test.go     # D-025 — N≥100 concurrent memory.list calls against shared MemoryStore
 test/integration/memory_page_test.go                  # cross-package: MemoryStore + Protocol transport + identity scope; surfaces memory.identity_rejected
-internal/auth/scopes.go                                # +ScopeMemoryRead, +ScopeMemoryCrossTenant (alongside the shipped admin / console:fleet scopes)
+internal/auth/scopes.go                                # NO CHANGE (D-079 closed-set principle preserved — see audit B1 resolution; this phase consumes the shipped admin / console:fleet scopes only)
 web/console/src/routes/memory/+page.svelte
 web/console/src/lib/components/memory/MemoryTable.svelte
 web/console/src/lib/components/memory/SelectedItemDetail.svelte
@@ -100,7 +98,7 @@ web/console/src/lib/db/saved_filters_memory.ts  # TYPED wrapper over 72h's saved
 web/console/tests/memory-page.spec.ts
 web/console/src/lib/protocol.ts                          # REGENERATED ONLY by `make protocol-ts-gen` — never hand-edited
 scripts/smoke/phase-73j.sh
-docs/glossary.md                                         # +memory.list, +memory.get, +memory.health, +ScopeMemoryRead, +ScopeMemoryCrossTenant
+docs/glossary.md                                         # +memory.list, +memory.get, +memory.health (the ScopeMemoryRead + ScopeMemoryCrossTenant entries originally proposed here are REMOVED per audit B1 — no new scope claims minted)
 ```
 
 ## Public API surface
@@ -127,7 +125,7 @@ type MemoryItem struct {
 
 // MemoryFilter is the query payload for memory.list.
 type MemoryFilter struct {
-    TenantIDs        []string // empty = caller's own tenant; >1 or != caller requires memory.crosstenant claim
+    TenantIDs        []string // empty = caller's own tenant; >1 or != caller requires auth.ScopeAdmin (D-079 closed set)
     UserIDs          []string
     SessionIDs       []string
     AgentIDs         []string
@@ -207,7 +205,7 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
   - `concurrent_reuse_test.go` — N=100 concurrent `memory.list` calls with overlapping filters against a single shared `MemoryStore` under `-race` (D-025). Assert no data races, no context bleed (each goroutine's filter + identity quadruple preserved), no cross-cancellation, baseline `runtime.NumGoroutine` restored after all calls return.
 
 - **Integration:**
-  - `test/integration/memory_page_test.go` — real `MemoryStore` (inmem driver first; conformance against sqlite + postgres in the conformance bucket), real Protocol transport, real `events/drivers/inmem` event store, real `artifacts/drivers/inmem` artifact store. Wires the full stack: client subscribes to `memory.identity_rejected` per Phase 72a-extended `events.subscribe`; calls `memory.list` for the caller's own quadruple → 200 OK; calls `memory.list` with a foreign tenant filter WITHOUT `memory.crosstenant` claim → `ErrControlScopeRequired`; calls `memory.list` with a deliberately empty `session_id` in the request identity → `ErrIdentityRequired` AND the integration test asserts a `memory.identity_rejected` event reaches the operator's subscriber stream. Heavy-value round-trip: a deliberately oversized value materialised into the store → `memory.get` returns `ValueArtifact` only → the test calls `artifacts.get` against the returned stub → bytes round-trip. Concurrency stress: N=10 concurrent producers + N=10 concurrent `memory.list` subscribers across two tenants under `-race`; assert no cross-tenant leakage. (See AGENTS.md §17 — real drivers everywhere on the seam, ≥1 failure mode, identity propagation, under `-race`.)
+  - `test/integration/memory_page_test.go` — real `MemoryStore` (inmem driver first; conformance against sqlite + postgres in the conformance bucket), real Protocol transport, real `events/drivers/inmem` event store, real `artifacts/drivers/inmem` artifact store. Wires the full stack: client subscribes to `memory.identity_rejected` per Phase 72a-extended `events.subscribe`; calls `memory.list` for the caller's own quadruple → 200 OK; calls `memory.list` with a foreign tenant filter WITHOUT `auth.ScopeAdmin` claim → `ErrIdentityScopeRequired`; calls `memory.list` with a deliberately empty `session_id` in the request identity → `ErrIdentityRequired` AND the integration test asserts a `memory.identity_rejected` event reaches the operator's subscriber stream. Heavy-value round-trip: a deliberately oversized value materialised into the store → `memory.get` returns `ValueArtifact` only → the test calls `artifacts.get` against the returned stub → bytes round-trip. Concurrency stress: N=10 concurrent producers + N=10 concurrent `memory.list` subscribers across two tenants under `-race`; assert no cross-tenant leakage. (See AGENTS.md §17 — real drivers everywhere on the seam, ≥1 failure mode, identity propagation, under `-race`.)
 
 - **Conformance:**
   - The three Protocol methods run against the Phase 62 Protocol conformance suite — every transport (HTTP+SSE / WebSocket / stdio) emits identical wire shapes for each method.
@@ -229,7 +227,7 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
 - `protocol_call 'memory/list' '{"filter": {"strategies": ["truncation"]}}'` → assert strategy facet honoured.
 - `protocol_call 'memory/get' '{"key": "<fixture-key>"}'` → assert 200; assert exactly one of `.value` / `.value_artifact` populated; assert `assert_json_path '.item.key' '<fixture-key>'`.
 - `protocol_call 'memory/health' '{}'` → assert 200; assert `assert_json_path '.aggregate.total | type' 'number'`.
-- `protocol_call 'memory/list' '{"filter": {"tenant_ids": ["t-other"]}}'` (without `memory.crosstenant` claim) → `assert_status 403`.
+- `protocol_call 'memory/list' '{"filter": {"tenant_ids": ["t-other"]}}'` (without `auth.ScopeAdmin` claim) → `assert_status 403`.
 - `protocol_call 'memory/list' '{}'` with a deliberately empty session in the identity scope → `assert_status 401` or `403` (the runtime fails closed per D-033; smoke accepts either canonical identity-required code).
 - `assert_status 200 /console/memory` → SvelteKit page route — SKIP until 73m's `harbor console` subcommand ships (the static asset is served by `harbor console`, not `harbor dev`).
 
@@ -266,7 +264,7 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
 - **`memory.overflow_drop_oldest` event-name drift (page-memory.md §12).** The §12 mockup refinements name the event `memory.overflow_drop_oldest`; the shipped runtime constant is `memory.recovery_dropped` per D-035. This phase uses the shipped name; a follow-up `docs(design)` PR should reconcile the §12 wording.
 - **Console DB schema for saved filters lives in Phase 72h.** This phase's `saved_filters_memory.ts` is a TYPED WRAPPER over 72h's existing `saved_filters` table (which has a `page TEXT` discriminator column); this phase adds NO new tables. The wrapper exports typed get/put/list/delete helpers that scope reads/writes to `page = "memory"`. If 72h ships a different column shape, the wrapper's typed signature needs to match.
 - **Per-page Playwright spec coverage.** The wave-end 75a aggregator suite enumerates every page spec and asserts a matching `*.spec.ts` exists. The 73j spec MUST be merged before 75a's enumeration runs — i.e. before the final Stage-2.3 PR.
-- **`memory.crosstenant` scope claim** is a new scope, not yet declared in `internal/auth/scopes.go`. Adding it is a Phase 61 extension at the auth-layer constants level; no new validator code; the claim flows through `auth.HasScope` like the shipped `admin` / `console:fleet` scopes.
+- **Cross-tenant scope-claim posture** (resolved per audit B1): 73j uses `auth.ScopeAdmin` from the D-079 closed two-scope set — no `memory.crosstenant` is minted (Phase 72's Non-goals forbid a third scope). Posture matches 72 / 72a / 72c / 72e / 73c / 73e.
 - **§13 forbidden-practice mirror.** This phase introduces a NEW Protocol surface (3 methods) — the §13 primitive-with-consumer rule is satisfied trivially by the page UI in the same phase. No extension to §13's two consequence-clauses (`SpawnTask`/`AwaitTask` twinning, pause-primitive producer) is needed here.
 
 ## Glossary additions
@@ -274,8 +272,7 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
 - **`memory.list`** — Protocol method returning paginated memory items for the caller's identity scope, with optional facet filters (scope / driver / strategy / TTL-expiring / content-search) + aggregate counters (Total / Expiring1h / IdentityRejected24h / RecoveryDropped24h). Added in Phase 73j. Read-only at V1.
 - **`memory.get`** — Protocol method returning the full detail of a single memory item: metadata + post-redaction value (when below the heavy-content threshold per D-026) OR `ValueArtifact ArtifactStub` (above threshold). NEVER inlines bytes ≥ heavy threshold. Added in Phase 73j.
 - **`memory.health`** — Protocol method returning aggregate memory health counters (Total / Expiring1h / IdentityRejected24h / RecoveryDropped24h) + per-scope driver mapping. Counters derive from `events.aggregate` over `memory.*` event types. Added in Phase 73j.
-- **`ScopeMemoryRead`** — Phase 61 scope claim required to call `memory.list` / `memory.get` / `memory.health` within the caller's own identity quadruple. Added in Phase 73j.
-- **`ScopeMemoryCrossTenant`** — Phase 61 scope claim required to widen `MemoryFilter.TenantIDs` beyond the caller's own tenant. D-079 pattern. Added in Phase 73j.
+<!-- ScopeMemoryRead + ScopeMemoryCrossTenant entries removed per audit B1: no new scopes minted; the closed D-079 set (auth.ScopeAdmin + auth.ScopeConsoleFleet) covers cross-tenant access; reading own quadruple needs only an authenticated JWT. -->
 
 ## Pre-merge checklist
 
@@ -287,11 +284,11 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
 - [ ] `npm run lint` passes in `web/console/` (no raw color / spacing literals per §13)
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes (the three new methods all touch identity; the integration test asserts cross-tenant rejection without `memory.crosstenant` + identity-required failure-loud on missing session_id)
+- [ ] If multi-isolation paths changed: cross-session isolation test passes (the three new methods all touch identity; the integration test asserts cross-tenant rejection without `auth.ScopeAdmin` + identity-required failure-loud on missing session_id)
 - [ ] **Concurrent-reuse test passes** — N≥100 concurrent `memory.list` calls against a single shared `MemoryStore` under `-race` (D-025)
 - [ ] **Integration test exists** — `test/integration/memory_page_test.go` wires real `MemoryStore` + real Protocol transport + real events store + identity propagation under `-race`; asserts `memory.identity_rejected` surfaces in the operator's subscriber stream (§17)
 - [ ] **Per-page Playwright spec lands in this phase's PR** — `web/console/tests/memory-page.spec.ts` exists and passes (binding for every 73x phase per the decomposition doc §12 lock-in)
-- [ ] Glossary updated with the 5 new entries (`memory.list`, `memory.get`, `memory.health`, `ScopeMemoryRead`, `ScopeMemoryCrossTenant`)
+- [ ] Glossary updated with 3 new entries (`memory.list`, `memory.get`, `memory.health`); `ScopeMemoryRead` + `ScopeMemoryCrossTenant` are NOT minted (D-079 closed-set principle per audit B1)
 - [ ] **D-033 invariant honoured** — `memory.identity_rejected` events surface in the Recent identity rejections card verbatim, `<missing>` substitution preserved, NO "view rejected memory anyway" affordance (§13 forbidden-practice)
 - [ ] **D-026 invariant honoured** — heavy memory values route through `artifacts.get` via `ValueArtifact`; no inline bytes above threshold; constructed-driver negative test asserts `ErrContextLeak` on raw-bytes shape
 - [ ] **D-065 invariant honoured** — no session-level priority field anywhere; `Pinned` strategy chip is a Phase 24 strategy, not a priority

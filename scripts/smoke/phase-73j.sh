@@ -5,7 +5,7 @@
 #
 # Surface assertions (404/405/501 auto-SKIP per AGENTS.md §4.2):
 #   1. memory.list / memory.get / memory.health round-trip.
-#   2. memory.list with foreign tenant filter requires the memory.crosstenant
+#   2. memory.list with foreign tenant filter requires the auth.ScopeAdmin
 #      claim — rejected without it.
 #   3. memory.* requests with an incomplete identity triple fail loudly per
 #      D-033 (the runtime emits memory.identity_rejected and the Protocol
@@ -63,10 +63,10 @@ protocol_call 'memory/get' \
 protocol_call 'memory/health' '{}' \
   'phase 73j: memory.health returns aggregate counters + driver_by_scope'
 
-# 5. Cross-tenant filter rejected without memory.crosstenant claim (D-079 pattern).
+# 5. Cross-tenant filter rejected without auth.ScopeAdmin claim (D-079 pattern).
 protocol_call 'memory/list' \
   "{\"filter\": {\"tenant_ids\": [\"${FOREIGN_TENANT_ID}\"]}}" \
-  'phase 73j: memory.list rejects foreign-tenant filter without memory.crosstenant claim'
+  'phase 73j: memory.list rejects foreign-tenant filter without auth.ScopeAdmin claim'
 
 # 6. Identity-required failure-loud — D-033 closure at the Protocol edge.
 #    A request whose identity scope is missing session_id MUST fail loudly with
