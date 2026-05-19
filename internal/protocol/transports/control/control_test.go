@@ -87,6 +87,63 @@ func newTestHandler(t *testing.T) (*control.Handler, func()) {
 	return h, cleanup
 }
 
+// newImpersonationHandler — Phase 72b: wires the bus + redactor into
+// the control handler so the admin-impersonation gate runs end-to-end
+// (the unwired bus/redactor variant refuses impersonation requests
+// fail-closed, which is its own assertion shape — covered below).
+func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, audit.Redactor, func()) {
+	t.Helper()
+	red := auditpatterns.New()
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     128,
+		IdleTimeout:              60 * time.Second,
+		DropWindow:               time.Second,
+	}, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	store, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		_ = bus.Close(context.Background())
+		t.Fatalf("state.Open: %v", err)
+	}
+	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
+		Store:    store,
+		Bus:      bus,
+		Redactor: audit.Redactor(red),
+		Cfg:      config.TasksConfig{Driver: "inprocess"},
+	})
+	if err != nil {
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+		t.Fatalf("tasks.Open: %v", err)
+	}
+	surface, err := protocol.NewControlSurface(taskReg, steering.NewRegistry())
+	if err != nil {
+		_ = taskReg.Close(context.Background())
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+		t.Fatalf("protocol.NewControlSurface: %v", err)
+	}
+	h, err := control.NewHandler(surface,
+		control.WithEventBus(bus),
+		control.WithRedactor(audit.Redactor(red)),
+	)
+	if err != nil {
+		_ = taskReg.Close(context.Background())
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+		t.Fatalf("control.NewHandler: %v", err)
+	}
+	return h, bus, audit.Redactor(red), func() {
+		_ = taskReg.Close(context.Background())
+		_ = store.Close(context.Background())
+		_ = bus.Close(context.Background())
+	}
+}
+
 // do issues a request against the handler via httptest and returns the
 // recorded response.
 func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {

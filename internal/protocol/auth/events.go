@@ -68,3 +68,83 @@ type AuthRejectedPayload struct {
 func init() {
 	events.RegisterEventType(EventTypeAuthRejected)
 }
+
+// AdminImpersonationReason is the stable sentinel name for an
+// `audit.admin_scope_used` event emitted by the Phase 72b
+// admin-impersonation path. The Reason field of
+// AdminScopeUsedPayload is set to this constant when the bus event
+// comes from the impersonation gate (vs. the Phase 05
+// events.Subscribe admin-filter emit, which carries the
+// events.AdminScopeUsedPayload shape).
+//
+// Other emit sites under audit.admin_scope_used MAY add new
+// sentinels (e.g. delegated-impersonation post-V1); a Protocol
+// client branches on Reason, never on the wrapped human-readable
+// detail.
+const AdminImpersonationReason = "impersonation"
+
+// IdentityTriple is the flat audit-visible shape of an
+// IdentityScope (no nested Actor / Requester / Impersonating —
+// those collapse to their triple at the payload boundary). Used as
+// the Actor / Requester / Impersonating field of
+// AdminScopeUsedPayload so the audit shape is purely flat strings;
+// no caller-controlled bytes reach the bus.
+//
+// IdentityTriple is intentionally distinct from
+// identity.Identity: the audit payload lives on the wire-adjacent
+// bus surface, not on the runtime's identity-quadruple surface.
+// Mirroring the runtime type 1:1 would couple the audit shape to
+// internal storage refactors (the same anti-pattern RFC §5.1 names
+// for the wire IdentityScope). Phase 72b, D-107.
+type IdentityTriple struct {
+	Tenant  string
+	User    string
+	Session string
+}
+
+// AdminScopeUsedPayload is the typed payload on the
+// `audit.admin_scope_used` canonical event when the emit source is
+// an impersonation request (Phase 72b). The pre-existing emit site
+// (the `events.Subscribe` admin-filter, Phase 05 /
+// `internal/events/drivers/inmem`) continues to use
+// `events.AdminScopeUsedPayload`; this richer typed payload is
+// what the Phase 72b impersonation path publishes.
+//
+// SafePayload by construction: every field is a bounded-string
+// shaped identity component plus two enum strings. No
+// caller-controlled bytes reach the bus — the wire shape rejects
+// any deviation at the Protocol edge before reaching the emit.
+//
+// Brief 11 §PG-5 verbatim names the three identity fields. The
+// `Reason` field is the stable sentinel
+// (`AdminImpersonationReason`); the `Method` field is the
+// Protocol method that carried the impersonation (one of the ten
+// canonical methods, typically `start` but `redirect` /
+// `user_message` are accepted too — Phase 72b's non-goal explicitly
+// names per-tool-call impersonation downgrade as post-V1, so the
+// method stays one of the ten).
+//
+// Phase 72b, D-107.
+type AdminScopeUsedPayload struct {
+	events.SafeSealed
+	// Actor is the verified admin identity at the Protocol edge.
+	// V1 invariant: equals the JWT's verified `(tenant, user,
+	// session)` triple.
+	Actor IdentityTriple
+	// Requester is the originating admin identity. V1 invariant:
+	// equals Actor (single-hop impersonation only); diverges
+	// post-V1 for delegated-impersonation chains.
+	Requester IdentityTriple
+	// Impersonating is the target identity the run executes
+	// under. Complete `(tenant, user, session)` triple — missing
+	// components fail loudly at the Protocol edge with
+	// CodeIdentityRequired.
+	Impersonating IdentityTriple
+	// Reason is the stable sentinel name (e.g.
+	// `AdminImpersonationReason = "impersonation"`).
+	Reason string
+	// Method is the Protocol method that carried the
+	// impersonation (e.g. `"start"` / `"redirect"` /
+	// `"user_message"`).
+	Method string
+}

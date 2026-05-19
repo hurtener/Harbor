@@ -49,6 +49,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -69,6 +70,14 @@ type muxConfig struct {
 	validator       auth.Validator
 	withoutAuth     bool
 	aggregatorClock events.AggregatorClock
+	// redactor is the audit.Redactor wired into the control transport
+	// for the Phase 72b admin-impersonation audit emit. Optional in the
+	// mux config so existing call-sites compile unchanged, but
+	// production wiring (the `harbor dev` boot path) SHOULD supply it
+	// so impersonation works end-to-end. When unsupplied, the control
+	// transport refuses impersonation requests fail-closed with
+	// CodeRuntimeError (CLAUDE.md §13 "Silent degradation").
+	redactor audit.Redactor
 }
 
 // Option configures NewMux.
@@ -125,6 +134,28 @@ func WithAggregateClock(c events.AggregatorClock) Option {
 	return func(cfg *muxConfig) {
 		if c != nil {
 			cfg.aggregatorClock = c
+		}
+	}
+}
+
+// WithRedactor wires the audit.Redactor into the control transport so
+// the Phase 72b admin-impersonation gate can publish a redacted
+// `audit.admin_scope_used` event onto the bus on every accepted
+// impersonation. The bus is already mandatory at NewMux (it feeds the
+// SSE event transport); the redactor is the second half of the pair the
+// control transport needs to enable impersonation.
+//
+// The option is OPTIONAL at the type level so existing call-sites
+// compile unchanged. When the redactor is not supplied, the control
+// transport refuses impersonation requests fail-closed with
+// CodeRuntimeError (CLAUDE.md §13 "Silent degradation"). Production
+// wiring (the `harbor dev` boot path) SHOULD supply it.
+//
+// A nil redactor is treated as "WithRedactor not supplied".
+func WithRedactor(r audit.Redactor) Option {
+	return func(c *muxConfig) {
+		if r != nil {
+			c.redactor = r
 		}
 	}
 }
@@ -193,7 +224,20 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		return nil, fmt.Errorf("%w: WithValidator is required (or WithoutValidator() for the explicit test-only escape hatch — see CLAUDE.md §13)", ErrMisconfigured)
 	}
 
-	controlOpts := []control.Option{control.WithLogger(cfg.logger)}
+	controlOpts := []control.Option{
+		control.WithLogger(cfg.logger),
+		// Phase 72b: thread the bus and (optional) redactor into the
+		// control transport so the admin-impersonation gate can emit
+		// `audit.admin_scope_used` events. The bus is mandatory at
+		// NewMux already; the redactor is optional at the type level
+		// but mandatory in practice for impersonation (the control
+		// handler refuses impersonation paths fail-closed when either
+		// is missing).
+		control.WithEventBus(bus),
+	}
+	if cfg.redactor != nil {
+		controlOpts = append(controlOpts, control.WithRedactor(cfg.redactor))
+	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("transports: build control handler: %w", err)
