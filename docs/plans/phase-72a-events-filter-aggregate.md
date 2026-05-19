@@ -75,7 +75,7 @@ docs/glossary.md                                   # +"events.aggregate", +"Even
 // internal/protocol/types/events.go
 type EventFilter struct {
     EventTypes []string  // e.g. ["tool.failed", "planner.repair_exhausted"]
-    TenantIDs  []string  // empty = subscriber's own tenant; >1 requires events.crosstenant claim
+    TenantIDs  []string  // empty = subscriber's own tenant; >1 requires the auth.ScopeAdmin or auth.ScopeConsoleFleet claim (D-079)
     UserIDs    []string
     SessionIDs []string
     RunIDs     []string

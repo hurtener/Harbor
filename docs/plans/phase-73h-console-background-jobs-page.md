@@ -119,7 +119,7 @@ None. The page spec §12 already pre-discharges every binding question:
   - `web/console/src/lib/pages/background-jobs/orphan-detector.test.ts` — orphan detector unit tests: empty input → empty set; planted orphan with absent parent_task_id → flagged; child whose parent IS in the snapshot → not flagged; sort-invariance (running the detector twice with different row orders returns the same set).
   - `web/console/src/lib/pages/background-jobs/queue-table.test.ts` — Svelte component snapshot tests (renders all spec §12 columns; the Progress mini-bar handles nil; bulk-select state updates the toolbar disabled state).
 - **Integration:** `test/integration/background_jobs_page_test.go` boots the assembled dev stack (`harbortest/devstack.Assemble` per D-094): real `TaskRegistry` with mixed foreground + background + grouped + planted-orphan tasks across two tenants; real Protocol SSE+REST transport via `httptest.Server`; one operator scope with `tasks.control`, one without. Asserts:
-  - `tasks.list` with `Kinds: ["background"]` returns only background tasks; `tasks.list` with `Kinds: ["foreground"]` returns only foreground; empty `type` returns all kinds.
+  - `tasks.list` with `Kinds: ["background"]` returns only background tasks; `tasks.list` with `Kinds: ["foreground"]` returns only foreground; empty `Kinds` (or omitted) returns all kinds.
   - `tasks.list?group_id=<gid>` returns the siblings; cross-tenant `group_id` lookup is rejected with `CodeScopeMismatch`.
   - Identity propagation: a tenant-`B` operator listing tasks sees ZERO tenant-`A` rows (the canonical multi-isolation gate; CLAUDE.md §6 rule 2).
   - Orphan detector: a planted background task whose parent foreground task is `MarkCancelled`'d (orphaning it) is flagged after the next `tasks.list` snapshot; a non-orphan child is not flagged.
@@ -169,7 +169,7 @@ None. The page spec §12 already pre-discharges every binding question:
 
 - `Background Jobs page` — Console route at `/console/background-jobs` ; a focused queue projection of `tasks.list` with `Kinds: ["background"]` with queue-shaped affordances.
 - `AwaitTask orphan detector` — Console-side `O(N)` cross-check that flags a background task whose `parent_task_id` is absent from the same `tasks.list` snapshot. The detector surfaces, at the UI, the §13 binding that `SpawnTask` + `AwaitTask` MUST emit in the same phase (Phase 47 / D-056 closed this for ReAct).
-- `tasks.list kinds=["background"] filter` — `TasksListFilter.Kind = "background"`; the queue-mode filter the Background Jobs page binds.
+- `tasks.list kinds=["background"] filter` — `TasksListFilter.Kinds = []TaskKind{"background"}` (the canonical plural-slice shape from 73d); the queue-mode filter the Background Jobs page binds.
 
 ## Pre-merge checklist
 

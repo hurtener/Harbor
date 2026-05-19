@@ -22,7 +22,7 @@ Lands the Wave 13 cross-cutting global-search primitive as five Protocol methods
 - brief 11 §CC-4: "runtime-side for sessions/tasks (cardinality is high); Console-side for slow-moving catalog data (tools / agents / flows / MCP servers)." This phase ships ONLY the four runtime-side indexes (sessions, tasks, events, artifacts); the Console-side Tools / Agents / Flows / MCP search adapters are per-page concerns inside their Stage-2 phases (73c / 73d / 73e / 73f / 73g / 73i / 73k) — not free-floating runtime primitives.
 - brief 11 §CC-4: "Indexes: session IDs (and metadata), task IDs, agent names, tool names, flow names, MCP server names, artifact filenames, event types, user/tenant identifiers." Each runtime-side index this phase ships exposes free-text query over the subset of those entities it owns: `search.sessions` over session IDs + agent + status + age; `search.tasks` over task IDs + status + agent + tool; `search.events` over event type + source + identity + payload-header free text; `search.artifacts` over artifact ID + filename + mime + source.
 - brief 12 §"the two-surface model": "every operation flows through canonical Protocol methods." The four runtime-side methods + the palette dispatcher MUST be Protocol-level — a third-party Console implementation can call them with the same wire shape. No Console-private search hooks.
-- brief 05 §"Session-lifetime invariants": session identity triple is immutable for lifetime; `search.sessions` MUST enforce that the requesting subscriber's identity scope filters the result set (a session in tenant T1 NEVER surfaces in a T2 caller's query unless the caller holds the cross-tenant `search.crosstenant` admin scope claim).
+- brief 05 §"Session-lifetime invariants": session identity triple is immutable for lifetime; `search.sessions` MUST enforce that the requesting subscriber's identity scope filters the result set (a session in tenant T1 NEVER surfaces in a T2 caller's query unless the caller holds the cross-tenant `auth.ScopeAdmin` admin scope claim).
 - brief 06 §"Isolation-triple filtering by default": Subscribe ignores any filter that elides the triple unless the caller has admin scope; `search.events` reuses the same shape — empty triple non-admin search is rejected loudly with `ErrIdentityScopeRequired` (NEVER silently downgraded to "empty result set").
 
 ## Findings I'm departing from (if any)
@@ -34,7 +34,7 @@ None. The split (high-cardinality runtime-side; slow-moving Console-side) is tak
 - Ship FIVE Protocol methods atop the shipped Phase 60 transport: `search.query` (palette dispatcher), `search.sessions`, `search.tasks`, `search.events`, `search.artifacts`.
 - All five methods share one wire shape: `SearchRequest` (free-text query + identity-aware filter + pagination + facet/index selector) and `SearchResponse` (paginated results scoped by the caller's `(tenant, user, session)` triple + heavy payloads ship as `ArtifactRef`).
 - All five methods enforce identity rejection (D-033 shape): missing `tenant_id` / `user_id` / `session_id` → fail loudly with `ErrIdentityRequired` (NEVER silently degrade to "empty result set").
-- Cross-tenant queries gate on a `search.crosstenant` admin scope claim (D-079 shape extended to the search surface); a missing claim → 403 with `CodeIdentityRequired` / `CodeAuthRejected` (NEVER returns "empty" silently).
+- Cross-tenant queries gate on a `auth.ScopeAdmin` admin scope claim (D-079 shape extended to the search surface); a missing claim → 403 with `CodeIdentityRequired` / `CodeAuthRejected` (NEVER returns "empty" silently).
 - The §13 primitive-with-consumer obligation is discharged in-phase by a query-shape conformance test per index (one test per runtime-side method, plus a fifth aggregating-shape test for `search.query`); the Stage-2 page consumers (Sessions / Tasks / Events / Artifacts) ride on top of the same surface.
 - Heavy-payload bypass: result rows that exceed the heavy-content threshold (D-026) MUST ship `ArtifactRef` rather than inline bytes. Verified by an integration test that deliberately materialises a payload above threshold and asserts the response carries a ref.
 - Concurrent-reuse contract (D-025): N≥100 concurrent search calls against shared indexes under `-race`; assert no data races, no context bleed, no cross-cancellation, baseline goroutine count restored.
@@ -54,7 +54,7 @@ None. The split (high-cardinality runtime-side; slow-moving Console-side) is tak
 - [ ] `internal/protocol/types/search.go` defines `SearchRequest`, `SearchResponse`, `SearchResultRow`, `SearchIndex` (enum: `sessions` / `tasks` / `events` / `artifacts`), `SearchFacet` — single source of truth (D-002 wire-type rule).
 - [ ] Each of the four runtime-side methods (`search.sessions`, `search.tasks`, `search.events`, `search.artifacts`) is implemented as a server-enforced index that filters by the caller's `(tenant, user, session)` triple BEFORE materialising any payload bytes. Identity-rejection is enforced loudly with `ErrIdentityRequired` when ANY component of the triple is missing; never silently downgraded.
 - [ ] `search.query` is a pure aggregator: given a `SearchRequest` whose `Indexes` field selects ≥1 of `{sessions, tasks, events, artifacts}`, it concurrently fans out to each selected runtime-side method, merges the result rows, paginates the union, and returns. It carries NO index of its own and emits NO new events. Console-side catalog indexes (tools / agents / flows / mcp) are NOT invoked by `search.query` (per the Console-side / runtime-side split).
-- [ ] Cross-tenant query gating: a `SearchRequest` whose `Filter.TenantIDs` lists multiple tenants (or a tenant other than the caller's authenticated tenant) requires the `search.crosstenant` scope claim (D-079 closed-scope-set shape). Without the claim: 403 with `CodeAuthRejected` (NEVER silently downgraded to empty result).
+- [ ] Cross-tenant query gating: a `SearchRequest` whose `Filter.TenantIDs` lists multiple tenants (or a tenant other than the caller's authenticated tenant) requires the `auth.ScopeAdmin` scope claim (D-079 closed-scope-set shape). Without the claim: 403 with `CodeAuthRejected` (NEVER silently downgraded to empty result).
 - [ ] Pagination is identical across all five methods: `Page` + `PageSize` request fields; `Page`, `PageCount`, `TotalCount`, `HasMore` response fields. Default `PageSize=20`, max `PageSize=200` (request a larger size → 400 with `CodeInvalidRequest`).
 - [ ] Heavy-payload bypass (D-026): a `SearchResultRow` whose underlying entity carries a payload ≥ heavy-content threshold ships an `ArtifactRef` in the row's preview field, NEVER inline bytes. The result-shape test asserts this for every index.
 - [ ] Audit redaction (RFC §6.13 audit-before-emit boundary): every search result row goes through `audit.Redactor` before emission (`SearchResponse` is NOT a `SafePayload`; default-redactor path applies). On redaction failure: emit `audit.redaction_failed`, fail the request loudly with the wrapped error; NEVER ship un-redacted bytes.
@@ -127,7 +127,7 @@ type SearchRequest struct {
 
 // SearchFilter narrows results. The TenantIDs / UserIDs / SessionIDs
 // fields default to the caller's authenticated triple; supplying values
-// OTHER THAN the caller's own requires the search.crosstenant scope
+// OTHER THAN the caller's own requires the auth.ScopeAdmin scope
 // claim (D-079 closed-scope-set shape).
 type SearchFilter struct {
     TenantIDs  []string
@@ -193,7 +193,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
   - `internal/search/aggregate_test.go` — `Query` palette dispatcher: a request with `Indexes=[sessions,tasks]` concurrently calls both indexes, merges rows, paginates the union; tested under deliberate per-index latency to assert correct ordering after merge.
   - `internal/protocol/types/search_test.go` — wire-type JSON round-trip (request + response + result row + facet); enum-value validation; pagination-default validation.
 - **Integration:**
-  - `test/integration/search_cluster_test.go` — wires real `sessions/drivers/inmem`, `tasks/drivers/inmem`, `events/drivers/inmem`, `artifacts/drivers/inmem` and the real Protocol transport. Tests: (a) each of the 5 methods round-trips end-to-end; (b) cross-tenant query without `search.crosstenant` claim → 403 (the explicit failure mode per §17.3); (c) missing identity component → 401 (second explicit failure mode); (d) heavy payload ≥ D-026 threshold ships `ArtifactRef` (third explicit failure mode — silent bytes-inlining is forbidden); (e) cross-session isolation under N≥10 concurrent searchers across two tenants.
+  - `test/integration/search_cluster_test.go` — wires real `sessions/drivers/inmem`, `tasks/drivers/inmem`, `events/drivers/inmem`, `artifacts/drivers/inmem` and the real Protocol transport. Tests: (a) each of the 5 methods round-trips end-to-end; (b) cross-tenant query without `auth.ScopeAdmin` claim → 403 (the explicit failure mode per §17.3); (c) missing identity component → 401 (second explicit failure mode); (d) heavy payload ≥ D-026 threshold ships `ArtifactRef` (third explicit failure mode — silent bytes-inlining is forbidden); (e) cross-session isolation under N≥10 concurrent searchers across two tenants.
 - **Conformance:**
   - The five new methods register in the Phase 80 Protocol conformance suite (`internal/protocol/conformance.RunSuite`). All five round-trip identically over both the in-process `ControlSurface.Dispatch` AND the over-the-wire Phase 60 mux under `httptest.Server` (D-080 two-transport matrix). When Phase 80's suite reaches search-cluster scope, the auto-enumerate gate asserts a scenario exists for each of the five methods.
 - **Concurrency / leak:**
@@ -204,7 +204,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 `scripts/smoke/phase-72c.sh` (header: `# PREFLIGHT_REQUIRES: live-server`):
 
 - 5 happy-path round-trips, one per method: `protocol_call 'search/query' '{"query":"hello"}'`, `protocol_call 'search/sessions' '{"query":"agent-a"}'`, `protocol_call 'search/tasks' '{"query":"in-progress"}'`, `protocol_call 'search/events' '{"query":"tool.failed"}'`, `protocol_call 'search/artifacts' '{"query":"report.pdf"}'`. While the surface is not yet implemented, each call SKIPs per the protocol_call stub; once the phase lands, replace with `assert_status 200` + `assert_json_path '.rows | type' 'array'`.
-- 5 cross-tenant failure assertions, one per method: same call with `"filter":{"tenant_ids":["t1","t2"]}` BUT without the `search.crosstenant` scope claim → `assert_status 403`.
+- 5 cross-tenant failure assertions, one per method: same call with `"filter":{"tenant_ids":["t1","t2"]}` BUT without the `auth.ScopeAdmin` scope claim → `assert_status 403`.
 - 5 missing-identity failure assertions, one per method: same call with an empty body in a context that strips the identity triple → `assert_status 401`.
 - Surface-existence probes (`skip_if_404`) for each of the 5 routes, so until the Protocol layer ships these methods the smoke remains green via SKIP.
 
@@ -222,13 +222,13 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 
 **Same-wave (Wave 13, Stage 1 — Batch A per §12 lock-in #2):**
 
-- Phase 72 (events.subscribe scope foundation — supplies the identity-scope claim primitive `search.crosstenant` reuses)
+- Phase 72 (events.subscribe scope foundation — supplies the identity-scope claim primitive `auth.ScopeAdmin` reuses)
 - Phase 72a (events filter — `search.events` reuses the EventFilter predicate over event header fields)
 
 **Already shipped (pre-Wave 13):**
 
 - Phase 60 (Protocol wire transport — `Shipped`)
-- Phase 61 (Protocol auth — `Shipped`; supplies the closed-scope-set primitive `search.crosstenant` extends per D-079)
+- Phase 61 (Protocol auth — `Shipped`; supplies the closed-scope-set primitive `auth.ScopeAdmin` extends per D-079)
 - Phase 06 (events bus + replayer — `Shipped`; `search.events` consumes the Replayer capability)
 - Phase 08 (sessions registry — `Shipped`)
 - Phase 20 (tasks registry — `Shipped`)
@@ -240,7 +240,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 
 - **Phase 73 (state inspection) is `Pending` at plan-authoring time.** The decomposition doc §4 lists 73 as a dependency of 72c, but the dependency is on the `sessions.SessionRegistry` / `tasks.TaskRegistry` interfaces — both ALREADY SHIPPED in Phases 08 and 20. Phase 73 will EXTEND those interfaces with UI-feeding methods (per the master plan); `search.*` consumes only the listing methods Phases 08 and 20 already provide. **Contingency:** if Phase 73 reshapes the underlying registry interfaces in a backward-incompatible way during Wave 13, the search-cluster phase slips by the same delta and the per-index tests are re-pinned against the new shape. The integration test will surface this immediately under `-race`.
 - **Index storage strategy.** V1 ships in-memory iterate-and-filter per query (matches Brief 11 §CC-4's runtime-side high-cardinality posture and the §9 V1 persistence triad's in-memory floor). For deployments with millions of sessions / tasks / events / artifacts the linear scan is expensive — post-V1 may add a search-index sidecar (SQLite FTS5 / Postgres pg_trgm). The wire shape (`SearchRequest` / `SearchResponse`) is index-strategy-agnostic, so the upgrade is additive.
-- **Cross-tenant scope claim name.** Proposed: `search.crosstenant` (mirrors `events.crosstenant`). If the operator prefers a single shared `crosstenant` claim covering both events and search, that's a Phase-72c plan-review-time amendment (the closed-scope-set in `auth.IsValidScope` is updated additively per D-079).
+- **Cross-tenant scope claim name** (resolved per audit R7 / N1): `auth.ScopeAdmin` from the D-079 closed two-scope set (`ScopeAdmin` + `ScopeConsoleFleet`). No new `search.crosstenant` or `events.crosstenant` scope is minted — Phase 72's Non-goals explicitly forbid a third scope. Cross-tenant search reuses the existing closed set, matching 72 / 72a / 72e / 73c / 73e patterns.
 - **`search.query` palette dispatcher latency.** A naive concurrent fan-out across four indexes returns when the slowest completes. V1 accepts this; a per-index timeout (default 2s) caps tail latency. The integration test exercises a deliberate per-index latency to assert correct ordering after merge.
 - **Console-side adapter ownership.** Per brief 11 §CC-4 the Tools / Agents / Flows / MCP catalogs are searched Console-side; those adapters MUST live inside their per-page phases (73c / 73d / 73e / 73f / 73g / 73i / 73k), NOT in this phase. A reviewer who sees a Tools-search method added to `internal/protocol/methods/methods.go` in this phase's PR should reject on sight — that's a §13 "page primitive without its consumer" smell read backward.
 - **Pagination default size.** V1 ships `PageSize=20` default and `PageSize=200` max. Operator may revise at phase-review time; the integration test exercises both boundaries.
@@ -248,7 +248,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 ## Glossary additions
 
 - **`search.query`** — Protocol method serving the Console-side palette dispatcher (Wave 13 Phase 72c). Pure aggregator: concurrent fan-out across the selected runtime-side indexes, merges + paginates the union. Carries no index of its own; emits no events. Heavy-payload bypass via `ArtifactRef` per D-026.
-- **`search.sessions`** — Runtime-side Protocol method (Wave 13 Phase 72c) returning paginated session matches scoped to the caller's `(tenant, user, session)` triple. Cross-tenant query requires the `search.crosstenant` admin scope claim (D-079 closed-scope-set shape).
+- **`search.sessions`** — Runtime-side Protocol method (Wave 13 Phase 72c) returning paginated session matches scoped to the caller's `(tenant, user, session)` triple. Cross-tenant query requires the `auth.ScopeAdmin` admin scope claim (D-079 closed-scope-set shape).
 - **`search.tasks`** — Runtime-side Protocol method (Wave 13 Phase 72c) returning paginated task matches; same identity-scope contract as `search.sessions`.
 - **`search.events`** — Runtime-side Protocol method (Wave 13 Phase 72c) returning paginated event matches filtered by event type + identity scope + time-window. Reuses the `EventFilter` predicate landed in Phase 72a. Substring search over event payload contents is post-V1 (brief 11 §CC-4).
 - **`search.artifacts`** — Runtime-side Protocol method (Wave 13 Phase 72c) returning paginated artifact matches; rows always carry an `ArtifactRef` (artifacts are by-reference by construction per D-026).
@@ -262,7 +262,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 - [ ] `make check-mirror` passes
 - [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes (binding for this phase — every search method filters by the isolation triple; the integration test asserts cross-tenant rejection without `search.crosstenant` claim AND cross-session isolation under concurrent searchers)
+- [ ] If multi-isolation paths changed: cross-session isolation test passes (binding for this phase — every search method filters by the isolation triple; the integration test asserts cross-tenant rejection without `auth.ScopeAdmin` claim AND cross-session isolation under concurrent searchers)
 - [ ] **Concurrent-reuse test passes** — N≥100 concurrent `Search` calls against EACH shared `Searcher` instance under `-race`, asserting no data races, no context bleed, no cross-cancellation, baseline goroutine count restored (D-025)
 - [ ] **Integration test exists** — `test/integration/search_cluster_test.go` wires real sessions + tasks + events + artifacts + Protocol transport under `-race`; covers cross-tenant 403, missing-identity 401, and heavy-payload `ArtifactRef` bypass failure modes (§17.3 ≥1 failure mode rule — this phase ships 3)
 - [ ] Glossary updated with the 5 new method names + `SearchRequest` + `SearchResponse`

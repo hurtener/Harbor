@@ -359,7 +359,7 @@ type EventsSubscribeFilter struct {
 
 ```svelte
 <!-- web/console/src/lib/components/graph/EngineGraphCanvas.svelte (consumed; from 73i) -->
-<EngineGraph nodes={...} edges={...} on:node-click={...} />
+<EngineGraphCanvas nodes={...} edges={...} on:node-click={...} />
 ```
 
 ## Test plan

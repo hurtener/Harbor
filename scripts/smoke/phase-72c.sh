@@ -9,7 +9,7 @@
 #      search.tasks / search.events / search.artifacts each return a
 #      paginated response with a `rows` array.
 #   2. Five cross-tenant rejections: each method, called with a
-#      filter listing multiple tenants WITHOUT the search.crosstenant
+#      filter listing multiple tenants WITHOUT the auth.ScopeAdmin
 #      scope claim, returns 403.
 #   3. Five missing-identity rejections: each method, called without an
 #      identity triple in context, returns 401.
@@ -52,28 +52,28 @@ protocol_call 'search/artifacts' \
 
 # ----------------------------------------------------------------------------
 # 2. Cross-tenant rejection — each method must 403 when the filter lists
-#    multiple tenants and the caller lacks the search.crosstenant claim.
+#    multiple tenants and the caller lacks the auth.ScopeAdmin claim.
 # ----------------------------------------------------------------------------
 
 protocol_call 'search/query' \
   '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.query rejects cross-tenant filter without search.crosstenant claim'
+  'phase 72c: search.query rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 protocol_call 'search/sessions' \
   '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.sessions rejects cross-tenant filter without search.crosstenant claim'
+  'phase 72c: search.sessions rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 protocol_call 'search/tasks' \
   '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.tasks rejects cross-tenant filter without search.crosstenant claim'
+  'phase 72c: search.tasks rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 protocol_call 'search/events' \
   '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.events rejects cross-tenant filter without search.crosstenant claim'
+  'phase 72c: search.events rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 protocol_call 'search/artifacts' \
   '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.artifacts rejects cross-tenant filter without search.crosstenant claim'
+  'phase 72c: search.artifacts rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 # ----------------------------------------------------------------------------
 # 3. Missing-identity rejection — each method must 401 when the caller's
