@@ -8,8 +8,9 @@ import (
 
 // The canonical method names — the Phase 54 task-control ten (RFC §5.2
 // "Task control" row verbatim) plus the Wave 13 streaming-events two
-// (Phase 72 / 72a — RFC §5.2 "Streaming events" row). This slice is the
-// test's independent source of truth; if methods.go drifts from the
+// (Phase 72 / 72a — RFC §5.2 "Streaming events" row) plus the five
+// Phase 72c `search.*` methods (D-108). This slice is the test's
+// independent source of truth; if methods.go drifts from the
 // canonical set, the exhaustiveness test below fails.
 var wantMethods = []methods.Method{
 	methods.MethodStart,
@@ -24,13 +25,19 @@ var wantMethods = []methods.Method{
 	methods.MethodUserMessage,
 	methods.MethodEventsSubscribe,
 	methods.MethodEventsAggregate,
+	methods.MethodSearchQuery,
+	methods.MethodSearchSessions,
+	methods.MethodSearchTasks,
+	methods.MethodSearchEvents,
+	methods.MethodSearchArtifacts,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	got := methods.Methods()
-	// Phase 54 task-control ten + Wave 13 streaming-events two.
-	if len(got) != 12 {
-		t.Fatalf("Methods() returned %d methods, want 12", len(got))
+	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
+	// 72c search cluster five = 17.
+	if len(got) != 17 {
+		t.Fatalf("Methods() returned %d methods, want 17", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -59,8 +66,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 
 	// Wire strings are the RFC §5.2 verbatim lowercase snake_case for
 	// the task-control ten; the streaming-events two use a dotted
-	// `events.<verb>` shape (which matches the canonical event-type
-	// naming convention — `tool.failed`, `runtime.error`, etc.).
+	// `events.<verb>` shape; the Phase 72c cluster uses a dotted
+	// `search.<index>` shape — both match the canonical event-type
+	// naming convention (`tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
 		methods.MethodStart:           "start",
 		methods.MethodCancel:          "cancel",
@@ -74,6 +82,11 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodUserMessage:     "user_message",
 		methods.MethodEventsSubscribe: "events.subscribe",
 		methods.MethodEventsAggregate: "events.aggregate",
+		methods.MethodSearchQuery:     "search.query",
+		methods.MethodSearchSessions:  "search.sessions",
+		methods.MethodSearchTasks:     "search.tasks",
+		methods.MethodSearchEvents:    "search.events",
+		methods.MethodSearchArtifacts: "search.artifacts",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -105,9 +118,13 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodEventsAggregate) {
 		t.Error("IsControlMethod(events.aggregate) = true, want false — streaming-events methods route through their own transports")
 	}
-	// Every other canonical method IS a control method.
+	// Every non-start, non-streaming, non-search canonical method IS a
+	// control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
+			continue
+		}
+		if methods.IsSearchMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
@@ -159,5 +176,36 @@ func TestIsStreamingEventsMethod(t *testing.T) {
 	}
 	if methods.IsStreamingEventsMethod(methods.Method("bogus")) {
 		t.Error("IsStreamingEventsMethod(bogus) = true, want false")
+	}
+}
+
+func TestIsSearchMethod(t *testing.T) {
+	// The five Phase 72c search methods.
+	for _, m := range []methods.Method{
+		methods.MethodSearchQuery,
+		methods.MethodSearchSessions,
+		methods.MethodSearchTasks,
+		methods.MethodSearchEvents,
+		methods.MethodSearchArtifacts,
+	} {
+		if !methods.IsSearchMethod(m) {
+			t.Errorf("IsSearchMethod(%q) = false, want true", m)
+		}
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — search methods are not steering controls", m)
+		}
+	}
+	// Non-search methods (start + the nine steering controls + streaming
+	// + unknown).
+	for _, m := range []methods.Method{
+		methods.MethodStart, methods.MethodCancel, methods.MethodPause,
+		methods.MethodResume, methods.MethodRedirect, methods.MethodInjectContext,
+		methods.MethodApprove, methods.MethodReject, methods.MethodPrioritize,
+		methods.MethodUserMessage, methods.MethodEventsSubscribe,
+		methods.MethodEventsAggregate, methods.Method("bogus"), "",
+	} {
+		if methods.IsSearchMethod(m) {
+			t.Errorf("IsSearchMethod(%q) = true, want false", m)
+		}
 	}
 }

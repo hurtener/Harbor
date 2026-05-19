@@ -114,6 +114,11 @@ var CanonicalMethods = map[string]struct{}{
 	"user_message":     {},
 	"events.subscribe": {}, // Phase 72 / D-105
 	"events.aggregate": {}, // Phase 72a / D-106
+	"search.query":     {}, // Phase 72c / D-108
+	"search.sessions":  {}, // Phase 72c / D-108
+	"search.tasks":     {}, // Phase 72c / D-108
+	"search.events":    {}, // Phase 72c / D-108
+	"search.artifacts": {}, // Phase 72c / D-108
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -148,6 +153,14 @@ var CanonicalWireTypes = map[string]string{
 	"EventAggregateRequest":  "types",
 	"EventAggregateResponse": "types",
 	"Error":                  "errors",
+	// Phase 72c (D-108) search cluster wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"SearchRequest":     "types",
+	"SearchResponse":    "types",
+	"SearchResultRow":   "types",
+	"SearchFilter":      "types",
+	"SearchFacet":       "types",
+	"SearchArtifactRef": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

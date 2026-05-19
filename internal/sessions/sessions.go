@@ -137,6 +137,38 @@ type SessionRegistry interface {
 	CloseRegistry(ctx context.Context) error
 }
 
+// SessionLister is the narrow read-side capability the Phase 72c
+// `search.sessions` Searcher consumes. The triple `(tenant, user,
+// session)` is the load-bearing isolation key (CLAUDE.md §6); the
+// listing is server-enforced per the supplied SessionListFilter. The
+// returned snapshots include both currently-open and previously-closed
+// sessions — search wants the union.
+//
+// Intentionally NOT on the SessionRegistry interface: the lister is a
+// projection over the in-memory open-session index plus the StateStore.
+// Concrete `*Registry` implements it; future drivers add it when their
+// backing store gains a `list` capability (StateStore List is post-V1).
+type SessionLister interface {
+	// ListSnapshots returns session snapshots that match the filter,
+	// scoped to the requested tenants. Empty `TenantIDs` matches every
+	// tenant the registry has seen (the search subsystem gates this
+	// on the caller's auth.ScopeAdmin claim — the registry does NOT
+	// re-check scope). Empty `UserIDs` / `SessionIDs` are wildcards.
+	ListSnapshots(ctx context.Context, f SessionListFilter) ([]SessionSnapshot, error)
+}
+
+// SessionListFilter narrows ListSnapshots's result set. All fields are
+// wildcards when empty. SinceLastSeen / UntilLastSeen filter by the
+// LastSeen timestamp; zero means "no bound."
+type SessionListFilter struct {
+	TenantIDs      []string
+	UserIDs        []string
+	SessionIDs     []string
+	SinceLastSeen  time.Time
+	UntilLastSeen  time.Time
+	IncludeClosed  bool
+}
+
 // Sentinel errors. Callers compare via errors.Is.
 var (
 	// ErrReopenAfterClose — Open called for a SessionID whose existing

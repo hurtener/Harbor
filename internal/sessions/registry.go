@@ -327,6 +327,110 @@ func (r *Registry) Inspect(ctx context.Context, id string) (*SessionSnapshot, er
 	return &SessionSnapshot{Session: *stored, Running: running}, nil
 }
 
+// ListSnapshots implements sessions.SessionLister — the Phase 72c
+// `search.sessions` read-side projection. Returns snapshots for every
+// session the registry has seen (open OR closed) matching the filter.
+//
+// The registry's in-memory `idIndex` is the catalog of every SessionID
+// that has been Opened during this registry's lifetime. The snapshot
+// is built by Loading each matching session from the StateStore so the
+// Closed / ClosedAt / LastSeen fields are current; Running is derived
+// from the GCPolicy RunningProbe at inspection time (mirroring
+// Inspect's contract).
+//
+// The caller (the search subsystem) is responsible for the auth scope
+// gate — ListSnapshots does NOT re-check scope. It DOES validate that
+// every supplied `TenantIDs` / `UserIDs` / `SessionIDs` entry is
+// non-empty (a no-op for empty filters).
+//
+// Concurrent reuse (D-025): ListSnapshots only reads `idIndex` /
+// `openSessions` under the registry's mutex; no per-call state lives
+// on `*Registry`. One Registry serves N concurrent ListSnapshots safely.
+func (r *Registry) ListSnapshots(ctx context.Context, f SessionListFilter) ([]SessionSnapshot, error) {
+	if r.closed.Load() {
+		return nil, ErrRegistryClosed
+	}
+
+	// Snapshot the in-memory catalogs under the lock.
+	r.mu.Lock()
+	type entry struct {
+		id    string
+		ident identity.Identity
+	}
+	candidates := make([]entry, 0, len(r.idIndex))
+	for sid, ident := range r.idIndex {
+		candidates = append(candidates, entry{id: sid, ident: ident})
+	}
+	r.mu.Unlock()
+
+	tenantSet := newStringSet(f.TenantIDs)
+	userSet := newStringSet(f.UserIDs)
+	sessionSet := newStringSet(f.SessionIDs)
+
+	out := make([]SessionSnapshot, 0, len(candidates))
+	for _, c := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !tenantSet.allow(c.ident.TenantID) {
+			continue
+		}
+		if !userSet.allow(c.ident.UserID) {
+			continue
+		}
+		if !sessionSet.allow(c.id) {
+			continue
+		}
+		stored, err := r.loadSession(ctx, c.ident)
+		if err != nil {
+			// A registry record may have been deleted out-of-band;
+			// skip rather than fail the whole listing (the next
+			// ListSnapshots call observes the absence too).
+			continue
+		}
+		if !f.IncludeClosed && stored.Closed {
+			continue
+		}
+		if !f.SinceLastSeen.IsZero() && stored.LastSeen.Before(f.SinceLastSeen) {
+			continue
+		}
+		if !f.UntilLastSeen.IsZero() && stored.LastSeen.After(f.UntilLastSeen) {
+			continue
+		}
+		running := false
+		if r.gcPolicy.RunningProbe != nil {
+			if rb, perr := r.gcPolicy.RunningProbe(ctx, identity.Quadruple{Identity: stored.Identity}); perr == nil {
+				running = rb
+			}
+		}
+		out = append(out, SessionSnapshot{Session: *stored, Running: running})
+	}
+	return out, nil
+}
+
+// stringSet is a small inclusion-filter helper for ListSnapshots. An
+// empty set matches everything; a non-empty set matches members only.
+type stringSet map[string]struct{}
+
+func newStringSet(values []string) stringSet {
+	s := make(stringSet, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		s[v] = struct{}{}
+	}
+	return s
+}
+
+func (s stringSet) allow(value string) bool {
+	if len(s) == 0 {
+		return true
+	}
+	_, ok := s[value]
+	return ok
+}
+
 // CloseRegistry cancels the sweeper goroutine and joins it.
 // Idempotent. Subsequent operations return ErrRegistryClosed.
 func (r *Registry) CloseRegistry(_ context.Context) error {
@@ -396,3 +500,6 @@ func sameIdentity(a, b identity.Identity) bool {
 
 // Compile-time assertion: *Registry satisfies SessionRegistry.
 var _ SessionRegistry = (*Registry)(nil)
+
+// Compile-time assertion: *Registry satisfies SessionLister (Phase 72c).
+var _ SessionLister = (*Registry)(nil)

@@ -85,12 +85,32 @@ const maxBodyBytes = 64 << 10
 // requests are rejected loudly with `CodeRuntimeError` — never silently
 // accepted without the audit emit (CLAUDE.md §5, §7 rule 6, §13 "Silent
 // degradation").
+//
+// Phase 72c (D-108): when constructed with `WithSearchSurface`, the
+// handler routes the five `search.*` methods to the search dispatcher
+// instead of the task-control ControlSurface. The same handler still
+// serves all the Phase 54 task-control methods unchanged.
 type Handler struct {
-	surface  *protocol.ControlSurface
-	logger   *slog.Logger
-	bus      events.EventBus // nil ⇒ impersonation accepted-path refused
-	redactor audit.Redactor  // nil ⇒ impersonation accepted-path refused
-	now      func() time.Time
+	surface       *protocol.ControlSurface
+	searchSurface SearchSurface
+	logger        *slog.Logger
+	bus           events.EventBus // nil ⇒ impersonation accepted-path refused
+	redactor      audit.Redactor  // nil ⇒ impersonation accepted-path refused
+	now           func() time.Time
+}
+
+// SearchSurface is the narrow contract the control transport calls into
+// for the five `search.*` Protocol methods. The production
+// implementation lives in internal/protocol/control/search.go (the
+// SearchHandler shaped over a search.SearcherRegistry); tests inject a
+// deterministic surface. A nil surface means the handler will reject
+// search calls with CodeUnknownMethod — preserving the 404 path the
+// smoke script's `skip_if_404` relies on while the surface is being
+// wired through.
+type SearchSurface interface {
+	// Dispatch handles one of the five canonical search.* methods.
+	// Returns either a *types.SearchResponse or a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req *types.SearchRequest) (*types.SearchResponse, error)
 }
 
 // Option configures a Handler at construction time.
@@ -149,6 +169,18 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithSearchSurface wires the Phase 72c search dispatcher into the
+// control handler. When supplied, the handler routes the five
+// `search.*` methods to s.Dispatch instead of falling through to the
+// task-control ControlSurface. Optional — handlers built without it
+// reject search calls with CodeUnknownMethod (the 404 → SKIP path the
+// smoke script relies on).
+func WithSearchSurface(s SearchSurface) Option {
+	return func(h *Handler) {
+		h.searchSurface = s
+	}
+}
+
 // NewHandler builds the Protocol REST/JSON control transport over the
 // transport-agnostic ControlSurface. The surface is mandatory — a nil
 // fails loud with ErrMisconfigured rather than building a handler that
@@ -197,7 +229,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := methods.Method(r.PathValue("method"))
 	if !methods.IsValidMethod(method) {
 		h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
-			"method %q is not a canonical task-control method", string(method)))
+			"method %q is not a canonical Protocol method", string(method)))
+		return
+	}
+
+	// Phase 72c (D-108): the five `search.*` methods route through a
+	// separate SearchSurface — they're not steering controls, they
+	// don't reach the task registry, and their wire shape is
+	// `*types.SearchRequest`. If no SearchSurface is wired, fall
+	// through to the unknown-method path so the smoke `skip_if_404`
+	// branch fires.
+	if methods.IsSearchMethod(method) {
+		if h.searchSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: search surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.serveSearch(w, r, method)
 		return
 	}
 
@@ -585,17 +633,17 @@ func (h *Handler) emitAdminScopeUsed(ctx context.Context, method methods.Method,
 	// `RedactedMap` ambiguity for an audit type the operator's
 	// payload-shape contract explicitly carved out as flat).
 	auditView := map[string]any{
-		"actor_tenant":         scope.Actor.Tenant,
-		"actor_user":           scope.Actor.User,
-		"actor_session":        scope.Actor.Session,
-		"requester_tenant":     scope.Requester.Tenant,
-		"requester_user":       scope.Requester.User,
-		"requester_session":    scope.Requester.Session,
-		"impersonating_tenant": scope.Impersonating.Tenant,
-		"impersonating_user":   scope.Impersonating.User,
+		"actor_tenant":          scope.Actor.Tenant,
+		"actor_user":            scope.Actor.User,
+		"actor_session":         scope.Actor.Session,
+		"requester_tenant":      scope.Requester.Tenant,
+		"requester_user":        scope.Requester.User,
+		"requester_session":     scope.Requester.Session,
+		"impersonating_tenant":  scope.Impersonating.Tenant,
+		"impersonating_user":    scope.Impersonating.User,
 		"impersonating_session": scope.Impersonating.Session,
-		"reason":               auth.AdminImpersonationReason,
-		"method":               string(method),
+		"reason":                auth.AdminImpersonationReason,
+		"method":                string(method),
 	}
 	redacted, err := h.redactor.Redact(ctx, auditView)
 	if err != nil {
