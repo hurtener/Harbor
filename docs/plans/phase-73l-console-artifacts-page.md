@@ -8,9 +8,13 @@ The page lands the Wave-13 page UI plus the `artifacts.list` filter
 extensions (mime / source / size / task_id), the `artifacts.put`
 upload pipeline that Brief 11 §PG-2 requires, and the `PresignGet`
 resolver call site that materialises read-side presigned URLs through
-the Protocol — and it is the **second consumer** of the canonical
-renderer registry at `web/console/src/lib/chat/renderers/` (the
-Playground page 73n is the registry's first consumer). All mutation
+the Protocol — and it **ships the canonical renderer registry SKELETON**
+at `web/console/src/lib/chat/renderers/` (dispatch table + mime
+renderers — markdown, code, image, pdf, audio, json). Phase 73l Stage
+2.1 is the FIRST in-staging consumer (the introducer); Phase 73n Stage
+2.3 Playground is the second consumer and extends the same directory
+with chat-bubble / tool-call / diff renderers under the same dispatch
+contract. All mutation
 surfaces (Delete / Set retention) are rendered disabled-with-tooltip
 per the spec's §10 deferred list.
 
@@ -45,15 +49,22 @@ per the spec's §10 deferred list.
   is the upload pipeline's second consumer.
 - **brief 11 §PG-4 (Rich output rendering)** — "Markdown, code blocks,
   JSON tree, CSV table, citations, ArtifactRef previews." This phase
-  is the **second consumer** of the canonical renderer registry the
-  Playground introduces; the Artifacts preview pane MUST dispatch
-  through the registry — no bespoke per-mime renderer (Brief 12
-  §"shared chat / playground library", D-091).
+  **ships the canonical renderer registry SKELETON** (dispatch table +
+  the mime renderers Artifacts needs: markdown, code, image, pdf,
+  audio, json) at `web/console/src/lib/chat/renderers/` per D-062.
+  Phase 73l is the FIRST in-staging consumer (Stage 2.1) and therefore
+  the introducer. Phase 73n Playground (Stage 2.3) is the second
+  consumer and EXTENDS the same registry with chat-bubble-specific
+  renderers (tool-call trace cards, diff-view cards, artifact-reference
+  cards) — those additions live under the same
+  `web/console/src/lib/chat/renderers/` path and reuse the dispatch
+  contract this phase establishes.
 - **brief 12 §"The shared chat / playground library"** — "The MCP-Apps
   renderer registry lives at `web/console/src/lib/chat/renderers/`."
-  This phase imports from that location and registers no
-  Artifacts-page-only renderer; future renderer additions for new
-  mime types land in the shared module and benefit both pages.
+  This phase establishes that location with the dispatch contract
+  plus mime renderers; future renderer additions (chat-bubble renderers
+  in 73n, post-V1 new mime renderers) land in the same module under
+  the same dispatch contract.
 - **brief 11 §CC-4 (search)** — "moderate-cardinality search runs as a
   Console-side index over `artifacts.list` rows; high-cardinality
   search lands as `search.artifacts` (Wave 13 to decide)." This phase
@@ -64,7 +75,7 @@ per the spec's §10 deferred list.
 - **brief 11 §"Open architectural questions" — Console DB scope** —
   Saved-view chips, the Save (pin) action, sort prefs, and the bulk
   Download (zip) flow are Console-local per D-061; this phase persists
-  them in `web/console/src/lib/console_db/` consuming the schema 72h
+  them in `web/console/src/lib/db/` consuming the schema 72h
   ships (`saved_views`, `saved_filters`). No artifact mutation lands
   in the Console DB.
 
@@ -112,11 +123,15 @@ verbatim. The decomposition's row 73l in `docs/plans/wave-13-decomposition.md`
   return `CodePresignUnsupported`; only Phase 19's S3 driver implements
   the capability, so the resolver fails loudly with a typed error on
   non-S3 backends (per the Brief 05 §3 + D-022 fail-loud posture).
-- Consume the canonical renderer registry at
-  `web/console/src/lib/chat/renderers/` (Phase 73n is the registry's
-  first consumer; this phase is the second). The Preview pane uses
-  the same dispatch table the Playground uses; the file
-  `web/console/src/routes/console/artifacts/preview_pane.svelte`
+- **Ship the canonical renderer registry SKELETON** at
+  `web/console/src/lib/chat/renderers/` — dispatch table
+  (`index.ts`) plus the mime renderers Artifacts needs (markdown,
+  code, image, pdf, audio, json). Phase 73l Stage 2.1 is the FIRST
+  in-staging consumer and therefore the introducer; Phase 73n Stage
+  2.3 Playground extends the SAME directory with chat-bubble /
+  tool-call / diff renderers under the SAME dispatch contract. The
+  Preview pane in this phase wires through the dispatch table; the
+  file `web/console/src/routes/console/artifacts/preview_pane.svelte`
   imports `dispatchRenderer` from the registry and dispatches by
   mime type. NO bespoke per-mime renderer lives in
   `web/console/src/routes/console/artifacts/`.
@@ -323,8 +338,8 @@ web/console/                              # FIRST creation of this tree IF a pri
       preview_pane.svelte
       bulk_toolbar.svelte
     lib/protocol.ts                        # generated; this phase regenerates it
-    lib/chat/renderers/                    # consumed (NOT introduced by this phase — Phase 73n introduces it)
-    lib/console_db/                        # consumed (72h introduces)
+    lib/chat/renderers/                    # **INTRODUCED here** (Stage 2.1, first consumer): index.ts dispatch table + markdown.ts + code.ts + image.ts + pdf.ts + audio.ts + json.ts. Phase 73n Stage 2.3 extends this directory with chat-bubble / tool-call / diff renderers under the same dispatch contract.
+    lib/db/                                 # consumed (72h introduces)
   tests/artifacts-page.spec.ts             # NEW
 
 test/integration/artifacts_page_test.go    # NEW
@@ -559,17 +574,16 @@ and runs the following assertions against the booted dev server:
   page does not subscribe directly in V1 — it polls `artifacts.list`
   on user-triggered refresh per the spec's "moderate-cardinality"
   posture).
-- **Phase 73n** — introduces the canonical renderer registry at
-  `web/console/src/lib/chat/renderers/`. This phase is the registry's
-  SECOND consumer. If 73n has not yet landed when this phase lands,
-  this phase ships the registry skeleton (and 73n upgrades it on
-  its own landing). The wave-13 decomposition stages 73n in 2.3 and
-  73l in 2.1 — so 73n typically lands AFTER 73l; in that case the
-  registry skeleton lives in this phase's PR per the
+- **Phase 73n** (Stage 2.3, AFTER this phase in staging) — extends the
+  canonical renderer registry this phase introduces with chat-bubble
+  / tool-call / diff renderers under the same dispatch contract. The
+  Wave 13 decomposition stages 73n in 2.3 and 73l in 2.1, so 73l
+  always lands first; this phase is the registry INTRODUCER per the
   encapsulate-first-extract-on-second-consumer pattern (Brief 12 §"The
-  shared chat / playground library"). The skeleton ships a minimal
-  dispatcher + a markdown / image / hex-dump fallback set covering
-  the Artifacts preview pane's V1 mime palette.
+  shared chat / playground library"). This phase ships the dispatch
+  table (`index.ts`) plus mime renderers (markdown, code, image, pdf,
+  audio, json); 73n adds the chat-bubble renderers on top without
+  re-shipping the dispatcher.
 - **Phase 19** — Phase 19's S3 driver is the only V1 driver
   implementing `Presigner`; this phase exercises the resolver against
   it in the integration test (and SKIPs against the fs / in-mem /

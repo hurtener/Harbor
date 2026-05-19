@@ -30,7 +30,7 @@ None.
 ## Goals
 
 - Ship the chat module as a self-contained package at `web/console/src/lib/chat/` with: chat-stream renderer, message bubbles (user / agent), tool-call trace cards, diff-view cards, artifact-reference cards, code blocks via Shiki, Markdown + GFM + KaTeX + Mermaid renderers per Brief 11 §PG-4, multimodal upload + voice input + token-count preview composer.
-- Ship the canonical MCP-Apps renderer registry at `web/console/src/lib/chat/renderers/` per D-062 — the ONLY path for MCP-sourced tool output rendering. Bespoke per-server renderers are §13-forbidden.
+- **Extend** the canonical MCP-Apps renderer registry at `web/console/src/lib/chat/renderers/` per D-062 — the ONLY path for MCP-sourced tool output rendering. The **registry SKELETON is shipped by Phase 73l (Stage 2.1)**: dispatch table (`index.ts`) + mime renderers (markdown, code, image, pdf, audio, json). 73n Playground (Stage 2.3) lands AFTER 73l per Wave 13 staging, so this phase EXTENDS 73l's directory with chat-bubble / tool-call / diff / artifact-reference renderers using the same dispatch contract — it does NOT re-ship the dispatcher. Bespoke per-server renderers are §13-forbidden.
 - Ship 1 NEW Protocol method: `runs.set_overrides` (reasoning effort / temperature / system-prompt override / max-tokens for the next message in a session). Scoped to the operator's session identity.
 - Ship the Playground page UI matching `docs/rfc/assets/console-playground-page.png`.
 - Trace toggle consumes Phase 74's `topology.snapshot`.
@@ -45,8 +45,8 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `web/console/src/lib/chat/` ships as a self-contained module: (a) no imports of other Console internals from inside the chat module; (b) a typed `ProtocolClient` interface that the caller injects (never a Console-private singleton); (c) the MCP-Apps renderer registry at `web/console/src/lib/chat/renderers/`.
-- [ ] The renderer registry handles: Markdown / GFM via `marked` or equivalent, KaTeX via the `katex` library, Mermaid via `mermaid`, Shiki for code blocks, mime-typed previews for image / pdf / audio / json / text artifacts.
+- [ ] `web/console/src/lib/chat/` ships as a self-contained module: (a) no imports of other Console internals from inside the chat module; (b) a typed `ProtocolClient` interface that the caller injects (never a Console-private singleton); (c) the renderer registry directory at `web/console/src/lib/chat/renderers/` already EXISTS (shipped by Phase 73l with dispatch table + mime renderers); this phase adds chat-bubble renderers to that directory under the same dispatch contract.
+- [ ] Chat-bubble renderers ADDED to 73l's registry (Phase 73l ships the dispatch table + mime renderers: markdown / code / image / pdf / audio / json with their `marked` / `katex` / `mermaid` / `shiki` / image / pdf-viewer / audio-waveform / json-tree implementations). 73n adds: tool-call trace card renderer, diff-view renderer, artifact-reference card renderer.
 - [ ] `internal/protocol/methods/methods.go` declares `runs.set_overrides`.
 - [ ] `internal/protocol/types/runs.go` defines `RunOverrides` (reasoning effort, temperature, max tokens, system prompt override) — single source of truth (D-002).
 - [ ] `runs.set_overrides` enforces identity-mandatory (`session_id` required; tenant/user inferred from auth); the override applies to the NEXT message in the session, not retroactively.
@@ -90,13 +90,10 @@ web/console/src/lib/chat/DiffViewCard.svelte
 web/console/src/lib/chat/ArtifactReferenceCard.svelte
 web/console/src/lib/chat/CodeBlock.svelte                # uses Shiki
 web/console/src/lib/chat/StreamingIndicator.svelte
-web/console/src/lib/chat/renderers/index.ts              # renderer registry — canonical MCP-Apps path
-web/console/src/lib/chat/renderers/markdown.ts           # GFM + KaTeX + Mermaid
-web/console/src/lib/chat/renderers/code.ts               # Shiki
-web/console/src/lib/chat/renderers/image.ts
-web/console/src/lib/chat/renderers/pdf.ts
-web/console/src/lib/chat/renderers/audio.ts
-web/console/src/lib/chat/renderers/json.ts
+web/console/src/lib/chat/renderers/tool_call_trace.ts    # NEW renderer (chat-bubble specific); dispatch table at index.ts shipped by 73l
+web/console/src/lib/chat/renderers/diff_view.ts          # NEW renderer (chat-bubble specific)
+web/console/src/lib/chat/renderers/artifact_reference.ts # NEW renderer (chat-bubble specific)
+# NOTE: index.ts + markdown.ts + code.ts + image.ts + pdf.ts + audio.ts + json.ts are shipped by Phase 73l (Stage 2.1). This phase EXTENDS that directory; the dispatch table is registered via 73l's exported register() helper, not re-shipped.
 web/console/src/routes/playground/[session_id]/+page.svelte
 web/console/src/lib/components/playground/Header.svelte
 web/console/src/lib/components/playground/ControlsCard.svelte    # reasoning effort / temperature / max-tokens / system-prompt-override + drift-mode (disabled)
@@ -165,7 +162,7 @@ type RunSetOverridesResponse struct {
 - Phase 72 (events.subscribe scope foundation)
 - Phase 72b (`IdentityScope` admin-impersonation extension — "Run as identity" header selector)
 - Phase 74 (topology.snapshot — trace toggle)
-- Phase 73l (artifacts.put — multimodal upload pipeline)
+- **Phase 73l (Stage 2.1; ships the canonical renderer registry SKELETON + mime renderers at `web/console/src/lib/chat/renderers/`. This phase EXTENDS that directory with chat-bubble renderers under the same dispatch contract. Also supplies `artifacts.put` for the multimodal upload pipeline.)**
 - Phase 75 (Playwright harness baseline)
 
 **Already shipped (pre-Wave 13):**
