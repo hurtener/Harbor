@@ -27,7 +27,7 @@ None.
 
 ## Goals
 
-- Extend `events.subscribe` request shape with a filter struct that is identity-scope-aware (cross-tenant filters require the `events.crosstenant` scope claim per D-079).
+- Extend `events.subscribe` request shape with a filter struct that is identity-scope-aware (cross-tenant filters require the `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` scope claim per D-079 — the closed two-scope set, not a new `events.crosstenant` scope).
 - Add a new Protocol method `events.aggregate` that returns time-bucketed counts per event type over a window.
 - Both methods MUST honor identity rejection (D-033 shape — fail loudly on missing tuple components; never silently filter to empty).
 - Heavy payload bypass: events whose payload exceeds the heavy-content threshold (D-026) ship an `ArtifactRef` rather than inlined bytes; the filter MUST accept event-shape predicates without forcing the runtime to materialize heavy payloads.
@@ -45,7 +45,7 @@ None.
 - [ ] `internal/protocol/methods/methods.go` declares `events.aggregate` alongside the existing `events.subscribe` method name.
 - [ ] `internal/events/aggregate.go` implements the aggregator: given a filter + window + bucket-size, returns `[]EventBucket` where each bucket has `start`, `end`, and `counts map[string]int64` (counts keyed by event type).
 - [ ] `events.subscribe` extends to accept the filter struct on subscription request — when the filter is empty, behavior is identical to today's surface (backward compatible).
-- [ ] Identity-scope check: a subscriber without the `events.crosstenant` scope claim cannot pass multiple tenants in the filter; violation rejected loudly with `ErrIdentityScopeRequired` (never silently downgraded).
+- [ ] Identity-scope check: a subscriber without the `auth.ScopeAdmin` scope claim cannot pass multiple tenants in the filter; violation rejected loudly with `ErrIdentityScopeRequired` (never silently downgraded).
 - [ ] Identity-rejection check: missing `tenant_id` / `user_id` / `session_id` in the subscriber's identity triple causes the runtime to emit `memory.identity_rejected`-shaped audit event (D-033 pattern, here applied to events surface) and fail the request loudly.
 - [ ] Heavy-payload handling: when an event's payload exceeds the heavy-content threshold (D-026), the delivered event carries an `ArtifactRef` not bytes; the filter MUST evaluate against the event header fields without dereferencing the artifact.
 - [ ] Filter conformance test runs N≥100 concurrent subscribers with overlapping filters against a single shared `EventBus` instance under `-race` (D-025 concurrent-reuse contract).
@@ -124,7 +124,7 @@ func Match(ev Event, filter EventFilter) bool
 
 - `protocol_call 'events/subscribe' '{"filter": {"event_types": ["tool.failed"]}}'` → assert 200; assert response is a subscription cursor.
 - `protocol_call 'events/aggregate' '{"filter": {"event_types": ["tool.failed"]}, "window": "1h", "bucket": "1m"}'` → assert 200; `assert_json_path '.buckets | length' 60` (60 one-minute buckets in a one-hour window).
-- `protocol_call 'events/subscribe' '{"filter": {"tenant_ids": ["t1", "t2"]}}'` (without the `events.crosstenant` claim) → `assert_status 403`.
+- `protocol_call 'events/subscribe' '{"filter": {"tenant_ids": ["t1", "t2"]}}'` (without the `auth.ScopeAdmin` claim) → `assert_status 403`.
 - `protocol_call 'events/aggregate' '{}'` (missing identity in context) → `assert_status 401` or `403`.
 
 ## Coverage target

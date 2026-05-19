@@ -63,6 +63,7 @@ None.
 - [ ] Design tokens only (§13). Skeleton component primitives used per CLAUDE.md §4.5 rule 4; any custom wrappers are justified in the PR description.
 - [ ] `svelte-check --fail-on-warnings` passes (D-092).
 - [ ] Per-page Playwright spec at `web/console/tests/playground-page.spec.ts` covers: chat-stream round-trip, multimodal upload, reasoning-effort override applied to next message, intervention Approve / Reject scope-claim degradation, artifact preview.
+- [ ] **"Run as identity" selector in the header consumes 72b's `IdentityScope` triplet** (Brief 11 §PG-5). When the operator has the `auth.ScopeAdmin` claim, the header renders a "Run as identity" dropdown that surfaces tenants / users / sessions the admin can impersonate; selecting a triple populates `IdentityScope.Impersonating` on the next `user_message` / `start` Protocol call. Operators WITHOUT `auth.ScopeAdmin` do NOT see the selector (it renders as absent, not disabled — minimizes UI clutter for non-admin operators). This satisfies 72b's binding cross-reference and lands the consumer alongside the primitive in the same wave (§13 primitive-with-consumer).
 - [ ] `scripts/smoke/phase-73n.sh` asserts `runs.set_overrides` round-trip + chat module assets served.
 - [ ] **Chat module encapsulation invariant verified by grep:** no `from '$lib/'` imports inside `web/console/src/lib/chat/` that reach OUTSIDE the chat module (typed via tsconfig path aliases — only `$lib/chat/*` allowed within).
 - [ ] **Concurrent-reuse test:** N≥100 concurrent `runs.set_overrides` calls against shared session state under `-race` (D-025).
@@ -162,6 +163,7 @@ type RunSetOverridesResponse struct {
 **Same-wave (Wave 13):**
 
 - Phase 72 (events.subscribe scope foundation)
+- Phase 72b (`IdentityScope` admin-impersonation extension — "Run as identity" header selector)
 - Phase 74 (topology.snapshot — trace toggle)
 - Phase 73l (artifacts.put — multimodal upload pipeline)
 - Phase 75 (Playwright harness baseline)

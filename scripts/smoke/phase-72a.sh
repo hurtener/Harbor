@@ -7,7 +7,7 @@
 # auto-SKIP per AGENTS.md §4.2):
 #   1. events/subscribe accepts an EventFilter and returns a cursor.
 #   2. events/aggregate returns time-bucketed counts.
-#   3. cross-tenant filter without events.crosstenant claim → 403.
+#   3. cross-tenant filter without auth.ScopeAdmin claim → 403.
 #   4. missing identity in subscriber context → 401.
 #
 # Until the phase ships, `protocol_call` stubs the calls (SKIP); when the
@@ -35,7 +35,7 @@ protocol_call 'events/aggregate' \
 # 3. cross-tenant filter without scope claim → expect 403.
 protocol_call 'events/subscribe' \
   '{"filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72a: events.subscribe rejects cross-tenant filter without events.crosstenant claim'
+  'phase 72a: events.subscribe rejects cross-tenant filter without auth.ScopeAdmin claim'
 
 # 4. missing identity context → expect 401.
 protocol_call 'events/aggregate' \

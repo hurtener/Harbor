@@ -193,6 +193,17 @@ brief 11 §"Open architectural questions" #10 session-share token; brief
 - [ ] Convert-to-Evaluation row action renders DISABLED with tooltip:
       "Evaluations is a post-V1 subsystem (D-064)." The action is NOT
       wired to any Protocol method.
+- [ ] **Identity column rendering consumes 72b's `IdentityScope` triplet**
+      (`actor` / `requester` / `impersonating`) per Brief 11 §PG-5.
+      When 72b's wire-shape extension is present in `protocol.ts`, each
+      session row's Identity column renders the verified `actor` triple
+      with a separate `impersonating` chip when the row's `IdentityScope.Impersonating`
+      is non-empty (admin-initiated runs); when the row is a normal
+      non-impersonated run, only the actor triple renders (no
+      impersonating chip). This satisfies 72b's binding cross-reference
+      ("the Sessions-page identity column renders the impersonation
+      triplet") and lands the consumer alongside the primitive in the
+      same wave (§13 primitive-with-consumer).
 - [ ] `web/console/tests/sessions-page.spec.ts` Playwright spec passes
       against `harbor console` boot + a seeded `SessionRegistry`,
       covering: (a) catalog renders rows with all mockup columns

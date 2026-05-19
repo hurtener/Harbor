@@ -66,14 +66,7 @@ real Protocol surfaces end-to-end.
   (filter `events_subscribe.run` is already the shipped run-scoped
   carrier from Phase 60's `X-Harbor-Run` header per the D-082
   post-PR amendment).
-- brief 12 §"The shared chat / playground library": the Start /
-  Redirect / Inject-context / User-message composer at the
-  bottom-right dock is rendered via the canonical chat module at
-  `web/console/src/lib/chat/` per D-091. Phase 73b is the second
-  consumer of that module — the chat module's first consumer is the
-  73n Playground page (per the wave-13 staging); Phase 73b consumes it
-  read-only (the page never imports the chat module's internals beyond
-  the typed `ProtocolClient` interface).
+- brief 12 §"The shared chat / playground library": Phase 73b is **NOT** a consumer of the canonical chat module. The chat module's V1 first consumer is 73n Playground; the second consumer is the post-V1 packed dev UI in `harbor dev` per CLAUDE.md §4.5 #11 (the "encapsulate first, extract on second consumer" rule). A second in-V1 consumer would trigger extraction to `web/shared/chat/` in the same wave, which is out of scope. Live Runtime's Start / Redirect / Inject-context / User-message composer at the bottom-right dock is rendered with **non-chat Skeleton primitives** (`Stack`, `Card`, `Textarea`, `Button`) calling the shipped Phase 54 control verbs through the typed Protocol client directly — no chat module dependency.
 - brief 12 §"Why `harbor console`, not `harbor dev`, serves the
   Console": the page lives in the Console SvelteKit SPA and is served
   by `harbor console`; `harbor dev` stays headless. Phase 73b ships
@@ -100,10 +93,12 @@ None.
   per-component subtree under
   `web/console/src/lib/components/live-runtime/`. The page composes
   the shared engine-graph canvas (`web/console/src/lib/components/graph/`
-  from 73i), the canonical chat module (`web/console/src/lib/chat/`
-  from 73n's first consumer), Skeleton primitives, and the typed
-  Protocol client (`web/console/src/lib/protocol.ts` — generated per
-  D-093).
+  from 73i), Skeleton primitives (`Stack`, `Card`, `Textarea`,
+  `Button`), and the typed Protocol client
+  (`web/console/src/lib/protocol.ts` — generated per D-093). The page
+  does NOT import the canonical chat module from `web/console/src/lib/chat/`
+  per D-091 + CLAUDE.md §4.5 #11 (chat module's V1 first consumer is
+  73n Playground; a second in-V1 consumer is forbidden).
 - Wire every panel of the page to its Protocol surface per the
   `docs/design/console/page-live-runtime.md` §3 + §12 component
   matrix — topology canvas, status legend, tab strip, Event Stream
@@ -214,9 +209,10 @@ None.
       header / Current Step / Recent Artifacts / Interventions /
       Cost / Last error / Tenant), (6) bottom dock (left: Event
       Stream / right: per-task detail pane with Details / Input /
-      Output / Logs / Trace tabs OR the chat-module composer when
-      no node is selected), (7) footer (Protocol version + Events
-      Stream connection state + Console version).
+      Output / Logs / Trace tabs OR a Skeleton-primitive composer
+      when no node is selected — NO chat-module dependency per
+      D-091's encapsulate-first rule), (7) footer (Protocol version +
+      Events Stream connection state + Console version).
 - [ ] All data sourcing flows through the typed Protocol client; no
       hand-rolled `fetch` in any `.svelte` file under
       `web/console/src/lib/components/live-runtime/` or in the
@@ -225,15 +221,21 @@ None.
       raw color / spacing / type-scale literals on these files.
 - [ ] The page consumes the shared engine-graph canvas from 73i at
       `web/console/src/lib/components/graph/`. The canvas's
-      `<EngineGraph>` component receives a typed `topology.snapshot`
+      `<EngineGraphCanvas>` component receives a typed `topology.snapshot`
       payload and emits a typed `node-click` event the page binds to
       the bottom-dock per-task detail pane.
-- [ ] The page consumes the canonical chat module at
-      `web/console/src/lib/chat/` for the composer surface — Start /
-      Redirect / Inject context / User Message / Cancel / Pause /
-      Resume actions all route through the chat module's typed
-      `ProtocolClient` interface (D-091). No imports from the chat
-      module's internals beyond the typed interface.
+- [ ] **The page does NOT consume the canonical chat module.** Per
+      D-091 + CLAUDE.md §4.5 #11's "encapsulate first, extract on
+      second consumer" rule, the chat module's V1 first consumer is
+      73n Playground; a second in-V1 consumer would force extraction
+      to `web/shared/chat/`, which is out of V1 scope. Live Runtime's
+      composer surface (Start / Redirect / Inject context / User
+      Message / Cancel / Pause / Resume) is built with Skeleton
+      primitives (`Stack`, `Card`, `Textarea`, `Button`) under
+      `web/console/src/lib/components/live-runtime/composer/` and
+      calls the shipped Phase 54 control verbs through the typed
+      Protocol client directly. The composer module's grep proves no
+      imports from `$lib/chat/`.
 - [ ] The Header status counter strip wires to the new
       `tasks.list` status-counter-strip aggregate; the chips update
       live on every `task.*` event the SSE subscription delivers.
@@ -356,7 +358,7 @@ type EventsSubscribeFilter struct {
 ```
 
 ```svelte
-<!-- web/console/src/lib/components/graph/EngineGraph.svelte (consumed; from 73i) -->
+<!-- web/console/src/lib/components/graph/EngineGraphCanvas.svelte (consumed; from 73i) -->
 <EngineGraph nodes={...} edges={...} on:node-click={...} />
 ```
 
@@ -461,9 +463,8 @@ type EventsSubscribeFilter struct {
   `artifacts.list`)
 - 73i (Phase 73i — Console Flows page; ships the shared engine-graph
   canvas at `web/console/src/lib/components/graph/`)
-- 73n (Phase 73n — Console Playground page; first consumer of the
-  canonical chat module at `web/console/src/lib/chat/`; Phase 73b
-  is the second consumer)
+- 73n is NOT a dep — 73b's composer uses Skeleton primitives, NOT the
+  73n chat module (per D-091 + CLAUDE.md §4.5 #11)
 - 74 (Phase 74 — Console topology projection events; Stage 1 of
   Wave 13)
 - 75 (Phase 75 — Console e2e Playwright harness baseline; Stage 1
@@ -472,12 +473,9 @@ type EventsSubscribeFilter struct {
 ## Risks / open questions
 
 - **Page ↔ shared-component layering risk.** The page consumes the
-  73i engine-graph canvas and the 73n chat module. If 73i / 73n
-  reshape their exported props late, this page breaks. Mitigated by
-  the §4.5 D-091 typed-`ProtocolClient`-injection rule (the chat
-  module never imports Console internals; the page injects the
-  client) AND by the integration test wiring REAL shared components
-  in.
+  73i engine-graph canvas. If 73i reshapes its exported props late,
+  this page breaks. Mitigated by the integration test wiring the REAL
+  73i canvas in (not a mock).
 - **Metrics + Health tabs as empty-state.** The tabs land in this
   phase but their content depends on 72f. The risk is the empty-
   state pointer drifts (the linked phase number changes). Mitigated
