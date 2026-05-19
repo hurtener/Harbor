@@ -20,6 +20,7 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 10 | Code-mode as a Harbor primitive | ~4200 | 2026-05-12 |
 | 11 | Console feature surface (from operator mockup + playground) | ~5000 | 2026-05-12 |
 | 12 | Console deployment posture + shared UI library | ~2200 | 2026-05-15 |
+| 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
 
 ## Subsystem → briefs reverse index
 
@@ -29,6 +30,7 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 |-----------|-------|--------|
 | Core runtime — engine, messages, streaming, routers, concurrency, playbooks | §6.1 | **01** |
 | Planner interface + Trajectory + RunContext | §6.2 | **02**, 07 |
+| React planner prompt engineering (Phases 83a–d) | §6.2 | **13**, 02, 03, 07 |
 | Steering and unified pause/resume | §3.3, §6.3 | **02** |
 | Tool catalog + transports (in-proc / HTTP / MCP / A2A) | §6.4 | **03**, **07** |
 | Tool-side OAuth + HITL (Phase 30) | §6.4, §3.3 | **09** |
