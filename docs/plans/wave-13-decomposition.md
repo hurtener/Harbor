@@ -155,7 +155,7 @@ Suggested ordering: 2.1 → 2.2 → 2.3 (sequential between sub-stages; parallel
 | **2.3** | 73a, 73h, 73m, 73n | 4 | All Stage-2.3 PRs merged. |
 | **3** | 75a (bundles into final 2.3 PR) + checkpoint audit (single PR) | 1 + 1 | Wave 13 closed; Wave 14 unblocked. |
 
-**Total: 30 phases in Wave 13.** Largest wave in the project so far (Wave 11 was ~8 phases). Justified: the Console subsystem is intentionally a full layer.
+**Total: 26 phases in Wave 13** (11 Stage-1 + 14 Stage-2 + 1 Stage-3). Of these, 3 are pre-existing `Pending` master-plan rows (72, 74, 75) that Wave 13 re-affirms or narrows in scope; the remaining 23 are new. Largest wave in the project so far (Wave 11 was ~8 phases). Justified: the Console subsystem is intentionally a full layer.
 
 ---
 
