@@ -3,6 +3,7 @@ package stream_test
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -331,6 +332,39 @@ func TestServeHTTP_Reconnect_ReplayUnavailable_SurfacesGap(t *testing.T) {
 		}
 	}
 	t.Fatal("reconnect with replay-off bus did not surface the gap on the wire")
+}
+
+// TestServeHTTP_CrossTenantWithoutScope_Returns403 — Phase 72 / D-105:
+// a `?admin=1` request from a context carrying no scope set (the
+// "dropped middleware" / "no scope claim" shape) is rejected with HTTP
+// 403 and the canonical Protocol error code `identity_scope_required`.
+// Pinned via the wire surface (httptest server) so the JSON envelope
+// shape is observable.
+func TestServeHTTP_CrossTenantWithoutScope_Returns403(t *testing.T) {
+	bus := newTestBus(t)
+	srv := newStreamServer(t, bus)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+	req.Header.Set(stream.HeaderTenant, "t1")
+	req.Header.Set(stream.HeaderUser, "u1")
+	req.Header.Set(stream.HeaderSession, "s1")
+	// No auth middleware on this mux → context carries no scope set →
+	// HasScope returns false for both ScopeAdmin and ScopeConsoleFleet.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET ?admin=1: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("?admin=1 without scope: status = %d, want 403", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"code":"identity_scope_required"`) {
+		t.Errorf("body missing identity_scope_required code: %q", string(body))
+	}
 }
 
 // TestServeHTTP_EventTypeFilter — the X-Harbor-Event-Type header narrows

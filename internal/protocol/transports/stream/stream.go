@@ -54,6 +54,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,6 +65,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 )
 
 // minKeepalive is the floor WithKeepalive enforces. A keepalive interval
@@ -199,19 +201,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// subscription is opened (RFC §5.5, CLAUDE.md §6 rule 9).
 	id, err := resolveIdentity(r)
 	if err != nil {
-		writePlainError(w, http.StatusUnauthorized, "identity scope incomplete: "+err.Error())
+		writeProtocolError(w, http.StatusUnauthorized,
+			protoerrors.Newf(protoerrors.CodeIdentityRequired,
+				"identity scope incomplete: %v", err))
 		return
 	}
 
 	// Phase 61: an `?admin=1` query param requests cross-tenant fan-in
 	// (events.Filter.Admin = true). This is gated on a verified scope
-	// claim — ScopeAdmin OR ScopeConsoleFleet. A request that asks for
-	// admin without the scope is rejected 403 (CodeScopeMismatch
-	// territory). A request that does NOT ask for admin is the default
-	// triple-scoped stream.
+	// claim — ScopeAdmin OR ScopeConsoleFleet (D-079). A request that
+	// asks for admin without the scope is rejected 403 with the
+	// canonical Phase 72 / D-105 wire code CodeIdentityScopeRequired
+	// (distinct from CodeScopeMismatch, which is reserved for the
+	// steering-control scope-claim path per RFC §6.3). A request that
+	// does NOT ask for admin is the default triple-scoped stream.
 	wantAdmin := r.URL.Query().Get("admin") == "1"
 	if wantAdmin && !(auth.HasScope(r.Context(), auth.ScopeAdmin) || auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
-		writePlainError(w, http.StatusForbidden, "scope_mismatch: admin fan-in requires a verified `admin` or `console:fleet` scope")
+		writeProtocolError(w, http.StatusForbidden,
+			protoerrors.Newf(protoerrors.CodeIdentityScopeRequired,
+				"admin fan-in requires a verified `admin` or `console:fleet` scope (D-079)"))
 		return
 	}
 
@@ -228,16 +236,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// A rejected Subscribe (identity gate, subscriber-limit, closed
 		// bus) — surface it; do not silently 200 with an empty stream.
-		status := http.StatusInternalServerError
-		if errors.Is(err, events.ErrIdentityScopeRequired) {
-			status = http.StatusUnauthorized
-		} else if errors.Is(err, events.ErrSubscriberLimitReached) {
-			status = http.StatusTooManyRequests
-		} else if errors.Is(err, events.ErrBusClosed) {
-			status = http.StatusServiceUnavailable
+		// Phase 72 / D-105: both ErrIdentityScopeRequired (filter
+		// elided the triple and admin was false) and
+		// ErrAdminScopeRequired (admin requested without the scope
+		// claim) collapse onto the canonical wire code
+		// CodeIdentityScopeRequired (403). Phase 61's `?admin=1` gate
+		// normally short-circuits BEFORE Subscribe, but the mapping
+		// must hold if a future filter variant lets the bus return
+		// either sentinel.
+		switch {
+		case errors.Is(err, events.ErrIdentityScopeRequired),
+			errors.Is(err, events.ErrAdminScopeRequired):
+			writeProtocolError(w, http.StatusForbidden,
+				protoerrors.Newf(protoerrors.CodeIdentityScopeRequired,
+					"event subscription scope insufficient: %v", err))
+			return
+		case errors.Is(err, events.ErrSubscriberLimitReached):
+			writeProtocolError(w, http.StatusTooManyRequests,
+				protoerrors.Newf(protoerrors.CodeRuntimeError,
+					"event subscriber limit reached: %v", err))
+			return
+		case errors.Is(err, events.ErrBusClosed):
+			writeProtocolError(w, http.StatusServiceUnavailable,
+				protoerrors.Newf(protoerrors.CodeRuntimeError,
+					"event bus closed: %v", err))
+			return
+		default:
+			writeProtocolError(w, http.StatusInternalServerError,
+				protoerrors.Newf(protoerrors.CodeRuntimeError,
+					"event stream could not be opened: %v", err))
+			return
 		}
-		writePlainError(w, status, "event stream could not be opened: "+err.Error())
-		return
 	}
 	defer sub.Cancel()
 
@@ -466,9 +495,29 @@ func parseLastEventID(r *http.Request, sessionID string) (events.Cursor, bool) {
 // writePlainError writes a pre-stream error as a plain-text body with
 // the given status. Used only before the SSE response is committed —
 // once the text/event-stream headers are written the response status is
-// fixed and later failures are logged, not surfaced.
+// fixed and later failures are logged, not surfaced. Reserved for
+// pre-routing failures (non-GET method, missing Flusher) that aren't
+// well-modelled by the canonical Protocol error envelope.
 func writePlainError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(msg + "\n"))
+}
+
+// writeProtocolError writes a pre-stream rejection as the canonical
+// Protocol error envelope (JSON `{code, message}`) with the given
+// status. Phase 72 / D-105: the SSE transport's rejection paths
+// (identity missing, scope insufficient, bus refused) return a typed
+// wire envelope so third-party Consoles branch on the `code` field
+// instead of parsing free-form prose. A marshal failure degrades to a
+// bare status with no body — never a partial / truncated body.
+func writeProtocolError(w http.ResponseWriter, status int, perr *protoerrors.Error) {
+	buf, err := json.Marshal(perr)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(buf)
 }

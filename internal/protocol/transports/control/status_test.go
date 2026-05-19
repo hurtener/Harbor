@@ -12,13 +12,15 @@ import (
 // stable status — the mapping is part of the wire contract.
 func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 	cases := map[protoerrors.Code]int{
-		protoerrors.CodeInvalidRequest:   http.StatusBadRequest,
-		protoerrors.CodeIdentityRequired: http.StatusUnauthorized,
-		protoerrors.CodeScopeMismatch:    http.StatusForbidden,
-		protoerrors.CodePayloadInvalid:   http.StatusUnprocessableEntity,
-		protoerrors.CodeUnknownMethod:    http.StatusNotFound,
-		protoerrors.CodeNotFound:         http.StatusNotFound,
-		protoerrors.CodeRuntimeError:     http.StatusInternalServerError,
+		protoerrors.CodeInvalidRequest:        http.StatusBadRequest,
+		protoerrors.CodeIdentityRequired:      http.StatusUnauthorized,
+		protoerrors.CodeScopeMismatch:         http.StatusForbidden,
+		protoerrors.CodePayloadInvalid:        http.StatusUnprocessableEntity,
+		protoerrors.CodeUnknownMethod:         http.StatusNotFound,
+		protoerrors.CodeNotFound:              http.StatusNotFound,
+		protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
+		protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
+		protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
 	}
 	for code, want := range cases {
 		if got := httpStatus(code); got != want {
@@ -30,21 +32,41 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 // TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes asserts the table
 // above covers every code internal/protocol/errors declares — a new
 // canonical code without a status entry must surface as a test failure,
-// not a silent 500.
+// not a silent 500. Derives the canonical set from protoerrors.Codes()
+// (D-082 amendment) so a new code without a mapping surfaces by NAME.
 func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
-	known := map[protoerrors.Code]struct{}{
-		protoerrors.CodeInvalidRequest:   {},
-		protoerrors.CodeIdentityRequired: {},
-		protoerrors.CodeScopeMismatch:    {},
-		protoerrors.CodePayloadInvalid:   {},
-		protoerrors.CodeUnknownMethod:    {},
-		protoerrors.CodeNotFound:         {},
-		protoerrors.CodeRuntimeError:     {},
+	mapped := map[protoerrors.Code]struct{}{
+		protoerrors.CodeInvalidRequest:        {},
+		protoerrors.CodeIdentityRequired:      {},
+		protoerrors.CodeScopeMismatch:         {},
+		protoerrors.CodePayloadInvalid:        {},
+		protoerrors.CodeUnknownMethod:         {},
+		protoerrors.CodeNotFound:              {},
+		protoerrors.CodeRuntimeError:          {},
+		protoerrors.CodeAuthRejected:          {},
+		protoerrors.CodeIdentityScopeRequired: {},
 	}
-	for code := range known {
+	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {
 			t.Errorf("code %q is in the status table but not canonical", code)
 		}
+	}
+	for _, code := range protoerrors.Codes() {
+		if _, ok := mapped[code]; !ok {
+			t.Errorf("canonical code %q has no entry in the status-mapping table — add one to status.go and to this table", code)
+		}
+	}
+}
+
+// TestStatusFor_CodeIdentityScopeRequired_Returns403 — pins the
+// Phase 72 / D-105 wire mapping: the new canonical code maps to HTTP
+// 403 (the request is authenticated; the scope set does not authorize
+// the operation). 401 would imply the request is unauthenticated,
+// which would be wrong — the JWT verified, only the scope set was
+// insufficient.
+func TestStatusFor_CodeIdentityScopeRequired_Returns403(t *testing.T) {
+	if got := httpStatus(protoerrors.CodeIdentityScopeRequired); got != http.StatusForbidden {
+		t.Errorf("httpStatus(CodeIdentityScopeRequired) = %d, want 403 (authenticated but not authorized)", got)
 	}
 }
 

@@ -63,11 +63,20 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsValidMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
-			"method %q is not a canonical task-control method", string(method))
+			"method %q is not a canonical Protocol method", string(method))
 	}
 
 	if method == methods.MethodStart {
 		return s.dispatchStart(ctx, req)
+	}
+	// Phase 72 / D-105: events.subscribe is a streaming-events method
+	// served by the Phase 60 SSE transport, NOT by the REST control
+	// surface. A caller that hits Dispatch with events.subscribe is
+	// using the wrong transport for the wrong vocabulary — surface it
+	// loud rather than silently routing it onto the steering inbox.
+	if method == methods.MethodEventsSubscribe {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is a streaming-events method; open the SSE transport at GET /v1/events instead", string(method))
 	}
 	return s.dispatchControl(ctx, method, req)
 }
@@ -209,18 +218,25 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 	}, nil
 }
 
-// compile-time assertion: the nine control methods + MethodStart are the
-// ten canonical methods, and exactly the nine non-start methods have a
-// steering.ControlType mapping. If a method is added to the methods
-// package without a mapping here, this fails — keeping the Protocol
-// method table and the steering bridge in lockstep.
+// compile-time assertion: every steering-control method
+// (IsControlMethod=true) has a steering.ControlType mapping. The Phase
+// 54 set is the nine non-start, non-events.subscribe canonical
+// methods; Phase 72 added events.subscribe (a streaming-events method,
+// not a steering control) — IsControlMethod gates the exhaustive
+// check so a new non-control method does NOT need a mapping. If a new
+// steering-control method is added to internal/protocol/methods
+// without a mapping here, this fails — keeping the Protocol method
+// table and the steering bridge in lockstep.
 func init() {
 	for _, m := range methods.Methods() {
-		if m == methods.MethodStart {
+		if !methods.IsControlMethod(m) {
+			// MethodStart, MethodEventsSubscribe (Phase 72), and any
+			// future non-control method are routed elsewhere — no
+			// steering.ControlType is expected for them.
 			continue
 		}
 		if _, ok := methodToControlType[m]; !ok {
-			panic(fmt.Sprintf("protocol: method %q has no steering.ControlType mapping — methodToControlType is out of sync with internal/protocol/methods", m))
+			panic(fmt.Sprintf("protocol: steering-control method %q has no steering.ControlType mapping — methodToControlType is out of sync with internal/protocol/methods", m))
 		}
 	}
 }

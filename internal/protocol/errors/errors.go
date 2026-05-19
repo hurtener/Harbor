@@ -87,20 +87,42 @@ const (
 	// client that gets CodeAuthRejected has one but it failed to
 	// verify. Maps to HTTP 401.
 	CodeAuthRejected Code = "auth_rejected"
+	// CodeIdentityScopeRequired — Phase 72 Console subscription scope
+	// (D-105). Returned at the wire edge when a Subscribe request's
+	// scope set is insufficient for the requested fan-in — typically a
+	// cross-tenant (`?admin=1`) `events.subscribe` request from a JWT
+	// lacking `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` (D-079).
+	// HTTP status 403 (the request is authenticated; the scope set
+	// does not authorize the operation).
+	//
+	// Distinct from CodeIdentityRequired (missing identity triple,
+	// 401), CodeAuthRejected (token invalid, 401), and
+	// CodeScopeMismatch (which is reserved for steering-control scope
+	// claims per RFC §6.3 — the steering inbox's caller-scope vs
+	// per-method minimum). The wire transport collapses both
+	// `events.ErrIdentityScopeRequired` (Subscribe filter elides the
+	// triple AND Admin is false) and `events.ErrAdminScopeRequired`
+	// (Admin requested without the verified scope claim) onto this
+	// single code: from the third-party Console's perspective the
+	// operator-actionable answer is the same — attach a scope-bearing
+	// token. The Go-level distinction stays available for in-process
+	// callers that need it.
+	CodeIdentityScopeRequired Code = "identity_scope_required"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
 // new Protocol error code is a new phase that declares a constant +
 // extends this map; there is no registration escape hatch.
 var canonicalCodes = map[Code]struct{}{
-	CodeInvalidRequest:   {},
-	CodeIdentityRequired: {},
-	CodeScopeMismatch:    {},
-	CodePayloadInvalid:   {},
-	CodeUnknownMethod:    {},
-	CodeNotFound:         {},
-	CodeRuntimeError:     {},
-	CodeAuthRejected:     {},
+	CodeInvalidRequest:        {},
+	CodeIdentityRequired:      {},
+	CodeScopeMismatch:         {},
+	CodePayloadInvalid:        {},
+	CodeUnknownMethod:         {},
+	CodeNotFound:              {},
+	CodeRuntimeError:          {},
+	CodeAuthRejected:          {},
+	CodeIdentityScopeRequired: {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error
