@@ -384,6 +384,18 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **NetworkDefaults** — operator-tunable defaults (Phase 33a) bifrost applies to every provider (native + custom) when the per-provider override is absent. Fields: `Timeout`, `MaxRetries`, `RetryBackoffInitial`, `RetryBackoffMax`, `Concurrency`, `BufferSize`. Zero-valued fields fall through to bifrost's package-level defaults; non-zero values override. Configured at `llm.network_defaults`. Restart-required. RFC §6.5, D-042.
 
+**notification topic** — the `notification.*` event family on Harbor's typed event bus. Per-class topic naming (`notification.task_failed`, `notification.tool_approval_requested`, `notification.governance_budget_exceeded`, `notification.auth_required`, `notification.pause_requested`). Populated by a runtime-internal rules-engine-lite mapper consuming a small subset of the wider event taxonomy. Phase 72d.
+
+**`notification.task_failed`** — V1 notification class synthesised from `task.failed` events (Phase 20). Severity Error. Carries a `NotificationPayload` with `OriginEventType=task.failed` + the originating event's `Sequence` for correlation, plus a deep-link to the failed task in the Console. Phase 72d.
+
+**`notification.tool_approval_requested`** — V1 notification class synthesised from `tool.approval_requested` events (Phase 31). Severity Warning. Carries a deep-link to the pending approval in the Console's Tools page. Phase 72d.
+
+**`notification.governance_budget_exceeded`** — V1 notification class synthesised from `governance.budget_exceeded` events (Phase 36a). Severity Error. Carries a deep-link to the affected tenant/session's governance posture. Phase 72d.
+
+**`notification.auth_required`** — V1 notification class synthesised from `tool.auth_required` events (Phase 30). Severity Warning. Carries a deep-link to the OAuth-binding flow in the Console's MCP Connections page. Phase 72d.
+
+**`notification.pause_requested`** — V1 notification class synthesised from `pause.requested` events (Phase 50). Severity Info. Carries a deep-link to the paused task in the Console's Interventions queue. Phase 72d.
+
 ## P
 
 **`ParallelExecutor`** — the `internal/runtime/parallel.Executor` runtime component that consumes `planner.CallParallel` Decisions (Phase 47, D-056). Three settled invariants: atomic-setup validation (any branch's invalid args fails the whole call BEFORE dispatch), system cap on branch count (`AbsoluteMaxParallel = 50`), parallel-pause atomicity contract surface (failing loud on mid-execution pause requests until Phase 50's unified pause primitive lands). Dispatches via the resolved `tools.ToolDescriptor`'s `Invoke`; concurrent-reuse safe per D-025. RFC §6.2, D-056.
@@ -473,6 +485,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **REST control surface** — the Protocol's client→server request-response wire channel (Phase 60): one JSON `POST /v1/control/{method}` per task-control method, a thin `http.Handler` adapter over Phase 54's transport-agnostic `protocol.ControlSurface.Dispatch`. A `*protocol/errors.Error` from Dispatch maps onto a stable HTTP status (`status.go`). Paired with the **SSE stream** (the server→client half) — together they are RFC §5.4's resolved SSE + REST wire transport. RFC §5.4, D-078.
 
 **Round-trip invariant (Skills.md)** — `Export(Import(b)) == b` for any spec-compliant Skills.md `b`. Asserted via `bytes.Equal` over the Phase 40 golden corpus (`internal/skills/importer/testdata/golden/`). The load-bearing test that distinguishes a working importer from a working-by-coincidence importer. Authors hand-order YAML keys; the importer preserves their ordering by carrying the raw frontmatter bytes verbatim between the `---` fences. Heading variations (`## steps` / `## Step` / `## Steps:`) normalise on the parse side; Export emits the canonical heading. Sources using a non-canonical heading do NOT round-trip byte-stable — the invariant gates canonical sources only. RFC §6.7, brief 04 §4.7 step 5, D-053.
+
+**rules-engine-lite mapper** — Harbor's runtime-internal pure-function translator from a triggering bus event to zero-or-more `notification.*` bus events. Lives at `internal/runtime/notifications/mapper.go`. Pure by construction — no I/O, no global state, no time-of-day dependency — so concurrent calls against a single instance are trivially safe (D-025). Named "rules-engine-lite" to distinguish from a full rules engine: V1 implements a fixed switch over event types, not a configurable rule DSL. Brief 11 §CC-3, Phase 72d.
 
 **RepairLoop** — Phase 44 driver of the salvage → schema repair → graceful failure → multi-action salvage ladder (`internal/planner/repair/repair.go`). One method: `Run(ctx, rc, client, req, validateTool) (Decision, error)`. Reusable artifact — one instance safe to share across N concurrent runs (D-025; `internal/planner/repair/d025_test.go` pins N=128). Per-call state lives on the stack and in `planner.RunContext`. Returns `planner.CallTool` / `planner.CallParallel` on success, `planner.Finish{NoPath, Metadata["followup"]=true}` on graceful failure (always paired with a `planner.repair_exhausted` emit). Composition: OUTSIDE the LLM call (the Phase 36 retry-with-feedback wrapper is INSIDE — they handle different concerns; §13 forbids two-parallel-implementations). RFC §6.2, D-050.
 
