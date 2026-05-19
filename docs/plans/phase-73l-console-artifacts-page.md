@@ -3,7 +3,7 @@
 ## Summary
 
 Phase 73l ships the Console **Artifacts** page — the operator's catalog
-+ preview surface over Harbor's content-addressed artifact store.
+and preview surface over Harbor's content-addressed artifact store.
 The page lands the Wave-13 page UI plus the `artifacts.list` filter
 extensions (mime / source / size / task_id), the `artifacts.put`
 upload pipeline that Brief 11 §PG-2 requires, and the `PresignGet`
