@@ -2,7 +2,7 @@
 
 ## Summary
 
-Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single flat string into the twelve XML-tagged sections inventoried in brief 13 §2.1 (`<identity>`, `<output_format>`, `<action_schema>`, `<finishing>`, `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`, `<error_handling>`, `<available_tools>`, `<additional_guidance>`, `<planning_constraints>`). Introduce explicit injection points (`extra_guidance`, `current_date`) and a `PlannerConfig.ExtraGuidance` config key so operators can shape the prompt without forking the builder. The downstream phases (83b/c/d) extend the sections this phase establishes.
+Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single flat string into the twelve XML-tagged sections inventoried in brief 13 §2.1 (`<identity>`, `<output_format>`, `<action_schema>`, `<finishing>`, `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`, `<error_handling>`, `<available_tools>`, `<additional_guidance>`, `<planning_constraints>`). Introduce explicit injection points (`extra_guidance`, `current_date`) and a `PlannerConfig.ExtraGuidance` config key so operators can shape the prompt without forking the builder. The adapted prompt **drops the `reasoning` field from the action JSON** and ports the predecessor's `<tone>` CRITICAL clamp verbatim (`reasoning` is captured from the provider channel — Phase 83e — never required in structured output). The `<finishing>` block carries **only** `answer`; rich-output fields (`confidence` / `route` / `requires_followup` / `warnings`) are not reserved, not deferred — Harbor delivers rich UI via MCP-Apps tools (brief 13 §5). The downstream phases (83b/c/d) extend the sections this phase establishes.
 
 ## RFC anchor
 
@@ -17,17 +17,20 @@ Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single fla
 - brief 13 §2.1: "XML tags make the sections individually editable" — we adopt the predecessor's twelve-section layout in the same fixed order so per-section edits stay local.
 - brief 13 §2.1: "The `extra` and `planning_hints` slots are explicit injection points" — this phase wires `extra_guidance`; 83c wires `planning_hints`.
 - brief 13 §4: "`{{current_date}}` … Date-only is deliberate: it stays stable across a session, which helps KV-cache hit rates" — we adopt date-only injection, no time-of-day, to preserve cache stability.
-- brief 13 §5.1: "Preserve the slot — the `<finishing>` block describes the V2 fields as 'reserved'" — the `<finishing>` section ships with `confidence` / `route` / `requires_followup` / `warnings` documented as **reserved for V2**; the Decision sum in `ifaces` is **not** widened in this phase.
+- brief 13 §2.6 (revision 2026-05-19): the predecessor's `<tone>` CRITICAL clamp is ported verbatim — *"During intermediate steps, produce ONLY the JSON action object. Do not add commentary."* + *"Do not include a 'thought' or 'reasoning' field in the JSON."* The action schema in the rendered prompt is `{tool, args}` only. Reasoning capture lives on Phase 83e (runtime surface + Decision-side schema narrowing); this phase's contribution is **prompt-side** alignment: the model is told not to emit reasoning, and the rendered prompt's `<action_schema>` example omits the field.
+- brief 13 §5: rich output is dropped from Harbor entirely. The `<finishing>` block carries only `answer`; the `<error_handling>` block guides "ask for clarification in `args.answer`" rather than via a `requires_followup` flag. Rich UI is delivered via MCP-Apps tools, not planner emission.
 
 ## Findings I'm departing from (if any)
 
-- None.
+- **Initial draft of this plan (committed 2026-05-18) reserved V2 finish-args fields and kept `reasoning` in the action schema.** The 2026-05-19 brief revision drops both. This plan now matches the revised brief.
 
 ## Goals
 
 - The shipped prompt assembles in the same twelve-section order as brief 13 §2.1.
 - Operators can inject domain-specific interpretation rules via a config key without writing Go.
-- The Decision shape is unchanged (no V2 surface leakage); the prompt content describes V2 fields as **reserved** in `<finishing>` but the planner still emits only the V1-supported shape.
+- The prompt's `<action_schema>` example shows `{tool, args}` only — no `reasoning` field. The `<tone>` section carries the CRITICAL clamp instructing the model not to emit `thought` / `reasoning` in JSON.
+- The `<finishing>` section instructs only `args.answer` (plain text). Rich-output fields are not reserved, not described as "future."
+- The Decision shape (runtime-side) is **unchanged** in this phase — Phase 83e tightens it. 83a is prompt-content-only; the runtime still accepts a `reasoning` field if the model emits one (Phase 44 strips it, soon to be a no-op once Phase 83e lands).
 - All existing `WithSystemPrompt(string)` callers keep working unchanged (backwards-compatible default).
 
 ## Non-goals
@@ -35,7 +38,8 @@ Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single fla
 - Tool catalog rendering depth (no `args_schema`, no examples). That is Phase 83b.
 - Dynamic per-turn augmentation (`planning_hints`, repair guidance). That is Phase 83c.
 - Memory / skills injection. That is Phase 83d.
-- Widening `Decision_Finish` to accept V2 metadata fields. Deferred to V2.
+- Narrowing the runtime-side Decision sum (dropping `reasoning` from `Decision_CallTool`) + extending `CompleteResponse` with the captured reasoning trace + adding the replay knob. That is Phase 83e.
+- Reserving any rich-output fields on `_finish`. Harbor does not build rich-output emission; rich UI is via MCP-Apps tools.
 
 ## Acceptance criteria
 
@@ -43,6 +47,10 @@ Refactor `internal/planner/react/prompt.go`'s `defaultBuilder` from a single fla
 - [ ] Empty / missing optional injections (`extra_guidance`, planning hints) omit their section entirely rather than emitting an empty `<additional_guidance></additional_guidance>` block.
 - [ ] `current_date` is rendered as `YYYY-MM-DD` (UTC, date-only). A test asserts the format does not include time-of-day.
 - [ ] `PromptBuilder` interface keeps its current signature; `defaultBuilder` keeps the `WithSystemPrompt(string)` override semantics (empty string → `DefaultSystemPrompt`).
+- [ ] **`<action_schema>` and the example actions in the rendered prompt contain NO `reasoning` field.** A golden-fixture test asserts the rendered prompt does not contain the substring `"reasoning":` (case-sensitive).
+- [ ] **`<tone>` ports the predecessor's CRITICAL clamp verbatim** (case-sensitive). Specifically the two lines (a) "During intermediate steps, produce ONLY the JSON action object. Do not add commentary." and (b) "Do not include a 'thought' or 'reasoning' field in the JSON." Golden-fixture test asserts both lines appear.
+- [ ] **`<finishing>` block carries only `args.answer`** (no `confidence` / `route` / `requires_followup` / `warnings` / "optional fields you may include"). A golden-fixture test asserts none of those strings appear in the rendered prompt.
+- [ ] **`<error_handling>` block does NOT reference `requires_followup`** — the guidance is "ask for clarification in `args.answer`."
 - [ ] New Option `WithSystemPromptExtra(s string)` on `ReActPlanner` injects content into the `<additional_guidance>` section.
 - [ ] New config key `planner.extra_guidance` on `PlannerConfig` flows from YAML through `internal/config` validation to the planner constructor.
 - [ ] `DefaultSystemPrompt` is replaced with a structured template constant (or with per-section constants concatenated by `buildSystemContent`); the migration is **not silent** — the old single-string constant either is removed or is renamed to `legacyDefaultSystemPrompt` with a TODO comment + tracking issue, never left dangling.
@@ -117,7 +125,7 @@ type PlannerConfig struct {
 
 - **Migration risk.** Any existing operator who has memorised the previous default prompt text and asserts against it will see the assertion break. Mitigated by: (a) marking this as post-V1; (b) treating the prompt-content change as a deliberate API surface bump; (c) the golden fixture being the *normative* spec going forward.
 - **Token budget.** The twelve-section layout is materially longer (~1.2–1.8k tokens before tool rendering) than the current flat prompt (~200 tokens). For tiny models or extreme cost regimes this is non-trivial. Mitigation: `WithPromptBuilder()` already exposes the full escape hatch; operators who need the lean prompt construct their own builder. No new knob required.
-- **V2 surface drift.** The `<finishing>` block names `confidence` / `route` / `requires_followup` / `warnings` as reserved. Models that ship with these patterns trained in will emit them; the planner ignores them in V1. A test asserts the planner's Decision parser tolerates (silently drops) those extra args fields. If V2 lands the Decision sum widens; this phase preserves the slot.
+- **Trained-in-format drift on dropped fields.** Some models trained on prompts similar to the predecessor's will emit `reasoning` / `confidence` / `route` / `requires_followup` anyway. Phase 44's schema repair pipeline must tolerate (strip-and-warn) extra fields on incoming JSON. A test asserts the planner's Decision parser silently drops these extras and logs a soft event for telemetry. The CRITICAL clamp in `<tone>` is the format pressure that makes drift uncommon over many turns.
 
 ## Glossary additions
 
