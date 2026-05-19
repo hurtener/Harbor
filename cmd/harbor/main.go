@@ -131,6 +131,19 @@ import (
 	// seam pattern that D-095 uses for OAuth providers. The V1
 	// reference planner remains the no-config-needed default.
 	_ "github.com/hurtener/Harbor/internal/planner/react"
+	// Notifications event topic — Phase 72d (D-109). The package's init()
+	// registers the five V1 notification.* event-type constants
+	// (notification.task_failed / tool_approval_requested /
+	// governance_budget_exceeded / auth_required / pause_requested) plus
+	// notification.identity_rejected onto the canonical events registry
+	// so any future Publish from a constructed Subscriber (or a Console-
+	// side Protocol consumer subscribing to the topic) doesn't trip
+	// events.ErrUnknownEventType. Phase 72d ships zero new HTTP routes
+	// and no boot-side Subscriber construction; the long-lived
+	// Subscriber wires up in a later phase when its UI consumer ships.
+	// Blank-importing here keeps the event-type registry consistent
+	// across every binary boot per the §4.4 seam pattern.
+	_ "github.com/hurtener/Harbor/internal/runtime/notifications"
 )
 
 func main() {
