@@ -64,7 +64,7 @@ None.
 - [ ] **Prioritize scope-claim degradation**: the per-task Prioritize composer is gated on the same `tasks.control` claim; an out-of-range priority value returns `CodePayloadInvalid` (the surface maps `steering.ErrPayloadInvalid` per Phase 54).
 - [ ] The Tasks page SvelteKit route (`web/console/src/routes/tasks/+page.svelte`) renders against `console-tasks-page.png` with: sub-header strip (filter chips + saved-filters + search + Refresh + Export + Board/List toggle) + main canvas (kanban 4-column board OR virtualised list) + selected-task action bar (6 Phase 54 control buttons) + bottom dock (6 tabs) + right rail (Summary / Parent Session / Cost Breakdown / Recent Activity / Recent Artifacts cards).
 - [ ] The page goes through the **typed Protocol client** at `web/console/src/lib/protocol.ts` (D-093 generated from `CanonicalWireTypes`); NO hand-rolled `fetch` calls in `.svelte` files (§13).
-- [ ] Saved-filter chips, board-vs-list mode preference, and pin/sort preferences persist in Console DB per D-061 (NEVER mutate runtime entities). Schema lives in `web/console/src/lib/console-db/saved_filters_tasks.ts` on top of the Phase 72h base schema.
+- [ ] Saved-filter chips, board-vs-list mode preference, and pin/sort preferences persist in Console DB per D-061 (NEVER mutate runtime entities). Schema lives in `web/console/src/lib/db/saved_filters_tasks.ts` on top of the Phase 72h base schema.
 - [ ] Design tokens only — no raw color / spacing / type-scale literals in `.svelte` files (§13 + Stylelint enforcement).
 - [ ] Per-page Playwright spec `web/console/tests/tasks-page.spec.ts` covers: (a) kanban 4-column board renders with cards in correct status columns from a seeded `tasks.list` fixture, (b) dragging a Running card into the Paused column invokes the `pause` Protocol method (mocked transport assertion), (c) bulk-action toolbar appears when ≥2 row checkboxes are selected, (d) Prioritize button is disabled with the scope-claim tooltip when the operator lacks `tasks.control`.
 - [ ] **Concurrent-reuse test passes** — `internal/tasks/protocol/list_concurrent_test.go` runs N=100+ concurrent `tasks.list` calls (overlapping + disjoint filters) against a single shared `TaskRegistry` under `-race`, asserting no data races, no context bleed (each goroutine's filter is preserved on its returned rows), no goroutine leaks (D-025).
@@ -98,7 +98,7 @@ web/console/src/lib/components/tasks/TaskDetailBottomDock.svelte
 web/console/src/lib/components/tasks/RightRailSummary.svelte
 web/console/src/lib/components/tasks/RightRailParentSession.svelte
 web/console/src/lib/components/tasks/RightRailCostBreakdown.svelte
-web/console/src/lib/console-db/saved_filters_tasks.ts      # Console DB schema for tasks-page saved filters (on top of Phase 72h base)
+web/console/src/lib/db/saved_filters_tasks.ts      # Console DB schema for tasks-page saved filters (on top of Phase 72h base)
 web/console/tests/tasks-page.spec.ts
 web/console/src/lib/protocol.ts                            # REGENERATED ONLY by `make protocol-ts-gen` — never hand-edited
 scripts/smoke/phase-73d.sh

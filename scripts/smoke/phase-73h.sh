@@ -5,12 +5,12 @@
 # Phase 73h is a Stage 2.3 Wave 13 sub-phase under Phase 73 (Console state
 # inspection surface). It ships the Background Jobs Console page route +
 # extends the `tasks.list` Protocol filter shape (Phase 73d upstream) with
-# `type=background` + `group_id=…` + status / has_pending_approval facets,
+# `kinds=["background"]` + `group_id=…` + status / has_pending_approval facets,
 # plus the Console-side `AwaitTask` orphan detector.
 #
 # This smoke probes:
 #
-#   1. live-server: `tasks.list?type=background` returns 200 (or SKIPs on
+#   1. live-server: `tasks.list` with `Kinds: ["background"]` returns 200 (or SKIPs on
 #      404/405 when the page-phase / 73d upstream is not yet built into
 #      this binary).
 #   2. live-server: `tasks.list?group_id=<synthetic>` returns 200 with an
@@ -41,7 +41,7 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 # ----------------------------------------------------------------------------
-# 1. live-server: tasks.list?type=background returns 200.
+# 1. live-server: tasks.list with kinds=["background"] returns 200.
 # ----------------------------------------------------------------------------
 #
 # The Phase 60 wire transport binds `tasks.list` as a POST against the
@@ -52,7 +52,7 @@ TASKS_LIST_URL="$(api_url /v1/protocol/tasks.list)"
 
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
-        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","scope":"read"},"filter":{"kind":"background","limit":10}}'
+        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","scope":"read"},"filter":{"kinds":["background"],"limit":10}}'
         status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -X POST \
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
@@ -61,22 +61,22 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
             "${TASKS_LIST_URL}" || echo "000")
         case "${status}" in
             200)
-                ok 'phase 73h: tasks.list?type=background returns 200 against live server'
+                ok 'phase 73h: tasks.list with kinds=["background"] returns 200 against live server'
                 ;;
             404|405|501)
-                skip "phase 73h: tasks.list?type=background returned ${status} — Phase 73d upstream not yet shipped into this build"
+                skip "phase 73h: tasks.list with kinds=["background"] returned ${status} — Phase 73d upstream not yet shipped into this build"
                 ;;
             401|403)
                 # Identity-scope failure is structurally fine — the wire
                 # reached the runtime and the auth edge replied.
-                ok "phase 73h: tasks.list?type=background returned ${status} (auth edge rejected — wire reached the runtime)"
+                ok "phase 73h: tasks.list with kinds=["background"] returned ${status} (auth edge rejected — wire reached the runtime)"
                 ;;
             *)
-                fail "phase 73h: tasks.list?type=background expected 200/404/405/501/401/403, got ${status}"
+                fail "phase 73h: tasks.list with kinds=["background"] expected 200/404/405/501/401/403, got ${status}"
                 ;;
         esac
     else
-        skip 'phase 73h: HARBOR_DEV_TOKEN not set — tasks.list?type=background live probe skipped (set via `make preflight` or HARBOR_DEV_TOKEN env)'
+        skip 'phase 73h: HARBOR_DEV_TOKEN not set — tasks.list with kinds=["background"] live probe skipped (set via `make preflight` or HARBOR_DEV_TOKEN env)'
     fi
 else
     skip 'phase 73h: curl or jq not available — live-server probes skipped'

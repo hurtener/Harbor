@@ -85,7 +85,7 @@ web/console/src/lib/components/tools/StatusErrorRateCard.svelte
 web/console/src/lib/components/tools/ContentSizeCard.svelte
 web/console/src/lib/components/tools/SubHeaderStrip.svelte
 web/console/src/lib/components/tools/RunHistoryStrip.svelte
-web/console/src/lib/console-db/saved_filters_tools.ts  # Console DB schema for tools-page saved filters (depends on Phase 72h schema)
+web/console/src/lib/db/saved_filters_tools.ts  # TYPED wrapper over 72h's saved_filters table (NOT a new table; uses 72h's `page` discriminator column). Exports typed get/put/list/delete helpers for tools-page saved-filter rows.
 web/console/tests/tools-page.spec.ts
 cmd/harbor-gen-protocol-ts/                            # if not yet shipped, this phase's Protocol-type additions trigger regeneration
 web/console/src/lib/protocol.ts                        # REGENERATED ONLY by `make protocol-ts-gen` — never hand-edited
@@ -212,7 +212,7 @@ type ToolContentStats struct {
 
 - **Aggregate counter cost.** `tools.list` returns `ToolAggregates` over the filtered set. Naive impl scans every tool's metrics per request; for catalogs with thousands of tools this is wasteful. V1 accepts O(N) per call (matches Brief 11 §CC-4 high-cardinality posture); post-V1 may add a cached aggregator.
 - **`tools.metrics` consumes events from Phase 72a's `events.aggregate`.** A 72a delivery slip would slip 73f. Mitigation: 72a is Stage-1 Batch A; 73f is Stage 2.1 (runs only after Batch A + B both merge).
-- **Console DB schema for saved filters lives in Phase 72h.** 73f's `saved_filters_tools.ts` adds a tool-specific table on top of the 72h base schema; if 72h ships a different shape, 73f's table definition needs to match.
+- **Console DB schema for saved filters lives in Phase 72h.** 73f's `saved_filters_tools.ts` is a TYPED WRAPPER over 72h's existing `saved_filters` table (which has a `page TEXT` discriminator column); this phase adds NO new tables. The wrapper exports typed get/put/list/delete helpers that scope reads/writes to `page = "tools"`. If 72h ships a different column shape, the wrapper's typed signature needs to match.
 - **Per-page Playwright spec coverage.** The wave-end 75a aggregator suite enumerates every page-spec and asserts a matching `*.spec.ts` exists. The 73f spec MUST be merged before 75a's enumeration runs — i.e. before the final Stage-2.3 PR.
 
 ## Glossary additions

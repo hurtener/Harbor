@@ -361,13 +361,21 @@ flips OK.
   Wave 13 narrows to 60 + 72 because (a) 73's per-page Protocol additions are
   pulled into each Stage-2 page phase + (b) 64 is transitively assumed via 60.
   The narrowing is documented in `docs/plans/wave-13-decomposition.md` §4.
-- **First-Console-SvelteKit phase (Stage 1 of Wave 13):** The phase that creates
-  `web/console/` with the `svelte.config.js` runes mode pin, the `package.json`
-  Svelte 5 pin, `tokens.css`, and the generated `protocol.ts`. This phase
-  (Phase 75) requires that scaffold to exist; per the wave-13 decomposition,
-  the harness baseline lands in the same Stage-1 bundle, so the scaffold is
-  either in-flight in a parallel agent or already merged. The smoke's
-  directory-missing SKIP path keeps this phase's PR-time CI green either way.
+- **72h** (Stage 1 Batch B — Console DB schema + **SvelteKit scaffold infrastructure**).
+  Phase 72h ships `web/console/package.json` + `svelte.config.js` (runes mode
+  per D-092) + `vite.config.ts` + `tokens.css` + `.stylelintrc.cjs` + the
+  initial generated `protocol.ts` stub + `src/routes/+layout.svelte`. Phase
+  75's Playwright harness requires this scaffold to exist; per the wave-13
+  decomposition both phases land in Stage 1 Batch B. The smoke's
+  directory-missing SKIP path keeps this phase's PR-time CI green if 72h
+  lands first OR 75 lands first (no serial ordering).
+- **73m** (Stage 2.3 — `harbor console` subcommand). Phase 75's meta-test boots
+  `harbor console` against a test Runtime; the subcommand lands in 73m. The
+  harness baseline (this phase) does NOT require `harbor console` to exist
+  at scaffold-PR time (the meta-test SKIPs if `bin/harbor console --help`
+  exits non-zero). 73m is listed here as a same-wave dep so the meta-test
+  flips from SKIP to OK once 73m merges; it is NOT a Stage-1 → Stage-1 hard
+  dep.
 
 **Not a Dep:** Phase 73 (state inspection). Wave 13 narrows: the per-page
 Protocol additions formerly lumped into Phase 73 are pulled into each Stage-2

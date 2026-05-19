@@ -96,7 +96,7 @@ web/console/src/lib/components/memory/RecoveryDropoutsCard.svelte
 web/console/src/lib/components/memory/SubHeaderStrip.svelte
 web/console/src/lib/components/memory/StrategyOverlayChipRow.svelte
 web/console/src/lib/components/memory/BulkActionToolbar.svelte  # V1: disabled-with-tooltip
-web/console/src/lib/console-db/saved_filters_memory.ts  # Console DB schema for memory-page saved filters (depends on Phase 72h schema)
+web/console/src/lib/db/saved_filters_memory.ts  # TYPED wrapper over 72h's saved_filters table (NOT a new table; uses 72h's `page` discriminator column). Exports typed get/put/list/delete helpers for memory-page saved-filter rows.
 web/console/tests/memory-page.spec.ts
 web/console/src/lib/protocol.ts                          # REGENERATED ONLY by `make protocol-ts-gen` — never hand-edited
 scripts/smoke/phase-73j.sh
@@ -264,7 +264,7 @@ func Health(ctx context.Context, store memory.MemoryStore, ev events.Store, id i
 - **Aggregate counter cost.** `memory.health` derives counters from `events.aggregate` over a 24-h window. For high-cardinality tenants this is an O(N) scan per call. V1 accepts the cost (brief 11 §CC-4 high-cardinality posture); post-V1 may add a continuous-aggregate materialized view.
 - **Heavy-value materialisation cost.** A `memory.get` against a heavy-value key materialises through `artifacts.put` to produce the stub. If the value is already in the store as bytes, the materialisation is a copy; the cost is bounded by the per-call heavy-threshold ceiling. Acceptable for V1.
 - **`memory.overflow_drop_oldest` event-name drift (page-memory.md §12).** The §12 mockup refinements name the event `memory.overflow_drop_oldest`; the shipped runtime constant is `memory.recovery_dropped` per D-035. This phase uses the shipped name; a follow-up `docs(design)` PR should reconcile the §12 wording.
-- **Console DB schema for saved filters lives in Phase 72h.** This phase's `saved_filters_memory.ts` adds a memory-specific table on top of the 72h base schema; if 72h ships a different shape, this table definition needs to match.
+- **Console DB schema for saved filters lives in Phase 72h.** This phase's `saved_filters_memory.ts` is a TYPED WRAPPER over 72h's existing `saved_filters` table (which has a `page TEXT` discriminator column); this phase adds NO new tables. The wrapper exports typed get/put/list/delete helpers that scope reads/writes to `page = "memory"`. If 72h ships a different column shape, the wrapper's typed signature needs to match.
 - **Per-page Playwright spec coverage.** The wave-end 75a aggregator suite enumerates every page spec and asserts a matching `*.spec.ts` exists. The 73j spec MUST be merged before 75a's enumeration runs — i.e. before the final Stage-2.3 PR.
 - **`memory.crosstenant` scope claim** is a new scope, not yet declared in `internal/auth/scopes.go`. Adding it is a Phase 61 extension at the auth-layer constants level; no new validator code; the claim flows through `auth.HasScope` like the shipped `admin` / `console:fleet` scopes.
 - **§13 forbidden-practice mirror.** This phase introduces a NEW Protocol surface (3 methods) — the §13 primitive-with-consumer rule is satisfied trivially by the page UI in the same phase. No extension to §13's two consequence-clauses (`SpawnTask`/`AwaitTask` twinning, pause-primitive producer) is needed here.
