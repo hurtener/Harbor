@@ -14,6 +14,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`_await_task`** — Phase 47 (D-056) reserved tool name the LLM emits to block the foreground turn on a previously-spawned task. The ReAct `mapDecision` translates `{"tool":"_await_task","args":{"task_id":"<id>"}}` into a typed `planner.AwaitTask{TaskID}` Decision; empty task_id fails loud with `planner.ErrInvalidDecision`. The reserved name is a prompt-time convention (the leading underscore marks it as planner-internal); the Decision sum stays sealed per D-047.
 
+**`AwaitTask` orphan detector** — Console-side `O(N)` cross-check on the Background Jobs page (Phase 73h) that flags a background task whose `parent_task_id` is non-nil and absent from the same `tasks.list` snapshot. The detector surfaces — at the UI — the §13 binding that `SpawnTask` + `AwaitTask` MUST emit in the same phase (Phase 47 / D-056 closed this for ReAct). Lives in `web/console/src/lib/pages/background-jobs/orphan-detector.ts` as a pure function `detectOrphans(rows): Set<TaskID>`. No Protocol round-trip; no Console-side shadow of runtime state — the detector reads only what the same `tasks.list` snapshot already returned. D-114.
+
 **`_spawn_task`** — Phase 47 (D-056) reserved tool name the LLM emits to spawn a background task. The ReAct `mapDecision` translates `{"tool":"_spawn_task","args":{"kind":"...", "spec":{...}, "group_id":"..."}}` into a typed `planner.SpawnTask{Kind, Spec, GroupID}` Decision. `kind` defaults to `background`; `spec.retain_turn` defaults to false (push-wake per D-032). Malformed args fail loud with wrapped `planner.ErrInvalidDecision`.
 
 **`AbsoluteMaxParallel`** — the system cap on `planner.CallParallel.Branches` length. Value: 50 (RFC §6.2, settled). The runtime parallel executor (Phase 47) rejects above-cap emissions with `planner.ErrParallelCapExceeded` before any branch dispatches. Defence in depth: operators tune the soft cap via `PlanningHints.MaxParallel`; the system cap stays settled. D-056.
@@ -87,6 +89,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **`AssertSequence`** — Phase 71 (`harbortest`) public assertion that checks a list of `events.EventType` appears as an ordered subsequence of an `EventLog`'s captured events. Intervening event types are allowed; only the order of the want list is enforced. The right semantics for flow-level tests where bus-internal events (audit.admin_scope_used, bus.dropped) may interleave with the agent's emits. RFC §6.13, D-085.
 
 ## B
+
+**Background Jobs page** — Console route at `/console/background-jobs` (Phase 73h). A focused queue projection of `tasks.list?type=background` with queue-shaped affordances: faceted filter chips, saved-filter chips, virtualised queue table with priority badge / progress mini-bar / parent-session deep-link / orphan badge, bulk-action toolbar (per-row invocations of the shipped Phase 54 `cancel` / `pause` / `resume` / `prioritize` verbs — no parallel bulk endpoint), and a per-job right-rail with Details / Progress / Logs / Pending approvals / Artifacts for this Job / Related Sessions tabs. The page is a runtime lens (RFC §7.1) — every row round-trips through `tasks.list`; the Console DB holds only saved-filter chips, column visibility, and bulk-select state per D-061. D-114.
 
 **Brief** — a research artifact in `docs/research/NN-*.md`, distilled from predecessor source code and authoritative for context (not design). See `docs/research/INDEX.md`.
 
@@ -826,6 +830,8 @@ Additions to this set are RFC PRs.
 **`TaskCostRollup`** — `tasks.get` enrichment field (Phase 73d) aggregating `llm.cost.recorded` events scoped to the task: total tokens (prompt + output), USD cost, and a per-planner-step breakdown. Heavy per-event payloads stay on the event bus; the rollup carries only sums + step indices — never inlined event payloads (D-026).
 
 **`TaskPlannerSnapshotRef`** — `tasks.get` enrichment field (Phase 73d) pointing at the planner checkpoint that existed at task spawn time. Carries the checkpoint id (resolvable via the existing Phase 73 `state.load_planner_checkpoint`) and a pre-truncated summary. Heavy checkpoint content is fetched on demand, never inlined in the `tasks.get` response. RFC §5.2.
+
+**`tasks.list` `type=background` filter** — Phase 73h extension of the `TasksListFilter` wire shape introduced in Phase 73d: setting `Kind = "background"` restricts the returned rows to background tasks only (the canonical filter the Console Background Jobs page binds). Pairs with `Kind = "foreground"` and `Kind = ""` (empty — all kinds). Identity-scope is enforced at the Protocol edge before the filter applies; cross-tenant fan-in requires the `admin` claim per D-066. Wire-stable JSON contract; the runtime-side translator (`tasks.ListFilterFromWire`) maps the wire filter onto the Phase 20 `tasks.TaskFilter` consumed by `TaskRegistry.List`. RFC §6.8, D-114.
 
 **Tool** — Harbor's planner-addressable unit. Same struct regardless of `Transport` (`inprocess` / `http` / `mcp` / `a2a` / `flow`); the unification is at the type level (brief 03 §1). Carries `ArgsSchema`, `OutSchema`, `Policy` (the reliability shell), `Source` (provider ID), and a `Loading` mode (`always` / `deferred`). RFC §6.4.
 
