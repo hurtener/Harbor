@@ -556,6 +556,20 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Scope claim** — a verified JWT scope value (`auth.ScopeAdmin` = `"admin"`, `auth.ScopeConsoleFleet` = `"console:fleet"`) the Protocol consults when granting cross-session / cross-tenant subscriptions or fleet-control privileges. Scopes are NOT isolation principals — the `(tenant, user, session)` triple stays the isolation key (CLAUDE.md §6 rule 1); a scope is an *additional* entitlement carried alongside the triple. The closed set means an attacker-injected unknown scope is silently dropped from the verified set, never honoured as a privilege. The SSE handler's `?admin=1` query is the first consumer (RFC §6.13 admin subscriptions); the Phase 30 OAuth callback's admin-bound flow is the second. RFC §4.2 + §5.5, D-079.
 
+**`search.query`** — Wave 13 Protocol method (Phase 72c) serving the Console-side global search palette (⌘K). Pure aggregator: concurrent fan-out across the four runtime-side indexes (`search.sessions`, `search.tasks`, `search.events`, `search.artifacts`) selected by the request's `Indexes` field, merges + paginates the union. Carries NO index of its own; emits NO events. Console-side catalog adapters (tools / agents / flows / MCP) are invoked separately by per-page phases per the brief 11 §CC-4 high-cardinality split. Heavy-payload bypass via `ArtifactRef` per D-026. RFC §5.2 + §7, brief 11 §CC-4.
+
+**`search.sessions`** — Wave 13 Protocol method (Phase 72c) returning paginated session matches scoped to the caller's `(tenant, user, session)` triple. Runtime-side per brief 11 §CC-4 (session cardinality is high). Cross-tenant query requires the `search.crosstenant` admin scope claim (D-079 closed-scope-set shape extended to the search surface); a missing claim → 403, NEVER silently downgraded. RFC §5.2 + §7, brief 11 §CC-4.
+
+**`search.tasks`** — Wave 13 Protocol method (Phase 72c) returning paginated task matches; same identity-scope contract as `search.sessions`. Facets: status, type, agent, tool. RFC §5.2 + §7, brief 11 §CC-4.
+
+**`search.events`** — Wave 13 Protocol method (Phase 72c) returning paginated event matches filtered by event type + identity scope + time-window. Reuses the `EventFilter` predicate landed in Phase 72a. Substring search over event payload contents is post-V1 (would force materialisation of heavy payloads through the D-026 LLM-edge safety net). RFC §5.2 + §6.13, brief 11 §CC-4 + brief 06 §3.
+
+**`search.artifacts`** — Wave 13 Protocol method (Phase 72c) returning paginated artifact matches; rows always carry an `ArtifactRef` (artifacts are by-reference by construction per D-026). Facets: mime, source, size, task_id. RFC §5.2 + §6.10, brief 11 §CC-4.
+
+**`SearchRequest`** — Wave 13 Protocol wire-type (Phase 72c) shared by all five `search.*` methods. Carries free-text query + identity-aware filter + per-index facets + pagination + (for `search.query` only) the selected index set. Lives in `internal/protocol/types/search.go` per the D-002 single-source rule. RFC §5.2.
+
+**`SearchResponse`** — Wave 13 Protocol wire-type (Phase 72c) shared by all five `search.*` methods. Carries paginated result rows (`SearchResultRow`) + pagination cursors (`Page`, `PageCount`, `TotalCount`, `HasMore`). Result rows ship heavy payloads as `ArtifactRef`, NEVER inline (D-026). Goes through `audit.Redactor` before emission. RFC §5.2 + §6.13.
+
 **`SimulateFailure`** — Phase 71 (`harbortest`) public entry that schedules N failures on a wrapped tool inside a `FaultInjector`. Subsequent invocations of the named tool pop the FIFO and short-circuit with a class-typed error; once the queue empties the tool resumes normal behaviour. Stacks FIFO: two SimulateFailure calls on the same tool produce concatenated failure runs. RFC §6.13, D-085.
 
 **Sentinel errors** — typed errors that mark specific failure modes the runtime expects callers to compare against with `errors.Is`. The settled set:
