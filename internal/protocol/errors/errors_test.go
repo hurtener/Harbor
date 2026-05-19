@@ -11,7 +11,8 @@ import (
 // The canonical Protocol error codes — the test's independent source
 // of truth. The original seven landed in Phase 54; CodeAuthRejected
 // landed in Phase 61 (D-079); CodeIdentityScopeRequired landed in
-// Phase 72 (D-105). If errors.go drifts, the stability test fails.
+// Wave 13 (Phase 72 / 72a — D-105 / D-106). If errors.go drifts, the
+// stability test fails.
 var wantCodes = []protoerrors.Code{
 	protoerrors.CodeInvalidRequest,
 	protoerrors.CodeIdentityRequired,

@@ -25,17 +25,20 @@
 // deliberate — the Protocol surface owns its own method vocabulary
 // (brief 07's "the runtime owns the protocol it speaks").
 //
-// # The Phase 72 extension: the streaming-events method-name anchor
+// # The Wave 13 extension: the streaming-events method-name anchors
 //
 // Phase 72 elevates `events.subscribe` to a canonical method-name
 // constant. The wire-transport route is still `GET /v1/events` (Phase
 // 60 SSE), but the canonical method name is now the contract third-party
 // Console implementations branch on — same pattern as the Phase 54
-// task-control nine. `events.subscribe` is a streaming-events method,
-// NOT a task-control method: `IsControlMethod("events.subscribe")` is
-// false (the predicate stays exclusive to the Phase 54 steering-control
-// nine) and `Methods()` returns the augmented sorted set with the new
-// entry. See `docs/plans/phase-72-console-subscription-scope.md`.
+// task-control nine. Phase 72a adds `events.aggregate`
+// (`POST /v1/events/aggregate`) for time-bucketed event-type counts.
+// `events.subscribe` and `events.aggregate` are streaming-events
+// methods, NOT task-control methods: `IsControlMethod` returns false
+// for both (the predicate stays exclusive to the Phase 54 steering-
+// control nine) and `Methods()` returns the augmented sorted set with
+// the new entries. See `docs/plans/phase-72-console-subscription-scope.md`
+// and `docs/plans/phase-72a-events-filter-and-aggregate.md`.
 //
 // # No registration escape hatch
 //
@@ -54,7 +57,9 @@ import "sort"
 type Method string
 
 // The ten canonical task-control method names (RFC §5.2 "Task control"
-// row + RFC §6.3 control taxonomy).
+// row + RFC §6.3 control taxonomy) PLUS the two streaming-events method
+// names landed in Wave 13 (Phase 72 / 72a) — `events.subscribe` and
+// `events.aggregate` — the first non-task-control Protocol surface.
 const (
 	// MethodStart asks the Runtime to spawn a new task / foreground run.
 	// Maps onto tasks.TaskRegistry.Spawn (Phase 20).
@@ -105,6 +110,17 @@ const (
 	// task-control method — IsControlMethod returns false; the Phase
 	// 54 control nine stays exclusive.
 	MethodEventsSubscribe Method = "events.subscribe"
+
+	// MethodEventsAggregate returns time-bucketed event-type counts
+	// over a window (Phase 72a / D-106). Powers the per-event-type
+	// stacked-area sparkline on the Console Events page (Phase 73g).
+	// The wire-transport route is `POST /v1/events/aggregate`.
+	// Identity-mandatory + D-079 cross-tenant scope rules apply (same
+	// posture as MethodEventsSubscribe).
+	//
+	// NOT a control method: `IsControlMethod(MethodEventsAggregate)`
+	// returns false.
+	MethodEventsAggregate Method = "events.aggregate"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -124,32 +140,63 @@ var canonicalMethods = map[Method]struct{}{
 	MethodPrioritize:      {},
 	MethodUserMessage:     {},
 	MethodEventsSubscribe: {},
+	MethodEventsAggregate: {},
 }
 
-// IsValidMethod reports whether m is one of the ten canonical
-// task-control method names.
+// streamingEventsMethods is the closed set of canonical method names
+// the Runtime classifies as streaming-events methods (the first non-
+// task-control Protocol surface to land — Phase 72 / 72a). Used by
+// IsControlMethod to keep its predicate exclusive to the Phase 54
+// nine, and by IsStreamingEventsMethod (below) when a caller wants
+// the inverse predicate.
+var streamingEventsMethods = map[Method]struct{}{
+	MethodEventsSubscribe: {},
+	MethodEventsAggregate: {},
+}
+
+// IsValidMethod reports whether m is one of the canonical Protocol
+// method names — the Phase 54 task-control ten plus the Wave 13
+// streaming-events additions.
 func IsValidMethod(m Method) bool {
 	_, ok := canonicalMethods[m]
 	return ok
 }
 
 // IsControlMethod reports whether m is one of the nine steering-control
-// methods. The set is closed at the Phase 54 nine: every canonical
-// method except MethodStart (which spawns a task) AND
-// MethodEventsSubscribe (which opens a streaming-events subscription —
-// Phase 72). The protocol.ControlSurface uses this to branch: a control
-// method maps onto a steering.ControlEvent; MethodStart maps onto the
-// task registry; MethodEventsSubscribe is served by the SSE transport.
-// A new non-control method (state inspection, topology, artifacts —
-// future phases) extends THIS predicate, NOT the steering-control
-// inbox.
+// methods — every canonical method except MethodStart AND the
+// streaming-events methods (Phase 72 / 72a). The protocol.ControlSurface
+// uses this to branch: a control method maps onto a steering.ControlEvent;
+// MethodStart maps onto the task registry; a streaming-events method
+// routes through the SSE / events-aggregate transport. A new non-control
+// method (state inspection, topology, artifacts — future phases) extends
+// THIS predicate, NOT the steering-control inbox.
 func IsControlMethod(m Method) bool {
-	return IsValidMethod(m) && m != MethodStart && m != MethodEventsSubscribe
+	if !IsValidMethod(m) {
+		return false
+	}
+	if m == MethodStart {
+		return false
+	}
+	if _, ok := streamingEventsMethods[m]; ok {
+		return false
+	}
+	return true
+}
+
+// IsStreamingEventsMethod reports whether m is one of the streaming-
+// events methods landed in Wave 13 (MethodEventsSubscribe or
+// MethodEventsAggregate). The transport-side router uses this to
+// classify a method into its routing branch without re-listing the
+// streaming set.
+func IsStreamingEventsMethod(m Method) bool {
+	_, ok := streamingEventsMethods[m]
+	return ok
 }
 
 // Methods returns a deterministic, lexicographically-sorted snapshot of
-// the ten canonical method names. Useful for exhaustiveness tests and
-// for a transport adapter's route table.
+// every canonical method name (the Phase 54 task-control ten + the
+// Wave 13 streaming-events additions). Useful for exhaustiveness tests
+// and for a transport adapter's route table.
 func Methods() []Method {
 	out := make([]Method, 0, len(canonicalMethods))
 	for m := range canonicalMethods {
