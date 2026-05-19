@@ -6,7 +6,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 
 - **Source of truth:** `/RFC-001-Harbor.md` (referenced as RFC §X.X). Every phase below traces to one or more RFC sections; if a phase plan and the RFC drift, the RFC wins (`AGENTS.md` §2).
 - **Research substrate:** the eleven briefs in `docs/research/01..11.md` (canonical index: `docs/research/INDEX.md`). Decisions on shape, sharp edges, and Go-flavored types come from there.
-- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded; lettered suffixes (`26a`, `33a`, `36a`, `36b`, `53a`, `64a`, `83a`–`83d`) insert work into an existing band without renumbering. Phases 01–82 + 26a + 33a + 36a + 36b + 53a + 64a are V1; 83–99 + 83a–d are post-V1 follow-ups listed for completeness so we don't lose track.
+- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded; lettered suffixes (`26a`, `33a`, `36a`, `36b`, `53a`, `64a`, `83a`–`83e`) insert work into an existing band without renumbering. Phases 01–82 + 26a + 33a + 36a + 36b + 53a + 64a are V1; 83–99 + 83a–e are post-V1 follow-ups listed for completeness so we don't lose track.
 - **Done-definition (binding, from `AGENTS.md` §4.2):** (a) all acceptance criteria pass; (b) coverage targets met; (c) `scripts/smoke/phase-NN.sh` shows `OK ≥ count(criteria)` and `FAIL = 0`; (d) prior phases' smoke scripts still pass.
 - **Coverage defaults (override per phase):** 80% for new packages; 85% for persistence drivers and conformance-tested subsystems; 70% for CLI/tooling.
 - **Predecessor name:** does not appear in this repository, ever. (`AGENTS.md` §13.)
@@ -109,6 +109,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 83b| ReAct tool schema injection (catalog rendering)| planner/react       | §6.2, §6.4  | 83a, 26               | 85%  | Pending  |
 | 83c| ReAct dynamic repair guidance + planning hints | planner/react       | §6.2        | 83a, 44, 05           | 85%  | Pending  |
 | 83d| ReAct skills + memory injection (UNTRUSTED)   | planner/react        | §6.2, §6.6  | 83a, 23, 37           | 85%  | Pending  |
+| 83e| ReAct reasoning channel decoupling            | planner/react+llm    | §6.2, §6.5  | 45, 32, 33, 44        | 90%  | Pending  |
 | 84 | Reflection / critique loop                    | planner              | §12         | 45                    | n/a  | Post-V1  |
 | 85 | Skills Portico provider driver                | skills/portico       | §6.7        | 37, 28                | n/a  | Post-V1  |
 | 86 | Durable distributed bus driver                | distributed          | §6.12, §12  | 22                    | n/a  | Post-V1  |
@@ -127,7 +128,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 99 | Vision-aware memory summarization             | memory               | §6.6, D-021 | 24, 33, 97            | n/a  | Post-V1  |
 |100 | Recipe loader (declarative YAML flows)        | runtime/flow/recipe  | §6.1, D-023 | 26a                   | n/a  | Post-V1  |
 
-V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–100 + 83a–d (22 phases — ReAct prompt depth 83a–d, Governance 91–96, Multimodal-output 97–99, Recipe loader 100). Total tracked: 100 + 26a + 36a + 36b + 83a–d + Phase 00 = 108 entries.
+V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–100 + 83a–e (23 phases — ReAct prompt depth 83a–d, ReAct reasoning-channel decoupling 83e, Governance 91–96, Multimodal-output 97–99, Recipe loader 100). Total tracked: 100 + 26a + 36a + 36b + 83a–e + Phase 00 = 109 entries.
 
 ---
 
@@ -854,6 +855,7 @@ Listed for tracking. Not on the V1 critical path.
 - **83b — ReAct tool schema injection (catalog rendering).** Extend `tools.Tool` with `Examples []ToolExample` (tag-ranked `minimal > common > edge-case`); upgrade `<available_tools>` rendering to emit `args_schema`, `side_effects`, and curated examples per tool. Closes the args-validation-failure cascade caused by name+description-only catalog rendering. RFC §6.2, §6.4. Deps: 83a, 26. See `docs/plans/phase-83b-react-tool-schema-injection.md`.
 - **83c — ReAct dynamic repair guidance + planning hints.** Add per-run `RepairCounters{FinishRepair, ArgsRepair, MultiAction}` on `RunContext`; render escalating `reminder → warning → critical` hints per turn when counters trip; wire `RunContext.PlanningHints` into `<planning_constraints>`. Closes the across-step feedback loop Phase 44 (per-step repair) leaves open. New decisions entry **D-105** scopes counters to `RunContext` (not the planner struct) per D-025 concurrent-reuse contract. RFC §6.2. Deps: 83a, 44, 05. See `docs/plans/phase-83c-react-dynamic-repair-guidance.md`.
 - **83d — ReAct skills + memory injection (UNTRUSTED framing).** Render `RunContext.MemoryBlocks` and `RunContext.SkillsContext` into the system prompt as separate `llm.ChatMessage` entries with the five-line anti-prompt-injection rule list from brief 13 §2.3. Distinct `<read_only_external_memory>` / `<read_only_conversation_memory>` wrappers preserved per tier; `<skills_context>` for pre-retrieved skill bodies. Serialisation failures fail loudly via `ErrMemoryBlockUnserializable`. RFC §6.2, §6.6, §6.7. Deps: 83a, 23, 37. See `docs/plans/phase-83d-react-skills-and-memory-injection.md`.
+- **83e — ReAct reasoning channel decoupling (capture-vs-replay).** Drop `Reasoning` from `Decision_CallTool`; extend `llm.CompleteResponse` with `Reasoning string`; bifrost driver reads `BifrostChatResponse.Choices[0].Message.ReasoningDetails` — closing both the unary-path gap (today `OnReasoning` is streaming-only) and the Gemini-direct black hole (today bifrost populates `reasoning_details[]` on the message but Harbor drops it). Reasoning persists on `TrajectoryStep.ReasoningTrace`; replay is operator-controlled per agent via `PlannerConfig.ReasoningReplay` enum (`never` default for ALL models, `text` opt-in). No `provider_native` mode in V1 (Bifrost docs don't cover thinking-block round-trips). New decisions **D-106** (schema narrowing) + **D-107** (replay knob shape — two enum values, defer `provider_native`). RFC §6.2, §6.5. Deps: 45, 32, 33, 44. See `docs/plans/phase-83e-react-reasoning-channel-decoupling.md`.
 - **84 — Reflection / critique loop.** Optional per planner. Self-critique before Finish. RFC §12. Deps: 45.
 - **85 — Skills Portico provider driver.** Consume Portico-distributed skill packs via MCP; same SkillProvider interface. Deps: 37, 28.
 - **86 — Durable distributed bus driver.** NATS / Redis Streams / Postgres-as-queue behind `MessageBus`. RFC §12. Deps: 22.
