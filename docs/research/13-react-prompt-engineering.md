@@ -32,9 +32,9 @@ This brief inventories what to inherit, what to adapt for Harbor's `tool` / `_fi
 The default prompt content itself is currently:
 
 > You are Harbor's ReAct planner. Each step, choose ONE action and respond with a JSON object of the form:
->   `{"tool": "<tool name>", "args": {...}, "reasoning": "<why>"}`
+> `{"tool": "<tool name>", "args": {...}, "reasoning": "<why>"}`
 > When you have enough information to satisfy the user's goal, emit:
->   `{"tool": "_finish", "args": {"answer": "<final answer>"}, "reasoning": "<why>"}`
+> `{"tool": "_finish", "args": {"answer": "<final answer>"}, "reasoning": "<why>"}`
 > …
 
 Compact and correct, but it gives the LLM no schema discipline, no failure-recovery framing, and no anti-injection framing for memory content that will arrive once Phase 24 strategies start feeding the prompt.
@@ -70,7 +70,8 @@ Three design properties stand out:
 
 `build_messages()` at `planner/llm.py:918-1117` performs **per-turn** augmentation on top of the static prompt. The pattern is:
 
-- The planner instance keeps **failure counters** that persist across runs (no orchestrator wiring required):
+- The planner instance keeps **failure counters** that persist across runs (no orchestrator wiring required). **Harbor cannot inherit this storage location verbatim**: Harbor's `ReActPlanner` is a shared compiled artifact under the D-025 concurrent-reuse contract (AGENTS.md §5), so per-run mutable state on the planner struct is forbidden. The mechanic is preserved — the storage moves to `RunContext`. See Phase 83c + the new decision **D-105** in `docs/decisions.md` (filed alongside 83c).
+- Counters tracked by the predecessor:
   - `_finish_repair_history_count` — how many times the model emitted a finish action that failed validation.
   - `_arg_fill_repair_history_count` — how many times args failed validation.
   - `_multi_action_history_count` — how many times the model emitted multiple JSON objects.
@@ -438,7 +439,8 @@ The predecessor ships two additional system prompts: `_TRAJECTORY_SUMMARIZER_SYS
 | `parallel` opcode shape (`steps[]` + `join`) | ✅ | | Matches Phase 47's `Decision_Parallel`. |
 | `<finishing>` optional fields (`confidence`/`route`/…) marked **V2-reserved** | | ✅ | Section describes them; Decision doesn't accept them yet. |
 | `side_effects` taxonomy in `<tool_usage>` | ✅ | | Already in Harbor's `Tool` struct. |
-| Dynamic per-turn repair tiers (reminder/warning/critical) | ✅ | | Phase 83c. |
+| Dynamic per-turn repair tiers (reminder/warning/critical) — tier mechanic | ✅ | | Phase 83c. |
+| Failure-counter storage location | | ✅ | Phase 83c moves counters from the planner instance to `RunContext` per D-025. New decision **D-105**. |
 | `<additional_guidance>` injection point | ✅ | | Phase 83a (`WithSystemPromptExtra` Option + `ExtraGuidance` config key). |
 | `<planning_constraints>` injection point | ✅ | | Phase 83c (`RunContext.PlanningHints`). |
 | UNTRUSTED memory framing | ✅ | | Phase 83d. Distinct `<read_only_external_memory>` / `<read_only_conversation_memory>` wrappers preserved. |
@@ -452,7 +454,7 @@ The predecessor ships two additional system prompts: `_TRAJECTORY_SUMMARIZER_SYS
 |---|---|---|---|---|
 | 83a | `react-prompt-structured-sections` | Refactor `defaultBuilder` to assemble the 12 XML-tagged sections; add `WithSystemPromptExtra` Option and `PlannerConfig.ExtraGuidance` config key. | §6.2 | 45 |
 | 83b | `react-tool-schema-injection` | Extend `Tool` struct with `Examples []ToolExample` (tag-ranked); upgrade catalog rendering to emit `args_schema` + examples per tool. | §6.2, §6.4 | 83a, 26 |
-| 83c | `react-dynamic-repair-guidance` | Add per-planner failure counters (finish / args / multi-action); render escalating reminder/warning/critical hints per turn; wire `RunContext.PlanningHints` injection. | §6.2 | 83a, 44 |
+| 83c | `react-dynamic-repair-guidance` | Add per-run failure counters on `RunContext` (finish / args / multi-action); render escalating reminder/warning/critical hints per turn; wire `RunContext.PlanningHints` injection. New decision **D-105**. | §6.2 | 83a, 44, 05 |
 | 83d | `react-skills-and-memory-injection` | Inject `rc.Skills.Search` results + memory blocks into the prompt with `<read_only_*_memory>` UNTRUSTED framing. | §6.2, §6.6, §6.7 | 83a, 23, 37 |
 
 ## 8. Inheritance from earlier briefs

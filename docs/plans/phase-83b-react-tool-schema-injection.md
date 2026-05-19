@@ -45,7 +45,7 @@ Upgrade the `<available_tools>` section established by Phase 83a so each tool re
 - [ ] `internal/planner/react/prompt.go` gets a `renderTool(t tools.Tool, cfg ToolRenderConfig) string` helper that emits the per-tool block.
 - [ ] Tag-priority ranking: `minimal` (rank 0) > `common` (rank 1) > `edge-case` (rank 2) > untagged (rank 3). Stable sort by `(rank, originalIndex)`.
 - [ ] Default `max_examples_per_tool = 3`; configurable via `PlannerConfig.MaxToolExamplesPerTool` (defaulting to 3 when zero).
-- [ ] Existing tools that ship without examples render exactly as Phase 83a renders them (no diff in the `<available_tools>` block).
+- [ ] Existing tools that ship without examples gain a schema + side-effects block in the rendered output (this *is* a deliberate format change from Phase 83a) but **do not** require any code change at the registration site — the new fields are opt-in on `Tool`, and the renderer omits the `examples:` line entirely when `Examples` is empty. The golden fixture for a no-examples tool documents the exact rendered shape.
 - [ ] `args_schema` rendering uses `encoding/json` with `MarshalIndent(..., "", "")` (sorted keys via a stable key-sort helper; Go's `encoding/json` already emits keys deterministically for `map[string]any` since 1.21+). The output is single-line compact JSON.
 - [ ] Golden fixture extended: `internal/planner/react/testdata/golden_tools_prompt.txt` shows the rendered block for a fixture catalog of two tools (one with examples, one without).
 - [ ] Concurrent-reuse: `renderTool` is pure — no shared state. 100+ concurrent calls under `-race` test passes (extends Phase 83a's d025 suite).
