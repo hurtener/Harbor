@@ -102,16 +102,17 @@ const (
 // tree where methods/ itself is the thing under audit), so the set is
 // duplicated here and the test pins the duplication.
 var CanonicalMethods = map[string]struct{}{
-	"start":          {},
-	"cancel":         {},
-	"pause":          {},
-	"resume":         {},
-	"redirect":       {},
-	"inject_context": {},
-	"approve":        {},
-	"reject":         {},
-	"prioritize":     {},
-	"user_message":   {},
+	"start":            {},
+	"cancel":           {},
+	"pause":            {},
+	"resume":           {},
+	"redirect":         {},
+	"inject_context":   {},
+	"approve":          {},
+	"reject":           {},
+	"prioritize":       {},
+	"user_message":     {},
+	"events.subscribe": {}, // Phase 72 / D-105
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
