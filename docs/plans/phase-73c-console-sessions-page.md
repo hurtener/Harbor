@@ -90,7 +90,7 @@ brief 11 §"Open architectural questions" #10 session-share token; brief
   (the wire surface is additive — new optional fields on the existing
   type per CLAUDE.md §8).
 - Ship the SvelteKit `/console/sessions` route with two view modes (list
-  + detail), the full §4 page anatomy from `page-sessions.md` (top
+  - detail), the full §4 page anatomy from `page-sessions.md` (top
   sub-header strip; main table; right rail Session Summary + Recent
   Interventions + Recent Artifacts; bottom dock tab strip).
 - Ship `web/console/tests/sessions-page.spec.ts` Playwright spec
@@ -373,8 +373,8 @@ type ListQuery struct {
   seeds the `SessionRegistry` with two tenants × N sessions, opens an
   authenticated client (Phase 61 JWT), and (a) lists own-tenant happy
   path; (b) lists cross-tenant without `admin` → `CodeScopeMismatch`
-  + asserts audit event; (c) lists cross-tenant WITH `admin` → success
-  + asserts `audit.admin_scope_used`; (d) malformed cursor →
+  - asserts audit event; (c) lists cross-tenant WITH `admin` → success
+  - asserts `audit.admin_scope_used`; (d) malformed cursor →
   `CodeInvalidRequest`; (e) N≥10 concurrent SSE subscribers on the
   same session's events fan in while `sessions.list` is hit in
   parallel — no cross-talk, baseline goroutine restored after teardown.

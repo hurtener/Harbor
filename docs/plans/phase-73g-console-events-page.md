@@ -126,7 +126,7 @@ Console-local / Phase-72a / Phase-73 (artifacts.get) boundary.
 - A Go-side integration test
   `test/integration/events_page_test.go` wires the real
   `events.EventBus` + Phase 72a's `events.subscribe` + `events.aggregate`
-  + the shipped `artifacts.get` + the Phase 60 transport edge, and
+  - the shipped `artifacts.get` + the Phase 60 transport edge, and
   asserts the sparkline aggregation is correct over deliberate event
   emission (count and per-type bucket totals match what was
   published). Identity propagation is the failure mode; the test
@@ -504,7 +504,7 @@ the Search box is Console-local substring match over the loaded page.
   fire any Protocol method. RFC §7, D-029, D-061.
 - **Saved-view chip (events)** — a Console-local chip on the Console
   Events page that captures a named filter combination (event types
-  + identity facets + window). Persisted in the Phase 72h Console DB
+  - identity facets + window). Persisted in the Phase 72h Console DB
   `saved_filters` table; never round-trips through the runtime
   (D-061). Distinct from a Protocol `events.Filter` shape — the chip
   is the operator's named pointer at a particular `events.Filter`
