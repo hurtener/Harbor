@@ -236,6 +236,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Governance** — Harbor's middleware subsystem between the Runtime and the `LLMClient` driver. Owns identity-scoped policies: cost accumulators, ceilings, rate limits, MaxTokens, and (post-V1) key rotation, model swap, failover chains, circuit breakers, caching, PII redaction. The `LLMClient` interface stays one method; bifrost is unaware of identity scopes. RFC §6.15.
 
+**`governance.posture`** — Protocol method (read-only) returning the runtime's active governance configuration as a wire-friendly projection of `Governance.IdentityTiers` (D-081): per-tier `BudgetCeilingUSD` + `RateLimit{Capacity, RefillTokens, RefillIntervalMS}` + `MaxTokens`, plus the `DefaultTier` selector and the caller's `ResolvedTier`. Identity-mandatory; cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). The Console's Settings page Governance Posture card is the first UI consumer. RFC §6.15, RFC §7, Phase 72g.
+
+**`GovernancePosture`** — Wire-type response from `governance.posture` (`GovernancePostureResponse` in `internal/protocol/types/governance.go`). Carries `DefaultTier string`, `ResolvedTier string`, `IdentityTiers map[string]IdentityTierView`. Single source of truth per CLAUDE.md §8 — no shadow type in Console code. Phase 72g.
+
 **GCPolicy** — Configuration knob group for the `SessionRegistry`'s GC sweeper. Defaults: `IdleTTL=24h, HardCap=720h (30d), SweepInterval=15m`. Carries the `RunningProbe` seam through which `TaskRegistry` (Phase 20) gates "never reap a session with a RUNNING task." Fields are not hot-reloadable in V1. RFC §6.9.
 
 **`GroupCompletion`** — typed wake-up payload delivered by `WatchGroup` (and as the `task.group_resolved` / `task.group_cancelled` bus-event payload). Carries the group's terminal status (`GroupCompleted` | `GroupCancelled`), resolve timestamp, cancel reason (when cancelled), and a `MemberOutcome` per group member. Heavy results MUST already be substituted with `ArtifactRef`s upstream (D-022, D-026); the payload is ref-shaped, not byte-bound. The same canonical shape across consumers (Console, durable-event-log, sidecar status emitters, planner runtime). RFC §6.8, Phase 21.
@@ -307,6 +311,10 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Live Runtime** — the Console page that is the present-tense interactive execution workbench: initiate, observe, and steer live Harbor executions through the same Protocol surfaces used in production. The chat/testing interface is one panel among many (live topology, planner steps, tool calls, streaming response, event stream, runtime controls). It is the spiritual replacement of the predecessor's Playground, upgraded. Distinct from **Sessions**, which are the past-and-active *durable execution records* (replay / continue / clone / convert-to-eval) — Live Runtime is present-tense and interactive, Sessions are investigative. RFC §7, D-062.
 
 **LLMClient** — Harbor's interface for talking to an LLM provider. **One method**: `Complete(ctx, req) (resp, error)`. Tool dispatch is runtime-side. The single V1 driver wraps `bifrost`. RFC §6.5.
+
+**`llm.posture`** — Protocol method (read-only) returning the runtime's bound LLM provider posture: provider name, model id, region/endpoint, and a `MockMode` boolean. `MockMode == true` iff the runtime booted with `HARBOR_DEV_ALLOW_MOCK=1` (D-089) — the structural signal the Console's LLM-Provider Posture card renders alongside the canonical `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` banner. Identity-mandatory; cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). Phase 72g.
+
+**`LLMPosture`** — Wire-type response from `llm.posture` (`LLMPostureResponse` in `internal/protocol/types/llm.go`). Carries `Provider string`, `Model string`, `Region string`, `MockMode bool`. Single source of truth per CLAUDE.md §8. The Console renders this verbatim; a Console implementation that hides the banner when `MockMode == true` is a §13 forbidden-practice violation. Phase 72g.
 
 ## M
 
