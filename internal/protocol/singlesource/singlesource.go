@@ -119,6 +119,11 @@ var CanonicalMethods = map[string]struct{}{
 	"search.tasks":     {}, // Phase 72c / D-108
 	"search.events":    {}, // Phase 72c / D-108
 	"search.artifacts": {}, // Phase 72c / D-108
+	"runtime.info":     {}, // Phase 72f / D-111
+	"runtime.health":   {}, // Phase 72f / D-111
+	"runtime.counters": {}, // Phase 72f / D-111
+	"runtime.drivers":  {}, // Phase 72f / D-111
+	"metrics.snapshot": {}, // Phase 72f / D-111
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -161,6 +166,20 @@ var CanonicalWireTypes = map[string]string{
 	"SearchFilter":      "types",
 	"SearchFacet":       "types",
 	"SearchArtifactRef": "types",
+	// Phase 72f (D-111) runtime-posture wire types — all live in
+	// internal/protocol/types (internal/protocol/types/posture.go).
+	"RuntimeInfoRequest": "types",
+	"RuntimeInfo":        "types",
+	"SubsystemHealth":    "types",
+	"RuntimeHealth":      "types",
+	"RuntimeCounters":    "types",
+	"SubsystemDriver":    "types",
+	"RuntimeDrivers":     "types",
+	"NamedCounter":       "types",
+	"HistogramBucket":    "types",
+	"NamedHistogram":     "types",
+	"NamedGauge":         "types",
+	"MetricsSnapshot":    "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

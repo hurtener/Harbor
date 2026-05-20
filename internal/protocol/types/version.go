@@ -364,6 +364,16 @@ const (
 	// `events.aggregate` time-bucket method. Shipped in Wave 13
 	// (Phase 72 / 72a).
 	CapEventsSubscribe Capability = "events_subscribe"
+	// CapRuntimePosture — the runtime-posture surface (RFC §5.3, §6.15,
+	// §7): the five read-only `runtime.*` / `metrics.*` methods
+	// (`runtime.info`, `runtime.health`, `runtime.counters`,
+	// `runtime.drivers`, `metrics.snapshot`). Shipped in Wave 13
+	// (Phase 72f / D-111). A Protocol client negotiates "does this
+	// Runtime advertise the posture surface?" via
+	// `VersionHandshake.Accepts(CapRuntimePosture)`. The addition is
+	// backward-compatible (RFC §5.3 minor-class change) — no version
+	// bump.
+	CapRuntimePosture Capability = "runtime_posture"
 )
 
 // canonicalCapabilities is the registered set — a fixed package-level
@@ -373,6 +383,7 @@ const (
 var canonicalCapabilities = map[Capability]struct{}{
 	CapTaskControl:     {},
 	CapEventsSubscribe: {},
+	CapRuntimePosture:  {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

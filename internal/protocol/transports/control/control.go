@@ -90,13 +90,20 @@ const maxBodyBytes = 64 << 10
 // handler routes the five `search.*` methods to the search dispatcher
 // instead of the task-control ControlSurface. The same handler still
 // serves all the Phase 54 task-control methods unchanged.
+//
+// Phase 72f (D-111): when constructed with `WithPostureSurface`, the
+// handler routes the five `runtime.*` / `metrics.*` posture methods to
+// the posture dispatcher. Like the search surface, this is additive —
+// handlers built without it reject posture calls with CodeUnknownMethod
+// (the 404 → SKIP path the smoke script relies on).
 type Handler struct {
-	surface       *protocol.ControlSurface
-	searchSurface SearchSurface
-	logger        *slog.Logger
-	bus           events.EventBus // nil ⇒ impersonation accepted-path refused
-	redactor      audit.Redactor  // nil ⇒ impersonation accepted-path refused
-	now           func() time.Time
+	surface        *protocol.ControlSurface
+	searchSurface  SearchSurface
+	postureSurface PostureSurface
+	logger         *slog.Logger
+	bus            events.EventBus // nil ⇒ impersonation accepted-path refused
+	redactor       audit.Redactor  // nil ⇒ impersonation accepted-path refused
+	now            func() time.Time
 }
 
 // SearchSurface is the narrow contract the control transport calls into
@@ -111,6 +118,21 @@ type SearchSurface interface {
 	// Dispatch handles one of the five canonical search.* methods.
 	// Returns either a *types.SearchResponse or a *errors.Error.
 	Dispatch(ctx context.Context, method methods.Method, req *types.SearchRequest) (*types.SearchResponse, error)
+}
+
+// PostureSurface is the narrow contract the control transport calls
+// into for the five `runtime.*` / `metrics.*` posture Protocol methods
+// (Phase 72f / D-111). The production implementation is
+// *protocol.PostureSurface; tests inject a deterministic surface. A nil
+// surface means the handler rejects posture calls with
+// CodeUnknownMethod — preserving the 404 → SKIP path the smoke script
+// relies on while the surface is being wired through.
+type PostureSurface interface {
+	// Dispatch handles one of the five canonical posture methods.
+	// Returns either a *types.RuntimeInfo / *types.RuntimeHealth /
+	// *types.RuntimeCounters / *types.RuntimeDrivers /
+	// *types.MetricsSnapshot, or a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
 // Option configures a Handler at construction time.
@@ -181,6 +203,18 @@ func WithSearchSurface(s SearchSurface) Option {
 	}
 }
 
+// WithPostureSurface wires the Phase 72f runtime-posture dispatcher
+// into the control handler. When supplied, the handler routes the five
+// `runtime.*` / `metrics.*` posture methods to s.Dispatch instead of
+// falling through to the task-control ControlSurface. Optional —
+// handlers built without it reject posture calls with
+// CodeUnknownMethod (the 404 → SKIP path the smoke script relies on).
+func WithPostureSurface(s PostureSurface) Option {
+	return func(h *Handler) {
+		h.postureSurface = s
+	}
+}
+
 // NewHandler builds the Protocol REST/JSON control transport over the
 // transport-agnostic ControlSurface. The surface is mandatory — a nil
 // fails loud with ErrMisconfigured rather than building a handler that
@@ -246,6 +280,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveSearch(w, r, method)
+		return
+	}
+
+	// Phase 72f (D-111): the five `runtime.*` / `metrics.*` posture
+	// methods route through a separate PostureSurface — they're not
+	// steering controls, they don't reach the task registry, and their
+	// wire shape is `*types.RuntimeInfoRequest`. If no PostureSurface
+	// is wired, fall through to the unknown-method path so the smoke
+	// `skip_if_404` branch fires.
+	if methods.IsPostureMethod(method) {
+		if h.postureSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: posture surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.servePosture(w, r, method)
 		return
 	}
 

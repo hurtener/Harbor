@@ -604,9 +604,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
-	// Phase 72c search cluster five = 17.
-	if len(got) != 17 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 17 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five)", len(got))
+	// Phase 72c search cluster five + Phase 72f posture cluster five = 22.
+	if len(got) != 22 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 22 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:           {},
@@ -626,6 +626,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSearchTasks:     {},
 		methods.MethodSearchEvents:    {},
 		methods.MethodSearchArtifacts: {},
+		methods.MethodRuntimeInfo:     {},
+		methods.MethodRuntimeHealth:   {},
+		methods.MethodRuntimeCounters: {},
+		methods.MethodRuntimeDrivers:  {},
+		methods.MethodMetricsSnapshot: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -711,6 +716,15 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// rather than silent.
 			if methods.IsSearchMethod(m) {
 				t.Skip("phase-72c: search.* methods exercised by their per-package conformance + integration tests; conformance-suite scenario lands in Phase 80")
+			}
+			// Phase 72f (D-111): the five `runtime.*` / `metrics.*`
+			// posture methods are dispatched by PostureSurface, not
+			// ControlSurface. Their happy-path is exercised by the
+			// internal/protocol posture_test.go + the runtime-posture
+			// integration test; the conformance-suite scenario lands
+			// in a later phase (same posture as the search cluster).
+			if methods.IsPostureMethod(m) {
+				t.Skip("phase-72f: runtime.* / metrics.* posture methods exercised by internal/protocol posture tests + test/integration/runtime_posture_test.go; conformance-suite scenario lands later")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -858,6 +872,13 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// conformance suite picks them up in Phase 80.
 			if methods.IsSearchMethod(m) {
 				t.Skip("phase-72c: search.* malformed-request paths covered by per-package conformance; conformance-suite scenario lands in Phase 80")
+			}
+			// Phase 72f (D-111): the five posture methods are
+			// dispatched by PostureSurface. Their malformed-request
+			// rejection is covered in internal/protocol/posture_test.go;
+			// the conformance-suite scenario lands later.
+			if methods.IsPostureMethod(m) {
+				t.Skip("phase-72f: runtime.* / metrics.* posture malformed-request paths covered by internal/protocol posture tests; conformance-suite scenario lands later")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
@@ -1292,16 +1313,18 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// Phase 54 task-control + Wave 13 streaming-events = 2 capabilities
-	// at Protocol 0.1.0. (The capability constants live in
-	// internal/protocol/types/version.go; a new capability is a new
-	// constant + a new entry in canonicalCapabilities.)
-	if len(caps) != 2 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 2 (CapTaskControl + CapEventsSubscribe) at Protocol 0.1.0", len(caps))
+	// Phase 54 task-control + Wave 13 streaming-events + Phase 72f
+	// runtime-posture = 3 capabilities at Protocol 0.1.0. (The
+	// capability constants live in internal/protocol/types/version.go;
+	// a new capability is a new constant + a new entry in
+	// canonicalCapabilities.)
+	if len(caps) != 3 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 3 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
 		types.CapTaskControl:     {},
 		types.CapEventsSubscribe: {},
+		types.CapRuntimePosture:  {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {
@@ -1321,6 +1344,9 @@ func runVersionHandshake(t *testing.T) {
 	}
 	if !h.Accepts(types.CapEventsSubscribe) {
 		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the Wave 13 streaming-events surface (Phase 72 / 72a) must be advertised")
+	}
+	if !h.Accepts(types.CapRuntimePosture) {
+		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the Wave 13 runtime-posture surface (Phase 72f) must be advertised")
 	}
 
 	// The deprecation registry is empty at 0.1.0 — nothing has been

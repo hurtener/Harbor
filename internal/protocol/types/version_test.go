@@ -347,6 +347,32 @@ func TestCapabilities_DeterministicAndValid(t *testing.T) {
 	}
 }
 
+// TestCapRuntimePosture_Registered pins the Phase 72f (D-111) posture
+// capability: CapRuntimePosture is registered, IsValidCapability
+// returns true, Capabilities() includes it, and the current handshake
+// advertises it so a Protocol client can negotiate the surface.
+func TestCapRuntimePosture_Registered(t *testing.T) {
+	if string(types.CapRuntimePosture) != "runtime_posture" {
+		t.Fatalf("CapRuntimePosture wire string = %q, want %q",
+			string(types.CapRuntimePosture), "runtime_posture")
+	}
+	if !types.IsValidCapability(types.CapRuntimePosture) {
+		t.Error("IsValidCapability(CapRuntimePosture) = false, want true")
+	}
+	var found bool
+	for _, c := range types.Capabilities() {
+		if c == types.CapRuntimePosture {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Capabilities() = %v, missing CapRuntimePosture — the Phase 72f surface must be advertised", types.Capabilities())
+	}
+	if !types.CurrentHandshake().Accepts(types.CapRuntimePosture) {
+		t.Error("CurrentHandshake().Accepts(CapRuntimePosture) = false, want true")
+	}
+}
+
 func TestVersionHandshake_CurrentAndAccepts(t *testing.T) {
 	h := types.CurrentHandshake()
 	if h.ProtocolVersion != types.ProtocolVersion {
