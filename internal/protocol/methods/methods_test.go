@@ -40,15 +40,17 @@ var wantMethods = []methods.Method{
 	methods.MethodGovernancePosture,
 	methods.MethodLLMPosture,
 	methods.MethodPauseList,
+	methods.MethodTopologySnapshot,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
-	// Phase 72g posture pair two + Phase 72e pause-snapshot one = 25.
-	if len(got) != 25 {
-		t.Fatalf("Methods() returned %d methods, want 25", len(got))
+	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
+	// 74 topology.snapshot one = 26.
+	if len(got) != 26 {
+		t.Fatalf("Methods() returned %d methods, want 26", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -81,20 +83,20 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// `search.<index>` shape — both match the canonical event-type
 	// naming convention (`tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
-		methods.MethodStart:           "start",
-		methods.MethodCancel:          "cancel",
-		methods.MethodPause:           "pause",
-		methods.MethodResume:          "resume",
-		methods.MethodRedirect:        "redirect",
-		methods.MethodInjectContext:   "inject_context",
-		methods.MethodApprove:         "approve",
-		methods.MethodReject:          "reject",
-		methods.MethodPrioritize:      "prioritize",
-		methods.MethodUserMessage:     "user_message",
-		methods.MethodEventsSubscribe: "events.subscribe",
-		methods.MethodEventsAggregate: "events.aggregate",
-		methods.MethodSearchQuery:     "search.query",
-		methods.MethodSearchSessions:  "search.sessions",
+		methods.MethodStart:             "start",
+		methods.MethodCancel:            "cancel",
+		methods.MethodPause:             "pause",
+		methods.MethodResume:            "resume",
+		methods.MethodRedirect:          "redirect",
+		methods.MethodInjectContext:     "inject_context",
+		methods.MethodApprove:           "approve",
+		methods.MethodReject:            "reject",
+		methods.MethodPrioritize:        "prioritize",
+		methods.MethodUserMessage:       "user_message",
+		methods.MethodEventsSubscribe:   "events.subscribe",
+		methods.MethodEventsAggregate:   "events.aggregate",
+		methods.MethodSearchQuery:       "search.query",
+		methods.MethodSearchSessions:    "search.sessions",
 		methods.MethodSearchTasks:       "search.tasks",
 		methods.MethodSearchEvents:      "search.events",
 		methods.MethodSearchArtifacts:   "search.artifacts",
@@ -106,6 +108,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodGovernancePosture: "governance.posture",
 		methods.MethodLLMPosture:        "llm.posture",
 		methods.MethodPauseList:         "pause.list",
+		methods.MethodTopologySnapshot:  "topology.snapshot",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -154,13 +157,18 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodPauseList) {
 		t.Error("IsControlMethod(pause.list) = true, want false — pause.list routes through its own snapshot handler")
 	}
-	// Every non-start, non-streaming, non-search, non-posture, non-pause
-	// canonical method IS a control method.
+	// Phase 74 (D-114): topology.snapshot is a read-only projection
+	// method, NOT a steering control.
+	if methods.IsControlMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsControlMethod(topology.snapshot) = true, want false — topology.snapshot is a read-only projection method")
+	}
+	// Every non-start, non-streaming, non-search, non-posture, non-pause,
+	// non-topology canonical method IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
-		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) {
+		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) || methods.IsTopologyMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
@@ -232,7 +240,7 @@ func TestIsSearchMethod(t *testing.T) {
 		}
 	}
 	// Non-search methods (start + the nine steering controls + streaming
-	// + posture + unknown).
+	// + posture + topology + unknown).
 	for _, m := range []methods.Method{
 		methods.MethodStart, methods.MethodCancel, methods.MethodPause,
 		methods.MethodResume, methods.MethodRedirect, methods.MethodInjectContext,
@@ -240,7 +248,8 @@ func TestIsSearchMethod(t *testing.T) {
 		methods.MethodUserMessage, methods.MethodEventsSubscribe,
 		methods.MethodEventsAggregate, methods.MethodRuntimeInfo,
 		methods.MethodMetricsSnapshot, methods.MethodGovernancePosture,
-		methods.MethodLLMPosture, methods.Method("bogus"), "",
+		methods.MethodLLMPosture, methods.MethodTopologySnapshot,
+		methods.Method("bogus"), "",
 	} {
 		if methods.IsSearchMethod(m) {
 			t.Errorf("IsSearchMethod(%q) = true, want false", m)
@@ -287,6 +296,45 @@ func TestIsPostureMethod(t *testing.T) {
 	} {
 		if methods.IsPostureMethod(m) {
 			t.Errorf("IsPostureMethod(%q) = true, want false", m)
+		}
+	}
+}
+
+// TestIsTopologyMethod pins the Phase 74 (D-114) topology predicate —
+// topology.snapshot is the closed set; it is NOT a control / streaming
+// / search method, and IsValidMethod recognises its wire string.
+func TestIsTopologyMethod(t *testing.T) {
+	if string(methods.MethodTopologySnapshot) != "topology.snapshot" {
+		t.Fatalf("MethodTopologySnapshot wire string = %q, want %q",
+			string(methods.MethodTopologySnapshot), "topology.snapshot")
+	}
+	if !methods.IsTopologyMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsTopologyMethod(topology.snapshot) = false, want true")
+	}
+	if !methods.IsValidMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsValidMethod(topology.snapshot) = false, want true")
+	}
+	// Wire-string stability — a third-party Console computes the
+	// canonical name as a literal and expects parity.
+	if !methods.IsValidMethod(methods.Method("topology.snapshot")) {
+		t.Error(`IsValidMethod(Method("topology.snapshot")) = false, want true — wire string stability broken`)
+	}
+	if methods.IsControlMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsControlMethod(topology.snapshot) = true, want false")
+	}
+	if methods.IsStreamingEventsMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsStreamingEventsMethod(topology.snapshot) = true, want false")
+	}
+	if methods.IsSearchMethod(methods.MethodTopologySnapshot) {
+		t.Error("IsSearchMethod(topology.snapshot) = true, want false")
+	}
+	// Non-topology methods.
+	for _, m := range []methods.Method{
+		methods.MethodStart, methods.MethodCancel, methods.MethodEventsSubscribe,
+		methods.MethodSearchQuery, methods.Method("bogus"), "",
+	} {
+		if methods.IsTopologyMethod(m) {
+			t.Errorf("IsTopologyMethod(%q) = true, want false", m)
 		}
 	}
 }

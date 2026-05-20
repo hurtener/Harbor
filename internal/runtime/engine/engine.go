@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/messages"
 )
 
@@ -51,24 +52,36 @@ type Engine interface {
 	Cancel(ctx context.Context, runID string) (bool, error)
 	Run(ctx context.Context) error
 	Stop(ctx context.Context) error
+	// Topology builds a canonical types.TopologyProjection of the
+	// engine's static node graph + live per-edge queue depth (Phase 74
+	// / D-114). Identity-mandatory; pure read; safe for N concurrent
+	// callers (D-025). See topology.go.
+	Topology(ctx context.Context) (types.TopologyProjection, error)
 }
 
 // engine is the in-memory Engine implementation. All exported
 // methods are concurrent-safe.
 type engine struct {
-	cfg       engineConfig
-	nodes     map[string]Node
-	adjs      []Adjacency
-	inlets    []string // sorted node names with no parent
-	outlets   []string // sorted node names with no child
+	cfg     engineConfig
+	nodes   map[string]Node
+	adjs    []Adjacency
+	inlets  []string // sorted node names with no parent
+	outlets []string // sorted node names with no child
+
+	// engineID is a process-unique identifier minted once at New. It
+	// is immutable for the engine's lifetime and appears on every
+	// TopologyProjection (Phase 74 / D-114). A compiled artifact's
+	// id is set-once at construction — never mutated — so it is
+	// concurrent-reuse-safe (D-025) without synchronisation.
+	engineID string
 
 	// channels[from][to] is the bounded buffer between two adjacent
 	// nodes. inletChans[name] is the ingress channel for an inlet
 	// (where Emit lands). The engine writes to outlet from the
 	// outlet nodes' workers.
-	channels    map[string]map[string]chan messages.Envelope
-	inletChans  map[string]chan messages.Envelope
-	outletChan  chan messages.Envelope // dispatcher reads here
+	channels   map[string]map[string]chan messages.Envelope
+	inletChans map[string]chan messages.Envelope
+	outletChan chan messages.Envelope // dispatcher reads here
 
 	dispatcher *dispatcher
 	logger     *slog.Logger // optional; nil-safe via slog.New(slog.DiscardHandler) when unset
@@ -157,15 +170,16 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 	}
 
 	e := &engine{
-		cfg:           cfg,
-		nodes:         nodes,
-		adjs:          adjacencies,
-		inlets:        inletNodes(adjacencies, nodes),
-		outlets:       outletNodes(adjacencies, nodes),
-		channels:      make(map[string]map[string]chan messages.Envelope),
-		inletChans:    make(map[string]chan messages.Envelope),
-		outletChan:    make(chan messages.Envelope, cfg.queueSize),
-		logger:        slog.Default(),
+		cfg:             cfg,
+		engineID:        newEngineID(),
+		nodes:           nodes,
+		adjs:            adjacencies,
+		inlets:          inletNodes(adjacencies, nodes),
+		outlets:         outletNodes(adjacencies, nodes),
+		channels:        make(map[string]map[string]chan messages.Envelope),
+		inletChans:      make(map[string]chan messages.Envelope),
+		outletChan:      make(chan messages.Envelope, cfg.queueSize),
+		logger:          slog.Default(),
 		capacities:      make(map[string]*runCapacity),
 		cancellations:   make(map[string]*runCancellation),
 		cancelObservers: make(map[string][]*cancelObserver),
@@ -199,7 +213,46 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 	}
 
 	e.dispatcher = newDispatcher(e.outletChan, cfg.queueSize, e.signalDrainedFrame)
+
+	// Phase 74 (D-114): construction-time topology.changed emit. When
+	// WithEventBus wired a bus, publish one event carrying the initial
+	// projection so a Protocol consumer that subscribed before the
+	// engine existed catches the graph the moment it is built. A nil
+	// bus (the Phase 02 default) is a no-op — every existing engine
+	// test that never wires a bus sees zero behavioural change.
+	//
+	// The emit fails the constructor loud if the bus rejects the event
+	// (a wiring bug the operator must see; CLAUDE.md §5 fail-loudly).
+	if cfg.eventBus != nil {
+		if err := e.publishTopologyChanged(engineSystemCtx(e.engineID)); err != nil {
+			return nil, fmt.Errorf("engine: construction-time topology emit: %w", err)
+		}
+	}
 	return e, nil
+}
+
+// engineSystemCtx returns a context carrying the engine's synthetic
+// system identity. The construction-time topology.changed emit happens
+// outside any request ctx — there is no (tenant, user, session) to
+// inherit — so the engine emits under an explicit, complete, non-empty
+// system triple (`system` / `engine` / <engineID>). This is NOT an
+// identity downgrade (CLAUDE.md §13): the triple is fully populated;
+// it simply names the runtime itself as the principal for an
+// engine-scoped, run-agnostic event. The engineID in the session slot
+// keeps the synthetic identity unique per engine.
+func engineSystemCtx(engineID string) context.Context {
+	ctx, err := identity.With(context.Background(), identity.Identity{
+		TenantID:  "system",
+		UserID:    "engine",
+		SessionID: engineID,
+	})
+	if err != nil {
+		// identity.With only errors on an incomplete triple; the
+		// literal above is complete by construction, so this is
+		// unreachable. Return a background ctx rather than panic.
+		return context.Background()
+	}
+	return ctx
 }
 
 // isOutletOnly reports whether a node appears only as a To target

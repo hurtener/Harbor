@@ -403,6 +403,17 @@ func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error)
 		}
 		return &sr, nil
 	}
+	// Phase 74 (D-114): `topology.snapshot` carries a flat
+	// TopologySnapshotRequest (just the identity scope) — neither a
+	// StartRequest nor a ControlRequest.
+	if methods.IsTopologyMethod(method) {
+		var tr types.TopologySnapshotRequest
+		if err := json.Unmarshal(body, &tr); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: request body is not a valid TopologySnapshotRequest", string(method))
+		}
+		return &tr, nil
+	}
 	var cr types.ControlRequest
 	if err := json.Unmarshal(body, &cr); err != nil {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
@@ -463,6 +474,29 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 		bodyScope = v.Identity
 	case *types.ControlRequest:
 		bodyScope = v.Identity
+	case *types.TopologySnapshotRequest:
+		// Phase 74 (D-114): a topology.snapshot body carries a flat
+		// IdentityScope. The body-vs-JWT match still applies — EXCEPT
+		// the cross-tenant case: a topology.snapshot caller MAY name a
+		// tenant other than its JWT's when it holds the admin scope
+		// (the Dispatch-side D-079 gate verifies the scope). We
+		// therefore backfill an empty body but do NOT reject a
+		// non-matching tenant here — Dispatch's admin gate owns that
+		// decision. User / Session still must match the JWT (a topology
+		// snapshot is not an impersonation surface).
+		bodyScope = v.Identity
+		if bodyScope.Tenant == "" && bodyScope.User == "" && bodyScope.Session == "" {
+			bodyScope.Tenant = authed.TenantID
+			bodyScope.User = authed.UserID
+			bodyScope.Session = authed.SessionID
+			v.Identity = bodyScope
+			return nil
+		}
+		if bodyScope.User != authed.UserID || bodyScope.Session != authed.SessionID {
+			return protoerrors.Newf(protoerrors.CodeIdentityRequired,
+				"body identity scope does not match the verified JWT identity")
+		}
+		return nil
 	default:
 		return nil
 	}
