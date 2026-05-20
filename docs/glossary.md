@@ -250,6 +250,24 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Flows (Console page)** — the Console page that surfaces engine graphs, scoped to the graph-family planners (Graph / Workflow / Deterministic). Not a new runtime subsystem — a "Flow" here *is* an `internal/runtime/engine` node graph; the page is a view over it. V1 scope is read / run / inspect-run-history (a pure lens); authoring / versioning / import-export is post-V1 and is the part that may need a real subsystem. Distinct from `Flow` (the runtime DAG type). RFC §7, D-063.
 
+**`flow.Registry`** — the runtime subsystem (Phase 73i, `internal/runtime/flow/registry.go`) that is the source-of-truth for registered graph-family flows + their bounded per-flow run-history ring. A flow registers a `Definition` + descriptive `Metadata` (owner / version / planner family / source reference); the run loop records each invocation as a `RunRecord`. The Console Flows-page `Catalog` projects the wire shapes from it. Not a test stub — a real runtime artifact, safe for N concurrent callers (RWMutex-guarded). RFC §6.1, D-117.
+
+**`flows.list`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/list`) returning the paginated catalog of registered graph-family flows with aggregate run metrics (runs-in-window, p50/p95 latency, success rate, last run, per-flow `Budget` per D-023). Identity-mandatory; a cross-tenant filter requires `auth.ScopeAdmin` (D-079). RFC §5.2, §6.1, §7, D-117.
+
+**`flows.describe`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/describe`) returning a single flow's full engine-graph description: nodes + edges + per-node descriptor + per-node `FlowNodePolicy` + a string source reference (Go path or YAML descriptor per D-023 — never executable code) + live Budget consumption. Identity-mandatory; an unknown flow id returns `CodeNotFound`. RFC §5.2, §6.1, §7, D-117.
+
+**`flows.runs.list`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/runs/list`) returning a flow's paginated run history (per-run status / trigger / timing / cost / identity). Identity-mandatory; a cross-tenant filter requires `auth.ScopeAdmin` (D-079). RFC §5.2, §6.1, §7, D-117.
+
+**`flows.runs.describe`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/runs/describe`) returning a single flow run's per-node execution timeline + final-output reference. Heavy outputs are shipped by-reference via `FlowArtifactRef` per D-026 — never inline bytes. Identity-mandatory; an unknown run id returns `CodeNotFound`. RFC §5.2, §6.1, §7, D-117.
+
+**`flows.run`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/run`) invoking a one-shot run of a registered flow. The ONLY mutating Flows-page method; gated on the verified `auth.ScopeAdmin` claim (D-079 closed two-scope set — no new scope minted). A claimless request is rejected `403` (`CodeScopeMismatch`). RFC §5.2, §6.1, §7, D-117.
+
+**`flows.metrics`** — canonical Protocol method (Phase 73i, route `POST /v1/flows/metrics`) returning a flow's time-bucketed sparkline aggregates (runs-per-bucket, p95 latency, success rate, cost, budget consumption) over a window. Read-only; identity-mandatory. RFC §5.2, §6.1, §7, D-117.
+
+**`FlowDescription`** — Phase 73i Protocol wire type (`internal/protocol/types/flows.go`) — the `flows.describe` payload: the catalog `Flow` row + the engine-graph `Nodes` / `Edges` set + a string `Source` reference + live `FlowBudgetConsumption`. Deterministic sort: nodes by id, edges by `(From, To)`. RFC §5.2, §6.1, D-117.
+
+**`FlowRunDescription`** — Phase 73i Protocol wire type (`internal/protocol/types/flows.go`) — the `flows.runs.describe` payload: the `FlowRun` row + the per-node `FlowNodeRunState` timeline + either an inline `OutputPreview` or a by-reference `FlowArtifactRef` (`OutputRef`) when the run's final output exceeded the heavy-content threshold (D-026). RFC §5.2, §6.1, D-117.
+
 **Failover chain** — Operator-defined sequence of providers tried in order when the primary fails or hits its ceiling. Orchestrated by Harbor's Governance subsystem; audited per hop; distinct from bifrost's per-request `Fallbacks` field. Post-V1, phase 93. RFC §6.15.
 
 **`FailFast`** — `TaskGroup` flag (Phase 21): when true, the first member task that transitions to `StatusFailed` cancels the remaining non-terminal members AND transitions the group to `GroupCancelled`. Cancel reason is derived from the failing member's error code (`fail-fast:<code>` or `fail-fast` when no code is set). RFC §6.8, brief 05 §4.

@@ -619,9 +619,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
-	// Phase 73f tools cluster seven = 51.
-	if len(got) != 51 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 51 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven)", len(got))
+	// Phase 73f tools cluster seven + Phase 73i flows-page six = 57.
+	if len(got) != 57 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 57 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -677,6 +677,13 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodToolsContentStats:      {},
 		methods.MethodToolsSetApprovalPolicy: {},
 		methods.MethodToolsRevokeOAuth:       {},
+
+		methods.MethodFlowsList:         {},
+		methods.MethodFlowsDescribe:     {},
+		methods.MethodFlowsRunsList:     {},
+		methods.MethodFlowsRunsDescribe: {},
+		methods.MethodFlowsRun:          {},
+		methods.MethodFlowsMetrics:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -841,6 +848,19 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// posture / pause / topology clusters above.
 			if methods.IsToolsMethod(m) {
 				t.Skip("phase-73f: tools.* methods exercised by internal/tools/protocol tests + stream tools_handler tests + test/integration/tools_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73i (D-117): the six `flows.*` methods route through
+			// the Console Flows-page handler (POST /v1/flows/*), not the
+			// REST ControlSurface — they need a flowprotocol.Surface the
+			// conformance Stack does not wire. Their happy-paths +
+			// failure modes are exercised by the flows_handler unit
+			// tests, the flow/protocol surface tests, the concurrent-
+			// reuse test, and test/integration/flows_page_test.go (real
+			// registry + real bus + real wire transport). The
+			// conformance-suite scenario lands with the Phase 80 surface
+			// extension — same posture as the search / pause clusters.
+			if methods.IsFlowsMethod(m) {
+				t.Skip("phase-73i: flows.* methods exercised by their handler + surface unit tests + test/integration/flows_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)

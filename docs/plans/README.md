@@ -102,6 +102,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
+| 73i| Console Flows page (Protocol + UI)            | protocol+web/console | §5.2, §6.1, §7 | 73, 75, 26a        | 85%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
 | 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Pending  |
@@ -841,6 +842,18 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Unit (`internal/memory/protocol` — `list_test.go` / `get_test.go` / `health_test.go` / `leak_internal_test.go` / `concurrent_reuse_test.go`; `internal/protocol/transports/stream/memory_handler_test.go`) + integration (`test/integration/memory_page_test.go` — real `MemoryStore` + real transport + real ES256 auth + real artifact store + real events bus; happy path, cross-tenant reject, identity-required fail-loud with the D-033 bus assertion, D-026 heavy-value round-trip, N≥10 two-tenant concurrency stress, all `-race`) + Console-side Vitest (`saved_filters_memory.spec.ts`, `protocol-memory.spec.ts`) + Playwright (`memory-page.spec.ts`) + smoke (`scripts/smoke/phase-73j.sh`).
 **Deps.** 23, 24, 25, 60, 61, 72a, 72h, 73 (artifacts.get), 75 (all shipped or same-wave).
 **Plan.** See `docs/plans/phase-73j-console-memory-page.md` (shipped — D-118).
+
+### 73i — Console Flows page (Protocol + UI) (RFC §5.2, §6.1, §7)
+
+**Goal.** Ship the Console Flows page as a single Wave 13 Stage-2.1 phase: six NEW `flows.*` Protocol methods (`flows.list` with aggregate metrics, `flows.describe` engine-graph payload, `flows.runs.list`, `flows.runs.describe`, `flows.run`, `flows.metrics`) + the read-only Flows-page UI (catalog table + Flow Metrics card + the shared read-only engine graph canvas + per-flow Budget meter + run-history table + selected-run summary panel) + the per-page Playwright spec. Authoring is OUT of V1 per D-063 — the page is view-only with `flows.run` as the only mutating action, gated on `auth.ScopeAdmin` (D-079).
+
+**Acceptance.** Six method names declared in `internal/protocol/methods/methods.go`; wire types in `internal/protocol/types/flows.go`; all six identity-mandatory + cross-tenant gated on `auth.ScopeAdmin`; `flows.run` gated on the same admin claim and degrades to 403 without it; `flows.runs.describe` ships heavy outputs via `FlowArtifactRef` (D-026); the shared `EngineGraphCanvas` + typed `GraphInput` interface published for Phase 73b; no authoring affordances render (D-063).
+
+**Deviations (D-117).** The `flows.run` mutating gate reuses `auth.ScopeAdmin` (D-079 closed two-scope set — no new scope minted). The runtime side introduces a new `flow.Registry` subsystem as the source-of-truth (registered flows + bounded run-history ring). The typed Console client lives at `web/console/src/lib/flows/client.ts` as the hand-authored mirror of the flows.* surface until `cmd/harbor-gen-protocol-ts` (D-093) is extended to emit it — `protocol.ts` itself is not hand-edited.
+
+**Tests.** Unit (`flow/protocol/*_test.go` — surface + catalog + invoker; `flows_handler_test.go` — identity / scope / decode; `concurrent_reuse_test.go` — D-025 N≥100) + integration (`test/integration/flows_page_test.go` — real registry + real transport + real auth, two-tenant scope, cross-tenant reject, `flows.run` reject without claim, D-026 heavy-output bypass, concurrency stress, all `-race`) + Console Vitest (`format.spec.ts`, `layout.spec.ts`, `client.spec.ts`) + Playwright (`web/console/tests/flows-page.spec.ts`) + smoke (`scripts/smoke/phase-73i.sh`).
+
+**Plan.** See `docs/plans/phase-73i-console-flows-page.md` (shipped — D-117).
 
 ### 74 — Console topology projection events (RFC §5.2, §6.13, §7.1)
 

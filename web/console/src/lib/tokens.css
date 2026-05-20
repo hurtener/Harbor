@@ -26,6 +26,9 @@
   --color-warning: #d29922;
   --color-danger: #f85149;
 
+  /* ---- Color: modal scrim (Phase 73i Flows-page Run-flow modal) ---- */
+  --color-overlay: rgb(1 4 9 / 70%);
+
   /* ---- Spacing scale ---- */
   --space-0: 0;
   --space-1: 0.25rem;
@@ -58,6 +61,23 @@
   --size-px: 1px;
   --size-rail: 22rem;
   --size-value-viewer-max: 16rem;
+
+  /* ---- Borders ---- */
+  /* The hairline border shorthand every surface / table / card uses.
+     Held as a token so component `.svelte` files reference it via
+     `var(--border-hairline)` rather than a raw `1px solid …` literal
+     (Phase 73i — the Flows-page components are the first consumers). */
+  --border-hairline: 1px solid #30363d;
+
+  /* ---- Layout sizes (Phase 73i Flows-page two-pane grids) ---- */
+  --size-rail-width: 280px;
+  --size-graph-max-height: 480px;
+  --size-modal-width: 420px;
+  --size-sparkline-height: 4rem;
+  --size-progress-track: 0.5rem;
+  --size-bar-min: 0.125rem;
+  /* The 1px square the visually-hidden (`.sr-only`) pattern clips to. */
+  --size-sr-square: 1px;
 
   /* ---- Motion ---- */
   --motion-fast: 120ms;

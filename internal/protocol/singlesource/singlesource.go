@@ -155,6 +155,13 @@ var CanonicalMethods = map[string]struct{}{
 	"tools.content_stats":       {}, // Phase 73f / D-116
 	"tools.set_approval_policy": {}, // Phase 73f / D-116
 	"tools.revoke_oauth":        {}, // Phase 73f / D-116
+	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
+	"flows.list":          {}, // Phase 73i / D-117
+	"flows.describe":      {}, // Phase 73i / D-117
+	"flows.runs.list":     {}, // Phase 73i / D-117
+	"flows.runs.describe": {}, // Phase 73i / D-117
+	"flows.run":           {}, // Phase 73i / D-117
+	"flows.metrics":       {}, // Phase 73i / D-117
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -317,6 +324,31 @@ var CanonicalWireTypes = map[string]string{
 	"ToolSetApprovalPolicyResponse": "types",
 	"ToolRevokeOAuthRequest":        "types",
 	"ToolRevokeOAuthResponse":       "types",
+	// Phase 73i (D-117) Console Flows-page wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"Flow":                   "types",
+	"FlowBudget":             "types",
+	"FlowBudgetConsumption":  "types",
+	"FlowFilter":             "types",
+	"FlowListRequest":        "types",
+	"FlowListResponse":       "types",
+	"FlowNode":               "types",
+	"FlowNodePolicy":         "types",
+	"FlowEdge":               "types",
+	"FlowDescription":        "types",
+	"FlowDescribeRequest":    "types",
+	"FlowRun":                "types",
+	"FlowRunsListRequest":    "types",
+	"FlowRunsListResponse":   "types",
+	"FlowArtifactRef":        "types",
+	"FlowNodeRunState":       "types",
+	"FlowRunDescription":     "types",
+	"FlowRunDescribeRequest": "types",
+	"FlowRunRequest":         "types",
+	"FlowRunResponse":        "types",
+	"FlowMetricsBucket":      "types",
+	"FlowMetrics":            "types",
+	"FlowMetricsRequest":     "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path
