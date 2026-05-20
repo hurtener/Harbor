@@ -76,6 +76,37 @@ describe('HarborClient namespace dispatch', () => {
 	});
 });
 
+describe('HarborClient events namespace (Phase 73g / D-125)', () => {
+	it('routes events.aggregate to POST /v1/events/aggregate', async () => {
+		const fetchImpl = vi.fn(async () => okResponse({ buckets: [], protocol_version: '1.0' }));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.events.aggregate({ filter: {}, window: 3_600_000_000_000, bucket: 60_000_000_000 });
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/events/aggregate');
+		const body = JSON.parse(init.body as string);
+		expect(body.identity).toEqual(CONNECTION.identity);
+		expect(body.window).toBe(3_600_000_000_000);
+	});
+
+	it('builds the events.subscribe SSE URL with type + admin + access_token', () => {
+		const client = new HarborClient({ connection: CONNECTION });
+		const url = new URL(
+			client.events.subscribeURL({ eventTypes: ['tool.failed', 'planner.error'], admin: true })
+		);
+		expect(url.pathname).toBe('/v1/events');
+		expect(url.searchParams.getAll('type')).toEqual(['tool.failed', 'planner.error']);
+		expect(url.searchParams.get('admin')).toBe('1');
+		// EventSource cannot set an Authorization header — token rides as a param.
+		expect(url.searchParams.get('access_token')).toBe('dummy-bearer-token');
+	});
+
+	it('omits the admin param for a triple-scoped subscription', () => {
+		const client = new HarborClient({ connection: CONNECTION });
+		const url = new URL(client.events.subscribeURL());
+		expect(url.searchParams.has('admin')).toBe(false);
+	});
+});
+
 describe('HarborClient error mapping', () => {
 	it('raises a ProtocolError carrying code, message AND status', async () => {
 		const fetchImpl = vi.fn(async () =>

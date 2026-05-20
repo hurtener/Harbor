@@ -38,6 +38,7 @@ import type {
 	MemoryListResponse,
 	MemoryHealthResponse
 } from './memory-types.js';
+import type { EventAggregateRequest, EventAggregateResponse } from './events.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -82,6 +83,23 @@ export class Transport {
 	/** The identity triple this transport is scoped to (read-only). */
 	get identity(): RuntimeConnection['identity'] {
 		return this.#identity;
+	}
+
+	/**
+	 * The Runtime base URL (no trailing slash). Exposed so the
+	 * `events.subscribe` SSE consumer can construct an `EventSource`
+	 * target — the SSE stream is a long-lived `GET` that the request /
+	 * response `Transport.request` choke point does not model. The SSE
+	 * consumer is still a member of the `events` namespace, not a
+	 * hand-rolled per-page client (CONVENTIONS.md §6).
+	 */
+	get baseURL(): string {
+		return this.#baseURL;
+	}
+
+	/** The bearer JWT this transport carries (read-only). */
+	get token(): string {
+		return this.#token;
 	}
 
 	/**
@@ -318,6 +336,66 @@ export class MCPServersNamespace {
 	}
 }
 
+/**
+ * The `events.*` namespace — the Console Events page surface (Phase 73g
+ * / D-125). Phase 73g ships NO new Protocol method; this namespace wraps
+ * the already-shipped `events.aggregate` (`POST /v1/events/aggregate` —
+ * Phase 72a) and exposes the `events.subscribe` SSE endpoint
+ * (`GET /v1/events` — Phase 72) as a typed `EventSource`-target builder.
+ *
+ * # Why the SSE stream is not a `Transport.request`
+ *
+ * `events.subscribe` is a long-lived server-sent-event stream, not a
+ * request / response round-trip — `Transport.request` (the single
+ * `fetch` choke point) does not model it. The namespace exposes
+ * {@link subscribeURL}; the page-side `EventsSubscription` wrapper
+ * opens an `EventSource` against it. Bearer auth rides as a query
+ * param because `EventSource` cannot set an `Authorization` header —
+ * the runtime accepts the bearer token on either surface (Phase 60).
+ * No `.svelte` file constructs the URL or the `EventSource` by hand;
+ * both go through this namespace + the `EventsSubscription` wrapper.
+ */
+export class EventsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+
+	/** `events.aggregate` — the time-bucketed per-type count series. */
+	aggregate(req: EventAggregateRequest): Promise<EventAggregateResponse> {
+		return this.#t.request<EventAggregateResponse>(
+			'/v1/events/aggregate',
+			req as unknown as Record<string, unknown>
+		);
+	}
+
+	/**
+	 * The `events.subscribe` SSE endpoint URL the page-side
+	 * `EventsSubscription` opens an `EventSource` against. The optional
+	 * `eventTypes` narrow to a repeatable `type` query param; `admin`
+	 * requests cross-tenant fan-in (the runtime gates it on
+	 * `auth.ScopeAdmin` / `auth.ScopeConsoleFleet`, D-079). The bearer
+	 * token rides as `access_token` — `EventSource` cannot carry an
+	 * `Authorization` header.
+	 */
+	subscribeURL(opts: { eventTypes?: string[]; admin?: boolean } = {}): string {
+		const url = new URL(`${this.#t.baseURL}/v1/events`);
+		for (const t of opts.eventTypes ?? []) {
+			url.searchParams.append('type', t);
+		}
+		if (opts.admin) {
+			url.searchParams.set('admin', '1');
+		}
+		url.searchParams.set('access_token', this.#t.token);
+		return url.toString();
+	}
+
+	/** The identity triple the events subscription is scoped to. */
+	get identity(): RuntimeConnection['identity'] {
+		return this.#t.identity;
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -342,6 +420,7 @@ export interface ProtocolClient {
 	readonly flows: FlowsNamespace;
 	readonly artifacts: ArtifactsNamespace;
 	readonly mcp: MCPNamespace;
+	readonly events: EventsNamespace;
 }
 
 /**
@@ -359,6 +438,7 @@ export class HarborClient implements ProtocolClient {
 	readonly flows: FlowsNamespace;
 	readonly artifacts: ArtifactsNamespace;
 	readonly mcp: MCPNamespace;
+	readonly events: EventsNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -367,5 +447,6 @@ export class HarborClient implements ProtocolClient {
 		this.flows = new FlowsNamespace(transport);
 		this.artifacts = new ArtifactsNamespace(transport);
 		this.mcp = new MCPNamespace(transport);
+		this.events = new EventsNamespace(transport);
 	}
 }

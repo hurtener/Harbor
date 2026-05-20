@@ -103,6 +103,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
 | 73i| Console Flows page (Protocol + UI)            | protocol+web/console | §5.2, §6.1, §7 | 73, 75, 26a        | 85%  | Shipped  |
+| 73g| Console Events page                           | web/console          | §5.2, §6.13, §7 | 72a, 73, 75       | 80%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
 | 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Pending  |
@@ -854,6 +855,18 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Unit (`flow/protocol/*_test.go` — surface + catalog + invoker; `flows_handler_test.go` — identity / scope / decode; `concurrent_reuse_test.go` — D-025 N≥100) + integration (`test/integration/flows_page_test.go` — real registry + real transport + real auth, two-tenant scope, cross-tenant reject, `flows.run` reject without claim, D-026 heavy-output bypass, concurrency stress, all `-race`) + Console Vitest (`format.spec.ts`, `layout.spec.ts`, `client.spec.ts`) + Playwright (`web/console/tests/flows-page.spec.ts`) + smoke (`scripts/smoke/phase-73i.sh`).
 
 **Plan.** See `docs/plans/phase-73i-console-flows-page.md` (shipped — D-117).
+
+### 73g — Console Events page (RFC §5.2, §6.13, §7)
+
+**Goal.** Ship the Console Events page — the runtime event-bus stream as a full-screen, query-driven investigative surface. This is a composition-only page phase: it ships NO new Protocol method. It consumes the shipped `events.subscribe` (`GET /v1/events` SSE table feed — Phase 72), `events.aggregate` (`POST /v1/events/aggregate` sparkline feed — Phase 72a), and `artifacts.get_ref` (heavy-payload `Open artifact` resolver — Phase 73l). The page IS the consumer Phase 72a's primitives waited for (§13 satisfied trivially). The UI is the SvelteKit Events page (`/events`) — faceted filter chips + Console-DB-backed saved-view chips + event-rate sparkline + virtualised event table + right-rail Event Details card + Pause-stream toggle + Export ▾ — built on the D-121 design-system foundation.
+
+**Acceptance.** Route under `(console)/events/` (no `/console/` URL prefix — CONVENTIONS.md §1); the `EventsNamespace` joins the unified `HarborClient`; saved views persist in the shipped `saved_filters` Console DB table scoped to `page='events'` (no new table — D-061); the Pause-stream toggle is a Console-local render gate distinct from the runtime `pause` method; heavy payloads route through `artifacts.get_ref`, never inlined (D-026); cross-tenant `Tenant ▾` gated on the D-079 closed scope set (no `events.crosstenant` minted); four-state `PageState`. See `docs/plans/phase-73g-console-events-page.md`.
+
+**Deviations (D-125).** No new Protocol method (composition-only). The route ships at `web/console/src/routes/(console)/events/` and the page components at `web/console/src/lib/components/events/` — the phase plan (authored before D-121) named `console/events/` and `lib/events/components/`; CONVENTIONS.md §1/§3 (D-121) is the binding cross-cutting authority and yields the corrected paths (CLAUDE.md §15).
+
+**Tests.** Console Vitest (`filters.test.ts`, `sparkline.test.ts`, `export.test.ts`, `taxonomy.test.ts`, `saved_filters_events.spec.ts`, `EventsNamespace` cases in `harbor-client.spec.ts`) + integration (`test/integration/events_page_test.go` — real inmem bus + real SSE/aggregate handlers + real artifacts surface, subscribe filter narrowing, aggregate sparkline correctness, cross-tenant isolation, the truncated-payload `artifacts.get_ref` identity-rejection failure mode, N≥16 concurrent-subscriber stress, all `-race`) + Playwright (`web/console/tests/events-page.spec.ts`) + smoke (`scripts/smoke/phase-73g.sh`).
+
+**Plan.** See `docs/plans/phase-73g-console-events-page.md` (shipped — D-125).
 
 ### 74 — Console topology projection events (RFC §5.2, §6.13, §7.1)
 

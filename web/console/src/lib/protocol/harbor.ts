@@ -20,11 +20,24 @@ export {
 	ArtifactsNamespace,
 	MCPNamespace,
 	MCPServersNamespace,
+	EventsNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
 
 export { ProtocolError, type ProtocolErrorBody } from './errors.js';
+
+export {
+	WINDOW_SPEC,
+	isEventArtifactRef,
+	type Event,
+	type EventArtifactRef,
+	type EventFilter,
+	type EventBucket,
+	type EventAggregateRequest,
+	type EventAggregateResponse,
+	type TimeWindow
+} from './events.js';
 
 export {
 	DEFAULT_MEMORY_LIST_PAGE_SIZE,
