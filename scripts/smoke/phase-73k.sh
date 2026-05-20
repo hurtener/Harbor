@@ -123,7 +123,7 @@ assert_status 200 "$(api_url /healthz)" "phase 73k: healthz returns 200"
 # ----------------------------------------------------------------------------
 # 2. mcp.servers.list with valid identity → 2xx + .servers is an array.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.list' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.list' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"}}' \
     'phase 73k: mcp.servers.list (operator scope)'; then
     assert_2xx_json '.servers' 'phase 73k: mcp.servers.list returns .servers array'
@@ -132,7 +132,7 @@ fi
 # ----------------------------------------------------------------------------
 # 3. mcp.servers.list with missing identity → identity_required.
 # ----------------------------------------------------------------------------
-if protocol_post '' '/v1/protocol/mcp.servers.list' '{}' \
+if protocol_post '' '/v1/control/mcp.servers.list' '{}' \
     'phase 73k: mcp.servers.list rejects missing identity'; then
     assert_error_code 'identity_required' \
         'phase 73k: mcp.servers.list missing identity → identity_required'
@@ -141,7 +141,7 @@ fi
 # ----------------------------------------------------------------------------
 # 4. mcp.servers.get for an unknown server → not_found.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.get' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.get' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"__nonexistent__"}' \
     'phase 73k: mcp.servers.get unknown name'; then
     assert_error_code 'not_found' \
@@ -151,7 +151,7 @@ fi
 # ----------------------------------------------------------------------------
 # 5. mcp.servers.resources for a likely-empty dev runtime → 2xx + array.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.resources' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.resources' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.resources'; then
     case "${PROTOCOL_STATUS}" in
@@ -171,7 +171,7 @@ fi
 # ----------------------------------------------------------------------------
 # 6. mcp.servers.prompts — same shape.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.prompts' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.prompts' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.prompts'; then
     case "${PROTOCOL_STATUS}" in
@@ -186,7 +186,7 @@ fi
 # 7. mcp.servers.health — 2xx with handshake-latency buckets when a
 # server is configured; otherwise not_found.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.health' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.health' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.health'; then
     case "${PROTOCOL_STATUS}" in
@@ -200,7 +200,7 @@ fi
 # ----------------------------------------------------------------------------
 # 8. mcp.servers.policy — read-only ToolPolicy projection.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.policy' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.policy' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.policy'; then
     case "${PROTOCOL_STATUS}" in
@@ -214,7 +214,7 @@ fi
 # ----------------------------------------------------------------------------
 # 9. mcp.servers.bindings.list — operator's own bindings only.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.bindings.list' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.bindings.list' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.bindings.list'; then
     case "${PROTOCOL_STATUS}" in
@@ -228,7 +228,7 @@ fi
 # ----------------------------------------------------------------------------
 # 10. mcp.servers.refresh_discovery without control claim → scope_mismatch.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.refresh_discovery' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.refresh_discovery' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.refresh_discovery (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
@@ -238,7 +238,7 @@ fi
 # ----------------------------------------------------------------------------
 # 11. mcp.servers.probe without control claim → scope_mismatch.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.probe' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.probe' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.probe (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
@@ -248,7 +248,7 @@ fi
 # ----------------------------------------------------------------------------
 # 12. mcp.servers.refresh_binding without tools.admin → scope_mismatch.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.refresh_binding' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.refresh_binding' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","principal_id":"smoke"}' \
     'phase 73k: mcp.servers.refresh_binding (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
@@ -258,7 +258,7 @@ fi
 # ----------------------------------------------------------------------------
 # 13. mcp.servers.revoke_binding without tools.admin → scope_mismatch.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.revoke_binding' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.revoke_binding' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","principal_id":"smoke"}' \
     'phase 73k: mcp.servers.revoke_binding (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
@@ -270,7 +270,7 @@ fi
 #     Then (if admin token present) with tools.admin → 2xx + a follow-up
 #     mcp.servers.get shows .raw_html_trusted=true.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.set_raw_html_trust' \
+if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.set_raw_html_trust' \
     '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","trusted":true}' \
     'phase 73k: set_raw_html_trust (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
@@ -278,7 +278,7 @@ if protocol_post "${TOKEN_OPERATOR}" '/v1/protocol/mcp.servers.set_raw_html_trus
 fi
 
 if [ -n "${TOKEN_ADMIN}" ] && [ "${TOKEN_ADMIN}" != "${TOKEN_OPERATOR}" ]; then
-    if protocol_post "${TOKEN_ADMIN}" '/v1/protocol/mcp.servers.set_raw_html_trust' \
+    if protocol_post "${TOKEN_ADMIN}" '/v1/control/mcp.servers.set_raw_html_trust' \
         '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","trusted":true}' \
         'phase 73k: set_raw_html_trust (admin scope)'; then
         case "${PROTOCOL_STATUS}" in
@@ -300,9 +300,14 @@ else
     skip 'phase 73k: methods.go does not yet declare mcp.servers.list (pre-Phase 73k build)'
 fi
 
-if grep -q 'EventTypeMCPRawHTMLTrustToggled' internal/audit/events.go 2>/dev/null \
-    || grep -rq 'EventTypeMCPRawHTMLTrustToggled' internal/audit/ 2>/dev/null; then
-    ok 'phase 73k: EventTypeMCPRawHTMLTrustToggled registered in internal/audit'
+# The mcp.raw_html_trust_toggled audit event is registered in the
+# canonical event taxonomy at internal/events/events.go (alongside
+# topology.changed) — the closed EventType registry, not a separate
+# internal/audit/events.go file. Deviation documented in the Phase 73k
+# plan (the plan referenced internal/audit/events.go which does not
+# exist; audit events live in the events taxonomy).
+if grep -q 'EventTypeMCPRawHTMLTrustToggled' internal/events/events.go 2>/dev/null; then
+    ok 'phase 73k: EventTypeMCPRawHTMLTrustToggled registered in internal/events'
 else
     skip 'phase 73k: mcp.raw_html_trust_toggled event not yet registered (pre-Phase 73k build)'
 fi

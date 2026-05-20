@@ -134,6 +134,19 @@ var CanonicalMethods = map[string]struct{}{
 	"memory.list":        {}, // Phase 73j / D-118
 	"memory.get":         {}, // Phase 73j / D-118
 	"memory.health":      {}, // Phase 73j / D-118
+	// Phase 73k (D-119) MCP-Connections-page cluster — twelve methods.
+	"mcp.servers.list":               {}, // Phase 73k / D-119
+	"mcp.servers.get":                {}, // Phase 73k / D-119
+	"mcp.servers.resources":          {}, // Phase 73k / D-119
+	"mcp.servers.prompts":            {}, // Phase 73k / D-119
+	"mcp.servers.refresh_discovery":  {}, // Phase 73k / D-119
+	"mcp.servers.probe":              {}, // Phase 73k / D-119
+	"mcp.servers.health":             {}, // Phase 73k / D-119
+	"mcp.servers.bindings.list":      {}, // Phase 73k / D-119
+	"mcp.servers.policy":             {}, // Phase 73k / D-119
+	"mcp.servers.refresh_binding":    {}, // Phase 73k / D-119
+	"mcp.servers.revoke_binding":     {}, // Phase 73k / D-119
+	"mcp.servers.set_raw_html_trust": {}, // Phase 73k / D-119
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -240,6 +253,43 @@ var CanonicalWireTypes = map[string]string{
 	"MemoryHealthRequest":   "types",
 	"MemoryHealthAggregate": "types",
 	"MemoryHealthResponse":  "types",
+	// Phase 73k (D-119) MCP-Connections-page wire types — all live in
+	// internal/protocol/types/mcp_servers.go. MCPServerStateView is a
+	// string-enum type (like methods.Method / errors.Code) and is NOT
+	// listed here — CanonicalWireTypes records struct wire types only.
+	"MCPServerView":                     "types",
+	"MCPServersListRequest":             "types",
+	"MCPServersListResponse":            "types",
+	"MCPServerGetRequest":               "types",
+	"MCPToolPolicyView":                 "types",
+	"MCPBindingScopeCount":              "types",
+	"MCPServerGetResponse":              "types",
+	"MCPResourceView":                   "types",
+	"MCPServerResourcesRequest":         "types",
+	"MCPServerResourcesResponse":        "types",
+	"MCPPromptArg":                      "types",
+	"MCPPromptView":                     "types",
+	"MCPServerPromptsRequest":           "types",
+	"MCPServerPromptsResponse":          "types",
+	"MCPServerRefreshDiscoveryRequest":  "types",
+	"MCPServerRefreshDiscoveryResponse": "types",
+	"MCPServerProbeRequest":             "types",
+	"MCPServerProbeResponse":            "types",
+	"MCPHealthBucket":                   "types",
+	"MCPReconnect":                      "types",
+	"MCPServerHealthRequest":            "types",
+	"MCPServerHealthResponse":           "types",
+	"MCPBindingView":                    "types",
+	"MCPServerBindingsListRequest":      "types",
+	"MCPServerBindingsListResponse":     "types",
+	"MCPServerPolicyRequest":            "types",
+	"MCPServerPolicyResponse":           "types",
+	"MCPServerRefreshBindingRequest":    "types",
+	"MCPServerRefreshBindingResponse":   "types",
+	"MCPServerRevokeBindingRequest":     "types",
+	"MCPServerRevokeBindingResponse":    "types",
+	"MCPServerSetRawHTMLTrustRequest":   "types",
+	"MCPServerSetRawHTMLTrustResponse":  "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

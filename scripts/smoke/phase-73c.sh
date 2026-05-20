@@ -289,8 +289,15 @@ fi
 
 # --------------------------------------------------------------------
 # 4. Optional Playwright invocation when the Console build is present
-#    AND Playwright is installed. SKIP otherwise (the install gate
-#    lives in Phase 75's baseline harness).
+#    AND Playwright is installed AND the Phase 73c spec file exists.
+#    SKIP otherwise (the install gate lives in Phase 75's baseline
+#    harness). The spec-file existence check is the spec-missing -> SKIP
+#    extension of the 404/405/501 convention: a sibling Console phase
+#    that runs `npm ci` installs Playwright into `node_modules`, but the
+#    Phase 73c spec only lands with the Phase 73c implementation — until
+#    then the Playwright block must SKIP, not FAIL. (Cross-phase fix per
+#    CLAUDE.md §17.6 — surfaced when Phase 73k's `npm ci` flipped the
+#    install gate without 73c's own spec being present.)
 # --------------------------------------------------------------------
 if [ ! -f 'web/console/tests/sessions-page.spec.ts' ]; then
     # The spec lands with the Phase 73c implementation. Until then the

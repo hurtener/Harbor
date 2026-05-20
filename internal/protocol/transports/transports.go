@@ -95,6 +95,12 @@ type muxConfig struct {
 	// transport rejects artifacts calls with CodeUnknownMethod (the 404
 	// → SKIP path the smoke script relies on).
 	artifactsSurface control.ArtifactsSurface
+	// mcpSurface is the Phase 73k (D-119) MCP-Connections dispatcher
+	// wired into the control transport so the twelve `mcp.servers.*`
+	// methods route through it. Optional — when unsupplied, the control
+	// transport rejects MCP calls with CodeUnknownMethod (the 404 → SKIP
+	// path the smoke script relies on).
+	mcpSurface control.MCPSurface
 	// pauseCoordinator + artifactStore + heavyThreshold feed the Phase
 	// 72e `pause.list` snapshot handler. All three are OPTIONAL in the
 	// mux config so existing call-sites compile unchanged — when the
@@ -215,6 +221,25 @@ func WithPostureSurface(s control.PostureSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.postureSurface = s
+		}
+	}
+}
+
+// WithMCPSurface wires the Phase 73k (D-119) MCP-Connections dispatcher
+// into the control transport. When supplied, the control handler routes
+// the twelve `mcp.servers.*` methods to the MCP surface instead of
+// falling through to the task-control ControlSurface.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied, the control transport rejects MCP calls with
+// CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
+// relies on. Production wiring (`harbor dev`) supplies it so the Console
+// MCP Connections page (Phase 73k) has a live surface. A nil surface is
+// treated as "WithMCPSurface not supplied".
+func WithMCPSurface(s control.MCPSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.mcpSurface = s
 		}
 	}
 }
@@ -372,6 +397,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.artifactsSurface != nil {
 		controlOpts = append(controlOpts, control.WithArtifactsSurface(cfg.artifactsSurface))
+	}
+	if cfg.mcpSurface != nil {
+		controlOpts = append(controlOpts, control.WithMCPSurface(cfg.mcpSurface))
 	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {
