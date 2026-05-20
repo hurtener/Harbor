@@ -1,4 +1,10 @@
-// Harbor Console Artifacts page — Playwright per-page spec (Phase 73l / D-120).
+// Harbor Console Artifacts page — Playwright per-page spec.
+//
+// Refactored for the design-system foundation (D-121, CONVENTIONS.md): the
+// Artifacts page now composes the shared `components/ui/` inventory, routes
+// async state through the four-state `<PageState>`, and talks to the
+// Runtime through `HarborClient` + `connection.ts`. The page-specific
+// preview component moved to `src/lib/components/artifacts/`.
 //
 // This spec rides on the Phase 75 harness baseline (`fixtures/page`). The
 // live e2e assertions are gated on the `harbor console` subcommand
@@ -6,11 +12,11 @@
 // subcommand-missing → SKIP pattern (CLAUDE.md §4.2). Until `harbor
 // console` lands, the live tests SKIP cleanly so preflight stays green.
 //
-// The renderer-registry regression test is UNCONDITIONAL — it is a
-// static source-tree assertion (no browser, no server) that pins the
-// CLAUDE.md §13 / Brief 12 invariant: the Artifacts route directory
-// carries NO bespoke per-mime renderer; the preview pane dispatches
-// through the canonical registry at `$lib/chat/renderers`.
+// The renderer-registry discipline test is UNCONDITIONAL — it is a static
+// source-tree assertion (no browser, no server) that pins the CLAUDE.md
+// §13 / Brief 12 invariant: the Artifacts surface carries NO bespoke
+// per-mime renderer; the preview component dispatches through the
+// canonical registry at `$lib/chat/renderers`.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -21,39 +27,50 @@ import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
 const here = dirname(fileURLToPath(import.meta.url));
-const artifactsRouteDir = join(here, "..", "src", "routes", "console", "artifacts");
+const artifactsRouteDir = join(here, "..", "src", "routes", "(console)", "artifacts");
+const artifactsComponentsDir = join(
+  here,
+  "..",
+  "src",
+  "lib",
+  "components",
+  "artifacts",
+);
 
 test.describe("Console Artifacts page — renderer-registry discipline", () => {
   // This block is UNCONDITIONAL — it is a static source assertion, not a
   // browser test, so it runs at every phase regardless of `harbor
   // console` availability.
 
-  test("the Artifacts route ships no bespoke per-mime renderer", () => {
+  test("the Artifacts surface ships no bespoke per-mime renderer", () => {
     // CLAUDE.md §13 / Brief 12: per-mime renderers live ONLY in the
     // canonical registry at `$lib/chat/renderers/`. A `*_renderer.svelte`
-    // or a `*.renderer.svelte` under the route directory is a violation.
-    const files = readdirSync(artifactsRouteDir);
-    const bespoke = files.filter(
-      (f) => /_renderer\.svelte$/.test(f) || /\.renderer\.svelte$/.test(f),
-    );
-    expect(
-      bespoke,
-      `bespoke renderer files under routes/console/artifacts/ — per-mime renderers belong in $lib/chat/renderers/`,
-    ).toEqual([]);
+    // or a `*.renderer.svelte` under the route or page-component dir is a
+    // violation.
+    for (const dir of [artifactsRouteDir, artifactsComponentsDir]) {
+      const files = readdirSync(dir);
+      const bespoke = files.filter(
+        (f) => /_renderer\.svelte$/.test(f) || /\.renderer\.svelte$/.test(f),
+      );
+      expect(
+        bespoke,
+        `bespoke renderer files under ${dir} — per-mime renderers belong in $lib/chat/renderers/`,
+      ).toEqual([]);
+    }
   });
 
-  test("the preview pane imports dispatchRenderer from the canonical registry", () => {
-    const previewPane = readFileSync(
-      join(artifactsRouteDir, "preview_pane.svelte"),
+  test("the preview component imports dispatchRenderer from the canonical registry", () => {
+    const previewComponent = readFileSync(
+      join(artifactsComponentsDir, "ArtifactPreview.svelte"),
       "utf8",
     );
     expect(
-      previewPane.includes("$lib/chat/renderers"),
-      "preview_pane.svelte imports the canonical renderer registry",
+      previewComponent.includes("$lib/chat/renderers"),
+      "ArtifactPreview.svelte imports the canonical renderer registry",
     ).toBe(true);
     expect(
-      previewPane.includes("dispatchRenderer"),
-      "preview_pane.svelte dispatches via dispatchRenderer",
+      previewComponent.includes("dispatchRenderer"),
+      "ArtifactPreview.svelte dispatches via dispatchRenderer",
     ).toBe(true);
   });
 
@@ -61,20 +78,71 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
     // CLAUDE.md §13: components go through the typed Protocol client,
     // never a raw `fetch`. The renderer components legitimately fetch
     // their (presigned) content URL — that is the registry's contract,
-    // not a Protocol call — so the assertion is scoped to the page +
-    // its route components.
-    for (const file of [
-      "+page.svelte",
-      "filter_bar.svelte",
-      "artifacts_table.svelte",
-      "right_rail.svelte",
-      "bulk_toolbar.svelte",
+    // not a Protocol call — so the assertion is scoped to the page + its
+    // page-specific components.
+    const pageSrc = readFileSync(
+      join(artifactsRouteDir, "+page.svelte"),
+      "utf8",
+    );
+    expect(
+      /\bfetch\s*\(/.test(pageSrc),
+      "+page.svelte must not hand-roll fetch — use the typed Protocol client",
+    ).toBe(false);
+    const previewSrc = readFileSync(
+      join(artifactsComponentsDir, "ArtifactPreview.svelte"),
+      "utf8",
+    );
+    expect(
+      /\bfetch\s*\(/.test(previewSrc),
+      "ArtifactPreview.svelte must not hand-roll fetch",
+    ).toBe(false);
+  });
+
+  test("the page reads no hardcoded dev identity off a globalThis shim", () => {
+    // CONVENTIONS.md §6: identity comes from `connection.ts`, never a
+    // `globalThis.__HARBOR_*__` window-global or a hardcoded
+    // `dev-tenant/dev-user/dev-session` triple.
+    const pageSrc = readFileSync(
+      join(artifactsRouteDir, "+page.svelte"),
+      "utf8",
+    );
+    expect(
+      pageSrc.includes("__HARBOR_IDENTITY__"),
+      "+page.svelte must not read identity from a window global",
+    ).toBe(false);
+    expect(
+      pageSrc.includes("dev-tenant"),
+      "+page.svelte must not hardcode a dev identity",
+    ).toBe(false);
+    expect(
+      pageSrc.includes("resolveConnection"),
+      "+page.svelte resolves its connection through connection.ts",
+    ).toBe(true);
+  });
+
+  test("the page composes the shared ui/ inventory", () => {
+    // CONVENTIONS.md §3/§5: the page is built from the shared component
+    // inventory and routes async state through the four-state PageState.
+    const pageSrc = readFileSync(
+      join(artifactsRouteDir, "+page.svelte"),
+      "utf8",
+    );
+    for (const primitive of [
+      "PageHeader",
+      "FilterBar",
+      "SavedViewChips",
+      "DataTable",
+      "BulkActionBar",
+      "DetailRail",
+      "RailCard",
+      "Pagination",
+      "ConnectionFooter",
+      "PageState",
     ]) {
-      const src = readFileSync(join(artifactsRouteDir, file), "utf8");
       expect(
-        /\bfetch\s*\(/.test(src),
-        `${file} must not hand-roll fetch — use the typed Protocol client`,
-      ).toBe(false);
+        pageSrc.includes(primitive),
+        `+page.svelte composes the shared ${primitive} primitive`,
+      ).toBe(true);
     }
   });
 });
@@ -93,7 +161,7 @@ test.describe("Console Artifacts page — live e2e", () => {
       "the Artifacts page mounts",
     ).toBeAttached();
     await expect(
-      page.locator("[data-testid='artifacts-table']"),
+      page.locator("table"),
       "the artifacts catalog table renders",
     ).toBeAttached();
   });
@@ -113,8 +181,6 @@ test.describe("Console Artifacts page — live e2e", () => {
     );
     const uploadBtn = page.locator("[data-testid='upload-artifact']");
     await expect(uploadBtn, "the Upload artifact button is present").toBeAttached();
-    // The file-chooser is opened by the button; the harness sets a
-    // fixture file on the resulting input.
     const chooserPromise = page.waitForEvent("filechooser");
     await uploadBtn.click();
     const chooser = await chooserPromise;
@@ -139,9 +205,9 @@ test.describe("Console Artifacts page — live e2e", () => {
     // Selecting a row resolves a preview; the host stamps
     // `data-renderer-dispatched` with the registry renderer's `source`
     // id — proving the canonical registry handled the preview.
-    const firstRow = page.locator("[data-testid='artifact-row']").first();
+    const firstRow = page.locator("tbody tr.data-row").first();
     if ((await firstRow.count()) > 0) {
-      await firstRow.locator(".name-link").click();
+      await firstRow.click();
       await expect(
         page.locator("[data-renderer-dispatched]"),
         "the preview is dispatched via the canonical renderer registry",
@@ -158,9 +224,9 @@ test.describe("Console Artifacts page — live e2e", () => {
     await helpers.gotoPage("artifacts");
     // The bulk Delete / Set retention surfaces are deferred (page-
     // artifacts.md §10) — they render aria-disabled with the deferred
-    // tooltip. The bulk toolbar only shows when a row is checked.
+    // tooltip. The bulk action bar only shows when a row is checked.
     const firstCheckbox = page
-      .locator("[data-testid='artifact-row'] input[type='checkbox']")
+      .locator("tbody tr.data-row input[type='checkbox']")
       .first();
     if ((await firstCheckbox.count()) > 0) {
       await firstCheckbox.check();
