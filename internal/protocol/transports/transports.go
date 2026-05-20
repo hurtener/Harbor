@@ -78,6 +78,13 @@ type muxConfig struct {
 	// transport refuses impersonation requests fail-closed with
 	// CodeRuntimeError (CLAUDE.md §13 "Silent degradation").
 	redactor audit.Redactor
+	// postureSurface is the Phase 72f (D-111) runtime-posture
+	// dispatcher wired into the control transport so the five
+	// `runtime.*` / `metrics.*` posture methods route through it.
+	// Optional — when unsupplied, the control transport rejects
+	// posture calls with CodeUnknownMethod (the 404 → SKIP path the
+	// smoke script relies on while `harbor dev` does not yet wire it).
+	postureSurface control.PostureSurface
 }
 
 // Option configures NewMux.
@@ -160,6 +167,26 @@ func WithRedactor(r audit.Redactor) Option {
 	}
 }
 
+// WithPostureSurface wires the Phase 72f (D-111) runtime-posture
+// dispatcher into the control transport. When supplied, the control
+// handler routes the five `runtime.*` / `metrics.*` posture methods to
+// the posture surface instead of falling through to the task-control
+// ControlSurface.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied, the control transport rejects posture calls with
+// CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
+// relies on while the `harbor dev` boot path does not yet construct a
+// posture surface. A nil surface is treated as "WithPostureSurface not
+// supplied".
+func WithPostureSurface(s control.PostureSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.postureSurface = s
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the Phase 60 trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -237,6 +264,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.redactor != nil {
 		controlOpts = append(controlOpts, control.WithRedactor(cfg.redactor))
+	}
+	if cfg.postureSurface != nil {
+		controlOpts = append(controlOpts, control.WithPostureSurface(cfg.postureSurface))
 	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {

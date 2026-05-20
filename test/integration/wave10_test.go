@@ -328,9 +328,16 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapEventsSubscribe) {
 		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the Wave 13 streaming-events surface (Phase 72 / 72a) must be advertised")
 	}
+	// Wave 13 (Phase 72f / D-111) added the runtime-posture capability.
+	// Per CLAUDE.md §17.6, an integration test that pins a capability
+	// count is updated in the same PR as the surface that legitimately
+	// changes it — a future surface addition continues to extend this.
+	if !h.Accepts(types.CapRuntimePosture) {
+		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the Wave 13 runtime-posture surface (Phase 72f) must be advertised")
+	}
 	caps := h.Capabilities
-	if len(caps) != 2 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe}", caps)
+	if len(caps) != 3 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

@@ -92,6 +92,15 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a search method; dispatch through the SearchSurface (POST /v1/search) instead", string(method))
 	}
+	// Phase 72f (D-111): the five `runtime.*` / `metrics.*` posture
+	// methods are dispatched by PostureSurface, not ControlSurface — a
+	// caller that hits the task-control Dispatch with a posture method
+	// is using the wrong surface. Surface it loud rather than silently
+	// routing onto the steering inbox.
+	if methods.IsPostureMethod(method) {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is a posture method; dispatch through the PostureSurface instead", string(method))
+	}
 	return s.dispatchControl(ctx, method, req)
 }
 
