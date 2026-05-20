@@ -2929,6 +2929,29 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 
 ---
 
+## D-124 — Phase 73e Console Agents page: eight `agents.*` read-only Protocol methods on a sibling agents handler over a `registry/protocol` Service; control verbs stay the shipped `registry.*` surface
+
+**Date:** 2026-05-20
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `internal/protocol/types/agents.go` (the twenty-eight Agents-page wire types + the three string enums); `internal/protocol/methods/methods.go` (the eight `agents.*` method constants + `canonicalAgentsMethods` + `IsAgentsMethod`); `internal/runtime/registry/protocol/` (the new package — `Service` over a `Projector` seam, the V1 `RegistryProjector` over a `registry.AgentRegistry` with an optional `ConfigSource` join); `internal/protocol/transports/stream/agents_handler.go` (the `POST /v1/agents/{method}` wire handler); `internal/protocol/transports/transports.go` (`WithAgentsService`); `cmd/harbor/cmd_dev.go` (the dev stack constructs the Agent Registry + the agents Service and mounts the route); `web/console/src/lib/protocol/agents.ts` + the `agents` namespace on `HarborClient`; `web/console/src/routes/(console)/agents/` (list + `[id]` detail routes); `web/console/src/lib/components/agents/`; `web/console/src/lib/db/saved_filters_agents.ts`.
+
+**Decision.** The Console Agents page consumes eight NEW `agents.*` Protocol methods. Three calls land here.
+
+**1. Eight read-only methods on a sibling handler, not the control surface.** `agents.list` / `agents.get` / `agents.tools` / `agents.memory` / `agents.governance` / `agents.skills` / `agents.permissions` / `agents.metrics` are all read-only projections of the Agent Registry. They route through a dedicated `POST /v1/agents/{method}` wire handler in the `stream` package — the same posture as the Phase 73f `tools.*` cluster — not the task-control `ControlSurface`. `IsAgentsMethod` makes `IsControlMethod` return false for them so the steering inbox stays the Phase 54 nine.
+
+**2. Control verbs stay the shipped `registry.*` surface — Phase 73e mints NO control method.** The five fleet-control verbs the Agents page exposes (Pause / Drain / Restart / Force-Stop / Deregister) are the EXISTING shipped `registry.*` control verbs (Phase 53a, D-066), gated on the elevated control-scope claim. Phase 73e adds no control Protocol method and no new wire type for them; the page renders the control buttons disabled-with-tooltip for an operator without the claim (CONVENTIONS.md §5 — no stubbed action). This is the §13 "no two parallel implementations" rule: the registry control surface already exists; the page consumes it rather than cloning it.
+
+**3. `agent_id` is NOT an isolation principal.** Every `agents.*` method is identity-mandatory and filters by the `(tenant, user, session)` tuple read from the request context — never by `agent_id` (D-059, CLAUDE.md §6 clarifying note). The `RegistryProjector` delegates scoping to the registry's own tuple-scoped storage; a cross-tenant `agents.get` returns `not_found`, never another tenant's agent.
+
+**Why.** Brief 11 / Brief 12 pin agent management as a binding V1 Console surface; the Agent Registry (D-059 / D-060) already owns the data. Splitting the page surface into eight specialised methods rather than overloading `agents.get` follows Brief 11's recommendation directly — each detail tab loads independently through its own nested `PageState`. Keeping the methods read-only and routing control through the shipped `registry.*` surface keeps the Console an honest Protocol client and avoids a parallel control path.
+
+**Findings I'm departing from.** None on design. One implementation note: the registry persists only the `version_hash` of an agent's `AgentConfig`, not the config itself, so the configuration-derived projections (`agents.tools` / `agents.memory` / `agents.governance` / `agents.skills` and the `AgentConfig` on `agents.get`) join through an optional `ConfigSource` seam on the `RegistryProjector`. When no `ConfigSource` is wired the methods return an HONEST empty projection (an empty binding list, a zero-value memory binding) — they still validate identity and the agent's existence and still fail loud with `not_found` for a missing agent; this is not a stubbed success (CLAUDE.md §13). Production wiring supplies a `ConfigSource` as the subsystems that own that data (tool catalog, memory configs, Phase 36 governance, skills catalog) grow their join surfaces.
+
+**Protocol additions.** Eight method names (`agents.list` / `agents.get` / `agents.tools` / `agents.memory` / `agents.governance` / `agents.skills` / `agents.permissions` / `agents.metrics`), twenty-eight wire types in `internal/protocol/types/agents.go`. No new error code (the agents surface reuses `identity_required` / `not_found` / `invalid_request` / `runtime_error`). No new capability constant. No new scope — agent control/admin gates on the existing `auth.ScopeAdmin` (D-079 closed two-scope set). The wire-transport route is the new `POST /v1/agents/{method}`.
+
+---
+
 ## D-125 — Phase 73g Console Events page: composition-only UI over shipped `events.subscribe` / `events.aggregate` / `artifacts.get_ref`; no new Protocol method
 
 **Date:** 2026-05-20
