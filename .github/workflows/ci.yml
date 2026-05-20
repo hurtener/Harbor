@@ -64,6 +64,60 @@ jobs:
       - name: Run lint (skips when no Go sources yet)
         run: make lint
 
+  frontend-e2e:
+    name: frontend-e2e (Console Playwright)
+    runs-on: ubuntu-latest
+    # Phase 75 (D-115) — the Console e2e Playwright harness baseline.
+    # Runs after `go` so `make build` has produced `bin/harbor`, which the
+    # harness boots (`harbor console`, D-091 — NOT `harbor dev`). The whole
+    # job skips gracefully when `web/console/` is absent: the Stage-1
+    # SvelteKit-scaffold phase (72h) may land in a parallel agent in the same
+    # wave, so this phase's CI must stay green before the scaffold exists
+    # (the directory-missing → SKIP analogue of the §4.2 "404/405/501 → SKIP"
+    # smoke convention).
+    needs: [go]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect web/console/
+        id: detect
+        run: |
+          if [ -f web/console/package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "web/console/ absent — SKIP (Stage-1 SvelteKit scaffold pending)"
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.detect.outputs.present == 'true'
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Build bin/harbor
+        if: steps.detect.outputs.present == 'true'
+        run: make build
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 'lts/*'
+      - name: Install npm dependencies
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm ci
+      - name: Cache Playwright browsers
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/console/package-lock.json') }}
+      - name: Install Playwright Chromium
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run test:e2e:install
+      - name: Run Console Playwright suite
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web/console
+        run: npm run test:e2e
+
   preflight:
     name: preflight gate
     runs-on: ubuntu-latest

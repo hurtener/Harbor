@@ -99,7 +99,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
-| 75 | Console e2e Playwright (CI gate)              | testing              | §7          | 64, 72, 73            | n/a  | Pending  |
+| 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
+| 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Pending  |
@@ -810,12 +811,19 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Integration.
 **Deps.** 05, 09.
 
-### 75 — Console e2e Playwright (CI gate) (RFC §7)
+### 75 — Console e2e Playwright harness baseline (RFC §7)
 
-**Goal.** Playwright suite under `web/console/tests/*.spec.ts` runs against `harbor dev`. Per the binding rule: every operator-facing flow shipped in a phase has a matching `.spec.ts`. (Console implementation lives in its own repo; this phase covers the Runtime-side hooks + CI gate skeleton in this repo.)
-**Acceptance.** A baseline harness exists; CI runs it (skipped if the Console repo isn't checked out as a dev dependency); future Console phases hook into it.
-**Tests.** Playwright baseline.
-**Deps.** 64, 72, 73.
+**Goal.** Playwright **harness baseline** under `web/console/tests/` — config, fixtures, page-object base class, helpers, the meta-test, and the `frontend-e2e` CI hook. The harness runs against `harbor console` (D-091) — NOT `harbor dev`; the original master-plan wording is corrected per D-091 + Brief 12 (the Console static build is served exclusively by `harbor console`). Per the binding rule: every operator-facing flow shipped in a phase has a matching `.spec.ts`. Wave 13 (`docs/plans/wave-13-decomposition.md` §12 item 7) narrows this phase to **baseline-only**: per-page specs land alongside each Stage-2 page phase (73a–73n); the wave-end aggregator suite is Phase 75a (Stage 3). See D-115.
+**Acceptance.** A baseline harness exists at `web/console/tests/` (config + fixtures + page-object base + helpers + meta-test); the `frontend-e2e` CI job runs it and skips gracefully when `web/console/` is absent (directory-missing → SKIP); future Console page phases hook their per-page specs into it.
+**Tests.** Playwright meta-test (`harness.spec.ts`) — boots `harbor console`, asserts the index serves + the SvelteKit app hydrates; SKIPs cleanly before the `harbor console` subcommand (Phase 73m) and the SvelteKit scaffold (Phase 72h) land.
+**Deps.** 60, 72. (Narrowed from `64, 72, 73` per the Wave 13 decomposition §4 — per-page Protocol additions move into each Stage-2 page phase; 64 is transitively assumed via 60.)
+
+### 75a — Console e2e Playwright wave-end suite (RFC §7)
+
+**Goal.** The Wave 13 wave-end aggregator Playwright suite (`web/console/tests/wave13.spec.ts`) — full IA navigation across all 14 V1 Console pages, scope-claim degradation regression, cross-page identity isolation, saved-view persistence, notification routing end-to-end. Bundled with the final Stage-2 PR per CLAUDE.md §17.5. Includes `test/integration/wave13_test.go` (Go-side wire-type round-trip + cross-page identity isolation + N≥10 concurrent SSE subscriber stress). Enumerates the 14-page IA and asserts a matching `<slug>-page.spec.ts` exists for each — a missing page-spec pair is a build break (operator §12 item 7 binding amendment).
+**Acceptance.** Every one of the 14 V1 Console pages has a matching per-page spec; the aggregator walks them all; the page-coverage check (`make wave13-coverage-check`) is green.
+**Tests.** `wave13.spec.ts` + `test/integration/wave13_test.go`.
+**Deps.** 75, 73a-73n.
 
 ### 76 — Cross-tenant isolation conformance harness (RFC §4.3)
 
