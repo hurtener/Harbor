@@ -58,6 +58,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
 // muxConfig holds the optional knobs NewMux threads into the two
@@ -122,6 +123,13 @@ type muxConfig struct {
 	// page works.
 	memoryStore      memory.MemoryStore
 	memoryDriverName string
+	// toolsService feeds the Phase 73f `tools.*` handler (the Console
+	// Tools page surface). OPTIONAL — when unsupplied the
+	// `POST /v1/tools/{method}` route is NOT mounted, so the smoke
+	// script's `skip_if_404` keeps preflight green on a partial build.
+	// Production wiring (`harbor dev`) SHOULD supply it so the Console
+	// Tools page (Phase 73f) has a live surface.
+	toolsService *toolsprotocol.Service
 }
 
 // Option configures NewMux.
@@ -285,6 +293,28 @@ func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.artifactsSurface = s
+		}
+	}
+}
+
+// WithToolsService wires the Phase 73f `tools.*` handler into NewMux —
+// the seven Console Tools-page methods (`tools.list` / `tools.get` /
+// `tools.describe` / `tools.metrics` / `tools.content_stats` /
+// `tools.set_approval_policy` / `tools.revoke_oauth`).
+//
+// The service is OPTIONAL so existing call-sites compile unchanged.
+// When unsupplied, the `POST /v1/tools/{method}` route is NOT mounted —
+// the smoke script's `skip_if_404` keeps preflight green on a partial
+// build. Production wiring (`harbor dev`) supplies it so the Console
+// Tools page (Phase 73f) has a live surface. When supplied AND
+// WithValidator is set, the route is wrapped in auth.Middleware like
+// every other transport — the two admin methods then gate on the
+// verified `auth.ScopeAdmin` claim (D-079). A nil service is treated
+// as "WithToolsService not supplied".
+func WithToolsService(s *toolsprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.toolsService = s
 		}
 	}
 }
@@ -473,6 +503,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		memoryHandler = mh
 	}
 
+	// Wave 13 (Phase 73f): the `tools.*` handler. Built only when
+	// WithToolsService supplied a non-nil service. When unsupplied the
+	// `POST /v1/tools/{method}` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var toolsHandler *stream.ToolsHandler
+	if cfg.toolsService != nil {
+		th, err := stream.NewToolsHandler(cfg.toolsService, stream.WithToolsLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build tools handler: %w", err)
+		}
+		toolsHandler = th
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -517,6 +560,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		mountMemory(stream.MemoryListRoutePattern, memoryHandler.ListHandler())
 		mountMemory(stream.MemoryGetRoutePattern, memoryHandler.GetHandler())
 		mountMemory(stream.MemoryHealthRoutePattern, memoryHandler.HealthHandler())
+	}
+
+	if toolsHandler != nil {
+		var mountedTools http.Handler = toolsHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedTools = mw(toolsHandler)
+		}
+		mux.Handle(stream.ToolsRoutePattern, mountedTools)
 	}
 	return mux, nil
 }

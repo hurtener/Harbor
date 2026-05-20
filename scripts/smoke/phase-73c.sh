@@ -311,7 +311,7 @@ elif [ -f 'web/console/package.json' ] && [ -d 'web/console/node_modules/@playwr
         fail 'phase 73c: Playwright sessions-page.spec.ts failed (run `(cd web/console && npm run test:e2e -- sessions-page.spec.ts)` for detail)'
     fi
 else
-    skip 'phase 73c: Playwright not installed under web/console/node_modules/@playwright/test; SKIP per Phase 75 baseline-harness gate'
+    skip 'phase 73c: Playwright not installed OR sessions-page.spec.ts absent (Phase 73c not yet landed); SKIP per Phase 75 baseline-harness gate'
 fi
 
 smoke_summary
