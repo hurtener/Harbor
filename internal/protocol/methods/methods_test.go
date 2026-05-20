@@ -59,6 +59,13 @@ var wantMethods = []methods.Method{
 	methods.MethodMCPServersRefreshBinding,
 	methods.MethodMCPServersRevokeBinding,
 	methods.MethodMCPServersSetRawHTMLTrust,
+	methods.MethodToolsList,
+	methods.MethodToolsGet,
+	methods.MethodToolsDescribe,
+	methods.MethodToolsMetrics,
+	methods.MethodToolsContentStats,
+	methods.MethodToolsSetApprovalPolicy,
+	methods.MethodToolsRevokeOAuth,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -67,9 +74,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
-	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve = 44.
-	if len(got) != 44 {
-		t.Fatalf("Methods() returned %d methods, want 44", len(got))
+	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
+	// Phase 73f tools cluster seven = 51.
+	if len(got) != 51 {
+		t.Fatalf("Methods() returned %d methods, want 51", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -147,6 +155,14 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodMCPServersRefreshBinding:   "mcp.servers.refresh_binding",
 		methods.MethodMCPServersRevokeBinding:    "mcp.servers.revoke_binding",
 		methods.MethodMCPServersSetRawHTMLTrust:  "mcp.servers.set_raw_html_trust",
+
+		methods.MethodToolsList:              "tools.list",
+		methods.MethodToolsGet:               "tools.get",
+		methods.MethodToolsDescribe:          "tools.describe",
+		methods.MethodToolsMetrics:           "tools.metrics",
+		methods.MethodToolsContentStats:      "tools.content_stats",
+		methods.MethodToolsSetApprovalPolicy: "tools.set_approval_policy",
+		methods.MethodToolsRevokeOAuth:       "tools.revoke_oauth",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -223,9 +239,34 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodMCPServersList) {
 		t.Error("IsControlMethod(mcp.servers.list) = true, want false — mcp.servers.* route through the MCPSurface")
 	}
+	// Phase 73f (D-116): the seven tools.* methods route through the
+	// Tools dispatcher, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodToolsList, methods.MethodToolsGet,
+		methods.MethodToolsDescribe, methods.MethodToolsMetrics,
+		methods.MethodToolsContentStats, methods.MethodToolsSetApprovalPolicy,
+		methods.MethodToolsRevokeOAuth,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — tools.* methods route through the Tools dispatcher", m)
+		}
+		if !methods.IsToolsMethod(m) {
+			t.Errorf("IsToolsMethod(%q) = false, want true", m)
+		}
+	}
+	// Only the two mutating tools methods are admin methods.
+	if !methods.IsToolsAdminMethod(methods.MethodToolsSetApprovalPolicy) {
+		t.Error("IsToolsAdminMethod(tools.set_approval_policy) = false, want true")
+	}
+	if !methods.IsToolsAdminMethod(methods.MethodToolsRevokeOAuth) {
+		t.Error("IsToolsAdminMethod(tools.revoke_oauth) = false, want true")
+	}
+	if methods.IsToolsAdminMethod(methods.MethodToolsList) {
+		t.Error("IsToolsAdminMethod(tools.list) = true, want false — list is a read method")
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
-	// non-topology, non-artifacts, non-memory, non-mcp canonical method IS
-	// a control method.
+	// non-topology, non-artifacts, non-memory, non-mcp, non-tools canonical
+	// method IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
@@ -235,6 +276,9 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			continue
 		}
 		if methods.IsMCPServersMethod(m) {
+			continue
+		}
+		if methods.IsToolsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

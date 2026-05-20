@@ -147,6 +147,14 @@ var CanonicalMethods = map[string]struct{}{
 	"mcp.servers.refresh_binding":    {}, // Phase 73k / D-119
 	"mcp.servers.revoke_binding":     {}, // Phase 73k / D-119
 	"mcp.servers.set_raw_html_trust": {}, // Phase 73k / D-119
+	// Phase 73f (D-116) Console-Tools-page cluster — seven methods.
+	"tools.list":                {}, // Phase 73f / D-116
+	"tools.get":                 {}, // Phase 73f / D-116
+	"tools.describe":            {}, // Phase 73f / D-116
+	"tools.metrics":             {}, // Phase 73f / D-116
+	"tools.content_stats":       {}, // Phase 73f / D-116
+	"tools.set_approval_policy": {}, // Phase 73f / D-116
+	"tools.revoke_oauth":        {}, // Phase 73f / D-116
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -290,6 +298,25 @@ var CanonicalWireTypes = map[string]string{
 	"MCPServerRevokeBindingResponse":    "types",
 	"MCPServerSetRawHTMLTrustRequest":   "types",
 	"MCPServerSetRawHTMLTrustResponse":  "types",
+	// Phase 73f (D-116) Console-Tools-page wire types — all live in
+	// internal/protocol/types (internal/protocol/types/tools.go).
+	"Tool":                          "types",
+	"ToolFilter":                    "types",
+	"ToolListRequest":               "types",
+	"ToolListResponse":              "types",
+	"ToolAggregates":                "types",
+	"ToolGetRequest":                "types",
+	"ToolDescribeRequest":           "types",
+	"ToolManifest":                  "types",
+	"ToolMetricsRequest":            "types",
+	"ToolMetrics":                   "types",
+	"ToolContentStatsRequest":       "types",
+	"ToolContentStats":              "types",
+	"ToolContentBucket":             "types",
+	"ToolSetApprovalPolicyRequest":  "types",
+	"ToolSetApprovalPolicyResponse": "types",
+	"ToolRevokeOAuthRequest":        "types",
+	"ToolRevokeOAuthResponse":       "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

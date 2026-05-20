@@ -618,9 +618,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
-	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve = 44.
-	if len(got) != 44 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 44 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve)", len(got))
+	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
+	// Phase 73f tools cluster seven = 51.
+	if len(got) != 51 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 51 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -668,6 +669,14 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodMCPServersRefreshBinding:   {},
 		methods.MethodMCPServersRevokeBinding:    {},
 		methods.MethodMCPServersSetRawHTMLTrust:  {},
+
+		methods.MethodToolsList:              {},
+		methods.MethodToolsGet:               {},
+		methods.MethodToolsDescribe:          {},
+		methods.MethodToolsMetrics:           {},
+		methods.MethodToolsContentStats:      {},
+		methods.MethodToolsSetApprovalPolicy: {},
+		methods.MethodToolsRevokeOAuth:       {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -819,6 +828,19 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// topology clusters above.
 			if methods.IsMCPServersMethod(m) {
 				t.Skip("phase-73k: mcp.servers.* methods exercised by the MCPSurface unit tests + test/integration MCP-page test; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73f (D-116): the seven `tools.*` methods are
+			// dispatched by the Tools handler (POST /v1/tools/{method}),
+			// not the REST ControlSurface — they need a tools.ToolCatalog
+			// the conformance Stack does not wire. Their happy-paths +
+			// failure modes are exercised by internal/tools/protocol unit
+			// tests, the concurrent-reuse test, the stream-package
+			// tools_handler tests, and test/integration/tools_page_test.go
+			// (real catalog + real wire transport + real ES256 auth).
+			// Skip with an explicit reason — same posture as the search /
+			// posture / pause / topology clusters above.
+			if methods.IsToolsMethod(m) {
+				t.Skip("phase-73f: tools.* methods exercised by internal/tools/protocol tests + stream tools_handler tests + test/integration/tools_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
