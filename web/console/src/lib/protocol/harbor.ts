@@ -24,6 +24,7 @@ export {
 	MCPServersNamespace,
 	EventsNamespace,
 	AgentsNamespace,
+	SessionsNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
