@@ -5,13 +5,21 @@
   // status pill + per-node timeline + final-output preview. A heavy
   // output (D-026) arrives as an `output_ref` ArtifactRef — the panel
   // renders an `Open artifact` link, NEVER inlines heavy bytes.
+  //
+  // The `Open session` / `Open artifact` deep-links are OPTIONAL: when
+  // the target detail route does not yet exist (no `/sessions/<id>` or
+  // `/artifacts/<id>` route is mounted in the Console), the page passes
+  // no handler and the affordance renders disabled-with-tooltip rather
+  // than navigating to a 404 (CONVENTIONS.md §5 — never a broken link).
   import type { FlowRunDescription } from '$lib/flows/types';
   import { formatDurationMS } from '$lib/flows/format';
 
   interface Props {
     description: FlowRunDescription | null;
-    onopensession: (runID: string) => void;
-    onopenartifact: (artifactID: string) => void;
+    /** Deep-link to the run's session view; omitted when no route exists. */
+    onopensession?: (runID: string) => void;
+    /** Deep-link to the output artifact; omitted when no route exists. */
+    onopenartifact?: (artifactID: string) => void;
   }
 
   const { description, onopensession, onopenartifact }: Props = $props();
@@ -34,7 +42,11 @@
       <button
         class="ghost"
         data-testid="run-open-session"
-        onclick={() => onopensession(description.run.run_id)}
+        disabled={onopensession === undefined}
+        title={onopensession
+          ? 'Open the full session view for this run'
+          : 'The session detail route is not available yet'}
+        onclick={() => onopensession?.(description.run.run_id)}
       >
         Open session
       </button>
@@ -59,7 +71,11 @@
       <button
         class="artifact-link"
         data-testid="run-open-artifact"
-        onclick={() => onopenartifact(description.output_ref!.id)}
+        disabled={onopenartifact === undefined}
+        title={onopenartifact
+          ? 'Open the output artifact'
+          : 'The artifact detail route is not available yet'}
+        onclick={() => onopenartifact?.(description.output_ref!.id)}
       >
         Open artifact ({description.output_ref.size_bytes ?? 0} bytes)
       </button>
@@ -164,6 +180,13 @@
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-sm);
     cursor: pointer;
+  }
+
+  .artifact-link:disabled,
+  .ghost:disabled {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+    opacity: 0.6;
   }
 
   .output {
