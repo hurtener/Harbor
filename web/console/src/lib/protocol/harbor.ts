@@ -25,3 +25,24 @@ export {
 } from './client.js';
 
 export { ProtocolError, type ProtocolErrorBody } from './errors.js';
+
+export {
+	DEFAULT_MEMORY_LIST_PAGE_SIZE,
+	MAX_MEMORY_LIST_PAGE_SIZE,
+	type MemoryScope,
+	type MemoryStrategyName,
+	type MemoryDriverName,
+	type IdentityScope,
+	type MemoryItem,
+	type MemoryFilter,
+	type MemoryListRequest,
+	type MemoryAggregates,
+	type MemoryListResponse,
+	type MemoryArtifactRef,
+	type MemoryMetadata,
+	type MemoryGetRequest,
+	type MemoryItemDetail,
+	type MemoryGetResponse,
+	type MemoryHealthAggregate,
+	type MemoryHealthResponse
+} from './memory-types.js';

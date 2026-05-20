@@ -17,7 +17,7 @@
  * only (D-061).
  */
 import type { ConsoleDB, SavedFilter } from './index.js';
-import type { MemoryFilter } from '../protocol-memory.js';
+import type { MemoryFilter } from '../protocol/memory-types.js';
 
 /** The `saved_filters.page` discriminator value for the Memory page. */
 export const MEMORY_PAGE: SavedFilter['page'] = 'memory';
