@@ -40,8 +40,11 @@ web/console/build/
 web/console/node_modules/
 web/console/.svelte-kit/
 web/console/coverage/
+# Playwright e2e harness output (Phase 75)
 web/console/test-results/
 web/console/playwright-report/
+web/console/blob-report/
+web/console/.playwright/
 
 # Frontend artifacts
 node_modules/

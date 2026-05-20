@@ -120,7 +120,7 @@ into the Stage-3 PR per `docs/plans/wave-13-decomposition.md` §7.
   `fetch` call (forbidden per CLAUDE.md §4.5 #11 — go through the typed Protocol
   client).
 - Update glossary with two new terms ("Playwright harness", "frontend-e2e CI job").
-- Append D-105 to `docs/decisions.md` capturing the harness-targets-`harbor console`
+- Append D-115 to `docs/decisions.md` capturing the harness-targets-`harbor console`
   correction + the per-page-spec convention + the harness-baseline-vs-aggregator
   split (75 / 75a).
 
@@ -187,12 +187,12 @@ into the Stage-3 PR per `docs/plans/wave-13-decomposition.md` §7.
       harness files exist, the config targets `harbor console`, the npm
       scripts are declared, and no spec hand-rolls `fetch`.
 - [ ] Glossary entries added for "Playwright harness" and "frontend-e2e CI job".
-- [ ] D-105 appended to `docs/decisions.md` capturing the harness posture +
+- [ ] D-115 appended to `docs/decisions.md` capturing the harness posture +
       the correction to the master-plan row + the harness-baseline-vs-aggregator
       split.
 - [ ] `docs/plans/README.md` row for Phase 75: `Status` flips to `Shipped`;
       the goal text is updated from "runs against `harbor dev`" to "runs
-      against `harbor console`" with a footnote pointing at D-091 + D-105;
+      against `harbor console`" with a footnote pointing at D-091 + D-115;
       `Deps` flipped to `60, 72` per the wave-13 decomposition §4.
 - [ ] README Status row Phase 75 → Shipped; a one-line pointer to
       `web/console/tests/README.md` added to the testing section.
@@ -223,7 +223,7 @@ web/console/
 scripts/smoke/phase-75.sh                      # NEW — static-only smoke
 docs/plans/phase-75-playwright-harness-baseline.md
 docs/plans/README.md                           # row flip + goal/Deps amendment + Phase 75a row
-docs/decisions.md                              # D-105
+docs/decisions.md                              # D-115
 docs/glossary.md                               # two new terms (alphabetical insertion)
 README.md                                      # Status row + testing pointer
 ```
@@ -439,14 +439,14 @@ hydration. The wave-end aggregator (Phase 75a) consumes the full Stage-2 surface
   Runtime via `harbortest/devstack` + a `bin/harbor console` instance on an
   ephemeral port (D-104 pattern). First consumer: Phase 73a's
   `overview-page.spec.ts` (§13 primitive-with-consumer). Wave-end aggregator:
-  Phase 75a. D-105.
+  Phase 75a. D-115.
 - **`frontend-e2e` CI job** — the GitHub Actions job declared in
   `.github/workflows/ci.yml` (lands in Phase 75) that builds `bin/harbor`,
   installs npm dependencies + Playwright browsers, and runs the Console
   Playwright suite from `web/console/`. Skips gracefully when `web/console/`
   is absent (directory-missing → SKIP, mirroring the CLAUDE.md §4.2 "404/405/501
   → SKIP" pattern for smokes). Runs after the `go` job in the workflow DAG
-  so `bin/harbor` exists. D-105.
+  so `bin/harbor` exists. D-115.
 
 ## Pre-merge checklist
 
@@ -477,4 +477,4 @@ hydration. The wave-end aggregator (Phase 75a) consumes the full Stage-2 surface
       harness", "frontend-e2e CI job")
 - [ ] If a brief finding was departed from: justified above (master-plan §75
       goal text "runs against `harbor dev`" is corrected to "runs against
-      `harbor console`" per D-091 + brief 12; D-105 captures the lineage)
+      `harbor console`" per D-091 + brief 12; D-115 captures the lineage)
