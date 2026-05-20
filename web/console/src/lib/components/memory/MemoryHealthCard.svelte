@@ -1,8 +1,10 @@
 <script lang="ts">
-  // Memory-health status card — the right-rail card that renders the
-  // aggregate counters from `memory.health` (Phase 73j / D-118).
-  // Read-only (page-memory.md §12). Svelte 5 runes mode (D-092).
-  import type { MemoryHealthAggregate } from '$lib/protocol-memory';
+  // Memory-health card body — the right-rail content rendered inside a
+  // shared `RailCard` (D-121, CONVENTIONS.md §3). It renders the aggregate
+  // counters from `memory.health`. Read-only (page-memory.md §12). The
+  // page wraps this in `<RailCard title="Memory health">`; this component
+  // owns only the card body. Svelte 5 runes mode (D-092); tokens only.
+  import type { MemoryHealthAggregate } from '$lib/protocol/memory-types';
 
   let { aggregate }: { aggregate: MemoryHealthAggregate | null } = $props();
 
@@ -11,8 +13,7 @@
   );
 </script>
 
-<section class="card" aria-label="Memory health">
-  <h2>Memory health</h2>
+<div class="health-body" aria-label="Memory health">
   {#if aggregate}
     <dl class="counters">
       <div><dt>Total records</dt><dd>{aggregate.total}</dd></div>
@@ -31,7 +32,7 @@
       </div>
     </dl>
     {#if driverRows.length > 0}
-      <h3>Driver by scope</h3>
+      <h4>Driver by scope</h4>
       <ul class="drivers">
         {#each driverRows as [scope, driver] (scope)}
           <li><span class="scope">{scope}</span><span class="driver">{driver}</span></li>
@@ -41,25 +42,20 @@
   {:else}
     <p class="muted">Health counters unavailable.</p>
   {/if}
-</section>
+</div>
 
 <style>
-  .card {
-    background: var(--color-surface);
-    border: var(--border-width-hairline) solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-4);
+  .health-body {
+    display: grid;
+    gap: var(--space-2);
   }
 
-  h2 {
-    font-size: var(--text-base);
-    margin: var(--space-0) var(--space-0) var(--space-3);
-  }
-
-  h3 {
-    font-size: var(--text-sm);
+  h4 {
+    font-size: var(--text-xs);
     color: var(--color-text-muted);
-    margin: var(--space-4) var(--space-0) var(--space-2);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    margin: var(--space-2) var(--space-0) var(--space-1);
   }
 
   .counters {

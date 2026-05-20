@@ -8,7 +8,7 @@
   // placeholder UI (page-memory.md §12). D-065: the `Pinned` overlay is
   // a Phase 24 STRATEGY, not a session priority; this row never renders
   // a priority dimension. Svelte 5 runes mode (D-092).
-  import type { MemoryStrategyName } from '$lib/protocol-memory';
+  import type { MemoryStrategyName } from '$lib/protocol/memory-types';
 
   let {
     selected,
@@ -60,7 +60,7 @@
     font-size: var(--text-xs);
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-lg);
-    border: var(--border-width-hairline) solid var(--color-border);
+    border: var(--border-hairline);
     background: var(--color-surface);
     color: var(--color-text-muted);
     cursor: pointer;

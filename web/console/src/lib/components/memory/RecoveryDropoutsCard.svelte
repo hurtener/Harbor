@@ -12,13 +12,15 @@
 </script>
 
 <script lang="ts">
-  // Recovery-dropouts status card — the right-rail card that surfaces
-  // `memory.recovery_dropped` events (D-035). Read-only. Svelte 5 runes.
+  // Recovery-dropouts card body — the right-rail content rendered inside
+  // a shared `RailCard` (D-121, CONVENTIONS.md §3). It surfaces
+  // `memory.recovery_dropped` events (D-035). The page wraps this in
+  // `<RailCard title="Recovery dropouts">`; this component owns only the
+  // card body. Read-only. Svelte 5 runes mode (D-092).
   let { dropouts }: { dropouts: RecoveryDropout[] } = $props();
 </script>
 
-<section class="card" aria-label="Recovery dropouts">
-  <h2>Recovery dropouts</h2>
+<div class="dropouts-body" aria-label="Recovery dropouts">
   {#if dropouts.length === 0}
     <p class="muted">No recovery dropouts in this scope.</p>
   {:else}
@@ -31,19 +33,12 @@
       {/each}
     </ul>
   {/if}
-</section>
+</div>
 
 <style>
-  .card {
-    background: var(--color-surface);
-    border: var(--border-width-hairline) solid var(--color-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-4);
-  }
-
-  h2 {
-    font-size: var(--text-base);
-    margin: var(--space-0) var(--space-0) var(--space-3);
+  .dropouts-body {
+    display: grid;
+    gap: var(--space-2);
   }
 
   .dropouts {
@@ -57,17 +52,19 @@
   .dropouts li {
     display: flex;
     justify-content: space-between;
+    gap: var(--space-3);
     font-size: var(--text-sm);
   }
 
   .reason {
-    font-family: var(--font-mono);
     color: var(--color-warning);
+    overflow-wrap: anywhere;
   }
 
   time {
     color: var(--color-text-muted);
     font-size: var(--text-xs);
+    flex-shrink: 0;
   }
 
   .muted {

@@ -32,6 +32,12 @@
 
 import { ProtocolError, type ProtocolErrorBody } from './errors.js';
 import type { RuntimeConnection } from '../connection.js';
+import type {
+	MemoryGetResponse,
+	MemoryListRequest,
+	MemoryListResponse,
+	MemoryHealthResponse
+} from './memory-types.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -168,16 +174,19 @@ export class MemoryNamespace {
 		this.#t = t;
 	}
 	/** `memory.list` — paginated, identity-scope-filtered memory records. */
-	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
-		return this.#t.request<R>('/v1/memory/list', req);
+	list(req: MemoryListRequest = {}): Promise<MemoryListResponse> {
+		return this.#t.request<MemoryListResponse>(
+			'/v1/memory/list',
+			req as unknown as Record<string, unknown>
+		);
 	}
 	/** `memory.get` — full detail of one memory record. */
-	get<R = unknown>(key: string): Promise<R> {
-		return this.#t.request<R>('/v1/memory/get', { key });
+	get(key: string): Promise<MemoryGetResponse> {
+		return this.#t.request<MemoryGetResponse>('/v1/memory/get', { key });
 	}
 	/** `memory.health` — aggregate memory-health counters. */
-	health<R = unknown>(): Promise<R> {
-		return this.#t.request<R>('/v1/memory/health', {});
+	health(): Promise<MemoryHealthResponse> {
+		return this.#t.request<MemoryHealthResponse>('/v1/memory/health', {});
 	}
 }
 
