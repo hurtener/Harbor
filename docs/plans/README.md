@@ -104,6 +104,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
+| 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Pending  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |

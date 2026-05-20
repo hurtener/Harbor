@@ -122,6 +122,15 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	if methods.IsTopologyMethod(method) {
 		return s.dispatchTopology(ctx, req)
 	}
+	// Phase 73k (D-119): the twelve `mcp.servers.*` methods are
+	// dispatched by the MCPSurface, not the task-control ControlSurface
+	// — a caller that hits the control Dispatch with an MCP method is
+	// using the wrong surface. Surface it loud rather than silently
+	// routing onto the steering inbox.
+	if methods.IsMCPServersMethod(method) {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is an MCP method; dispatch through the MCPSurface instead", string(method))
+	}
 	return s.dispatchControl(ctx, method, req)
 }
 

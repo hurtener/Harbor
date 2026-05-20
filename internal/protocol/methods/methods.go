@@ -324,6 +324,53 @@ const (
 	// `POST /v1/memory/health`. Same identity-scope contract as
 	// MethodMemoryList.
 	MethodMemoryHealth Method = "memory.health"
+
+	// The Wave 13 (Phase 73k / D-119) MCP-Connections-page method
+	// cluster. Twelve `mcp.servers.*` methods — nine read methods and
+	// three admin verbs — that back the Console MCP Connections page.
+	// None are control / streaming-events / search / posture / pause /
+	// topology methods: `IsMCPServersMethod` is the O(1) predicate, and
+	// they route through the MCPSurface dispatcher. Identity-mandatory;
+	// the three admin verbs gate on the `auth.ScopeAdmin` claim (D-079
+	// closed-set — no new scope is minted for MCP). See
+	// `docs/plans/phase-73k-console-mcp-connections-page.md`.
+
+	// MethodMCPServersList — paged, filterable list of the configured
+	// MCP southbound servers with live state.
+	MethodMCPServersList Method = "mcp.servers.list"
+	// MethodMCPServersGet — single-server detail read.
+	MethodMCPServersGet Method = "mcp.servers.get"
+	// MethodMCPServersResources — list of the resources a server
+	// advertises.
+	MethodMCPServersResources Method = "mcp.servers.resources"
+	// MethodMCPServersPrompts — list of the prompts a server
+	// advertises.
+	MethodMCPServersPrompts Method = "mcp.servers.prompts"
+	// MethodMCPServersRefreshDiscovery — control-plane verb: re-runs
+	// the server's tools/resources/prompts discovery.
+	MethodMCPServersRefreshDiscovery Method = "mcp.servers.refresh_discovery"
+	// MethodMCPServersProbe — control-plane verb: runs a transport
+	// ping / tools-list round-trip.
+	MethodMCPServersProbe Method = "mcp.servers.probe"
+	// MethodMCPServersHealth — handshake-latency sparkline + reconnect
+	// history + transport-error rate.
+	MethodMCPServersHealth Method = "mcp.servers.health"
+	// MethodMCPServersBindingsList — list of a server's OAuth bindings
+	// (metadata only — never token plaintext, D-083).
+	MethodMCPServersBindingsList Method = "mcp.servers.bindings.list"
+	// MethodMCPServersPolicy — read-only ToolPolicy projection.
+	MethodMCPServersPolicy Method = "mcp.servers.policy"
+	// MethodMCPServersRefreshBinding — admin verb: initiates an OAuth
+	// (re)connect flow for a binding. Requires the `auth.ScopeAdmin`
+	// claim (D-079).
+	MethodMCPServersRefreshBinding Method = "mcp.servers.refresh_binding"
+	// MethodMCPServersRevokeBinding — admin verb: revokes an OAuth
+	// binding. Requires the `auth.ScopeAdmin` claim (D-079).
+	MethodMCPServersRevokeBinding Method = "mcp.servers.revoke_binding"
+	// MethodMCPServersSetRawHTMLTrust — admin verb: sets the per-server
+	// raw-HTML opt-in flag and emits the `mcp.raw_html_trust_toggled`
+	// audit event. Requires the `auth.ScopeAdmin` claim (D-079).
+	MethodMCPServersSetRawHTMLTrust Method = "mcp.servers.set_raw_html_trust"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -364,6 +411,19 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMemoryList:        {},
 	MethodMemoryGet:         {},
 	MethodMemoryHealth:      {},
+
+	MethodMCPServersList:             {},
+	MethodMCPServersGet:              {},
+	MethodMCPServersResources:        {},
+	MethodMCPServersPrompts:          {},
+	MethodMCPServersRefreshDiscovery: {},
+	MethodMCPServersProbe:            {},
+	MethodMCPServersHealth:           {},
+	MethodMCPServersBindingsList:     {},
+	MethodMCPServersPolicy:           {},
+	MethodMCPServersRefreshBinding:   {},
+	MethodMCPServersRevokeBinding:    {},
+	MethodMCPServersSetRawHTMLTrust:  {},
 }
 
 // canonicalArtifactsMethods is the closed sub-set of the three artifacts
@@ -385,6 +445,56 @@ var canonicalArtifactsMethods = map[Method]struct{}{
 // steering inbox.
 func IsArtifactsMethod(m Method) bool {
 	_, ok := canonicalArtifactsMethods[m]
+	return ok
+}
+
+// canonicalMCPServersMethods is the closed sub-set of the twelve
+// `mcp.servers.*` methods landed in Phase 73k (Wave 13 / D-119) — nine
+// read methods and three admin verbs. IsMCPServersMethod is O(1); the
+// control transport branches on it to route the request through the
+// MCPSurface dispatcher instead of the task-control surface.
+var canonicalMCPServersMethods = map[Method]struct{}{
+	MethodMCPServersList:             {},
+	MethodMCPServersGet:              {},
+	MethodMCPServersResources:        {},
+	MethodMCPServersPrompts:          {},
+	MethodMCPServersRefreshDiscovery: {},
+	MethodMCPServersProbe:            {},
+	MethodMCPServersHealth:           {},
+	MethodMCPServersBindingsList:     {},
+	MethodMCPServersPolicy:           {},
+	MethodMCPServersRefreshBinding:   {},
+	MethodMCPServersRevokeBinding:    {},
+	MethodMCPServersSetRawHTMLTrust:  {},
+}
+
+// canonicalMCPAdminMethods is the closed sub-set of the three
+// `mcp.servers.*` admin verbs (Phase 73k / D-119) that gate on the
+// `auth.ScopeAdmin` claim. IsMCPAdminMethod is O(1); the MCPSurface
+// dispatcher uses it to apply the admin-scope gate.
+var canonicalMCPAdminMethods = map[Method]struct{}{
+	MethodMCPServersRefreshBinding:  {},
+	MethodMCPServersRevokeBinding:   {},
+	MethodMCPServersSetRawHTMLTrust: {},
+}
+
+// IsMCPServersMethod reports whether m is one of the twelve canonical
+// `mcp.servers.*` methods (Phase 73k / D-119). The control transport
+// branches on this to route the request through the MCPSurface
+// dispatcher instead of the task-control / search / posture surfaces.
+// NOT a control method — a new non-control method extends THIS
+// predicate, never the steering inbox.
+func IsMCPServersMethod(m Method) bool {
+	_, ok := canonicalMCPServersMethods[m]
+	return ok
+}
+
+// IsMCPAdminMethod reports whether m is one of the three `mcp.servers.*`
+// admin verbs (`refresh_binding` / `revoke_binding` /
+// `set_raw_html_trust`) that gate on the `auth.ScopeAdmin` claim
+// (D-079). The MCPSurface dispatcher uses it to apply the admin gate.
+func IsMCPAdminMethod(m Method) bool {
+	_, ok := canonicalMCPAdminMethods[m]
 	return ok
 }
 
@@ -561,6 +671,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsMemoryMethod(m) {
+		return false
+	}
+	if IsMCPServersMethod(m) {
 		return false
 	}
 	return true

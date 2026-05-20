@@ -103,10 +103,23 @@ type Handler struct {
 	searchSurface    SearchSurface
 	postureSurface   PostureSurface
 	artifactsSurface ArtifactsSurface
+	mcpSurface       MCPSurface
 	logger           *slog.Logger
 	bus              events.EventBus // nil ⇒ impersonation accepted-path refused
 	redactor         audit.Redactor  // nil ⇒ impersonation accepted-path refused
 	now              func() time.Time
+}
+
+// MCPSurface is the narrow contract the control transport calls into for
+// the twelve `mcp.servers.*` Protocol methods (Phase 73k / D-119). The
+// production implementation is *protocol.MCPSurface; tests inject a
+// deterministic surface. A nil surface means the handler rejects MCP
+// calls with CodeUnknownMethod — preserving the 404 → SKIP path the
+// smoke script relies on while the surface is being wired through.
+type MCPSurface interface {
+	// Dispatch handles one of the twelve `mcp.servers.*` methods.
+	// Returns either a *types.<Method>Response or a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
 // SearchSurface is the narrow contract the control transport calls into
@@ -258,6 +271,18 @@ func WithArtifactsSurface(s ArtifactsSurface) Option {
 	}
 }
 
+// WithMCPSurface wires the Phase 73k (D-119) MCP-Connections dispatcher
+// into the control handler. When supplied, the handler routes the twelve
+// `mcp.servers.*` methods to s.Dispatch instead of falling through to
+// the task-control ControlSurface. Optional — handlers built without it
+// reject MCP calls with CodeUnknownMethod (the 404 → SKIP path the smoke
+// script relies on).
+func WithMCPSurface(s MCPSurface) Option {
+	return func(h *Handler) {
+		h.mcpSurface = s
+	}
+}
+
 // NewHandler builds the Protocol REST/JSON control transport over the
 // transport-agnostic ControlSurface. The surface is mandatory — a nil
 // fails loud with ErrMisconfigured rather than building a handler that
@@ -361,6 +386,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveArtifacts(w, r, method)
+		return
+	}
+
+	// Phase 73k (D-119): the twelve `mcp.servers.*` methods route
+	// through a separate MCPSurface — they reach the runtime's MCP
+	// driver registry + OAuth provider, not the steering inbox. If no
+	// MCPSurface is wired, fall through to the unknown-method path so
+	// the smoke `skip_if_404` branch fires.
+	if methods.IsMCPServersMethod(method) {
+		if h.mcpSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: MCP surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.serveMCP(w, r, method)
 		return
 	}
 

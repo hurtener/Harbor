@@ -47,6 +47,18 @@ var wantMethods = []methods.Method{
 	methods.MethodMemoryList,
 	methods.MethodMemoryGet,
 	methods.MethodMemoryHealth,
+	methods.MethodMCPServersList,
+	methods.MethodMCPServersGet,
+	methods.MethodMCPServersResources,
+	methods.MethodMCPServersPrompts,
+	methods.MethodMCPServersRefreshDiscovery,
+	methods.MethodMCPServersProbe,
+	methods.MethodMCPServersHealth,
+	methods.MethodMCPServersBindingsList,
+	methods.MethodMCPServersPolicy,
+	methods.MethodMCPServersRefreshBinding,
+	methods.MethodMCPServersRevokeBinding,
+	methods.MethodMCPServersSetRawHTMLTrust,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -55,9 +67,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
-	// Phase 73j memory cluster three = 32.
-	if len(got) != 32 {
-		t.Fatalf("Methods() returned %d methods, want 32", len(got))
+	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve = 44.
+	if len(got) != 44 {
+		t.Fatalf("Methods() returned %d methods, want 44", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -122,6 +134,19 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodMemoryList:        "memory.list",
 		methods.MethodMemoryGet:         "memory.get",
 		methods.MethodMemoryHealth:      "memory.health",
+
+		methods.MethodMCPServersList:             "mcp.servers.list",
+		methods.MethodMCPServersGet:              "mcp.servers.get",
+		methods.MethodMCPServersResources:        "mcp.servers.resources",
+		methods.MethodMCPServersPrompts:          "mcp.servers.prompts",
+		methods.MethodMCPServersRefreshDiscovery: "mcp.servers.refresh_discovery",
+		methods.MethodMCPServersProbe:            "mcp.servers.probe",
+		methods.MethodMCPServersHealth:           "mcp.servers.health",
+		methods.MethodMCPServersBindingsList:     "mcp.servers.bindings.list",
+		methods.MethodMCPServersPolicy:           "mcp.servers.policy",
+		methods.MethodMCPServersRefreshBinding:   "mcp.servers.refresh_binding",
+		methods.MethodMCPServersRevokeBinding:    "mcp.servers.revoke_binding",
+		methods.MethodMCPServersSetRawHTMLTrust:  "mcp.servers.set_raw_html_trust",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -193,15 +218,23 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			t.Errorf("IsControlMethod(%q) = true, want false — memory.* methods are read-only, not steering controls", m)
 		}
 	}
+	// Phase 73k (D-119): the twelve mcp.servers.* methods route through
+	// the MCPSurface, NOT the steering inbox.
+	if methods.IsControlMethod(methods.MethodMCPServersList) {
+		t.Error("IsControlMethod(mcp.servers.list) = true, want false — mcp.servers.* route through the MCPSurface")
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
-	// non-topology, non-artifacts, non-memory canonical method IS a
-	// control method.
+	// non-topology, non-artifacts, non-memory, non-mcp canonical method IS
+	// a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||
 			methods.IsTopologyMethod(m) || methods.IsArtifactsMethod(m) || methods.IsMemoryMethod(m) {
+			continue
+		}
+		if methods.IsMCPServersMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

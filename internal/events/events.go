@@ -109,6 +109,15 @@ const (
 	// subscribers keep typed access). The paired request-side surface
 	// is the `topology.snapshot` Protocol method.
 	EventTypeTopologyChanged EventType = "topology.changed"
+	// EventTypeMCPRawHTMLTrustToggled — emitted by the runtime (the
+	// Phase 73k MCPSurface) when a Console admin flips the per-server
+	// raw-HTML opt-in flag via `mcp.servers.set_raw_html_trust`. Payload
+	// is MCPRawHTMLTrustToggledPayload (SafePayload by construction —
+	// server name + boolean + actor identity quadruple; no upstream MCP
+	// content). The default-deny posture for raw-HTML / SVG rendering
+	// (brief 11 §8) makes this audit event the load-bearing record of
+	// the operator's explicit opt-in. Phase 73k / D-119.
+	EventTypeMCPRawHTMLTrustToggled EventType = "mcp.raw_html_trust_toggled"
 )
 
 // canonicalTypes is the registered set. Build via init() so the file
@@ -132,6 +141,7 @@ func init() {
 		EventTypeGovernanceRateLimited,
 		EventTypeRuntimeRunCancelled,
 		EventTypeTopologyChanged,
+		EventTypeMCPRawHTMLTrustToggled,
 	} {
 		canonicalTypes[t] = struct{}{}
 	}
@@ -151,6 +161,28 @@ type TopologyChangedPayload struct {
 	// Projection is the canonical engine topology at the moment the
 	// event was emitted.
 	Projection types.TopologyProjection
+}
+
+// MCPRawHTMLTrustToggledPayload is the SafePayload carried by an
+// EventTypeMCPRawHTMLTrustToggled event (Phase 73k / D-119). The
+// runtime publishes one on every successful
+// `mcp.servers.set_raw_html_trust` Protocol call.
+//
+// It is SafePayload by construction (D-028): the payload carries only
+// the MCP server name, the new boolean trust value, the actor's
+// identity quadruple, and the toggle instant — no upstream MCP content,
+// no secret-shaped fields. The bus therefore skips the audit.Redactor
+// for this payload and a subscriber keeps typed access.
+type MCPRawHTMLTrustToggledPayload struct {
+	SafeSealed
+	// Actor is the identity quadruple of the admin who toggled the flag.
+	Actor identity.Quadruple
+	// ServerName is the MCP server the flag was toggled on.
+	ServerName string
+	// Trusted is the new raw-HTML trust value.
+	Trusted bool
+	// OccurredAt is the wall-clock instant the toggle was applied.
+	OccurredAt time.Time
 }
 
 // IsValidEventType reports whether t is in the canonical registry.

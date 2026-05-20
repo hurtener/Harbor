@@ -618,9 +618,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
-	// Phase 73j memory cluster three = 32.
-	if len(got) != 32 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 32 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three)", len(got))
+	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve = 44.
+	if len(got) != 44 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 44 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -655,6 +655,19 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodMemoryList:        {},
 		methods.MethodMemoryGet:         {},
 		methods.MethodMemoryHealth:      {},
+
+		methods.MethodMCPServersList:             {},
+		methods.MethodMCPServersGet:              {},
+		methods.MethodMCPServersResources:        {},
+		methods.MethodMCPServersPrompts:          {},
+		methods.MethodMCPServersRefreshDiscovery: {},
+		methods.MethodMCPServersProbe:            {},
+		methods.MethodMCPServersHealth:           {},
+		methods.MethodMCPServersBindingsList:     {},
+		methods.MethodMCPServersPolicy:           {},
+		methods.MethodMCPServersRefreshBinding:   {},
+		methods.MethodMCPServersRevokeBinding:    {},
+		methods.MethodMCPServersSetRawHTMLTrust:  {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -796,6 +809,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// when the Stack wires a MemoryStore-bearing memory handler.
 			if methods.IsMemoryMethod(m) {
 				t.Skip("phase-73j: memory.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires a memory handler")
+			}
+			// Phase 73k (D-119): the twelve `mcp.servers.*` methods are
+			// dispatched by the MCPSurface, not the ControlSurface — the
+			// conformance Stack wires no MCP accessor. Their happy-paths
+			// + failure modes are exercised end-to-end by the MCPSurface
+			// unit tests + the MCP-page integration test. Skip with an
+			// explicit reason — same posture as the search / posture /
+			// topology clusters above.
+			if methods.IsMCPServersMethod(m) {
+				t.Skip("phase-73k: mcp.servers.* methods exercised by the MCPSurface unit tests + test/integration MCP-page test; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -988,6 +1011,12 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// tests.
 			if methods.IsMemoryMethod(m) {
 				t.Skip("phase-73j: memory.* malformed-request paths covered by internal/protocol/transports/stream/memory_handler_test.go")
+			}
+			// Phase 73k (D-119): mcp.servers.* methods route through the
+			// MCPSurface, not the ControlSurface — their malformed-request
+			// paths are covered by the MCPSurface unit tests.
+			if methods.IsMCPServersMethod(m) {
+				t.Skip("phase-73k: mcp.servers.* malformed-request path covered by internal/protocol/mcp_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
