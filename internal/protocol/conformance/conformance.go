@@ -460,6 +460,8 @@ var expectedHTTPStatus = map[protoerrors.Code]int{
 	protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
 	protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
 	protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
+	protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
+	protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 }
 
 // errorCodeMatrix is the closed set of canonical Protocol error codes
@@ -477,6 +479,15 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeRuntimeError,
 	protoerrors.CodeAuthRejected,
 	protoerrors.CodeIdentityScopeRequired,
+	// Phase 73l (D-120) artifacts surface — `CodePresignUnsupported`
+	// (an `artifacts.get_ref` against a non-S3 driver) and
+	// `CodeRequestTooLarge` (an oversize `artifacts.put` body). Both are
+	// exercised end-to-end by the artifacts surface unit tests +
+	// test/integration/artifacts_page_test.go; the conformance-suite
+	// scenario lands when the Stack wires an ArtifactsSurface (same
+	// posture as the search.* / posture / pause / topology clusters).
+	protoerrors.CodePresignUnsupported,
+	protoerrors.CodeRequestTooLarge,
 }
 
 // methodScopeFor returns the steering scope the suite uses when
@@ -606,9 +617,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one = 26.
-	if len(got) != 26 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 26 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one)", len(got))
+	// 74 topology.snapshot one + Phase 73l artifacts cluster three = 29.
+	if len(got) != 29 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 29 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -637,6 +648,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodLLMPosture:        {},
 		methods.MethodPauseList:         {},
 		methods.MethodTopologySnapshot:  {},
+		methods.MethodArtifactsList:     {},
+		methods.MethodArtifactsPut:      {},
+		methods.MethodArtifactsGetRef:   {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -757,6 +771,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// the suite gains an engine-bearing Stack.
 			if methods.IsTopologyMethod(m) {
 				t.Skip("phase-74: topology.snapshot exercised by its unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an engine")
+			}
+			// Phase 73l (D-120): the three `artifacts.*` methods are
+			// dispatched by ArtifactsSurface, not ControlSurface — they
+			// need an ArtifactStore the conformance Stack does not wire.
+			// Their happy-paths + failure modes are exercised by the
+			// artifacts surface unit tests, the concurrent-reuse test,
+			// and test/integration/artifacts_page_test.go (real
+			// ArtifactStore + real wire transport). The conformance-suite
+			// scenario lands when the Stack gains an ArtifactStore — same
+			// posture as the search / posture / pause / topology clusters.
+			if methods.IsArtifactsMethod(m) {
+				t.Skip("phase-73l: artifacts.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an ArtifactStore")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -931,6 +957,17 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// covered by Phase 74's protocol_test.go.
 			if methods.IsTopologyMethod(m) {
 				t.Skip("phase-74: topology.snapshot malformed-request path covered by internal/protocol/protocol_test.go; conformance-suite scenario lands when the Stack wires an engine")
+			}
+			// Phase 73l (D-120): the three artifacts.* methods are
+			// dispatched by ArtifactsSurface, which the engine-less
+			// conformance Stack does not wire — the control transport
+			// returns CodeUnknownMethod before any request-shape check.
+			// Their malformed-request paths are covered by the artifacts
+			// surface unit tests + test/integration/artifacts_page_test.go;
+			// the conformance-suite scenario lands when the Stack wires
+			// an ArtifactStore.
+			if methods.IsArtifactsMethod(m) {
+				t.Skip("phase-73l: artifacts.* malformed-request paths covered by internal/protocol/artifacts_test.go; conformance-suite scenario lands when the Stack wires an ArtifactStore")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

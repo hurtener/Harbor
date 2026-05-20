@@ -116,6 +116,24 @@ const (
 	// token. The Go-level distinction stays available for in-process
 	// callers that need it.
 	CodeIdentityScopeRequired Code = "identity_scope_required"
+	// CodePresignUnsupported — Phase 73l (Wave 13 / D-120) artifacts
+	// surface: an `artifacts.get_ref` request reached an ArtifactStore
+	// driver that does not implement the `artifacts.Presigner` capability
+	// (the in-mem / fs / sqlite-blob / postgres-blob drivers — only the
+	// Phase 19 S3 driver implements it). The resolver fails loud rather
+	// than silently falling back to byte-streaming, so a backend
+	// misconfiguration is observable. The Console renders the typed code
+	// as "Preview not available — driver does not support presigned URLs"
+	// and offers a proxy Download link. Maps to HTTP 501 (Not
+	// Implemented) — the request is well-formed, the surface is real, but
+	// the configured driver cannot satisfy it.
+	CodePresignUnsupported Code = "presign_unsupported"
+	// CodeRequestTooLarge — Phase 73l (Wave 13 / D-120) artifacts
+	// surface: an `artifacts.put` request body exceeded the configured
+	// `config.ProtocolConfig.MaxRequestBytes` bound. Fails loud rather
+	// than silently truncating the upload. Maps to HTTP 413 (Payload Too
+	// Large).
+	CodeRequestTooLarge Code = "request_too_large"
 )
 
 // canonicalCodes is the registered set — a fixed package-level map. A
@@ -131,6 +149,8 @@ var canonicalCodes = map[Code]struct{}{
 	CodeRuntimeError:          {},
 	CodeAuthRejected:          {},
 	CodeIdentityScopeRequired: {},
+	CodePresignUnsupported:    {},
+	CodeRequestTooLarge:       {},
 }
 
 // IsValidCode reports whether c is one of the canonical Protocol error

@@ -23,6 +23,8 @@ var wantCodes = []protoerrors.Code{
 	protoerrors.CodeRuntimeError,
 	protoerrors.CodeAuthRejected,
 	protoerrors.CodeIdentityScopeRequired,
+	protoerrors.CodePresignUnsupported,
+	protoerrors.CodeRequestTooLarge,
 }
 
 func TestErrorCodes_StableWireStrings(t *testing.T) {
@@ -39,6 +41,8 @@ func TestErrorCodes_StableWireStrings(t *testing.T) {
 		protoerrors.CodeRuntimeError:          "runtime_error",
 		protoerrors.CodeAuthRejected:          "auth_rejected",
 		protoerrors.CodeIdentityScopeRequired: "identity_scope_required",
+		protoerrors.CodePresignUnsupported:    "presign_unsupported",
+		protoerrors.CodeRequestTooLarge:       "request_too_large",
 	}
 	for code, want := range wire {
 		if string(code) != want {
