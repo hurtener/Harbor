@@ -44,6 +44,9 @@ var wantMethods = []methods.Method{
 	methods.MethodArtifactsList,
 	methods.MethodArtifactsPut,
 	methods.MethodArtifactsGetRef,
+	methods.MethodMemoryList,
+	methods.MethodMemoryGet,
+	methods.MethodMemoryHealth,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -51,9 +54,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one + Phase 73l artifacts cluster three = 29.
-	if len(got) != 29 {
-		t.Fatalf("Methods() returned %d methods, want 29", len(got))
+	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
+	// Phase 73j memory cluster three = 32.
+	if len(got) != 32 {
+		t.Fatalf("Methods() returned %d methods, want 32", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -115,6 +119,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodArtifactsList:     "artifacts.list",
 		methods.MethodArtifactsPut:      "artifacts.put",
 		methods.MethodArtifactsGetRef:   "artifacts.get_ref",
+		methods.MethodMemoryList:        "memory.list",
+		methods.MethodMemoryGet:         "memory.get",
+		methods.MethodMemoryHealth:      "memory.health",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -177,14 +184,24 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			t.Errorf("IsControlMethod(%q) = true, want false — artifacts methods route through the ArtifactsSurface", m)
 		}
 	}
+	// Phase 73j (D-118): the three `memory.*` read methods route
+	// through their own handlers, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodMemoryList, methods.MethodMemoryGet, methods.MethodMemoryHealth,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — memory.* methods are read-only, not steering controls", m)
+		}
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
-	// non-topology, non-artifacts canonical method IS a control method.
+	// non-topology, non-artifacts, non-memory canonical method IS a
+	// control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||
-			methods.IsTopologyMethod(m) || methods.IsArtifactsMethod(m) {
+			methods.IsTopologyMethod(m) || methods.IsArtifactsMethod(m) || methods.IsMemoryMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
@@ -351,6 +368,52 @@ func TestIsTopologyMethod(t *testing.T) {
 	} {
 		if methods.IsTopologyMethod(m) {
 			t.Errorf("IsTopologyMethod(%q) = true, want false", m)
+		}
+	}
+}
+
+// TestIsMemoryMethod pins the Phase 73j (D-118) memory predicate — the
+// three `memory.*` read methods are the closed set; none of them is a
+// control / streaming / search / posture / pause / topology method, and
+// IsValidMethod recognises every wire string.
+func TestIsMemoryMethod(t *testing.T) {
+	memoryMethods := map[methods.Method]string{
+		methods.MethodMemoryList:   "memory.list",
+		methods.MethodMemoryGet:    "memory.get",
+		methods.MethodMemoryHealth: "memory.health",
+	}
+	for m, wire := range memoryMethods {
+		if string(m) != wire {
+			t.Errorf("memory method wire string = %q, want %q", string(m), wire)
+		}
+		if !methods.IsMemoryMethod(m) {
+			t.Errorf("IsMemoryMethod(%q) = false, want true", m)
+		}
+		if !methods.IsValidMethod(m) {
+			t.Errorf("IsValidMethod(%q) = false, want true", m)
+		}
+		// Wire-string stability — a third-party Console computes the
+		// canonical name as a literal and expects parity.
+		if !methods.IsValidMethod(methods.Method(wire)) {
+			t.Errorf("IsValidMethod(Method(%q)) = false, want true — wire string stability broken", wire)
+		}
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false", m)
+		}
+		if methods.IsStreamingEventsMethod(m) || methods.IsSearchMethod(m) ||
+			methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||
+			methods.IsTopologyMethod(m) {
+			t.Errorf("memory method %q misclassified into another non-control surface", m)
+		}
+	}
+	// Non-memory methods.
+	for _, m := range []methods.Method{
+		methods.MethodStart, methods.MethodCancel, methods.MethodEventsSubscribe,
+		methods.MethodSearchQuery, methods.MethodPauseList,
+		methods.MethodTopologySnapshot, methods.Method("bogus"), "",
+	} {
+		if methods.IsMemoryMethod(m) {
+			t.Errorf("IsMemoryMethod(%q) = true, want false", m)
 		}
 	}
 }

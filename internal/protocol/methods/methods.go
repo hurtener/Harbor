@@ -293,6 +293,37 @@ const (
 	// through this single resolver per D-022 / D-026. Identity-mandatory;
 	// expiry is bounded [1m, 7d].
 	MethodArtifactsGetRef Method = "artifacts.get_ref"
+
+	// MethodMemoryList — Phase 73j (Wave 13 / D-118). Returns the
+	// paginated, identity-scope-filtered set of memory records the
+	// Console Memory page renders. Read-only — it composes over the
+	// shipped `MemoryStore.Snapshot` surface (Phases 23–25) and the
+	// `events.aggregate` counters (Phase 72a). The wire-transport route
+	// is `POST /v1/memory/list`. Identity-mandatory; a cross-tenant
+	// filter requires the verified `auth.ScopeAdmin` (or
+	// `auth.ScopeConsoleFleet`) claim from the D-079 closed two-scope
+	// set — NO new memory scope is minted (audit B1). NOT a control /
+	// search / posture / pause / topology method; `IsMemoryMethod` is
+	// its own O(1) predicate. See
+	// `docs/plans/phase-73j-console-memory-page.md`.
+	MethodMemoryList Method = "memory.list"
+
+	// MethodMemoryGet — Phase 73j. Returns the full detail of a single
+	// memory record: metadata + post-redaction value (below the D-026
+	// heavy-content threshold) OR a by-reference `MemoryArtifactRef`
+	// (at or above the threshold) — NEVER inline bytes above threshold.
+	// The wire-transport route is `POST /v1/memory/get`. Same identity-
+	// scope contract as MethodMemoryList.
+	MethodMemoryGet Method = "memory.get"
+
+	// MethodMemoryHealth — Phase 73j. Returns aggregate memory-health
+	// counters (total records / expiring-in-1h / identity-rejected-24h
+	// / recovery-dropped-24h) plus the per-scope driver mapping. The
+	// 24-h-window counters derive from `events.aggregate` over the
+	// `memory.*` event types. The wire-transport route is
+	// `POST /v1/memory/health`. Same identity-scope contract as
+	// MethodMemoryList.
+	MethodMemoryHealth Method = "memory.health"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -330,6 +361,9 @@ var canonicalMethods = map[Method]struct{}{
 	MethodArtifactsList:     {},
 	MethodArtifactsPut:      {},
 	MethodArtifactsGetRef:   {},
+	MethodMemoryList:        {},
+	MethodMemoryGet:         {},
+	MethodMemoryHealth:      {},
 }
 
 // canonicalArtifactsMethods is the closed sub-set of the three artifacts
@@ -422,6 +456,30 @@ func IsTopologyMethod(m Method) bool {
 	return ok
 }
 
+// canonicalMemoryMethods is the closed sub-set of the three Phase 73j
+// (Wave 13 / D-118) `memory.*` read methods. IsMemoryMethod is O(1);
+// the transport adapter uses it to branch the request through the
+// memory-inspection handlers instead of the task-control surface. The
+// set is closed — the V1 memory-page surface is read-only (`memory.list`
+// / `memory.get` / `memory.health`); the mutation methods (`memory.put`
+// / `memory.delete`) are deferred to Phase 73 / post-V1.
+var canonicalMemoryMethods = map[Method]struct{}{
+	MethodMemoryList:   {},
+	MethodMemoryGet:    {},
+	MethodMemoryHealth: {},
+}
+
+// IsMemoryMethod reports whether m is one of the three canonical
+// `memory.*` read methods landed in Phase 73j (Wave 13 / D-118). The
+// control transport branches on this to route the request through the
+// memory-inspection handlers instead of the task-control / search /
+// posture / pause / topology surfaces. NOT a control method — a new
+// non-control method extends THIS predicate, never the steering inbox.
+func IsMemoryMethod(m Method) bool {
+	_, ok := canonicalMemoryMethods[m]
+	return ok
+}
+
 // streamingEventsMethods is the closed set of canonical method names
 // the Runtime classifies as streaming-events methods (the first non-
 // task-control Protocol surface to land — Phase 72 / 72a). Used by
@@ -465,8 +523,8 @@ var pauseMethods = map[Method]struct{}{
 // streaming-events methods (Phase 72 / 72a) AND the Phase 72c
 // `search.*` cluster AND the Phase 72f `runtime.*` / `metrics.*`
 // posture cluster AND the Phase 72e pause-snapshot method AND the
-// Phase 74 `topology.snapshot` method (each a separate surface from
-// the steering inbox).
+// Phase 74 `topology.snapshot` method AND the Phase 73j `memory.*`
+// read cluster (each a separate surface from the steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
@@ -500,6 +558,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsArtifactsMethod(m) {
+		return false
+	}
+	if IsMemoryMethod(m) {
 		return false
 	}
 	return true

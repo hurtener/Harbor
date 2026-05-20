@@ -131,6 +131,9 @@ var CanonicalMethods = map[string]struct{}{
 	"artifacts.list":     {}, // Phase 73l / D-120
 	"artifacts.put":      {}, // Phase 73l / D-120
 	"artifacts.get_ref":  {}, // Phase 73l / D-120
+	"memory.list":        {}, // Phase 73j / D-118
+	"memory.get":         {}, // Phase 73j / D-118
+	"memory.health":      {}, // Phase 73j / D-118
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -222,6 +225,21 @@ var CanonicalWireTypes = map[string]string{
 	"ArtifactsPutResponse":    "types",
 	"ArtifactsGetRefRequest":  "types",
 	"ArtifactsGetRefResponse": "types",
+	// Phase 73j (D-118) Console-memory-page wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"MemoryItem":            "types",
+	"MemoryFilter":          "types",
+	"MemoryListRequest":     "types",
+	"MemoryAggregates":      "types",
+	"MemoryListResponse":    "types",
+	"MemoryArtifactRef":     "types",
+	"MemoryMetadata":        "types",
+	"MemoryGetRequest":      "types",
+	"MemoryItemDetail":      "types",
+	"MemoryGetResponse":     "types",
+	"MemoryHealthRequest":   "types",
+	"MemoryHealthAggregate": "types",
+	"MemoryHealthResponse":  "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

@@ -52,6 +52,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
@@ -104,6 +105,17 @@ type muxConfig struct {
 	pauseCoordinator pauseresume.Coordinator
 	artifactStore    artifacts.ArtifactStore
 	heavyThreshold   int
+	// memoryStore + memoryDriverName feed the Phase 73j (D-118) three
+	// `memory.*` read routes. memoryStore is OPTIONAL in the mux config
+	// so existing call-sites compile unchanged — when it is unsupplied
+	// the three `memory.*` routes are NOT mounted, so the smoke
+	// script's `skip_if_404` keeps preflight green on a partial build.
+	// The memory handler reuses artifactStore + heavyThreshold (the
+	// `pause.list` deps) for the D-026 heavy-value bypass; production
+	// wiring (`harbor dev`) supplies all of them so the Console Memory
+	// page works.
+	memoryStore      memory.MemoryStore
+	memoryDriverName string
 }
 
 // Option configures NewMux.
@@ -252,6 +264,31 @@ func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 	}
 }
 
+// WithMemory wires the Phase 73j (D-118) three `memory.*` read routes
+// into NewMux. store is the memory.MemoryStore the Console Memory page
+// projects from (Phases 23–25); driverName is the configured memory-
+// driver name surfaced on each row. The memory handler reuses the
+// ArtifactStore + heavy-content threshold supplied via WithPauseList
+// for the D-026 heavy-value bypass — so WithPauseList must also be set
+// for the three `memory.*` routes to mount.
+//
+// store is OPTIONAL — when it is nil (or the ArtifactStore /
+// heavyThreshold from WithPauseList are unset), the three `memory.*`
+// routes are left UN-mounted (the route's smoke `skip_if_404` keeps
+// preflight green on a partial build). When supplied correctly the
+// routes `POST /v1/memory/list` / `/get` / `/health` are mounted and,
+// when WithValidator is also set, wrapped in auth.Middleware like every
+// other transport.
+//
+// The three methods are READ-ONLY (CLAUDE.md §13) — they project the
+// shipped MemoryStore surface; no mutation path is mounted.
+func WithMemory(store memory.MemoryStore, driverName string) Option {
+	return func(c *muxConfig) {
+		c.memoryStore = store
+		c.memoryDriverName = driverName
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the Phase 60 trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -387,6 +424,27 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		pauseListHandler = plh
 	}
 
+	// Wave 13 (Phase 73j / D-118): the three `memory.*` read handlers.
+	// Built only when WithMemory supplied a MemoryStore AND the
+	// ArtifactStore + heavy-content threshold (shared with pause.list)
+	// are set. When any is missing the three routes are left un-mounted
+	// — the smoke `skip_if_404` keeps preflight green on a partial
+	// build. The memory handler reuses the events Aggregator built
+	// above for the 24h identity-rejected / recovery-dropped counters.
+	var memoryHandler *stream.MemoryHandler
+	if cfg.memoryStore != nil && cfg.artifactStore != nil && cfg.heavyThreshold > 0 {
+		mh, err := stream.NewMemoryHandler(
+			cfg.memoryStore, cfg.artifactStore, cfg.heavyThreshold,
+			stream.WithMemoryLogger(cfg.logger),
+			stream.WithMemoryAggregator(aggregator),
+			stream.WithMemoryDriverName(cfg.memoryDriverName),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build memory handler: %w", err)
+		}
+		memoryHandler = mh
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -418,6 +476,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedPauseList = mw(pauseListHandler)
 		}
 		mux.Handle(stream.PauseListRoutePattern, mountedPauseList)
+	}
+
+	if memoryHandler != nil {
+		mountMemory := func(pattern string, h http.Handler) {
+			if cfg.validator != nil {
+				mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+				h = mw(h)
+			}
+			mux.Handle(pattern, h)
+		}
+		mountMemory(stream.MemoryListRoutePattern, memoryHandler.ListHandler())
+		mountMemory(stream.MemoryGetRoutePattern, memoryHandler.GetHandler())
+		mountMemory(stream.MemoryHealthRoutePattern, memoryHandler.HealthHandler())
 	}
 	return mux, nil
 }
