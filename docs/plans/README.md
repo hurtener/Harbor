@@ -104,6 +104,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
 | 73i| Console Flows page (Protocol + UI)            | protocol+web/console | §5.2, §6.1, §7 | 73, 75, 26a        | 85%  | Shipped  |
 | 73g| Console Events page                           | web/console          | §5.2, §6.13, §7 | 72a, 73, 75       | 80%  | Shipped  |
+| 73c| Console Sessions page (Protocol + UI)         | protocol+web/console | §5.2, §6.9, §7 | 08, 60, 61, 72a, 72b, 72c, 75 | 80%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
 | 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Pending  |
@@ -868,6 +869,18 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Console Vitest (`filters.test.ts`, `sparkline.test.ts`, `export.test.ts`, `taxonomy.test.ts`, `saved_filters_events.spec.ts`, `EventsNamespace` cases in `harbor-client.spec.ts`) + integration (`test/integration/events_page_test.go` — real inmem bus + real SSE/aggregate handlers + real artifacts surface, subscribe filter narrowing, aggregate sparkline correctness, cross-tenant isolation, the truncated-payload `artifacts.get_ref` identity-rejection failure mode, N≥16 concurrent-subscriber stress, all `-race`) + Playwright (`web/console/tests/events-page.spec.ts`) + smoke (`scripts/smoke/phase-73g.sh`).
 
 **Plan.** See `docs/plans/phase-73g-console-events-page.md` (shipped — D-125).
+
+### 73c — Console Sessions page (Protocol + UI) (RFC §5.2, §6.9, §7)
+
+**Goal.** Ship the Console Sessions page as a single Wave 13 Stage-2.1 phase: two NEW `sessions.*` Protocol methods (`sessions.list` — paginated + filtered SessionRegistry projection with the full filter set; `sessions.inspect` — full per-session snapshot) + the SvelteKit Sessions list/detail route + the per-page Playwright spec. Read-only — the bulk Cancel / Pause toolbar actions iterate the shipped per-row control methods (D-072) and render disabled-with-tooltip (D-066). The page IS the first consumer of `sessions.list` (§13 primitive-with-consumer).
+
+**Acceptance.** Two method names declared in `internal/protocol/methods/methods.go`; nine wire types in `internal/protocol/types/sessions.go`; both identity-mandatory + cross-tenant gated on `auth.ScopeAdmin` (D-079); `sessions.list` emits `Truncated bool` not a silent total (D-026); the Sessions-page Identity column renders Phase 72b's `IdentityScope` impersonation triplet; no `Priority` surface (D-065); saved filters Console-DB-local (D-061); the page clears the `CONVENTIONS.md` §5 depth bar.
+
+**Deviations (D-122).** The wire handler lands at `internal/protocol/transports/stream/sessions_handler.go` (the codebase has no `internal/server/` package — the plan's path is stale; the handler follows the Phase 73f / 73i precedent). `sessions.inspect` ships whole, not as an additive extension of a Phase 73 parent method that has not landed. `web/console/src/lib/protocol.ts` is NOT hand-edited — the Sessions wire types live at `web/console/src/lib/sessions/types.ts` with a typed `SessionsProtocol` wrapper over the unified `HarborClient`, following the Phase 73i Flows-page precedent until `cmd/harbor-gen-protocol-ts` (D-093) lands.
+
+**Tests.** Unit (`sessions/protocol/protocol_test.go` — Service filter/cursor/scope; `concurrent_test.go` — D-025 N≥100; `sessions_handler_test.go` — identity / scope / decode) + integration (`test/integration/sessions_page_test.go` — real registry + real transport + real auth, two-tenant scope, cross-tenant reject + audit emit, malformed cursor, N≥10 SSE-subscriber concurrency stress, all `-race`) + Console Vitest (`sessions/tests/format.spec.ts`, `db/tests/saved_filters_sessions.spec.ts`) + Playwright (`web/console/tests/sessions-page.spec.ts`) + smoke (`scripts/smoke/phase-73c.sh`).
+
+**Plan.** See `docs/plans/phase-73c-console-sessions-page.md` (shipped — D-122).
 
 ### 74 — Console topology projection events (RFC §5.2, §6.13, §7.1)
 

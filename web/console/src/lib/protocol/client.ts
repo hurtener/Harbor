@@ -528,6 +528,27 @@ export class AgentsNamespace {
 	}
 }
 
+/**
+ * The `sessions.*` namespace (Phase 73c / D-122). The Runtime mounts
+ * these at `POST /v1/sessions/{verb}` — the Sessions handler shares the
+ * same identity + cross-tenant scope-claim gating the tools / flows
+ * handlers use. Both methods are read-only.
+ */
+export class SessionsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `sessions.list` — the paginated, filtered session catalog. */
+	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
+		return this.#t.request<R>('/v1/sessions/list', req);
+	}
+	/** `sessions.inspect` — a single session's full snapshot. */
+	inspect<R = unknown>(sessionID: string): Promise<R> {
+		return this.#t.request<R>('/v1/sessions/inspect', { session_id: sessionID });
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -556,6 +577,7 @@ export interface ProtocolClient {
 	readonly mcp: MCPNamespace;
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
+	readonly sessions: SessionsNamespace;
 }
 
 /**
@@ -577,6 +599,7 @@ export class HarborClient implements ProtocolClient {
 	readonly mcp: MCPNamespace;
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
+	readonly sessions: SessionsNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -589,5 +612,6 @@ export class HarborClient implements ProtocolClient {
 		this.mcp = new MCPNamespace(transport);
 		this.events = new EventsNamespace(transport);
 		this.agents = new AgentsNamespace(transport);
+		this.sessions = new SessionsNamespace(transport);
 	}
 }

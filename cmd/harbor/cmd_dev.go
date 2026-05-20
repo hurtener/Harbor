@@ -105,6 +105,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/sessions"
+	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -866,6 +868,35 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("tasks/protocol service: %w", err)
 	}
 
+	// Phase 73c (D-122): the Console Sessions-page Protocol service.
+	// The registry is StateStore-backed (Phase 08) — the same store
+	// the task registry uses, so the Console Sessions page renders the
+	// live session set. The ListerProjector wraps the registry's
+	// SessionLister surface; the service's bus + redactor are wired so
+	// a cross-tenant `sessions.list` query emits its
+	// `audit.admin_scope_used` event (CLAUDE.md §13 — the admin path is
+	// never a silent no-op).
+	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions registry: %w", err)
+	}
+	closers = append(closers, sessionRegistry.CloseRegistry)
+	sessionsProjector, err := sessionsprotocol.NewListerProjector(sessionRegistry)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions/protocol projector: %w", err)
+	}
+	sessionsService, err := sessionsprotocol.NewService(sessionsProjector,
+		sessionsprotocol.WithBus(bus),
+		sessionsprotocol.WithRedactor(red),
+		sessionsprotocol.WithLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions/protocol service: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
@@ -893,6 +924,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Phase 73e: mount the eight `agents.*` read routes so the
 		// Console Agents page has a live Protocol surface.
 		transports.WithAgentsService(agentsService),
+		// Phase 73c (D-122): mount the two Console Sessions-page routes
+		// (`sessions.list` / `sessions.inspect`) so the Console Sessions
+		// page has a live Protocol surface.
+		transports.WithSessionsService(sessionsService),
 	)
 	if err != nil {
 		closeAll(ctx)

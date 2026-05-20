@@ -514,6 +514,32 @@ const (
 	// (Active Agents / Running Tasks / Total Cost / Total Tokens) for
 	// the caller's identity scope. Powers the Agents page hero numbers.
 	MethodAgentsMetrics Method = "agents.metrics"
+
+	// MethodSessionsList — Phase 73c (Wave 13 / D-122). Returns the
+	// paginated, identity-scope-filtered projection of the
+	// SessionRegistry the Console Sessions page renders — the
+	// past-and-active durable record of every Harbor execution the
+	// operator has access to. Carries the full filter set (status /
+	// agent / user / tenant / started-window / has-intervention /
+	// has-failed-task / cost-above) plus cursor pagination. Read-only;
+	// identity-mandatory. A cross-tenant filter (a `tenant_ids` entry
+	// outside the caller's verified tenant) requires the verified
+	// `auth.ScopeAdmin` claim (D-079 closed two-scope set — NO new
+	// scope is minted). NOT a control / streaming-events / search /
+	// posture / pause / topology / artifacts / memory / mcp / tools /
+	// flows method — `IsSessionsMethod` is its own O(1) predicate. The
+	// wire-transport route is `POST /v1/sessions/list`. See
+	// `docs/plans/phase-73c-console-sessions-page.md`.
+	MethodSessionsList Method = "sessions.list"
+	// MethodSessionsInspect — Phase 73c. Returns the full per-session
+	// snapshot the Console Sessions detail view renders — the
+	// right-rail Session Summary projection (id / status / started /
+	// duration / events / tasks / agent / user / tenant / cost / last
+	// activity) plus the capped `recent_interventions` /
+	// `recent_artifacts` slices. Read-only; identity-mandatory; same
+	// cross-tenant scope contract as MethodSessionsList. The
+	// wire-transport route is `POST /v1/sessions/inspect`.
+	MethodSessionsInspect Method = "sessions.inspect"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -573,6 +599,9 @@ var canonicalMethods = map[Method]struct{}{
 
 	MethodTasksList: {},
 	MethodTasksGet:  {},
+
+	MethodSessionsList:    {},
+	MethodSessionsInspect: {},
 
 	MethodMCPServersList:             {},
 	MethodMCPServersGet:              {},
@@ -797,6 +826,28 @@ func IsFlowsMethod(m Method) bool {
 	return ok
 }
 
+// canonicalSessionsMethods is the closed sub-set of the two Sessions-
+// page methods landed in Phase 73c (Wave 13 / D-122) — `sessions.list`
+// and `sessions.inspect`. IsSessionsMethod is O(1); the stream
+// transport branches on it to route the request through the Sessions
+// handler instead of the task-control surface. Both are read-only.
+var canonicalSessionsMethods = map[Method]struct{}{
+	MethodSessionsList:    {},
+	MethodSessionsInspect: {},
+}
+
+// IsSessionsMethod reports whether m is one of the two canonical
+// Sessions-page methods (Phase 73c / D-122 — `sessions.list`,
+// `sessions.inspect`). The stream transport branches on this to route
+// the request through the Sessions handler instead of the task-control
+// / search / posture / pause / topology / artifacts / memory / mcp /
+// tools / flows surfaces. NOT a control method — a new non-control
+// method extends THIS predicate, never the steering inbox.
+func IsSessionsMethod(m Method) bool {
+	_, ok := canonicalSessionsMethods[m]
+	return ok
+}
+
 // canonicalSearchMethods is the closed sub-set of the five search.*
 // methods. IsSearchMethod is O(1); a transport adapter (Phase 72c
 // search handler) uses it to branch the route table.
@@ -985,6 +1036,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsAgentsMethod(m) {
+		return false
+	}
+	if IsSessionsMethod(m) {
 		return false
 	}
 	return true

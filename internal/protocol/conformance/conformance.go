@@ -620,9 +620,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
-	// Phase 73d tasks-page two + Phase 73e agents-page eight = 67.
-	if len(got) != 67 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 67 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight)", len(got))
+	// Phase 73d tasks-page two + Phase 73e agents-page eight +
+	// Phase 73c sessions-page two = 69.
+	if len(got) != 69 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 69 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -697,6 +698,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentsSkills:      {},
 		methods.MethodAgentsPermissions: {},
 		methods.MethodAgentsMetrics:     {},
+
+		methods.MethodSessionsList:    {},
+		methods.MethodSessionsInspect: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -900,6 +904,20 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// extension — same posture as the tools / flows clusters.
 			if methods.IsAgentsMethod(m) {
 				t.Skip("phase-73e: agents.* methods exercised by internal/runtime/registry/protocol tests + stream agents_handler tests + test/integration/agents_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73c (D-122): the two `sessions.*` methods route
+			// through the Console Sessions-page handler (POST
+			// /v1/sessions/*), not the REST ControlSurface — they need a
+			// sessions/protocol.Service the conformance Stack does not
+			// wire. Their happy-paths + failure modes are exercised by
+			// the sessions/protocol unit tests, the D-025 concurrent-
+			// reuse test, the stream sessions_handler tests, and
+			// test/integration/sessions_page_test.go (real registry +
+			// real wire transport + real auth). Skip with an explicit
+			// reason — same posture as the search / pause / flows
+			// clusters above.
+			if methods.IsSessionsMethod(m) {
+				t.Skip("phase-73c: sessions.* methods exercised by internal/sessions/protocol tests + stream sessions_handler tests + test/integration/sessions_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
