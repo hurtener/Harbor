@@ -88,6 +88,12 @@ type muxConfig struct {
 	// calls with CodeUnknownMethod (the 404 → SKIP path the smoke
 	// script relies on).
 	postureSurface control.PostureSurface
+	// artifactsSurface is the Phase 73l (D-120) artifacts dispatcher
+	// wired into the control transport so the three `artifacts.*`
+	// methods route through it. Optional — when unsupplied, the control
+	// transport rejects artifacts calls with CodeUnknownMethod (the 404
+	// → SKIP path the smoke script relies on).
+	artifactsSurface control.ArtifactsSurface
 	// pauseCoordinator + artifactStore + heavyThreshold feed the Phase
 	// 72e `pause.list` snapshot handler. All three are OPTIONAL in the
 	// mux config so existing call-sites compile unchanged — when the
@@ -226,6 +232,26 @@ func WithPauseList(coord pauseresume.Coordinator, store artifacts.ArtifactStore,
 	}
 }
 
+// WithArtifactsSurface wires the Phase 73l (D-120) artifacts dispatcher
+// into the control transport. When supplied, the control handler routes
+// the three artifacts methods — `artifacts.list`, `artifacts.put`,
+// `artifacts.get_ref` — to the artifacts surface instead of falling
+// through to the task-control ControlSurface.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied, the control transport rejects artifacts calls with
+// CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
+// relies on. Production wiring (`harbor dev`) supplies it so the Console
+// Artifacts page (Phase 73l) has a live surface. A nil surface is
+// treated as "WithArtifactsSurface not supplied".
+func WithArtifactsSurface(s control.ArtifactsSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.artifactsSurface = s
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the Phase 60 trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -306,6 +332,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.postureSurface != nil {
 		controlOpts = append(controlOpts, control.WithPostureSurface(cfg.postureSurface))
+	}
+	if cfg.artifactsSurface != nil {
+		controlOpts = append(controlOpts, control.WithArtifactsSurface(cfg.artifactsSurface))
 	}
 	controlHandler, err := control.NewHandler(cs, controlOpts...)
 	if err != nil {

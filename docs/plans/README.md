@@ -101,6 +101,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
+| 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
@@ -822,6 +823,15 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** Each method enforces identity; redaction applied; pagination defined.
 **Tests.** Integration + scope mismatch.
 **Deps.** 60, 07, 17.
+**Cross-reference.** Phase 73l (Console Artifacts page) is the page-side consumer — it extends `artifacts.list`'s filter shape and adds `artifacts.put` + the `artifacts.get_ref` presigned-URL resolver in the same wave (D-120).
+
+### 73l — Console Artifacts page (RFC §5.2, §6.10, §7)
+
+**Goal.** The Console Artifacts page — catalog + preview surface over the runtime's content-addressed artifact store — plus its feeding Protocol additions: the `artifacts.list` filter extensions (mime / source / size / created / tags), the `artifacts.put` upload pipeline (Brief 11 §PG-2), and the `artifacts.get_ref` presigned-URL resolver (D-022 / D-026). Ships the canonical renderer-registry SKELETON at `web/console/src/lib/chat/renderers/` (dispatch table + six MIME renderers) — Phase 73l is the registry's first in-staging consumer; Phase 73n extends it.
+**Acceptance.** The three `artifacts.*` methods route through a sibling `ArtifactsSurface`; identity-mandatory + D-079 cross-tenant gating; `artifacts.get_ref` fails loud with `CodePresignUnsupported` on a non-S3 driver; the page dispatches previews through the canonical registry with no bespoke per-mime renderer; mutation surfaces render disabled-with-tooltip. See `docs/plans/phase-73l-console-artifacts-page.md`.
+**Tests.** Unit (`internal/protocol/artifacts_test.go`), concurrent-reuse N=100 (D-025), integration (`test/integration/artifacts_page_test.go` — in-mem + SQLite + fs drivers + real wire transport), renderer-registry Vitest, Playwright per-page spec.
+**Deps.** 73 (artifacts base methods), 75 (Playwright harness).
+**Deviations (D-120).** The surface lands at `internal/protocol/artifacts.go` (the codebase has no `handlers/` sub-package — it follows the `SearchSurface` / `PostureSurface` convention); `web/console/src/lib/protocol.ts` is hand-extended (the `cmd/harbor-gen-protocol-ts` generator binary has not yet landed — Phase 72h committed `protocol.ts` as a hand-shaped stub). Both are recorded in the phase plan.
 
 ### 74 — Console topology projection events (RFC §5.2, §6.13, §7.1)
 

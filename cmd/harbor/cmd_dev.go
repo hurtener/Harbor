@@ -713,10 +713,38 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol posture surface: %w", err)
 	}
 
+	// Phase 73l (D-120): the artifacts surface backing the Console
+	// Artifacts page — `artifacts.list` (catalog), `artifacts.put`
+	// (upload pipeline per Brief 11 §PG-2), `artifacts.get_ref`
+	// (presigned-URL resolver per D-022 / D-026). Wired with the live
+	// artifact store, the audit redactor, and the bus so an operator
+	// gets a working artifacts surface out of the box (no seam to wire —
+	// CLAUDE.md §13). The dev artifact store defaults to the `inmem`
+	// driver, which does not implement `Presigner`; an `artifacts.get_ref`
+	// against it fails loud with `CodePresignUnsupported` (the Console
+	// renders the fallback Download link).
+	artDriverName := cfg.Artifacts.Driver
+	if artDriverName == "" {
+		artDriverName = "inmem"
+	}
+	artifactsSurface, err := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
+		Store:        artStore,
+		Redactor:     red,
+		Bus:          bus,
+		Clock:        time.Now,
+		DriverName:   artDriverName,
+		MaxBodyBytes: cfg.Protocol.ResolvedMaxRequestBytes(),
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("protocol artifacts surface: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
 		transports.WithPostureSurface(postureSurface),
+		transports.WithArtifactsSurface(artifactsSurface),
 		// Phase 72e: mount the `pause.list` snapshot route. The
 		// production path always wires the unified Coordinator + the
 		// artifact store + the configured heavy-content threshold so

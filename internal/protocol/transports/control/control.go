@@ -99,13 +99,14 @@ const maxBodyBytes = 64 << 10
 // with CodeUnknownMethod (the 404 → SKIP path the smoke script relies
 // on).
 type Handler struct {
-	surface        *protocol.ControlSurface
-	searchSurface  SearchSurface
-	postureSurface PostureSurface
-	logger         *slog.Logger
-	bus            events.EventBus // nil ⇒ impersonation accepted-path refused
-	redactor       audit.Redactor  // nil ⇒ impersonation accepted-path refused
-	now            func() time.Time
+	surface          *protocol.ControlSurface
+	searchSurface    SearchSurface
+	postureSurface   PostureSurface
+	artifactsSurface ArtifactsSurface
+	logger           *slog.Logger
+	bus              events.EventBus // nil ⇒ impersonation accepted-path refused
+	redactor         audit.Redactor  // nil ⇒ impersonation accepted-path refused
+	now              func() time.Time
 }
 
 // SearchSurface is the narrow contract the control transport calls into
@@ -141,6 +142,22 @@ type PostureSurface interface {
 	// *types.RuntimeCounters / *types.RuntimeDrivers /
 	// *types.MetricsSnapshot / *types.GovernancePostureResponse /
 	// *types.LLMPostureResponse, or a *errors.Error.
+	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
+}
+
+// ArtifactsSurface is the narrow contract the control transport calls
+// into for the three Phase 73l (D-120) artifacts methods —
+// `artifacts.list`, `artifacts.put`, `artifacts.get_ref`. The production
+// implementation is *protocol.ArtifactsSurface; tests inject a
+// deterministic surface. A nil surface means the handler rejects
+// artifacts calls with CodeUnknownMethod — preserving the 404 → SKIP
+// path the smoke script relies on while the surface is being wired
+// through.
+type ArtifactsSurface interface {
+	// Dispatch handles one of the three canonical artifacts methods.
+	// Returns either a *types.ArtifactsListResponse /
+	// *types.ArtifactsPutResponse / *types.ArtifactsGetRefResponse, or
+	// a *errors.Error.
 	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
@@ -222,6 +239,22 @@ func WithSearchSurface(s SearchSurface) Option {
 func WithPostureSurface(s PostureSurface) Option {
 	return func(h *Handler) {
 		h.postureSurface = s
+	}
+}
+
+// WithArtifactsSurface wires the Phase 73l (D-120) artifacts dispatcher
+// into the control handler. When supplied, the handler routes the three
+// artifacts methods — `artifacts.list`, `artifacts.put`,
+// `artifacts.get_ref` — to s.Dispatch instead of falling through to the
+// task-control ControlSurface. Optional — handlers built without it
+// reject artifacts calls with CodeUnknownMethod (the 404 → SKIP path the
+// smoke script relies on). A nil surface is treated as
+// "WithArtifactsSurface not supplied".
+func WithArtifactsSurface(s ArtifactsSurface) Option {
+	return func(h *Handler) {
+		if s != nil {
+			h.artifactsSurface = s
+		}
 	}
 }
 
@@ -309,6 +342,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.servePosture(w, r, method)
+		return
+	}
+
+	// Phase 73l (D-120): the three `artifacts.*` methods route through a
+	// separate ArtifactsSurface — they're not steering controls, they
+	// don't reach the task registry, and they carry their own wire
+	// shapes (ArtifactsListRequest / ArtifactsPutRequest /
+	// ArtifactsGetRefRequest). artifacts.put also carries an upload
+	// payload larger than the 64 KiB control body cap, so the artifacts
+	// adapter applies its own 8 MiB transport-edge cap. If no
+	// ArtifactsSurface is wired, fall through to the unknown-method path
+	// so the smoke `skip_if_404` branch fires.
+	if methods.IsArtifactsMethod(method) {
+		if h.artifactsSurface == nil {
+			h.writeError(w, r, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+				"method %q: artifacts surface is not configured on this Runtime", string(method)))
+			return
+		}
+		h.serveArtifacts(w, r, method)
 		return
 	}
 

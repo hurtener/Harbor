@@ -21,6 +21,8 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeRuntimeError:          http.StatusInternalServerError,
 		protoerrors.CodeAuthRejected:          http.StatusUnauthorized,
 		protoerrors.CodeIdentityScopeRequired: http.StatusForbidden,
+		protoerrors.CodePresignUnsupported:    http.StatusNotImplemented,
+		protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 	}
 	for code, want := range cases {
 		if got := httpStatus(code); got != want {
@@ -45,6 +47,8 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 		protoerrors.CodeRuntimeError:          {},
 		protoerrors.CodeAuthRejected:          {},
 		protoerrors.CodeIdentityScopeRequired: {},
+		protoerrors.CodePresignUnsupported:    {},
+		protoerrors.CodeRequestTooLarge:       {},
 	}
 	for code := range mapped {
 		if !protoerrors.IsValidCode(code) {
