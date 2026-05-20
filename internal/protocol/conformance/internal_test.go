@@ -86,8 +86,10 @@ func TestInternal_ErrorCodeMatrix_AllCanonical(t *testing.T) {
 			t.Errorf("errorCodeMatrix contains %q, not a canonical Code", c)
 		}
 	}
+	// Phase 54 set (7) + Phase 61 CodeAuthRejected + Wave 13 (Phase 72 /
+	// 72a) CodeIdentityScopeRequired = 9 canonical codes at Protocol 0.1.0.
 	if len(errorCodeMatrix) != 9 {
-		t.Errorf("errorCodeMatrix size = %d, want 9 (Phase 54 set + CodeAuthRejected + CodeIdentityScopeRequired)", len(errorCodeMatrix))
+		t.Errorf("errorCodeMatrix size = %d, want 9 (Protocol 0.1.0 canonical set)", len(errorCodeMatrix))
 	}
 }
 

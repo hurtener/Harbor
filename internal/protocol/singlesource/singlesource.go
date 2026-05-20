@@ -113,6 +113,7 @@ var CanonicalMethods = map[string]struct{}{
 	"prioritize":       {},
 	"user_message":     {},
 	"events.subscribe": {}, // Phase 72 / D-105
+	"events.aggregate": {}, // Phase 72a / D-106
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -134,15 +135,19 @@ var CanonicalMethods = map[string]struct{}{
 // Kept in lockstep with the canonical packages by
 // TestSingleSource_CanonicalWireTypesInLockstep.
 var CanonicalWireTypes = map[string]string{
-	"IdentityScope":    "types",
-	"StartRequest":     "types",
-	"StartResponse":    "types",
-	"ControlRequest":   "types",
-	"ControlResponse":  "types",
-	"Version":          "types",
-	"Deprecation":      "types",
-	"VersionHandshake": "types",
-	"Error":            "errors",
+	"IdentityScope":          "types",
+	"StartRequest":           "types",
+	"StartResponse":          "types",
+	"ControlRequest":         "types",
+	"ControlResponse":        "types",
+	"Version":                "types",
+	"Deprecation":            "types",
+	"VersionHandshake":       "types",
+	"EventFilter":            "types",
+	"EventBucket":            "types",
+	"EventAggregateRequest":  "types",
+	"EventAggregateResponse": "types",
+	"Error":                  "errors",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

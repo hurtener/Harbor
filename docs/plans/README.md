@@ -94,6 +94,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 70 | `harbor inspect-topology` (ASCII renderer)    | cmd/harbor           | §8          | 63, 60                | 70%  | Shipped  |
 | 71 | `harbortest` test kit package                 | testing              | §6.13       | 05, 09, 07            | 85%  | Shipped  |
 | 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Shipped  |
+| 72a| `events.subscribe` filter ext + `events.aggregate` | protocol+events | §5.2, §6.13 | 60, 61, 72            | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
 | 75 | Console e2e Playwright (CI gate)              | testing              | §7          | 64, 72, 73            | n/a  | Pending  |
@@ -776,6 +777,14 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Integration.
 **Deps.** 60, 05, 06.
 **Plan file.** `docs/plans/phase-72-console-subscription-scope.md` (shipped — D-105).
+
+### 72a — `events.subscribe` filter extensions + `events.aggregate` (RFC §5.2, §6.13)
+
+**Goal.** Extend the `events.subscribe` Protocol surface with a wire `EventFilter` struct (event-type / tenant / user / session / run / time-window) and add a new `events.aggregate` Protocol method returning time-bucketed event-type counts. Both methods use the closed two-scope set (`auth.ScopeAdmin` + `auth.ScopeConsoleFleet`) for cross-tenant fan-in per D-079 — NO new `events.crosstenant` scope.
+**Acceptance.** `EventFilter` + `EventBucket` + `EventAggregateRequest` + `EventAggregateResponse` ship in `internal/protocol/types/events.go`; `events.aggregate` route mounted on the wire; cross-tenant requests without the closed-set scope claim return 403 + `CodeIdentityScopeRequired`; bucket arithmetic deterministic (Window % Bucket == 0 or 400); concurrent-reuse pin under `-race` (N≥100).
+**Tests.** Unit (filter matrix, aggregate bucket arithmetic, concurrent-reuse) + integration (`test/integration/events_filter_aggregate_test.go` — real bus + real auth + real transports, scope-claim happy + reject paths, concurrent-reuse over the wire) + smoke (`scripts/smoke/phase-72a.sh`).
+**Deps.** 60, 61, 72.
+**Plan.** See `docs/plans/phase-72a-events-filter-aggregate.md`.
 
 ### 73 — Console state inspection surface (RFC §5.2, §7)
 

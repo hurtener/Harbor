@@ -359,6 +359,11 @@ const (
 	// control" row): the `start` method plus the nine steering-control
 	// methods. Shipped in Phase 54.
 	CapTaskControl Capability = "task_control"
+	// CapEventsSubscribe — the streaming-events surface (RFC §5.2
+	// "Streaming events" row): the `events.subscribe` method and the
+	// `events.aggregate` time-bucket method. Shipped in Wave 13
+	// (Phase 72 / 72a).
+	CapEventsSubscribe Capability = "events_subscribe"
 )
 
 // canonicalCapabilities is the registered set — a fixed package-level
@@ -366,7 +371,8 @@ const (
 // extends this map in its own phase; there is no registration escape
 // hatch.
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl: {},
+	CapTaskControl:     {},
+	CapEventsSubscribe: {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

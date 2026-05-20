@@ -6,10 +6,11 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 )
 
-// The canonical method names — the Phase 54 task-control row + the
-// Phase 72 streaming-events anchor. This slice is the test's
-// independent source of truth; if methods.go drifts, the exhaustiveness
-// test below fails.
+// The canonical method names — the Phase 54 task-control ten (RFC §5.2
+// "Task control" row verbatim) plus the Wave 13 streaming-events two
+// (Phase 72 / 72a — RFC §5.2 "Streaming events" row). This slice is the
+// test's independent source of truth; if methods.go drifts from the
+// canonical set, the exhaustiveness test below fails.
 var wantMethods = []methods.Method{
 	methods.MethodStart,
 	methods.MethodCancel,
@@ -22,12 +23,14 @@ var wantMethods = []methods.Method{
 	methods.MethodPrioritize,
 	methods.MethodUserMessage,
 	methods.MethodEventsSubscribe,
+	methods.MethodEventsAggregate,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	got := methods.Methods()
-	if len(got) != 11 {
-		t.Fatalf("Methods() returned %d methods, want 11 (10 task-control + events.subscribe)", len(got))
+	// Phase 54 task-control ten + Wave 13 streaming-events two.
+	if len(got) != 12 {
+		t.Fatalf("Methods() returned %d methods, want 12", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -54,7 +57,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		}
 	}
 
-	// Wire strings are the RFC §5.2 verbatim lowercase snake_case.
+	// Wire strings are the RFC §5.2 verbatim lowercase snake_case for
+	// the task-control ten; the streaming-events two use a dotted
+	// `events.<verb>` shape (which matches the canonical event-type
+	// naming convention — `tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
 		methods.MethodStart:           "start",
 		methods.MethodCancel:          "cancel",
@@ -67,6 +73,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodPrioritize:      "prioritize",
 		methods.MethodUserMessage:     "user_message",
 		methods.MethodEventsSubscribe: "events.subscribe",
+		methods.MethodEventsAggregate: "events.aggregate",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -90,12 +97,17 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodStart) {
 		t.Error("IsControlMethod(start) = true, want false — start maps to the task registry, not the steering inbox")
 	}
+	// Wave 13 streaming-events methods route through their own
+	// transports (SSE / events-aggregate), NOT the steering inbox.
 	if methods.IsControlMethod(methods.MethodEventsSubscribe) {
-		t.Error("IsControlMethod(events.subscribe) = true, want false — events.subscribe is a streaming-events method, not a steering-control method (Phase 72 / D-105)")
+		t.Error("IsControlMethod(events.subscribe) = true, want false — streaming-events methods route through their own transports")
+	}
+	if methods.IsControlMethod(methods.MethodEventsAggregate) {
+		t.Error("IsControlMethod(events.aggregate) = true, want false — streaming-events methods route through their own transports")
 	}
 	// Every other canonical method IS a control method.
 	for _, m := range methods.Methods() {
-		if m == methods.MethodStart || m == methods.MethodEventsSubscribe {
+		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
@@ -127,5 +139,25 @@ func TestMethods_EventsSubscribe_Registered(t *testing.T) {
 	// canonical name as a literal and expects parity.
 	if !methods.IsValidMethod(methods.Method("events.subscribe")) {
 		t.Error(`IsValidMethod(Method("events.subscribe")) = false, want true — wire string stability broken`)
+	}
+}
+
+// TestIsStreamingEventsMethod pins the streaming-events predicate —
+// MethodEventsSubscribe and MethodEventsAggregate are the closed set.
+func TestIsStreamingEventsMethod(t *testing.T) {
+	if !methods.IsStreamingEventsMethod(methods.MethodEventsSubscribe) {
+		t.Error("IsStreamingEventsMethod(events.subscribe) = false, want true")
+	}
+	if !methods.IsStreamingEventsMethod(methods.MethodEventsAggregate) {
+		t.Error("IsStreamingEventsMethod(events.aggregate) = false, want true")
+	}
+	if methods.IsStreamingEventsMethod(methods.MethodStart) {
+		t.Error("IsStreamingEventsMethod(start) = true, want false")
+	}
+	if methods.IsStreamingEventsMethod(methods.MethodCancel) {
+		t.Error("IsStreamingEventsMethod(cancel) = true, want false")
+	}
+	if methods.IsStreamingEventsMethod(methods.Method("bogus")) {
+		t.Error("IsStreamingEventsMethod(bogus) = true, want false")
 	}
 }

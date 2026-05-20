@@ -64,10 +64,11 @@ import (
 // at NewMux per CLAUDE.md §13 ("Test stubs as production defaults on
 // operator-facing seams"; PR #91 amendment).
 type muxConfig struct {
-	logger      *slog.Logger
-	keepalive   time.Duration
-	validator   auth.Validator
-	withoutAuth bool
+	logger          *slog.Logger
+	keepalive       time.Duration
+	validator       auth.Validator
+	withoutAuth     bool
+	aggregatorClock events.AggregatorClock
 }
 
 // Option configures NewMux.
@@ -110,6 +111,20 @@ func WithValidator(v auth.Validator) Option {
 	return func(c *muxConfig) {
 		if v != nil {
 			c.validator = v
+		}
+	}
+}
+
+// WithAggregateClock injects a deterministic clock into the
+// events.aggregate handler's underlying *events.Aggregator. Production
+// callers do not use this; the default real clock (UTC) is correct.
+// Tests that exercise the aggregate path with backdated events use
+// this to anchor the aggregator's "now" deterministically — the same
+// posture WithKeepalive takes for the SSE keepalive interval.
+func WithAggregateClock(c events.AggregatorClock) Option {
+	return func(cfg *muxConfig) {
+		if c != nil {
+			cfg.aggregatorClock = c
 		}
 	}
 }
@@ -193,6 +208,25 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		return nil, fmt.Errorf("transports: build stream handler: %w", err)
 	}
 
+	// Wave 13 (Phase 72a): the events.aggregate handler shares the
+	// bus and lives in the same package. It is built once per Runtime
+	// process; if the bus does not implement events.Replayer, the
+	// handler still mounts — the per-request error path returns
+	// CodeRuntimeError + HTTP 500 with a clear "no historical
+	// aggregation" message.
+	aggregatorOpts := []events.AggregatorOption{}
+	if cfg.aggregatorClock != nil {
+		aggregatorOpts = append(aggregatorOpts, events.WithAggregatorClock(cfg.aggregatorClock))
+	}
+	aggregator, err := events.NewAggregator(bus, aggregatorOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("transports: build events aggregator: %w", err)
+	}
+	aggregateHandler, err := stream.NewAggregateHandler(aggregator, stream.WithAggregateLogger(cfg.logger))
+	if err != nil {
+		return nil, fmt.Errorf("transports: build events.aggregate handler: %w", err)
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -202,16 +236,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	// identity from ctx (preferred) or the Phase 60 trust-based
 	// carriers (fallback when WithValidator is not set).
 	var (
-		mountedControl http.Handler = controlHandler
-		mountedStream  http.Handler = streamHandler
+		mountedControl   http.Handler = controlHandler
+		mountedStream    http.Handler = streamHandler
+		mountedAggregate http.Handler = aggregateHandler
 	)
 	if cfg.validator != nil {
 		mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
 		mountedControl = mw(controlHandler)
 		mountedStream = mw(streamHandler)
+		mountedAggregate = mw(aggregateHandler)
 	}
 
 	mux.Handle(control.RoutePattern, mountedControl)
 	mux.Handle(stream.RoutePattern, mountedStream)
+	mux.Handle(stream.AggregateRoutePattern, mountedAggregate)
 	return mux, nil
 }
