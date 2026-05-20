@@ -39,15 +39,16 @@ var wantMethods = []methods.Method{
 	methods.MethodMetricsSnapshot,
 	methods.MethodGovernancePosture,
 	methods.MethodLLMPosture,
+	methods.MethodPauseList,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
-	// Phase 72g posture pair two = 24.
-	if len(got) != 24 {
-		t.Fatalf("Methods() returned %d methods, want 24", len(got))
+	// Phase 72g posture pair two + Phase 72e pause-snapshot one = 25.
+	if len(got) != 25 {
+		t.Fatalf("Methods() returned %d methods, want 25", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -104,6 +105,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodMetricsSnapshot:   "metrics.snapshot",
 		methods.MethodGovernancePosture: "governance.posture",
 		methods.MethodLLMPosture:        "llm.posture",
+		methods.MethodPauseList:         "pause.list",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -147,13 +149,18 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			t.Errorf("IsControlMethod(%q) = true, want false — posture methods route through the PostureSurface", m)
 		}
 	}
-	// Every non-start, non-streaming, non-search, non-posture canonical
-	// method IS a control method.
+	// Phase 72e: the pause-snapshot method routes through its own
+	// HTTP handler, NOT the steering inbox.
+	if methods.IsControlMethod(methods.MethodPauseList) {
+		t.Error("IsControlMethod(pause.list) = true, want false — pause.list routes through its own snapshot handler")
+	}
+	// Every non-start, non-streaming, non-search, non-posture, non-pause
+	// canonical method IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
-		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) {
+		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

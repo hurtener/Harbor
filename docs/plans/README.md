@@ -96,6 +96,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Shipped  |
 | 72a| `events.subscribe` filter ext + `events.aggregate` | protocol+events | §5.2, §6.13 | 60, 61, 72            | 85%  | Shipped  |
 | 72b| `IdentityScope` admin-impersonation extension | protocol             | §5.5, §7    | 60, 61                | 89%  | Shipped  |
+| 72e| `pause.list` snapshot Protocol method          | protocol             | §5.2, §6.3  | 50, 60, 61, 17        | 90%  | Shipped  |
 | 72f| Runtime posture surface (`runtime.*`/`metrics.snapshot`) | protocol  | §5.3, §6.15, §7 | 60, 61, 56            | 85%  | Shipped  |
 | 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
@@ -790,6 +791,14 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Unit (filter matrix, aggregate bucket arithmetic, concurrent-reuse) + integration (`test/integration/events_filter_aggregate_test.go` — real bus + real auth + real transports, scope-claim happy + reject paths, concurrent-reuse over the wire) + smoke (`scripts/smoke/phase-72a.sh`).
 **Deps.** 60, 61, 72.
 **Plan.** See `docs/plans/phase-72a-events-filter-aggregate.md`.
+
+### 72e — `pause.list` snapshot Protocol method (RFC §5.2, §6.3)
+
+**Goal.** Add the `pause.list` Protocol method (route `POST /v1/pause/list`) — a paginated, identity-scope-filtered snapshot of currently-paused tasks / sessions, projected from the shipped Phase 50 Pause/Resume Coordinator's in-memory registry. Read-only: it consumes the Coordinator state, it does not mutate the registry or call `Resume`. It is the snapshot half of the Console intervention-queue contract; live deltas continue to flow through `events.subscribe` on the `pause.requested` / `pause.resumed` topics. The Overview-page intervention queue (Phase 73a) is the UI consumer.
+**Acceptance.** `MethodPauseList` + the `PauseSnapshot` / `PauseFilter` / `PauseListRequest` / `PauseListResponse` / `PauseArtifactRef` wire types ship in `internal/protocol/{methods,types}`; the `Coordinator.List` interface extension + `internal/runtime/pauseresume/list.go` implementation; identity-mandatory (401 `CodeIdentityRequired`); cross-tenant filter without `auth.ScopeAdmin` → 403 `CodeIdentityScopeRequired` (D-079 closed-scope reuse, no new scope); the D-026 heavy-content bypass routes oversized pause payloads through the `ArtifactStore` and emits `pause.payload_artifact_routed`; pagination (`PageSize` default 50, max 200, out-of-range → 400, never silently clamped); concurrent-reuse pin under `-race` (N=128).
+**Tests.** Unit (`list_test.go` — filter combinations + pagination math + status semantics; `pause_list_handler_test.go` — identity / scope-claim / malformed / heavy-bypass; `list_concurrent_test.go` — D-025 N=128) + integration (`test/integration/pause_list_test.go` — real Coordinator + real transport + real auth, two-tenant scope, cross-tenant reject, admin-claim accept, heavy-payload bypass, concurrency stress, all `-race`) + smoke (`scripts/smoke/phase-72e.sh`).
+**Deps.** 50, 60, 61, 17 (all shipped). 73 for pagination-shape consistency only — same wave.
+**Plan.** See `docs/plans/phase-72e-pause-list-snapshot.md` (shipped — D-110).
 
 ### 72g — `governance.posture` + `llm.posture` (RFC §5.5, §6.15)
 
