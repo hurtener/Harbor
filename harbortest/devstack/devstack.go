@@ -764,6 +764,16 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)
 		}
 		muxOpts = append(muxOpts, transports.WithPostureSurface(postureSurface))
+		// Phase 72e: mount the `pause.list` snapshot route. The
+		// devstack mirrors the production `cmd/harbor` boot path
+		// (CLAUDE.md §17.6 — the fixture must not diverge from
+		// production) — the unified Coordinator + the artifact store +
+		// the configured heavy-content threshold are wired so the
+		// wave-end E2E exercises the real route.
+		if stack.Coordinator != nil && stack.Artifacts != nil {
+			muxOpts = append(muxOpts, transports.WithPauseList(
+				stack.Coordinator, stack.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes))
+		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {
 			return stack, fmt.Errorf("transports.NewMux: %w", muxErr)

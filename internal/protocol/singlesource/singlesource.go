@@ -126,6 +126,7 @@ var CanonicalMethods = map[string]struct{}{
 	"metrics.snapshot":   {}, // Phase 72f / D-111
 	"governance.posture": {}, // Phase 72g / D-112
 	"llm.posture":        {}, // Phase 72g / D-112
+	"pause.list":         {}, // Phase 72e / D-110
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -190,6 +191,13 @@ var CanonicalWireTypes = map[string]string{
 	"RateLimitView":             "types",
 	"LLMPostureRequest":         "types",
 	"LLMPostureResponse":        "types",
+	// Phase 72e (D-110) pause-list snapshot wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"PauseListRequest":  "types",
+	"PauseListResponse": "types",
+	"PauseSnapshot":     "types",
+	"PauseFilter":       "types",
+	"PauseArtifactRef":  "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

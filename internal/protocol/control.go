@@ -101,6 +101,16 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a posture method; dispatch through the PostureSurface instead", string(method))
 	}
+	// Phase 72e (D-110): `pause.list` is a read-only snapshot over the
+	// pauseresume.Coordinator — it routes through its own HTTP handler
+	// (POST /v1/pause/list), not the task-control ControlSurface. A
+	// caller that hits the control Dispatch with the pause method is
+	// using the wrong surface. Surface it loud rather than silently
+	// routing onto the steering inbox.
+	if methods.IsPauseMethod(method) {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is a pause-snapshot method; POST to /v1/pause/list instead", string(method))
+	}
 	return s.dispatchControl(ctx, method, req)
 }
 

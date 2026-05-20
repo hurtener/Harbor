@@ -605,9 +605,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
-	// Phase 72g posture pair two = 24.
-	if len(got) != 24 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 24 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two)", len(got))
+	// Phase 72g posture pair two + Phase 72e pause-snapshot one = 25.
+	if len(got) != 25 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 25 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -634,6 +634,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodMetricsSnapshot:   {},
 		methods.MethodGovernancePosture: {},
 		methods.MethodLLMPosture:        {},
+		methods.MethodPauseList:         {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -730,6 +731,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// the search cluster).
 			if methods.IsPostureMethod(m) {
 				t.Skip("phase-72f/72g: posture methods exercised by internal/protocol posture tests + test/integration posture tests; conformance-suite scenario lands later")
+			}
+			// Phase 72e (D-110): `pause.list` is a read-only snapshot
+			// over the pauseresume.Coordinator — it routes through its
+			// own HTTP handler (POST /v1/pause/list), not the REST
+			// ControlSurface. It is exercised end-to-end by the
+			// pause_list_handler unit tests + test/integration/
+			// pause_list_test.go (the §13 primitive-with-consumer
+			// binding test). Skip with an explicit reason so the SKIP
+			// is observable rather than silent — same posture as the
+			// search.* cluster above.
+			if methods.IsPauseMethod(m) {
+				t.Skip("phase-72e: pause.list exercised by its handler unit tests + test/integration/pause_list_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -886,6 +899,14 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// lands later.
 			if methods.IsPostureMethod(m) {
 				t.Skip("phase-72f/72g: posture malformed-request paths covered by internal/protocol + per-package posture-handler tests; conformance-suite scenario lands later")
+			}
+			// Phase 72e (D-110): pause.list routes through its own HTTP
+			// handler, not the ControlSurface. Its malformed-request
+			// rejection (PageSize > max → 400, bad status enum → 400)
+			// is covered by pause_list_handler_test.go; the conformance
+			// suite picks it up with the Phase 80 surface extension.
+			if methods.IsPauseMethod(m) {
+				t.Skip("phase-72e: pause.list malformed-request paths covered by pause_list_handler_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

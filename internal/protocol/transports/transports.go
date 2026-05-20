@@ -49,12 +49,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
+	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // muxConfig holds the optional knobs NewMux threads into the two
@@ -86,6 +88,16 @@ type muxConfig struct {
 	// calls with CodeUnknownMethod (the 404 → SKIP path the smoke
 	// script relies on).
 	postureSurface control.PostureSurface
+	// pauseCoordinator + artifactStore + heavyThreshold feed the Phase
+	// 72e `pause.list` snapshot handler. All three are OPTIONAL in the
+	// mux config so existing call-sites compile unchanged — when the
+	// coordinator or store is unsupplied the `pause.list` route is NOT
+	// mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev`) SHOULD
+	// supply all three so the Console intervention queue works.
+	pauseCoordinator pauseresume.Coordinator
+	artifactStore    artifacts.ArtifactStore
+	heavyThreshold   int
 }
 
 // Option configures NewMux.
@@ -186,6 +198,31 @@ func WithPostureSurface(s control.PostureSurface) Option {
 		if s != nil {
 			c.postureSurface = s
 		}
+	}
+}
+
+// WithPauseList wires the Phase 72e `pause.list` snapshot handler into
+// NewMux. coord is the unified pause/resume Coordinator (Phase 50) the
+// snapshot projects from; store is the ArtifactStore the D-026
+// heavy-content bypass routes oversized pause payloads through;
+// heavyThreshold is the configured heavy-content byte size
+// (cfg.Artifacts.HeavyOutputThresholdBytes).
+//
+// All three are required together — supplying the option with a nil
+// coord, a nil store, or a non-positive threshold leaves the
+// `pause.list` route UN-mounted (the route's smoke `skip_if_404` keeps
+// preflight green on a partial build). When supplied correctly the
+// route `POST /v1/pause/list` is mounted and, when WithValidator is
+// also set, wrapped in auth.Middleware like every other transport.
+//
+// pause.list is READ-ONLY against the Coordinator (CLAUDE.md §7 rule 4
+// / §13) — it reads the shipped pause-coordinator state, it does not
+// reinvent pause coordination.
+func WithPauseList(coord pauseresume.Coordinator, store artifacts.ArtifactStore, heavyThreshold int) Option {
+	return func(c *muxConfig) {
+		c.pauseCoordinator = coord
+		c.artifactStore = store
+		c.heavyThreshold = heavyThreshold
 	}
 }
 
@@ -303,6 +340,24 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		return nil, fmt.Errorf("transports: build events.aggregate handler: %w", err)
 	}
 
+	// Wave 13 (Phase 72e): the pause.list snapshot handler. Built only
+	// when WithPauseList supplied all three dependencies (coordinator,
+	// store, positive threshold). When any is missing the route is left
+	// un-mounted — the smoke `skip_if_404` keeps preflight green on a
+	// partial build.
+	var pauseListHandler *stream.PauseListHandler
+	if cfg.pauseCoordinator != nil && cfg.artifactStore != nil && cfg.heavyThreshold > 0 {
+		plh, err := stream.NewPauseListHandler(
+			cfg.pauseCoordinator, cfg.artifactStore, cfg.heavyThreshold,
+			stream.WithPauseListLogger(cfg.logger),
+			stream.WithPauseListBus(bus),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build pause.list handler: %w", err)
+		}
+		pauseListHandler = plh
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -326,5 +381,14 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	mux.Handle(control.RoutePattern, mountedControl)
 	mux.Handle(stream.RoutePattern, mountedStream)
 	mux.Handle(stream.AggregateRoutePattern, mountedAggregate)
+
+	if pauseListHandler != nil {
+		var mountedPauseList http.Handler = pauseListHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedPauseList = mw(pauseListHandler)
+		}
+		mux.Handle(stream.PauseListRoutePattern, mountedPauseList)
+	}
 	return mux, nil
 }

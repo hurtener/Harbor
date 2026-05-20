@@ -63,4 +63,20 @@ var (
 	// forward-incompatible record against the current schema, the load
 	// fails loud (Phase 51 / D-069).
 	ErrUnsupportedFormatVersion = errors.New("pauseresume: unsupported pause-record format_version")
+
+	// ErrInvalidPage — Coordinator.List was called with a pagination
+	// shape outside the accepted bounds: a negative Page, a negative
+	// PageSize, or a PageSize above MaxListPageSize. The List path
+	// fails closed rather than silently clamping — a silent clamp would
+	// defeat the per-row identity boundary the snapshot guarantees
+	// (Phase 72e / D-110).
+	ErrInvalidPage = errors.New("pauseresume: invalid pause-list pagination")
+
+	// ErrCrossTenantScope — Coordinator.List was called with a
+	// ListFilter naming a tenant other than the caller's own (or more
+	// than one tenant) without ListRequest.AdminScoped set. Cross-tenant
+	// pause visibility requires the verified auth.ScopeAdmin claim
+	// (D-079); the Coordinator fails closed rather than leaking
+	// foreign-tenant pause records (Phase 72e / D-110).
+	ErrCrossTenantScope = errors.New("pauseresume: cross-tenant pause-list requires the admin scope claim")
 )
