@@ -146,6 +146,33 @@ type TaskRow struct {
 	// GroupID is the TaskGroup the task is a member of ("" when the
 	// task is not a group member).
 	GroupID string `json:"group_id,omitempty"`
+	// Progress is the planner-emitted numeric progress hint in the
+	// [0,1] range. It is a pointer so the wire shape distinguishes "the
+	// planner emitted progress 0.0" from "the planner emitted no
+	// progress at all" — nil ⇒ no hint, and the Console renders an
+	// indeterminate Progress mini-bar rather than a 0% bar. Phase 73h
+	// (D-128): the Background Jobs page's Progress column.
+	Progress *float64 `json:"progress,omitempty"`
+	// Tags is the slice of short labels the Background Jobs page renders
+	// in its Tags column — the parent task type plus any planner-emitted
+	// labels. Empty slice ⇒ no tags. Phase 73h (D-128).
+	Tags []string `json:"tags,omitempty"`
+	// LastActivityAt is the timestamp of the most recent activity on the
+	// task — the max of UpdatedAt and any event on the run's stream. The
+	// Background Jobs page's `Stuck > 1h` saved-filter chip derives off
+	// this field (a Console-local rule — D-061). Phase 73h (D-128).
+	LastActivityAt time.Time `json:"last_activity_at"`
+	// IsBackground mirrors `Kind == "background"` — a convenience
+	// boolean so a Console row-renderer branches without re-comparing
+	// the enum. Phase 73h (D-128): the Background Jobs queue is the
+	// `IsBackground == true` projection of the unified task set.
+	IsBackground bool `json:"is_background"`
+	// HasPendingApproval is true when the task's run has at least one
+	// open HITL approval / tool-approval gate. The Background Jobs
+	// page's `Has pending approval` facet filters on it, and the
+	// per-job right-rail's Pending-approvals tab is populated when it is
+	// true. Phase 73h (D-128).
+	HasPendingApproval bool `json:"has_pending_approval"`
 }
 
 // TaskFilter is the server-enforced facet filter on `tasks.list`. An
@@ -177,6 +204,20 @@ type TaskFilter struct {
 	// Search is a free-text substring filter over the task's
 	// description + query, routed to the runtime search.tasks index.
 	Search string `json:"search,omitempty"`
+	// GroupID drills into one `TaskGroup` — restricts to tasks whose
+	// GroupID equals this value ("" = no group filter). The Background
+	// Jobs page's per-job right-rail "Related Sessions" tab issues a
+	// `tasks.list` with this facet set to surface the sibling tasks
+	// (foreground + background) under the same group. Identity scope is
+	// still enforced — a cross-tenant `group_id` lookup never widens
+	// visibility. Phase 73h (D-128).
+	GroupID string `json:"group_id,omitempty"`
+	// HasPendingApproval, when non-nil, restricts to tasks whose
+	// HasPendingApproval row field equals the pointee. nil = no
+	// approval filter; *true = only tasks with an open approval gate;
+	// *false = only tasks with none. The Background Jobs page's `Has
+	// pending approval` facet chip binds this. Phase 73h (D-128).
+	HasPendingApproval *bool `json:"has_pending_approval,omitempty"`
 }
 
 // TaskListAggregates carries the per-status counters the kanban
