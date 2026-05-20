@@ -10,9 +10,10 @@ import (
 // "Task control" row verbatim) plus the Wave 13 streaming-events two
 // (Phase 72 / 72a — RFC §5.2 "Streaming events" row) plus the five
 // Phase 72c `search.*` methods (D-108) plus the five Phase 72f
-// `runtime.*` / `metrics.*` posture methods (D-111). This slice is the
-// test's independent source of truth; if methods.go drifts from the
-// canonical set, the exhaustiveness test below fails.
+// `runtime.*` / `metrics.*` posture methods (D-111) plus the two Phase
+// 72g `governance.posture` / `llm.posture` methods (D-112). This slice
+// is the test's independent source of truth; if methods.go drifts from
+// the canonical set, the exhaustiveness test below fails.
 var wantMethods = []methods.Method{
 	methods.MethodStart,
 	methods.MethodCancel,
@@ -36,14 +37,17 @@ var wantMethods = []methods.Method{
 	methods.MethodRuntimeCounters,
 	methods.MethodRuntimeDrivers,
 	methods.MethodMetricsSnapshot,
+	methods.MethodGovernancePosture,
+	methods.MethodLLMPosture,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
-	// 72c search cluster five + Phase 72f posture cluster five = 22.
-	if len(got) != 22 {
-		t.Fatalf("Methods() returned %d methods, want 22", len(got))
+	// 72c search cluster five + Phase 72f runtime-posture cluster five +
+	// Phase 72g posture pair two = 24.
+	if len(got) != 24 {
+		t.Fatalf("Methods() returned %d methods, want 24", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -90,14 +94,16 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodEventsAggregate: "events.aggregate",
 		methods.MethodSearchQuery:     "search.query",
 		methods.MethodSearchSessions:  "search.sessions",
-		methods.MethodSearchTasks:     "search.tasks",
-		methods.MethodSearchEvents:    "search.events",
-		methods.MethodSearchArtifacts: "search.artifacts",
-		methods.MethodRuntimeInfo:     "runtime.info",
-		methods.MethodRuntimeHealth:   "runtime.health",
-		methods.MethodRuntimeCounters: "runtime.counters",
-		methods.MethodRuntimeDrivers:  "runtime.drivers",
-		methods.MethodMetricsSnapshot: "metrics.snapshot",
+		methods.MethodSearchTasks:       "search.tasks",
+		methods.MethodSearchEvents:      "search.events",
+		methods.MethodSearchArtifacts:   "search.artifacts",
+		methods.MethodRuntimeInfo:       "runtime.info",
+		methods.MethodRuntimeHealth:     "runtime.health",
+		methods.MethodRuntimeCounters:   "runtime.counters",
+		methods.MethodRuntimeDrivers:    "runtime.drivers",
+		methods.MethodMetricsSnapshot:   "metrics.snapshot",
+		methods.MethodGovernancePosture: "governance.posture",
+		methods.MethodLLMPosture:        "llm.posture",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -128,6 +134,18 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	}
 	if methods.IsControlMethod(methods.MethodEventsAggregate) {
 		t.Error("IsControlMethod(events.aggregate) = true, want false — streaming-events methods route through their own transports")
+	}
+	// Posture methods (Phase 72f / 72g) route through the
+	// PostureSurface, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodRuntimeInfo, methods.MethodRuntimeHealth,
+		methods.MethodRuntimeCounters, methods.MethodRuntimeDrivers,
+		methods.MethodMetricsSnapshot, methods.MethodGovernancePosture,
+		methods.MethodLLMPosture,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — posture methods route through the PostureSurface", m)
+		}
 	}
 	// Every non-start, non-streaming, non-search, non-posture canonical
 	// method IS a control method.
@@ -214,7 +232,8 @@ func TestIsSearchMethod(t *testing.T) {
 		methods.MethodApprove, methods.MethodReject, methods.MethodPrioritize,
 		methods.MethodUserMessage, methods.MethodEventsSubscribe,
 		methods.MethodEventsAggregate, methods.MethodRuntimeInfo,
-		methods.MethodMetricsSnapshot, methods.Method("bogus"), "",
+		methods.MethodMetricsSnapshot, methods.MethodGovernancePosture,
+		methods.MethodLLMPosture, methods.Method("bogus"), "",
 	} {
 		if methods.IsSearchMethod(m) {
 			t.Errorf("IsSearchMethod(%q) = true, want false", m)
@@ -222,9 +241,11 @@ func TestIsSearchMethod(t *testing.T) {
 	}
 }
 
-// TestIsPostureMethod pins the Phase 72f (D-111) posture predicate —
-// the five `runtime.*` / `metrics.*` methods are the closed set, none
-// of them is a control method, and they are valid canonical methods.
+// TestIsPostureMethod pins the Phase 72f / 72g posture predicate — the
+// five `runtime.*` / `metrics.*` methods (D-111) and the two
+// `governance.posture` / `llm.posture` methods (D-112) are the closed
+// set; none of them is a control or search method, and all are valid
+// canonical methods.
 func TestIsPostureMethod(t *testing.T) {
 	for _, m := range []methods.Method{
 		methods.MethodRuntimeInfo,
@@ -232,6 +253,8 @@ func TestIsPostureMethod(t *testing.T) {
 		methods.MethodRuntimeCounters,
 		methods.MethodRuntimeDrivers,
 		methods.MethodMetricsSnapshot,
+		methods.MethodGovernancePosture,
+		methods.MethodLLMPosture,
 	} {
 		if !methods.IsPostureMethod(m) {
 			t.Errorf("IsPostureMethod(%q) = false, want true", m)
@@ -243,7 +266,7 @@ func TestIsPostureMethod(t *testing.T) {
 			t.Errorf("IsControlMethod(%q) = true, want false — posture methods are not steering controls", m)
 		}
 		if methods.IsSearchMethod(m) {
-			t.Errorf("IsSearchMethod(%q) = true, want false", m)
+			t.Errorf("IsSearchMethod(%q) = true, want false — posture methods are not search methods", m)
 		}
 		if methods.IsStreamingEventsMethod(m) {
 			t.Errorf("IsStreamingEventsMethod(%q) = true, want false", m)
@@ -252,7 +275,8 @@ func TestIsPostureMethod(t *testing.T) {
 	// Non-posture methods are not posture methods.
 	for _, m := range []methods.Method{
 		methods.MethodStart, methods.MethodCancel, methods.MethodEventsSubscribe,
-		methods.MethodSearchQuery, methods.Method("bogus"), "",
+		methods.MethodEventsAggregate, methods.MethodSearchQuery,
+		methods.Method("bogus"), "",
 	} {
 		if methods.IsPostureMethod(m) {
 			t.Errorf("IsPostureMethod(%q) = true, want false", m)

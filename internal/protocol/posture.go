@@ -6,21 +6,31 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// PostureSurface is the transport-agnostic Harbor Protocol runtime-
-// posture handler (Phase 72f / D-111). It owns the five read-only
-// posture methods — runtime.info, runtime.health, runtime.counters,
-// runtime.drivers, metrics.snapshot — and is a sibling of the Phase 54
-// ControlSurface, not an extension: the posture methods are READ
-// methods (no runtime mutation), and threading the build / health /
-// counters / drivers / metrics seams through NewControlSurface would
-// balloon its dependency set (see the phase plan's "Risks" section).
+// PostureSurface is the transport-agnostic Harbor Protocol posture
+// handler. It owns the seven read-only posture methods:
+//
+//   - runtime.info, runtime.health, runtime.counters, runtime.drivers,
+//     metrics.snapshot — the Phase 72f (D-111) runtime-posture cluster.
+//   - governance.posture, llm.posture — the Phase 72g (D-112) config-
+//     posture pair (the D-081 governance `IdentityTiers` view and the
+//     bound LLM provider/model/region + D-089 `MockMode` flag).
+//
+// PostureSurface is a sibling of the Phase 54 ControlSurface, not an
+// extension: the posture methods are READ methods (no runtime
+// mutation), and threading the build / health / counters / drivers /
+// metrics / governance / llm seams through NewControlSurface would
+// balloon its dependency set.
 //
 // PostureSurface is built once per Runtime process via NewPostureSurface
 // and shared across every Protocol request; Dispatch is safe for
@@ -39,6 +49,16 @@ import (
 // authoritative and the cross-tenant gate is a no-op — the same
 // posture every other Protocol surface holds.
 //
+// # Audit on the cross-tenant config reads (Phase 72g / D-112)
+//
+// An accepted cross-tenant `governance.posture` / `llm.posture` read
+// emits a `*.posture_read_admin` audit event through the wired Redactor
+// + Bus — the same posture the Phase 72b admin-scope path takes. An
+// own-tenant read does NOT emit (matches the sessions.inspect
+// convention). The five `runtime.*` / `metrics.*` reads never emit
+// audit. A failed audit emit fails loudly (CodeRuntimeError) — the read
+// already succeeded, so the operator MUST see the audit drift.
+//
 // # The Console never reads internal Runtime objects (CLAUDE.md §8/§13)
 //
 // The posture data flows as canonical Protocol wire types
@@ -53,6 +73,10 @@ type PostureSurface struct {
 	counters    func(ctx context.Context, ident identity.Identity) types.RuntimeCounters
 	drivers     func() []types.SubsystemDriver
 	metrics     func(ctx context.Context) types.MetricsSnapshot
+	governance  *governance.PostureProvider
+	llm         *llm.PostureProvider
+	redactor    audit.Redactor
+	bus         events.EventBus
 	bootedAt    time.Time
 	displayName string
 	instanceID  string
@@ -61,8 +85,9 @@ type PostureSurface struct {
 // PostureDeps bundles the runtime-side seams a PostureSurface reads
 // through. Every dependency is read-only — the surface mutates none of
 // them. The Runtime wires these at boot (Stage-2 page consumers — the
-// Overview counter cards, the Settings Runtime Info card — read the
-// resulting Protocol methods, never the seams directly).
+// Overview counter cards, the Settings Runtime Info / Governance /
+// LLM-Provider cards — read the resulting Protocol methods, never the
+// seams directly).
 type PostureDeps struct {
 	// Build carries the static build identity (BuildVersion /
 	// BuildCommit / BuildDate / BuildGoVersion). The Capabilities,
@@ -88,6 +113,22 @@ type PostureDeps struct {
 	// Metrics returns the Protocol-shaped projection over the Phase 56
 	// MetricsRegistry. Mandatory.
 	Metrics func(ctx context.Context) types.MetricsSnapshot
+	// Governance is the Phase 72g (D-112) read-only governance posture
+	// accessor — the source the `governance.posture` method projects
+	// onto types.GovernancePostureResponse. Mandatory.
+	Governance *governance.PostureProvider
+	// LLM is the Phase 72g (D-112) read-only LLM posture accessor — the
+	// source the `llm.posture` method projects onto
+	// types.LLMPostureResponse. Mandatory.
+	LLM *llm.PostureProvider
+	// Redactor is the audit Redactor every cross-tenant
+	// `*.posture_read_admin` payload runs through before the bus
+	// publish (CLAUDE.md §7 rule 6). Mandatory.
+	Redactor audit.Redactor
+	// Bus is the canonical event bus the cross-tenant
+	// `*.posture_read_admin` audit events are published onto.
+	// Mandatory.
+	Bus events.EventBus
 	// DisplayName is the operator-configured friendly name for this
 	// Runtime. Optional — empty when the operator configured none.
 	DisplayName string
@@ -102,7 +143,7 @@ type PostureDeps struct {
 // a surface that would nil-panic on the first Dispatch.
 var ErrPostureMisconfigured = stderrors.New("protocol: PostureSurface missing a mandatory dependency")
 
-// NewPostureSurface builds the Protocol runtime-posture surface. Every
+// NewPostureSurface builds the Protocol posture surface. Every
 // PostureDeps seam except Build / DisplayName / BootedAt is mandatory; a
 // missing one fails loud with a wrapped ErrPostureMisconfigured.
 //
@@ -124,6 +165,18 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 	if deps.Metrics == nil {
 		return nil, fmt.Errorf("%w: Metrics is nil", ErrPostureMisconfigured)
 	}
+	if deps.Governance == nil {
+		return nil, fmt.Errorf("%w: Governance is nil", ErrPostureMisconfigured)
+	}
+	if deps.LLM == nil {
+		return nil, fmt.Errorf("%w: LLM is nil", ErrPostureMisconfigured)
+	}
+	if deps.Redactor == nil {
+		return nil, fmt.Errorf("%w: Redactor is nil", ErrPostureMisconfigured)
+	}
+	if deps.Bus == nil {
+		return nil, fmt.Errorf("%w: Bus is nil", ErrPostureMisconfigured)
+	}
 	if deps.InstanceID == "" {
 		return nil, fmt.Errorf("%w: InstanceID is empty", ErrPostureMisconfigured)
 	}
@@ -138,6 +191,10 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		counters:    deps.Counters,
 		drivers:     deps.Drivers,
 		metrics:     deps.Metrics,
+		governance:  deps.Governance,
+		llm:         deps.LLM,
+		redactor:    deps.Redactor,
+		bus:         deps.Bus,
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
@@ -148,9 +205,11 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 // posture-method call. A Phase 60 REST handler decodes a request, calls
 // Dispatch, and encodes the response — Dispatch IS the surface.
 //
-// method selects the handler; it MUST be one of the five posture
-// methods (methods.IsPostureMethod). req MUST be a *types.RuntimeInfoRequest
-// — the five posture methods share the one read-only request shape.
+// method selects the handler; it MUST be one of the seven posture
+// methods (methods.IsPostureMethod). req MUST be a
+// *types.RuntimeInfoRequest — all seven posture methods share the one
+// read-only request envelope (the governance / llm reads are also
+// identity-only, so they reuse the same shape).
 //
 // The return is always a *types.<Method>Response or a *protoerrors.Error
 // so the wire layer never sees an unstructured runtime error:
@@ -159,6 +218,7 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 //   - CodeInvalidRequest  — req is nil or not a *types.RuntimeInfoRequest.
 //   - CodeIdentityRequired — the request's identity triple is incomplete.
 //   - CodeScopeMismatch   — a cross-tenant query without the admin scope.
+//   - CodeRuntimeError    — a posture-accessor or audit-emit failure.
 //
 // Dispatch holds no per-call state on the PostureSurface — it reads
 // everything from ctx + req (D-025). One PostureSurface serves N
@@ -193,12 +253,19 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 	// When no middleware ran (Phase 60 trust-based posture), there is
 	// no ctx-identity and the gate is a no-op — the body identity is
 	// authoritative, same posture every other Protocol surface holds.
+	// The actor — the audit anchor for the Phase 72g cross-tenant
+	// config reads — is the ctx-verified identity when present, else
+	// the body identity.
+	crossTenant := false
+	actor := id
 	if verified, hasVerified := identity.From(ctx); hasVerified {
+		actor = verified
 		if id.TenantID != verified.TenantID {
 			if !auth.HasScope(ctx, auth.ScopeAdmin) && !auth.HasScope(ctx, auth.ScopeConsoleFleet) {
 				return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
 					"method %q: cross-tenant posture read requires the admin scope claim", string(method))
 			}
+			crossTenant = true
 		}
 	}
 
@@ -213,6 +280,10 @@ func (s *PostureSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return s.handleDrivers(), nil
 	case methods.MethodMetricsSnapshot:
 		return s.handleMetrics(ctx), nil
+	case methods.MethodGovernancePosture:
+		return s.handleGovernancePosture(ctx, method, id, actor, crossTenant)
+	case methods.MethodLLMPosture:
+		return s.handleLLMPosture(ctx, method, id, actor, crossTenant)
 	default:
 		// Unreachable: IsPostureMethod already gated the method set.
 		// Fail loud rather than silently no-op (CLAUDE.md §5).
@@ -291,4 +362,180 @@ func (s *PostureSurface) handleMetrics(ctx context.Context) *types.MetricsSnapsh
 		m.Gauges = []types.NamedGauge{}
 	}
 	return &m
+}
+
+// handleGovernancePosture builds the governance.posture response (Phase
+// 72g / D-112) by reading the governance PostureProvider and projecting
+// its Snapshot onto the wire type. The validated request identity is
+// threaded into ctx so the provider's identity-mandatory gate (it reads
+// the triple from ctx) is satisfied. An accepted cross-tenant read
+// emits a `governance.posture_read_admin` audit event.
+func (s *PostureSurface) handleGovernancePosture(
+	ctx context.Context,
+	method methods.Method,
+	id identity.Identity,
+	actor identity.Identity,
+	crossTenant bool,
+) (any, error) {
+	govCtx, err := identity.With(ctx, id)
+	if err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete: %v", string(method), err)
+	}
+	snap, err := s.governance.Posture(govCtx)
+	if err != nil {
+		return nil, mapPostureError(string(method), err)
+	}
+	if crossTenant {
+		if emitErr := s.emitPostureReadAdmin(ctx, method, actor, id.TenantID); emitErr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: cross-tenant read succeeded but audit emit failed: %v", string(method), emitErr)
+		}
+	}
+	return projectGovernancePosture(snap), nil
+}
+
+// handleLLMPosture builds the llm.posture response (Phase 72g / D-112)
+// by reading the llm PostureProvider and projecting its PostureSnapshot
+// onto the wire type. An accepted cross-tenant read emits an
+// `llm.posture_read_admin` audit event.
+func (s *PostureSurface) handleLLMPosture(
+	ctx context.Context,
+	method methods.Method,
+	id identity.Identity,
+	actor identity.Identity,
+	crossTenant bool,
+) (any, error) {
+	snap, err := s.llm.Posture(ctx)
+	if err != nil {
+		return nil, mapPostureError(string(method), err)
+	}
+	if crossTenant {
+		if emitErr := s.emitPostureReadAdmin(ctx, method, actor, id.TenantID); emitErr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: cross-tenant read succeeded but audit emit failed: %v", string(method), emitErr)
+		}
+	}
+	return projectLLMPosture(snap), nil
+}
+
+// emitPostureReadAdmin publishes the typed `*.posture_read_admin` audit
+// event onto the wired bus. The audit payload runs through the wired
+// audit.Redactor BEFORE the publish (CLAUDE.md §7 rule 6 + D-020) — the
+// posture surface reports provider/model/region/tier metadata, never an
+// API key, but the redactor pass is mandatory regardless.
+//
+// The event's Identity is the ACTOR's quadruple — the admin caller is
+// the audit anchor. The RequestedTenant is on the payload for
+// correlation. The event type is governance- or llm-namespaced to match
+// the dispatched method.
+func (s *PostureSurface) emitPostureReadAdmin(
+	ctx context.Context,
+	method methods.Method,
+	actor identity.Identity,
+	requestedTenant string,
+) error {
+	actorQuad := identity.Quadruple{Identity: actor}
+
+	// Run the audit-visible fields through the redactor before building
+	// the typed payload (mirrors the Phase 72b admin_scope_used
+	// pattern).
+	auditView := map[string]any{
+		"actor_tenant":     actor.TenantID,
+		"actor_user":       actor.UserID,
+		"actor_session":    actor.SessionID,
+		"requested_tenant": requestedTenant,
+		"method":           string(method),
+	}
+	if _, err := s.redactor.Redact(ctx, auditView); err != nil {
+		// Fail loud — never emit unredacted (CLAUDE.md §13).
+		return fmt.Errorf("redactor refused posture_read_admin payload: %w", err)
+	}
+
+	var ev events.Event
+	switch method {
+	case methods.MethodGovernancePosture:
+		ev = events.Event{
+			Type:       governance.EventTypePostureReadAdmin,
+			Identity:   actorQuad,
+			OccurredAt: s.clock(),
+			Payload: governance.PostureReadAdminPayload{
+				Actor:           actorQuad,
+				RequestedTenant: requestedTenant,
+				OccurredAt:      s.clock(),
+			},
+		}
+	case methods.MethodLLMPosture:
+		ev = events.Event{
+			Type:       llm.EventTypePostureReadAdmin,
+			Identity:   actorQuad,
+			OccurredAt: s.clock(),
+			Payload: llm.PostureReadAdminPayload{
+				Actor:           actorQuad,
+				RequestedTenant: requestedTenant,
+			},
+		}
+	default:
+		return fmt.Errorf("emitPostureReadAdmin: unsupported method %q", string(method))
+	}
+
+	if err := s.bus.Publish(ctx, ev); err != nil {
+		return fmt.Errorf("publish %s: %w", ev.Type, err)
+	}
+	return nil
+}
+
+// projectGovernancePosture maps a governance.Snapshot onto the
+// GovernancePostureResponse wire type. The internal TierConfig shape is
+// projected — never re-exported — so a future change to the internal
+// struct does not silently reshape the Protocol surface (single-source
+// per CLAUDE.md §8). The IdentityTiers map is always non-nil in the
+// wire JSON.
+func projectGovernancePosture(snap governance.Snapshot) *types.GovernancePostureResponse {
+	tiers := make(map[string]types.IdentityTierView, len(snap.IdentityTiers))
+	for name, tc := range snap.IdentityTiers {
+		tiers[name] = types.IdentityTierView{
+			BudgetCeilingUSD: tc.BudgetCeilingUSD,
+			RateLimit: types.RateLimitView{
+				Capacity:         tc.RateLimit.Capacity,
+				RefillTokens:     tc.RateLimit.RefillTokens,
+				RefillIntervalMS: tc.RateLimit.RefillInterval.Milliseconds(),
+			},
+			MaxTokens: tc.MaxTokens,
+		}
+	}
+	return &types.GovernancePostureResponse{
+		DefaultTier:     snap.DefaultTier,
+		ResolvedTier:    snap.ResolvedTier,
+		IdentityTiers:   tiers,
+		ProtocolVersion: types.ProtocolVersion,
+	}
+}
+
+// projectLLMPosture maps an llm.PostureSnapshot onto the
+// LLMPostureResponse wire type.
+func projectLLMPosture(snap llm.PostureSnapshot) *types.LLMPostureResponse {
+	return &types.LLMPostureResponse{
+		Provider:        snap.Provider,
+		Model:           snap.Model,
+		Region:          snap.Region,
+		MockMode:        snap.MockMode,
+		ProtocolVersion: types.ProtocolVersion,
+	}
+}
+
+// mapPostureError translates a posture-accessor error onto a canonical
+// Protocol error code. The mapping closes the wire surface — every error
+// shape is observable as a Code (CLAUDE.md §13).
+func mapPostureError(method string, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case stderrors.Is(err, governance.ErrIdentityRequired):
+		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: %v", method, err)
+	default:
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: posture read failed: %v", method, err)
+	}
 }

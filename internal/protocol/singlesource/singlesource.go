@@ -114,16 +114,18 @@ var CanonicalMethods = map[string]struct{}{
 	"user_message":     {},
 	"events.subscribe": {}, // Phase 72 / D-105
 	"events.aggregate": {}, // Phase 72a / D-106
-	"search.query":     {}, // Phase 72c / D-108
-	"search.sessions":  {}, // Phase 72c / D-108
-	"search.tasks":     {}, // Phase 72c / D-108
-	"search.events":    {}, // Phase 72c / D-108
-	"search.artifacts": {}, // Phase 72c / D-108
-	"runtime.info":     {}, // Phase 72f / D-111
-	"runtime.health":   {}, // Phase 72f / D-111
-	"runtime.counters": {}, // Phase 72f / D-111
-	"runtime.drivers":  {}, // Phase 72f / D-111
-	"metrics.snapshot": {}, // Phase 72f / D-111
+	"search.query":       {}, // Phase 72c / D-108
+	"search.sessions":    {}, // Phase 72c / D-108
+	"search.tasks":       {}, // Phase 72c / D-108
+	"search.events":      {}, // Phase 72c / D-108
+	"search.artifacts":   {}, // Phase 72c / D-108
+	"runtime.info":       {}, // Phase 72f / D-111
+	"runtime.health":     {}, // Phase 72f / D-111
+	"runtime.counters":   {}, // Phase 72f / D-111
+	"runtime.drivers":    {}, // Phase 72f / D-111
+	"metrics.snapshot":   {}, // Phase 72f / D-111
+	"governance.posture": {}, // Phase 72g / D-112
+	"llm.posture":        {}, // Phase 72g / D-112
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -180,6 +182,14 @@ var CanonicalWireTypes = map[string]string{
 	"NamedHistogram":     "types",
 	"NamedGauge":         "types",
 	"MetricsSnapshot":    "types",
+	// Phase 72g (D-112) posture-pair wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"GovernancePostureRequest":  "types",
+	"GovernancePostureResponse": "types",
+	"IdentityTierView":          "types",
+	"RateLimitView":             "types",
+	"LLMPostureRequest":         "types",
+	"LLMPostureResponse":        "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

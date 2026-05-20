@@ -604,33 +604,36 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
-	// Phase 72c search cluster five + Phase 72f posture cluster five = 22.
-	if len(got) != 22 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 22 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five)", len(got))
+	// Phase 72c search cluster five + Phase 72f posture cluster five +
+	// Phase 72g posture pair two = 24.
+	if len(got) != 24 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 24 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
-		methods.MethodStart:           {},
-		methods.MethodCancel:          {},
-		methods.MethodPause:           {},
-		methods.MethodResume:          {},
-		methods.MethodRedirect:        {},
-		methods.MethodInjectContext:   {},
-		methods.MethodApprove:         {},
-		methods.MethodReject:          {},
-		methods.MethodPrioritize:      {},
-		methods.MethodUserMessage:     {},
-		methods.MethodEventsSubscribe: {},
-		methods.MethodEventsAggregate: {},
-		methods.MethodSearchQuery:     {},
-		methods.MethodSearchSessions:  {},
-		methods.MethodSearchTasks:     {},
-		methods.MethodSearchEvents:    {},
-		methods.MethodSearchArtifacts: {},
-		methods.MethodRuntimeInfo:     {},
-		methods.MethodRuntimeHealth:   {},
-		methods.MethodRuntimeCounters: {},
-		methods.MethodRuntimeDrivers:  {},
-		methods.MethodMetricsSnapshot: {},
+		methods.MethodStart:             {},
+		methods.MethodCancel:            {},
+		methods.MethodPause:             {},
+		methods.MethodResume:            {},
+		methods.MethodRedirect:          {},
+		methods.MethodInjectContext:     {},
+		methods.MethodApprove:           {},
+		methods.MethodReject:            {},
+		methods.MethodPrioritize:        {},
+		methods.MethodUserMessage:       {},
+		methods.MethodEventsSubscribe:   {},
+		methods.MethodEventsAggregate:   {},
+		methods.MethodSearchQuery:       {},
+		methods.MethodSearchSessions:    {},
+		methods.MethodSearchTasks:       {},
+		methods.MethodSearchEvents:      {},
+		methods.MethodSearchArtifacts:   {},
+		methods.MethodRuntimeInfo:       {},
+		methods.MethodRuntimeHealth:     {},
+		methods.MethodRuntimeCounters:   {},
+		methods.MethodRuntimeDrivers:    {},
+		methods.MethodMetricsSnapshot:   {},
+		methods.MethodGovernancePosture: {},
+		methods.MethodLLMPosture:        {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -717,14 +720,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsSearchMethod(m) {
 				t.Skip("phase-72c: search.* methods exercised by their per-package conformance + integration tests; conformance-suite scenario lands in Phase 80")
 			}
-			// Phase 72f (D-111): the five `runtime.*` / `metrics.*`
-			// posture methods are dispatched by PostureSurface, not
-			// ControlSurface. Their happy-path is exercised by the
-			// internal/protocol posture_test.go + the runtime-posture
-			// integration test; the conformance-suite scenario lands
-			// in a later phase (same posture as the search cluster).
+			// Phase 72f / 72g (D-111 / D-112): the seven posture methods
+			// — the five `runtime.*` / `metrics.*` reads plus
+			// `governance.posture` / `llm.posture` — are dispatched by
+			// PostureSurface, not ControlSurface. Their happy-paths are
+			// exercised by internal/protocol posture tests + the
+			// runtime-posture / phase72g_posture integration tests; the
+			// conformance-suite scenario lands later (same posture as
+			// the search cluster).
 			if methods.IsPostureMethod(m) {
-				t.Skip("phase-72f: runtime.* / metrics.* posture methods exercised by internal/protocol posture tests + test/integration/runtime_posture_test.go; conformance-suite scenario lands later")
+				t.Skip("phase-72f/72g: posture methods exercised by internal/protocol posture tests + test/integration posture tests; conformance-suite scenario lands later")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -873,12 +878,14 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			if methods.IsSearchMethod(m) {
 				t.Skip("phase-72c: search.* malformed-request paths covered by per-package conformance; conformance-suite scenario lands in Phase 80")
 			}
-			// Phase 72f (D-111): the five posture methods are
-			// dispatched by PostureSurface. Their malformed-request
-			// rejection is covered in internal/protocol/posture_test.go;
-			// the conformance-suite scenario lands later.
+			// Phase 72f / 72g (D-111 / D-112): the seven posture methods
+			// are dispatched by PostureSurface, not ControlSurface.
+			// Their malformed-request rejection is covered by the
+			// internal/protocol posture tests + the per-package
+			// posture-handler tests; the conformance-suite scenario
+			// lands later.
 			if methods.IsPostureMethod(m) {
-				t.Skip("phase-72f: runtime.* / metrics.* posture malformed-request paths covered by internal/protocol posture tests; conformance-suite scenario lands later")
+				t.Skip("phase-72f/72g: posture malformed-request paths covered by internal/protocol + per-package posture-handler tests; conformance-suite scenario lands later")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

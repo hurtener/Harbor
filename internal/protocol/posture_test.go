@@ -6,7 +6,13 @@ import (
 	"time"
 
 	"context"
+	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
+	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/events/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
@@ -18,6 +24,48 @@ import (
 // byte-stable.
 func fixedClock() time.Time {
 	return time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+}
+
+// newPostureBus builds a real in-memory event bus for the posture
+// fixture — the Phase 72g cross-tenant audit emit path publishes onto
+// it. §17.3: real drivers on the seam, no mocks.
+func newPostureBus(t *testing.T) events.EventBus {
+	t.Helper()
+	bus, err := inmem.New(config.EventsConfig{
+		MaxSubscribersPerSession: 8,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              30 * time.Second,
+		DropWindow:               time.Second,
+		ReplayBufferSize:         128,
+	}, patterns.New())
+	if err != nil {
+		t.Fatalf("events inmem: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	return bus
+}
+
+// newPostureGovernance / newPostureLLM build the Phase 72g posture
+// providers for the fixture.
+func newPostureGovernance() *governance.PostureProvider {
+	return governance.NewPostureProvider(governance.Config{
+		DefaultTier: "free",
+		IdentityTiers: map[string]governance.TierConfig{
+			"free": {
+				BudgetCeilingUSD: 5.0,
+				RateLimit:        governance.RateLimitConfig{Capacity: 100, RefillTokens: 10, RefillInterval: time.Second},
+				MaxTokens:        2048,
+			},
+		},
+	})
+}
+
+func newPostureLLM() *llm.PostureProvider {
+	return llm.NewPostureProvider(llm.ConfigSnapshot{
+		Driver:   "bifrost",
+		Provider: "openai",
+		Model:    "openai/gpt-5.3-chat",
+	})
 }
 
 // newPostureFixture builds a PostureSurface wired with deterministic
@@ -59,6 +107,10 @@ func newPostureFixture(t *testing.T) *protocol.PostureSurface {
 				Counters: []types.NamedCounter{{Name: "harbor_events_total", Value: 5}},
 			}
 		},
+		Governance:  newPostureGovernance(),
+		LLM:         newPostureLLM(),
+		Redactor:    patterns.New(),
+		Bus:         newPostureBus(t),
 		DisplayName: "harbor-test",
 		InstanceID:  "inst-test-001",
 	}
@@ -87,6 +139,10 @@ func TestNewPostureSurface_NilDepFailsLoud(t *testing.T) {
 			Counters:   func(context.Context, identity.Identity) types.RuntimeCounters { return types.RuntimeCounters{} },
 			Drivers:    func() []types.SubsystemDriver { return nil },
 			Metrics:    func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+			Governance: newPostureGovernance(),
+			LLM:        newPostureLLM(),
+			Redactor:   patterns.New(),
+			Bus:        newPostureBus(t),
 			InstanceID: "i",
 		}
 	}
@@ -96,6 +152,10 @@ func TestNewPostureSurface_NilDepFailsLoud(t *testing.T) {
 		"nil Counters":     func(d *protocol.PostureDeps) { d.Counters = nil },
 		"nil Drivers":      func(d *protocol.PostureDeps) { d.Drivers = nil },
 		"nil Metrics":      func(d *protocol.PostureDeps) { d.Metrics = nil },
+		"nil Governance":   func(d *protocol.PostureDeps) { d.Governance = nil },
+		"nil LLM":          func(d *protocol.PostureDeps) { d.LLM = nil },
+		"nil Redactor":     func(d *protocol.PostureDeps) { d.Redactor = nil },
+		"nil Bus":          func(d *protocol.PostureDeps) { d.Bus = nil },
 		"empty InstanceID": func(d *protocol.PostureDeps) { d.InstanceID = "" },
 	}
 	for name, mutate := range cases {
@@ -136,7 +196,8 @@ func TestPostureDispatch_IncompleteIdentity(t *testing.T) {
 	for _, method := range []methods.Method{
 		methods.MethodRuntimeInfo, methods.MethodRuntimeHealth,
 		methods.MethodRuntimeCounters, methods.MethodRuntimeDrivers,
-		methods.MethodMetricsSnapshot,
+		methods.MethodMetricsSnapshot, methods.MethodGovernancePosture,
+		methods.MethodLLMPosture,
 	} {
 		req := &types.RuntimeInfoRequest{
 			Identity: types.IdentityScope{Tenant: "", User: "u", Session: "s"},
@@ -296,6 +357,166 @@ func TestPostureDispatch_CrossTenantRequiresAdmin(t *testing.T) {
 	if _, err := s.Dispatch(ctxVerified, methods.MethodRuntimeInfo, sameReq); err != nil {
 		t.Fatalf("same-tenant Dispatch unexpectedly rejected: %v", err)
 	}
+}
+
+// TestPostureDispatch_GovernancePosture pins the Phase 72g (D-112)
+// `governance.posture` happy path — the projected IdentityTiers view.
+func TestPostureDispatch_GovernancePosture(t *testing.T) {
+	s := newPostureFixture(t)
+	out, err := s.Dispatch(context.Background(), methods.MethodGovernancePosture, validRequest())
+	if err != nil {
+		t.Fatalf("Dispatch(governance.posture): %v", err)
+	}
+	gp, ok := out.(*types.GovernancePostureResponse)
+	if !ok {
+		t.Fatalf("governance.posture returned %T, want *types.GovernancePostureResponse", out)
+	}
+	if gp.DefaultTier != "free" {
+		t.Errorf("DefaultTier = %q, want free", gp.DefaultTier)
+	}
+	tier, ok := gp.IdentityTiers["free"]
+	if !ok {
+		t.Fatalf("IdentityTiers missing the 'free' tier: %+v", gp.IdentityTiers)
+	}
+	if tier.BudgetCeilingUSD != 5.0 || tier.MaxTokens != 2048 {
+		t.Errorf("tier projection wrong: %+v", tier)
+	}
+	if tier.RateLimit.Capacity != 100 || tier.RateLimit.RefillIntervalMS != 1000 {
+		t.Errorf("rate-limit projection wrong: %+v", tier.RateLimit)
+	}
+	if gp.ProtocolVersion != types.ProtocolVersion {
+		t.Errorf("ProtocolVersion = %q, want %q", gp.ProtocolVersion, types.ProtocolVersion)
+	}
+}
+
+// TestPostureDispatch_LLMPosture pins the Phase 72g (D-112) `llm.posture`
+// happy path — the projected provider/model/region.
+func TestPostureDispatch_LLMPosture(t *testing.T) {
+	s := newPostureFixture(t)
+	out, err := s.Dispatch(context.Background(), methods.MethodLLMPosture, validRequest())
+	if err != nil {
+		t.Fatalf("Dispatch(llm.posture): %v", err)
+	}
+	lp, ok := out.(*types.LLMPostureResponse)
+	if !ok {
+		t.Fatalf("llm.posture returned %T, want *types.LLMPostureResponse", out)
+	}
+	if lp.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", lp.Provider)
+	}
+	if lp.Model != "openai/gpt-5.3-chat" {
+		t.Errorf("Model = %q, want openai/gpt-5.3-chat", lp.Model)
+	}
+	if lp.ProtocolVersion != types.ProtocolVersion {
+		t.Errorf("ProtocolVersion = %q, want %q", lp.ProtocolVersion, types.ProtocolVersion)
+	}
+}
+
+// TestPostureDispatch_CrossTenantConfigReadEmitsAudit pins the Phase 72g
+// (D-112) cross-tenant audit emit: an admin-scoped cross-tenant
+// `governance.posture` / `llm.posture` read publishes the
+// `*.posture_read_admin` event; an own-tenant read does not.
+func TestPostureDispatch_CrossTenantConfigReadEmitsAudit(t *testing.T) {
+	for _, tc := range []struct {
+		method    methods.Method
+		eventType events.EventType
+	}{
+		{methods.MethodGovernancePosture, governance.EventTypePostureReadAdmin},
+		{methods.MethodLLMPosture, llm.EventTypePostureReadAdmin},
+	} {
+		t.Run(string(tc.method), func(t *testing.T) {
+			bus := newPostureBus(t)
+			// An admin-scoped subscription observes cross-tenant emits.
+			sub, err := bus.Subscribe(context.Background(), events.Filter{Admin: true})
+			if err != nil {
+				t.Fatalf("bus.Subscribe: %v", err)
+			}
+			defer sub.Cancel()
+
+			deps := basePostureDeps(t)
+			deps.Bus = bus
+			s, err := protocol.NewPostureSurface(deps)
+			if err != nil {
+				t.Fatalf("NewPostureSurface: %v", err)
+			}
+
+			verified := identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "sess"}
+			ctxAdmin := auth.WithScopes(mustCtx(t, verified), []auth.Scope{auth.ScopeAdmin})
+			crossReq := &types.RuntimeInfoRequest{
+				Identity: types.IdentityScope{Tenant: "tenant-b", User: "u", Session: "sess"},
+			}
+			if _, err := s.Dispatch(ctxAdmin, tc.method, crossReq); err != nil {
+				t.Fatalf("cross-tenant Dispatch: %v", err)
+			}
+			// The cross-tenant read MUST emit the typed
+			// *.posture_read_admin event (the Admin-true subscription
+			// may also surface its own admin-scope-used event — only
+			// the posture-typed event is asserted).
+			deadline := time.After(2 * time.Second)
+			var saw bool
+			for !saw {
+				select {
+				case ev := <-sub.Events():
+					if ev.Type == tc.eventType {
+						saw = true
+					}
+				case <-deadline:
+					t.Fatalf("no %s event emitted for cross-tenant read", tc.eventType)
+				}
+			}
+
+			// Own-tenant read emits no posture audit event.
+			sameReq := &types.RuntimeInfoRequest{
+				Identity: types.IdentityScope{Tenant: "tenant-a", User: "u", Session: "sess"},
+			}
+			if _, err := s.Dispatch(mustCtx(t, verified), tc.method, sameReq); err != nil {
+				t.Fatalf("own-tenant Dispatch: %v", err)
+			}
+			quiet := time.After(400 * time.Millisecond)
+			for {
+				select {
+				case ev := <-sub.Events():
+					if ev.Type == governance.EventTypePostureReadAdmin ||
+						ev.Type == llm.EventTypePostureReadAdmin {
+						t.Fatalf("own-tenant read unexpectedly emitted %q", ev.Type)
+					}
+				case <-quiet:
+					return
+				}
+			}
+		})
+	}
+}
+
+// basePostureDeps builds a complete PostureDeps for tests that need to
+// override one seam.
+func basePostureDeps(t *testing.T) protocol.PostureDeps {
+	t.Helper()
+	return protocol.PostureDeps{
+		Clock:    fixedClock,
+		BootedAt: fixedClock().Add(-1 * time.Hour),
+		Health:   func(context.Context) []types.SubsystemHealth { return nil },
+		Counters: func(context.Context, identity.Identity) types.RuntimeCounters {
+			return types.RuntimeCounters{}
+		},
+		Drivers:    func() []types.SubsystemDriver { return nil },
+		Metrics:    func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Governance: newPostureGovernance(),
+		LLM:        newPostureLLM(),
+		Redactor:   patterns.New(),
+		Bus:        newPostureBus(t),
+		InstanceID: "inst-test-001",
+	}
+}
+
+// mustCtx threads identity into a fresh context or fails the test.
+func mustCtx(t *testing.T, id identity.Identity) context.Context {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	return ctx
 }
 
 // assertPostureCode asserts err is a *protoerrors.Error with the given

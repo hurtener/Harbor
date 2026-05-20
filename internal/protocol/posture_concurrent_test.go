@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -48,8 +49,12 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 		Drivers: func() []types.SubsystemDriver {
 			return []types.SubsystemDriver{{Subsystem: "state", Driver: "inmem"}}
 		},
-		Metrics:    func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
-		InstanceID: "inst-concurrent",
+		Metrics:     func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Governance:  newPostureGovernance(),
+		LLM:         newPostureLLM(),
+		Redactor:    patterns.New(),
+		Bus:         newPostureBus(t),
+		InstanceID:  "inst-concurrent",
 	})
 	if err != nil {
 		t.Fatalf("NewPostureSurface: %v", err)
@@ -76,11 +81,13 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 				},
 			}
 
-			// Exercise every posture method once per goroutine.
+			// Exercise every posture method once per goroutine —
+			// including the Phase 72g governance / llm reads.
 			for _, m := range []methods.Method{
 				methods.MethodRuntimeInfo, methods.MethodRuntimeHealth,
 				methods.MethodRuntimeCounters, methods.MethodRuntimeDrivers,
-				methods.MethodMetricsSnapshot,
+				methods.MethodMetricsSnapshot, methods.MethodGovernancePosture,
+				methods.MethodLLMPosture,
 			} {
 				out, derr := s.Dispatch(context.Background(), m, req)
 				if derr != nil {
