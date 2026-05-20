@@ -619,9 +619,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
-	// Phase 73f tools cluster seven + Phase 73i flows-page six = 57.
-	if len(got) != 57 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 57 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six)", len(got))
+	// Phase 73f tools cluster seven + Phase 73i flows-page six +
+	// Phase 73d tasks-page two = 59.
+	if len(got) != 59 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 59 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -677,6 +678,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodToolsContentStats:      {},
 		methods.MethodToolsSetApprovalPolicy: {},
 		methods.MethodToolsRevokeOAuth:       {},
+
+		methods.MethodTasksList: {},
+		methods.MethodTasksGet:  {},
 
 		methods.MethodFlowsList:         {},
 		methods.MethodFlowsDescribe:     {},
@@ -861,6 +865,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// extension — same posture as the search / pause clusters.
 			if methods.IsFlowsMethod(m) {
 				t.Skip("phase-73i: flows.* methods exercised by their handler + surface unit tests + test/integration/flows_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73d (D-123): the two `tasks.*` methods route through
+			// the Console Tasks-page handler (POST /v1/tasks/{method}),
+			// not the REST ControlSurface — they need a tasks.TaskRegistry
+			// the conformance Stack does not wire. Their happy-paths +
+			// failure modes are exercised by internal/tasks/protocol unit
+			// tests, the concurrent-reuse test, the stream-package
+			// tasks_handler tests, and test/integration/tasks_page_test.go
+			// (real registry + real wire transport). Skip with an
+			// explicit reason — same posture as the tools / flows clusters.
+			if methods.IsTasksMethod(m) {
+				t.Skip("phase-73d: tasks.* methods exercised by internal/tasks/protocol tests + stream tasks_handler tests + test/integration/tasks_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
