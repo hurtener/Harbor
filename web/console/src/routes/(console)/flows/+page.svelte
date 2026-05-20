@@ -50,7 +50,8 @@
     formatRelative
   } from '$lib/flows/format.js';
   import type { Flow, FlowFilter, FlowMetrics } from '$lib/flows/types.js';
-  import { openConsoleDBForOperator } from '$lib/db/console_db.js';
+  import { openListPageDB } from '$lib/db/console_db.js';
+  import { operatorIdOf } from '$lib/db/schema.js';
   import {
     FlowsSavedFilters,
     type FlowsSavedFilter
@@ -134,11 +135,15 @@
   /** Loads the saved-filter chips from the Console DB. */
   async function loadSavedFilters(): Promise<void> {
     try {
-      const handle = await openConsoleDBForOperator();
-      if (!handle) {
+      if (connection === null) {
         return;
       }
-      savedStore = new FlowsSavedFilters(handle.db, handle.operatorID);
+      const db = await openListPageDB(connection);
+      const operatorID = await operatorIdOf(
+        connection.identity.tenant,
+        connection.identity.user
+      );
+      savedStore = new FlowsSavedFilters(db, operatorID);
       savedFilters = await savedStore.list();
     } catch {
       // A Console-DB open failure is non-fatal for the catalog view —

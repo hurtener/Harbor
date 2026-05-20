@@ -22,7 +22,8 @@ import type { RuntimeConnection } from '../../connection.js';
 const CONNECTION: RuntimeConnection = {
 	baseURL: 'http://runtime.test',
 	token: 'tok-abc',
-	identity: { tenant: 't1', user: 'u1', session: 's1' }
+	identity: { tenant: 't1', user: 'u1', session: 's1' },
+	scopes: []
 };
 
 function okResponse(body: unknown): Response {
