@@ -49,7 +49,9 @@ import (
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
@@ -200,6 +202,16 @@ func buildPostureSurface(t *testing.T, stack *devstack.DevStack, rec *posturePer
 				},
 			}
 		},
+		// Phase 72g (D-112): the governance / llm posture seams + the
+		// audit redactor + bus the merged PostureSurface requires. The
+		// runtime-posture test does not exercise governance.posture /
+		// llm.posture itself, but NewPostureSurface fails closed on a
+		// nil mandatory seam — so they are wired with the devstack's
+		// real redactor + bus.
+		Governance:  governance.NewPostureProvider(governance.Config{}),
+		LLM:         llm.NewPostureProvider(llm.ConfigSnapshot{Driver: "mock"}),
+		Redactor:    stack.Audit,
+		Bus:         stack.Bus,
 		DisplayName: "harbor-phase72f-test",
 		InstanceID:  "inst-phase72f-test",
 	})

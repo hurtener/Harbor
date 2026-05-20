@@ -47,6 +47,12 @@ const (
 	// wrapper per corrective re-ask. Carries the attempt index and a
 	// truncated `Reason` derived from the validator's error.
 	EventTypeRetryWithFeedback events.EventType = "llm.retry_with_feedback"
+	// EventTypePostureReadAdmin — Phase 72g (D-112). Emitted when an
+	// admin-scoped caller reads ANOTHER tenant's LLM posture via the
+	// `llm.posture` Protocol method. An own-tenant read does NOT emit.
+	// The cross-tenant read is a privileged action and lands on the
+	// audit trail per CLAUDE.md §7 + RFC §6.15.
+	EventTypePostureReadAdmin events.EventType = "llm.posture_read_admin"
 )
 
 func init() {
@@ -57,9 +63,26 @@ func init() {
 		EventTypeCostRecorded,
 		EventTypeModeDowngraded,
 		EventTypeRetryWithFeedback,
+		EventTypePostureReadAdmin,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// PostureReadAdminPayload is the typed payload for
+// EventTypePostureReadAdmin (Phase 72g). SafePayload — the actor's
+// identity and the requested tenant are operator-visible audit
+// metadata, not secret-shaped. NEVER carries provider API keys — the
+// posture surface reports provider/model/region only. The payload runs
+// through the audit Redactor before the bus publish (CLAUDE.md §7).
+type PostureReadAdminPayload struct {
+	events.SafeSealed
+	// Actor is the identity of the admin-scoped caller that performed
+	// the cross-tenant read.
+	Actor identity.Quadruple
+	// RequestedTenant is the tenant_id the caller asked to read — a
+	// tenant other than the caller's own.
+	RequestedTenant string
 }
 
 // ImageMaterializedPayload is the typed payload for

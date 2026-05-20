@@ -78,12 +78,13 @@ type muxConfig struct {
 	// transport refuses impersonation requests fail-closed with
 	// CodeRuntimeError (CLAUDE.md §13 "Silent degradation").
 	redactor audit.Redactor
-	// postureSurface is the Phase 72f (D-111) runtime-posture
-	// dispatcher wired into the control transport so the five
-	// `runtime.*` / `metrics.*` posture methods route through it.
-	// Optional — when unsupplied, the control transport rejects
-	// posture calls with CodeUnknownMethod (the 404 → SKIP path the
-	// smoke script relies on while `harbor dev` does not yet wire it).
+	// postureSurface is the Phase 72f / 72g (D-111 / D-112) posture
+	// dispatcher wired into the control transport so the seven posture
+	// methods — the five `runtime.*` / `metrics.*` reads plus the two
+	// `governance.posture` / `llm.posture` reads — route through it.
+	// Optional — when unsupplied, the control transport rejects posture
+	// calls with CodeUnknownMethod (the 404 → SKIP path the smoke
+	// script relies on).
 	postureSurface control.PostureSurface
 }
 
@@ -167,18 +168,19 @@ func WithRedactor(r audit.Redactor) Option {
 	}
 }
 
-// WithPostureSurface wires the Phase 72f (D-111) runtime-posture
+// WithPostureSurface wires the Phase 72f / 72g (D-111 / D-112) posture
 // dispatcher into the control transport. When supplied, the control
-// handler routes the five `runtime.*` / `metrics.*` posture methods to
-// the posture surface instead of falling through to the task-control
+// handler routes the seven posture methods — the five `runtime.*` /
+// `metrics.*` reads plus `governance.posture` / `llm.posture` — to the
+// posture surface instead of falling through to the task-control
 // ControlSurface.
 //
 // The option is OPTIONAL so existing call-sites compile unchanged. When
 // not supplied, the control transport rejects posture calls with
 // CodeUnknownMethod (HTTP 404) — the 404 → SKIP path the smoke script
-// relies on while the `harbor dev` boot path does not yet construct a
-// posture surface. A nil surface is treated as "WithPostureSurface not
-// supplied".
+// relies on. Production wiring (`harbor dev`) supplies it so the
+// Console Settings page (Phase 73m) has a live surface. A nil surface
+// is treated as "WithPostureSurface not supplied".
 func WithPostureSurface(s control.PostureSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {

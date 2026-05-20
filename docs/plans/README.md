@@ -97,6 +97,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72a| `events.subscribe` filter ext + `events.aggregate` | protocol+events | §5.2, §6.13 | 60, 61, 72            | 85%  | Shipped  |
 | 72b| `IdentityScope` admin-impersonation extension | protocol             | §5.5, §7    | 60, 61                | 89%  | Shipped  |
 | 72f| Runtime posture surface (`runtime.*`/`metrics.snapshot`) | protocol  | §5.3, §6.15, §7 | 60, 61, 56            | 85%  | Shipped  |
+| 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
@@ -789,6 +790,14 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Unit (filter matrix, aggregate bucket arithmetic, concurrent-reuse) + integration (`test/integration/events_filter_aggregate_test.go` — real bus + real auth + real transports, scope-claim happy + reject paths, concurrent-reuse over the wire) + smoke (`scripts/smoke/phase-72a.sh`).
 **Deps.** 60, 61, 72.
 **Plan.** See `docs/plans/phase-72a-events-filter-aggregate.md`.
+
+### 72g — `governance.posture` + `llm.posture` (RFC §5.5, §6.15)
+
+**Goal.** Two read-only posture Protocol methods feeding the Console Settings page (Phase 73m). `governance.posture` returns the D-081 `IdentityTiers` view (per-tier `BudgetCeilingUSD` + token-bucket `RateLimit` + `MaxTokens`) plus `DefaultTier` + the caller-resolved tier. `llm.posture` returns the bound LLM provider/model/region + a `MockMode` boolean — `true` iff the runtime booted with `HARBOR_DEV_ALLOW_MOCK=1` (D-089). The two methods EXTEND the Phase 72f `PostureSurface` (one surface, not two — §13). Both are identity-mandatory; cross-tenant reads require `auth.ScopeAdmin` (D-079). Read-only — no mutation method.
+**Acceptance.** `MethodGovernancePosture` / `MethodLLMPosture` registered in `internal/protocol/methods` + folded into `IsPostureMethod`; wire types in `internal/protocol/types/{governance,llm}.go`; the Phase 72f `PostureSurface` dispatcher routes both new methods through the control transport via the same `IsPostureMethod` branch; cross-tenant non-admin → 403 `CodeScopeMismatch`; missing identity → 401; cross-tenant governance/llm admin reads emit a `*.posture_read_admin` audit event; `MockMode` reflects the D-089 boot-time capture; concurrent-reuse pin under `-race` (N≥100).
+**Tests.** Unit (posture providers, posture surface, control posture handler, concurrent-reuse) + integration (`test/integration/phase72g_posture_test.go` — real governance + llm + transports + ES256 auth, MockMode round-trip across two boot modes, cross-tenant reject, N≥10 stress) + smoke (`scripts/smoke/phase-72g.sh`).
+**Deps.** 36a, 36b, 64, 72f.
+**Plan.** See `docs/plans/phase-72g-governance-llm-posture.md` (shipped — D-112).
 
 ### 72h — Console DB local schema + SvelteKit scaffold (RFC §7)
 

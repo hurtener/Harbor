@@ -91,11 +91,13 @@ const maxBodyBytes = 64 << 10
 // instead of the task-control ControlSurface. The same handler still
 // serves all the Phase 54 task-control methods unchanged.
 //
-// Phase 72f (D-111): when constructed with `WithPostureSurface`, the
-// handler routes the five `runtime.*` / `metrics.*` posture methods to
-// the posture dispatcher. Like the search surface, this is additive —
-// handlers built without it reject posture calls with CodeUnknownMethod
-// (the 404 → SKIP path the smoke script relies on).
+// Phase 72f / 72g (D-111 / D-112): when constructed with
+// `WithPostureSurface`, the handler routes the seven posture methods —
+// the five `runtime.*` / `metrics.*` reads plus `governance.posture` /
+// `llm.posture` — to the posture dispatcher. Like the search surface,
+// this is additive — handlers built without it reject posture calls
+// with CodeUnknownMethod (the 404 → SKIP path the smoke script relies
+// on).
 type Handler struct {
 	surface        *protocol.ControlSurface
 	searchSurface  SearchSurface
@@ -121,17 +123,24 @@ type SearchSurface interface {
 }
 
 // PostureSurface is the narrow contract the control transport calls
-// into for the five `runtime.*` / `metrics.*` posture Protocol methods
-// (Phase 72f / D-111). The production implementation is
+// into for the seven posture Protocol methods — the five `runtime.*` /
+// `metrics.*` reads (Phase 72f / D-111) plus `governance.posture` and
+// `llm.posture` (Phase 72g / D-112). The production implementation is
 // *protocol.PostureSurface; tests inject a deterministic surface. A nil
 // surface means the handler rejects posture calls with
 // CodeUnknownMethod — preserving the 404 → SKIP path the smoke script
 // relies on while the surface is being wired through.
+//
+// All seven posture methods share the one read-only request envelope
+// `*types.RuntimeInfoRequest` — the governance / llm reads are also
+// identity-only, so they reuse the same shape rather than threading two
+// near-identical wire types.
 type PostureSurface interface {
-	// Dispatch handles one of the five canonical posture methods.
+	// Dispatch handles one of the seven canonical posture methods.
 	// Returns either a *types.RuntimeInfo / *types.RuntimeHealth /
 	// *types.RuntimeCounters / *types.RuntimeDrivers /
-	// *types.MetricsSnapshot, or a *errors.Error.
+	// *types.MetricsSnapshot / *types.GovernancePostureResponse /
+	// *types.LLMPostureResponse, or a *errors.Error.
 	Dispatch(ctx context.Context, method methods.Method, req any) (any, error)
 }
 
@@ -203,9 +212,10 @@ func WithSearchSurface(s SearchSurface) Option {
 	}
 }
 
-// WithPostureSurface wires the Phase 72f runtime-posture dispatcher
-// into the control handler. When supplied, the handler routes the five
-// `runtime.*` / `metrics.*` posture methods to s.Dispatch instead of
+// WithPostureSurface wires the Phase 72f / 72g posture dispatcher into
+// the control handler. When supplied, the handler routes the seven
+// posture methods — the five `runtime.*` / `metrics.*` reads plus
+// `governance.posture` / `llm.posture` — to s.Dispatch instead of
 // falling through to the task-control ControlSurface. Optional —
 // handlers built without it reject posture calls with
 // CodeUnknownMethod (the 404 → SKIP path the smoke script relies on).
@@ -283,11 +293,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 72f (D-111): the five `runtime.*` / `metrics.*` posture
-	// methods route through a separate PostureSurface — they're not
-	// steering controls, they don't reach the task registry, and their
-	// wire shape is `*types.RuntimeInfoRequest`. If no PostureSurface
-	// is wired, fall through to the unknown-method path so the smoke
+	// Phase 72f / 72g (D-111 / D-112): the seven posture methods — the
+	// five `runtime.*` / `metrics.*` reads plus `governance.posture` /
+	// `llm.posture` — route through a separate PostureSurface. They are
+	// read-only runtime-config / observability projections, not
+	// steering controls, they don't reach the task registry, and they
+	// share the one `*types.RuntimeInfoRequest` envelope. If no
+	// PostureSurface is wired, fall through to the unknown-method path
+	// so the smoke
 	// `skip_if_404` branch fires.
 	if methods.IsPostureMethod(method) {
 		if h.postureSurface == nil {

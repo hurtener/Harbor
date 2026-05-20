@@ -76,6 +76,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -87,6 +88,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
@@ -96,6 +98,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
@@ -656,9 +659,54 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
 
+	// Phase 72f / 72g (D-111 / D-112): the single posture surface — the
+	// seven read-only posture Protocol methods. The five `runtime.*` /
+	// `metrics.*` reads (72f) project the runtime's build identity,
+	// per-subsystem health, live counters, configured drivers, and a
+	// metrics snapshot; the two `governance.posture` / `llm.posture`
+	// reads (72g) project the operator-configured `IdentityTiers`
+	// (latent by default) and the bound LLM provider/model/region + the
+	// boot-captured MockMode flag. All seven are read-only; a
+	// cross-tenant read gates on `auth.ScopeAdmin` (D-079) and the
+	// governance / llm cross-tenant reads emit a `*.posture_read_admin`
+	// audit event. There is exactly ONE NewPostureSurface call site per
+	// binary.
+	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
+		Build: types.RuntimeInfo{
+			BuildVersion:   HarborVersion,
+			BuildCommit:    "dev",
+			BuildGoVersion: goruntime.Version(),
+		},
+		Clock:    time.Now,
+		BootedAt: time.Now(),
+		Health: func(_ context.Context) []types.SubsystemHealth {
+			return devPostureHealth(cfg)
+		},
+		Counters: func(_ context.Context, _ identity.Identity) types.RuntimeCounters {
+			return types.RuntimeCounters{}
+		},
+		Drivers: func() []types.SubsystemDriver {
+			return devPostureDrivers(cfg)
+		},
+		Metrics: func(_ context.Context) types.MetricsSnapshot {
+			return types.MetricsSnapshot{}
+		},
+		Governance:  governance.NewPostureProvider(governanceConfigFromConfig(cfg.Governance)),
+		LLM:         llm.NewPostureProvider(llmCfg),
+		Redactor:    red,
+		Bus:         bus,
+		DisplayName: "harbor dev",
+		InstanceID:  devInstanceID(),
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("protocol posture surface: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
+		transports.WithPostureSurface(postureSurface),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -1161,6 +1209,86 @@ func parsePortFromBind(bind string) (int, bool) {
 // llm-package ModelProfile map. Each profile field is copied by
 // value — both packages own their own struct types so a copy keeps
 // the seam decoupled.
+// governanceConfigFromConfig projects the operator-supplied
+// `config.GovernanceConfig` onto the `governance.Config` shape the
+// Phase 72g posture surface reads. Only the read-only posture-relevant
+// fields are projected — `DefaultTier` + `IdentityTiers` (each tier's
+// `BudgetCeilingUSD` / `RateLimit` / `MaxTokens`). The enforcement
+// fields (`Resolver` / `Clock`) stay zero — the posture surface is a
+// read-only projection, not the enforcement seam, so a nil resolver is
+// correct (every caller's `ResolvedTier` falls back to `DefaultTier`).
+//
+// An empty `IdentityTiers` in the YAML (the latent default) yields a
+// `governance.Config` with an empty tier map — the posture surface
+// reports it verbatim and the Console renders the explicit "No tiers
+// configured" state.
+func governanceConfigFromConfig(in config.GovernanceConfig) governance.Config {
+	tiers := make(map[string]governance.TierConfig, len(in.IdentityTiers))
+	for name, tc := range in.IdentityTiers {
+		tiers[name] = governance.TierConfig{
+			BudgetCeilingUSD: tc.BudgetCeilingUSD,
+			RateLimit: governance.RateLimitConfig{
+				Capacity:       tc.RateLimit.Capacity,
+				RefillTokens:   tc.RateLimit.RefillTokens,
+				RefillInterval: tc.RateLimit.RefillInterval,
+			},
+			MaxTokens: tc.MaxTokens,
+		}
+	}
+	return governance.Config{
+		DefaultTier:   in.DefaultTier,
+		IdentityTiers: tiers,
+	}
+}
+
+// devPostureHealth builds the Phase 72f `runtime.health` seam for the
+// dev boot. The dev stack is in-process and fully assembled by the time
+// the posture surface is constructed, so every persistence-shaped
+// subsystem reports `ready`.
+func devPostureHealth(cfg *config.Config) []types.SubsystemHealth {
+	subs := []string{"state", "events"}
+	if cfg.Artifacts.Driver != "" {
+		subs = append(subs, "artifacts")
+	}
+	if cfg.Memory.Driver != "" {
+		subs = append(subs, "memory")
+	}
+	out := make([]types.SubsystemHealth, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, types.SubsystemHealth{Subsystem: s, Status: types.HealthStatusReady})
+	}
+	return out
+}
+
+// devPostureDrivers builds the Phase 72f `runtime.drivers` seam — the
+// configured driver name per persistence-shaped subsystem. Never the
+// DSN (CLAUDE.md §7) — the driver name only.
+func devPostureDrivers(cfg *config.Config) []types.SubsystemDriver {
+	out := []types.SubsystemDriver{
+		{Subsystem: "state", Driver: cfg.State.Driver},
+	}
+	if cfg.Artifacts.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "artifacts", Driver: cfg.Artifacts.Driver})
+	}
+	if cfg.Memory.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "memory", Driver: cfg.Memory.Driver})
+	}
+	if cfg.Events.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "events", Driver: cfg.Events.Driver})
+	}
+	return out
+}
+
+// devInstanceID mints a stable-per-process instance identifier for the
+// dev Runtime. A Console attached to multiple Runtimes keys each
+// attachment by it.
+func devInstanceID() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return "harbor-dev-" + h
+	}
+	return "harbor-dev"
+}
+
 func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]llm.ModelProfile {
 	if len(in) == 0 {
 		return nil
