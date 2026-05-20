@@ -101,7 +101,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
-| 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
+| 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
@@ -823,12 +823,13 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Integration + scope mismatch.
 **Deps.** 60, 07, 17.
 
-### 74 — Console topology projection events (RFC §5.2, §6.13)
+### 74 — Console topology projection events (RFC §5.2, §6.13, §7.1)
 
-**Goal.** `topology.snapshot` events emitted on engine construction + on edge change; static graph + live queue depth.
-**Acceptance.** Console renders a topology view from these events alone (no internal access).
-**Tests.** Integration.
+**Goal.** `topology.snapshot` Protocol method + `topology.changed` event over the canonical engine-scoped `TopologyProjection` (static graph + live per-edge queue depth); the event emits on engine construction, the method serves on-demand cold-start.
+**Acceptance.** A Protocol client renders a topology view from the canonical projection alone (no internal access); identity-mandatory; cross-tenant requires `auth.ScopeAdmin` (D-079). See `docs/plans/phase-74-console-topology.md`.
+**Tests.** Unit (`internal/protocol/types`, `internal/runtime/engine`), concurrent-reuse N≥128 (D-025), integration (`test/integration/phase74_topology_test.go` — real engine + real bus + real wire transport).
 **Deps.** 05, 09.
+**Deviations (D-114).** The `ControlSurface` topology accessor wires via the `WithTopologyAccessor` functional option (not a positional `NewControlSurface` argument — keeps the Phase 54 signature stable); the nil-accessor / engine-less path returns `CodeUnknownMethod` (no `CodeMethodNotSupported` code exists); `harbor dev` hosts no engine-graph so its surface leaves the accessor nil; the decision number is `D-114` (the plan's pre-assigned `D-106` collided with a parallel Wave 13 phase).
 
 ### 75 — Console e2e Playwright harness baseline (RFC §7)
 

@@ -231,6 +231,25 @@ type AssembleOpts struct {
 		Session string
 	}
 
+	// TopologyAccessor, when non-nil, is wired into the
+	// ControlSurface via protocol.WithTopologyAccessor so the Phase 74
+	// `topology.snapshot` method returns a real projection (D-114).
+	// Production `harbor dev` hosts no engine-graph (its runtime is
+	// planner/RunLoop-shaped), so its ControlSurface leaves the
+	// accessor nil; the Phase 74 integration test constructs a real
+	// `engine.Engine` and passes it here so the topology surface is
+	// exercised end-to-end with real drivers (CLAUDE.md §17.6 — the
+	// test fixture wires what the test needs; the production absence
+	// is documented, not a bug). Ignored when SkipSteering is set.
+	TopologyAccessor protocol.TopologyAccessor
+
+	// ScopeChecker, when non-nil, overrides the ControlSurface's
+	// admin-cross-tenant scope predicate (Phase 74 / D-114). The
+	// integration test injects a deterministic checker to exercise
+	// the cross-tenant admin path without standing up an
+	// auth.Middleware. Ignored when SkipSteering is set.
+	ScopeChecker protocol.ScopeChecker
+
 	// DraftRoot overrides the on-disk root the Phase 66 / D-100
 	// draft Store materialises drafts under. Empty falls back to a
 	// per-test temp dir (the helper picks one via testing.TempDir).
@@ -591,7 +610,22 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// even if the caller did not set both flags.
 	if !opts.SkipSteering {
 		steerReg := steering.NewRegistry()
-		surface, surfaceErr := protocol.NewControlSurface(taskReg, steerReg)
+		// Phase 74 (D-114): wire the optional topology accessor + scope
+		// checker. Production `harbor dev` passes neither (no engine-
+		// graph); the Phase 74 integration test passes a real engine
+		// + a deterministic scope checker so the topology.snapshot
+		// surface is exercised end-to-end.
+		surfaceOpts := []protocol.Option{}
+		if opts.TopologyAccessor != nil {
+			surfaceOpts = append(surfaceOpts, protocol.WithTopologyAccessor(opts.TopologyAccessor))
+			// Wire the bus so a cross-tenant topology.snapshot admin
+			// read emits audit.admin_scope_used (RFC §6.13 / D-114).
+			surfaceOpts = append(surfaceOpts, protocol.WithEventBus(bus))
+		}
+		if opts.ScopeChecker != nil {
+			surfaceOpts = append(surfaceOpts, protocol.WithScopeChecker(opts.ScopeChecker))
+		}
+		surface, surfaceErr := protocol.NewControlSurface(taskReg, steerReg, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
 		}

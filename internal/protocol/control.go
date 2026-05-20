@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/types"
@@ -111,7 +113,129 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a pause-snapshot method; POST to /v1/pause/list instead", string(method))
 	}
+	// Phase 74 (D-114): `topology.snapshot` is a read-only projection
+	// method — it reaches the engine's Topology accessor, not the
+	// steering inbox. ControlSurface dispatches it directly (unlike
+	// the streaming-events / search methods which route to other
+	// surfaces) because the topology projection is a plain
+	// request → reply with no streaming and no separate dispatcher.
+	if methods.IsTopologyMethod(method) {
+		return s.dispatchTopology(ctx, req)
+	}
 	return s.dispatchControl(ctx, method, req)
+}
+
+// dispatchTopology handles the `topology.snapshot` method (Phase 74 /
+// D-114): it returns the Runtime engine's canonical TopologyProjection.
+//
+// The gauntlet, in order:
+//
+//  1. A nil topology accessor (a Runtime hosting no engine) →
+//     CodeUnknownMethod. The route does not exist on this Runtime;
+//     surfacing it as unknown-method maps to HTTP 404, which the
+//     smoke script's 404 → SKIP convention picks up cleanly.
+//  2. A wrong / nil request type → CodeInvalidRequest.
+//  3. An incomplete identity triple → CodeIdentityRequired (RFC §5.5).
+//  4. A cross-tenant request (caller tenant ≠ the engine's tenant)
+//     without the verified auth.ScopeAdmin claim → CodeAuthRejected
+//     (D-079). The admin path additionally emits audit.admin_scope_used
+//     — the transport adapter owns the bus emit; here we record that
+//     an elevated read occurred by leaving the gate result observable.
+//  5. The engine's Topology accessor builds the projection; an
+//     identity-rejection from the accessor maps to CodeIdentityRequired,
+//     anything else to CodeRuntimeError.
+func (s *ControlSurface) dispatchTopology(ctx context.Context, req any) (*types.TopologyProjection, error) {
+	method := methods.MethodTopologySnapshot
+
+	if s.topology == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
+			"method %q: this Runtime hosts no engine — topology projection is not available", string(method))
+	}
+
+	tr, ok := req.(*types.TopologySnapshotRequest)
+	if !ok || tr == nil {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: request is nil or not a *types.TopologySnapshotRequest", string(method))
+	}
+
+	// Identity-mandatory at the Protocol edge (RFC §5.5).
+	callerID := identity.Identity{
+		TenantID:  tr.Identity.Tenant,
+		UserID:    tr.Identity.User,
+		SessionID: tr.Identity.Session,
+	}
+	if err := identity.Validate(callerID); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete: %v", string(method), err)
+	}
+
+	// Cross-tenant gate (D-079): a caller whose tenant differs from the
+	// engine's tenant needs the verified auth.ScopeAdmin claim. The
+	// projection carries no tenant id, but a cross-tenant read of
+	// another tenant's graph is an admin-only operation. A granted
+	// cross-tenant read emits audit.admin_scope_used (RFC §6.13 —
+	// admin-scope use is retroactively auditable).
+	if callerID.TenantID != s.topology.TenantID() {
+		if s.adminScope == nil || !s.adminScope(ctx, auth.ScopeAdmin) {
+			return nil, protoerrors.Newf(protoerrors.CodeAuthRejected,
+				"method %q: cross-tenant topology snapshot requires the admin scope", string(method))
+		}
+		// Audit the elevated read BEFORE returning the projection. A
+		// failed audit emit fails the read closed (CLAUDE.md §5 — an
+		// un-auditable admin read is rejected, never silently granted).
+		if err := s.emitAdminScopeUsed(ctx, callerID); err != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: admin-scope audit emit failed; cross-tenant read refused", string(method))
+		}
+	}
+
+	// The engine's Topology accessor reads identity from ctx. Inject
+	// the validated caller identity so the accessor's identity-mandatory
+	// gate passes — the trust-based Phase 60 posture has no ctx-identity
+	// otherwise, and the engine fails closed on an unscoped ctx.
+	topoCtx, err := identity.With(ctx, callerID)
+	if err != nil {
+		// Unreachable — callerID already passed identity.Validate above.
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete", string(method))
+	}
+
+	proj, err := s.topology.Topology(topoCtx)
+	if err != nil {
+		return nil, mapTopologyError(string(method), err)
+	}
+	proj.SortDeterministic()
+	return &proj, nil
+}
+
+// emitAdminScopeUsed publishes an `audit.admin_scope_used` event onto
+// the wired bus when a cross-tenant `topology.snapshot` read is granted
+// under the admin scope (RFC §6.13). The event is identity-scoped to
+// the CALLER's triple — the admin who performed the read — so a Console
+// auditing that admin's sessions sees the trail. The payload is the
+// SafePayload events.AdminScopeUsedPayload (no secret-shaped fields).
+//
+// A nil bus (the surface was built without WithEventBus) is a no-op
+// and returns nil — the cross-tenant read is still gated on the admin
+// scope; only the audit trail is absent. Production wires the bus so
+// the trail is complete. A non-nil bus that rejects the Publish
+// returns the error: dispatchTopology fails the read closed rather
+// than silently granting an un-auditable admin read (CLAUDE.md §5).
+func (s *ControlSurface) emitAdminScopeUsed(ctx context.Context, caller identity.Identity) error {
+	if s.bus == nil {
+		return nil
+	}
+	return s.bus.Publish(ctx, events.Event{
+		Type: events.EventTypeAdminScopeUsed,
+		Identity: identity.Quadruple{
+			Identity: caller,
+		},
+		Payload: events.AdminScopeUsedPayload{
+			Tenant:  caller.TenantID,
+			User:    caller.UserID,
+			Session: caller.SessionID,
+		},
+	})
 }
 
 // dispatchStart handles the `start` method: it spawns a foreground task

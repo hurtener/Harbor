@@ -145,3 +145,60 @@ func TestConcurrentReuse_ControlSurface(t *testing.T) {
 		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
 	}
 }
+
+// TestConcurrentReuse_ControlSurface_Topology pins the D-025
+// concurrent-reuse contract for the Phase 74 `topology.snapshot`
+// dispatch path: N≥100 goroutines call Dispatch(topology.snapshot)
+// against ONE shared ControlSurface (with a wired topology accessor)
+// under -race. Each goroutine drives a distinct identity triple; the
+// test asserts no data races, no projection drift across calls, and no
+// goroutine leak.
+func TestConcurrentReuse_ControlSurface_Topology(t *testing.T) {
+	const n = 128 // ≥100 per the D-025 contract
+
+	accessor := &fakeTopologyAccessor{tenant: "shared-tenant", proj: sampleProjection()}
+	surface := newTopologySurface(t, accessor)
+
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp, err := surface.Dispatch(context.Background(), methods.MethodTopologySnapshot,
+				&types.TopologySnapshotRequest{
+					Identity: types.IdentityScope{
+						Tenant:  "shared-tenant",
+						User:    fmt.Sprintf("user-%d", i),
+						Session: fmt.Sprintf("session-%d", i),
+					},
+				})
+			if err != nil {
+				errs <- fmt.Errorf("goroutine-%d: %w", i, err)
+				return
+			}
+			proj, ok := resp.(*types.TopologyProjection)
+			if !ok {
+				errs <- fmt.Errorf("goroutine-%d: response type %T", i, resp)
+				return
+			}
+			if proj.EngineID != "engine-test" || len(proj.Nodes) != 2 || len(proj.Edges) != 1 {
+				errs <- fmt.Errorf("goroutine-%d: projection drift / field tearing", i)
+				return
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > baseline+5 {
+		t.Errorf("goroutine leak: baseline %d, after %d", baseline, after)
+	}
+}

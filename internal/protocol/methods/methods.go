@@ -72,6 +72,19 @@
 // `docs/plans/phase-72f-runtime-posture.md` and
 // `docs/plans/phase-72g-governance-llm-posture.md`.
 //
+// # The Wave 13 topology method (Phase 74 / D-114)
+//
+// Phase 74 adds `topology.snapshot` — the request-side surface that
+// returns the Runtime engine's canonical TopologyProjection (static
+// node graph + live per-edge queue depth). It is NOT a task-control
+// method (`IsControlMethod` returns false), NOT a streaming-events
+// method, and NOT a search method: `IsTopologyMethod` is its own
+// O(1) predicate. The wire-transport route is the existing
+// `POST /v1/control/{method}` REST surface. The paired in-flight
+// surface — `topology.changed` — is a canonical EVENT, not a method,
+// so it is not in the method registry. See
+// `docs/plans/phase-74-console-topology.md`.
+//
 // # No registration escape hatch
 //
 // canonicalMethods is a fixed package-level map, not a write-once
@@ -236,6 +249,20 @@ const (
 	// false; the Phase 54 control nine stays exclusive. See
 	// `docs/plans/phase-72e-pause-list-snapshot.md`.
 	MethodPauseList Method = "pause.list"
+
+	// MethodTopologySnapshot — Phase 74 (Wave 13 / D-114). Returns the
+	// canonical TopologyProjection of the Runtime's engine — the static
+	// node graph + live per-edge queue depth. Request → reply (on-demand
+	// cold-start surface); the paired in-flight surface is the
+	// `topology.changed` canonical event. The wire-transport route is
+	// the existing `POST /v1/control/{method}` REST surface. NOT a
+	// task-control method (it reaches the engine's read-only Topology
+	// accessor, not the steering inbox) and NOT a streaming-events or
+	// search method — `IsControlMethod` / `IsStreamingEventsMethod` /
+	// `IsSearchMethod` all return false; `IsTopologyMethod` returns
+	// true. Identity-mandatory; a cross-tenant snapshot requires the
+	// `auth.ScopeAdmin` claim (D-079). See `docs/plans/phase-74-console-topology.md`.
+	MethodTopologySnapshot Method = "topology.snapshot"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -244,18 +271,18 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:           {},
-	MethodCancel:          {},
-	MethodPause:           {},
-	MethodResume:          {},
-	MethodRedirect:        {},
-	MethodInjectContext:   {},
-	MethodApprove:         {},
-	MethodReject:          {},
-	MethodPrioritize:      {},
-	MethodUserMessage:     {},
-	MethodEventsSubscribe: {},
-	MethodEventsAggregate: {},
+	MethodStart:             {},
+	MethodCancel:            {},
+	MethodPause:             {},
+	MethodResume:            {},
+	MethodRedirect:          {},
+	MethodInjectContext:     {},
+	MethodApprove:           {},
+	MethodReject:            {},
+	MethodPrioritize:        {},
+	MethodUserMessage:       {},
+	MethodEventsSubscribe:   {},
+	MethodEventsAggregate:   {},
 	MethodSearchQuery:       {},
 	MethodSearchSessions:    {},
 	MethodSearchTasks:       {},
@@ -269,6 +296,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodGovernancePosture: {},
 	MethodLLMPosture:        {},
 	MethodPauseList:         {},
+	MethodTopologySnapshot:  {},
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
@@ -318,6 +346,27 @@ func IsPostureMethod(m Method) bool {
 	return ok
 }
 
+// canonicalTopologyMethods is the closed sub-set of the topology-
+// projection methods landed in Phase 74 (Wave 13 / D-114). Today it
+// holds the single `topology.snapshot` method; the paired
+// `topology.changed` surface is an EVENT, not a method, so it is not
+// in this set. IsTopologyMethod is O(1); the control transport uses
+// it to branch the request onto the topology dispatcher.
+var canonicalTopologyMethods = map[Method]struct{}{
+	MethodTopologySnapshot: {},
+}
+
+// IsTopologyMethod reports whether m is one of the canonical
+// topology-projection methods (Phase 74 / D-114 — today just
+// `topology.snapshot`). The control transport branches on this to
+// route the request through the topology dispatcher instead of the
+// task-control / search surfaces. NOT a control method — a new
+// non-control method extends THIS predicate, never the steering inbox.
+func IsTopologyMethod(m Method) bool {
+	_, ok := canonicalTopologyMethods[m]
+	return ok
+}
+
 // streamingEventsMethods is the closed set of canonical method names
 // the Runtime classifies as streaming-events methods (the first non-
 // task-control Protocol surface to land — Phase 72 / 72a). Used by
@@ -360,16 +409,18 @@ var pauseMethods = map[Method]struct{}{
 // methods — every canonical method except MethodStart AND the
 // streaming-events methods (Phase 72 / 72a) AND the Phase 72c
 // `search.*` cluster AND the Phase 72f `runtime.*` / `metrics.*`
-// posture cluster AND the Phase 72e pause-snapshot method (each a
-// separate surface from the steering inbox).
+// posture cluster AND the Phase 72e pause-snapshot method AND the
+// Phase 74 `topology.snapshot` method (each a separate surface from
+// the steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
 // events-aggregate transport; a search method maps onto the Phase 72c
 // search dispatcher; a posture method maps onto the Phase 72f
 // PostureSurface; a pause-snapshot method maps onto the Phase 72e
-// pause-list handler. A new non-control method (state inspection,
-// topology, artifacts — future phases) extends THIS predicate, NOT
+// pause-list handler; a topology method maps onto the Phase 74
+// topology dispatcher. A new non-control method (state inspection,
+// artifacts — future phases) extends THIS predicate, NOT
 // the steering-control inbox.
 func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
@@ -388,6 +439,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsPauseMethod(m) {
+		return false
+	}
+	if IsTopologyMethod(m) {
 		return false
 	}
 	return true

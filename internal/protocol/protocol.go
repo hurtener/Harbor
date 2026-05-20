@@ -60,12 +60,46 @@
 package protocol
 
 import (
+	"context"
 	stderrors "errors"
 	"fmt"
 
+	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
+
+// TopologyAccessor is the narrow read-only contract the ControlSurface
+// calls into for the Phase 74 `topology.snapshot` method. The Runtime
+// engine satisfies it structurally — the engine package never imports
+// the Protocol package; the wiring at cmd/harbor injects the engine as
+// a TopologyAccessor. Keeping the interface here (not in the engine
+// package) is what keeps the engine Protocol-free (no import cycle).
+//
+// A nil TopologyAccessor is permitted at construction (a Runtime that
+// hosts no engine — e.g. validate-only mode): a `topology.snapshot`
+// call against a nil-accessor surface fails closed with
+// CodeUnknownMethod (the route effectively does not exist on that
+// Runtime), which the smoke script's 404 → SKIP convention picks up.
+type TopologyAccessor interface {
+	// Topology builds the engine's canonical TopologyProjection.
+	// Identity-mandatory; pure read.
+	Topology(ctx context.Context) (types.TopologyProjection, error)
+	// TenantID is the tenant the engine runs under. The
+	// admin-cross-tenant gate compares it against the caller's tenant:
+	// a caller whose tenant differs needs the verified auth.ScopeAdmin
+	// claim (D-079).
+	TenantID() string
+}
+
+// ScopeChecker reports whether ctx carries a given auth scope. It is
+// the seam the admin-cross-tenant gate consults; the production
+// implementation is auth.HasScope. Injecting it (rather than calling
+// auth.HasScope directly) keeps the gate unit-testable without an
+// auth.Middleware in front.
+type ScopeChecker func(ctx context.Context, s auth.Scope) bool
 
 // ControlSurface is the transport-agnostic Harbor Protocol task-control
 // handler. It is built once per Runtime process and shared across every
@@ -75,8 +109,11 @@ import (
 // Construct a ControlSurface via NewControlSurface; do not construct one
 // directly.
 type ControlSurface struct {
-	tasks    tasks.TaskRegistry
-	steering *steering.Registry
+	tasks      tasks.TaskRegistry
+	steering   *steering.Registry
+	topology   TopologyAccessor // Phase 74 — may be nil (Runtime hosts no engine)
+	adminScope ScopeChecker     // Phase 74 — the admin-cross-tenant gate; defaults to auth.HasScope
+	bus        events.EventBus  // Phase 74 — optional; the audit.admin_scope_used emit on a cross-tenant topology read
 }
 
 // Option configures a ControlSurface at construction time. Reserved for
@@ -85,7 +122,7 @@ type ControlSurface struct {
 // later phase adds one without a signature break.
 type Option func(*ControlSurface)
 
-// NewControlSurface builds the Protocol task-control surface. Both
+// NewControlSurface builds the Protocol task-control surface. Two
 // dependencies are mandatory:
 //
 //   - taskRegistry — the Phase 20 task registry the `start` method maps
@@ -97,6 +134,12 @@ type Option func(*ControlSurface)
 // A nil either fails loud with a wrapped ErrMisconfigured — there is no
 // silent-degradation path (CLAUDE.md §5).
 //
+// The Phase 74 `topology` accessor is OPTIONAL — a nil topology builds
+// a surface that rejects `topology.snapshot` with CodeUnknownMethod (a
+// Runtime hosting no engine, e.g. validate-only mode). It is wired via
+// the WithTopologyAccessor option so existing two-arg callers compile
+// unchanged.
+//
 // The returned ControlSurface is immutable after construction (D-025)
 // and safe for concurrent use by N goroutines.
 func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steering.Registry, opts ...Option) (*ControlSurface, error) {
@@ -107,13 +150,60 @@ func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steeri
 		return nil, fmt.Errorf("%w: steering.Registry is nil", ErrMisconfigured)
 	}
 	s := &ControlSurface{
-		tasks:    taskRegistry,
-		steering: steeringRegistry,
+		tasks:      taskRegistry,
+		steering:   steeringRegistry,
+		adminScope: auth.HasScope,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s, nil
+}
+
+// WithTopologyAccessor wires the Phase 74 engine topology accessor into
+// the ControlSurface so `topology.snapshot` returns a real projection.
+// A surface built WITHOUT it rejects `topology.snapshot` with
+// CodeUnknownMethod — the explicit "this Runtime hosts no engine"
+// posture (CLAUDE.md §13 — no silent degradation; the route simply
+// does not exist on an engine-less Runtime). A nil accessor passed
+// here is treated as "not supplied".
+func WithTopologyAccessor(t TopologyAccessor) Option {
+	return func(s *ControlSurface) {
+		// A typed-nil interface value (a nil *engine boxed into a
+		// non-nil interface) is still a nil accessor for our purposes;
+		// callers pass a real accessor or omit the option.
+		if t != nil {
+			s.topology = t
+		}
+	}
+}
+
+// WithScopeChecker overrides the admin-cross-tenant scope predicate.
+// Production leaves it at the default (auth.HasScope); tests inject a
+// deterministic checker to exercise the admin path without standing up
+// an auth.Middleware.
+func WithScopeChecker(c ScopeChecker) Option {
+	return func(s *ControlSurface) {
+		if c != nil {
+			s.adminScope = c
+		}
+	}
+}
+
+// WithEventBus wires the canonical events.EventBus the ControlSurface
+// publishes an `audit.admin_scope_used` event onto when a cross-tenant
+// `topology.snapshot` read is granted under the admin scope (RFC §6.13
+// — admin-scope use is retroactively auditable). The bus is OPTIONAL:
+// a surface built without it still gates the cross-tenant read on the
+// admin scope, but a successful admin read emits no audit event — the
+// production wiring (cmd/harbor / harbortest devstack) wires the bus so
+// the audit trail is complete. A nil bus is treated as "not supplied".
+func WithEventBus(b events.EventBus) Option {
+	return func(s *ControlSurface) {
+		if b != nil {
+			s.bus = b
+		}
+	}
 }
 
 // ErrMisconfigured — NewControlSurface was called with a nil dependency.

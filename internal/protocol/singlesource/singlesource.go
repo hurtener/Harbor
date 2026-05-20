@@ -102,18 +102,18 @@ const (
 // tree where methods/ itself is the thing under audit), so the set is
 // duplicated here and the test pins the duplication.
 var CanonicalMethods = map[string]struct{}{
-	"start":            {},
-	"cancel":           {},
-	"pause":            {},
-	"resume":           {},
-	"redirect":         {},
-	"inject_context":   {},
-	"approve":          {},
-	"reject":           {},
-	"prioritize":       {},
-	"user_message":     {},
-	"events.subscribe": {}, // Phase 72 / D-105
-	"events.aggregate": {}, // Phase 72a / D-106
+	"start":              {},
+	"cancel":             {},
+	"pause":              {},
+	"resume":             {},
+	"redirect":           {},
+	"inject_context":     {},
+	"approve":            {},
+	"reject":             {},
+	"prioritize":         {},
+	"user_message":       {},
+	"events.subscribe":   {}, // Phase 72 / D-105
+	"events.aggregate":   {}, // Phase 72a / D-106
 	"search.query":       {}, // Phase 72c / D-108
 	"search.sessions":    {}, // Phase 72c / D-108
 	"search.tasks":       {}, // Phase 72c / D-108
@@ -127,6 +127,7 @@ var CanonicalMethods = map[string]struct{}{
 	"governance.posture": {}, // Phase 72g / D-112
 	"llm.posture":        {}, // Phase 72g / D-112
 	"pause.list":         {}, // Phase 72e / D-110
+	"topology.snapshot":  {}, // Phase 74 / D-114
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -198,6 +199,12 @@ var CanonicalWireTypes = map[string]string{
 	"PauseSnapshot":     "types",
 	"PauseFilter":       "types",
 	"PauseArtifactRef":  "types",
+	// Phase 74 (D-114) topology-projection wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"TopologyProjection":      "types",
+	"TopologyNode":            "types",
+	"TopologyEdge":            "types",
+	"TopologySnapshotRequest": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

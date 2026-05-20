@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // wrap formats a sentinel error with %w plus contextual key=value
@@ -100,6 +101,14 @@ const (
 	// when the cancellation was observed for an active run. Payload is
 	// RunCancelledPayload (SafePayload). Phase 13.
 	EventTypeRuntimeRunCancelled EventType = "runtime.run_cancelled"
+	// EventTypeTopologyChanged — emitted by the engine on construction
+	// and on every adjacency-set change, carrying the canonical
+	// TopologyProjection (Phase 74 / D-114). Payload is
+	// TopologyChangedPayload (SafePayload — the projection has no
+	// secret-shaped fields, so the audit redactor bypasses it and
+	// subscribers keep typed access). The paired request-side surface
+	// is the `topology.snapshot` Protocol method.
+	EventTypeTopologyChanged EventType = "topology.changed"
 )
 
 // canonicalTypes is the registered set. Build via init() so the file
@@ -122,9 +131,26 @@ func init() {
 		EventTypeGovernanceBudgetExceeded,
 		EventTypeGovernanceRateLimited,
 		EventTypeRuntimeRunCancelled,
+		EventTypeTopologyChanged,
 	} {
 		canonicalTypes[t] = struct{}{}
 	}
+}
+
+// TopologyChangedPayload is the SafePayload carried by an
+// EventTypeTopologyChanged event (Phase 74 / D-114). The engine
+// publishes one on construction and on every adjacency-set change.
+//
+// It is SafePayload by construction (D-028): a TopologyProjection
+// carries only node names, edge endpoints, kind tags, and bounded
+// integer queue depths — no secret-shaped fields. The bus therefore
+// skips the audit.Redactor for this payload and a subscriber keeps
+// typed access to Projection (no RedactedMap downgrade).
+type TopologyChangedPayload struct {
+	SafeSealed
+	// Projection is the canonical engine topology at the moment the
+	// event was emitted.
+	Projection types.TopologyProjection
 }
 
 // IsValidEventType reports whether t is in the canonical registry.

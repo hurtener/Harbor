@@ -3,6 +3,7 @@ package protocol
 import (
 	stderrors "errors"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -82,5 +83,24 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 	default:
 		return protoerrors.Newf(protoerrors.CodeRuntimeError,
 			"method %q: task spawn failed", method)
+	}
+}
+
+// mapTopologyError translates an engine Topology() error into a stable
+// *protoerrors.Error (Phase 74 / D-114). The engine's identity-rejection
+// path wraps identity.ErrIdentityIncomplete; anything else is an
+// unclassified runtime failure. Never swallowed (CLAUDE.md §5).
+func mapTopologyError(method string, err error) *protoerrors.Error {
+	switch {
+	case err == nil:
+		return nil
+
+	case stderrors.Is(err, identity.ErrIdentityIncomplete):
+		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete", method)
+
+	default:
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: topology projection failed", method)
 	}
 }

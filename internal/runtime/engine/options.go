@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"time"
+
+	"github.com/hurtener/Harbor/internal/events"
 )
 
 // DefaultQueueSize is the bounded per-adjacency channel capacity when
@@ -58,6 +60,11 @@ type engineConfig struct {
 	runErrorHandler     RunErrorHandler
 	runCancelledHandler RunCancelledHandler
 	cancelTTL           time.Duration
+	// eventBus, when non-nil, is the bus the engine publishes a
+	// `topology.changed` event onto at construction (Phase 74 /
+	// D-114). nil (the default) = no emit — the Phase 02 engine-test
+	// surface that never wires a bus sees zero behavioural change.
+	eventBus events.EventBus
 }
 
 // channelKey is the (from, to) pair used to key per-channel queue
@@ -126,6 +133,29 @@ func WithRunErrorHandler(h RunErrorHandler) Option {
 func WithRunCancelledHandler(h RunCancelledHandler) Option {
 	return func(cfg *engineConfig) {
 		cfg.runCancelledHandler = h
+	}
+}
+
+// WithEventBus wires the canonical events.EventBus the engine
+// publishes its construction-time `topology.changed` event onto
+// (Phase 74 / D-114). The event carries the engine's initial
+// TopologyProjection so a Protocol consumer that subscribed before
+// the engine was built catches the graph the moment it exists.
+//
+// The option is additive: an engine constructed WITHOUT WithEventBus
+// (the Phase 02 default) publishes nothing — every existing engine
+// test sees zero behavioural change and Phase 02 callers gain no new
+// mandatory dependency. A nil bus passed to WithEventBus is treated
+// as "WithEventBus not supplied".
+//
+// When a bus IS supplied and it rejects the construction-time event,
+// New fails loud (CLAUDE.md §5) rather than building an engine whose
+// topology surface silently never reached the bus.
+func WithEventBus(b events.EventBus) Option {
+	return func(cfg *engineConfig) {
+		if b != nil {
+			cfg.eventBus = b
+		}
 	}
 }
 
