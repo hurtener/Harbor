@@ -74,11 +74,23 @@ Playwright spec covering every binding refinement in
 
 ## Findings I'm departing from (if any)
 
-None. Phase 73g implements page-events.md §12 verbatim under the
-"UI composes Phase 72a surface" cut the wave-13 decomposition §5 row
-73g settled. The decomposition's note "NO new Protocol method (composes
-Phase 72a's surface)" is binding; no surface from this phase escapes the
-Console-local / Phase-72a / Phase-73 (artifacts.get) boundary.
+One documented path deviation (recorded in `docs/decisions.md` D-125).
+This plan was authored before Phase 73's D-121 (`CONVENTIONS.md`)
+landed, and its acceptance criteria / "Files added or changed" sections
+name the route at `web/console/src/routes/console/events/+page.svelte`
+and the components at `web/console/src/lib/events/components/`.
+`CONVENTIONS.md` §1 / §3 (D-121) is the binding cross-cutting authority:
+the `(console)` route group carries NO `/console/` URL prefix, and
+page-specific components live in `components/<page>/`. The page therefore
+ships at `web/console/src/routes/(console)/events/` (served at `/events`)
+and the components at `web/console/src/lib/components/events/`. This is a
+plan-yields-to-higher-priority-artifact correction per CLAUDE.md §15 — the
+"Console consistency" section below (the binding part of this plan)
+already states the `(console)/` route correctly. No design departure: the
+page still implements page-events.md §12 verbatim under the "UI composes
+Phase 72a surface" cut the wave-13 decomposition §5 row 73g settled, and
+no surface escapes the Console-local / Phase-72a / Phase-73 (artifacts.*)
+boundary; the decomposition's "NO new Protocol method" note is honoured.
 
 ## Goals
 
