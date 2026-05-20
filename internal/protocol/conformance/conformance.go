@@ -603,9 +603,10 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// Phase 54 task-control ten + Wave 13 streaming-events two = 12.
-	if len(got) != 12 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 12 (Phase 54 task-control ten + Wave 13 streaming-events two)", len(got))
+	// Phase 54 task-control ten + Wave 13 streaming-events two +
+	// Phase 72c search cluster five = 17.
+	if len(got) != 17 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 17 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:           {},
@@ -620,6 +621,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodUserMessage:     {},
 		methods.MethodEventsSubscribe: {},
 		methods.MethodEventsAggregate: {},
+		methods.MethodSearchQuery:     {},
+		methods.MethodSearchSessions:  {},
+		methods.MethodSearchTasks:     {},
+		methods.MethodSearchEvents:    {},
+		methods.MethodSearchArtifacts: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -697,6 +703,15 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
+			// Phase 72c (D-108): the five `search.*` methods are
+			// task-control-disjoint — they need a SearchSurface, not
+			// a ControlSurface. Phase 80 will extend the conformance
+			// suite to exercise them end-to-end; until then, skip with
+			// an explicit issue-style reason so the SKIP is observable
+			// rather than silent.
+			if methods.IsSearchMethod(m) {
+				t.Skip("phase-72c: search.* methods exercised by their per-package conformance + integration tests; conformance-suite scenario lands in Phase 80")
+			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
 				defer st.Cleanup()
@@ -836,6 +851,14 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
+			// Phase 72c (D-108): the five search.* methods are
+			// dispatched by SearchSurface, not ControlSurface. Their
+			// malformed-request rejection is covered in the
+			// per-package conformance test in internal/search/*; the
+			// conformance suite picks them up in Phase 80.
+			if methods.IsSearchMethod(m) {
+				t.Skip("phase-72c: search.* malformed-request paths covered by per-package conformance; conformance-suite scenario lands in Phase 80")
+			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
 				defer st.Cleanup()

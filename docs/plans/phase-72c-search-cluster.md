@@ -1,5 +1,7 @@
 # Phase 72c — `search.*` cluster (5 methods, one phase)
 
+**Status:** Shipped (D-108).
+
 ## Summary
 
 Lands the Wave 13 cross-cutting global-search primitive as five Protocol methods sharing a single conformance surface: a Console-side palette dispatcher (`search.query`) and four runtime-side per-subsystem indexes (`search.sessions`, `search.tasks`, `search.events`, `search.artifacts`). Brief 11 §CC-4 pins the split — sessions / tasks / events / artifacts are high-cardinality runtime-side and own server-enforced indexes; tools / agents / flows / MCP connections stay Console-side because their catalogs are slow-moving (those Console-side adapters land inside each Stage-2 page phase, NOT here). All five methods share the same shape (identity-aware filter + pagination + free-text query + `ArtifactRef` heavy-payload bypass) per the §12 lock-in #4 operator decision to keep the cluster as one phase. The §13 primitive-with-consumer obligation is discharged in-phase by a query-shape conformance test per index; the Stage-2 Sessions / Tasks / Events / Artifacts pages are the page-level consumers that ride on top.
