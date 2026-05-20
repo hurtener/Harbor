@@ -78,6 +78,24 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`agent_id`** — an agent's stable *registration identity* — minted once at first registration by the Agent Registry, persisted, rehydrated on restart. It is **not** an isolation principal: Harbor's isolation tuple stays `(tenant, user, session, run)` and `agent_id` does not widen it. For a connect-to-remote agent the local `agent_id` is a handle; the canonical identity is the remote A2A `AgentCard`. Runtime-instance-local, collision-free by construction (ULID/UUID), never assumed globally unique. RFC §6.16, AGENTS.md §6, D-059, D-060.
 
+**`agents.list`** — Phase 73e (Wave 13 / D-124) Protocol method returning the catalog of agents registered under the caller's identity scope, with optional facet filters (status / planner type / free-text search) and aggregate counters (`Total` / `Active` / `Paused` / `Drained`) over the filtered view. Powers the Console Agents page cards grid. Identity-mandatory; filters by the `(tenant, user, session)` tuple, never by `agent_id`. Wire route `POST /v1/agents/list`. RFC §6.16, §7, D-124.
+
+**`agents.get`** — Phase 73e Protocol method returning one agent's full registration-identity projection — `agent_id` / `incarnation` / `version_hash` (D-059), hosting (D-060), status, health, and the `AgentConfig` projection. Powers the Console Agents detail header + the Identity / Autonomy tabs. Wire route `POST /v1/agents/get`. RFC §6.16, D-124.
+
+**`agents.tools`** — Phase 73e Protocol method returning an agent's tool bindings joined to per-binding OAuth status (`auth.BindingScope` per D-083). Powers the Console Agents detail Tools tab. Wire route `POST /v1/agents/tools`. RFC §6.16, D-124.
+
+**`agents.memory`** — Phase 73e Protocol method returning an agent's configured memory strategy (Phase 24), TTL, and scope. Powers the Console Agents detail Memory tab. Wire route `POST /v1/agents/memory`. RFC §6.16, D-124.
+
+**`agents.governance`** — Phase 73e Protocol method returning an agent's per-identity-tier cost ceilings + current spend (Phase 36a) and rate-limit posture (Phase 36b). Powers the Console Agents detail Cost tab. Wire route `POST /v1/agents/governance`. RFC §6.16, D-124.
+
+**`agents.skills`** — Phase 73e Protocol method returning an agent's attached skills (Phase 38 imported + Phase 41 generated). Powers the Console Agents detail Skills tab. Wire route `POST /v1/agents/skills`. RFC §6.16, D-124.
+
+**`agents.permissions`** — Phase 73e Protocol method returning an agent's permission model. V1 default is implicit ("every authenticated user in the tenant can invoke this agent"); an explicit ACL surface is post-V1 (D-064). Wire route `POST /v1/agents/permissions`. RFC §6.16, D-124.
+
+**`agents.metrics`** — Phase 73e Protocol method returning the registry-wide rollup (Active Agents / Running Tasks / Total Cost / Total Tokens) for the caller's identity scope. Powers the Console Agents page hero numbers. Wire route `POST /v1/agents/metrics`. RFC §6.16, D-124.
+
+**`AgentConfig` (Protocol projection)** — Phase 73e (`internal/protocol/types/agents.go`) flat Protocol projection of an agent's configuration — planner type + planner config (MaxSteps, repair policy) + model + model policy. Distinct from the registry's internal `registry.AgentConfig` (which the registry hashes into `version_hash` and never persists verbatim — D-068): the Protocol projection is the wire shape `agents.get` returns, joined from the subsystems that own the config data. D-124.
+
 **AuthSpec** — Phase 27 HTTP tool driver: static-auth specification attached to an HTTP tool, carrying `Kind` (`api_key` / `bearer` / `cookie`) plus the kind-specific field (`HeaderName` xor `QueryParam` for api_key, `CookieName` for cookie). The secret value lives separately in operator config — never in the request payload or URL template. Templates that reference the `.Auth` namespace are rejected at load time (`ErrTemplateSecretLeak`). AGENTS.md §7, RFC §6.4.
 
 **`auth.OAuthProvider`** — Phase 30's transport-agnostic contract for tool-side OAuth (`internal/tools/auth`). One concrete `*Provider` covers MCP (Phase 28) / HTTP (Phase 27) / A2A (Phase 29) southbound drivers. Five methods: `Token` returns a fresh bearer (single-flight refresh on expiry, `*ErrAuthRequired` on miss); `InitiateFlow` mints a flow record + a pause record via Phase 50's Coordinator; `CompleteFlow` exchanges (state, code), persists the token via `TokenStore`, and resumes the parked run; `Revoke` deletes the token; `Close` releases the in-flight singleflight + cached metadata. Identity is mandatory; `ScopeAgent` flows require `registry.HasControlScope` (Phase 53a). D-083, RFC §6.4 + §3.3.

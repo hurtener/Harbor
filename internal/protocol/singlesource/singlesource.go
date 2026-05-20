@@ -165,6 +165,15 @@ var CanonicalMethods = map[string]struct{}{
 	"flows.runs.describe": {}, // Phase 73i / D-117
 	"flows.run":           {}, // Phase 73i / D-117
 	"flows.metrics":       {}, // Phase 73i / D-117
+	// Phase 73e (D-124) Console-Agents-page cluster — eight methods.
+	"agents.list":        {}, // Phase 73e / D-124
+	"agents.get":         {}, // Phase 73e / D-124
+	"agents.tools":       {}, // Phase 73e / D-124
+	"agents.memory":      {}, // Phase 73e / D-124
+	"agents.governance":  {}, // Phase 73e / D-124
+	"agents.skills":      {}, // Phase 73e / D-124
+	"agents.permissions": {}, // Phase 73e / D-124
+	"agents.metrics":     {}, // Phase 73e / D-124
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -367,6 +376,39 @@ var CanonicalWireTypes = map[string]string{
 	"FlowMetricsBucket":      "types",
 	"FlowMetrics":            "types",
 	"FlowMetricsRequest":     "types",
+	// Phase 73e (D-124) Console Agents-page wire types — all live in
+	// internal/protocol/types (internal/protocol/types/agents.go).
+	// AgentStatus / AgentHealth / AgentHosting are string-enum types
+	// (like methods.Method / errors.Code) and are NOT listed here —
+	// CanonicalWireTypes records struct wire types only.
+	"Agent":                    "types",
+	"AgentFilter":              "types",
+	"AgentListRequest":         "types",
+	"AgentAggregates":          "types",
+	"AgentListResponse":        "types",
+	"AgentGetRequest":          "types",
+	"AgentConfig":              "types",
+	"AgentGetResponse":         "types",
+	"AgentToolsRequest":        "types",
+	"AgentToolBinding":         "types",
+	"AgentToolsResponse":       "types",
+	"AgentMemoryRequest":       "types",
+	"AgentMemoryBinding":       "types",
+	"AgentMemoryResponse":      "types",
+	"AgentGovernanceRequest":   "types",
+	"AgentCostCeiling":         "types",
+	"AgentRateLimit":           "types",
+	"AgentGovernance":          "types",
+	"AgentGovernanceResponse":  "types",
+	"AgentSkillsRequest":       "types",
+	"AgentSkillBinding":        "types",
+	"AgentSkillsResponse":      "types",
+	"AgentPermissionsRequest":  "types",
+	"AgentPermissions":         "types",
+	"AgentPermissionsResponse": "types",
+	"AgentMetricsRequest":      "types",
+	"AgentMetrics":             "types",
+	"AgentMetricsResponse":     "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path
