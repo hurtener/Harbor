@@ -74,6 +74,14 @@ var wantMethods = []methods.Method{
 	methods.MethodFlowsRunsDescribe,
 	methods.MethodFlowsRun,
 	methods.MethodFlowsMetrics,
+	methods.MethodAgentsList,
+	methods.MethodAgentsGet,
+	methods.MethodAgentsTools,
+	methods.MethodAgentsMemory,
+	methods.MethodAgentsGovernance,
+	methods.MethodAgentsSkills,
+	methods.MethodAgentsPermissions,
+	methods.MethodAgentsMetrics,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -84,9 +92,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
-	// Phase 73d tasks-page two = 59.
-	if len(got) != 59 {
-		t.Fatalf("Methods() returned %d methods, want 59", len(got))
+	// Phase 73d tasks-page two + Phase 73e agents-page eight = 67.
+	if len(got) != 67 {
+		t.Fatalf("Methods() returned %d methods, want 67", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -317,7 +325,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 		if methods.IsMCPServersMethod(m) {
 			continue
 		}
-		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) || methods.IsFlowsMethod(m) {
+		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||
+			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

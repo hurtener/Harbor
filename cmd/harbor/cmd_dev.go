@@ -102,6 +102,8 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	"github.com/hurtener/Harbor/internal/runtime/registry"
+	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -767,6 +769,39 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("tools/protocol service: %w", err)
 	}
 
+	// Phase 73e (D-124): the Console Agents-page Protocol service. The
+	// Agent Registry is the per-runtime-instance subsystem owning agent
+	// registration identity (D-059 / D-060); it is constructed over the
+	// same StateStore the rest of the runtime persists through, so the
+	// Console renders the live registered set. A fresh dev stack with no
+	// agents registered correctly serves an empty catalog ("no agents
+	// yet" is the right empty state, not a missing surface). The eight
+	// `agents.*` methods are READ-ONLY projections; the five
+	// agent-control verbs the page exposes are the EXISTING shipped
+	// `registry.*` control verbs (D-066), not new methods (CLAUDE.md
+	// §13).
+	agentRegistry, err := registry.New(registry.Deps{
+		Store:    stateStore,
+		Bus:      bus,
+		Redactor: red,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("agent registry: %w", err)
+	}
+	agentsProjector, err := agentsprotocol.NewRegistryProjector(agentRegistry)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("registry/protocol projector: %w", err)
+	}
+	agentsService, err := agentsprotocol.NewService(agentsProjector,
+		agentsprotocol.WithLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("registry/protocol service: %w", err)
+	}
+
 	// Phase 73i (D-117): the Console Flows-page surface. The dev stack
 	// boots an empty flow.Registry — flows register into it at
 	// agent-definition time, so a fresh dev stack with no graph-family
@@ -855,6 +890,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		transports.WithFlows(flowsSurface),
 		// Phase 73d: mount the two Console Tasks-page read routes.
 		transports.WithTasksService(tasksService),
+		// Phase 73e: mount the eight `agents.*` read routes so the
+		// Console Agents page has a live Protocol surface.
+		transports.WithAgentsService(agentsService),
 	)
 	if err != nil {
 		closeAll(ctx)

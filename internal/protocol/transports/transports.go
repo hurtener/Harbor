@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
@@ -146,6 +147,13 @@ type muxConfig struct {
 	// green on a partial build. Production wiring (`harbor dev`) SHOULD
 	// supply it so the Console Tasks page has a live surface.
 	tasksService *tasksprotocol.Service
+	// agentsService feeds the Phase 73e (D-124) Console Agents-page
+	// handler — the eight `POST /v1/agents/{method}` read routes.
+	// OPTIONAL: when unsupplied the `POST /v1/agents/{method}` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev`) SHOULD
+	// supply it so the Console Agents page works.
+	agentsService *agentsprotocol.Service
 }
 
 // Option configures NewMux.
@@ -383,6 +391,32 @@ func WithTasksService(s *tasksprotocol.Service) Option {
 	}
 }
 
+// WithAgentsService wires the Phase 73e (D-124) `agents.*` handler into
+// NewMux — the eight Console Agents-page methods (`agents.list` /
+// `agents.get` / `agents.tools` / `agents.memory` / `agents.governance`
+// / `agents.skills` / `agents.permissions` / `agents.metrics`).
+//
+// The service is OPTIONAL so existing call-sites compile unchanged.
+// When unsupplied, the `POST /v1/agents/{method}` route is NOT mounted
+// — the smoke script's `skip_if_404` keeps preflight green on a partial
+// build. Production wiring (`harbor dev`) supplies it so the Console
+// Agents page (Phase 73e) has a live surface. When supplied AND
+// WithValidator is set, the route is wrapped in auth.Middleware like
+// every other transport.
+//
+// All eight `agents.*` methods are READ-ONLY projections of the Agent
+// Registry — the five agent-control verbs (Pause / Drain / Restart /
+// Force-Stop / Deregister) are the EXISTING shipped `registry.*`
+// control verbs (D-066), not new methods (CLAUDE.md §13). A nil service
+// is treated as "WithAgentsService not supplied".
+func WithAgentsService(s *agentsprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.agentsService = s
+		}
+	}
+}
+
 // WithMemory wires the Phase 73j (D-118) three `memory.*` read routes
 // into NewMux. store is the memory.MemoryStore the Console Memory page
 // projects from (Phases 23–25); driverName is the configured memory-
@@ -610,6 +644,20 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		flowsHandler = fh
 	}
 
+	// Wave 13 (Phase 73e / D-124): the Console Agents-page handler.
+	// Built only when WithAgentsService supplied a non-nil service.
+	// When unsupplied the `POST /v1/agents/{method}` route is left
+	// un-mounted — the smoke `skip_if_404` keeps preflight green on a
+	// partial build.
+	var agentsHandler *stream.AgentsHandler
+	if cfg.agentsService != nil {
+		ah, err := stream.NewAgentsHandler(cfg.agentsService, stream.WithAgentsLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build agents handler: %w", err)
+		}
+		agentsHandler = ah
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -681,6 +729,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedTasks = mw(tasksHandler)
 		}
 		mux.Handle(stream.TasksRoutePattern, mountedTasks)
+	}
+
+	if agentsHandler != nil {
+		var mountedAgents http.Handler = agentsHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedAgents = mw(agentsHandler)
+		}
+		mux.Handle(stream.AgentsRoutePattern, mountedAgents)
 	}
 	return mux, nil
 }

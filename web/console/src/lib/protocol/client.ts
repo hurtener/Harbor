@@ -481,6 +481,53 @@ export class ControlNamespace {
 	}
 }
 
+/**
+ * The `agents.*` namespace (Phase 73e / D-124). The Runtime mounts these
+ * at `POST /v1/agents/{verb}` (the same one-shot request/response shape
+ * as `tools.*`). All eight methods are READ-ONLY projections of the
+ * Agent Registry; the five agent-control verbs the Agents page exposes
+ * (Pause / Drain / Restart / Force-Stop / Deregister) are the EXISTING
+ * shipped `registry.*` control verbs (D-066), not part of this surface.
+ */
+export class AgentsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `agents.list` — paginated, faceted agent catalog projection. */
+	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
+		return this.#t.request<R>('/v1/agents/list', req);
+	}
+	/** `agents.get` — one agent's full registration-identity projection. */
+	get<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/get', { id });
+	}
+	/** `agents.tools` — the agent's tool bindings + per-binding OAuth. */
+	tools<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/tools', { id });
+	}
+	/** `agents.memory` — the agent's memory strategy + TTL + scope. */
+	memory<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/memory', { id });
+	}
+	/** `agents.governance` — per-identity-tier ceilings + spend + limits. */
+	governance<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/governance', { id });
+	}
+	/** `agents.skills` — the agent's attached skills. */
+	skills<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/skills', { id });
+	}
+	/** `agents.permissions` — the agent's permission model (V1: implicit). */
+	permissions<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/agents/permissions', { id });
+	}
+	/** `agents.metrics` — the registry-wide rollup the page hero shows. */
+	metrics<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/agents/metrics', {});
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -508,6 +555,7 @@ export interface ProtocolClient {
 	readonly artifacts: ArtifactsNamespace;
 	readonly mcp: MCPNamespace;
 	readonly events: EventsNamespace;
+	readonly agents: AgentsNamespace;
 }
 
 /**
@@ -528,6 +576,7 @@ export class HarborClient implements ProtocolClient {
 	readonly artifacts: ArtifactsNamespace;
 	readonly mcp: MCPNamespace;
 	readonly events: EventsNamespace;
+	readonly agents: AgentsNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -539,5 +588,6 @@ export class HarborClient implements ProtocolClient {
 		this.artifacts = new ArtifactsNamespace(transport);
 		this.mcp = new MCPNamespace(transport);
 		this.events = new EventsNamespace(transport);
+		this.agents = new AgentsNamespace(transport);
 	}
 }

@@ -620,9 +620,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
-	// Phase 73d tasks-page two = 59.
-	if len(got) != 59 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 59 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two)", len(got))
+	// Phase 73d tasks-page two + Phase 73e agents-page eight = 67.
+	if len(got) != 67 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 67 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -688,6 +688,15 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodFlowsRunsDescribe: {},
 		methods.MethodFlowsRun:          {},
 		methods.MethodFlowsMetrics:      {},
+
+		methods.MethodAgentsList:        {},
+		methods.MethodAgentsGet:         {},
+		methods.MethodAgentsTools:       {},
+		methods.MethodAgentsMemory:      {},
+		methods.MethodAgentsGovernance:  {},
+		methods.MethodAgentsSkills:      {},
+		methods.MethodAgentsPermissions: {},
+		methods.MethodAgentsMetrics:     {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -877,6 +886,20 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// explicit reason — same posture as the tools / flows clusters.
 			if methods.IsTasksMethod(m) {
 				t.Skip("phase-73d: tasks.* methods exercised by internal/tasks/protocol tests + stream tasks_handler tests + test/integration/tasks_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73e (D-124): the eight `agents.*` methods route
+			// through the Console Agents-page handler
+			// (POST /v1/agents/{method}), not the REST ControlSurface —
+			// they need an Agent Registry the conformance Stack does not
+			// wire. Their happy-paths + failure modes are exercised by
+			// internal/runtime/registry/protocol unit tests, the
+			// concurrent-reuse test, the stream-package agents_handler
+			// tests, and test/integration/agents_page_test.go (real
+			// registry + real bus + real wire transport). The
+			// conformance-suite scenario lands with the Phase 80 surface
+			// extension — same posture as the tools / flows clusters.
+			if methods.IsAgentsMethod(m) {
+				t.Skip("phase-73e: agents.* methods exercised by internal/runtime/registry/protocol tests + stream agents_handler tests + test/integration/agents_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)

@@ -477,6 +477,43 @@ const (
 	// (existence is never revealed across tenants). The wire-transport
 	// route is `POST /v1/tasks/get`.
 	MethodTasksGet Method = "tasks.get"
+
+	// MethodAgentsList — Phase 73e (Wave 13 / D-124). Returns the
+	// catalog of agents registered under the caller's identity scope,
+	// with optional facet filters (status / planner type / free-text
+	// search) plus aggregate counters. Powers the Console Agents page
+	// cards grid. Identity-mandatory; a cross-tenant fan-in requires the
+	// `auth.ScopeAdmin` claim (D-079). `IsAgentsMethod` returns true.
+	// The wire-transport route is `POST /v1/agents/list`.
+	MethodAgentsList Method = "agents.list"
+	// MethodAgentsGet — Phase 73e. Returns one agent's full
+	// registration-identity projection: agent_id / incarnation /
+	// version_hash (D-059), hosting (D-060), status, health, and the
+	// AgentConfig projection. Powers the Agents detail header + the
+	// Identity / Autonomy tabs.
+	MethodAgentsGet Method = "agents.get"
+	// MethodAgentsTools — Phase 73e. Returns the agent's tool bindings
+	// joined to per-binding OAuth status (D-083). Powers the Tools tab.
+	MethodAgentsTools Method = "agents.tools"
+	// MethodAgentsMemory — Phase 73e. Returns the agent's configured
+	// memory strategy (Phase 24), TTL, and scope. Powers the Memory tab.
+	MethodAgentsMemory Method = "agents.memory"
+	// MethodAgentsGovernance — Phase 73e. Returns the agent's
+	// per-identity-tier cost ceilings + spend (Phase 36a) and rate-limit
+	// posture (Phase 36b). Powers the Cost tab.
+	MethodAgentsGovernance Method = "agents.governance"
+	// MethodAgentsSkills — Phase 73e. Returns the agent's attached
+	// skills (Phase 38 + Phase 41 generated skills). Powers the Skills
+	// tab.
+	MethodAgentsSkills Method = "agents.skills"
+	// MethodAgentsPermissions — Phase 73e. Returns the agent's
+	// permission model — V1 default is implicit ("every authenticated
+	// user in the tenant"); an explicit ACL surface is post-V1.
+	MethodAgentsPermissions Method = "agents.permissions"
+	// MethodAgentsMetrics — Phase 73e. Returns the registry-wide rollup
+	// (Active Agents / Running Tasks / Total Cost / Total Tokens) for
+	// the caller's identity scope. Powers the Agents page hero numbers.
+	MethodAgentsMetrics Method = "agents.metrics"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -549,6 +586,46 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMCPServersRefreshBinding:   {},
 	MethodMCPServersRevokeBinding:    {},
 	MethodMCPServersSetRawHTMLTrust:  {},
+
+	MethodAgentsList:        {},
+	MethodAgentsGet:         {},
+	MethodAgentsTools:       {},
+	MethodAgentsMemory:      {},
+	MethodAgentsGovernance:  {},
+	MethodAgentsSkills:      {},
+	MethodAgentsPermissions: {},
+	MethodAgentsMetrics:     {},
+}
+
+// canonicalAgentsMethods is the closed sub-set of the eight `agents.*`
+// methods landed in Phase 73e (Wave 13 / D-124) — all eight are
+// read-only projections of the Agent Registry. IsAgentsMethod is O(1);
+// the wire handler branches on it to route the request through the
+// agents dispatcher instead of the task-control surface. The five
+// agent-control verbs (Pause / Drain / Restart / ForceStop /
+// Deregister) are NOT `agents.*` methods — they are the EXISTING
+// shipped `registry.*` control verbs (D-066), invoked through their own
+// surface; Phase 73e mints no control method.
+var canonicalAgentsMethods = map[Method]struct{}{
+	MethodAgentsList:        {},
+	MethodAgentsGet:         {},
+	MethodAgentsTools:       {},
+	MethodAgentsMemory:      {},
+	MethodAgentsGovernance:  {},
+	MethodAgentsSkills:      {},
+	MethodAgentsPermissions: {},
+	MethodAgentsMetrics:     {},
+}
+
+// IsAgentsMethod reports whether m is one of the eight canonical
+// `agents.*` methods (Phase 73e / D-124). The wire handler branches on
+// this to route the request through the agents dispatcher instead of
+// the task-control / search / posture / topology surfaces. NOT a
+// control method — a new non-control method extends THIS predicate,
+// never the steering inbox.
+func IsAgentsMethod(m Method) bool {
+	_, ok := canonicalAgentsMethods[m]
+	return ok
 }
 
 // canonicalArtifactsMethods is the closed sub-set of the three artifacts
@@ -905,6 +982,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsFlowsMethod(m) {
+		return false
+	}
+	if IsAgentsMethod(m) {
 		return false
 	}
 	return true
