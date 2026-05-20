@@ -155,6 +155,9 @@ var CanonicalMethods = map[string]struct{}{
 	"tools.content_stats":       {}, // Phase 73f / D-116
 	"tools.set_approval_policy": {}, // Phase 73f / D-116
 	"tools.revoke_oauth":        {}, // Phase 73f / D-116
+	// Phase 73d (D-123) Console-Tasks-page cluster — two methods.
+	"tasks.list": {}, // Phase 73d / D-123
+	"tasks.get":  {}, // Phase 73d / D-123
 	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
 	"flows.list":          {}, // Phase 73i / D-117
 	"flows.describe":      {}, // Phase 73i / D-117
@@ -324,6 +327,21 @@ var CanonicalWireTypes = map[string]string{
 	"ToolSetApprovalPolicyResponse": "types",
 	"ToolRevokeOAuthRequest":        "types",
 	"ToolRevokeOAuthResponse":       "types",
+	// Phase 73d (D-123) Console Tasks-page wire types — all live in
+	// internal/protocol/types (internal/protocol/types/tasks.go).
+	"TaskRow":                "types",
+	"TaskFilter":             "types",
+	"TaskListAggregates":     "types",
+	"TaskListCursor":         "types",
+	"TaskListRequest":        "types",
+	"TaskListResponse":       "types",
+	"TaskDetail":             "types",
+	"TaskParentSessionRef":   "types",
+	"TaskParentTaskRef":      "types",
+	"TaskCostRollup":         "types",
+	"TaskCostStep":           "types",
+	"TaskPlannerSnapshotRef": "types",
+	"TaskGetRequest":         "types",
 	// Phase 73i (D-117) Console Flows-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"Flow":                   "types",

@@ -59,6 +59,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -138,6 +139,13 @@ type muxConfig struct {
 	// Production wiring (`harbor dev`) SHOULD supply it so the Console
 	// Flows page works.
 	flowsSurface *flowprotocol.Surface
+	// tasksService feeds the Phase 73d (D-123) `tasks.*` handler — the
+	// two Console Tasks-page read methods (`tasks.list` / `tasks.get`).
+	// OPTIONAL — when unsupplied the `POST /v1/tasks/{method}` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev`) SHOULD
+	// supply it so the Console Tasks page has a live surface.
+	tasksService *tasksprotocol.Service
 }
 
 // Option configures NewMux.
@@ -350,6 +358,31 @@ func WithToolsService(s *toolsprotocol.Service) Option {
 	}
 }
 
+// WithTasksService wires the Phase 73d (D-123) `tasks.*` handler into
+// NewMux — the two Console Tasks-page read methods (`tasks.list` /
+// `tasks.get`).
+//
+// The service is OPTIONAL so existing call-sites compile unchanged.
+// When unsupplied, the `POST /v1/tasks/{method}` route is NOT mounted —
+// the smoke script's `skip_if_404` keeps preflight green on a partial
+// build. Production wiring (`harbor dev`) supplies it so the Console
+// Tasks page (Phase 73d) has a live surface. When supplied AND
+// WithValidator is set, the route is wrapped in auth.Middleware like
+// every other transport — a cross-tenant `tasks.list` fan-in then
+// gates on the verified `auth.ScopeAdmin` claim (D-079). A nil service
+// is treated as "WithTasksService not supplied".
+//
+// Both `tasks.*` methods are READ-ONLY (CLAUDE.md §13) — the Console
+// Tasks page consumes the shipped Phase 54 task-control verbs for
+// mutation; no `tasks.*` mutation path is mounted.
+func WithTasksService(s *tasksprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.tasksService = s
+		}
+	}
+}
+
 // WithMemory wires the Phase 73j (D-118) three `memory.*` read routes
 // into NewMux. store is the memory.MemoryStore the Console Memory page
 // projects from (Phases 23–25); driverName is the configured memory-
@@ -547,6 +580,19 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		toolsHandler = th
 	}
 
+	// Wave 13 (Phase 73d / D-123): the `tasks.*` handler. Built only
+	// when WithTasksService supplied a non-nil service. When unsupplied
+	// the `POST /v1/tasks/{method}` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var tasksHandler *stream.TasksHandler
+	if cfg.tasksService != nil {
+		th, err := stream.NewTasksHandler(cfg.tasksService, stream.WithTasksLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build tasks handler: %w", err)
+		}
+		tasksHandler = th
+	}
+
 	// Wave 13 (Phase 73i / D-117): the Console Flows-page handler. Built
 	// only when WithFlows supplied a non-nil surface. When unsupplied
 	// the six `/v1/flows/*` routes are left un-mounted — the smoke
@@ -626,6 +672,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedFlows = mw(flowsHandler)
 		}
 		mux.Handle(stream.FlowsRoutePattern, mountedFlows)
+	}
+
+	if tasksHandler != nil {
+		var mountedTasks http.Handler = tasksHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedTasks = mw(tasksHandler)
+		}
+		mux.Handle(stream.TasksRoutePattern, mountedTasks)
 	}
 	return mux, nil
 }

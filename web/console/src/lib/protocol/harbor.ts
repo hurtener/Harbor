@@ -15,6 +15,8 @@ export {
 	HarborClient,
 	Transport,
 	ToolsNamespace,
+	TasksNamespace,
+	ControlNamespace,
 	MemoryNamespace,
 	FlowsNamespace,
 	ArtifactsNamespace,
