@@ -38,7 +38,7 @@ describe('HarborClient namespace dispatch', () => {
 		await client.tools.list({ search: 'x' }, 2, 25);
 
 		expect(fetchImpl).toHaveBeenCalledOnce();
-		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
 		expect(url).toBe('http://127.0.0.1:18080/v1/tools/list');
 		expect(init.method).toBe('POST');
 		const body = JSON.parse(init.body as string);
@@ -54,7 +54,7 @@ describe('HarborClient namespace dispatch', () => {
 		const fetchImpl = vi.fn(async () => okResponse({ aggregate: {} }));
 		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
 		await client.memory.health();
-		const [url] = fetchImpl.mock.calls[0] as [string];
+		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
 		expect(url).toBe('http://127.0.0.1:18080/v1/memory/health');
 	});
 
@@ -62,7 +62,7 @@ describe('HarborClient namespace dispatch', () => {
 		const fetchImpl = vi.fn(async () => okResponse({ rows: [] }));
 		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
 		await client.artifacts.list({ scope: CONNECTION.identity });
-		const [url] = fetchImpl.mock.calls[0] as [string];
+		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
 		expect(url).toBe('http://127.0.0.1:18080/v1/control/artifacts.list');
 	});
 
@@ -70,7 +70,7 @@ describe('HarborClient namespace dispatch', () => {
 		const fetchImpl = vi.fn(async () => okResponse({ servers: [] }));
 		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
 		await client.mcp.servers.list();
-		const [url] = fetchImpl.mock.calls[0] as [string];
+		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
 		expect(url).toBe('http://127.0.0.1:18080/v1/control/mcp.servers.list');
 	});
 });
