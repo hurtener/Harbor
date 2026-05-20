@@ -82,6 +82,8 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentsSkills,
 	methods.MethodAgentsPermissions,
 	methods.MethodAgentsMetrics,
+	methods.MethodSessionsList,
+	methods.MethodSessionsInspect,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -92,9 +94,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
-	// Phase 73d tasks-page two + Phase 73e agents-page eight = 67.
-	if len(got) != 67 {
-		t.Fatalf("Methods() returned %d methods, want 67", len(got))
+	// Phase 73d tasks-page two + Phase 73e agents-page eight +
+	// Phase 73c sessions-page two = 69.
+	if len(got) != 69 {
+		t.Fatalf("Methods() returned %d methods, want 69", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -183,6 +186,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 
 		methods.MethodTasksList: "tasks.list",
 		methods.MethodTasksGet:  "tasks.get",
+
+		methods.MethodSessionsList:    "sessions.list",
+		methods.MethodSessionsInspect: "sessions.inspect",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -311,9 +317,25 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			t.Errorf("IsTasksMethod(%q) = false, want true", m)
 		}
 	}
+	// Phase 73c (D-122): the two sessions.* methods route through the
+	// Sessions-page handler, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodSessionsList, methods.MethodSessionsInspect,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — sessions.* methods are read-only, route through the Sessions handler", m)
+		}
+		if !methods.IsSessionsMethod(m) {
+			t.Errorf("IsSessionsMethod(%q) = false, want true", m)
+		}
+	}
+	if methods.IsSessionsMethod(methods.MethodStart) {
+		t.Error("IsSessionsMethod(start) = true, want false")
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
 	// non-topology, non-artifacts, non-memory, non-mcp, non-tools,
-	// non-tasks, non-flows canonical method IS a control method.
+	// non-tasks, non-flows, non-agents, non-sessions canonical method
+	// IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
@@ -326,7 +348,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 			continue
 		}
 		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||
-			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) {
+			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
+			methods.IsSessionsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

@@ -158,6 +158,9 @@ var CanonicalMethods = map[string]struct{}{
 	// Phase 73d (D-123) Console-Tasks-page cluster — two methods.
 	"tasks.list": {}, // Phase 73d / D-123
 	"tasks.get":  {}, // Phase 73d / D-123
+	// Phase 73c (D-122) Console-Sessions-page cluster — two methods.
+	"sessions.list":    {}, // Phase 73c / D-122
+	"sessions.inspect": {}, // Phase 73c / D-122
 	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
 	"flows.list":          {}, // Phase 73i / D-117
 	"flows.describe":      {}, // Phase 73i / D-117
@@ -409,6 +412,20 @@ var CanonicalWireTypes = map[string]string{
 	"AgentMetricsRequest":      "types",
 	"AgentMetrics":             "types",
 	"AgentMetricsResponse":     "types",
+	// Phase 73c (D-122) Console Sessions-page wire types — all live in
+	// internal/protocol/types (internal/protocol/types/sessions.go).
+	// SessionStatus / SessionSort are string-enum types (like
+	// methods.Method / errors.Code) and are NOT listed here —
+	// CanonicalWireTypes records struct wire types only.
+	"Window":                  "types",
+	"SessionFilter":           "types",
+	"SessionsListRequest":     "types",
+	"SessionRow":              "types",
+	"SessionsListResponse":    "types",
+	"InterventionSummary":     "types",
+	"ArtifactRefSummary":      "types",
+	"SessionsInspectRequest":  "types",
+	"SessionsInspectResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path
