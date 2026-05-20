@@ -108,6 +108,13 @@ func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauser
 	return pauseresume.Status{}, nil
 }
 
+// List satisfies the Phase 72e Coordinator.List extension. The steering
+// tests do not exercise the pause-list snapshot surface; the stub
+// returns an empty page so the interface is satisfied without behaviour.
+func (c *stubCoordinator) List(_ context.Context, _ pauseresume.ListRequest) (pauseresume.ListResponse, error) {
+	return pauseresume.ListResponse{}, nil
+}
+
 func (c *stubCoordinator) snapshot() (req, res int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

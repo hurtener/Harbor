@@ -223,6 +223,19 @@ const (
 	// cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). A
 	// posture method, same posture as MethodGovernancePosture.
 	MethodLLMPosture Method = "llm.posture"
+
+	// MethodPauseList — Phase 72e (Wave 13; D-110) the paginated,
+	// identity-scope-filtered snapshot of currently-paused runs from
+	// the unified pause/resume Coordinator (Phase 50). Read-only: it
+	// does NOT mutate the registry and does NOT call Resume — resume
+	// actions continue through MethodResume / MethodApprove /
+	// MethodReject. The wire-transport route is
+	// `POST /v1/pause/list`. Identity-mandatory; a cross-tenant filter
+	// requires the verified `auth.ScopeAdmin` claim (D-079). NOT a
+	// task-control method — `IsControlMethod(MethodPauseList)` returns
+	// false; the Phase 54 control nine stays exclusive. See
+	// `docs/plans/phase-72e-pause-list-snapshot.md`.
+	MethodPauseList Method = "pause.list"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -255,6 +268,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMetricsSnapshot:   {},
 	MethodGovernancePosture: {},
 	MethodLLMPosture:        {},
+	MethodPauseList:         {},
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
@@ -323,17 +337,39 @@ func IsValidMethod(m Method) bool {
 	return ok
 }
 
+// IsPauseMethod reports whether m is one of the pause-snapshot methods
+// landed in Wave 13 (Phase 72e — currently only MethodPauseList). The
+// pause-snapshot surface is a read-only projection over the unified
+// pause/resume Coordinator (Phase 50); it is NOT a steering control,
+// NOT a streaming-events method, and NOT a search method. A transport
+// adapter branches on this predicate to route the request through the
+// pause-list snapshot handler instead of the task-control surface.
+func IsPauseMethod(m Method) bool {
+	_, ok := pauseMethods[m]
+	return ok
+}
+
+// pauseMethods is the closed set of canonical pause-snapshot method
+// names (Phase 72e). Used by IsControlMethod to keep its predicate
+// exclusive to the Phase 54 nine, and by IsPauseMethod for the inverse.
+var pauseMethods = map[Method]struct{}{
+	MethodPauseList: {},
+}
+
 // IsControlMethod reports whether m is one of the nine steering-control
 // methods — every canonical method except MethodStart AND the
 // streaming-events methods (Phase 72 / 72a) AND the Phase 72c
 // `search.*` cluster AND the Phase 72f `runtime.*` / `metrics.*`
-// posture cluster (all separate surfaces from the steering inbox).
+// posture cluster AND the Phase 72e pause-snapshot method (each a
+// separate surface from the steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
 // events-aggregate transport; a search method maps onto the Phase 72c
 // search dispatcher; a posture method maps onto the Phase 72f
-// PostureSurface. A new non-control method extends THIS predicate, NOT
+// PostureSurface; a pause-snapshot method maps onto the Phase 72e
+// pause-list handler. A new non-control method (state inspection,
+// topology, artifacts — future phases) extends THIS predicate, NOT
 // the steering-control inbox.
 func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
@@ -349,6 +385,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsPostureMethod(m) {
+		return false
+	}
+	if IsPauseMethod(m) {
 		return false
 	}
 	return true

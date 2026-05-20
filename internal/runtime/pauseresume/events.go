@@ -12,11 +12,21 @@ const (
 	// EventTypePauseResumed — emitted by Coordinator.Resume when a
 	// pause record terminates. Payload is PauseResumedPayload.
 	EventTypePauseResumed events.EventType = "pause.resumed"
+	// EventTypePausePayloadArtifactRouted — emitted by the Phase 72e
+	// `pause.list` snapshot path when a pause record's Payload
+	// serialised size meets or exceeds the configured heavy-content
+	// threshold and is routed through the ArtifactStore instead of
+	// shipped inline (D-026 — context-window safety net applied to
+	// Protocol read snapshots). The emit makes the bypass LOUD — a
+	// heavy payload is never silently truncated. Payload is
+	// PausePayloadArtifactRoutedPayload.
+	EventTypePausePayloadArtifactRouted events.EventType = "pause.payload_artifact_routed"
 )
 
 func init() {
 	events.RegisterEventType(EventTypePauseRequested)
 	events.RegisterEventType(EventTypePauseResumed)
+	events.RegisterEventType(EventTypePausePayloadArtifactRouted)
 }
 
 // PauseRequestedPayload is the typed payload for a pause.requested
@@ -57,4 +67,25 @@ type PauseResumedPayload struct {
 	// (approve / reject / resume / timeout). Wire consumers switch on
 	// this value rather than parsing `Reason` strings. See D-096.
 	Decision Decision
+}
+
+// PausePayloadArtifactRoutedPayload is the typed payload for a
+// `pause.payload_artifact_routed` event. SafePayload by construction:
+// every field is the runtime's own bookkeeping — the opaque pause
+// Token, the content-addressed artifact ref ID, and the byte sizes
+// involved. NO caller-controlled payload bytes are carried (the heavy
+// payload itself went to the ArtifactStore, which is the whole point
+// of the bypass). Phase 72e (D-110, D-026).
+type PausePayloadArtifactRoutedPayload struct {
+	events.SafeSealed
+	// Token is the opaque pause Token whose Payload was routed.
+	Token string
+	// ArtifactID is the content-addressed ID of the artifact the
+	// heavy Payload was materialised into.
+	ArtifactID string
+	// PayloadBytes is the serialised byte length of the routed Payload.
+	PayloadBytes int
+	// ThresholdBytes is the configured heavy-content threshold the
+	// PayloadBytes met or exceeded.
+	ThresholdBytes int
 }

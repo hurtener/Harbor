@@ -707,6 +707,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
 		transports.WithPostureSurface(postureSurface),
+		// Phase 72e: mount the `pause.list` snapshot route. The
+		// production path always wires the unified Coordinator + the
+		// artifact store + the configured heavy-content threshold so
+		// the Console intervention queue works out of the box (no seam
+		// for the operator to wire — CLAUDE.md §13).
+		transports.WithPauseList(coord, artStore, cfg.Artifacts.HeavyOutputThresholdBytes),
 	)
 	if err != nil {
 		closeAll(ctx)

@@ -227,4 +227,93 @@ type Coordinator interface {
 	// checkpoint load (the restart-survival path). An unknown Token
 	// returns ErrPauseNotFound.
 	Status(ctx context.Context, token Token) (Status, error)
+
+	// List returns a paginated snapshot of pause records visible under
+	// the caller's identity scope (Phase 72e — the `pause.list`
+	// Protocol surface). Read-only: it does NOT mutate the registry,
+	// does NOT call Resume, and does NOT clear checkpoints.
+	//
+	// Identity-mandatory: a missing (tenant, user, session) triple on
+	// req.Identity returns wrapped ErrIdentityRequired. Pagination is
+	// mandatory — a 0 / negative / over-max PageSize, or a negative
+	// Page, returns wrapped ErrInvalidPage; the snapshot is never
+	// silently clamped.
+	//
+	// Cross-tenant visibility: when req.Filter.TenantIDs names a tenant
+	// other than req.Identity.TenantID (or more than one tenant), the
+	// caller MUST set req.AdminScoped — otherwise List returns wrapped
+	// ErrCrossTenantScope. The Coordinator does NOT read the scope from
+	// ctx; the Protocol-edge handler is responsible for verifying the
+	// `auth.ScopeAdmin` claim and setting AdminScoped (separation of
+	// concerns — D-079).
+	List(ctx context.Context, req ListRequest) (ListResponse, error)
+}
+
+// ListRequest is the input to Coordinator.List — the runtime-internal
+// projection of the Protocol-edge types.PauseListRequest.
+type ListRequest struct {
+	// Identity is the caller's (tenant, user, session) triple.
+	// Mandatory — an incomplete triple fails closed with
+	// ErrIdentityRequired.
+	Identity identity.Identity
+	// Filter narrows the snapshot. An empty filter means "the caller's
+	// own identity scope, status=paused".
+	Filter ListFilter
+	// Page is the 1-based page number. 0 is treated as 1; a negative
+	// Page fails closed with ErrInvalidPage.
+	Page int
+	// PageSize is the per-page row count. 0 is treated as the default
+	// (DefaultListPageSize); a negative or over-max value fails closed
+	// with ErrInvalidPage.
+	PageSize int
+	// AdminScoped is true when the caller carries the verified
+	// auth.ScopeAdmin claim. Set by the Protocol-edge handler; the
+	// Coordinator itself does NOT read the scope from ctx.
+	AdminScoped bool
+}
+
+// ListFilter is the runtime-internal filter shape for Coordinator.List.
+// Empty slices are wildcards; a zero Since / Until is "no bound".
+type ListFilter struct {
+	// States narrows by lifecycle state. Empty defaults to
+	// [StatusPaused] — the intervention-queue use case.
+	States []State
+	// TenantIDs narrows to a tenant set. Empty defaults to the
+	// caller's own tenant. A foreign tenant OR len>1 requires
+	// ListRequest.AdminScoped.
+	TenantIDs []string
+	// UserIDs narrows to a user set within the visible tenants.
+	UserIDs []string
+	// SessionIDs narrows to a session set.
+	SessionIDs []string
+	// RunIDs narrows to a run set.
+	RunIDs []string
+	// Reasons narrows to one or more canonical pause reasons.
+	Reasons []Reason
+	// Since is an optional lower bound on PausedAt (inclusive).
+	Since time.Time
+	// Until is an optional upper bound on PausedAt (inclusive).
+	Until time.Time
+}
+
+// ListResponse is the value returned by Coordinator.List.
+type ListResponse struct {
+	// Snapshots is the page of pause records, ordered PausedAt
+	// descending (newest first).
+	Snapshots []Pause
+	// Statuses is parallel to Snapshots — Statuses[i] is the lifecycle
+	// status of Snapshots[i].
+	Statuses []Status
+	// Page is the 1-based page number this response covers.
+	Page int
+	// PageSize is the per-page row count applied.
+	PageSize int
+	// PageCount is the total number of pages over the filtered set.
+	PageCount int
+	// TotalRows is the total filtered row count across all pages.
+	TotalRows int
+	// Truncated is true when a status=resumed filter was requested but
+	// the resumed slice has aged out of the in-memory registry — see
+	// the Coordinator's destructive-on-resume contract (coordinator.go).
+	Truncated bool
 }
