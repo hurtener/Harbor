@@ -1,21 +1,27 @@
 <script lang="ts">
-  // Artifacts preview pane — Phase 73l (D-120).
+  // Harbor Console — Artifacts page-specific preview component (D-121,
+  // CONVENTIONS.md §3 — page-specific components live in
+  // `components/<page>/`).
   //
   // This component dispatches the selected artifact's MIME type through
   // the CANONICAL renderer registry at `$lib/chat/renderers` — it does
-  // NOT carry a bespoke per-mime renderer (CLAUDE.md §13; Brief 12).
-  // The Playwright spec asserts no `*_renderer.svelte` lives under this
-  // route directory.
+  // NOT carry a bespoke per-mime renderer (CLAUDE.md §13; Brief 12). The
+  // renderer-registry skeleton (the `index.ts` dispatch table + the six
+  // MIME renderers) is the canonical registry Phase 73n extends; this
+  // component is one consumer of it, never an owner.
   //
   // The preview `src` is a presigned URL resolved via `artifacts.get_ref`
   // (D-022 / D-026) — the Console never inlines artifact bytes. When the
   // configured artifact-store driver has no `Presigner` (the dev `inmem`
   // / `fs` drivers return CodePresignUnsupported), the pane shows the
   // typed-error placeholder + a Download fallback.
+  //
+  // Svelte 5 runes mode (D-092); design tokens only.
   import { dispatchRenderer } from '$lib/chat/renderers';
-  import type { ArtifactRow } from '$lib/protocol';
+  import type { ArtifactRow } from '$lib/protocol.js';
 
-  interface PreviewState {
+  /** The resolved-preview state the page feeds this component. */
+  export interface PreviewState {
     /** The resolved presigned URL, or '' when none. */
     src: string;
     /** A typed error code from artifacts.get_ref, or '' when ok. */
@@ -33,12 +39,10 @@
   } = $props();
 
   // The dispatched renderer descriptor for the selected row's MIME.
-  const descriptor = $derived(
-    row ? dispatchRenderer(row.ref.mime_type ?? '') : null
-  );
+  const descriptor = $derived(row ? dispatchRenderer(row.ref.mime_type ?? '') : null);
 </script>
 
-<section class="preview-pane" data-testid="artifact-preview">
+<section class="artifact-preview" data-testid="artifact-preview">
   {#if !row}
     <p class="empty">Select an artifact to preview it.</p>
   {:else if preview.loading}
@@ -47,8 +51,8 @@
     <div class="unsupported" data-renderer-source="presign-unsupported">
       <p class="headline">Preview not available</p>
       <p class="detail">
-        The configured artifact-store driver does not support presigned
-        URLs. Use the Download action to fetch the artifact.
+        The configured artifact-store driver does not support presigned URLs. Use the
+        Download action to fetch the artifact.
       </p>
     </div>
   {:else if preview.errorCode}
@@ -70,7 +74,7 @@
 </section>
 
 <style>
-  .preview-pane {
+  .artifact-preview {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
@@ -92,7 +96,7 @@
     gap: var(--space-2);
     padding: var(--space-4);
     background: var(--color-surface);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-md);
   }
 
