@@ -14,7 +14,8 @@ import type { RuntimeConnection } from '../../connection.js';
 const CONNECTION: RuntimeConnection = {
 	baseURL: 'http://127.0.0.1:18080',
 	token: 'dummy-bearer-token',
-	identity: { tenant: 't1', user: 'u1', session: 's1' }
+	identity: { tenant: 't1', user: 'u1', session: 's1' },
+	scopes: ['admin']
 };
 
 function okResponse(body: unknown): Response {

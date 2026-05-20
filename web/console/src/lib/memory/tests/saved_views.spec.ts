@@ -15,7 +15,8 @@ import type { RuntimeConnection } from '../../connection.js';
 const CONNECTION: RuntimeConnection = {
 	baseURL: 'http://runtime.test',
 	token: 'tok-abc',
-	identity: { tenant: 't-mem', user: 'u-mem', session: 's-mem' }
+	identity: { tenant: 't-mem', user: 'u-mem', session: 's-mem' },
+	scopes: []
 };
 
 describe('openMemorySavedFilters', () => {

@@ -18,7 +18,8 @@ function connectionFor(tenant: string, user: string): RuntimeConnection {
 	return {
 		baseURL: 'http://127.0.0.1:18080',
 		token: 'dummy-bearer-token',
-		identity: { tenant, user, session: 'session-x' }
+		identity: { tenant, user, session: 'session-x' },
+		scopes: []
 	};
 }
 
