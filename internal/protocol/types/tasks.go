@@ -203,6 +203,41 @@ type TaskListCursor struct {
 	NextPageToken string `json:"next_page_token,omitempty"`
 }
 
+// TasksListStatusCounterStrip is the Phase 73b (Wave 13 / D-126)
+// status-counter-strip aggregate the Console Live Runtime page renders
+// as its header-level five-chip strip (`pending / running / completed /
+// paused / failed`). It is an OPT-IN projection on the `tasks.list`
+// response — a caller requests it via TaskListRequest.IncludeStatusCounterStrip.
+//
+// The strip is distinct from TaskListAggregates in two deliberate ways:
+//
+//   - It is computed over the FULL identity-scoped task set, NOT the
+//     filtered view. The Live Runtime header strip reports session-wide
+//     posture ("how many tasks are running in this session right now"),
+//     so it never narrows with the page's facet filter.
+//   - It keys on the canonical lifecycle vocabulary the Live Runtime
+//     page-spec mockup uses (`completed` rather than `complete`); the
+//     `cancelled` status is folded out — the strip is a five-chip
+//     present-tense posture, not the six-status kanban tally.
+//
+// The aggregate is identity-scoped and computed server-side per request
+// (CLAUDE.md §6 rule 2): the counter NEVER crosses the isolation
+// boundary — a second session never sees the first's counts.
+type TasksListStatusCounterStrip struct {
+	// Pending is the count of identity-scoped tasks in the Pending state.
+	Pending int `json:"pending"`
+	// Running is the count of identity-scoped tasks in the Running state.
+	Running int `json:"running"`
+	// Completed is the count of identity-scoped tasks in the Complete
+	// state (the strip's `completed` chip — see the type godoc on the
+	// `complete` → `completed` vocabulary choice).
+	Completed int `json:"completed"`
+	// Paused is the count of identity-scoped tasks in the Paused state.
+	Paused int `json:"paused"`
+	// Failed is the count of identity-scoped tasks in the Failed state.
+	Failed int `json:"failed"`
+}
+
 // TaskListRequest is the `tasks.list` request body.
 type TaskListRequest struct {
 	// Identity is the (tenant, user, session) scope the task list is
@@ -218,6 +253,15 @@ type TaskListRequest struct {
 	// Cursor is the pagination cursor; the zero value requests the
 	// first page.
 	Cursor TaskListCursor `json:"cursor"`
+	// IncludeStatusCounterStrip opts the response into carrying the
+	// Phase 73b (D-126) TasksListStatusCounterStrip aggregate. It is
+	// off by default — the Console Live Runtime page sets it on its
+	// initial-load `tasks.list` call and then maintains the strip live
+	// from the `task.*` SSE stream (the aggregate is the initial-load
+	// shape only; see the phase-73b plan's "tasks.list aggregate cost"
+	// risk). The Tasks page (73d) never sets it — its kanban renders
+	// the filtered-view TaskListAggregates instead.
+	IncludeStatusCounterStrip bool `json:"include_status_counter_strip,omitempty"`
 }
 
 // TaskListResponse is the `tasks.list` reply: a paginated slice of
@@ -231,6 +275,13 @@ type TaskListResponse struct {
 	Cursor TaskListCursor `json:"cursor"`
 	// Aggregates carries the per-status counters for the filtered view.
 	Aggregates TaskListAggregates `json:"aggregates"`
+	// StatusCounterStrip carries the Phase 73b (D-126) header-strip
+	// aggregate — non-nil ONLY when the request set
+	// IncludeStatusCounterStrip. It is computed over the FULL identity-
+	// scoped task set (not the filtered view) and is the Console Live
+	// Runtime page's header five-chip strip. nil on a request that did
+	// not opt in (the Tasks page never opts in).
+	StatusCounterStrip *TasksListStatusCounterStrip `json:"status_counter_strip,omitempty"`
 }
 
 // TaskGetRequest is the `tasks.get` request body.

@@ -25,11 +25,33 @@ export {
 	EventsNamespace,
 	AgentsNamespace,
 	SessionsNamespace,
+	TopologyNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
 
 export { ProtocolError, type ProtocolErrorBody } from './errors.js';
+
+export type {
+	TaskStatus,
+	TaskKind,
+	TaskIdentity,
+	TaskRow,
+	TaskFilter,
+	TaskListAggregates,
+	TaskListStatusCounterStrip,
+	TaskListCursor,
+	TaskListRequest,
+	TaskListResponse,
+	TaskDetail
+} from './tasks.js';
+
+export type {
+	TopologyNodeKind,
+	TopologyNode,
+	TopologyEdge,
+	TopologyProjection
+} from './topology.js';
 
 export {
 	WINDOW_SPEC,

@@ -95,7 +95,10 @@ export const LIST_PAGES = [
   'agents',
   'mcp_connections',
   'background_jobs',
-  'flows'
+  'flows',
+  // Phase 73b (D-126) — the Live Runtime page's Console-DB-backed
+  // saved-view chips persist topology / trace-tab presets here.
+  'live_runtime'
 ] as const;
 export type ListPage = (typeof LIST_PAGES)[number];
 

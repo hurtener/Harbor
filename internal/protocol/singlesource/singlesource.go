@@ -341,19 +341,22 @@ var CanonicalWireTypes = map[string]string{
 	"ToolRevokeOAuthResponse":       "types",
 	// Phase 73d (D-123) Console Tasks-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/tasks.go).
-	"TaskRow":                "types",
-	"TaskFilter":             "types",
-	"TaskListAggregates":     "types",
-	"TaskListCursor":         "types",
-	"TaskListRequest":        "types",
-	"TaskListResponse":       "types",
-	"TaskDetail":             "types",
-	"TaskParentSessionRef":   "types",
-	"TaskParentTaskRef":      "types",
-	"TaskCostRollup":         "types",
-	"TaskCostStep":           "types",
-	"TaskPlannerSnapshotRef": "types",
-	"TaskGetRequest":         "types",
+	// Phase 73b (D-126) extends the cluster with the Live Runtime
+	// header status-counter-strip aggregate.
+	"TasksListStatusCounterStrip": "types", // Phase 73b / D-126
+	"TaskRow":                     "types",
+	"TaskFilter":                  "types",
+	"TaskListAggregates":          "types",
+	"TaskListCursor":              "types",
+	"TaskListRequest":             "types",
+	"TaskListResponse":            "types",
+	"TaskDetail":                  "types",
+	"TaskParentSessionRef":        "types",
+	"TaskParentTaskRef":           "types",
+	"TaskCostRollup":              "types",
+	"TaskCostStep":                "types",
+	"TaskPlannerSnapshotRef":      "types",
+	"TaskGetRequest":              "types",
 	// Phase 73i (D-117) Console Flows-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"Flow":                   "types",

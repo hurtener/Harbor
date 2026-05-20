@@ -169,6 +169,41 @@ func TestFilter_Matches(t *testing.T) {
 	}
 }
 
+// TestFilter_RunScoped_TraceTab pins the Phase 73b (D-126) Trace-tab
+// filter scenario: the Console Live Runtime page's bottom-dock Trace
+// tab narrows its `events.subscribe` subscription to one run id so the
+// event stream correlates to a single topology node. The structured
+// carrier is the already-shipped `Filter.Run` field (D-082); this test
+// asserts the run-scoped narrowing AND cross-run isolation — a Trace
+// tab scoped to run r1 never sees run r2's events.
+func TestFilter_RunScoped_TraceTab(t *testing.T) {
+	q1 := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"},
+		RunID:    "r1",
+	}
+	q2 := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"},
+		RunID:    "r2",
+	}
+	evR1 := events.Event{Type: events.EventTypeRuntimeError, Identity: q1}
+	evR2 := events.Event{Type: events.EventTypeRuntimeError, Identity: q2}
+
+	// A run-scoped Trace-tab filter narrows to run r1.
+	traceFilter := events.Filter{Tenant: "T", User: "U", Session: "S", Run: "r1"}
+	if !traceFilter.Matches(evR1) {
+		t.Error("run-scoped filter did not match its own run (r1)")
+	}
+	if traceFilter.Matches(evR2) {
+		t.Error("run-scoped filter matched a foreign run (r2) — cross-run isolation breached")
+	}
+
+	// An empty Run is the session-scoped default — it matches every run.
+	sessionFilter := events.Filter{Tenant: "T", User: "U", Session: "S"}
+	if !sessionFilter.Matches(evR1) || !sessionFilter.Matches(evR2) {
+		t.Error("session-scoped filter (empty Run) must match every run in the session")
+	}
+}
+
 func TestRegister_DuplicatePanics(t *testing.T) {
 	defer func() {
 		r := recover()

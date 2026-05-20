@@ -39,7 +39,7 @@ source "scripts/smoke/common.sh"
 # CanonicalWireTypes). Until 73d ships, the route returns 404 / 405
 # and the probe SKIPs cleanly.
 
-TASKS_LIST_URL="$(api_url /v1/control/tasks.list)"
+TASKS_LIST_URL="$(api_url /v1/tasks/list)"
 TASKS_LIST_BODY='{"identity":{"tenant":"t-smoke","user":"u-smoke","session":"s-smoke"},"include_status_counter_strip":true}'
 
 if skip_if_404 "${TASKS_LIST_URL}" "phase 73b: tasks.list not yet shipped (Phase 73d carries it)"; then
@@ -142,7 +142,10 @@ fi
 # looks session-scoped.
 
 PAGE_DIR='web/console/src/lib/components/live-runtime'
-PAGE_ROUTE='web/console/src/routes/console/live-runtime'
+# The page routes under the (console) SvelteKit group — no /console/ URL
+# prefix (CONVENTIONS.md §1 / D-121). The literal directory carries the
+# parentheses.
+PAGE_ROUTE='web/console/src/routes/(console)/live-runtime'
 
 if [[ -d "${PAGE_DIR}" ]]; then
     # The legal occurrences carry the `task` or `task-level` qualifier;
@@ -221,6 +224,28 @@ else
     else
         fail "phase 73b: forbidden name in Phase 73b artifacts (CLAUDE.md §13):\n${forbidden_hits}"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Static guard — the Metrics/Health empty states point to Phase 72f.
+# ---------------------------------------------------------------------------
+#
+# Brief 11 §LR-2: the Metrics + Health tabs render an empty-state
+# pointer to the responsible phase (72f) until that phase's
+# `metrics.snapshot` / `runtime.health` primitives land. The risk is
+# the pointer drifts on a renumber — this guard fails if the empty-
+# state copy stops referencing 72f, forcing an update.
+
+METRICS_EMPTY="${PAGE_DIR}/metrics-tab-empty.svelte"
+HEALTH_EMPTY="${PAGE_DIR}/health-tab-empty.svelte"
+if [[ -f "${METRICS_EMPTY}" && -f "${HEALTH_EMPTY}" ]]; then
+    if grep -q '72f' "${METRICS_EMPTY}" && grep -q '72f' "${HEALTH_EMPTY}"; then
+        ok 'phase 73b: Metrics/Health empty states reference Phase 72f (Brief 11 §LR-2 pointer intact)'
+    else
+        fail 'phase 73b: a Metrics/Health empty state lost its Phase 72f pointer — Brief 11 §LR-2'
+    fi
+else
+    skip 'phase 73b: Metrics/Health empty-state components not present yet'
 fi
 
 smoke_summary
