@@ -178,7 +178,22 @@ fi
 # convention keeps the script harmless on builds that pre-date Phase
 # 72f's transport route-table extension.
 # -----------------------------------------------------------------------------
-POSTURE_BODY='{"identity":{"tenant":"smoke-tenant","user":"smoke-user","session":"smoke-session"}}'
+# Discover the dev Bearer token (parsed from the preflight server log
+# per the Phase 64 convention — the same path phase-72g.sh takes). The
+# dev server runs WITH the Phase 61 auth validator, so an unauthenticated
+# posture call is rejected 401 before the handler runs. When the log is
+# absent (operator ran the smoke standalone) HARBOR_DEV_TOKEN from env is
+# honoured as a fallback.
+if [[ -z "${HARBOR_DEV_TOKEN:-}" ]] && [[ -n "${HARBOR_DATA_DIR:-}" ]] && [[ -f "${HARBOR_DATA_DIR}/server.log" ]]; then
+    HARBOR_DEV_TOKEN="$(grep -m1 '^HARBOR_DEV_TOKEN=' "${HARBOR_DATA_DIR}/server.log" 2>/dev/null | sed 's/^HARBOR_DEV_TOKEN=//' || true)"
+fi
+
+# An empty JSON body — the merged Phase 72f/72g posture handler backfills
+# the identity triple from the verified JWT (Phase 61 defence-in-depth).
+# A hardcoded body identity that differs from the JWT's (user, session)
+# would be rejected CodeIdentityRequired, so `{}` is the correct probe
+# body for the authenticated happy path.
+POSTURE_BODY='{}'
 
 probe_posture_method() {
     local method="$1"
@@ -203,6 +218,17 @@ probe_posture_method() {
         404|405|501|000|000000|"")
             skip "${desc}: ${actual:-000} (Phase 72f surface not yet wired into this build)"
             return
+            ;;
+        401)
+            # 401 with no token available — the dev server runs WITH the
+            # Phase 61 auth validator, so an unauthenticated posture call
+            # is correctly rejected. SKIP rather than FAIL: the smoke
+            # could not discover a Bearer token to exercise the
+            # authenticated happy path.
+            if [[ -z "${HARBOR_DEV_TOKEN:-}" ]]; then
+                skip "${desc}: 401 — HARBOR_DEV_TOKEN not discoverable; authenticated happy path covered by the integration test"
+                return
+            fi
             ;;
     esac
 

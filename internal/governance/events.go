@@ -31,6 +31,15 @@ const (
 	// `MaxTokensEnforcer.PreCall` when `req.MaxTokens` exceeds the
 	// resolved tier's cap.
 	EventTypeMaxTokensExceeded events.EventType = "governance.maxtokens_exceeded"
+
+	// EventTypePostureReadAdmin — Phase 72g (D-112). Emitted when an
+	// admin-scoped caller reads ANOTHER tenant's governance posture via
+	// the `governance.posture` Protocol method. A caller reading its
+	// OWN tenant does NOT emit this event (matches the Phase 73
+	// sessions.inspect convention — own-scope reads are not audited).
+	// The cross-tenant read is a privileged action and lands on the
+	// audit trail per CLAUDE.md §7 + RFC §6.15.
+	EventTypePostureReadAdmin events.EventType = "governance.posture_read_admin"
 )
 
 func init() {
@@ -38,9 +47,27 @@ func init() {
 		EventTypeBudgetExceeded,
 		EventTypeRateLimited,
 		EventTypeMaxTokensExceeded,
+		EventTypePostureReadAdmin,
 	} {
 		events.RegisterEventType(t)
 	}
+}
+
+// PostureReadAdminPayload is the typed payload for
+// EventTypePostureReadAdmin (Phase 72g). SafePayload — the actor's
+// identity and the requested tenant are operator-visible audit
+// metadata, not secret-shaped. The payload still runs through the
+// audit Redactor before the bus publish (CLAUDE.md §7 rule 6).
+type PostureReadAdminPayload struct {
+	events.SafeSealed
+	// Actor is the identity of the admin-scoped caller that performed
+	// the cross-tenant read.
+	Actor identity.Quadruple
+	// RequestedTenant is the tenant_id the caller asked to read — a
+	// tenant other than the caller's own.
+	RequestedTenant string
+	// OccurredAt is the wall-clock time of the cross-tenant read.
+	OccurredAt time.Time
 }
 
 // BudgetExceededPayload is the typed payload for EventTypeBudgetExceeded.

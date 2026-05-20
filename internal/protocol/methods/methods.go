@@ -52,7 +52,7 @@
 // adapters branch the route table. See
 // `docs/plans/phase-72c-search-cluster.md`.
 //
-// # The Wave 13 runtime-posture cluster (Phase 72f / D-111)
+// # The Wave 13 posture cluster (Phase 72f / D-111 + Phase 72g / D-112)
 //
 // Phase 72f adds the five read-only `runtime.*` / `metrics.*` posture
 // methods: `runtime.info` (build identity + version + uptime +
@@ -60,12 +60,17 @@
 // `runtime.counters` (low-cardinality live counters), `runtime.drivers`
 // (configured driver names per persistence-shaped subsystem), and
 // `metrics.snapshot` (a Protocol-shaped projection over the Phase 56
-// MetricsRegistry). The five methods are NOT control methods:
-// `IsControlMethod` returns false for them (the steering inbox stays
-// exclusive). A separate `IsPostureMethod` predicate lets transport
-// adapters branch the route table — the posture surface is a sibling
-// of the task-control surface, not an extension. See
-// `docs/plans/phase-72f-runtime-posture.md`.
+// MetricsRegistry). Phase 72g extends the cluster with the two config-
+// posture methods the Console Settings page consumes: `governance.posture`
+// (the read-only D-081 `IdentityTiers` view) and `llm.posture` (the
+// bound LLM provider/model/region + `MockMode` flag per D-089). None of
+// the seven methods are control or search methods — `IsControlMethod` /
+// `IsSearchMethod` return false; a dedicated `IsPostureMethod` predicate
+// routes them through the PostureSurface dispatcher, a sibling of the
+// task-control surface, not an extension. They are read-only — no
+// mutation counterpart ships at V1. See
+// `docs/plans/phase-72f-runtime-posture.md` and
+// `docs/plans/phase-72g-governance-llm-posture.md`.
 //
 // # No registration escape hatch
 //
@@ -198,6 +203,26 @@ const (
 	// MetricsRegistry — counters, histograms, gauges as flat wire
 	// values. NOT an OpenTelemetry SDK re-export.
 	MethodMetricsSnapshot Method = "metrics.snapshot"
+
+	// MethodGovernancePosture — Phase 72g (Wave 13; D-112). Returns the
+	// runtime's read-only governance configuration: the D-081
+	// `IdentityTiers` map (per-tier `BudgetCeilingUSD` + token-bucket
+	// `RateLimit` + `MaxTokens`) plus the `DefaultTier` selector and the
+	// caller-resolved tier. Identity-mandatory; cross-tenant reads
+	// require the `auth.ScopeAdmin` claim (D-079). NOT a control method
+	// and NOT a search method — it is a posture method (read-only
+	// runtime-config projection). `IsControlMethod` / `IsSearchMethod`
+	// both return false; `IsPostureMethod` returns true. See
+	// `docs/plans/phase-72g-governance-llm-posture.md`.
+	MethodGovernancePosture Method = "governance.posture"
+
+	// MethodLLMPosture — Phase 72g (Wave 13; D-112). Returns the
+	// runtime's read-only LLM provider posture: provider name, model id,
+	// region/endpoint, and a `MockMode` boolean — `true` iff the runtime
+	// booted with `HARBOR_DEV_ALLOW_MOCK=1` (D-089). Identity-mandatory;
+	// cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). A
+	// posture method, same posture as MethodGovernancePosture.
+	MethodLLMPosture Method = "llm.posture"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -218,16 +243,18 @@ var canonicalMethods = map[Method]struct{}{
 	MethodUserMessage:     {},
 	MethodEventsSubscribe: {},
 	MethodEventsAggregate: {},
-	MethodSearchQuery:     {},
-	MethodSearchSessions:  {},
-	MethodSearchTasks:     {},
-	MethodSearchEvents:    {},
-	MethodSearchArtifacts: {},
-	MethodRuntimeInfo:     {},
-	MethodRuntimeHealth:   {},
-	MethodRuntimeCounters: {},
-	MethodRuntimeDrivers:  {},
-	MethodMetricsSnapshot: {},
+	MethodSearchQuery:       {},
+	MethodSearchSessions:    {},
+	MethodSearchTasks:       {},
+	MethodSearchEvents:      {},
+	MethodSearchArtifacts:   {},
+	MethodRuntimeInfo:       {},
+	MethodRuntimeHealth:     {},
+	MethodRuntimeCounters:   {},
+	MethodRuntimeDrivers:    {},
+	MethodMetricsSnapshot:   {},
+	MethodGovernancePosture: {},
+	MethodLLMPosture:        {},
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
@@ -250,22 +277,28 @@ func IsSearchMethod(m Method) bool {
 	return ok
 }
 
-// canonicalPostureMethods is the closed sub-set of the five Phase 72f
-// runtime-posture methods. IsPostureMethod is O(1); a transport adapter
-// uses it to branch the route table onto the PostureSurface instead of
-// the task-control ControlSurface.
+// canonicalPostureMethods is the closed sub-set of the seven posture
+// methods — the five Phase 72f (D-111) `runtime.*` / `metrics.*` reads
+// plus the two Phase 72g (D-112) `governance.posture` / `llm.posture`
+// reads. IsPostureMethod is O(1); a transport adapter uses it to branch
+// the route table onto the PostureSurface instead of the task-control
+// ControlSurface.
 var canonicalPostureMethods = map[Method]struct{}{
-	MethodRuntimeInfo:     {},
-	MethodRuntimeHealth:   {},
-	MethodRuntimeCounters: {},
-	MethodRuntimeDrivers:  {},
-	MethodMetricsSnapshot: {},
+	MethodRuntimeInfo:       {},
+	MethodRuntimeHealth:     {},
+	MethodRuntimeCounters:   {},
+	MethodRuntimeDrivers:    {},
+	MethodMetricsSnapshot:   {},
+	MethodGovernancePosture: {},
+	MethodLLMPosture:        {},
 }
 
-// IsPostureMethod reports whether m is one of the five read-only
-// posture methods (Phase 72f / D-111). The PostureSurface uses this to
-// branch in transport adapters that want a single route table over all
-// canonical methods.
+// IsPostureMethod reports whether m is one of the seven read-only
+// posture methods — the five `runtime.*` / `metrics.*` reads (Phase 72f
+// / D-111) and the two `governance.posture` / `llm.posture` config
+// reads (Phase 72g / D-112). The PostureSurface uses this to branch in
+// transport adapters that want a single route table over all canonical
+// methods.
 func IsPostureMethod(m Method) bool {
 	_, ok := canonicalPostureMethods[m]
 	return ok
