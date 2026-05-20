@@ -57,6 +57,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports/control"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
+	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
@@ -130,6 +131,13 @@ type muxConfig struct {
 	// Production wiring (`harbor dev`) SHOULD supply it so the Console
 	// Tools page (Phase 73f) has a live surface.
 	toolsService *toolsprotocol.Service
+	// flowsSurface feeds the Phase 73i (D-117) Console Flows-page
+	// handler — the six `POST /v1/flows/*` routes. OPTIONAL: when
+	// unsupplied the Flows routes are NOT mounted, so the smoke
+	// script's `skip_if_404` keeps preflight green on a partial build.
+	// Production wiring (`harbor dev`) SHOULD supply it so the Console
+	// Flows page works.
+	flowsSurface *flowprotocol.Surface
 }
 
 // Option configures NewMux.
@@ -293,6 +301,29 @@ func WithArtifactsSurface(s control.ArtifactsSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.artifactsSurface = s
+		}
+	}
+}
+
+// WithFlows wires the Phase 73i (D-117) Console Flows-page handler into
+// NewMux. surface is the transport-agnostic flowprotocol.Surface the
+// six `POST /v1/flows/*` routes dispatch through.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged. When
+// not supplied (or supplied a nil surface), the Flows routes are NOT
+// mounted — the smoke script's `skip_if_404` keeps preflight green on a
+// partial build. Production wiring (`harbor dev`) supplies it so the
+// Console Flows page (Phase 73i) has a live surface.
+//
+// Five of the six routes are read-only; `POST /v1/flows/run` mutates
+// and the Surface gates it on the verified `auth.ScopeAdmin` claim
+// (D-079 closed two-scope set — no new scope is minted). When
+// WithValidator is also set, the handler is wrapped in auth.Middleware
+// like every other transport.
+func WithFlows(surface *flowprotocol.Surface) Option {
+	return func(c *muxConfig) {
+		if surface != nil {
+			c.flowsSurface = surface
 		}
 	}
 }
@@ -516,6 +547,23 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		toolsHandler = th
 	}
 
+	// Wave 13 (Phase 73i / D-117): the Console Flows-page handler. Built
+	// only when WithFlows supplied a non-nil surface. When unsupplied
+	// the six `/v1/flows/*` routes are left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var flowsHandler *stream.FlowsHandler
+	if cfg.flowsSurface != nil {
+		fh, err := stream.NewFlowsHandler(
+			cfg.flowsSurface,
+			stream.WithFlowsLogger(cfg.logger),
+			stream.WithFlowsBus(bus),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build flows handler: %w", err)
+		}
+		flowsHandler = fh
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -569,6 +617,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedTools = mw(toolsHandler)
 		}
 		mux.Handle(stream.ToolsRoutePattern, mountedTools)
+	}
+
+	if flowsHandler != nil {
+		var mountedFlows http.Handler = flowsHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedFlows = mw(flowsHandler)
+		}
+		mux.Handle(stream.FlowsRoutePattern, mountedFlows)
 	}
 	return mux, nil
 }

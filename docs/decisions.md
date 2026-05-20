@@ -2747,6 +2747,42 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 
 ---
 
+## D-117 — Phase 73i Console Flows page: six `flows.*` Protocol methods on a dedicated stream-package handler family + a `flow.Registry` source-of-truth + the read-only Flows-page UI
+
+**Date:** 2026-05-20
+
+**Status:** Accepted.
+
+**Context.** Phase 73i ships the Console Flows page — the read-only viewer for the runtime's engine-graph flows (D-063). The Wave 13 decomposition (`docs/plans/wave-13-decomposition.md` §12) and `docs/design/console/page-flows.md` §12 pin six `[wave-13-extends]` Protocol additions: `flows.list` (catalog with aggregate metrics), `flows.describe` (engine-graph payload), `flows.runs.list` (run history), `flows.runs.describe` (per-run timeline), `flows.run` (one-shot invocation), `flows.metrics` (sparkline aggregates). The page is the consumer (§13 satisfied trivially). It consumes the shipped Phase 73 `state.history` posture for per-run detail — no same-wave Protocol dependency.
+
+**Decision.**
+
+**1. The six `flows.*` methods are a dedicated Protocol surface, not steering-control methods.** They are declared in `internal/protocol/methods/methods.go` and registered in `canonicalMethods`; a closed `canonicalFlowsMethods` sub-set + an `IsFlowsMethod` O(1) predicate route them through the Flows-page handler — the same pattern Phase 72e (`pause.list`) and Phase 74 (`topology.snapshot`) established. `IsControlMethod` returns false for all six (the steering inbox stays exclusive to the Phase 54 nine).
+
+**2. The wire types live in `internal/protocol/types/flows.go` only.** `Flow`, `FlowFilter`, `FlowDescription` (nodes + edges + per-node `FlowNodePolicy` + per-flow `FlowBudget` per D-023), `FlowRun`, `FlowRunDescription`, `FlowRunRequest`, `FlowMetrics` and their request/response envelopes — all registered in `singlesource.CanonicalWireTypes`. The `FlowNodePause` wire value is `"pause_point"` (not `"pause"`) so it never collides with the `pause` Protocol method name in the single-source checker.
+
+**3. The runtime side is a transport-agnostic `flow/protocol.Surface` over two interface seams (§4.4).** `Catalog` (registered flows + run history projections) and `Invoker` (one-shot run launcher). The production `Catalog` is `RegistryCatalog`, backed by a NEW `flow.Registry` — a real runtime subsystem (registered `Definition`s + a bounded per-flow run-history ring), NOT a test stub. The production `Invoker` is `FuncInvoker`, adapting a runtime-supplied `LaunchFunc` that delegates to the task registry's `SpawnTool` path. `cmd/harbor dev` and `harbortest/devstack` both wire an empty `flow.Registry` at boot — a fresh stack with no graph-family agents correctly serves an empty catalog (the right "no flows registered" empty state, not a missing surface).
+
+**4. `flows.run` is the only mutating method; it is gated on `auth.ScopeAdmin` (D-079).** No new scope is minted (D-079 closed two-scope set). The Surface fails closed with `ErrRunScopeRequired` → `CodeScopeMismatch` (HTTP 403) when the claim is absent. The other five methods are read-only; a cross-tenant catalog / run-history filter requires `auth.ScopeAdmin` and fails closed with `CodeIdentityScopeRequired` (HTTP 403) without it.
+
+**5. Heavy run outputs route by-reference through the ArtifactStore (D-026).** `flows.runs.describe` ships a `FlowArtifactRef` for any run output meeting the configured heavy-content threshold — never inline bytes. The `RegistryCatalog` fails loud on a store failure.
+
+**6. The wire transport is a dedicated stream-package handler family.** `internal/protocol/transports/stream/flows_handler.go` mounts six `POST /v1/flows/*` routes (`list` / `describe` / `runs/list` / `runs/describe` / `run` / `metrics`), wired via `transports.WithFlows`. Each dispatch emits a per-page audit event — `flows.page_viewed` for the five reads, `flows.run_invoked` for the mutating run — onto the canonical EventBus.
+
+**7. The Console UI is view-only (D-063).** The Flows page (`web/console/src/routes/flows/`) renders the catalog table, Flow Metrics card, the read-only engine graph canvas, the Budget meter, the run-history table, and the selected-run summary panel. There is NO authoring affordance — `Add node` / `Delete edge` / `Save graph` / `New flow` do not render, by construction. The engine graph canvas (`web/console/src/lib/components/graph/EngineGraphCanvas.svelte`) is SHARED with the future Phase 73b Live Runtime topology view; this phase establishes the typed `GraphInput` interface. All Runtime access flows through the typed `FlowsClient` (`web/console/src/lib/flows/client.ts`) — no hand-rolled `fetch` in `.svelte` files.
+
+**Why.** Closes the Phase 73i acceptance criteria + the page-flows.md §12 binding refinements. The dedicated-handler-family + interface-seam shape keeps the Flows surface testable with deterministic fixtures and decoupled from the task subsystem's concrete type, mirroring the proven Phase 72e / 74 patterns. The `flow.Registry` is a genuine runtime subsystem so the Console projects a real catalog, not a stub (CLAUDE.md §13).
+
+**Protocol additions.** Six method names (`flows.list` / `flows.describe` / `flows.runs.list` / `flows.runs.describe` / `flows.run` / `flows.metrics`); the `internal/protocol/types/flows.go` wire-type cluster; six `POST /v1/flows/*` REST routes; two canonical event types (`flows.page_viewed`, `flows.run_invoked`).
+
+**Acceptance:** see `docs/plans/phase-73i-console-flows-page.md` — every criterion is covered by the surface / catalog / handler unit tests, the N≥100 concurrent-reuse test, `test/integration/flows_page_test.go`, the Vitest suites, the Playwright spec, and `scripts/smoke/phase-73i.sh`.
+
+**Structural precedents.** D-023 (Flow-as-Tool: Go-coded V1 + per-flow `Budget`) is the Budget surface the page reads. D-026 (context-window safety net) is the heavy-output bypass. D-061 (Console DB local-only) is the posture `Save snapshot` / `Compare versions` honour. D-063 (Flows page = view over engine graphs; authoring post-V1) is the view-only mandate. D-079 (closed two-scope set) is the scope the mutating `flows.run` reuses. D-091 / D-092 / D-093 are the Console deployment + Svelte 5 + generated-client contracts. Phase 72e (`pause.list`) and Phase 74 (`topology.snapshot`) are the dedicated-Protocol-surface precedents.
+
+**Out of scope (post-V1).** Flow authoring / editor / versioning / import-export (D-063); `flows.set_budget` per-flow Budget edit (page-flows.md §10); declarative YAML flow descriptors (D-023 — V1.1); "Convert to evaluation" (D-064); the cross-runtime flows aggregator (D-091). None is blocked by the V1 Flows-page shape; each lands additively.
+
+---
+
 ## D-118 — Phase 73j Console Memory page: three read-only `memory.*` Protocol methods over the shipped `MemoryStore.Snapshot` surface; NO new memory scope (D-079 closed-set reuse — audit B1); per-turn projection model; D-026 heavy-value bypass mirrored at the memory-inspector edge
 
 **Date:** 2026-05-20

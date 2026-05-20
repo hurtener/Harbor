@@ -99,6 +99,8 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/flow"
+	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
@@ -764,6 +766,49 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("tools/protocol service: %w", err)
 	}
 
+	// Phase 73i (D-117): the Console Flows-page surface. The dev stack
+	// boots an empty flow.Registry — flows register into it at
+	// agent-definition time, so a fresh dev stack with no graph-family
+	// agents correctly serves an empty catalog ("no flows registered"
+	// is the right empty state, not a missing surface). The Catalog +
+	// Invoker are wired with the real artifact store + the configured
+	// heavy-content threshold so the Console Flows page works out of
+	// the box (no seam for the operator to wire — CLAUDE.md §13). The
+	// FuncInvoker's launcher delegates to the task registry's
+	// `SpawnTool` path — running an existing flow is permitted at V1
+	// (D-063).
+	flowRegistry := flow.NewRegistry()
+	flowCatalog, err := flowprotocol.NewRegistryCatalog(flowRegistry, artStore, cfg.Artifacts.HeavyOutputThresholdBytes)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("flow protocol catalog: %w", err)
+	}
+	flowInvoker, err := flowprotocol.NewFuncInvoker(
+		func(launchCtx context.Context, id identity.Identity, flowID string, _ map[string]any) (string, time.Time, error) {
+			runCtx, rerr := identity.WithRun(launchCtx, id, "flow-run-"+flowID)
+			if rerr != nil {
+				return "", time.Time{}, fmt.Errorf("flows.run: identity scope incomplete: %w", rerr)
+			}
+			handle, serr := taskReg.SpawnTool(runCtx, tasks.SpawnToolRequest{
+				Identity:    identity.Quadruple{Identity: id},
+				ToolName:    flowID,
+				Description: "Console flows.run invocation of " + flowID,
+			})
+			if serr != nil {
+				return "", time.Time{}, fmt.Errorf("flows.run: spawn failed: %w", serr)
+			}
+			return string(handle.ID), time.Now(), nil
+		}, flowRegistry)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("flow protocol invoker: %w", err)
+	}
+	flowsSurface, err := flowprotocol.NewSurface(flowCatalog, flowInvoker)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("flow protocol surface: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
@@ -784,6 +829,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Phase 73f: mount the `tools.*` route family so the Console
 		// Tools page has a live Protocol surface.
 		transports.WithToolsService(toolsService),
+		// Phase 73i: mount the six Console Flows-page routes.
+		transports.WithFlows(flowsSurface),
 	)
 	if err != nil {
 		closeAll(ctx)

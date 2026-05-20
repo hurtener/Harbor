@@ -66,6 +66,12 @@ var wantMethods = []methods.Method{
 	methods.MethodToolsContentStats,
 	methods.MethodToolsSetApprovalPolicy,
 	methods.MethodToolsRevokeOAuth,
+	methods.MethodFlowsList,
+	methods.MethodFlowsDescribe,
+	methods.MethodFlowsRunsList,
+	methods.MethodFlowsRunsDescribe,
+	methods.MethodFlowsRun,
+	methods.MethodFlowsMetrics,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -75,9 +81,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
 	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
-	// Phase 73f tools cluster seven = 51.
-	if len(got) != 51 {
-		t.Fatalf("Methods() returned %d methods, want 51", len(got))
+	// Phase 73f tools cluster seven + Phase 73i flows-page six = 57.
+	if len(got) != 57 {
+		t.Fatalf("Methods() returned %d methods, want 57", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -264,9 +270,23 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsToolsAdminMethod(methods.MethodToolsList) {
 		t.Error("IsToolsAdminMethod(tools.list) = true, want false — list is a read method")
 	}
+	// Phase 73i (D-117): the six flows.* methods route through the
+	// Flows-page handler, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodFlowsList,
+		methods.MethodFlowsDescribe,
+		methods.MethodFlowsRunsList,
+		methods.MethodFlowsRunsDescribe,
+		methods.MethodFlowsRun,
+		methods.MethodFlowsMetrics,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — flows methods route through the Flows-page handler", m)
+		}
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
-	// non-topology, non-artifacts, non-memory, non-mcp, non-tools canonical
-	// method IS a control method.
+	// non-topology, non-artifacts, non-memory, non-mcp, non-tools, non-flows
+	// canonical method IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
@@ -278,7 +298,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 		if methods.IsMCPServersMethod(m) {
 			continue
 		}
-		if methods.IsToolsMethod(m) {
+		if methods.IsToolsMethod(m) || methods.IsFlowsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

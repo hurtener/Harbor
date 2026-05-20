@@ -123,6 +123,34 @@ protocol_call() {
     skip "${desc}: protocol layer not implemented yet"
 }
 
+# assert_post_status <expected> <url> <json_body> <description>
+# POST json_body to url; SKIP on 404/405/501 (surface absent); assert
+# the response status equals <expected>. Used by phase smokes for
+# POST-only Protocol routes (the GET-based assert_status would always
+# see a 405 on a POST-only route).
+assert_post_status() {
+    local expected="$1" url="$2" body="$3" desc="$4"
+    if ! command -v curl >/dev/null 2>&1; then
+        skip "${desc}: curl not available"
+        return
+    fi
+    local actual
+    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST -H 'Content-Type: application/json' -d "$body" "$url" \
+        || echo "000")
+    case "$actual" in
+        404|501|000)
+            skip "${desc}: ${actual} (surface not yet implemented)"
+            return
+            ;;
+    esac
+    if [ "$actual" = "$expected" ]; then
+        ok "${desc}: ${expected} (POST ${url})"
+    else
+        fail "${desc}: expected ${expected}, got ${actual} (POST ${url})"
+    fi
+}
+
 # smoke_summary
 # Print final counters. Exit 1 if any FAIL; else 0.
 smoke_summary() {

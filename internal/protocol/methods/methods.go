@@ -250,6 +250,45 @@ const (
 	// `docs/plans/phase-72e-pause-list-snapshot.md`.
 	MethodPauseList Method = "pause.list"
 
+	// MethodFlowsList — Phase 73i (Wave 13 / D-117). Returns the
+	// paginated catalog of registered engine-graph flows with aggregate
+	// run metrics (runs-in-window, p50/p95 latency, success rate, last
+	// run, per-flow Budget per D-023). Identity-mandatory; a cross-tenant
+	// filter requires the verified `auth.ScopeAdmin` claim (D-079). NOT a
+	// task-control method — `IsFlowsMethod` returns true; `IsControlMethod`
+	// returns false. See `docs/plans/phase-73i-console-flows-page.md`.
+	MethodFlowsList Method = "flows.list"
+	// MethodFlowsDescribe — Phase 73i. Returns a single flow's full
+	// engine-graph description: nodes + edges + per-node descriptor +
+	// per-node policy + a string source reference (Go path or YAML
+	// descriptor per D-023 — never executable code) + live Budget
+	// consumption. Identity-mandatory; an unknown flow id fails with
+	// CodeNotFound.
+	MethodFlowsDescribe Method = "flows.describe"
+	// MethodFlowsRunsList — Phase 73i. Returns a flow's paginated run
+	// history (per-run status / trigger / timing / cost / identity).
+	// Identity-mandatory; a cross-tenant filter requires the verified
+	// `auth.ScopeAdmin` claim (D-079).
+	MethodFlowsRunsList Method = "flows.runs.list"
+	// MethodFlowsRunsDescribe — Phase 73i. Returns a single flow run's
+	// per-node execution timeline + final-output reference. Heavy outputs
+	// are shipped by-reference via FlowArtifactRef (D-026) — NEVER inline
+	// bytes. Identity-mandatory; an unknown run id fails with
+	// CodeNotFound.
+	MethodFlowsRunsDescribe Method = "flows.runs.describe"
+	// MethodFlowsRun — Phase 73i. Invokes a one-shot run of a registered
+	// flow. This is the ONLY mutating Flows-page method; it is gated on
+	// identity AND the verified `auth.ScopeAdmin` claim (D-079 closed
+	// scope set). A request without the claim is rejected with
+	// CodeScopeMismatch (HTTP 403). Every other Flows-page method is
+	// read-only.
+	MethodFlowsRun Method = "flows.run"
+	// MethodFlowsMetrics — Phase 73i. Returns a flow's time-bucketed
+	// sparkline aggregates (runs-per-bucket, p95 latency, success rate,
+	// cost, budget consumption) over a window. Read-only; identity-
+	// mandatory.
+	MethodFlowsMetrics Method = "flows.metrics"
+
 	// MethodTopologySnapshot — Phase 74 (Wave 13 / D-114). Returns the
 	// canonical TopologyProjection of the Runtime's engine — the static
 	// node graph + live per-edge queue depth. Request → reply (on-demand
@@ -456,6 +495,13 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMemoryGet:         {},
 	MethodMemoryHealth:      {},
 
+	MethodFlowsList:         {},
+	MethodFlowsDescribe:     {},
+	MethodFlowsRunsList:     {},
+	MethodFlowsRunsDescribe: {},
+	MethodFlowsRun:          {},
+	MethodFlowsMetrics:      {},
+
 	MethodToolsList:         {},
 	MethodToolsGet:          {},
 	MethodToolsDescribe:     {},
@@ -598,6 +644,30 @@ func IsToolsMethod(m Method) bool {
 // wire handler uses this to decide whether to enforce the scope gate.
 func IsToolsAdminMethod(m Method) bool {
 	_, ok := canonicalToolsAdminMethods[m]
+	return ok
+}
+
+// canonicalFlowsMethods is the closed sub-set of the six Flows-page
+// methods landed in Phase 73i (Wave 13 / D-117). IsFlowsMethod is O(1);
+// a transport adapter uses it to branch the request onto the Flows
+// dispatcher instead of the task-control / search / posture surfaces.
+var canonicalFlowsMethods = map[Method]struct{}{
+	MethodFlowsList:         {},
+	MethodFlowsDescribe:     {},
+	MethodFlowsRunsList:     {},
+	MethodFlowsRunsDescribe: {},
+	MethodFlowsRun:          {},
+	MethodFlowsMetrics:      {},
+}
+
+// IsFlowsMethod reports whether m is one of the six Flows-page methods
+// (Phase 73i / D-117). Five are read-only; `flows.run` is the single
+// mutating method. The Flows-page surface is distinct from the steering
+// inbox, the streaming-events surface, the search cluster, and the
+// posture surface — a transport adapter branches on this predicate to
+// route the request through the Flows dispatcher.
+func IsFlowsMethod(m Method) bool {
+	_, ok := canonicalFlowsMethods[m]
 	return ok
 }
 
@@ -780,6 +850,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsToolsMethod(m) {
+		return false
+	}
+	if IsFlowsMethod(m) {
 		return false
 	}
 	return true
