@@ -292,7 +292,12 @@ fi
 #    AND Playwright is installed. SKIP otherwise (the install gate
 #    lives in Phase 75's baseline harness).
 # --------------------------------------------------------------------
-if [ -f 'web/console/package.json' ] && [ -d 'web/console/node_modules/@playwright/test' ]; then
+if [ ! -f 'web/console/tests/sessions-page.spec.ts' ]; then
+    # The spec lands with the Phase 73c implementation. Until then the
+    # 404/405/501 -> SKIP convention (CLAUDE.md §4.2) applies — a missing
+    # spec is "surface not yet implemented", not a failure.
+    skip 'phase 73c: web/console/tests/sessions-page.spec.ts absent (Phase 73c implementation not yet landed) — SKIP per the 404->SKIP convention'
+elif [ -f 'web/console/package.json' ] && [ -d 'web/console/node_modules/@playwright/test' ]; then
     if (cd web/console && npm run test:e2e -- sessions-page.spec.ts >/dev/null 2>&1); then
         ok 'phase 73c: Playwright sessions-page.spec.ts passes (catalog rows + mockup columns + faceted filter + sub-header chips + bulk-action toolbar + right-rail Session Summary + bottom-dock tabs)'
     else

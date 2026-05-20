@@ -263,6 +263,36 @@ const (
 	// true. Identity-mandatory; a cross-tenant snapshot requires the
 	// `auth.ScopeAdmin` claim (D-079). See `docs/plans/phase-74-console-topology.md`.
 	MethodTopologySnapshot Method = "topology.snapshot"
+
+	// MethodArtifactsList — Phase 73l (Wave 13 / D-120). Returns the
+	// identity-scope-filtered catalog of artifacts from the runtime's
+	// content-addressed artifact store, with the Phase 73l filter
+	// extensions (mime / source / size-range / created-range / tags)
+	// applied as a Go-side projection. Identity-mandatory; a cross-tenant
+	// list requires the `auth.ScopeAdmin` claim (D-079). The wire-transport
+	// route is the existing `POST /v1/control/{method}` REST surface. NOT a
+	// task-control, streaming-events, search, posture, pause, or topology
+	// method — `IsArtifactsMethod` is its own O(1) predicate. See
+	// `docs/plans/phase-73l-console-artifacts-page.md`.
+	MethodArtifactsList Method = "artifacts.list"
+	// MethodArtifactsPut — Phase 73l (Wave 13 / D-120). The Console (and
+	// Playground) file-upload pipeline per Brief 11 §PG-2: accepts bytes +
+	// PutOpts, routes the payload through `audit.Redactor`, stores it via
+	// `artifacts.ArtifactStore.PutBytes`, and returns the canonical
+	// ArtifactRef. Heavy bytes never travel inline through the LLM edge
+	// (D-026) — the put returns a reference, never echoes the body.
+	// Identity-mandatory; a body whose scope tenant disagrees with the
+	// caller's verified tenant is rejected with CodeScopeMismatch.
+	MethodArtifactsPut Method = "artifacts.put"
+	// MethodArtifactsGetRef — Phase 73l (Wave 13 / D-120). The read-side
+	// presigned-URL resolver: invokes `artifacts.Presigner.PresignGet` via
+	// type-assertion on the underlying ArtifactStore. Drivers that do not
+	// implement `Presigner` (in-mem / fs / sqlite-blob / postgres-blob)
+	// return `CodePresignUnsupported` loudly — no silent fallback. The
+	// Console's Preview / Download / Share / bulk-Download all route
+	// through this single resolver per D-022 / D-026. Identity-mandatory;
+	// expiry is bounded [1m, 7d].
+	MethodArtifactsGetRef Method = "artifacts.get_ref"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -297,6 +327,31 @@ var canonicalMethods = map[Method]struct{}{
 	MethodLLMPosture:        {},
 	MethodPauseList:         {},
 	MethodTopologySnapshot:  {},
+	MethodArtifactsList:     {},
+	MethodArtifactsPut:      {},
+	MethodArtifactsGetRef:   {},
+}
+
+// canonicalArtifactsMethods is the closed sub-set of the three artifacts
+// methods landed in Phase 73l (Wave 13 / D-120). IsArtifactsMethod is
+// O(1); the control transport branches on it to route the request
+// through the artifacts dispatcher instead of the task-control surface.
+var canonicalArtifactsMethods = map[Method]struct{}{
+	MethodArtifactsList:   {},
+	MethodArtifactsPut:    {},
+	MethodArtifactsGetRef: {},
+}
+
+// IsArtifactsMethod reports whether m is one of the three canonical
+// artifacts methods (Phase 73l / D-120 — `artifacts.list`,
+// `artifacts.put`, `artifacts.get_ref`). The control transport branches
+// on this to route the request through the artifacts dispatcher instead
+// of the task-control / search / posture surfaces. NOT a control
+// method — a new non-control method extends THIS predicate, never the
+// steering inbox.
+func IsArtifactsMethod(m Method) bool {
+	_, ok := canonicalArtifactsMethods[m]
+	return ok
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
@@ -442,6 +497,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsTopologyMethod(m) {
+		return false
+	}
+	if IsArtifactsMethod(m) {
 		return false
 	}
 	return true

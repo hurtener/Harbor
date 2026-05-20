@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import globals from 'globals';
 import ts from 'typescript-eslint';
 import svelte from 'eslint-plugin-svelte';
 
@@ -12,6 +13,9 @@ export default ts.config(
   ...svelte.configs['flat/recommended'],
   {
     languageOptions: {
+      // The Console is a browser SPA (D-091) — browser globals (fetch,
+      // document, URL, Blob, navigator, btoa, …) are ambient.
+      globals: { ...globals.browser },
       parserOptions: {
         extraFileExtensions: ['.svelte']
       }

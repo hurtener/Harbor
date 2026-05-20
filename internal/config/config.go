@@ -783,7 +783,33 @@ type A2APeerConfig struct {
 }
 
 // ProtocolConfig is owned by the protocol-server phases.
-type ProtocolConfig struct{}
+//
+// `MaxRequestBytes` is the Phase 73l (D-120) upper bound on an
+// `artifacts.put` upload body. A body above this is rejected with the
+// canonical `CodeRequestTooLarge` / HTTP 413 — fail loud, never silently
+// truncate. Optional; a zero value resolves to `DefaultMaxRequestBytes`
+// (4 MiB) at load time. Operators with a larger upload need adjust this
+// key and the Console's browser-side size hint accordingly.
+type ProtocolConfig struct {
+	MaxRequestBytes int `yaml:"max_request_bytes,omitempty"`
+}
+
+// DefaultMaxRequestBytes is the `ProtocolConfig.MaxRequestBytes` value
+// applied when the operator configured none — 4 MiB, the spec's
+// "moderate-size upload" posture for the Phase 73l artifacts.put
+// pipeline.
+const DefaultMaxRequestBytes = 4 << 20
+
+// ResolvedMaxRequestBytes returns the configured `MaxRequestBytes`,
+// substituting `DefaultMaxRequestBytes` when the field is zero or
+// negative. The protocol-server boot path calls this so a fresh config
+// produces a working upload bound with zero ceremony.
+func (c ProtocolConfig) ResolvedMaxRequestBytes() int {
+	if c.MaxRequestBytes <= 0 {
+		return DefaultMaxRequestBytes
+	}
+	return c.MaxRequestBytes
+}
 
 // CLIConfig is owned by the CLI phases.
 //

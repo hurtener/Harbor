@@ -70,6 +70,18 @@ func httpStatus(code protoerrors.Code) int {
 		// events.ErrIdentityScopeRequired and
 		// events.ErrAdminScopeRequired at the wire edge.
 		return http.StatusForbidden // 403
+	case protoerrors.CodePresignUnsupported:
+		// Phase 73l (Wave 13 / D-120) — an `artifacts.get_ref` request
+		// reached an ArtifactStore driver without the `Presigner`
+		// capability. The request is well-formed and the surface is
+		// real, but the configured driver cannot satisfy it. 501 Not
+		// Implemented — distinct from a 404 (the route exists) and a 400
+		// (the request was valid).
+		return http.StatusNotImplemented // 501
+	case protoerrors.CodeRequestTooLarge:
+		// Phase 73l (Wave 13 / D-120) — an `artifacts.put` body exceeded
+		// the configured MaxRequestBytes bound. 413 Payload Too Large.
+		return http.StatusRequestEntityTooLarge // 413
 	default:
 		// An unmapped Code is a Protocol-surface bug, not a client
 		// error. Surface it loud as a 500 rather than masking it

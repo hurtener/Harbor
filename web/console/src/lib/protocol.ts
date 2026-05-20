@@ -5,9 +5,14 @@
 // by `cmd/harbor-gen-protocol-ts` and MUST NEVER be hand-edited — the
 // `make protocol-ts-gen-check` CI step asserts `git diff --exit-code` is clean.
 //
-// Phase 72h commits this initial empty-but-typed-shaped stub so the
-// SvelteKit scaffold type-checks. Downstream Console phases regenerate it
-// as Protocol wire types land on the Go side.
+// Phase 72h committed the initial empty-but-typed-shaped stub. Phase 73l
+// (D-120) extends it with the artifacts-page method surface. NOTE: the
+// `cmd/harbor-gen-protocol-ts` generator binary referenced by D-093 has
+// not yet landed (Phase 72h committed `protocol.ts` as a hand-shaped
+// stub). Phase 73l therefore hand-extends this file following the stub's
+// shape; when the generator lands it regenerates this file verbatim from
+// the Go `CanonicalWireTypes`. This is a documented Phase 73l deviation
+// (see the phase plan §"Findings I'm departing from").
 
 /**
  * The Console's view of the operator identity carried by every Protocol
@@ -21,3 +26,193 @@ export interface OperatorIdentity {
 
 /** Placeholder for the generated Protocol method surface. */
 export const PROTOCOL_TS_GENERATED = true as const;
+
+/* ------------------------------------------------------------------ */
+/* Phase 73l (D-120) — artifacts-page wire types                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The flat wire identity an artifacts-method request carries. Mirrors
+ * the Go `internal/protocol/types.ArtifactScope` — `(tenant, user,
+ * session, task)`. Identity is mandatory: tenant/user/session must be
+ * non-empty for put / get_ref. For list, empty fields are wildcards.
+ */
+export interface ArtifactScope {
+  tenant: string;
+  user: string;
+  session: string;
+  task?: string;
+}
+
+/** The closed enum of artifact producers. */
+export type ArtifactSource = 'tool' | 'planner' | 'user_upload' | 'system';
+
+/** Optional byte-size filter for `artifacts.list`. Both bounds inclusive. */
+export interface SizeRange {
+  min_bytes?: number;
+  max_bytes?: number;
+}
+
+/** Optional created-at filter for `artifacts.list`. */
+export interface TimeRange {
+  after?: string;
+  before?: string;
+}
+
+/** The flat Protocol projection of the storage-side artifact reference. */
+export interface ArtifactRef {
+  id: string;
+  mime_type?: string;
+  size_bytes: number;
+  filename?: string;
+  sha256?: string;
+  namespace?: string;
+  scope: ArtifactScope;
+}
+
+/** The `artifacts.list` catalog row shape. */
+export interface ArtifactRow {
+  ref: ArtifactRef;
+  tags?: string[];
+  source?: ArtifactSource;
+  driver?: string;
+  created_at?: string;
+}
+
+/** The `artifacts.list` request — Scope plus the Phase 73l filter extensions. */
+export interface ArtifactsListRequest {
+  scope: ArtifactScope;
+  mime_type?: string[];
+  source?: ArtifactSource[];
+  size_range?: SizeRange;
+  created_range?: TimeRange;
+  tags?: string[];
+  limit?: number;
+}
+
+/** The `artifacts.list` response — metadata-only rows (D-026). */
+export interface ArtifactsListResponse {
+  rows: ArtifactRow[];
+  total_matched: number;
+  protocol_version: string;
+}
+
+/** Optional upload metadata for `artifacts.put`. */
+export interface ArtifactsPutOpts {
+  mime_type?: string;
+  filename?: string;
+  namespace?: string;
+  source?: ArtifactSource;
+  tags?: string[];
+}
+
+/** The `artifacts.put` request — upload bytes (base64) on the request leg only. */
+export interface ArtifactsPutRequest {
+  scope: ArtifactScope;
+  /** Base64-encoded artifact bytes (Go `[]byte` JSON encoding). */
+  bytes: string;
+  opts?: ArtifactsPutOpts;
+}
+
+/** The `artifacts.put` response — the minted reference, never the bytes. */
+export interface ArtifactsPutResponse {
+  ref: ArtifactRef;
+  protocol_version: string;
+}
+
+/** The `artifacts.get_ref` request — the read-side presigned-URL resolver. */
+export interface ArtifactsGetRefRequest {
+  scope: ArtifactScope;
+  id: string;
+  /** Expiry in nanoseconds (Go `time.Duration`); bounded [1m, 7d]. */
+  expiry?: number;
+}
+
+/** The `artifacts.get_ref` response — a time-bounded presigned URL. */
+export interface ArtifactsGetRefResponse {
+  ref: ArtifactRef;
+  presigned_url: string;
+  expires_at: string;
+  protocol_version: string;
+}
+
+/** The canonical Protocol error envelope `{code, message}`. */
+export interface ProtocolError {
+  code: string;
+  message: string;
+}
+
+/** Raised by the typed client when the Runtime returns a non-2xx response. */
+export class ProtocolRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+  constructor(status: number, err: ProtocolError) {
+    super(err.message || err.code);
+    this.name = 'ProtocolRequestError';
+    this.code = err.code;
+    this.status = status;
+  }
+}
+
+/**
+ * The typed Protocol client surface the Console talks to the Runtime
+ * through. Components NEVER hand-roll `fetch` — they inject a
+ * `ProtocolClient` and call its typed methods (CLAUDE.md §4.5 #5/#11,
+ * §13).
+ */
+export interface ProtocolClient {
+  /** `artifacts.list` — the identity-scoped artifact catalog. */
+  artifactsList(req: ArtifactsListRequest): Promise<ArtifactsListResponse>;
+  /** `artifacts.put` — the Console / Playground file-upload pipeline. */
+  artifactsPut(req: ArtifactsPutRequest): Promise<ArtifactsPutResponse>;
+  /** `artifacts.get_ref` — the read-side presigned-URL resolver (D-022 / D-026). */
+  artifactsGetRef(req: ArtifactsGetRefRequest): Promise<ArtifactsGetRefResponse>;
+}
+
+/**
+ * The production `ProtocolClient` over the Runtime's REST/JSON control
+ * transport. The constructor takes the Runtime base URL and an optional
+ * bearer token (Phase 61 auth).
+ */
+export class HTTPProtocolClient implements ProtocolClient {
+  readonly baseURL: string;
+  private readonly token: string | undefined;
+
+  constructor(baseURL: string, token?: string) {
+    this.baseURL = baseURL.replace(/\/$/, '');
+    this.token = token;
+  }
+
+  private async call<TReq, TResp>(method: string, req: TReq): Promise<TResp> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    const resp = await fetch(`${this.baseURL}/v1/control/${method}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(req)
+    });
+    const body = (await resp.json().catch(() => ({}))) as unknown;
+    if (!resp.ok) {
+      const err = body as ProtocolError;
+      throw new ProtocolRequestError(resp.status, {
+        code: err.code ?? 'runtime_error',
+        message: err.message ?? `HTTP ${resp.status}`
+      });
+    }
+    return body as TResp;
+  }
+
+  artifactsList(req: ArtifactsListRequest): Promise<ArtifactsListResponse> {
+    return this.call<ArtifactsListRequest, ArtifactsListResponse>('artifacts.list', req);
+  }
+
+  artifactsPut(req: ArtifactsPutRequest): Promise<ArtifactsPutResponse> {
+    return this.call<ArtifactsPutRequest, ArtifactsPutResponse>('artifacts.put', req);
+  }
+
+  artifactsGetRef(req: ArtifactsGetRefRequest): Promise<ArtifactsGetRefResponse> {
+    return this.call<ArtifactsGetRefRequest, ArtifactsGetRefResponse>('artifacts.get_ref', req);
+  }
+}

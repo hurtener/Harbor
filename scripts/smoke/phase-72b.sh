@@ -99,18 +99,21 @@ fi
 # 4. No new Protocol error code minted by Phase 72b (CLAUDE.md §8 +
 # §13). The impersonation gate reuses CodeScopeMismatch /
 # CodeIdentityRequired / CodeRuntimeError — all already canonical in
-# internal/protocol/errors. The expected count is 9: the original
-# Phase 56 eight (CodeInvalidRequest / CodeIdentityRequired /
-# CodeScopeMismatch / CodePayloadInvalid / CodeUnknownMethod /
-# CodeNotFound / CodeRuntimeError / CodeAuthRejected) plus
-# CodeIdentityScopeRequired added by Phase 72 (D-105) for the
-# Console subscription scope-claim surface — both predecessors to
-# 72b, neither minted here.
+# internal/protocol/errors. 72b itself mints NO new code; the canonical
+# set has since grown in later phases: the original Phase 56 eight
+# (CodeInvalidRequest / CodeIdentityRequired / CodeScopeMismatch /
+# CodePayloadInvalid / CodeUnknownMethod / CodeNotFound /
+# CodeRuntimeError / CodeAuthRejected) plus CodeIdentityScopeRequired
+# (Phase 72 / D-105) plus CodePresignUnsupported + CodeRequestTooLarge
+# (Phase 73l / D-120 artifacts surface) = 11. The count is updated per
+# CLAUDE.md §17.6 ("fix what the integration test finds — no matter
+# where the bug lives") as the canonical set grows; the load-bearing
+# 72b assertion is that NO code was minted by 72b, which still holds.
 NEW_CODES=$(grep -cE 'Code[A-Z][A-Za-z]+\s*Code\s*=' internal/protocol/errors/errors.go 2>/dev/null || echo 0)
-if [ "${NEW_CODES}" -eq 9 ]; then
-    ok "phase 72b: internal/protocol/errors carries the canonical 9-code set (8 Phase 56 codes + Phase 72 CodeIdentityScopeRequired) — no new code minted by 72b"
+if [ "${NEW_CODES}" -eq 11 ]; then
+    ok "phase 72b: internal/protocol/errors carries the canonical 11-code set (8 Phase 56 + Phase 72 + 2 Phase 73l) — no new code minted by 72b"
 else
-    fail "phase 72b: internal/protocol/errors has ${NEW_CODES} Code constants, want 9 — a new code would be a Protocol-surface change requiring an RFC PR"
+    fail "phase 72b: internal/protocol/errors has ${NEW_CODES} Code constants, want 11 — a new code would be a Protocol-surface change requiring an RFC PR"
 fi
 
 # 5. No Console import from the impersonation surface (CLAUDE.md

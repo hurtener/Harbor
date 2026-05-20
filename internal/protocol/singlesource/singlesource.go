@@ -128,6 +128,9 @@ var CanonicalMethods = map[string]struct{}{
 	"llm.posture":        {}, // Phase 72g / D-112
 	"pause.list":         {}, // Phase 72e / D-110
 	"topology.snapshot":  {}, // Phase 74 / D-114
+	"artifacts.list":     {}, // Phase 73l / D-120
+	"artifacts.put":      {}, // Phase 73l / D-120
+	"artifacts.get_ref":  {}, // Phase 73l / D-120
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -205,6 +208,20 @@ var CanonicalWireTypes = map[string]string{
 	"TopologyNode":            "types",
 	"TopologyEdge":            "types",
 	"TopologySnapshotRequest": "types",
+	// Phase 73l (D-120) artifacts-page wire types — all live in
+	// internal/protocol/types alongside the rest of the Protocol shape.
+	"ArtifactScope":           "types",
+	"SizeRange":               "types",
+	"TimeRange":               "types",
+	"ArtifactRef":             "types",
+	"ArtifactRow":             "types",
+	"ArtifactsListRequest":    "types",
+	"ArtifactsListResponse":   "types",
+	"ArtifactsPutOpts":        "types",
+	"ArtifactsPutRequest":     "types",
+	"ArtifactsPutResponse":    "types",
+	"ArtifactsGetRefRequest":  "types",
+	"ArtifactsGetRefResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

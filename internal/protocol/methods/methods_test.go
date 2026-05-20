@@ -41,6 +41,9 @@ var wantMethods = []methods.Method{
 	methods.MethodLLMPosture,
 	methods.MethodPauseList,
 	methods.MethodTopologySnapshot,
+	methods.MethodArtifactsList,
+	methods.MethodArtifactsPut,
+	methods.MethodArtifactsGetRef,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -48,9 +51,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 54 task-control ten + Wave 13 streaming-events two + Phase
 	// 72c search cluster five + Phase 72f runtime-posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one = 26.
-	if len(got) != 26 {
-		t.Fatalf("Methods() returned %d methods, want 26", len(got))
+	// 74 topology.snapshot one + Phase 73l artifacts cluster three = 29.
+	if len(got) != 29 {
+		t.Fatalf("Methods() returned %d methods, want 29", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -109,6 +112,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodLLMPosture:        "llm.posture",
 		methods.MethodPauseList:         "pause.list",
 		methods.MethodTopologySnapshot:  "topology.snapshot",
+		methods.MethodArtifactsList:     "artifacts.list",
+		methods.MethodArtifactsPut:      "artifacts.put",
+		methods.MethodArtifactsGetRef:   "artifacts.get_ref",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -162,13 +168,23 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsControlMethod(methods.MethodTopologySnapshot) {
 		t.Error("IsControlMethod(topology.snapshot) = true, want false — topology.snapshot is a read-only projection method")
 	}
+	// Phase 73l (D-120): the three artifacts methods route through the
+	// ArtifactsSurface, NOT the steering inbox.
+	for _, m := range []methods.Method{
+		methods.MethodArtifactsList, methods.MethodArtifactsPut, methods.MethodArtifactsGetRef,
+	} {
+		if methods.IsControlMethod(m) {
+			t.Errorf("IsControlMethod(%q) = true, want false — artifacts methods route through the ArtifactsSurface", m)
+		}
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
-	// non-topology canonical method IS a control method.
+	// non-topology, non-artifacts canonical method IS a control method.
 	for _, m := range methods.Methods() {
 		if m == methods.MethodStart || methods.IsStreamingEventsMethod(m) {
 			continue
 		}
-		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) || methods.IsTopologyMethod(m) {
+		if methods.IsSearchMethod(m) || methods.IsPostureMethod(m) || methods.IsPauseMethod(m) ||
+			methods.IsTopologyMethod(m) || methods.IsArtifactsMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {

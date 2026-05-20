@@ -49,6 +49,10 @@
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
 
+  /* ---- Border widths ---- */
+  --border-thin: 1px;
+  --border-thick: 2px;
+
   /* ---- Motion ---- */
   --motion-fast: 120ms;
   --motion-base: 200ms;
