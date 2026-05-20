@@ -1,5 +1,6 @@
 /*
- * Harbor Console design-token surface (CLAUDE.md §4.5 rule 3).
+ * Harbor Console design-token surface (CLAUDE.md §4.5 rule 3,
+ * docs/design/console/CONVENTIONS.md §7).
  *
  * This file is the SINGLE place raw color / spacing / type-scale / radius /
  * motion values are allowed. Every `.svelte` component references these
@@ -7,12 +8,19 @@
  * `.stylelintrc.cjs` rule set mechanically rejects raw literals everywhere
  * except this file; `npm run lint` fails CI on a violation.
  *
- * Phase 72h ships the baseline token surface so every downstream Stage-2
- * Console page can ride on it. Later Console phases extend it additively.
+ * ONE coherent scale, extended in place — never per-phase append blocks.
+ * Tokens are grouped by what they ARE (color / spacing / type / radius /
+ * motion / sizing), not by which phase added them. There is exactly one
+ * hairline-border token and one rail-width token (CONVENTIONS.md §7); the
+ * `--border-hairline-alias` group below preserves legacy names so the five
+ * pre-D-121 pages keep resolving until the page-internal refactor wave
+ * migrates them onto the canonical names.
  */
 
 :root {
-  /* ---- Color: neutral scale ---- */
+  /* ================================================================ */
+  /* Color — base palette (the ONLY raw color literals in the Console) */
+  /* ================================================================ */
   --color-bg: #0d1117;
   --color-surface: #161b22;
   --color-surface-raised: #21262d;
@@ -20,25 +28,45 @@
   --color-text: #e6edf3;
   --color-text-muted: #8b949e;
 
-  /* ---- Color: brand + status ---- */
+  /* Color — brand + status */
   --color-accent: #2f81f7;
   --color-success: #3fb950;
   --color-warning: #d29922;
   --color-danger: #f85149;
 
-  /* ---- Color: modal scrim (Phase 73i Flows-page Run-flow modal) ---- */
+  /* Color — status-tint surfaces (soft pill backgrounds) */
+  --color-success-soft: #16341f;
+  --color-warning-soft: #3a2e10;
+  --color-danger-soft: #3a1a18;
+  --color-accent-soft: #16263f;
+
+  /* Color — modal scrim */
   --color-overlay: rgb(1 4 9 / 70%);
 
-  /* ---- Spacing scale ---- */
+  /* Color — MCP server-state semantic aliases (intent, not raw hue) */
+  --color-mcp-online: var(--color-success);
+  --color-mcp-reconnecting: var(--color-warning);
+  --color-mcp-offline: var(--color-text-muted);
+  --color-mcp-auth-pending: var(--color-accent);
+  --color-mcp-error: var(--color-danger);
+
+  /* ================================================================ */
+  /* Spacing scale                                                     */
+  /* ================================================================ */
   --space-0: 0;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
   --space-4: 1rem;
+  --space-5: 1.25rem;
   --space-6: 1.5rem;
   --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
 
-  /* ---- Type scale ---- */
+  /* ================================================================ */
+  /* Type scale                                                        */
+  /* ================================================================ */
   --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --text-xs: 0.75rem;
@@ -46,71 +74,65 @@
   --text-base: 1rem;
   --text-lg: 1.125rem;
   --text-xl: 1.5rem;
+  /* Letter-spacing — the uppercase-label tracking the inventory uses. */
+  --tracking-wide: 0.04em;
+  --tracking-wider: 0.06em;
 
-  /* ---- Radii ---- */
+  /* ================================================================ */
+  /* Radii                                                             */
+  /* ================================================================ */
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
 
-  /* ---- Border widths ---- */
-  --border-thin: 1px;
+  /* ================================================================ */
+  /* Borders — ONE hairline token (CONVENTIONS.md §7)                  */
+  /* ================================================================ */
+  /* The single hairline-border shorthand every surface / table / card
+     uses. Components reference `var(--border-hairline)` — never a raw
+     `1px solid …` literal. */
+  --border-hairline: 1px solid var(--color-border);
+  /* The hairline width on its own, for one-sided borders. */
+  --border-hairline-width: 1px;
+  /* Legacy alias group — pre-D-121 pages used four distinct names. They
+     resolve to the one canonical width until the refactor wave migrates
+     them. New code uses `--border-hairline` / `--border-hairline-width`. */
+  --border-thin: var(--border-hairline-width);
   --border-thick: 2px;
-  --border-width-hairline: 1px;
+  --border-width-hairline: var(--border-hairline-width);
+  --border-width-thin: var(--border-hairline-width);
 
-  /* ---- Sizing scale (added Phase 73j) ---- */
-  --size-px: 1px;
+  /* ================================================================ */
+  /* Sizing — ONE rail-width token (CONVENTIONS.md §7)                 */
+  /* ================================================================ */
+  /* The single detail-rail width every page's right rail uses. */
   --size-rail: 22rem;
+  /* Legacy alias group — pre-D-121 pages used three distinct rail-width
+     names. They resolve to the one canonical token until the refactor
+     wave migrates them. New code uses `--size-rail`. */
+  --size-rail-width: var(--size-rail);
+  --layout-rail-width: var(--size-rail);
+
+  /* Sizing — other layout dimensions */
+  --size-px: 1px;
+  --size-sr-square: 1px;
   --size-value-viewer-max: 16rem;
-
-  /* ---- Borders ---- */
-  /* The hairline border shorthand every surface / table / card uses.
-     Held as a token so component `.svelte` files reference it via
-     `var(--border-hairline)` rather than a raw `1px solid …` literal
-     (Phase 73i — the Flows-page components are the first consumers). */
-  --border-hairline: 1px solid #30363d;
-
-  /* ---- Layout sizes (Phase 73i Flows-page two-pane grids) ---- */
-  --size-rail-width: 280px;
+  --size-search-min: 12rem;
   --size-graph-max-height: 480px;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;
   --size-progress-track: 0.5rem;
   --size-bar-min: 0.125rem;
-  /* The 1px square the visually-hidden (`.sr-only`) pattern clips to. */
-  --size-sr-square: 1px;
-
-  /* ---- Motion ---- */
-  --motion-fast: 120ms;
-  --motion-base: 200ms;
-  --motion-slow: 320ms;
-  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* ---- MCP Connections page (Phase 73k) — status-chip semantics ----
-   * The five canonical MCP server states + the scope-chip + sparkline
-   * colours the MCP Connections page renders. Semantic aliases over the
-   * status scale so the `.svelte` files reference intent, not raw hue. */
-  --color-mcp-online: var(--color-success);
-  --color-mcp-reconnecting: var(--color-warning);
-  --color-mcp-offline: var(--color-text-muted);
-  --color-mcp-auth-pending: var(--color-accent);
-  --color-mcp-error: var(--color-danger);
-
-  /* ---- Spacing scale (extended for page layouts — Phase 73f) ---- */
-  --space-5: 1.25rem;
-  --space-10: 2.5rem;
-  --space-12: 3rem;
-
-  /* ---- Layout scale (page grids / panels — Phase 73f) ---- */
-  --layout-rail-width: 20rem;
   --layout-detail-min-height: 14rem;
   --layout-table-row-height: 2.5rem;
   --layout-hist-label-width: 5rem;
   --layout-hist-count-width: 2.5rem;
-  --border-width-thin: 1px;
 
-  /* ---- Status-tint surfaces (Phase 73f Tools-page pills) ---- */
-  --color-success-soft: #16341f;
-  --color-warning-soft: #3a2e10;
-  --color-danger-soft: #3a1a18;
-  --color-accent-soft: #16263f;
+  /* ================================================================ */
+  /* Motion                                                            */
+  /* ================================================================ */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }

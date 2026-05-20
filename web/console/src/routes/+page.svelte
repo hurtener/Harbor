@@ -1,26 +1,17 @@
 <script lang="ts">
-  // Phase 72h ships a placeholder index route so the SvelteKit scaffold
-  // builds. Downstream Stage-2 page phases replace / extend the routing
-  // tree under `src/routes/` (Overview lands at 73a).
+  // Harbor Console — root `/` route (D-121, CONVENTIONS.md §1).
+  //
+  // The root path redirects to `/overview` — the first page of the
+  // Runtime cluster. The redirect runs client-side on mount (the Console
+  // is an SSR-disabled SPA — D-091, `+layout.ts` sets `ssr = false`).
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+
+  onMount(() => {
+    void goto('/overview', { replaceState: true });
+  });
 </script>
 
-<section>
-  <h1>Harbor Console</h1>
-  <p>Console scaffold is in place. Pages land in Wave 13 Stage 2.</p>
-</section>
-
-<style>
-  section {
-    padding: var(--space-8);
-  }
-
-  h1 {
-    font-size: var(--text-xl);
-    margin: var(--space-0) var(--space-0) var(--space-2);
-  }
-
-  p {
-    color: var(--color-text-muted);
-    font-size: var(--text-sm);
-  }
-</style>
+<noscript>
+  <p>Harbor Console requires JavaScript. Open <a href="/overview">/overview</a>.</p>
+</noscript>

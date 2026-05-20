@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Harbor Console — Memory page (`/console/memory`), Phase 73j / D-118.
+  // Harbor Console — Memory page (`/memory`), Phase 73j / D-118.
   //
   // The per-identity inspector for the runtime's memory subsystem. It
   // is a Protocol client (D-091): it talks to the Runtime ONLY through
