@@ -107,6 +107,7 @@ import (
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
 // Stable CLI error codes for `harbor dev`. New codes ADD entries to
@@ -742,6 +743,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol artifacts surface: %w", err)
 	}
 
+	// Phase 73f: the Console Tools-page Protocol service. The catalog
+	// projector is built over the same tool catalog the runtime
+	// dispatches against, so the Console renders the live registered
+	// set. The bus + redactor are wired so the two admin methods'
+	// `audit.admin_scope_used` events reach the bus (CLAUDE.md §13 —
+	// the admin path is never a silent no-op).
+	toolsProjector, err := toolsprotocol.NewCatalogProjector(toolCat)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tools/protocol projector: %w", err)
+	}
+	toolsService, err := toolsprotocol.NewService(toolsProjector,
+		toolsprotocol.WithBus(bus),
+		toolsprotocol.WithRedactor(red),
+		toolsprotocol.WithLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tools/protocol service: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
@@ -759,6 +781,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// the D-026 heavy-value bypass. When no memory driver is
 		// configured (memStore is nil) the routes are left un-mounted.
 		transports.WithMemory(memStore, cfg.Memory.Driver),
+		// Phase 73f: mount the `tools.*` route family so the Console
+		// Tools page has a live Protocol surface.
+		transports.WithToolsService(toolsService),
 	)
 	if err != nil {
 		closeAll(ctx)

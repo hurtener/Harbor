@@ -811,6 +811,20 @@ Additions to this set are RFC PRs.
 
 **`tool.auth_completed`** — Phase 30 canonical event type emitted by `auth.Provider.CompleteFlow` on successful token exchange (after `TokenStore.Put` + `coordinator.Resume`). Payload `auth.ToolAuthCompletedPayload` (SafePayload) carries `(Source, BindingScope, State, PauseToken)` — never token plaintext. Observers correlate to the originating `tool.auth_required` via `State` and to the matching `pause.resumed` via `PauseToken`. D-083.
 
+**`tools.list`** — Phase 73f (Wave 13 / D-116) Protocol method returning the catalog of registered tools visible to the caller's identity scope, with optional facet filters (scope / transport / OAuth status / approval policy / reliability tier + free-text search) and aggregate counters (`Total` / `Active` / `Pending approval` / `Awaiting OAuth`) for the filtered view. Powers the Console Tools page catalog table. Identity-mandatory; a cross-tenant fan-in requires the `auth.ScopeAdmin` claim (D-079). Wire route `POST /v1/tools/list`. RFC §6.4, §7.
+
+**`tools.get`** — Phase 73f Protocol method returning a single tool's catalog-row projection by ID — the lighter sibling of `tools.describe`, the row shape the Console renders in the detail-panel header. D-116.
+
+**`tools.describe`** — Phase 73f Protocol method returning the full manifest of a registered tool descriptor: transport, version, scopes, the argument / output JSON Schemas, examples, OAuth binding scope (D-083), approval policy (D-086), and the reliability shell (D-024). Powers the Tools-page Manifest / Inputs / Outputs tabs. D-116.
+
+**`tools.metrics`** — Phase 73f Protocol method returning per-tool error-rate gauges over a selectable window (1h / 24h / 7d) plus a status pill (`Healthy` / `Degraded` / `Offline`). Powers the Tools-page Status + Error-rate right-rail card. D-116.
+
+**`tools.content_stats`** — Phase 73f Protocol method returning the per-tool distribution of recent result sizes vs the heavy-content threshold (RFC §6.5 / D-026) plus the negotiated `DisplayMode` snapshot (D-062). Powers the Tools-page Content-size card. D-116.
+
+**`tools.set_approval_policy`** — Phase 73f admin Protocol method updating a tool's approval policy (`auto` / `gated` / `denied`). Requires the verified `auth.ScopeAdmin` claim (D-079 — there is NO `tools.admin` scope); emits an `audit.admin_scope_used` event through the shipped `audit.Redactor`. D-116.
+
+**`tools.revoke_oauth`** — Phase 73f admin Protocol method revoking all OAuth bindings for a tool. Requires the verified `auth.ScopeAdmin` claim (D-079); emits an `audit.admin_scope_used` event. D-116.
+
 **Template (scaffold)** — the named, embedded set of `.tmpl` files under `cmd/harbor/scaffold/templates/<name>/` that `harbor scaffold` renders into a new project directory (Phase 67, D-087). Phase 67 ships exactly one template (`minimal-react`); future phases (or operator-shipped out-of-tree templates) extend the surface without re-touching the command body — `scaffold.Templates()` enumerates `embed.FS` at runtime, the cobra `--template` flag's allowed-value list derives from the same call.
 
 **Tracer** — Harbor's OpenTelemetry tracer wrapper (`internal/telemetry`, Phase 55). Wraps `go.opentelemetry.io/otel/trace.Tracer`; derives spans from `events.Event` records via `SpanFromEvent` so span boundaries align with run/step boundaries; exposes the W3C TraceContext propagation carriers and the `trace_id` / `span_id` `slog.Attr` pair (`LogAttrs`) for log correlation. Built once at boot via `NewTracer`; immutable and concurrency-safe (D-025). The span exporter sits behind a §4.4 driver seam — `noop` (default) and `otlp` (OTLP/gRPC). RFC §6.14, brief 06, D-073.

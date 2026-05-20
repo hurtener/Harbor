@@ -111,6 +111,7 @@ import (
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
 // DefaultDevTenant / DefaultDevUser / DefaultDevSession match the
@@ -815,6 +816,25 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// exercises the real routes.
 		if stack.Memory != nil {
 			muxOpts = append(muxOpts, transports.WithMemory(stack.Memory, cfg.Memory.Driver))
+		}
+		// Phase 73f: mount the `tools.*` route family. The devstack
+		// mirrors the production `cmd/harbor` boot path (CLAUDE.md
+		// §17.6) — the catalog projector is built over the same tool
+		// catalog the runtime dispatches against so the wave-end E2E
+		// exercises the real route.
+		if stack.Catalog != nil {
+			toolsProjector, projErr := toolsprotocol.NewCatalogProjector(stack.Catalog)
+			if projErr != nil {
+				return stack, fmt.Errorf("tools/protocol projector: %w", projErr)
+			}
+			toolsService, svcErr := toolsprotocol.NewService(toolsProjector,
+				toolsprotocol.WithBus(bus),
+				toolsprotocol.WithRedactor(stack.Audit),
+			)
+			if svcErr != nil {
+				return stack, fmt.Errorf("tools/protocol service: %w", svcErr)
+			}
+			muxOpts = append(muxOpts, transports.WithToolsService(toolsService))
 		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {

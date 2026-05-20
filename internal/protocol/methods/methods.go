@@ -371,6 +371,50 @@ const (
 	// raw-HTML opt-in flag and emits the `mcp.raw_html_trust_toggled`
 	// audit event. Requires the `auth.ScopeAdmin` claim (D-079).
 	MethodMCPServersSetRawHTMLTrust Method = "mcp.servers.set_raw_html_trust"
+
+	// MethodToolsList — Phase 73f (Wave 13 / D-116). Returns the
+	// catalog of registered tools visible to the caller's identity
+	// scope, with optional facet filters (scope / transport / OAuth
+	// status / approval policy / reliability tier) plus aggregate
+	// counters (Total / Active / Pending approval / Awaiting OAuth) for
+	// the filtered view. Powers the Console Tools page catalog table.
+	// Identity-mandatory; a cross-tenant fan-in requires the
+	// `auth.ScopeAdmin` claim (D-079). NOT a control / search /
+	// posture / topology method — `IsToolsMethod` returns true. The
+	// wire-transport route is `POST /v1/tools/list`. See
+	// `docs/plans/phase-73f-console-tools-page.md`.
+	MethodToolsList Method = "tools.list"
+	// MethodToolsGet — Phase 73f. Returns a single tool's catalog row
+	// projection by ID. The lighter sibling of `tools.describe` — the
+	// row shape the Console renders in the detail-panel header.
+	MethodToolsGet Method = "tools.get"
+	// MethodToolsDescribe — Phase 73f. Returns the full manifest of a
+	// registered tool descriptor: transport, version, scopes, the
+	// argument / output JSON Schemas, examples, OAuth binding scope
+	// (D-083), approval policy (D-086), and the reliability shell
+	// (D-024). Powers the Tools-page Manifest / Inputs / Outputs tabs.
+	MethodToolsDescribe Method = "tools.describe"
+	// MethodToolsMetrics — Phase 73f. Returns per-tool error-rate
+	// gauges over a selectable window (1h / 24h / 7d) plus a status
+	// pill (`Healthy` / `Degraded` / `Offline`). Powers the Tools-page
+	// Status + Error-rate right-rail card.
+	MethodToolsMetrics Method = "tools.metrics"
+	// MethodToolsContentStats — Phase 73f. Returns the per-tool
+	// distribution of recent result sizes vs the heavy-content
+	// threshold (RFC §6.5 / D-026) plus the negotiated `DisplayMode`
+	// snapshot (D-062). Powers the Tools-page Content-size card.
+	MethodToolsContentStats Method = "tools.content_stats"
+	// MethodToolsSetApprovalPolicy — Phase 73f. ADMIN method: updates a
+	// tool's approval policy. Requires the verified `auth.ScopeAdmin`
+	// claim (D-079; there is NO `tools.admin` scope — the closed
+	// two-scope set is the only admit surface). Emits an
+	// `audit.admin_scope_used` event through the shipped audit.Redactor.
+	MethodToolsSetApprovalPolicy Method = "tools.set_approval_policy"
+	// MethodToolsRevokeOAuth — Phase 73f. ADMIN method: revokes all
+	// OAuth bindings for a tool. Requires the verified `auth.ScopeAdmin`
+	// claim (D-079). Emits an `audit.admin_scope_used` event through
+	// the shipped audit.Redactor.
+	MethodToolsRevokeOAuth Method = "tools.revoke_oauth"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -411,6 +455,15 @@ var canonicalMethods = map[Method]struct{}{
 	MethodMemoryList:        {},
 	MethodMemoryGet:         {},
 	MethodMemoryHealth:      {},
+
+	MethodToolsList:         {},
+	MethodToolsGet:          {},
+	MethodToolsDescribe:     {},
+	MethodToolsMetrics:      {},
+	MethodToolsContentStats: {},
+
+	MethodToolsSetApprovalPolicy: {},
+	MethodToolsRevokeOAuth:       {},
 
 	MethodMCPServersList:             {},
 	MethodMCPServersGet:              {},
@@ -495,6 +548,56 @@ func IsMCPServersMethod(m Method) bool {
 // (D-079). The MCPSurface dispatcher uses it to apply the admin gate.
 func IsMCPAdminMethod(m Method) bool {
 	_, ok := canonicalMCPAdminMethods[m]
+	return ok
+}
+
+// canonicalToolsMethods is the closed sub-set of the seven `tools.*`
+// methods landed in Phase 73f (Wave 13 / D-116) — the five read
+// methods (`tools.list` / `tools.get` / `tools.describe` /
+// `tools.metrics` / `tools.content_stats`) plus the two admin methods
+// (`tools.set_approval_policy` / `tools.revoke_oauth`). IsToolsMethod
+// is O(1); a transport adapter branches on it to route the request
+// through the Tools surface instead of the task-control surface.
+var canonicalToolsMethods = map[Method]struct{}{
+	MethodToolsList:              {},
+	MethodToolsGet:               {},
+	MethodToolsDescribe:          {},
+	MethodToolsMetrics:           {},
+	MethodToolsContentStats:      {},
+	MethodToolsSetApprovalPolicy: {},
+	MethodToolsRevokeOAuth:       {},
+}
+
+// canonicalToolsAdminMethods is the closed sub-set of the two `tools.*`
+// methods that MUTATE runtime tool state and therefore require the
+// verified `auth.ScopeAdmin` claim (D-079). The Tools wire handler
+// uses this to gate the admin path: a read method skips the scope
+// check; an admin method without the claim fails closed with
+// CodeIdentityScopeRequired (HTTP 403). There is NO `tools.admin`
+// scope — the closed two-scope set (`admin` + `console:fleet`) is the
+// only admit surface.
+var canonicalToolsAdminMethods = map[Method]struct{}{
+	MethodToolsSetApprovalPolicy: {},
+	MethodToolsRevokeOAuth:       {},
+}
+
+// IsToolsMethod reports whether m is one of the seven canonical
+// `tools.*` methods (Phase 73f / D-116). The control transport
+// branches on this to route the request through the Tools dispatcher
+// instead of the task-control / search / posture / topology surfaces.
+// NOT a control method — a new non-control method extends THIS
+// predicate, never the steering inbox.
+func IsToolsMethod(m Method) bool {
+	_, ok := canonicalToolsMethods[m]
+	return ok
+}
+
+// IsToolsAdminMethod reports whether m is one of the two mutating
+// `tools.*` methods (`tools.set_approval_policy` / `tools.revoke_oauth`)
+// that require the verified `auth.ScopeAdmin` claim (D-079). The Tools
+// wire handler uses this to decide whether to enforce the scope gate.
+func IsToolsAdminMethod(m Method) bool {
+	_, ok := canonicalToolsAdminMethods[m]
 	return ok
 }
 
@@ -674,6 +777,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsMCPServersMethod(m) {
+		return false
+	}
+	if IsToolsMethod(m) {
 		return false
 	}
 	return true
