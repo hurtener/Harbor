@@ -103,6 +103,8 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/flow"
+	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
@@ -835,6 +837,44 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("tools/protocol service: %w", svcErr)
 			}
 			muxOpts = append(muxOpts, transports.WithToolsService(toolsService))
+		}
+		// Phase 73i (D-117): mount the six Console Flows-page routes.
+		// The devstack mirrors the production `cmd/harbor` boot path
+		// (CLAUDE.md §17.6) — an empty flow.Registry + the real
+		// artifact store + the configured heavy-content threshold are
+		// wired so the wave-end E2E exercises the real routes.
+		if stack.Artifacts != nil && stack.Tasks != nil {
+			flowRegistry := flow.NewRegistry()
+			flowCatalog, fcErr := flowprotocol.NewRegistryCatalog(
+				flowRegistry, stack.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes)
+			if fcErr != nil {
+				return stack, fmt.Errorf("flow protocol catalog: %w", fcErr)
+			}
+			taskReg := stack.Tasks
+			flowInvoker, fiErr := flowprotocol.NewFuncInvoker(
+				func(launchCtx context.Context, id identity.Identity, flowID string, _ map[string]any) (string, time.Time, error) {
+					runCtx, rerr := identity.WithRun(launchCtx, id, "flow-run-"+flowID)
+					if rerr != nil {
+						return "", time.Time{}, fmt.Errorf("flows.run: identity scope incomplete: %w", rerr)
+					}
+					handle, serr := taskReg.SpawnTool(runCtx, tasks.SpawnToolRequest{
+						Identity:    identity.Quadruple{Identity: id},
+						ToolName:    flowID,
+						Description: "Console flows.run invocation of " + flowID,
+					})
+					if serr != nil {
+						return "", time.Time{}, fmt.Errorf("flows.run: spawn failed: %w", serr)
+					}
+					return string(handle.ID), time.Now(), nil
+				}, flowRegistry)
+			if fiErr != nil {
+				return stack, fmt.Errorf("flow protocol invoker: %w", fiErr)
+			}
+			flowsSurface, fsErr := flowprotocol.NewSurface(flowCatalog, flowInvoker)
+			if fsErr != nil {
+				return stack, fmt.Errorf("flow protocol surface: %w", fsErr)
+			}
+			muxOpts = append(muxOpts, transports.WithFlows(flowsSurface))
 		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {
