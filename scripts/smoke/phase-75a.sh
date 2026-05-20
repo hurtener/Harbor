@@ -71,16 +71,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. The wave-end aggregator Playwright spec must exist once Playwright is wired.
+# 5. The wave-end aggregator Playwright spec must exist once Phase 75a lands.
+#
+# The gate for "Phase 75a has landed" is the 75a-owned coverage script —
+# NOT the mere presence of `web/console/tests/`. Phase 75 (the harness
+# baseline) legitimately creates `web/console/tests/` FIRST (its config +
+# fixtures + meta-test live there); Phase 75a lands later and adds
+# `wave13.spec.ts` + the coverage script. Gating on the directory would
+# FAIL the moment Phase 75 ships, before 75a does — the §17.6 cross-phase
+# fix bundled with the Phase 75 PR (D-115). Gate on the coverage script,
+# the unambiguous 75a artefact, so this assertion SKIPs cleanly until 75a
+# actually ships.
 # ---------------------------------------------------------------------------
-if [ -d "${ROOT}/web/console/tests" ]; then
+if [ -x "${COVERAGE_SCRIPT}" ]; then
     if [ -f "${ROOT}/web/console/tests/wave13.spec.ts" ]; then
         ok "phase 75a: web/console/tests/wave13.spec.ts exists"
     else
-        fail "phase 75a: web/console/tests/ present but wave13.spec.ts missing"
+        fail "phase 75a: Phase 75a artefacts present but wave13.spec.ts missing"
     fi
 else
-    skip "phase 75a: web/console/tests/ not yet present (bundles into final Stage-2.3 PR)"
+    skip "phase 75a: wave13.spec.ts not yet present (Phase 75a bundles into final Stage-2.3 PR)"
 fi
 
 smoke_summary
