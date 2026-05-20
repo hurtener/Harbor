@@ -69,14 +69,19 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 	if method == methods.MethodStart {
 		return s.dispatchStart(ctx, req)
 	}
-	// Phase 72 / D-105: events.subscribe is a streaming-events method
-	// served by the Phase 60 SSE transport, NOT by the REST control
-	// surface. A caller that hits Dispatch with events.subscribe is
-	// using the wrong transport for the wrong vocabulary — surface it
-	// loud rather than silently routing it onto the steering inbox.
+	// Wave 13 (Phase 72 / 72a — D-105 / D-106): the streaming-events
+	// methods are served by their own transports (SSE for subscribe;
+	// POST /v1/events/aggregate for aggregate), NOT by the REST control
+	// surface. A caller that hits Dispatch with one of them is using
+	// the wrong transport for the wrong vocabulary — surface it loud
+	// rather than silently routing onto the steering inbox.
 	if method == methods.MethodEventsSubscribe {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a streaming-events method; open the SSE transport at GET /v1/events instead", string(method))
+	}
+	if method == methods.MethodEventsAggregate {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is a streaming-events method; POST to /v1/events/aggregate instead", string(method))
 	}
 	return s.dispatchControl(ctx, method, req)
 }
@@ -219,19 +224,20 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 }
 
 // compile-time assertion: every steering-control method
-// (IsControlMethod=true) has a steering.ControlType mapping. The Phase
-// 54 set is the nine non-start, non-events.subscribe canonical
-// methods; Phase 72 added events.subscribe (a streaming-events method,
-// not a steering control) — IsControlMethod gates the exhaustive
-// check so a new non-control method does NOT need a mapping. If a new
-// steering-control method is added to internal/protocol/methods
-// without a mapping here, this fails — keeping the Protocol method
-// table and the steering bridge in lockstep.
+// (IsControlMethod=true) has a steering.ControlType mapping. MethodStart
+// and the Wave 13 streaming-events methods (MethodEventsSubscribe /
+// MethodEventsAggregate) are NOT control methods and route through
+// their own surfaces (the task registry for Start; the SSE handler +
+// events-aggregate handler for the streaming-events two) — IsControlMethod
+// gates the exhaustive check so a new non-control method does NOT need
+// a mapping. If a new steering-control method is added to
+// internal/protocol/methods without a mapping here, this fails —
+// keeping the Protocol method table and the steering bridge in lockstep.
 func init() {
 	for _, m := range methods.Methods() {
 		if !methods.IsControlMethod(m) {
-			// MethodStart, MethodEventsSubscribe (Phase 72), and any
-			// future non-control method are routed elsewhere — no
+			// MethodStart, the Wave 13 streaming-events methods, and
+			// any future non-control method are routed elsewhere — no
 			// steering.ControlType is expected for them.
 			continue
 		}

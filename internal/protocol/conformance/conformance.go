@@ -603,10 +603,9 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// Phase 54 task-control set (10) + Phase 72 streaming-events
-	// anchor (events.subscribe) = 11.
-	if len(got) != 11 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 11 (Phase 54 task-control + Phase 72 events.subscribe)", len(got))
+	// Phase 54 task-control ten + Wave 13 streaming-events two = 12.
+	if len(got) != 12 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 12 (Phase 54 task-control ten + Wave 13 streaming-events two)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:           {},
@@ -620,6 +619,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodPrioritize:      {},
 		methods.MethodUserMessage:     {},
 		methods.MethodEventsSubscribe: {},
+		methods.MethodEventsAggregate: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -673,22 +673,27 @@ func assertErrorCodeMatrixExhaustive(t *testing.T) {
 // runMethodMatrixHappyPath exercises every canonical method's
 // happy-path on BOTH transports.
 //
-// Phase 72 / D-105: MethodEventsSubscribe is a streaming-events method
-// served by the SSE transport (`GET /v1/events`), not by REST control.
-// Its happy-path lives under EventsSubscribe_HappyPath below;
-// runMethodMatrixHappyPath skips it so the matrix iteration stays
-// focused on task-control methods.
+// Streaming-events methods (MethodEventsSubscribe / MethodEventsAggregate
+// — Wave 13) are NOT exercised via the ControlSurface here: they route
+// through their own transport (the SSE handler / the events-aggregate
+// HTTP handler), not the REST control surface. Their happy-paths live
+// under EventsSubscribe_HappyPath (subscribe) and the EventFilterMatrix
+// / EventsAggregateMatrix scenarios — the matrix-exhaustiveness check
+// at boot still covers them. Dispatch returns CodeInvalidRequest if a
+// caller hits the REST surface with either method (the "wrong transport
+// for wrong vocabulary" guard).
 func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 	t.Helper()
 
 	for _, m := range methods.Methods() {
 		m := m
-		if m == methods.MethodEventsSubscribe {
-			// Streaming-events method — covered by
-			// EventsSubscribe_HappyPath and the EventFilterMatrix
-			// scenarios. Dispatch returns CodeInvalidRequest if a
-			// caller hits the REST surface with this method (the
-			// "wrong transport for wrong vocabulary" guard).
+		if methods.IsStreamingEventsMethod(m) {
+			// Streaming-events methods — covered by
+			// EventsSubscribe_HappyPath, EventFilterMatrix, and the
+			// EventsAggregateMatrix scenarios. Dispatch returns
+			// CodeInvalidRequest if a caller hits the REST surface
+			// with these methods (the "wrong transport for wrong
+			// vocabulary" guard).
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
@@ -818,15 +823,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 // the in-process Dispatch with CodeInvalidRequest; the wire path
 // surfaces it as HTTP 400.
 //
-// Phase 72 / D-105: MethodEventsSubscribe is intentionally skipped —
-// its "wrong transport" rejection is structurally CodeInvalidRequest
-// (the streaming-events method is hitting the REST control surface),
-// not "malformed JSON". A dedicated assertion lives below.
+// Streaming-events methods (MethodEventsSubscribe / MethodEventsAggregate
+// — Wave 13) are intentionally skipped — their "wrong transport"
+// rejection is structurally CodeInvalidRequest (the streaming-events
+// method is hitting the REST control surface), not "malformed JSON". A
+// dedicated assertion lives below.
 func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 	t.Helper()
 	for _, m := range methods.Methods() {
 		m := m
-		if m == methods.MethodEventsSubscribe {
+		if methods.IsStreamingEventsMethod(m) {
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
@@ -1263,14 +1269,35 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	if len(caps) != 1 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 1 (CapTaskControl) at Protocol 0.1.0", len(caps))
+	// Phase 54 task-control + Wave 13 streaming-events = 2 capabilities
+	// at Protocol 0.1.0. (The capability constants live in
+	// internal/protocol/types/version.go; a new capability is a new
+	// constant + a new entry in canonicalCapabilities.)
+	if len(caps) != 2 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 2 (CapTaskControl + CapEventsSubscribe) at Protocol 0.1.0", len(caps))
 	}
-	if caps[0] != types.CapTaskControl {
-		t.Fatalf("types.Capabilities()[0] = %q, want %q", caps[0], types.CapTaskControl)
+	wantCaps := map[types.Capability]struct{}{
+		types.CapTaskControl:     {},
+		types.CapEventsSubscribe: {},
+	}
+	for _, c := range caps {
+		if _, ok := wantCaps[c]; !ok {
+			t.Fatalf("types.Capabilities() returned unexpected capability %q", c)
+		}
+		delete(wantCaps, c)
+	}
+	if len(wantCaps) > 0 {
+		missing := make([]string, 0, len(wantCaps))
+		for c := range wantCaps {
+			missing = append(missing, string(c))
+		}
+		t.Fatalf("types.Capabilities() missing canonical capabilities %v", missing)
 	}
 	if !h.Accepts(types.CapTaskControl) {
 		t.Fatal("handshake.Accepts(CapTaskControl) = false; the Phase 54 task-control surface must be advertised")
+	}
+	if !h.Accepts(types.CapEventsSubscribe) {
+		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the Wave 13 streaming-events surface (Phase 72 / 72a) must be advertised")
 	}
 
 	// The deprecation registry is empty at 0.1.0 — nothing has been

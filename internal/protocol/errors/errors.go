@@ -87,19 +87,27 @@ const (
 	// client that gets CodeAuthRejected has one but it failed to
 	// verify. Maps to HTTP 401.
 	CodeAuthRejected Code = "auth_rejected"
-	// CodeIdentityScopeRequired — Phase 72 Console subscription scope
-	// (D-105). Returned at the wire edge when a Subscribe request's
-	// scope set is insufficient for the requested fan-in — typically a
-	// cross-tenant (`?admin=1`) `events.subscribe` request from a JWT
-	// lacking `auth.ScopeAdmin` or `auth.ScopeConsoleFleet` (D-079).
-	// HTTP status 403 (the request is authenticated; the scope set
-	// does not authorize the operation).
+	// CodeIdentityScopeRequired — Wave 13 (Phase 72 / 72a; D-105 / D-106)
+	// events surface: the request was authenticated and identified, but
+	// the caller's scope set does not authorise the requested fan-in.
+	// The canonical example is a cross-tenant (`?admin=1`)
+	// `events.subscribe` request, or a cross-tenant `events.aggregate`
+	// filter (one that names a tenant other than the caller's, or more
+	// than one tenant), submitted by a JWT lacking `auth.ScopeAdmin`
+	// OR `auth.ScopeConsoleFleet` (D-079 closed two-scope set; there
+	// is NO new `events.crosstenant` scope). HTTP status 403 (the
+	// request is authenticated; the scope set does not authorize the
+	// operation).
 	//
-	// Distinct from CodeIdentityRequired (missing identity triple,
-	// 401), CodeAuthRejected (token invalid, 401), and
-	// CodeScopeMismatch (which is reserved for steering-control scope
-	// claims per RFC §6.3 — the steering inbox's caller-scope vs
-	// per-method minimum). The wire transport collapses both
+	// Distinct from `CodeIdentityRequired` (the triple is missing
+	// entirely — HTTP 401), `CodeAuthRejected` (the token failed to
+	// verify — HTTP 401), and `CodeScopeMismatch` (which is reserved
+	// for steering-control scope claims per RFC §6.3 — the steering
+	// inbox's caller-scope vs per-method minimum). Here the request is
+	// authenticated AND identified; the SCOPE set is insufficient for
+	// the requested cross-tenant fan-in.
+	//
+	// The wire transport collapses both
 	// `events.ErrIdentityScopeRequired` (Subscribe filter elides the
 	// triple AND Admin is false) and `events.ErrAdminScopeRequired`
 	// (Admin requested without the verified scope claim) onto this

@@ -321,9 +321,16 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapTaskControl) {
 		t.Fatal("handshake.Accepts(CapTaskControl) = false; the Phase 54 task-control surface must be advertised")
 	}
+	// Wave 13 (Phase 72 / 72a) added the streaming-events capability.
+	// The wave-10 E2E gains an additional pin so its contract-stable
+	// posture matches the post-Wave-13 surface — a future surface
+	// addition continues to extend this list.
+	if !h.Accepts(types.CapEventsSubscribe) {
+		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the Wave 13 streaming-events surface (Phase 72 / 72a) must be advertised")
+	}
 	caps := h.Capabilities
-	if len(caps) != 1 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control}", caps)
+	if len(caps) != 2 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {
