@@ -1,8 +1,12 @@
 <script lang="ts">
-  // ContentSizeCard — the right-rail bottom card (page-tools.md §12):
-  // the per-tool result-size histogram vs the heavy-content threshold
-  // (RFC §6.5 / D-026) plus the negotiated MCP-Apps DisplayMode
-  // snapshot (D-062). Read-only. Svelte 5 runes mode (D-092).
+  // ContentSizeCard — the Tools-page right-rail result-size content
+  // (page-tools.md §12): the per-tool result-size histogram vs the
+  // heavy-content threshold (RFC §6.5 / D-026) plus the negotiated
+  // MCP-Apps DisplayMode snapshot (D-062). Tools-specific content; the
+  // page wraps it in `ui/RailCard`, so this emits only the card BODY and
+  // uses the shared `ui/StatusChip` for display-mode pills (D-121,
+  // CONVENTIONS.md §3). Read-only. Svelte 5 runes mode (D-092).
+  import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import type { ToolContentStats } from '$lib/protocol/tools.js';
 
   let { stats = null }: { stats?: ToolContentStats | null } = $props();
@@ -25,8 +29,7 @@
   }
 </script>
 
-<section class="card" data-testid="tools-content-card">
-  <h3>Content size &amp; display mode</h3>
+<div data-testid="tools-content-card">
   {#if stats === null}
     <p class="muted">Select a tool to see its result-size profile.</p>
   {:else}
@@ -53,29 +56,14 @@
       <h4>Negotiated display modes</h4>
       <ul class="display-modes">
         {#each Object.entries(stats.negotiated_display) as [mime, mode] (mime)}
-          <li><code>{mime}</code> → <span class="chip">{mode}</span></li>
+          <li><code>{mime}</code> → <StatusChip kind="accent" label={mode} /></li>
         {/each}
       </ul>
     {/if}
   {/if}
-</section>
+</div>
 
 <style>
-  .card {
-    padding: var(--space-4);
-    background: var(--color-surface);
-    border: var(--border-width-thin) solid var(--color-border);
-    border-radius: var(--radius-md);
-  }
-
-  h3 {
-    margin: var(--space-0) var(--space-0) var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: var(--border-width-thin);
-  }
-
   h4 {
     margin: var(--space-3) var(--space-0) var(--space-2);
     font-size: var(--text-xs);
@@ -139,15 +127,14 @@
   }
 
   .display-modes li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
   }
 
-  .chip {
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    background: var(--color-surface-raised);
-    color: var(--color-accent);
-    font-size: var(--text-xs);
+  code {
+    font-family: var(--font-mono);
   }
 </style>
