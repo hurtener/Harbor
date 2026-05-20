@@ -144,7 +144,8 @@ type AdminScopeUsedPayload struct {
 	// `AdminImpersonationReason = "impersonation"`).
 	Reason string
 	// Method is the Protocol method that carried the
-	// impersonation (e.g. `"start"` / `"redirect"` /
-	// `"user_message"`).
+	// impersonation (e.g. methods.MethodStart,
+	// methods.MethodRedirect, methods.MethodUserMessage —
+	// canonical method names live in internal/protocol/methods).
 	Method string
 }

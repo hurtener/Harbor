@@ -96,15 +96,21 @@ else
     fail "phase 72b: ${CONTROL_FILE} missing auth.ScopeAdmin gate — D-079 closed scope set requires admin"
 fi
 
-# 4. No new Protocol error code minted (CLAUDE.md §8 + §13). The
-# impersonation gate reuses CodeScopeMismatch / CodeIdentityRequired
-# / CodeRuntimeError — all already canonical in
-# internal/protocol/errors.
+# 4. No new Protocol error code minted by Phase 72b (CLAUDE.md §8 +
+# §13). The impersonation gate reuses CodeScopeMismatch /
+# CodeIdentityRequired / CodeRuntimeError — all already canonical in
+# internal/protocol/errors. The expected count is 9: the original
+# Phase 56 eight (CodeInvalidRequest / CodeIdentityRequired /
+# CodeScopeMismatch / CodePayloadInvalid / CodeUnknownMethod /
+# CodeNotFound / CodeRuntimeError / CodeAuthRejected) plus
+# CodeIdentityScopeRequired added by Phase 72 (D-105) for the
+# Console subscription scope-claim surface — both predecessors to
+# 72b, neither minted here.
 NEW_CODES=$(grep -cE 'Code[A-Z][A-Za-z]+\s*Code\s*=' internal/protocol/errors/errors.go 2>/dev/null || echo 0)
-if [ "${NEW_CODES}" -eq 8 ]; then
-    ok "phase 72b: internal/protocol/errors carries the canonical 8-code set (CodeInvalidRequest / CodeIdentityRequired / CodeScopeMismatch / CodePayloadInvalid / CodeUnknownMethod / CodeNotFound / CodeRuntimeError / CodeAuthRejected) — no new code minted"
+if [ "${NEW_CODES}" -eq 9 ]; then
+    ok "phase 72b: internal/protocol/errors carries the canonical 9-code set (8 Phase 56 codes + Phase 72 CodeIdentityScopeRequired) — no new code minted by 72b"
 else
-    fail "phase 72b: internal/protocol/errors has ${NEW_CODES} Code constants, want 8 — a new code would be a Protocol-surface change requiring an RFC PR"
+    fail "phase 72b: internal/protocol/errors has ${NEW_CODES} Code constants, want 9 — a new code would be a Protocol-surface change requiring an RFC PR"
 fi
 
 # 5. No Console import from the impersonation surface (CLAUDE.md
