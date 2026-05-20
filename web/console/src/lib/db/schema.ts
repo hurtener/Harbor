@@ -101,7 +101,11 @@ export const LIST_PAGES = [
   'live_runtime',
   // Phase 73n (D-130) — the Playground page's Console-DB-backed
   // saved-view chips persist Controls-card override presets here.
-  'playground'
+  'playground',
+  // Phase 73a (D-127) — the Overview page's Console-DB-backed
+  // saved-view chips persist hub-layout (activity-feed filter +
+  // counter-window) presets here.
+  'overview'
 ] as const;
 export type ListPage = (typeof LIST_PAGES)[number];
 

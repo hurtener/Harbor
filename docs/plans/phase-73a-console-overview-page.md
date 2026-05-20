@@ -24,7 +24,18 @@ Bundles the Overview page into a single phase per the Wave 13 decomposition (`do
 
 ## Findings I'm departing from (if any)
 
-None.
+None on design. One path-resolution correction (D-127): this plan was
+authored before D-121 (`docs/design/console/CONVENTIONS.md`) landed and
+names the route at `web/console/src/routes/overview/+page.svelte` with a
+`/console/overview` URL. `CONVENTIONS.md` §1 is the binding cross-cutting
+authority — Console pages route under the `(console)` SvelteKit group
+with **no `/console/` URL prefix**. The page therefore ships at
+`web/console/src/routes/(console)/overview/` and is served at
+`/overview`; the components live at
+`web/console/src/lib/components/overview/`. The "Files added or changed"
+block and the smoke-script `/console/overview` reference below read with
+that correction applied (CLAUDE.md §15 — a plan that contradicts a
+higher-priority artifact yields to it).
 
 ## Goals
 
@@ -96,20 +107,20 @@ contract and D-121 for the rationale.
 
 ## Acceptance criteria
 
-- [ ] `web/console/src/routes/overview/+page.svelte` renders the 4-card counter row (Events/min, Tasks Running, Background Jobs, MCP Connections), the sub-header health-chip strip, the cost rollup card, the intervention queue (composed from `pause.list`), the recent activity feed (composed from `events.subscribe`), the Quick Links 2x3 grid, the `+ New` quick-create menu, and the footer.
-- [ ] All data flows go through the typed Protocol client at `web/console/src/lib/protocol.ts` (D-093). NO hand-rolled `fetch` calls in `.svelte` files.
-- [ ] Counter-card sparklines render windowed event-rate aggregation client-side from the `events.subscribe` cursor — no new Protocol method.
-- [ ] Health sub-header strip renders chip-per-subsystem from `runtime.health` (Stage 1 Phase 72f) + per-driver `*.health_changed` events.
-- [ ] Intervention queue uses `pause.list` (Stage 1 Phase 72e) filtered by the operator's identity scope; cross-tenant view requires admin scope per D-079.
-- [ ] Cost rollup card renders per-agent breakdown by default; per-tenant view is admin elevation (operator's existing scope claim determines which appears).
-- [ ] Approve / Reject buttons invoke EXISTING shipped Protocol methods (`approve`, `reject` — Phase 54). No parallel implementation (§13). Buttons gated by `tasks.control` / `tools.approve` claims (D-066) and degrade to disabled-with-tooltip when missing.
-- [ ] `+ New` menu items deep-link into per-page create flows (the actual create routes are owned by their page's phase plan — Overview only provides the menu).
-- [ ] Quick Links grid contains exactly 6 tiles: Sessions, Tasks, Background Jobs, Agents, Tools, Settings. No `/console/evaluations` tile (D-064 post-V1).
-- [ ] Footer renders `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
-- [ ] Design tokens only — no raw color/spacing/type-scale literals in `.svelte` files (§13 + Stylelint enforcement).
-- [ ] `svelte-check --fail-on-warnings` passes (no Svelte 4 reactivity syntax per D-092).
-- [ ] Per-page Playwright spec `web/console/tests/overview-page.spec.ts` covers: (a) initial load renders all panel skeletons, (b) counter cards populate from event stream, (c) intervention queue renders pause.list rows with Approve / Reject buttons hidden when scope absent, (d) Quick Links navigation works, (e) `+ New` menu deep-links resolve.
-- [ ] `scripts/smoke/phase-73a.sh` asserts the page route returns 200 (gated on `harbor console` being up; SKIPped until 73m).
+- [x] `web/console/src/routes/overview/+page.svelte` renders the 4-card counter row (Events/min, Tasks Running, Background Jobs, MCP Connections), the sub-header health-chip strip, the cost rollup card, the intervention queue (composed from `pause.list`), the recent activity feed (composed from `events.subscribe`), the Quick Links 2x3 grid, the `+ New` quick-create menu, and the footer.
+- [x] All data flows go through the typed Protocol client at `web/console/src/lib/protocol.ts` (D-093). NO hand-rolled `fetch` calls in `.svelte` files.
+- [x] Counter-card sparklines render windowed event-rate aggregation client-side from the `events.subscribe` cursor — no new Protocol method.
+- [x] Health sub-header strip renders chip-per-subsystem from `runtime.health` (Stage 1 Phase 72f) + per-driver `*.health_changed` events.
+- [x] Intervention queue uses `pause.list` (Stage 1 Phase 72e) filtered by the operator's identity scope; cross-tenant view requires admin scope per D-079.
+- [x] Cost rollup card renders per-agent breakdown by default; per-tenant view is admin elevation (operator's existing scope claim determines which appears).
+- [x] Approve / Reject buttons invoke EXISTING shipped Protocol methods (`approve`, `reject` — Phase 54). No parallel implementation (§13). Buttons gated by `tasks.control` / `tools.approve` claims (D-066) and degrade to disabled-with-tooltip when missing.
+- [x] `+ New` menu items deep-link into per-page create flows (the actual create routes are owned by their page's phase plan — Overview only provides the menu).
+- [x] Quick Links grid contains exactly 6 tiles: Sessions, Tasks, Background Jobs, Agents, Tools, Settings. No `/console/evaluations` tile (D-064 post-V1).
+- [x] Footer renders `Connected to <runtime> | Protocol v<X.Y.Z> | Events Stream: ON|OFF | Console v<X.Y>`.
+- [x] Design tokens only — no raw color/spacing/type-scale literals in `.svelte` files (§13 + Stylelint enforcement).
+- [x] `svelte-check --fail-on-warnings` passes (no Svelte 4 reactivity syntax per D-092).
+- [x] Per-page Playwright spec `web/console/tests/overview-page.spec.ts` covers: (a) initial load renders all panel skeletons, (b) counter cards populate from event stream, (c) intervention queue renders pause.list rows with Approve / Reject buttons hidden when scope absent, (d) Quick Links navigation works, (e) `+ New` menu deep-links resolve.
+- [x] `scripts/smoke/phase-73a.sh` asserts the page route returns 200 (gated on `harbor console` being up; SKIPped until 73m).
 
 ## Files added or changed
 
@@ -197,18 +208,18 @@ No new Go-side surface; this phase is UI composition over existing Protocol meth
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] `make protocol-ts-gen-check` passes (no Go-side type changes here, but the gen check runs regardless per CI shape)
-- [ ] `svelte-check --fail-on-warnings` passes (no Svelte 4 reactivity syntax per D-092)
-- [ ] `npm run lint` passes in `web/console/` (no raw color / spacing literals per §13)
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: N/A — Overview is observation-only, all data goes through identity-scope-aware upstream Protocol methods
-- [ ] **Concurrent-reuse test:** N/A — no new Go-side reusable artifact (this phase is UI only)
-- [ ] **Integration test:** N/A — no new Go-side seam; UI Playwright spec covers the cross-stack integration end-to-end
-- [ ] **Per-page Playwright spec lands in this phase's PR** — `web/console/tests/overview-page.spec.ts` exists and passes
-- [ ] Glossary updated (no additions expected, but verified)
-- [ ] If a brief finding was departed from: justified above + decisions.md entry filed (None for this phase)
-- [ ] **Coordinator-verify pass complete** before the PR is opened for operator review (decomposition doc §12 lock-in)
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] `make protocol-ts-gen-check` passes (no Go-side type changes here, but the gen check runs regardless per CI shape)
+- [x] `svelte-check --fail-on-warnings` passes (no Svelte 4 reactivity syntax per D-092)
+- [x] `npm run lint` passes in `web/console/` (no raw color / spacing literals per §13)
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: N/A — Overview is observation-only, all data goes through identity-scope-aware upstream Protocol methods
+- [x] **Concurrent-reuse test:** N/A — no new Go-side reusable artifact (this phase is UI only)
+- [x] **Integration test:** N/A — no new Go-side seam; UI Playwright spec covers the cross-stack integration end-to-end
+- [x] **Per-page Playwright spec lands in this phase's PR** — `web/console/tests/overview-page.spec.ts` exists and passes
+- [x] Glossary updated (no additions expected, but verified)
+- [x] If a brief finding was departed from: justified above + decisions.md entry filed (None for this phase)
+- [x] **Coordinator-verify pass complete** before the PR is opened for operator review (decomposition doc §12 lock-in)

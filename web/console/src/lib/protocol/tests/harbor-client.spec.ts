@@ -97,6 +97,47 @@ describe('HarborClient namespace dispatch', () => {
 		const body = JSON.parse(init.body as string);
 		expect(body.include_status_counter_strip).toBe(true);
 	});
+
+	// Phase 73a / D-127 — the runtime + pause namespaces the Overview
+	// page consumes. Both are composition over already-shipped surface.
+	it('routes runtime.counters to the posture control surface', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({
+				events_per_second: 1,
+				tasks_running: 2,
+				background_jobs_active: 0,
+				mcp_connections_healthy: 3,
+				sessions_active: 4,
+				snapshot_at: 0
+			})
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		const counters = await client.runtime.counters();
+		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+		expect(url).toBe('http://127.0.0.1:18080/v1/control/runtime.counters');
+		expect(counters.tasks_running).toBe(2);
+	});
+
+	it('routes runtime.health to the posture control surface', async () => {
+		const fetchImpl = vi.fn(async () => okResponse({ subsystems: [] }));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.runtime.health();
+		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+		expect(url).toBe('http://127.0.0.1:18080/v1/control/runtime.health');
+	});
+
+	it('routes pause.list to POST /v1/pause/list with the identity body', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({ snapshots: [], page: 1, page_size: 50, page_count: 0, total_rows: 0 })
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.pause.list({ page: 1, page_size: 50 });
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/pause/list');
+		const body = JSON.parse(init.body as string);
+		expect(body.identity).toEqual(CONNECTION.identity);
+		expect(body.page_size).toBe(50);
+	});
 });
 
 describe('HarborClient events namespace (Phase 73g / D-125)', () => {
