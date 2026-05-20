@@ -74,6 +74,29 @@ describe('HarborClient namespace dispatch', () => {
 		const [url] = fetchImpl.mock.calls[0] as unknown as [string];
 		expect(url).toBe('http://127.0.0.1:18080/v1/control/mcp.servers.list');
 	});
+
+	// Phase 73b (D-126) — the Live Runtime page surfaces.
+	it('routes topology.snapshot onto the control surface', async () => {
+		const fetchImpl = vi.fn(async () => okResponse({ engine_id: 'e', nodes: [], edges: [] }));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.topology.snapshot();
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/control/topology.snapshot');
+		const body = JSON.parse(init.body as string);
+		expect(body.identity).toEqual(CONNECTION.identity);
+	});
+
+	it('routes tasks.list with the status-counter-strip opt-in flag', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({ rows: [], cursor: {}, aggregates: {}, status_counter_strip: {} })
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.tasks.list({ include_status_counter_strip: true });
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/tasks/list');
+		const body = JSON.parse(init.body as string);
+		expect(body.include_status_counter_strip).toBe(true);
+	});
 });
 
 describe('HarborClient events namespace (Phase 73g / D-125)', () => {

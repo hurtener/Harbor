@@ -99,11 +99,50 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 		s.emitAdminAudit(ctx, id, "tasks.list", len(tenants))
 	}
 
-	return prototypes.TaskListResponse{
+	resp := prototypes.TaskListResponse{
 		Rows:       rows,
 		Cursor:     nextCursor,
 		Aggregates: aggregates,
-	}, nil
+	}
+
+	// Phase 73b (D-126): the opt-in status-counter-strip aggregate. It
+	// is computed over the FULL identity-scoped task set `all` — NOT the
+	// filtered view — so the Live Runtime header strip reports session-
+	// wide present-tense posture rather than narrowing with the page's
+	// facet filter. The aggregate stays within the call's identity
+	// scope: `all` is the Projector's identity-scoped projection, so the
+	// counter never crosses the isolation boundary (CLAUDE.md §6 rule 2).
+	if req.IncludeStatusCounterStrip {
+		strip := computeStatusCounterStrip(all)
+		resp.StatusCounterStrip = &strip
+	}
+
+	return resp, nil
+}
+
+// computeStatusCounterStrip tallies the five-chip Live Runtime header
+// strip over the supplied identity-scoped task set. It keys on the
+// canonical lifecycle vocabulary the page-spec mockup uses (`completed`
+// for the runtime `complete` status); the `cancelled` status is folded
+// out — the strip is a five-chip present-tense posture, not the six-
+// status kanban tally (see the TasksListStatusCounterStrip godoc).
+func computeStatusCounterStrip(rows []prototypes.TaskRow) prototypes.TasksListStatusCounterStrip {
+	var strip prototypes.TasksListStatusCounterStrip
+	for _, t := range rows {
+		switch t.Status {
+		case prototypes.TaskStatusPending:
+			strip.Pending++
+		case prototypes.TaskStatusRunning:
+			strip.Running++
+		case prototypes.TaskStatusComplete:
+			strip.Completed++
+		case prototypes.TaskStatusPaused:
+			strip.Paused++
+		case prototypes.TaskStatusFailed:
+			strip.Failed++
+		}
+	}
+	return strip
 }
 
 // validateFilter rejects a structurally invalid TaskFilter — an unknown

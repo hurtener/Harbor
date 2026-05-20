@@ -549,6 +549,24 @@ export class SessionsNamespace {
 	}
 }
 
+/**
+ * The `topology.*` namespace — Phase 74 / D-114, consumed by the
+ * Console Live Runtime page (Phase 73b / D-126). The Runtime mounts
+ * `topology.snapshot` on the control surface at
+ * `POST /v1/control/topology.snapshot`. It is a pure read — the page's
+ * topology canvas renders the returned `TopologyProjection`.
+ */
+export class TopologyNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `topology.snapshot` — the Runtime engine's static node graph + live per-edge queue depth. */
+	snapshot<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/topology.snapshot', {});
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -578,6 +596,7 @@ export interface ProtocolClient {
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
+	readonly topology: TopologyNamespace;
 }
 
 /**
@@ -600,6 +619,7 @@ export class HarborClient implements ProtocolClient {
 	readonly events: EventsNamespace;
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
+	readonly topology: TopologyNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -613,5 +633,6 @@ export class HarborClient implements ProtocolClient {
 		this.events = new EventsNamespace(transport);
 		this.agents = new AgentsNamespace(transport);
 		this.sessions = new SessionsNamespace(transport);
+		this.topology = new TopologyNamespace(transport);
 	}
 }

@@ -88,11 +88,38 @@ export interface TaskListCursor {
   next_page_token?: string;
 }
 
+/**
+ * The Phase 73b (D-126) status-counter-strip aggregate — the Console
+ * Live Runtime page's header five-chip strip (`pending / running /
+ * completed / paused / failed`). Mirrors the Go
+ * `types.TasksListStatusCounterStrip`.
+ *
+ * Distinct from {@link TaskListAggregates}: the strip is computed over
+ * the FULL identity-scoped task set (not the filtered view) and is the
+ * session-wide present-tense posture. It keys on `completed` (not
+ * `complete`) and omits `cancelled` — a five-chip strip, not the
+ * six-status kanban tally. Identity-scoped + computed server-side: the
+ * counter never crosses the isolation boundary.
+ */
+export interface TaskListStatusCounterStrip {
+  pending: number;
+  running: number;
+  completed: number;
+  paused: number;
+  failed: number;
+}
+
 /** The `tasks.list` request body. */
 export interface TaskListRequest {
   filter?: TaskFilter;
   page_size?: number;
   cursor?: TaskListCursor;
+  /**
+   * Phase 73b (D-126) — opt the response into carrying the
+   * {@link TaskListStatusCounterStrip} aggregate. The Live Runtime page
+   * sets it on its initial-load call; the Tasks page never does.
+   */
+  include_status_counter_strip?: boolean;
 }
 
 /** The `tasks.list` reply. */
@@ -100,6 +127,12 @@ export interface TaskListResponse {
   rows: TaskRow[];
   cursor: TaskListCursor;
   aggregates: TaskListAggregates;
+  /**
+   * Phase 73b (D-126) header-strip aggregate — present ONLY when the
+   * request set `include_status_counter_strip`. Computed over the full
+   * identity-scoped task set (not the filtered view).
+   */
+  status_counter_strip?: TaskListStatusCounterStrip;
 }
 
 /** The parent-session reference card `tasks.get` returns. */
