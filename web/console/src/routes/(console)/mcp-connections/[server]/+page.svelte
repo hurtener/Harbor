@@ -2,7 +2,7 @@
   // Phase 73k (D-119) — MCP Connections per-server detail view.
   //
   // Six tabs: Tools / Resources / Prompts / OAuth & Auth / Health /
-  // Policy. The Tools tab deep-links to `/console/tools?server=<name>`
+  // Policy. The Tools tab deep-links to `/tools?server=<name>`
   // (Phase 73f's surface — a pure URL consumer). Every Protocol call
   // routes through the typed `mcpApi` client. Raw-HTML trust toggle is
   // admin-gated (UI + server). All values are design tokens.
@@ -39,7 +39,7 @@
 </script>
 
 <section class="detail-page" data-testid="mcp-connections-detail">
-  <a class="back-link" href="/console/mcp-connections">← MCP Connections</a>
+  <a class="back-link" href="/mcp-connections">← MCP Connections</a>
 
   {#if detail.loading}
     <p class="state-msg" data-testid="detail-loading">Loading {serverName}…</p>
@@ -108,7 +108,7 @@
         <p class="tab-note">
           This server exposes {detail.server.tool_count} tool(s).
         </p>
-        <a class="deep-link" data-testid="tools-deep-link" href={`/console/tools?server=${serverName}`}>
+        <a class="deep-link" data-testid="tools-deep-link" href={`/tools?server=${serverName}`}>
           Open in Tools page →
         </a>
       {:else if detail.activeTab === 'resources'}

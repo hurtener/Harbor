@@ -76,7 +76,7 @@
         {#each list.servers as srv (srv.name)}
           <tr data-testid={`server-row-${srv.name}`}>
             <td>
-              <a class="server-link" href={`/console/mcp-connections/${srv.name}`}>
+              <a class="server-link" href={`/mcp-connections/${srv.name}`}>
                 {srv.name}
               </a>
             </td>

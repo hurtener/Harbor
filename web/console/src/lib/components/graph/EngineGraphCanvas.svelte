@@ -11,7 +11,7 @@
   // `Save graph` affordances — those controls do not render at V1, by
   // construction. The only interactions are: click a node → emit a
   // selection; double-click → emit an activation (the Flows page routes
-  // a tool node's activation to `/console/tools/<id>`).
+  // a tool node's activation to `/tools/<id>`).
   import GraphNode from './GraphNode.svelte';
   import GraphEdge from './GraphEdge.svelte';
   import { layoutGraph, resolveEdge } from './layout';
