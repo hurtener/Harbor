@@ -1,0 +1,57 @@
+/*
+ * Harbor Console design-token surface (CLAUDE.md §4.5 rule 3).
+ *
+ * This file is the SINGLE place raw color / spacing / type-scale / radius /
+ * motion values are allowed. Every `.svelte` component references these
+ * custom properties via `var(--token-name)` — never a raw literal. The
+ * `.stylelintrc.cjs` rule set mechanically rejects raw literals everywhere
+ * except this file; `npm run lint` fails CI on a violation.
+ *
+ * Phase 72h ships the baseline token surface so every downstream Stage-2
+ * Console page can ride on it. Later Console phases extend it additively.
+ */
+
+:root {
+  /* ---- Color: neutral scale ---- */
+  --color-bg: #0d1117;
+  --color-surface: #161b22;
+  --color-surface-raised: #21262d;
+  --color-border: #30363d;
+  --color-text: #e6edf3;
+  --color-text-muted: #8b949e;
+
+  /* ---- Color: brand + status ---- */
+  --color-accent: #2f81f7;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #f85149;
+
+  /* ---- Spacing scale ---- */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* ---- Type scale ---- */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.5rem;
+
+  /* ---- Radii ---- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* ---- Motion ---- */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}

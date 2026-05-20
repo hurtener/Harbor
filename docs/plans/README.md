@@ -96,6 +96,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Shipped  |
 | 72a| `events.subscribe` filter ext + `events.aggregate` | protocol+events | §5.2, §6.13 | 60, 61, 72            | 85%  | Shipped  |
 | 72b| `IdentityScope` admin-impersonation extension | protocol             | §5.5, §7    | 60, 61                | 89%  | Shipped  |
+| 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
 | 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Pending  |
 | 75 | Console e2e Playwright (CI gate)              | testing              | §7          | 64, 72, 73            | n/a  | Pending  |
@@ -786,6 +787,14 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Unit (filter matrix, aggregate bucket arithmetic, concurrent-reuse) + integration (`test/integration/events_filter_aggregate_test.go` — real bus + real auth + real transports, scope-claim happy + reject paths, concurrent-reuse over the wire) + smoke (`scripts/smoke/phase-72a.sh`).
 **Deps.** 60, 61, 72.
 **Plan.** See `docs/plans/phase-72a-events-filter-aggregate.md`.
+
+### 72h — Console DB local schema + SvelteKit scaffold (RFC §7)
+
+**Goal.** Land the Console-local IndexedDB schema (per D-061 — Console-local state ONLY, never a shadow source of truth for runtime entities) AND introduce the `web/console/` SvelteKit scaffold (audit-resolved A5) every Stage-2 Console page rides on. Eight V1 tables: `saved_filters`, `saved_views`, `profiles`, `runtime_registry`, `auth_profiles`, `pat_store`, `notifications_routing`, `keybindings`.
+**Acceptance.** `web/console/src/lib/db/` ships as a self-contained TypeScript module behind a `ConsoleDB` driver interface (V1 default driver: IndexedDB); per-operator row scoping is structural (`[operator_id, id]` compound key); `auth_profiles` / `pat_store` blobs are AES-GCM ciphertext with a PBKDF2-derived KEK (`crypto.ts`); forward-only migrations; the §13 / D-061 carve-out is mechanically scanned (`schema-carveout.spec.ts` + smoke); the SvelteKit scaffold pins Svelte 5 runes (D-092) + ships the generated `protocol.ts` stub (D-093).
+**Tests.** Vitest unit (`crypto.spec.ts`, `schema.spec.ts`, `schema-carveout.spec.ts`, `migrations.spec.ts`) + in-package integration (`tests/integration.spec.ts` — real IndexedDB driver via `fake-indexeddb`, real WebCrypto, eight-table round-trip, cross-operator isolation, encrypted-blob round-trip, wrong-key fail-loud) + smoke (`scripts/smoke/phase-72h.sh`, static-only).
+**Deps.** 60 (Protocol auth for PAT identity scoping).
+**Plan.** See `docs/plans/phase-72h-console-db-schema.md`. Decision: D-113.
 
 ### 73 — Console state inspection surface (RFC §5.2, §7)
 
