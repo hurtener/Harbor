@@ -8,9 +8,12 @@
 # the npm scripts are declared, the `frontend-e2e` CI job is wired, and no
 # spec hand-rolls a `fetch(` call (CLAUDE.md §4.5 #11 + §13).
 #
-# The whole script degrades gracefully (SKIP, not FAIL) when `web/console/`
-# is absent — the Stage-1 first-Console-SvelteKit phase may land in a parallel
-# agent in the same stage; the harness baseline does not block that ordering.
+# The whole script degrades gracefully (SKIP, not FAIL) when the Phase 75
+# harness itself is absent. The keyed surface is `playwright.config.ts` —
+# Phase 72h introduces `web/console/` with the SvelteKit scaffold + Console
+# DB module BEFORE Phase 75 lands the Playwright harness; the file-absence
+# → SKIP convention (§4.2) must therefore key on the harness file, not the
+# `web/console/` directory (which 72h creates first).
 
 set -euo pipefail
 
@@ -20,8 +23,8 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-if [ ! -d "${ROOT}/web/console" ]; then
-  skip "phase 75: web/console/ not yet present (Stage-1 SvelteKit scaffold pending)"
+if [ ! -f "${ROOT}/web/console/playwright.config.ts" ]; then
+  skip "phase 75: Playwright harness not yet present (web/console/playwright.config.ts absent — Phase 75 pending)"
   smoke_summary
   exit 0
 fi
