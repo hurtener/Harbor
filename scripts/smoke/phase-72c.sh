@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: live-server
+# PREFLIGHT_REQUIRES: unit-tests
 #
-# Phase 72c — search.* cluster (5 methods, one phase).
+# Phase 72c (D-108) — search.* cluster (5 methods, one phase).
 #
-# Surface assertions (executed only when the surface is live; 404/405/501
-# auto-SKIP per AGENTS.md §4.2):
-#   1. Five happy-path round-trips: search.query / search.sessions /
-#      search.tasks / search.events / search.artifacts each return a
-#      paginated response with a `rows` array.
-#   2. Five cross-tenant rejections: each method, called with a
-#      filter listing multiple tenants WITHOUT the auth.ScopeAdmin
-#      scope claim, returns 403.
-#   3. Five missing-identity rejections: each method, called without an
-#      identity triple in context, returns 401.
-#
-# Until the phase ships, `protocol_call` stubs the calls (SKIP); when the
-# phase lands, replace `protocol_call` invocations with real `curl` /
-# `assert_status` / `assert_json_path` calls per the assertions above.
+# This smoke runs the per-package conformance + integration tests under
+# the race detector. The live HTTP server that mounts the search
+# transport (auth middleware + control transport with WithSearchSurface)
+# is part of `harbor dev`'s wiring, which lands in a future stage of
+# Wave 13; until then the smoke pins the surface via `go test -race`
+# against the real drivers, exactly as Phase 61 / Phase 62 do for the
+# auth + conformance surfaces.
 
 set -euo pipefail
 
@@ -26,95 +19,118 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# 1. Happy-path round-trips — one per method.
-# ----------------------------------------------------------------------------
-
-protocol_call 'search/query' \
-  '{"query": "hello", "indexes": ["sessions", "tasks", "events", "artifacts"]}' \
-  'phase 72c: search.query palette dispatcher round-trips'
-
-protocol_call 'search/sessions' \
-  '{"query": "agent-a"}' \
-  'phase 72c: search.sessions round-trips'
-
-protocol_call 'search/tasks' \
-  '{"query": "in-progress"}' \
-  'phase 72c: search.tasks round-trips'
-
-protocol_call 'search/events' \
-  '{"query": "tool.failed"}' \
-  'phase 72c: search.events round-trips'
-
-protocol_call 'search/artifacts' \
-  '{"query": "report.pdf"}' \
-  'phase 72c: search.artifacts round-trips'
+SEARCH_PKG="internal/search"
+PROTO_PKG="internal/protocol"
+TRANSPORT_PKG="internal/protocol/transports/control"
+TYPES_PKG="internal/protocol/types"
+METHODS_PKG="internal/protocol/methods"
+INTEGRATION_PKG="test/integration"
 
 # ----------------------------------------------------------------------------
-# 2. Cross-tenant rejection — each method must 403 when the filter lists
-#    multiple tenants and the caller lacks the auth.ScopeAdmin claim.
+# 1. Per-package conformance + concurrent-reuse + identity-isolation tests.
 # ----------------------------------------------------------------------------
 
-protocol_call 'search/query' \
-  '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.query rejects cross-tenant filter without auth.ScopeAdmin claim'
-
-protocol_call 'search/sessions' \
-  '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.sessions rejects cross-tenant filter without auth.ScopeAdmin claim'
-
-protocol_call 'search/tasks' \
-  '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.tasks rejects cross-tenant filter without auth.ScopeAdmin claim'
-
-protocol_call 'search/events' \
-  '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.events rejects cross-tenant filter without auth.ScopeAdmin claim'
-
-protocol_call 'search/artifacts' \
-  '{"query": "x", "filter": {"tenant_ids": ["t1", "t2"]}}' \
-  'phase 72c: search.artifacts rejects cross-tenant filter without auth.ScopeAdmin claim'
+if go test -race -count=1 -timeout 240s ./${SEARCH_PKG}/... >/dev/null 2>&1; then
+    ok 'phase 72c: internal/search/... tests pass under -race (aggregate + 4 per-index Searchers + D-025 + identity isolation)'
+else
+    fail 'phase 72c: internal/search tests failed (run `go test -race ./internal/search/...` for detail)'
+fi
 
 # ----------------------------------------------------------------------------
-# 3. Missing-identity rejection — each method must 401 when the caller's
-#    context lacks the (tenant, user, session) triple.
+# 2. Protocol-side dispatcher + wire-shape round-trip + handler error map.
 # ----------------------------------------------------------------------------
 
-protocol_call 'search/query' \
-  '{"query": "x"}' \
-  'phase 72c: search.query rejects missing identity context'
+if go test -race -count=1 -timeout 180s -run 'TestSearch' ./${PROTO_PKG}/ >/dev/null 2>&1; then
+    ok 'phase 72c: internal/protocol search-surface tests pass under -race (5 methods + cross-tenant CodeScopeMismatch)'
+else
+    fail 'phase 72c: protocol search-surface tests failed (run `go test -race -run TestSearch ./internal/protocol/...` for detail)'
+fi
 
-protocol_call 'search/sessions' \
-  '{"query": "x"}' \
-  'phase 72c: search.sessions rejects missing identity context'
-
-protocol_call 'search/tasks' \
-  '{"query": "x"}' \
-  'phase 72c: search.tasks rejects missing identity context'
-
-protocol_call 'search/events' \
-  '{"query": "x"}' \
-  'phase 72c: search.events rejects missing identity context'
-
-protocol_call 'search/artifacts' \
-  '{"query": "x"}' \
-  'phase 72c: search.artifacts rejects missing identity context'
+if go test -race -count=1 -timeout 180s -run 'TestSearchHandler' ./${TRANSPORT_PKG}/ >/dev/null 2>&1; then
+    ok 'phase 72c: control transport search_handler tests pass under -race (HTTP 200 / 400 / 401 / 403 / 404 path map)'
+else
+    fail 'phase 72c: control transport search-handler tests failed (run `go test -race -run TestSearchHandler ./internal/protocol/transports/control/...` for detail)'
+fi
 
 # ----------------------------------------------------------------------------
-# Surface-existence probes — until the Protocol layer ships these routes,
-# each probe SKIPs via 404. Once the phase lands, these flip to OK and
-# the protocol_call stubs above are replaced with real assertions.
+# 3. Wire-type single-source guards (CLAUDE.md §8 + the §13 single-source
+#    rule). The protocol/methods exhaustiveness test and the wire-type
+#    round-trip test must keep passing.
 # ----------------------------------------------------------------------------
 
-skip_if_404 "$(api_url /protocol/search/query)" \
-  'phase 72c: search.query route absent until Protocol layer ships' || true
-skip_if_404 "$(api_url /protocol/search/sessions)" \
-  'phase 72c: search.sessions route absent until Protocol layer ships' || true
-skip_if_404 "$(api_url /protocol/search/tasks)" \
-  'phase 72c: search.tasks route absent until Protocol layer ships' || true
-skip_if_404 "$(api_url /protocol/search/events)" \
-  'phase 72c: search.events route absent until Protocol layer ships' || true
-skip_if_404 "$(api_url /protocol/search/artifacts)" \
-  'phase 72c: search.artifacts route absent until Protocol layer ships' || true
+if go test -race -count=1 -timeout 60s ./${TYPES_PKG}/ ./${METHODS_PKG}/ >/dev/null 2>&1; then
+    ok 'phase 72c: types + methods exhaustiveness tests pass under -race (the five search.* method constants are in lockstep)'
+else
+    fail 'phase 72c: types/methods exhaustiveness failed — search.* constants drifted'
+fi
+
+# ----------------------------------------------------------------------------
+# 4. §17.1 integration test — real sessions + tasks + events +
+#    artifacts + Protocol transport, cross-tenant isolation, identity-
+#    mandatory rejection, heavy-payload ArtifactRef bypass.
+# ----------------------------------------------------------------------------
+
+if go test -race -count=1 -timeout 240s -run 'TestE2E_SearchCluster' ./${INTEGRATION_PKG}/ >/dev/null 2>&1; then
+    ok 'phase 72c: search_cluster integration test passes under -race (5 methods round-trip + identity-mandatory + cross-tenant 403 + heavy-payload Ref bypass + N=16 concurrency stress)'
+else
+    fail 'phase 72c: search_cluster integration test failed (run `go test -race -run TestE2E_SearchCluster ./test/integration/...` for detail)'
+fi
+
+# ----------------------------------------------------------------------------
+# 5. Static guards — surface existence + single-source preservation.
+# ----------------------------------------------------------------------------
+
+for sym in 'MethodSearchQuery' 'MethodSearchSessions' 'MethodSearchTasks' 'MethodSearchEvents' 'MethodSearchArtifacts'; do
+    if grep -q "${sym}" "${METHODS_PKG}/methods.go" 2>/dev/null; then
+        ok "phase 72c: ${METHODS_PKG} declares ${sym} (single-source preserved)"
+    else
+        fail "phase 72c: ${METHODS_PKG} missing ${sym}"
+    fi
+done
+
+for sym in 'SearchRequest' 'SearchResponse' 'SearchResultRow' 'SearchFilter' 'SearchFacet' 'SearchArtifactRef'; do
+    if grep -q "type ${sym}" "${TYPES_PKG}/search.go" 2>/dev/null; then
+        ok "phase 72c: ${TYPES_PKG}/search.go declares ${sym}"
+    else
+        fail "phase 72c: ${TYPES_PKG}/search.go missing ${sym}"
+    fi
+done
+
+if grep -q 'type SearchSurface' "${PROTO_PKG}/search.go" 2>/dev/null; then
+    ok "phase 72c: ${PROTO_PKG}/search.go declares SearchSurface (Protocol-side dispatcher)"
+else
+    fail "phase 72c: ${PROTO_PKG}/search.go missing SearchSurface"
+fi
+
+if grep -q 'WithSearchSurface' "${TRANSPORT_PKG}/control.go" 2>/dev/null; then
+    ok "phase 72c: ${TRANSPORT_PKG}/control.go declares WithSearchSurface (handler integration seam)"
+else
+    fail "phase 72c: ${TRANSPORT_PKG}/control.go missing WithSearchSurface"
+fi
+
+# Single-source preservation — no Protocol error Code constant constructed
+# under the search subsystem (CLAUDE.md §8).
+if grep -rIn --include='*.go' 'protoerrors\.Code(' "${SEARCH_PKG}/" 2>/dev/null | grep -v '_test.go' | grep -q .; then
+    fail 'phase 72c: a Protocol error Code is constructed under internal/search — codes are single-sourced in internal/protocol/errors'
+else
+    ok 'phase 72c: no Protocol error Code redefined under internal/search (single-source preserved)'
+fi
+
+# ----------------------------------------------------------------------------
+# 6. Live-server probes — until `harbor dev` mounts the search surface
+#    these SKIP via 404 per the AGENTS.md §4.2 convention. The shape
+#    matches the wire URL `/v1/control/{method}` the Phase 60 mux uses.
+# ----------------------------------------------------------------------------
+
+skip_if_404 "$(api_url /v1/control/search.query)" \
+  'phase 72c: search.query route not yet mounted by harbor dev' || true
+skip_if_404 "$(api_url /v1/control/search.sessions)" \
+  'phase 72c: search.sessions route not yet mounted by harbor dev' || true
+skip_if_404 "$(api_url /v1/control/search.tasks)" \
+  'phase 72c: search.tasks route not yet mounted by harbor dev' || true
+skip_if_404 "$(api_url /v1/control/search.events)" \
+  'phase 72c: search.events route not yet mounted by harbor dev' || true
+skip_if_404 "$(api_url /v1/control/search.artifacts)" \
+  'phase 72c: search.artifacts route not yet mounted by harbor dev' || true
 
 smoke_summary

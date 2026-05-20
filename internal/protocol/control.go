@@ -83,6 +83,15 @@ func (s *ControlSurface) Dispatch(ctx context.Context, method methods.Method, re
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q is a streaming-events method; POST to /v1/events/aggregate instead", string(method))
 	}
+	// Phase 72c (D-108): the five `search.*` methods are dispatched by
+	// SearchSurface, not ControlSurface — a caller that hits the REST
+	// control surface with a search method is using the wrong transport
+	// for the wrong vocabulary. Surface it loud rather than silently
+	// routing onto the steering inbox.
+	if methods.IsSearchMethod(method) {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q is a search method; dispatch through the SearchSurface (POST /v1/search) instead", string(method))
+	}
 	return s.dispatchControl(ctx, method, req)
 }
 
@@ -224,11 +233,13 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 }
 
 // compile-time assertion: every steering-control method
-// (IsControlMethod=true) has a steering.ControlType mapping. MethodStart
-// and the Wave 13 streaming-events methods (MethodEventsSubscribe /
-// MethodEventsAggregate) are NOT control methods and route through
-// their own surfaces (the task registry for Start; the SSE handler +
-// events-aggregate handler for the streaming-events two) — IsControlMethod
+// (IsControlMethod=true) has a steering.ControlType mapping. MethodStart,
+// the Wave 13 streaming-events methods (MethodEventsSubscribe /
+// MethodEventsAggregate), and the Phase 72c `search.*` cluster are NOT
+// control methods and route through their own surfaces (the task
+// registry for Start; the SSE handler + events-aggregate handler for
+// the streaming-events two; the search dispatcher in
+// internal/protocol/search.go for the search cluster) — IsControlMethod
 // gates the exhaustive check so a new non-control method does NOT need
 // a mapping. If a new steering-control method is added to
 // internal/protocol/methods without a mapping here, this fails —
@@ -236,9 +247,10 @@ func (s *ControlSurface) dispatchControl(ctx context.Context, method methods.Met
 func init() {
 	for _, m := range methods.Methods() {
 		if !methods.IsControlMethod(m) {
-			// MethodStart, the Wave 13 streaming-events methods, and
-			// any future non-control method are routed elsewhere — no
-			// steering.ControlType is expected for them.
+			// MethodStart, the Wave 13 streaming-events methods, the
+			// Phase 72c search cluster, and any future non-control
+			// method are routed elsewhere — no steering.ControlType is
+			// expected for them.
 			continue
 		}
 		if _, ok := methodToControlType[m]; !ok {

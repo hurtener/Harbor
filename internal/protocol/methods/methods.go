@@ -40,6 +40,18 @@
 // the new entries. See `docs/plans/phase-72-console-subscription-scope.md`
 // and `docs/plans/phase-72a-events-filter-and-aggregate.md`.
 //
+// # The Wave 13 search cluster (Phase 72c / D-108)
+//
+// Phase 72c adds the five `search.*` methods used by the Console
+// command palette and per-section search bars. `search.query` is the
+// pure aggregator that fans out to the per-index methods
+// (`search.sessions`, `search.tasks`, `search.events`,
+// `search.artifacts`). The five methods are NOT control methods:
+// `IsControlMethod` returns false for them (the steering inbox stays
+// exclusive). A separate `IsSearchMethod` predicate lets transport
+// adapters branch the route table. See
+// `docs/plans/phase-72c-search-cluster.md`.
+//
 // # No registration escape hatch
 //
 // canonicalMethods is a fixed package-level map, not a write-once
@@ -59,7 +71,8 @@ type Method string
 // The ten canonical task-control method names (RFC §5.2 "Task control"
 // row + RFC §6.3 control taxonomy) PLUS the two streaming-events method
 // names landed in Wave 13 (Phase 72 / 72a) — `events.subscribe` and
-// `events.aggregate` — the first non-task-control Protocol surface.
+// `events.aggregate` — the first non-task-control Protocol surface,
+// PLUS the five `search.*` methods landed in Phase 72c (D-108).
 const (
 	// MethodStart asks the Runtime to spawn a new task / foreground run.
 	// Maps onto tasks.TaskRegistry.Spawn (Phase 20).
@@ -121,6 +134,28 @@ const (
 	// NOT a control method: `IsControlMethod(MethodEventsAggregate)`
 	// returns false.
 	MethodEventsAggregate Method = "events.aggregate"
+
+	// MethodSearchQuery — Phase 72c (Wave 13) the Console palette
+	// dispatcher. Pure aggregator: fans out concurrently to the
+	// runtime-side per-index search methods, merges + paginates the
+	// union. Carries no index of its own. See `docs/plans/phase-72c-search-cluster.md`.
+	MethodSearchQuery Method = "search.query"
+	// MethodSearchSessions — Phase 72c. Server-enforced session-index
+	// search scoped to the caller's identity triple; cross-tenant
+	// requires the `auth.ScopeAdmin` claim (D-079).
+	MethodSearchSessions Method = "search.sessions"
+	// MethodSearchTasks — Phase 72c. Server-enforced task-index search;
+	// same identity-scope contract as MethodSearchSessions.
+	MethodSearchTasks Method = "search.tasks"
+	// MethodSearchEvents — Phase 72c. Server-enforced events-index
+	// search (filters by event type + header fields + time window).
+	// Reuses the Phase 72a EventFilter predicate. Substring search over
+	// event payload contents is post-V1.
+	MethodSearchEvents Method = "search.events"
+	// MethodSearchArtifacts — Phase 72c. Server-enforced artifact-index
+	// search; rows always carry a `ref` (artifacts are by-reference by
+	// construction per D-026).
+	MethodSearchArtifacts Method = "search.artifacts"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -141,6 +176,31 @@ var canonicalMethods = map[Method]struct{}{
 	MethodUserMessage:     {},
 	MethodEventsSubscribe: {},
 	MethodEventsAggregate: {},
+	MethodSearchQuery:     {},
+	MethodSearchSessions:  {},
+	MethodSearchTasks:     {},
+	MethodSearchEvents:    {},
+	MethodSearchArtifacts: {},
+}
+
+// canonicalSearchMethods is the closed sub-set of the five search.*
+// methods. IsSearchMethod is O(1); a transport adapter (Phase 72c
+// search handler) uses it to branch the route table.
+var canonicalSearchMethods = map[Method]struct{}{
+	MethodSearchQuery:     {},
+	MethodSearchSessions:  {},
+	MethodSearchTasks:     {},
+	MethodSearchEvents:    {},
+	MethodSearchArtifacts: {},
+}
+
+// IsSearchMethod reports whether m is one of the five canonical
+// `search.*` methods. The Phase 72c control transport branches on this
+// to route the request through the search dispatcher instead of the
+// task-control surface.
+func IsSearchMethod(m Method) bool {
+	_, ok := canonicalSearchMethods[m]
+	return ok
 }
 
 // streamingEventsMethods is the closed set of canonical method names
@@ -156,7 +216,7 @@ var streamingEventsMethods = map[Method]struct{}{
 
 // IsValidMethod reports whether m is one of the canonical Protocol
 // method names — the Phase 54 task-control ten plus the Wave 13
-// streaming-events additions.
+// streaming-events additions plus the Phase 72c search cluster.
 func IsValidMethod(m Method) bool {
 	_, ok := canonicalMethods[m]
 	return ok
@@ -164,12 +224,15 @@ func IsValidMethod(m Method) bool {
 
 // IsControlMethod reports whether m is one of the nine steering-control
 // methods — every canonical method except MethodStart AND the
-// streaming-events methods (Phase 72 / 72a). The protocol.ControlSurface
-// uses this to branch: a control method maps onto a steering.ControlEvent;
-// MethodStart maps onto the task registry; a streaming-events method
-// routes through the SSE / events-aggregate transport. A new non-control
-// method (state inspection, topology, artifacts — future phases) extends
-// THIS predicate, NOT the steering-control inbox.
+// streaming-events methods (Phase 72 / 72a) AND the Phase 72c
+// `search.*` cluster (a separate surface from the steering inbox).
+// The protocol.ControlSurface uses this to branch: a control method
+// maps onto a steering.ControlEvent; MethodStart maps onto the task
+// registry; a streaming-events method routes through the SSE /
+// events-aggregate transport; a search method maps onto the Phase 72c
+// search dispatcher. A new non-control method (state inspection,
+// topology, artifacts — future phases) extends THIS predicate, NOT
+// the steering-control inbox.
 func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
 		return false
@@ -178,6 +241,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if _, ok := streamingEventsMethods[m]; ok {
+		return false
+	}
+	if IsSearchMethod(m) {
 		return false
 	}
 	return true
@@ -195,8 +261,9 @@ func IsStreamingEventsMethod(m Method) bool {
 
 // Methods returns a deterministic, lexicographically-sorted snapshot of
 // every canonical method name (the Phase 54 task-control ten + the
-// Wave 13 streaming-events additions). Useful for exhaustiveness tests
-// and for a transport adapter's route table.
+// Wave 13 streaming-events additions + the Phase 72c search cluster).
+// Useful for exhaustiveness tests and for a transport adapter's route
+// table.
 func Methods() []Method {
 	out := make([]Method, 0, len(canonicalMethods))
 	for m := range canonicalMethods {
