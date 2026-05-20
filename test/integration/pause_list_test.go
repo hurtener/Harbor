@@ -464,7 +464,22 @@ func TestE2E_Phase72e_PauseListConcurrentStress(t *testing.T) {
 	for err := range errCh {
 		t.Error(err)
 	}
-	if after := runtime.NumGoroutine(); after > baseline+8 {
-		t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
+	// httptest keeps per-connection serve goroutines and the client
+	// keeps idle-connection goroutines alive briefly after the final
+	// response; they drain within tens of ms. Poll with a bounded
+	// timeout rather than snapshotting instantly (CLAUDE.md §17.4
+	// eventually-style assertion) so a loaded CI runner does not flake.
+	deadline := time.Now().Add(2 * time.Second)
+	var after int
+	for {
+		after = runtime.NumGoroutine()
+		if after <= baseline+8 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("goroutine leak: baseline=%d after=%d", baseline, after)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
