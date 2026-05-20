@@ -31,6 +31,13 @@ export interface RuntimeConnection {
 	token: string;
 	/** The operator's `(tenant, user, session)` isolation triple. */
 	identity: ConnectionIdentity;
+	/**
+	 * The verified scope claims the connection carries (D-066/D-079). The
+	 * `harbor console` boot persists the JWT's scope set; a control-scoped
+	 * action (e.g. `flows.run`) checks for its claim via {@link hasScope}
+	 * and otherwise degrades to disabled-with-tooltip (CONVENTIONS.md §5).
+	 */
+	scopes: string[];
 }
 
 /**
@@ -43,7 +50,8 @@ export const STORAGE_KEYS = {
 	token: 'harbor.runtime.token',
 	tenant: 'harbor.runtime.tenant',
 	user: 'harbor.runtime.user',
-	session: 'harbor.runtime.session'
+	session: 'harbor.runtime.session',
+	scopes: 'harbor.runtime.scopes'
 } as const;
 
 /**
@@ -67,14 +75,28 @@ export function resolveConnection(): RuntimeConnection | null {
 	if (!baseURL || !token || !tenant || !user || !session) {
 		return null;
 	}
+	const scopes = (localStorage.getItem(STORAGE_KEYS.scopes) ?? '')
+		.split(',')
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
 	return {
 		baseURL: baseURL.replace(/\/$/, ''),
 		token,
-		identity: { tenant, user, session }
+		identity: { tenant, user, session },
+		scopes
 	};
 }
 
 /** True when the Console is attached to a Runtime. */
 export function isConnected(): boolean {
 	return resolveConnection() !== null;
+}
+
+/**
+ * True when the resolved connection carries `scope` among its verified
+ * claims. A `null` connection (Console not attached) carries no scopes —
+ * `hasScope` returns `false`, never throws.
+ */
+export function hasScope(connection: RuntimeConnection | null, scope: string): boolean {
+	return connection !== null && connection.scopes.includes(scope);
 }

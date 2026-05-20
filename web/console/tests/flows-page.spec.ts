@@ -1,9 +1,10 @@
-// Harbor Console — Flows page e2e spec (Phase 73i / D-117).
+// Harbor Console — Flows page e2e spec (Phase 73i / D-117, refactored
+// onto the design-system foundation — D-121).
 //
 // Per-page Playwright spec for the Console Flows page. It exercises the
-// catalog table, the engine graph canvas, the `Run flow` scope-claim
-// gate, the run-history → summary-panel drill, and the heavy-output
-// `Open artifact` link.
+// shared `DataTable` catalog, the four-state `PageState`, the engine
+// graph canvas, the `Run flow` scope-claim gate, the run-history →
+// run-summary drill, and the heavy-output `Open artifact` link.
 //
 // SKIP semantics (mirroring the Phase 75 harness baseline + CLAUDE.md
 // §4.2's "404/405/501 → SKIP" smoke convention): the `harbor console`
@@ -23,21 +24,37 @@ import { BasePage } from './pages/base-page';
 class FlowsPage extends BasePage {
   readonly selectors = {
     page: "[data-testid='flows-page']",
-    catalog: "[data-testid='flows-catalog']",
+    // The catalog is now the shared `DataTable`; rows carry the
+    // `catalog-row` marker, the page wraps it in `flows-page`.
     catalogRow: "[data-testid='catalog-row']",
     catalogRun: "[data-testid='catalog-run']",
+    catalogMetrics: "[data-testid='catalog-metrics']",
     search: "[data-testid='flows-search']",
+    searchApply: "[data-testid='flows-search-apply']",
+    refresh: "[data-testid='flows-refresh']",
+    saveView: "[data-testid='flows-save-view']",
+    // The four-state PageState boundary (CONVENTIONS.md §4).
+    stateDisconnected: "[data-testid='page-state-disconnected']",
+    stateLoading: "[data-testid='page-state-loading']",
+    stateError: "[data-testid='page-state-error']",
+    stateEmpty: "[data-testid='page-state-empty']",
+    retry: "[data-testid='page-state-retry']",
+    // Detail-rail metrics card.
+    railMetricsEmpty: "[data-testid='rail-metrics-empty']",
     metricsCard: "[data-testid='flow-metrics-card']",
-    detailHeader: "[data-testid='flow-detail-header']",
+    // Detail route.
+    detailPage: "[data-testid='flow-detail-page']",
     detailRun: "[data-testid='detail-run']",
+    detailBack: "[data-testid='flow-detail-back']",
     graphCanvas: "[data-testid='engine-graph-canvas']",
     graphNode: "[data-testid='graph-node']",
-    graphEdge: "[data-testid='graph-edge']",
     runHistory: "[data-testid='run-history']",
     runHistoryRow: "[data-testid='run-history-row']",
     runSummary: "[data-testid='run-summary-panel']",
+    runSummaryEmpty: "[data-testid='run-summary-empty']",
     runOpenArtifact: "[data-testid='run-open-artifact']",
     runFlowModal: "[data-testid='run-flow-modal']",
+    footer: "[data-testid='connection-footer']",
   } as const;
 
   async goto(): Promise<void> {
@@ -57,7 +74,7 @@ test.describe('Console Flows page', () => {
     'harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built',
   );
 
-  test('the catalog table renders registered flows', async ({
+  test('the catalog renders registered flows via the shared DataTable', async ({
     page,
     runtime,
     helpers,
@@ -65,10 +82,33 @@ test.describe('Console Flows page', () => {
     await helpers.seedAuth(runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    await expect(page.locator(flows.selectors.catalog)).toBeVisible();
+    await expect(page.locator(flows.selectors.page)).toBeVisible();
+    await expect(
+      page.locator(flows.selectors.catalogRow).first(),
+    ).toBeVisible();
+    // The shared ConnectionFooter renders inside the app shell.
+    await expect(page.locator(flows.selectors.footer)).toBeVisible();
   });
 
-  test('selecting a flow opens the detail header + engine graph canvas', async ({
+  test('an empty catalog routes through PageState Empty, not a bare table', async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // CONVENTIONS.md §4 state 4: a zero-row result renders the
+    // page-specific Empty message — never an empty table. The Empty
+    // state shows only when the seeded Runtime has no graph-family
+    // agents; this assertion is conditional on that seed shape.
+    await helpers.seedAuth(runtime.token);
+    const flows = new FlowsPage(page, runtime.baseURL);
+    await flows.goto();
+    const empty = page.locator(flows.selectors.stateEmpty);
+    if ((await empty.count()) > 0) {
+      await expect(empty).toContainText('No flows registered');
+    }
+  });
+
+  test('selecting a flow opens the detail page + engine graph canvas', async ({
     page,
     runtime,
     helpers,
@@ -76,10 +116,8 @@ test.describe('Console Flows page', () => {
     await helpers.seedAuth(runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    const firstRow = page.locator(flows.selectors.catalogRow).first();
-    await firstRow.locator('button.link').click();
-    await expect(page.locator(flows.selectors.detailHeader)).toBeVisible();
-    // The shared engine graph canvas renders nodes + edges.
+    await page.locator(flows.selectors.catalogRow).first().click();
+    await expect(page.locator(flows.selectors.detailPage)).toBeVisible();
     await expect(page.locator(flows.selectors.graphCanvas)).toBeVisible();
     await expect(
       page.locator(flows.selectors.graphNode).first(),
@@ -115,12 +153,23 @@ test.describe('Console Flows page', () => {
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     const runBtn = page.locator(flows.selectors.catalogRun).first();
-    // The affordance is present regardless of scope.
     await expect(runBtn).toHaveCount(1);
-    // Its title attribute is always set (either "Run <flow>" or the
-    // claim-required explanation) — never empty.
     const title = await runBtn.getAttribute('title');
     expect(title, 'Run flow button always carries a title').toBeTruthy();
+  });
+
+  test('the detail rail surfaces flow metrics on demand', async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    await helpers.seedAuth(runtime.token);
+    const flows = new FlowsPage(page, runtime.baseURL);
+    await flows.goto();
+    // The metrics rail starts in the PageState Empty state.
+    await expect(page.locator(flows.selectors.railMetricsEmpty)).toBeVisible();
+    await page.locator(flows.selectors.catalogMetrics).first().click();
+    await expect(page.locator(flows.selectors.metricsCard)).toBeVisible();
   });
 
   test('clicking a run-history row loads the run summary panel', async ({
@@ -131,11 +180,7 @@ test.describe('Console Flows page', () => {
     await helpers.seedAuth(runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    await page
-      .locator(flows.selectors.catalogRow)
-      .first()
-      .locator('button.link')
-      .click();
+    await page.locator(flows.selectors.catalogRow).first().click();
     const runRow = page.locator(flows.selectors.runHistoryRow).first();
     await runRow.click();
     await expect(page.locator(flows.selectors.runSummary)).toBeVisible();
@@ -152,12 +197,7 @@ test.describe('Console Flows page', () => {
     await helpers.seedAuth(runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    await page
-      .locator(flows.selectors.catalogRow)
-      .first()
-      .locator('button.link')
-      .click();
-    // Select the heavy run if one is present in the seeded history.
+    await page.locator(flows.selectors.catalogRow).first().click();
     const heavyRow = page
       .locator(flows.selectors.runHistoryRow)
       .filter({ hasText: 'heavy' });
@@ -175,11 +215,7 @@ test.describe('Console Flows page', () => {
     await helpers.seedAuth(runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    await page
-      .locator(flows.selectors.catalogRow)
-      .first()
-      .locator('button.link')
-      .click();
+    await page.locator(flows.selectors.catalogRow).first().click();
     // `Add node`, `Delete edge`, `Save graph`, `New flow` MUST be absent
     // — not disabled, absent (D-063).
     for (const label of ['Add node', 'Delete edge', 'Save graph', 'New flow']) {

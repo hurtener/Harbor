@@ -7,7 +7,7 @@
  * key is missing (CONVENTIONS.md §6/§8).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { STORAGE_KEYS, isConnected, resolveConnection } from '../connection.js';
+import { STORAGE_KEYS, hasScope, isConnected, resolveConnection } from '../connection.js';
 
 afterEach(() => {
 	localStorage.clear();
@@ -42,5 +42,26 @@ describe('resolveConnection', () => {
 		seedConnection();
 		localStorage.removeItem(STORAGE_KEYS.session);
 		expect(resolveConnection()).toBeNull();
+	});
+
+	it('resolves the comma-separated scope claims, empty when unset', () => {
+		seedConnection();
+		expect(resolveConnection()?.scopes).toEqual([]);
+		localStorage.setItem(STORAGE_KEYS.scopes, 'admin, observer');
+		expect(resolveConnection()?.scopes).toEqual(['admin', 'observer']);
+	});
+});
+
+describe('hasScope', () => {
+	it('is true only when the connection carries the scope', () => {
+		seedConnection();
+		localStorage.setItem(STORAGE_KEYS.scopes, 'admin');
+		const conn = resolveConnection();
+		expect(hasScope(conn, 'admin')).toBe(true);
+		expect(hasScope(conn, 'observer')).toBe(false);
+	});
+
+	it('is false (never throws) for a null connection', () => {
+		expect(hasScope(null, 'admin')).toBe(false);
 	});
 });

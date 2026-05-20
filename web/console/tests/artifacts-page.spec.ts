@@ -28,6 +28,31 @@ const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsRouteDir = join(here, "..", "src", "routes", "(console)", "artifacts");
+
+/**
+ * Strips comments from a source string so a CONVENTIONS-compliance
+ * substring/regex assertion inspects CODE, not commentary. An
+ * explanatory comment that *describes* a removed legacy pattern (e.g.
+ * "no longer reads `dev-tenant` off a globalThis shim") must not trip a
+ * "must-not-contain" check — the test guards real code, never prose.
+ *
+ * Removes `/* ... *\/` block comments, `<!-- ... -->` HTML/Svelte-markup
+ * comments, and `//`-to-end-of-line line comments. The line-comment
+ * strip is anchored to a `//` that is at start-of-line (after optional
+ * whitespace) or preceded by whitespace, so a `://` inside a URL is left
+ * intact. It is a deliberately simple lexical strip — it does not parse
+ * string literals — which is sound here: the assertions search for a
+ * hand-rolled network call, a window-global identity shim, and a
+ * hardcoded dev triple, none of which a comment-strip can manufacture,
+ * and the must-CONTAIN checks (real identifiers) survive a strip
+ * untouched.
+ */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/(^|\s)\/\/[^\n]*/g, "$1");
+}
 const artifactsComponentsDir = join(
   here,
   "..",
@@ -60,9 +85,8 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
   });
 
   test("the preview component imports dispatchRenderer from the canonical registry", () => {
-    const previewComponent = readFileSync(
-      join(artifactsComponentsDir, "ArtifactPreview.svelte"),
-      "utf8",
+    const previewComponent = stripComments(
+      readFileSync(join(artifactsComponentsDir, "ArtifactPreview.svelte"), "utf8"),
     );
     expect(
       previewComponent.includes("$lib/chat/renderers"),
@@ -80,17 +104,15 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
     // their (presigned) content URL — that is the registry's contract,
     // not a Protocol call — so the assertion is scoped to the page + its
     // page-specific components.
-    const pageSrc = readFileSync(
-      join(artifactsRouteDir, "+page.svelte"),
-      "utf8",
+    const pageSrc = stripComments(
+      readFileSync(join(artifactsRouteDir, "+page.svelte"), "utf8"),
     );
     expect(
       /\bfetch\s*\(/.test(pageSrc),
       "+page.svelte must not hand-roll fetch — use the typed Protocol client",
     ).toBe(false);
-    const previewSrc = readFileSync(
-      join(artifactsComponentsDir, "ArtifactPreview.svelte"),
-      "utf8",
+    const previewSrc = stripComments(
+      readFileSync(join(artifactsComponentsDir, "ArtifactPreview.svelte"), "utf8"),
     );
     expect(
       /\bfetch\s*\(/.test(previewSrc),
@@ -102,9 +124,8 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
     // CONVENTIONS.md §6: identity comes from `connection.ts`, never a
     // `globalThis.__HARBOR_*__` window-global or a hardcoded
     // `dev-tenant/dev-user/dev-session` triple.
-    const pageSrc = readFileSync(
-      join(artifactsRouteDir, "+page.svelte"),
-      "utf8",
+    const pageSrc = stripComments(
+      readFileSync(join(artifactsRouteDir, "+page.svelte"), "utf8"),
     );
     expect(
       pageSrc.includes("__HARBOR_IDENTITY__"),
@@ -123,9 +144,8 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
   test("the page composes the shared ui/ inventory", () => {
     // CONVENTIONS.md §3/§5: the page is built from the shared component
     // inventory and routes async state through the four-state PageState.
-    const pageSrc = readFileSync(
-      join(artifactsRouteDir, "+page.svelte"),
-      "utf8",
+    const pageSrc = stripComments(
+      readFileSync(join(artifactsRouteDir, "+page.svelte"), "utf8"),
     );
     for (const primitive of [
       "PageHeader",
