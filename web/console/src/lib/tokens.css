@@ -64,4 +64,14 @@
   --motion-base: 200ms;
   --motion-slow: 320ms;
   --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- MCP Connections page (Phase 73k) — status-chip semantics ----
+   * The five canonical MCP server states + the scope-chip + sparkline
+   * colours the MCP Connections page renders. Semantic aliases over the
+   * status scale so the `.svelte` files reference intent, not raw hue. */
+  --color-mcp-online: var(--color-success);
+  --color-mcp-reconnecting: var(--color-warning);
+  --color-mcp-offline: var(--color-text-muted);
+  --color-mcp-auth-pending: var(--color-accent);
+  --color-mcp-error: var(--color-danger);
 }
