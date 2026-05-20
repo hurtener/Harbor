@@ -1,9 +1,11 @@
 <script lang="ts">
-  // RunHistoryStrip — the bottom-right Run-history panel
-  // (page-tools.md §12): a recent invocation timeline for the selected
-  // tool. The invocation rows stream from the `tool.*` event topic in
-  // a later phase; this strip ships the static surface + the selected-
-  // tool summary. Svelte 5 runes mode (D-092).
+  // RunHistoryStrip — the Tools-page Run-history content (page-tools.md
+  // §12): a recent-invocation summary for the selected tool. The
+  // per-invocation rows stream from the `tool.*` event topic with the
+  // Events-page surface; this strip ships the selected-tool summary.
+  // Tools-specific content; the page wraps it in `ui/RailCard`, so this
+  // emits only the card BODY — no card chrome (D-121, CONVENTIONS.md §3).
+  // Svelte 5 runes mode (D-092); design tokens only.
   import type { Tool, ToolMetrics } from '$lib/protocol/tools.js';
 
   let {
@@ -15,8 +17,7 @@
   } = $props();
 </script>
 
-<section class="card" data-testid="tools-run-history">
-  <h3>Run history</h3>
+<div data-testid="tools-run-history">
   {#if tool === null}
     <p class="muted">Select a tool to see its recent invocations.</p>
   {:else}
@@ -32,24 +33,9 @@
       topic. Rows deep-link into the originating session's bottom dock.
     </p>
   {/if}
-</section>
+</div>
 
 <style>
-  .card {
-    padding: var(--space-4);
-    background: var(--color-surface);
-    border: var(--border-width-thin) solid var(--color-border);
-    border-radius: var(--radius-md);
-  }
-
-  h3 {
-    margin: var(--space-0) var(--space-0) var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    text-transform: uppercase;
-    letter-spacing: var(--border-width-thin);
-  }
-
   .summary {
     margin: var(--space-0) var(--space-0) var(--space-2);
     font-size: var(--text-sm);
@@ -59,5 +45,9 @@
   .muted {
     color: var(--color-text-muted);
     font-size: var(--text-xs);
+  }
+
+  code {
+    font-family: var(--font-mono);
   }
 </style>

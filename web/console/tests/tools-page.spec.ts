@@ -1,11 +1,16 @@
-// Harbor Console e2e — Tools page per-page spec (Phase 73f / D-116).
+// Harbor Console e2e — Tools page per-page spec (Phase 73f / D-116;
+// refactored onto the D-121 design-system foundation).
 //
-// Covers the binding acceptance criteria from
-// `docs/plans/phase-73f-console-tools-page.md`:
-//   (a) the catalog table renders rows with the mockup columns,
-//   (b) a facet chip toggle updates the rendered rows,
-//   (c) a selected-tool drill-down opens the detail panel,
-//   (d) the Approve action surfaces the shipped `approve` Protocol path.
+// Covers the refactored Tools page:
+//   (a) the catalog `DataTable` renders rows with the mockup columns,
+//   (b) a facet chip toggle re-issues `tools.list` and re-renders,
+//   (c) a selected-tool drill-down opens the `ToolDetailTabs` panel,
+//   (d) the Approval tab's Approve / Reject controls call the REAL
+//       `tools.set_approval_policy` Protocol method, or render
+//       disabled-with-tooltip when the connection lacks the admin scope
+//       (CONVENTIONS.md §5 — no stubbed action presented as done).
+//   (e) the four-state `<PageState>` Disconnected branch renders when
+//       no Runtime connection is configured.
 //
 // SKIP semantics (mirrors `harness.spec.ts`): the `harbor console`
 // subcommand lands in Phase 73m (Stage 2.3). Until then the `runtime`
@@ -21,6 +26,28 @@ import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
+// The Console resolves its Runtime connection via `connection.ts`, which
+// reads the `harbor.runtime.*` storage convention. `seedAuth` seeds only
+// the auth token; this helper additionally seeds the connection triple so
+// the refactored page resolves a live connection rather than rendering
+// the Disconnected `PageState`.
+async function seedConnection(
+  page: import("@playwright/test").Page,
+  baseURL: string,
+  token: string,
+): Promise<void> {
+  await page.addInitScript(
+    ([b, t]) => {
+      window.localStorage.setItem("harbor.runtime.base_url", b);
+      window.localStorage.setItem("harbor.runtime.token", t);
+      window.localStorage.setItem("harbor.runtime.tenant", "tenant-e2e");
+      window.localStorage.setItem("harbor.runtime.user", "user-e2e");
+      window.localStorage.setItem("harbor.runtime.session", "session-e2e");
+    },
+    [baseURL, token] as const,
+  );
+}
+
 test.describe("Console Tools page", () => {
   test.skip(
     !CONSOLE_AVAILABLE,
@@ -33,6 +60,7 @@ test.describe("Console Tools page", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
 
     await expect(
@@ -51,12 +79,11 @@ test.describe("Console Tools page", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
 
-    const table = page.locator("[data-testid='tools-catalog-table']");
-    await expect(table, "the catalog table renders").toBeVisible();
-
-    // The mockup column headers, in order.
+    // The shared `DataTable` renders the catalog. Its column headers, in
+    // mockup order.
     for (const col of [
       "Name",
       "Version",
@@ -69,7 +96,7 @@ test.describe("Console Tools page", () => {
       "Owner",
     ]) {
       await expect(
-        table.locator("thead th", { hasText: col }),
+        page.locator(".data-table thead th", { hasText: col }),
         `the catalog table has the ${col} column`,
       ).toBeVisible();
     }
@@ -81,10 +108,8 @@ test.describe("Console Tools page", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
-
-    // Wait for the initial catalog load to settle (rows OR the
-    // filtered-empty state).
     await page.waitForLoadState("networkidle");
 
     const before = await page
@@ -92,8 +117,8 @@ test.describe("Console Tools page", () => {
       .count();
 
     // Toggle the MCP transport facet. The page re-issues `tools.list`
-    // with the facet and re-renders — the row count must change OR the
-    // filtered-empty state appears.
+    // with the facet and re-renders — the row count changes OR the
+    // filtered-empty `PageState` appears.
     await page
       .locator(
         "[data-testid='tools-facet-transport'][data-facet-value='MCP']",
@@ -121,6 +146,7 @@ test.describe("Console Tools page", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
     await page.waitForLoadState("networkidle");
 
@@ -138,19 +164,20 @@ test.describe("Console Tools page", () => {
       "the detail panel header shows the selected tool",
     ).toBeVisible();
 
-    // The detail panel exposes the tabbed surface.
+    // The `ToolDetailTabs` panel exposes the tabbed surface.
     await expect(
       page.locator("[data-testid='tools-detail-tab'][data-tab='approval']"),
       "the Approval tab is present",
     ).toBeVisible();
   });
 
-  test("(d) the Approval tab's Approve action surfaces the shipped approve path", async ({
+  test("(d) the Approval tab's Approve action is wired to the real Protocol or disabled-with-tooltip", async ({
     page,
     runtime,
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
     await page.waitForLoadState("networkidle");
 
@@ -163,13 +190,46 @@ test.describe("Console Tools page", () => {
     await page
       .locator("[data-testid='tools-detail-tab'][data-tab='approval']")
       .click();
-    await page.locator("[data-testid='tools-approve']").click();
 
-    // The Approve action records its intent — invoking the shipped
-    // `approve` Protocol method (Phase 54), never a new approval impl.
+    const approveBtn = page.locator("[data-testid='tools-approve']");
+    await expect(approveBtn, "the Approve control is present").toBeVisible();
+
+    // §13: the control is never a fake feedback string. It either invokes
+    // the real `tools.set_approval_policy` method (enabled), or renders
+    // disabled-with-tooltip explaining the missing admin scope.
+    const disabled = await approveBtn.isDisabled();
+    if (disabled) {
+      await expect(
+        page.locator("[data-testid='tools-approval-gated']"),
+        "the disabled Approve control explains the admin-scope gate",
+      ).toBeVisible();
+    } else {
+      await approveBtn.click();
+      // A real Protocol call resolves into a real result line (success
+      // or a `code: message` error) — never a fabricated feedback string.
+      await expect(
+        page.locator(
+          "[data-testid='tools-approval-result'], [data-testid='tools-approval-pending']",
+        ),
+        "the Approve action surfaced a real Protocol-call outcome",
+      ).toBeVisible();
+    }
+  });
+
+  test("(e) the page renders the Disconnected state with no Runtime connection", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Seed only the auth token, NOT the `harbor.runtime.*` connection
+    // keys — `connection.ts` returns null, so `<PageState>` renders the
+    // Disconnected branch (distinct from Error — CONVENTIONS.md §4).
+    await helpers.seedAuth(runtime.token);
+    await helpers.gotoPage("tools");
+
     await expect(
-      page.locator("[data-testid='tools-approval-feedback']"),
-      "the Approve action surfaced feedback referencing the approve method",
-    ).toContainText("approve");
+      page.locator("[data-testid='page-state-disconnected']"),
+      "the Disconnected PageState renders when no Runtime is attached",
+    ).toBeVisible();
   });
 });
