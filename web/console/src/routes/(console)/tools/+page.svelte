@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Console Tools page (`/console/tools`) — Phase 73f / D-116.
+  // Console Tools page (`/tools`) — Phase 73f / D-116.
   //
   // The registered-tool-catalog browser. Renders against
   // `docs/rfc/assets/console-tools-page.png` per page-tools.md §12:
