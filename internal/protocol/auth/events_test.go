@@ -11,6 +11,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem" // events inmem driver self-register
 	"github.com/hurtener/Harbor/internal/protocol/auth"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 )
 
 // TestValidate_BusEmit_PublishesAuthRejectedEvent — PR #91 / D-082:
@@ -164,5 +165,61 @@ func TestValidate_BusEmit_NilBus_NoBusEmit(t *testing.T) {
 func TestEventTypeAuthRejected_Registered(t *testing.T) {
 	if !events.IsValidEventType(auth.EventTypeAuthRejected) {
 		t.Fatalf("EventTypeAuthRejected (%q) not in canonical registry", auth.EventTypeAuthRejected)
+	}
+}
+
+// TestAdminScopeUsedPayload_IsSafePayload — Phase 72b: the new typed
+// payload composes events.SafeSealed so it is bus-publishable as a
+// SafePayload (no audit-redactor walk on the bus internals; the
+// control transport runs its OWN audit-boundary redactor before the
+// publish per CLAUDE.md §7 rule 6 + D-020).
+func TestAdminScopeUsedPayload_IsSafePayload(t *testing.T) {
+	// Compile-time assertion that the type composes the seal.
+	var _ events.EventPayload = auth.AdminScopeUsedPayload{}
+	var _ events.SafePayload = auth.AdminScopeUsedPayload{}
+}
+
+// TestAdminScopeUsedPayload_ShapeIsFlat — Phase 72b: the payload
+// fields are exactly the documented surface: Actor / Requester /
+// Impersonating (IdentityTriple — flat strings) + Reason + Method
+// (bounded enums). No caller-controlled bytes reach the bus.
+func TestAdminScopeUsedPayload_ShapeIsFlat(t *testing.T) {
+	p := auth.AdminScopeUsedPayload{
+		Actor:         auth.IdentityTriple{Tenant: "t", User: "admin", Session: "s-admin"},
+		Requester:     auth.IdentityTriple{Tenant: "t", User: "admin", Session: "s-admin"},
+		Impersonating: auth.IdentityTriple{Tenant: "t", User: "target", Session: "s-target"},
+		Reason:        auth.AdminImpersonationReason,
+		Method:        string(methods.MethodStart),
+	}
+	if p.Actor.User != "admin" {
+		t.Errorf("Actor.User: got %q want admin", p.Actor.User)
+	}
+	if p.Impersonating.User != "target" {
+		t.Errorf("Impersonating.User: got %q want target", p.Impersonating.User)
+	}
+	if p.Reason != auth.AdminImpersonationReason {
+		t.Errorf("Reason: got %q want %q", p.Reason, auth.AdminImpersonationReason)
+	}
+	if p.Method != string(methods.MethodStart) {
+		t.Errorf("Method: got %q want %q", p.Method, methods.MethodStart)
+	}
+}
+
+// TestAdminImpersonationReason_StableSentinel — Phase 72b: the
+// sentinel name is the stable wire shape a Console branches on. A
+// future emit site adding a new sentinel MUST NOT change this one.
+func TestAdminImpersonationReason_StableSentinel(t *testing.T) {
+	if auth.AdminImpersonationReason != "impersonation" {
+		t.Fatalf("AdminImpersonationReason = %q, want %q", auth.AdminImpersonationReason, "impersonation")
+	}
+}
+
+// TestAdminScopeUsedEventType_Registered — Phase 72b: the event type
+// the impersonation emit uses (audit.admin_scope_used) is already
+// canonical (Phase 05); confirm the registry knows it so the bus
+// Publish does not fail with ErrUnknownEventType.
+func TestAdminScopeUsedEventType_Registered(t *testing.T) {
+	if !events.IsValidEventType(events.EventTypeAdminScopeUsed) {
+		t.Fatalf("EventTypeAdminScopeUsed (%q) not in canonical registry", events.EventTypeAdminScopeUsed)
 	}
 }
