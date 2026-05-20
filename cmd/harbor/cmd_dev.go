@@ -105,6 +105,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -809,6 +810,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("flow protocol surface: %w", err)
 	}
 
+	// Phase 73d (D-123): the Console Tasks-page Protocol service. The
+	// registry projector is built over the same TaskRegistry the
+	// runtime drives, so the Console renders the live task set. The bus
+	// + redactor are wired so a cross-tenant `tasks.list` fan-in's
+	// `audit.admin_scope_used` event reaches the bus (CLAUDE.md §13 —
+	// the admin path is never a silent no-op).
+	tasksProjector, err := tasksprotocol.NewRegistryProjector(taskReg)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tasks/protocol projector: %w", err)
+	}
+	tasksService, err := tasksprotocol.NewService(tasksProjector,
+		tasksprotocol.WithBus(bus),
+		tasksprotocol.WithRedactor(red),
+		tasksprotocol.WithLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tasks/protocol service: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
@@ -831,6 +853,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		transports.WithToolsService(toolsService),
 		// Phase 73i: mount the six Console Flows-page routes.
 		transports.WithFlows(flowsSurface),
+		// Phase 73d: mount the two Console Tasks-page read routes.
+		transports.WithTasksService(tasksService),
 	)
 	if err != nil {
 		closeAll(ctx)

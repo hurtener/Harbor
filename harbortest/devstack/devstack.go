@@ -113,6 +113,7 @@ import (
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -875,6 +876,25 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("flow protocol surface: %w", fsErr)
 			}
 			muxOpts = append(muxOpts, transports.WithFlows(flowsSurface))
+		}
+		// Phase 73d (D-123): mount the two Console Tasks-page read
+		// routes. The devstack mirrors the production `cmd/harbor` boot
+		// path (CLAUDE.md §17.6) — the registry projector is built over
+		// the same TaskRegistry the runtime drives so the wave-end E2E
+		// exercises the real routes.
+		if stack.Tasks != nil {
+			tasksProjector, tpErr := tasksprotocol.NewRegistryProjector(stack.Tasks)
+			if tpErr != nil {
+				return stack, fmt.Errorf("tasks/protocol projector: %w", tpErr)
+			}
+			tasksService, tsErr := tasksprotocol.NewService(tasksProjector,
+				tasksprotocol.WithBus(bus),
+				tasksprotocol.WithRedactor(stack.Audit),
+			)
+			if tsErr != nil {
+				return stack, fmt.Errorf("tasks/protocol service: %w", tsErr)
+			}
+			muxOpts = append(muxOpts, transports.WithTasksService(tasksService))
 		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {

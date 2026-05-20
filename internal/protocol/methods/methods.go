@@ -454,6 +454,29 @@ const (
 	// claim (D-079). Emits an `audit.admin_scope_used` event through
 	// the shipped audit.Redactor.
 	MethodToolsRevokeOAuth Method = "tools.revoke_oauth"
+
+	// MethodTasksList — Phase 73d (Wave 13 / D-123). Returns the
+	// paginated list of tasks visible to the caller's identity scope,
+	// with optional facet filters (status / kind / parent-task /
+	// identity / time-window / error-class / latency-above / free-text)
+	// plus per-status aggregate counters (Pending / Running / Paused /
+	// Failed / Complete / Cancelled) for the filtered view. Powers the
+	// Console Tasks-page kanban board + list-mode table. Identity-
+	// mandatory; a cross-tenant fan-in requires the `auth.ScopeAdmin`
+	// claim (D-079). NOT a control / search / posture method —
+	// `IsTasksMethod` returns true. The wire-transport route is
+	// `POST /v1/tasks/list`. See
+	// `docs/plans/phase-73d-console-tasks-page.md`.
+	MethodTasksList Method = "tasks.list"
+	// MethodTasksGet — Phase 73d. Returns the enriched detail of a
+	// single task: the full Task projection (heavy values via
+	// ArtifactRef per D-026), parent-session reference, parent-task
+	// reference (when child), per-step cost rollup aggregated from
+	// `llm.cost.recorded` events, and the planner-checkpoint reference
+	// at spawn time. A cross-tenant TaskID lookup returns CodeNotFound
+	// (existence is never revealed across tenants). The wire-transport
+	// route is `POST /v1/tasks/get`.
+	MethodTasksGet Method = "tasks.get"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -510,6 +533,9 @@ var canonicalMethods = map[Method]struct{}{
 
 	MethodToolsSetApprovalPolicy: {},
 	MethodToolsRevokeOAuth:       {},
+
+	MethodTasksList: {},
+	MethodTasksGet:  {},
 
 	MethodMCPServersList:             {},
 	MethodMCPServersGet:              {},
@@ -644,6 +670,29 @@ func IsToolsMethod(m Method) bool {
 // wire handler uses this to decide whether to enforce the scope gate.
 func IsToolsAdminMethod(m Method) bool {
 	_, ok := canonicalToolsAdminMethods[m]
+	return ok
+}
+
+// canonicalTasksMethods is the closed sub-set of the two `tasks.*`
+// methods landed in Phase 73d (Wave 13 / D-123) — `tasks.list` and
+// `tasks.get`. Both are READ-ONLY: the Console Tasks page consumes the
+// existing Phase 54 task-control verbs for mutation, never a new
+// `tasks.*` mutating method. IsTasksMethod is O(1); the stream
+// transport branches on it to route the request through the Tasks
+// dispatcher instead of the task-control surface.
+var canonicalTasksMethods = map[Method]struct{}{
+	MethodTasksList: {},
+	MethodTasksGet:  {},
+}
+
+// IsTasksMethod reports whether m is one of the two canonical `tasks.*`
+// methods (Phase 73d / D-123 — `tasks.list`, `tasks.get`). The stream
+// transport branches on this to route the request through the Tasks
+// dispatcher instead of the task-control / search / posture / topology
+// surfaces. NOT a control method — both are reads; the Console Tasks
+// page consumes the shipped Phase 54 control verbs for mutation.
+func IsTasksMethod(m Method) bool {
+	_, ok := canonicalTasksMethods[m]
 	return ok
 }
 
@@ -847,6 +896,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsMCPServersMethod(m) {
+		return false
+	}
+	if IsTasksMethod(m) {
 		return false
 	}
 	if IsToolsMethod(m) {

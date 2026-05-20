@@ -396,6 +396,91 @@ export class EventsNamespace {
 	}
 }
 
+/**
+ * The `tasks.*` namespace — Phase 73d / D-123. The Runtime mounts the
+ * two Tasks-page read methods at `POST /v1/tasks/{verb}`. The Console
+ * Tasks page consumes the EXISTING Phase 54 control verbs for mutation
+ * through {@link ControlNamespace} — there is NO `tasks.*` mutating
+ * method (CLAUDE.md §13 "no parallel implementations").
+ */
+export class TasksNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `tasks.list` — paginated, faceted task-row projection + aggregates. */
+	list<R = unknown>(req: Record<string, unknown> = {}): Promise<R> {
+		return this.#t.request<R>('/v1/tasks/list', req);
+	}
+	/** `tasks.get` — enriched single-task detail. */
+	get<R = unknown>(id: string): Promise<R> {
+		return this.#t.request<R>('/v1/tasks/get', { id });
+	}
+}
+
+/**
+ * The `control.*` namespace — the shipped Phase 54 task-control surface
+ * (`cancel` / `pause` / `resume` / `prioritize` / `approve` / `reject`
+ * + `redirect` / `inject_context` / `user_message`). The Runtime mounts
+ * these on the control surface at `POST /v1/control/{verb}`.
+ *
+ * The Console Tasks-page bulk-action toolbar + per-task action bar
+ * consume THESE shipped verbs — no new control method is minted
+ * (CLAUDE.md §13). A verb targets a specific run by its task id carried
+ * in `identity.run`; the optional `payload` carries method-specific
+ * arguments (the `priority` for `prioritize`).
+ */
+export class ControlNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/**
+	 * Dispatch a Phase 54 control verb against the run identified by
+	 * `taskID` (carried in `identity.run`). `payload` carries the
+	 * method-specific arguments; `scope` is the caller's steering scope
+	 * claim. Returns the {@link ProtocolError}-on-failure ControlResponse.
+	 */
+	dispatch<R = unknown>(
+		verb: string,
+		taskID: string,
+		payload?: Record<string, unknown>,
+		scope = 'owner_user'
+	): Promise<R> {
+		const body: Record<string, unknown> = {
+			identity: { run: taskID, scope }
+		};
+		if (payload !== undefined) {
+			body.payload = payload;
+		}
+		return this.#t.request<R>(`/v1/control/${verb}`, body);
+	}
+	/** `cancel` — cancel the task's run. */
+	cancel<R = unknown>(taskID: string): Promise<R> {
+		return this.dispatch<R>('cancel', taskID);
+	}
+	/** `pause` — pause the task's run. */
+	pause<R = unknown>(taskID: string): Promise<R> {
+		return this.dispatch<R>('pause', taskID);
+	}
+	/** `resume` — resume the task's run. */
+	resume<R = unknown>(taskID: string): Promise<R> {
+		return this.dispatch<R>('resume', taskID);
+	}
+	/** `prioritize` — set the task's numeric priority. */
+	prioritize<R = unknown>(taskID: string, priority: number): Promise<R> {
+		return this.dispatch<R>('prioritize', taskID, { priority });
+	}
+	/** `approve` — approve a pending HITL gate on the task's run. */
+	approve<R = unknown>(taskID: string): Promise<R> {
+		return this.dispatch<R>('approve', taskID);
+	}
+	/** `reject` — reject a pending HITL gate on the task's run. */
+	reject<R = unknown>(taskID: string): Promise<R> {
+		return this.dispatch<R>('reject', taskID);
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -416,6 +501,8 @@ export class MCPNamespace {
  */
 export interface ProtocolClient {
 	readonly tools: ToolsNamespace;
+	readonly tasks: TasksNamespace;
+	readonly control: ControlNamespace;
 	readonly memory: MemoryNamespace;
 	readonly flows: FlowsNamespace;
 	readonly artifacts: ArtifactsNamespace;
@@ -434,6 +521,8 @@ export interface ProtocolClient {
  */
 export class HarborClient implements ProtocolClient {
 	readonly tools: ToolsNamespace;
+	readonly tasks: TasksNamespace;
+	readonly control: ControlNamespace;
 	readonly memory: MemoryNamespace;
 	readonly flows: FlowsNamespace;
 	readonly artifacts: ArtifactsNamespace;
@@ -443,6 +532,8 @@ export class HarborClient implements ProtocolClient {
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
 		this.tools = new ToolsNamespace(transport);
+		this.tasks = new TasksNamespace(transport);
+		this.control = new ControlNamespace(transport);
 		this.memory = new MemoryNamespace(transport);
 		this.flows = new FlowsNamespace(transport);
 		this.artifacts = new ArtifactsNamespace(transport);
