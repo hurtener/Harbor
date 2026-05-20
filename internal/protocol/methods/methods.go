@@ -52,6 +52,21 @@
 // adapters branch the route table. See
 // `docs/plans/phase-72c-search-cluster.md`.
 //
+// # The Wave 13 runtime-posture cluster (Phase 72f / D-111)
+//
+// Phase 72f adds the five read-only `runtime.*` / `metrics.*` posture
+// methods: `runtime.info` (build identity + version + uptime +
+// capabilities), `runtime.health` (per-subsystem readiness rollup),
+// `runtime.counters` (low-cardinality live counters), `runtime.drivers`
+// (configured driver names per persistence-shaped subsystem), and
+// `metrics.snapshot` (a Protocol-shaped projection over the Phase 56
+// MetricsRegistry). The five methods are NOT control methods:
+// `IsControlMethod` returns false for them (the steering inbox stays
+// exclusive). A separate `IsPostureMethod` predicate lets transport
+// adapters branch the route table — the posture surface is a sibling
+// of the task-control surface, not an extension. See
+// `docs/plans/phase-72f-runtime-posture.md`.
+//
 // # No registration escape hatch
 //
 // canonicalMethods is a fixed package-level map, not a write-once
@@ -156,6 +171,33 @@ const (
 	// search; rows always carry a `ref` (artifacts are by-reference by
 	// construction per D-026).
 	MethodSearchArtifacts Method = "search.artifacts"
+
+	// MethodRuntimeInfo — Phase 72f (D-111). Read-only posture method:
+	// returns the Runtime's build identity (version / commit / Go
+	// toolchain / build date), Protocol version, advertised
+	// capabilities, uptime, instance ID, and operator-configured
+	// display name. NOT a control method; dispatched by PostureSurface.
+	MethodRuntimeInfo Method = "runtime.info"
+	// MethodRuntimeHealth — Phase 72f. Read-only posture method:
+	// returns the per-subsystem readiness rollup (`ready` / `degraded`
+	// / `unavailable`) across the runtime's registered subsystems.
+	MethodRuntimeHealth Method = "runtime.health"
+	// MethodRuntimeCounters — Phase 72f. Read-only posture method:
+	// returns the low-cardinality live counters the Console footer /
+	// sidebar chips render (events/sec, tasks running, background jobs,
+	// MCP connections, sessions active). Identity-scoped; the response
+	// is the roll-up, never a per-run / per-task breakdown.
+	MethodRuntimeCounters Method = "runtime.counters"
+	// MethodRuntimeDrivers — Phase 72f. Read-only posture method:
+	// returns the configured driver names per persistence-shaped
+	// subsystem (`state`, `artifacts`, `memory`, `eventlog`). Returns
+	// the driver name + optional posture mode — never the DSN.
+	MethodRuntimeDrivers Method = "runtime.drivers"
+	// MethodMetricsSnapshot — Phase 72f. Read-only posture method:
+	// returns a Protocol-shaped projection over the Phase 56
+	// MetricsRegistry — counters, histograms, gauges as flat wire
+	// values. NOT an OpenTelemetry SDK re-export.
+	MethodMetricsSnapshot Method = "metrics.snapshot"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -181,6 +223,11 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSearchTasks:     {},
 	MethodSearchEvents:    {},
 	MethodSearchArtifacts: {},
+	MethodRuntimeInfo:     {},
+	MethodRuntimeHealth:   {},
+	MethodRuntimeCounters: {},
+	MethodRuntimeDrivers:  {},
+	MethodMetricsSnapshot: {},
 }
 
 // canonicalSearchMethods is the closed sub-set of the five search.*
@@ -200,6 +247,27 @@ var canonicalSearchMethods = map[Method]struct{}{
 // task-control surface.
 func IsSearchMethod(m Method) bool {
 	_, ok := canonicalSearchMethods[m]
+	return ok
+}
+
+// canonicalPostureMethods is the closed sub-set of the five Phase 72f
+// runtime-posture methods. IsPostureMethod is O(1); a transport adapter
+// uses it to branch the route table onto the PostureSurface instead of
+// the task-control ControlSurface.
+var canonicalPostureMethods = map[Method]struct{}{
+	MethodRuntimeInfo:     {},
+	MethodRuntimeHealth:   {},
+	MethodRuntimeCounters: {},
+	MethodRuntimeDrivers:  {},
+	MethodMetricsSnapshot: {},
+}
+
+// IsPostureMethod reports whether m is one of the five read-only
+// posture methods (Phase 72f / D-111). The PostureSurface uses this to
+// branch in transport adapters that want a single route table over all
+// canonical methods.
+func IsPostureMethod(m Method) bool {
+	_, ok := canonicalPostureMethods[m]
 	return ok
 }
 
@@ -225,13 +293,14 @@ func IsValidMethod(m Method) bool {
 // IsControlMethod reports whether m is one of the nine steering-control
 // methods — every canonical method except MethodStart AND the
 // streaming-events methods (Phase 72 / 72a) AND the Phase 72c
-// `search.*` cluster (a separate surface from the steering inbox).
+// `search.*` cluster AND the Phase 72f `runtime.*` / `metrics.*`
+// posture cluster (all separate surfaces from the steering inbox).
 // The protocol.ControlSurface uses this to branch: a control method
 // maps onto a steering.ControlEvent; MethodStart maps onto the task
 // registry; a streaming-events method routes through the SSE /
 // events-aggregate transport; a search method maps onto the Phase 72c
-// search dispatcher. A new non-control method (state inspection,
-// topology, artifacts — future phases) extends THIS predicate, NOT
+// search dispatcher; a posture method maps onto the Phase 72f
+// PostureSurface. A new non-control method extends THIS predicate, NOT
 // the steering-control inbox.
 func IsControlMethod(m Method) bool {
 	if !IsValidMethod(m) {
@@ -244,6 +313,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsSearchMethod(m) {
+		return false
+	}
+	if IsPostureMethod(m) {
 		return false
 	}
 	return true
