@@ -605,9 +605,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	got := methods.Methods()
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
-	// Phase 72g posture pair two + Phase 72e pause-snapshot one = 25.
-	if len(got) != 25 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 25 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one)", len(got))
+	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
+	// 74 topology.snapshot one = 26.
+	if len(got) != 26 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 26 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -635,6 +636,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodGovernancePosture: {},
 		methods.MethodLLMPosture:        {},
 		methods.MethodPauseList:         {},
+		methods.MethodTopologySnapshot:  {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -743,6 +745,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// search.* cluster above.
 			if methods.IsPauseMethod(m) {
 				t.Skip("phase-72e: pause.list exercised by its handler unit tests + test/integration/pause_list_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 74 (D-114): topology.snapshot needs a
+			// TopologyAccessor (an engine.Engine) the conformance
+			// Stack does not wire — its runtime is task/steering-
+			// shaped. The method's happy-path + failure modes are
+			// exercised end-to-end by Phase 74's own unit tests, the
+			// concurrent-reuse test, and test/integration/phase74_
+			// topology_test.go (real engine + real bus + real wire
+			// transport). The conformance-suite scenario lands when
+			// the suite gains an engine-bearing Stack.
+			if methods.IsTopologyMethod(m) {
+				t.Skip("phase-74: topology.snapshot exercised by its unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an engine")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -907,6 +921,16 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// suite picks it up with the Phase 80 surface extension.
 			if methods.IsPauseMethod(m) {
 				t.Skip("phase-72e: pause.list malformed-request paths covered by pause_list_handler_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 74 (D-114): topology.snapshot against the
+			// engine-less conformance Stack returns CodeUnknownMethod
+			// (the nil-accessor branch) before any request-shape
+			// check, so the generic malformed-request CodeInvalidRequest
+			// assertion does not apply. The method's malformed-request
+			// path (wrong request type against a wired accessor) is
+			// covered by Phase 74's protocol_test.go.
+			if methods.IsTopologyMethod(m) {
+				t.Skip("phase-74: topology.snapshot malformed-request path covered by internal/protocol/protocol_test.go; conformance-suite scenario lands when the Stack wires an engine")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

@@ -604,6 +604,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("steering.RunLoop: %w", err)
 	}
 
+	// Phase 74 (D-114): the ControlSurface is built WITHOUT a
+	// topology accessor. `harbor dev`'s runtime is planner/RunLoop-
+	// shaped — it hosts no `engine.Engine` node-graph — so there is no
+	// topology to project. A `topology.snapshot` call against this
+	// surface therefore returns CodeUnknownMethod (HTTP 404), which
+	// the smoke script's 404 → SKIP convention picks up cleanly. This
+	// is the documented nil-safe path, NOT a wiring gap (CLAUDE.md
+	// §17.6): a Runtime that hosts an engine wires it via
+	// protocol.WithTopologyAccessor; the Phase 74 integration test
+	// does exactly that through harbortest/devstack.AssembleOpts.
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
 	if err != nil {
 		closeAll(ctx)
