@@ -808,6 +808,14 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			muxOpts = append(muxOpts, transports.WithPauseList(
 				stack.Coordinator, stack.Artifacts, cfg.Artifacts.HeavyOutputThresholdBytes))
 		}
+		// Phase 73j (D-118): mount the three `memory.*` read routes for
+		// the Console Memory page. The devstack mirrors production
+		// (CLAUDE.md §17.6) — the MemoryStore + the artifact store +
+		// the heavy-content threshold are wired so the wave-end E2E
+		// exercises the real routes.
+		if stack.Memory != nil {
+			muxOpts = append(muxOpts, transports.WithMemory(stack.Memory, cfg.Memory.Driver))
+		}
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {
 			return stack, fmt.Errorf("transports.NewMux: %w", muxErr)

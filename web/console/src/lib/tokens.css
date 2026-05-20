@@ -52,6 +52,12 @@
   /* ---- Border widths ---- */
   --border-thin: 1px;
   --border-thick: 2px;
+  --border-width-hairline: 1px;
+
+  /* ---- Sizing scale (added Phase 73j) ---- */
+  --size-px: 1px;
+  --size-rail: 22rem;
+  --size-value-viewer-max: 16rem;
 
   /* ---- Motion ---- */
   --motion-fast: 120ms;

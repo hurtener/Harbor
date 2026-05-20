@@ -617,9 +617,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one + Phase 73l artifacts cluster three = 29.
-	if len(got) != 29 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 29 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three)", len(got))
+	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
+	// Phase 73j memory cluster three = 32.
+	if len(got) != 32 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 32 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -651,6 +652,9 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodArtifactsList:     {},
 		methods.MethodArtifactsPut:      {},
 		methods.MethodArtifactsGetRef:   {},
+		methods.MethodMemoryList:        {},
+		methods.MethodMemoryGet:         {},
+		methods.MethodMemoryHealth:      {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -783,6 +787,15 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// posture as the search / posture / pause / topology clusters.
 			if methods.IsArtifactsMethod(m) {
 				t.Skip("phase-73l: artifacts.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an ArtifactStore")
+			}
+			// Phase 73j (D-118) memory.* methods route through their own
+			// stream-transport handlers (POST /v1/memory/*), NOT the
+			// task-control ControlSurface. They are exercised end-to-end
+			// by their own unit + concurrent-reuse + integration tests +
+			// the phase-73j smoke; the conformance-suite scenario lands
+			// when the Stack wires a MemoryStore-bearing memory handler.
+			if methods.IsMemoryMethod(m) {
+				t.Skip("phase-73j: memory.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires a memory handler")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
@@ -968,6 +981,13 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// an ArtifactStore.
 			if methods.IsArtifactsMethod(m) {
 				t.Skip("phase-73l: artifacts.* malformed-request paths covered by internal/protocol/artifacts_test.go; conformance-suite scenario lands when the Stack wires an ArtifactStore")
+			}
+			// Phase 73j (D-118): memory.* methods route through their own
+			// stream-transport handlers, not the ControlSurface — their
+			// malformed-request paths are covered by the memory_handler
+			// tests.
+			if methods.IsMemoryMethod(m) {
+				t.Skip("phase-73j: memory.* malformed-request paths covered by internal/protocol/transports/stream/memory_handler_test.go")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)
