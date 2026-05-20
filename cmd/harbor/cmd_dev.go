@@ -506,7 +506,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			memStore = ms
 		}
 	}
-	_ = memStore // memory wired but not yet consumed by ControlSurface; tracked: https://github.com/hurtener/Harbor/issues/134
+	// memStore is consumed by the Phase 73j (D-118) Console Memory page
+	// `memory.*` read routes — wired into transports.NewMux below via
+	// transports.WithMemory.
 
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
 		Store:    stateStore,
@@ -751,6 +753,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// the Console intervention queue works out of the box (no seam
 		// for the operator to wire — CLAUDE.md §13).
 		transports.WithPauseList(coord, artStore, cfg.Artifacts.HeavyOutputThresholdBytes),
+		// Phase 73j (D-118): mount the three `memory.*` read routes for
+		// the Console Memory page. The handler reuses the artifact
+		// store + heavy-content threshold supplied to WithPauseList for
+		// the D-026 heavy-value bypass. When no memory driver is
+		// configured (memStore is nil) the routes are left un-mounted.
+		transports.WithMemory(memStore, cfg.Memory.Driver),
 	)
 	if err != nil {
 		closeAll(ctx)
