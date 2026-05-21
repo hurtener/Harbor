@@ -48,9 +48,9 @@ async function seedConnection(
     ([keys, base, tok]) => {
       window.localStorage.setItem(keys.baseURL, base);
       window.localStorage.setItem(keys.token, tok);
-      window.localStorage.setItem(keys.tenant, "console");
-      window.localStorage.setItem(keys.user, "operator");
-      window.localStorage.setItem(keys.session, "console-mcp");
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
     },
     [STORAGE_KEYS, baseURL, token] as const,
   );

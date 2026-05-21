@@ -41,10 +41,6 @@ import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
 
 // Seeds the Console's `harbor.runtime.*` storage convention so the page
 // resolves a live connection rather than the Disconnected `PageState`.
@@ -118,7 +114,21 @@ test.describe("Console Live Runtime page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — NOT a seeding-gap skip. The Phase 75a fixture
+    // seeder (D-131) closes the runtime-entity gap (sessions / agents /
+    // tasks / artifacts / tools / flows / memory). The Live Runtime
+    // page's tab content renders inside `<PageState>`, which only
+    // renders children when `status === 'ready'`; `ready` requires a
+    // non-empty `topology.snapshot`, and topology is projected from a
+    // live engine run (`internal/runtime/engine/topology.go`) — NOT
+    // from registry fixtures. Exercising it needs a real planner/engine
+    // run fixture (a larger seam than entity seeding). Tracked as a
+    // Phase 75a follow-up; see the Phase 75a PR body.
+    test.skip(
+      true,
+      "deferred: needs a live engine-run topology fixture (not entity " +
+        "seeding) — Phase 75a follow-up. See CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
@@ -149,7 +159,16 @@ test.describe("Console Live Runtime page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — NOT a seeding-gap skip. The topology canvas is
+    // the `<PageState>` `ready`-state primary view; `ready` requires a
+    // non-empty `topology.snapshot`, projected from a live engine run
+    // (not registry fixtures). Tracked as a Phase 75a follow-up — see
+    // the (c) test's comment and the Phase 75a PR body.
+    test.skip(
+      true,
+      "deferred: needs a live engine-run topology fixture (not entity " +
+        "seeding) — Phase 75a follow-up. See CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");

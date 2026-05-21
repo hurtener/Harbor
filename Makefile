@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev
+.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check
 
 help:
 	@echo "Harbor — make targets"
@@ -9,6 +9,7 @@ help:
 	@echo "  lint            golangci-lint run"
 	@echo "  preflight       Build + boot + run smoke checks + drift-audit + tear down"
 	@echo "  drift-audit     Verify design coherence (RFC, plans, briefs, mirror)"
+	@echo "  wave13-coverage-check  Assert every Console page has a Playwright spec"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -67,6 +68,13 @@ preflight:
 
 drift-audit:
 	@bash scripts/drift-audit.sh
+
+# wave13-coverage-check asserts every Console page-spec under
+# docs/design/console/page-<slug>.md has a matching Playwright spec at
+# web/console/tests/<slug>-page.spec.ts (Phase 75a / D-131). Evaluations
+# is excluded (post-V1, D-064). Wired into the frontend-e2e CI job.
+wave13-coverage-check:
+	@bash scripts/console/check-page-coverage.sh
 
 check-mirror:
 	@diff -q AGENTS.md CLAUDE.md && echo "OK: AGENTS.md == CLAUDE.md" || (echo "DRIFT: AGENTS.md != CLAUDE.md"; exit 1)
