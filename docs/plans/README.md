@@ -111,6 +111,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73d| Console Tasks page (kanban + bulk control)    | protocol+web/console | §5.2, §6.8, §7 | 20, 21, 54, 60, 61, 72c, 75 | 85%  | Shipped  |
 | 73b| Console Live Runtime page (Protocol + UI)     | protocol+web/console | §5.2, §6.3, §6.13, §7 | 60, 61, 72a, 73, 73i, 74, 75 | 85%  | Shipped  |
 | 73n| Console Playground page (Protocol + UI)       | protocol+web/console | §5.1, §6.4, §6.13, §7 | 54, 60, 61, 72b, 73l, 74, 75 | 85%  | Shipped  |
+| 73a| Console Overview page (composition-only UI)   | web/console          | §5.2, §6.13, §6.15, §7 | 54, 60, 61, 72a, 72e, 72f, 73d, 75 | 70%  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |
@@ -871,6 +872,18 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Tests.** Console Vitest (`filters.test.ts`, `sparkline.test.ts`, `export.test.ts`, `taxonomy.test.ts`, `saved_filters_events.spec.ts`, `EventsNamespace` cases in `harbor-client.spec.ts`) + integration (`test/integration/events_page_test.go` — real inmem bus + real SSE/aggregate handlers + real artifacts surface, subscribe filter narrowing, aggregate sparkline correctness, cross-tenant isolation, the truncated-payload `artifacts.get_ref` identity-rejection failure mode, N≥16 concurrent-subscriber stress, all `-race`) + Playwright (`web/console/tests/events-page.spec.ts`) + smoke (`scripts/smoke/phase-73g.sh`).
 
 **Plan.** See `docs/plans/phase-73g-console-events-page.md` (shipped — D-125).
+
+### 73a — Console Overview page (composition-only UI) (RFC §5.2, §6.13, §6.15, §7)
+
+**Goal.** Ship the Console Overview page — the operator's at-a-glance hub and the default route on a fresh attach. This is a composition-only page phase: it ships NO new Protocol method. It composes the SHIPPED `runtime.counters` / `runtime.health` (Phase 72f), `pause.list` (Phase 72e), `events.subscribe` SSE (Phase 60 / 72), and the Phase 54 `approve` / `reject` control verbs into the 4-card counter row + sub-header health-chip strip + cost-rollup card + intervention queue + recent-activity feed + 2×3 Quick Links grid + the `+ New` quick-create menu. The UI is the SvelteKit Overview page (`/overview`) built on the D-121 design-system foundation.
+
+**Acceptance.** Route under `(console)/overview/` (no `/console/` URL prefix — CONVENTIONS.md §1); the `RuntimeNamespace` + `PauseNamespace` join the unified `HarborClient`; the counter sparklines / recent-activity feed / cost rollup fold client-side off the `events.subscribe` cursor (no new Protocol method — page-overview.md §12); the intervention queue's Approve / Reject invoke the SHIPPED Phase 54 control verbs and degrade to disabled-with-tooltip without the admin control-scope claim (D-066 / §13 — no parallel implementation); the Quick Links grid is exactly six tiles with no Evaluations tile (D-064); saved views persist in the shipped `saved_filters` Console DB table scoped to `page='overview'` (no new table — D-061); four-state `PageState` with nested `PageState` per panel. See `docs/plans/phase-73a-console-overview-page.md`.
+
+**Deviations (D-127).** No new Protocol method, no new Go-side surface (composition-only — `internal/` is unchanged). The route ships at `web/console/src/routes/(console)/overview/` — the phase plan (authored before D-121) named `web/console/src/routes/overview/` and the smoke probed `/console/overview`; CONVENTIONS.md §1 (D-121) is the binding cross-cutting authority and yields the corrected unprefixed `(console)`-group paths (CLAUDE.md §15).
+
+**Tests.** Console Vitest (`aggregations.test.ts`, `activity.test.ts`, `cost.test.ts`, `saved_filters_overview.spec.ts`, `RuntimeNamespace` / `PauseNamespace` cases in `harbor-client.spec.ts`) + Playwright (`web/console/tests/overview-page.spec.ts` — depth-bar shell, counter row, scope-gated intervention actions, Quick Links navigation, `+ New` deep-links, the Disconnected PageState) + smoke (`scripts/smoke/phase-73a.sh`). No Go-side integration test — Phase 73a adds no `internal/` seam; the cross-stack integration assurance is the Playwright spec against a live `harbor console` plus the upstream 72e/72f integration tests.
+
+**Plan.** See `docs/plans/phase-73a-console-overview-page.md` (shipped — D-127).
 
 ### 73c — Console Sessions page (Protocol + UI) (RFC §5.2, §6.9, §7)
 

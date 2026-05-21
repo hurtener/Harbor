@@ -39,6 +39,8 @@ import type {
 	MemoryHealthResponse
 } from './memory-types.js';
 import type { EventAggregateRequest, EventAggregateResponse } from './events.js';
+import type { RuntimeCounters, RuntimeHealth } from './posture.js';
+import type { PauseListRequest, PauseListResponse } from './pause.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -591,6 +593,57 @@ export class RunsNamespace {
 	}
 }
 
+/**
+ * The `runtime.*` namespace — the read-only posture surface the Console
+ * Overview page (Phase 73a / D-127) consumes. Phase 73a ships NO new
+ * Protocol method: `runtime.counters` and `runtime.health` are already
+ * shipped (Phase 72f / D-111) on the `PostureSurface`. Posture methods
+ * route through the control transport — the Runtime mounts them at
+ * `POST /v1/control/runtime.{counters,health}` (`methods.IsPostureMethod`
+ * branches the route table). Both are pure reads; identity is mandatory
+ * and a cross-tenant read requires `auth.ScopeAdmin` (D-079).
+ */
+export class RuntimeNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `runtime.counters` — the low-cardinality live-counter rollup. */
+	counters(): Promise<RuntimeCounters> {
+		return this.#t.request<RuntimeCounters>('/v1/control/runtime.counters', {});
+	}
+	/** `runtime.health` — the per-subsystem readiness rollup. */
+	health(): Promise<RuntimeHealth> {
+		return this.#t.request<RuntimeHealth>('/v1/control/runtime.health', {});
+	}
+}
+
+/**
+ * The `pause.*` namespace — the read-only pause-snapshot surface the
+ * Console Overview-page intervention queue (Phase 73a / D-127)
+ * consumes. Phase 73a ships NO new Protocol method: `pause.list` is
+ * already shipped (Phase 72e / D-110) at `POST /v1/pause/list`. It is a
+ * READ-ONLY snapshot — it does NOT mutate the Coordinator registry and
+ * does NOT call Resume. The intervention queue's Approve / Reject row
+ * actions invoke the SHIPPED Phase 54 `approve` / `reject` control
+ * verbs through {@link ControlNamespace} — there is no parallel pause
+ * mutation here (CLAUDE.md §13). Identity is mandatory; a cross-tenant
+ * filter requires the verified `auth.ScopeAdmin` claim (D-079).
+ */
+export class PauseNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `pause.list` — the paginated, identity-scope-filtered pause snapshot. */
+	list(req: PauseListRequest = {}): Promise<PauseListResponse> {
+		return this.#t.request<PauseListResponse>(
+			'/v1/pause/list',
+			req as unknown as Record<string, unknown>
+		);
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -622,6 +675,8 @@ export interface ProtocolClient {
 	readonly sessions: SessionsNamespace;
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
+	readonly runtime: RuntimeNamespace;
+	readonly pause: PauseNamespace;
 }
 
 /**
@@ -646,6 +701,8 @@ export class HarborClient implements ProtocolClient {
 	readonly sessions: SessionsNamespace;
 	readonly topology: TopologyNamespace;
 	readonly runs: RunsNamespace;
+	readonly runtime: RuntimeNamespace;
+	readonly pause: PauseNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -661,5 +718,7 @@ export class HarborClient implements ProtocolClient {
 		this.sessions = new SessionsNamespace(transport);
 		this.topology = new TopologyNamespace(transport);
 		this.runs = new RunsNamespace(transport);
+		this.runtime = new RuntimeNamespace(transport);
+		this.pause = new PauseNamespace(transport);
 	}
 }
