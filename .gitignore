@@ -46,6 +46,16 @@ web/console/playwright-report/
 web/console/blob-report/
 web/console/.playwright/
 
+# Staged Console build embedded by `harbor console` (Phase 73m / D-129).
+# `make console-build` copies the SvelteKit static bundle into
+# cmd/harbor/consoledist/; that bundle is a build artifact and is NOT
+# committed (CLAUDE.md §13). Only the committed `.gitkeep` keeps the
+# directory present so `//go:embed` works on a bare checkout — when no
+# `index.html` is embedded, `harbor console` serves a synthesized
+# "run make console-build" placeholder page.
+cmd/harbor/consoledist/*
+!cmd/harbor/consoledist/.gitkeep
+
 # Frontend artifacts
 node_modules/
 .npm/

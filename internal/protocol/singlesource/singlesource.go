@@ -163,6 +163,8 @@ var CanonicalMethods = map[string]struct{}{
 	"sessions.inspect": {}, // Phase 73c / D-122
 	// Phase 73n (D-130) Console-Playground-page cluster — one method.
 	"runs.set_overrides": {}, // Phase 73n / D-130
+	// Phase 73m (D-129) Console-Settings-page cluster — one method.
+	"auth.rotate_token": {}, // Phase 73m / D-129
 	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
 	"flows.list":          {}, // Phase 73i / D-117
 	"flows.describe":      {}, // Phase 73i / D-117
@@ -436,6 +438,13 @@ var CanonicalWireTypes = map[string]string{
 	"RunOverrides":            "types",
 	"RunSetOverridesRequest":  "types",
 	"RunSetOverridesResponse": "types",
+	// Phase 73m (D-129) Console Settings-page wire types — the
+	// `auth.rotate_token` request / response live in
+	// internal/protocol/types (internal/protocol/types/auth.go). The
+	// ONE net-new Protocol method Phase 73m ships; the page is
+	// otherwise a pure consumer of the 72f / 72g posture surfaces.
+	"AuthRotateTokenRequest":  "types",
+	"AuthRotateTokenResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

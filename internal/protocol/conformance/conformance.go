@@ -621,9 +621,10 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
-	// Phase 73c sessions-page two = 69.
-	if len(got) != 70 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 70 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one)", len(got))
+	// Phase 73c sessions-page two + Phase 73n runs-page one +
+	// Phase 73m auth.rotate_token one = 71.
+	if len(got) != 71 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 71 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -703,6 +704,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodSessionsInspect: {},
 
 		methods.MethodRunsSetOverrides: {},
+
+		methods.MethodAuthRotateToken: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -934,6 +937,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsRunsMethod(m) {
 				t.Skip("phase-73n: runs.* methods exercised by internal/runtime/runs/protocol tests + stream runs_handler tests + test/integration/playground_overrides_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
+			// Phase 73m (D-129): auth.rotate_token routes through its own
+			// stream-transport handler (AuthHandler over auth.RotateSurface),
+			// not the ControlSurface — its happy path is exercised by
+			// internal/protocol/auth/rotate_token_test.go + stream
+			// auth_handler_test.go + test/integration/settings_page_test.go;
+			// the conformance-suite scenario lands with the Phase 80
+			// surface extension.
+			if methods.IsAuthMethod(m) {
+				t.Skip("phase-73m: auth.rotate_token exercised by internal/protocol/auth/rotate_token_test.go + stream auth_handler_test.go + test/integration/settings_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)
 				defer st.Cleanup()
@@ -1131,6 +1144,13 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			// paths are covered by the MCPSurface unit tests.
 			if methods.IsMCPServersMethod(m) {
 				t.Skip("phase-73k: mcp.servers.* malformed-request path covered by internal/protocol/mcp_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73m (D-129): auth.rotate_token routes through its own
+			// stream-transport handler, not the ControlSurface — its
+			// malformed-request paths are covered by stream
+			// auth_handler_test.go + internal/protocol/auth/rotate_token_test.go.
+			if methods.IsAuthMethod(m) {
+				t.Skip("phase-73m: auth.rotate_token malformed-request paths covered by internal/protocol/transports/stream/auth_handler_test.go")
 			}
 			t.Run("InProcess_NilRequest", func(t *testing.T) {
 				st := factory(t)

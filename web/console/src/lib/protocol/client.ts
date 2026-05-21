@@ -644,6 +644,64 @@ export class PauseNamespace {
 	}
 }
 
+/**
+ * The `runtime.*` / `governance.posture` / `llm.posture` posture
+ * namespace — consumed by the Console Settings page (Phase 73m / D-129).
+ * The five `runtime.*` / `metrics.*` reads are shipped by Phase 72f
+ * (D-111); `governance.posture` / `llm.posture` by Phase 72g (D-112).
+ * The Runtime mounts all seven on the control surface at
+ * `POST /v1/control/{method}`. Phase 73m is a pure CONSUMER — it ships
+ * none of these methods, it only reads them.
+ */
+export class PostureNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `runtime.info` — build identity + Protocol version + uptime + capabilities. */
+	info<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/runtime.info', {});
+	}
+	/** `runtime.health` — per-subsystem readiness rollup. */
+	health<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/runtime.health', {});
+	}
+	/** `runtime.drivers` — configured driver name per persistence-shaped subsystem. */
+	drivers<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/runtime.drivers', {});
+	}
+	/** `governance.posture` — the read-only D-081 IdentityTiers view. */
+	governance<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/governance.posture', {});
+	}
+	/** `llm.posture` — bound LLM provider / model / region + the MockMode flag. */
+	llm<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/control/llm.posture', {});
+	}
+}
+
+/**
+ * The `auth.*` namespace — Phase 73m / D-129. The Runtime mounts the
+ * single net-new method at `POST /v1/auth/{verb}`. `auth.rotate_token`
+ * is an ADMIN method: the Runtime gates it on the verified
+ * `auth.ScopeAdmin` claim (D-079).
+ */
+export class AuthNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/**
+	 * `auth.rotate_token` — rotate the operator's Protocol-auth token.
+	 * Returns the one-time-revealed re-minted token. ADMIN-gated:
+	 * a connection without the admin scope claim gets a
+	 * `ProtocolError` carrying `identity_scope_required` (HTTP 403).
+	 */
+	rotateToken<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/auth/rotate_token', {});
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -677,6 +735,8 @@ export interface ProtocolClient {
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
 	readonly pause: PauseNamespace;
+	readonly posture: PostureNamespace;
+	readonly auth: AuthNamespace;
 }
 
 /**
@@ -703,6 +763,8 @@ export class HarborClient implements ProtocolClient {
 	readonly runs: RunsNamespace;
 	readonly runtime: RuntimeNamespace;
 	readonly pause: PauseNamespace;
+	readonly posture: PostureNamespace;
+	readonly auth: AuthNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -720,5 +782,7 @@ export class HarborClient implements ProtocolClient {
 		this.runs = new RunsNamespace(transport);
 		this.runtime = new RuntimeNamespace(transport);
 		this.pause = new PauseNamespace(transport);
+		this.posture = new PostureNamespace(transport);
+		this.auth = new AuthNamespace(transport);
 	}
 }

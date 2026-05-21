@@ -1,0 +1,68 @@
+# Harbor Console — embedded zero-config default (Phase 73m / D-129).
+#
+# `harbor console` boots a self-contained Console + Runtime. When the
+# operator does not pass `--config` and no `harbor.yaml` exists in the
+# working directory, this embedded default is used so the Console works
+# out of the box (the first-clone-convenience path — §13's dev-only
+# escape-hatch clause). Every driver here is in-memory, and the LLM seam
+# uses the `mock` driver — so `harbor console` zero-config prints the
+# §13 stderr banner ([DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]) and
+# enables the mock escape hatch automatically.
+#
+# An operator running a real Console deployment passes `--config` to a
+# harbor.yaml wired to a real LLM provider (bifrost) and durable drivers.
+server:
+  bind_addr: 127.0.0.1:18790
+  shutdown_grace_period: 30s
+
+identity:
+  jwt_algorithms:
+    - ES256
+  issuer: https://issuer.example.com
+  audience: harbor
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+telemetry:
+  log_format: text
+  log_level: info
+  service_name: harbor-console
+
+state:
+  driver: inmem
+
+llm:
+  driver: mock
+  timeout: 60s
+  context_window_reserve: 0.05
+
+governance:
+  repair_attempts: 3
+
+events:
+  driver: inmem
+  max_subscribers_per_session: 16
+  subscriber_buffer_size: 256
+  idle_timeout: 60s
+  drop_window: 1s
+  replay_buffer_size: 10000
+
+artifacts:
+  driver: inmem
+  heavy_output_threshold_bytes: 32768
+
+tasks:
+  driver: inprocess
+  retain_turn_timeout: 5m
+  continuation_hop_limit: 8
+
+memory:
+  driver: inmem
+  strategy: none
+  recovery_backlog_max: 16
+
+planner:
+  driver: react
+
+distributed:
+  bus_driver: loopback
+  remote_driver: loopback

@@ -515,6 +515,22 @@ const (
 	// the caller's identity scope. Powers the Agents page hero numbers.
 	MethodAgentsMetrics Method = "agents.metrics"
 
+	// MethodAuthRotateToken — Phase 73m (Wave 13 / D-129). Rotates the
+	// operator's current Protocol-auth token: the Runtime re-mints a
+	// JWT for the caller's already-verified `(tenant, user, session)`
+	// identity and returns it once (one-time-reveal). The ONLY net-new
+	// Protocol method Phase 73m ships — the Console Settings page is
+	// otherwise a pure consumer of the 72f / 72g posture methods. ADMIN
+	// method: requires the verified `auth.ScopeAdmin` claim (D-079
+	// closed two-scope set — there is NO `auth.admin` scope). A request
+	// without the claim is rejected 403 with CodeIdentityScopeRequired.
+	// Every successful rotation emits a redacted `audit.admin_scope_used`
+	// event. NOT a control / search / posture / pause / topology
+	// method — `IsAuthMethod` is its own O(1) predicate. The
+	// wire-transport route is `POST /v1/auth/rotate_token`. See
+	// `docs/plans/phase-73m-console-settings-page.md`.
+	MethodAuthRotateToken Method = "auth.rotate_token"
+
 	// MethodSessionsList — Phase 73c (Wave 13 / D-122). Returns the
 	// paginated, identity-scope-filtered projection of the
 	// SessionRegistry the Console Sessions page renders — the
@@ -621,6 +637,8 @@ var canonicalMethods = map[Method]struct{}{
 	MethodSessionsInspect: {},
 
 	MethodRunsSetOverrides: {},
+
+	MethodAuthRotateToken: {},
 
 	MethodMCPServersList:             {},
 	MethodMCPServersGet:              {},
@@ -890,6 +908,26 @@ func IsRunsMethod(m Method) bool {
 	return ok
 }
 
+// canonicalAuthMethods is the closed sub-set of the `auth.*` methods
+// landed in Phase 73m (Wave 13 / D-129). Today it holds the single
+// `auth.rotate_token` method. IsAuthMethod is O(1); the stream
+// transport branches on it to route the request through the auth
+// handler instead of the task-control surface.
+var canonicalAuthMethods = map[Method]struct{}{
+	MethodAuthRotateToken: {},
+}
+
+// IsAuthMethod reports whether m is one of the canonical `auth.*`
+// methods (Phase 73m / D-129 — today just `auth.rotate_token`). The
+// stream transport branches on this to route the request through the
+// auth handler instead of the task-control / search / posture
+// surfaces. NOT a control method — a new non-control method extends
+// THIS predicate, never the steering inbox.
+func IsAuthMethod(m Method) bool {
+	_, ok := canonicalAuthMethods[m]
+	return ok
+}
+
 // canonicalSearchMethods is the closed sub-set of the five search.*
 // methods. IsSearchMethod is O(1); a transport adapter (Phase 72c
 // search handler) uses it to branch the route table.
@@ -1084,6 +1122,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsRunsMethod(m) {
+		return false
+	}
+	if IsAuthMethod(m) {
 		return false
 	}
 	return true

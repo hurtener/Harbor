@@ -171,6 +171,14 @@ type muxConfig struct {
 	// wiring (`harbor dev`) SHOULD supply it so the Console Playground
 	// page can record next-message overrides.
 	runsService *runsprotocol.Service
+	// rotateSurface feeds the Phase 73m (D-129) `auth.*` handler — the
+	// single net-new Console Settings-page method (`auth.rotate_token`).
+	// OPTIONAL: when unsupplied the `POST /v1/auth/{method}` route is
+	// NOT mounted, so the smoke script's `skip_if_404` keeps preflight
+	// green on a partial build. Production wiring (`harbor dev` /
+	// `harbor console`) SHOULD supply it so the Console Settings page
+	// (Phase 73m) "Rotate token" action has a live surface.
+	rotateSurface *auth.RotateSurface
 }
 
 // Option configures NewMux.
@@ -499,6 +507,29 @@ func WithMemory(store memory.MemoryStore, driverName string) Option {
 	}
 }
 
+// WithAuthSurface wires the Phase 73m (D-129) `auth.*` handler into
+// NewMux — the single net-new Console Settings-page method
+// (`auth.rotate_token`). surface is the *auth.RotateSurface the
+// `POST /v1/auth/rotate_token` route dispatches through.
+//
+// The option is OPTIONAL so existing call-sites compile unchanged.
+// When not supplied (or supplied a nil surface), the `auth.*` route is
+// NOT mounted — the smoke script's `skip_if_404` keeps preflight green
+// on a partial build. Production wiring (`harbor dev` / `harbor
+// console`) supplies it so the Console Settings page "Rotate token"
+// action has a live surface. When supplied AND WithValidator is set,
+// the route is wrapped in auth.Middleware like every other transport —
+// `auth.rotate_token` then gates on the verified `auth.ScopeAdmin`
+// claim (D-079). A nil surface is treated as "WithAuthSurface not
+// supplied".
+func WithAuthSurface(surface *auth.RotateSurface) Option {
+	return func(c *muxConfig) {
+		if surface != nil {
+			c.rotateSurface = surface
+		}
+	}
+}
+
 // WithoutValidator is the explicit, test-only escape hatch for cases
 // that legitimately need the Phase 60 trust-based posture (the REST
 // handler inherits `ControlSurface.Dispatch`'s identity-from-body
@@ -748,6 +779,20 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		runsHandler = rh
 	}
 
+	// Wave 13 (Phase 73m / D-129): the `auth.*` handler. Built only
+	// when WithAuthSurface supplied a non-nil *auth.RotateSurface. When
+	// unsupplied the `POST /v1/auth/{method}` route is left un-mounted
+	// — the smoke `skip_if_404` keeps preflight green on a partial
+	// build.
+	var authHandler *stream.AuthHandler
+	if cfg.rotateSurface != nil {
+		ah, err := stream.NewAuthHandler(cfg.rotateSurface, stream.WithAuthLogger(cfg.logger))
+		if err != nil {
+			return nil, fmt.Errorf("transports: build auth handler: %w", err)
+		}
+		authHandler = ah
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -846,6 +891,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedRuns = mw(runsHandler)
 		}
 		mux.Handle(stream.RunsRoutePattern, mountedRuns)
+	}
+
+	if authHandler != nil {
+		var mountedAuth http.Handler = authHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedAuth = mw(authHandler)
+		}
+		mux.Handle(stream.AuthRoutePattern, mountedAuth)
 	}
 	return mux, nil
 }

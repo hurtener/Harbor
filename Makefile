@@ -1,8 +1,9 @@
-.PHONY: help build test vet lint preflight drift-audit check-mirror install-hooks clean dev
+.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev
 
 help:
 	@echo "Harbor — make targets"
 	@echo "  build           Build the harbor binary (skipped until Phase 1 lands)"
+	@echo "  console-build   Build the SvelteKit Console + stage it into cmd/harbor/consoledist"
 	@echo "  test            go test -race ./..."
 	@echo "  vet             go vet ./..."
 	@echo "  lint            golangci-lint run"
@@ -12,6 +13,22 @@ help:
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
 	@echo "  clean           Remove build artifacts"
+
+# console-build builds the SvelteKit Console static bundle and stages it
+# into cmd/harbor/consoledist/ — the directory cmd/harbor/console_embed.go
+# bakes into the binary via //go:embed (Phase 73m / D-129). The Console
+# build (web/console/build/) is gitignored (CLAUDE.md §13); consoledist/
+# ships a committed placeholder so `go build` always works, and this
+# target overwrites it with the real bundle before a release build.
+console-build:
+	@if [ -d web/console ]; then \
+		cd web/console && npm ci && npm run build; \
+		find ../../cmd/harbor/consoledist -mindepth 1 ! -name .gitkeep -exec rm -rf {} +; \
+		cp -R build/. ../../cmd/harbor/consoledist/; \
+		echo "console-build: staged web/console/build -> cmd/harbor/consoledist"; \
+	else \
+		echo "skip console-build: web/console absent"; \
+	fi
 
 build:
 	@if [ -f cmd/harbor/main.go ]; then \

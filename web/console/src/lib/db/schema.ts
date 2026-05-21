@@ -105,7 +105,12 @@ export const LIST_PAGES = [
   // Phase 73a (D-127) — the Overview page's Console-DB-backed
   // saved-view chips persist hub-layout (activity-feed filter +
   // counter-window) presets here.
-  'overview'
+  'overview',
+  // Phase 73m (D-129) — the Settings page's Console-DB-backed
+  // saved-view chips persist section-bookmark presets here. Additive
+  // enum extension only — no new table, no migration (the `page`
+  // discriminator column already exists on `saved_filters`).
+  'settings'
 ] as const;
 export type ListPage = (typeof LIST_PAGES)[number];
 

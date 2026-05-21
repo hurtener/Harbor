@@ -1,0 +1,4 @@
+# Phase 73m (D-129) — keeps cmd/harbor/consoledist/ present on a bare
+# checkout so //go:embed all:consoledist resolves. The real SvelteKit
+# Console bundle is staged here by `make console-build` and is NOT
+# committed (CLAUDE.md §13 — build artifacts stay out of git).
