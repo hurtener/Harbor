@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { extractCostUSD, projectCost } from '../cost.js';
-import type { Event } from '../../protocol/harbor.js';
+import type { Event } from '../../protocol/events.js';
 
 function costEvent(
 	tenant: string,

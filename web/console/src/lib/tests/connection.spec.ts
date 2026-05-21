@@ -57,11 +57,47 @@ describe('hasScope', () => {
 		seedConnection();
 		localStorage.setItem(STORAGE_KEYS.scopes, 'admin');
 		const conn = resolveConnection();
+		// scope present
 		expect(hasScope(conn, 'admin')).toBe(true);
+		// scope absent
 		expect(hasScope(conn, 'observer')).toBe(false);
 	});
 
 	it('is false (never throws) for a null connection', () => {
 		expect(hasScope(null, 'admin')).toBe(false);
+	});
+
+	it('is false for every scope when the persisted scope set is empty', () => {
+		seedConnection();
+		// The scopes key is unset — resolveConnection yields an empty []
+		// scope set. hasScope must return false for any scope, never throw.
+		const conn = resolveConnection();
+		expect(conn?.scopes).toEqual([]);
+		expect(hasScope(conn, 'admin')).toBe(false);
+		expect(hasScope(conn, '')).toBe(false);
+	});
+
+	it('is false when the persisted scope value is empty or whitespace-only', () => {
+		seedConnection();
+		// A malformed persisted value — empty string, lone comma,
+		// whitespace — parses to an empty scope set, not a crash.
+		for (const malformed of ['', '   ', ',', ', ,', '\t,\n']) {
+			localStorage.setItem(STORAGE_KEYS.scopes, malformed);
+			const conn = resolveConnection();
+			expect(conn?.scopes, `malformed scopes ${JSON.stringify(malformed)}`).toEqual([]);
+			expect(hasScope(conn, 'admin')).toBe(false);
+		}
+	});
+
+	it('ignores blank entries in a malformed comma-separated scope value', () => {
+		seedConnection();
+		// Stray commas / whitespace around real claims are trimmed away —
+		// hasScope still resolves the real claims and rejects the rest.
+		localStorage.setItem(STORAGE_KEYS.scopes, ' admin , , observer ,');
+		const conn = resolveConnection();
+		expect(conn?.scopes).toEqual(['admin', 'observer']);
+		expect(hasScope(conn, 'admin')).toBe(true);
+		expect(hasScope(conn, 'observer')).toBe(true);
+		expect(hasScope(conn, '')).toBe(false);
 	});
 });

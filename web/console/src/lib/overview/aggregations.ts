@@ -23,7 +23,7 @@
  * `15m` windows below all bucket at one-minute resolution.
  */
 
-import type { Event } from '$lib/protocol/harbor.js';
+import type { Event } from '$lib/protocol/events.js';
 
 /** The closed set of counter-card aggregation windows. */
 export type CounterWindow = '1m' | '5m' | '15m';

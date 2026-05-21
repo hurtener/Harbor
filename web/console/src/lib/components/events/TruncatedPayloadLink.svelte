@@ -15,8 +15,8 @@
   // bytes. It NEVER reads payload bytes off the event; it resolves a URL
   // and hands the operator a link. The §13 raw-heavy-content rule, read
   // at the Console edge. Svelte 5 runes (D-092); tokens only.
-  import type { ArtifactsNamespace } from '$lib/protocol/harbor.js';
-  import type { EventArtifactRef } from '$lib/protocol/harbor.js';
+  import type { ArtifactsNamespace } from '$lib/protocol/client.js';
+  import type { EventArtifactRef } from '$lib/protocol/events.js';
   import type {
     ArtifactScope,
     ArtifactsGetRefRequest,

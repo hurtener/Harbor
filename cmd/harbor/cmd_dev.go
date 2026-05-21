@@ -953,11 +953,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		Clock:    time.Now,
 		BootedAt: time.Now(),
 		Health: func(_ context.Context) []types.SubsystemHealth {
-			return devPostureHealth(cfg)
+			return runtimeposture.HealthFromConfig(cfg)
 		},
 		Counters: runtimeposture.CountersProvider(taskReg, sessionRegistry),
 		Drivers: func() []types.SubsystemDriver {
-			return devPostureDrivers(cfg)
+			return runtimeposture.DriversFromConfig(cfg)
 		},
 		Metrics:     runtimeposture.MetricsProvider(metricsReg, opts.logger),
 		Governance:  governance.NewPostureProvider(governanceConfigFromConfig(cfg.Governance)),
@@ -1668,44 +1668,6 @@ func governanceConfigFromConfig(in config.GovernanceConfig) governance.Config {
 		DefaultTier:   in.DefaultTier,
 		IdentityTiers: tiers,
 	}
-}
-
-// devPostureHealth builds the Phase 72f `runtime.health` seam for the
-// dev boot. The dev stack is in-process and fully assembled by the time
-// the posture surface is constructed, so every persistence-shaped
-// subsystem reports `ready`.
-func devPostureHealth(cfg *config.Config) []types.SubsystemHealth {
-	subs := []string{"state", "events"}
-	if cfg.Artifacts.Driver != "" {
-		subs = append(subs, "artifacts")
-	}
-	if cfg.Memory.Driver != "" {
-		subs = append(subs, "memory")
-	}
-	out := make([]types.SubsystemHealth, 0, len(subs))
-	for _, s := range subs {
-		out = append(out, types.SubsystemHealth{Subsystem: s, Status: types.HealthStatusReady})
-	}
-	return out
-}
-
-// devPostureDrivers builds the Phase 72f `runtime.drivers` seam — the
-// configured driver name per persistence-shaped subsystem. Never the
-// DSN (CLAUDE.md §7) — the driver name only.
-func devPostureDrivers(cfg *config.Config) []types.SubsystemDriver {
-	out := []types.SubsystemDriver{
-		{Subsystem: "state", Driver: cfg.State.Driver},
-	}
-	if cfg.Artifacts.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "artifacts", Driver: cfg.Artifacts.Driver})
-	}
-	if cfg.Memory.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "memory", Driver: cfg.Memory.Driver})
-	}
-	if cfg.Events.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "events", Driver: cfg.Events.Driver})
-	}
-	return out
 }
 
 // devInstanceID mints a stable-per-process instance identifier for the

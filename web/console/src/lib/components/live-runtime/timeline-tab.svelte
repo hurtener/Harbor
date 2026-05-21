@@ -13,7 +13,7 @@
   // Topology tab does, just laid out as horizontal lanes.
   //
   // Svelte 5 runes mode (D-092); design tokens only.
-  import type { TopologyProjection } from '$lib/protocol/harbor.js';
+  import type { TopologyProjection } from '$lib/protocol/topology.js';
 
   let {
     projection,

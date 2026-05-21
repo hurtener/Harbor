@@ -14,7 +14,8 @@
   // here on the action menu — NEVER a session-level priority (D-065).
   //
   // Svelte 5 runes mode (D-092); design tokens only.
-  import type { TaskDetail, Event } from '$lib/protocol/harbor.js';
+  import type { TaskDetail } from '$lib/protocol/tasks.js';
+  import type { Event } from '$lib/protocol/events.js';
 
   /** The closed set of per-task detail tabs. */
   export type DetailTab = 'details' | 'input' | 'output' | 'logs' | 'trace';

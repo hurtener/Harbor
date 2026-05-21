@@ -38,7 +38,7 @@
   import { EventsPageState } from '$lib/events/state.svelte.js';
   import { EventsSavedViews } from '$lib/events/saved-views.svelte.js';
   import { categoryKind, categoryOf } from '$lib/events/taxonomy.js';
-  import type { Event } from '$lib/protocol/harbor.js';
+  import type { Event } from '$lib/protocol/events.js';
   import type { EventFacetState } from '$lib/events/filters.js';
 
   const state = new EventsPageState();

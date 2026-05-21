@@ -17,7 +17,8 @@
 
 import { resolveConnection } from '$lib/connection.js';
 import { HarborClient } from '$lib/protocol/harbor.js';
-import type { ArtifactsNamespace, Event, EventFilter } from '$lib/protocol/harbor.js';
+import type { ArtifactsNamespace } from '$lib/protocol/client.js';
+import type { Event, EventFilter } from '$lib/protocol/events.js';
 import type { PageStatus } from '$lib/components/ui/PageState.svelte';
 import { EventsSubscription, type EventSourceFactory } from './subscription.svelte.js';
 import { EventsAggregator } from './aggregate.svelte.js';

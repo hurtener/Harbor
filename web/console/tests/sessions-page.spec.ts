@@ -125,7 +125,7 @@ test.describe('Console Sessions page', () => {
     const rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(
       rows === 0,
-      'no sessions seeded in the harbor console runtime (§17.6 — harness seeding tracked for Phase 73a)',
+      'no sessions seeded in the harbor console runtime (§17.6 — runtime-entity seeding tracked in issue #178)',
     );
     await expect(
       page.locator(sessions.selectors.catalogRow).first(),
@@ -144,7 +144,7 @@ test.describe('Console Sessions page', () => {
     const _rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(
       _rows === 0,
-      'no sessions seeded in the harbor console runtime (§17.6 — harness seeding tracked for Phase 73a)',
+      'no sessions seeded in the harbor console runtime (§17.6 — runtime-entity seeding tracked in issue #178)',
     );
     for (const header of [
       'Session',
@@ -230,7 +230,7 @@ test.describe('Console Sessions page', () => {
     const _rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(
       _rows === 0,
-      'no sessions seeded in the harbor console runtime (§17.6 — harness seeding tracked for Phase 73a)',
+      'no sessions seeded in the harbor console runtime (§17.6 — runtime-entity seeding tracked in issue #178)',
     );
     await expect(
       page.locator(sessions.selectors.identityActor).first(),
@@ -249,7 +249,7 @@ test.describe('Console Sessions page', () => {
     const _rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(
       _rows === 0,
-      'no sessions seeded in the harbor console runtime (§17.6 — harness seeding tracked for Phase 73a)',
+      'no sessions seeded in the harbor console runtime (§17.6 — runtime-entity seeding tracked in issue #178)',
     );
     await page.locator(sessions.selectors.catalogRow).first().click();
     await expect(page.locator(sessions.selectors.detailPage)).toBeVisible();
@@ -269,7 +269,7 @@ test.describe('Console Sessions page', () => {
     const _rows = await page.locator(sessions.selectors.catalogRow).count();
     test.skip(
       _rows === 0,
-      'no sessions seeded in the harbor console runtime (§17.6 — harness seeding tracked for Phase 73a)',
+      'no sessions seeded in the harbor console runtime (§17.6 — runtime-entity seeding tracked in issue #178)',
     );
     await page.locator(sessions.selectors.catalogRow).first().click();
     await expect(page.locator(sessions.selectors.dock)).toBeVisible();
