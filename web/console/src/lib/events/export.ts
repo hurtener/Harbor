@@ -19,7 +19,7 @@
  * bytes leak into either format.
  */
 
-import type { Event } from '$lib/protocol/harbor.js';
+import type { Event } from '$lib/protocol/events.js';
 
 /** The export format the `Export ▾` menu offers. */
 export type ExportFormat = 'ndjson' | 'csv';

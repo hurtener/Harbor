@@ -120,7 +120,7 @@ test.describe("MCP Connections page", () => {
 
     const firstRow = page.locator("[data-testid^='server-row-']").first();
     if ((await firstRow.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstRow.click();
@@ -141,7 +141,7 @@ test.describe("MCP Connections page", () => {
 
     const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
     if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstLink.click();
@@ -167,7 +167,7 @@ test.describe("MCP Connections page", () => {
 
     const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
     if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstLink.click();
@@ -193,7 +193,7 @@ test.describe("MCP Connections page", () => {
 
     const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
     if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstLink.click();
@@ -217,7 +217,7 @@ test.describe("MCP Connections page", () => {
 
     const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
     if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstLink.click();
@@ -242,7 +242,7 @@ test.describe("MCP Connections page", () => {
 
     const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
     if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime");
+      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstLink.click();

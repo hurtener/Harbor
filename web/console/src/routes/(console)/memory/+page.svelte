@@ -21,18 +21,16 @@
   // the memory mutation surface is deferred to Phase 73 (page-memory.md
   // §10). Svelte 5 runes mode (D-092).
   import { onMount } from 'svelte';
+  import { HarborClient, ProtocolError, type ProtocolClient } from '$lib/protocol/harbor.js';
   import {
-    HarborClient,
-    ProtocolError,
     DEFAULT_MEMORY_LIST_PAGE_SIZE,
-    type ProtocolClient,
     type MemoryItem,
     type MemoryItemDetail,
     type MemoryFilter,
     type MemoryHealthAggregate,
     type MemoryStrategyName,
     type MemoryListResponse
-  } from '$lib/protocol/harbor.js';
+  } from '$lib/protocol/memory-types.js';
   import { resolveConnection, type RuntimeConnection } from '$lib/connection.js';
   import { openMemorySavedFilters } from '$lib/memory/saved_views.js';
   import type { MemorySavedFilters } from '$lib/db/saved_filters_memory.js';

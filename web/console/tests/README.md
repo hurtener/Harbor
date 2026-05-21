@@ -44,6 +44,14 @@ PR as the page**. The harness baseline ships only the infrastructure; it does
 3. **a11y-ID-first selectors.** Select by `data-testid` or ARIA role — never a
    brittle CSS path. The Console components stamp `data-testid` attributes for
    exactly this. Subclass `BasePage` to keep the page's selectors typed.
+
+   **`data-testid` naming convention (binding).** Page-specific elements use a
+   **page-prefixed kebab-case** id — `<page>-<element>` (e.g. `events-search`,
+   `tools-catalog-row`, `agents-status-facet`). Shared `components/ui/`
+   primitives that render on every page (`connection-footer`, `page-state-*`,
+   `data-table-*`) keep their **unprefixed** kebab id by design — they are
+   cross-page primitives, not page-owned elements. A spec and the component it
+   targets stay in lockstep on the same id.
 4. **Seed Runtime state through the typed Protocol client.** Need a session, a
    task, an event? Call the generated `protocol.ts` client via
    `helpers/protocol.ts`. **Never hand-roll a raw browser HTTP call** — that is

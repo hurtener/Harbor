@@ -41,11 +41,22 @@ func IsValidSearchIndex(i SearchIndex) bool {
 // `CodeAuthRejected` (HTTP 403) — NEVER silently downgraded to an
 // empty result set.
 type SearchFilter struct {
-	TenantIDs  []string  `json:"tenant_ids,omitempty"`
-	UserIDs    []string  `json:"user_ids,omitempty"`
-	SessionIDs []string  `json:"session_ids,omitempty"`
-	Since      time.Time `json:"since,omitempty"`
-	Until      time.Time `json:"until,omitempty"`
+	// TenantIDs narrows the search to these tenants; empty defaults to
+	// the caller's authenticated tenant. A value outside the caller's
+	// own tenant requires the `auth.ScopeAdmin` claim.
+	TenantIDs []string `json:"tenant_ids,omitempty"`
+	// UserIDs narrows the search to these users; empty defaults to the
+	// caller's authenticated user.
+	UserIDs []string `json:"user_ids,omitempty"`
+	// SessionIDs narrows the search to these sessions; empty defaults to
+	// the caller's authenticated session.
+	SessionIDs []string `json:"session_ids,omitempty"`
+	// Since is the inclusive lower bound of the result time-window; the
+	// zero value imposes no lower bound.
+	Since time.Time `json:"since,omitempty"`
+	// Until is the inclusive upper bound of the result time-window; the
+	// zero value imposes no upper bound.
+	Until time.Time `json:"until,omitempty"`
 }
 
 // SearchFacet is a per-index dimension selector — e.g.
@@ -53,7 +64,9 @@ type SearchFilter struct {
 // `{Key:"events.type", Value:"tool.failed"}`. Unknown facets are
 // silently ignored at V1 (post-V1 may tighten to error).
 type SearchFacet struct {
-	Key   string `json:"key"`
+	// Key is the facet dimension name (e.g. `tasks.status`).
+	Key string `json:"key"`
+	// Value is the facet's selected value (e.g. `running`).
 	Value string `json:"value"`
 }
 

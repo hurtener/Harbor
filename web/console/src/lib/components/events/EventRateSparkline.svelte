@@ -52,7 +52,7 @@
   }
 </script>
 
-<div class="sparkline" data-testid="event-rate-sparkline" role="img" aria-label="Event rate over time">
+<div class="sparkline" data-testid="events-rate-sparkline" role="img" aria-label="Event rate over time">
   {#if series.columns.length === 0}
     <p class="sparkline-empty">No event activity in this window.</p>
   {:else}

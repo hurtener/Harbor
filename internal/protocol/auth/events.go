@@ -97,6 +97,10 @@ const AdminImpersonationReason = "impersonation"
 // internal storage refactors (the same anti-pattern RFC §5.1 names
 // for the wire IdentityScope). Phase 72b, D-107.
 type IdentityTriple struct {
+	// Tenant / User / Session are the flattened `(tenant, user, session)`
+	// isolation triple the audit payload records — the wire-adjacent
+	// mirror of the runtime's identity quadruple (no Run: an audit row
+	// records the principal, not the per-execution scope).
 	Tenant  string
 	User    string
 	Session string

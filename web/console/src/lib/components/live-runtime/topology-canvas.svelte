@@ -12,7 +12,7 @@
   //
   // Svelte 5 runes mode (D-092); design tokens only.
   import EngineGraphCanvas from '$lib/components/graph/EngineGraphCanvas.svelte';
-  import type { TopologyProjection } from '$lib/protocol/harbor.js';
+  import type { TopologyProjection } from '$lib/protocol/topology.js';
   import { projectionToGraph } from '$lib/live-runtime/topology-adapter.js';
 
   let {

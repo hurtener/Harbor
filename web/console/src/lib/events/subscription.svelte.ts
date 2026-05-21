@@ -25,8 +25,8 @@
 // cursor. `EventsSubscription` tracks the highest `sequence` it has
 // seen as `cursor` for the page's subscription-status rail.
 
-import type { Event } from '$lib/protocol/harbor.js';
-import type { EventsNamespace } from '$lib/protocol/harbor.js';
+import type { Event } from '$lib/protocol/events.js';
+import type { EventsNamespace } from '$lib/protocol/client.js';
 
 /** The maximum number of events the rolling page retains in memory. */
 export const MAX_ROLLING_EVENTS = 500;

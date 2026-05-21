@@ -12,9 +12,9 @@
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import TruncatedPayloadLink from './TruncatedPayloadLink.svelte';
   import { categoryKind, categoryOf } from '$lib/events/taxonomy.js';
-  import { isEventArtifactRef } from '$lib/protocol/harbor.js';
-  import type { Event } from '$lib/protocol/harbor.js';
-  import type { ArtifactsNamespace } from '$lib/protocol/harbor.js';
+  import { isEventArtifactRef } from '$lib/protocol/events.js';
+  import type { Event } from '$lib/protocol/events.js';
+  import type { ArtifactsNamespace } from '$lib/protocol/client.js';
 
   let {
     event,
@@ -153,8 +153,10 @@
     </div>
   </RailCard>
 {:else}
-  <RailCard title="Event">
-    <p class="rail-hint" data-testid="rail-empty-hint">Select an event row to see its detail.</p>
+  <RailCard title="Event detail">
+    <p class="rail-hint" data-testid="rail-empty-hint">
+      No event selected — pick an event row to see its detail.
+    </p>
   </RailCard>
 {/if}
 

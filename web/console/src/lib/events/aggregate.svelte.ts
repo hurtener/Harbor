@@ -14,12 +14,9 @@
 // stream. Pause-stream freezes the TABLE only — the sparkline keeps
 // refreshing (page-events.md §12 risk note).
 
-import type {
-	EventFilter,
-	EventsNamespace,
-	TimeWindow
-} from '$lib/protocol/harbor.js';
-import { WINDOW_SPEC } from '$lib/protocol/harbor.js';
+import type { EventFilter, TimeWindow } from '$lib/protocol/events.js';
+import { WINDOW_SPEC } from '$lib/protocol/events.js';
+import type { EventsNamespace } from '$lib/protocol/client.js';
 import { projectBuckets, type SparklineSeries } from './sparkline.js';
 import type { ProtocolError } from '$lib/protocol/errors.js';
 

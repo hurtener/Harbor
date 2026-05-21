@@ -172,3 +172,67 @@ func TestPostureWireTypes_NoOTelLeak(t *testing.T) {
 		t.Fatal("MetricsSnapshot marshalled to empty bytes")
 	}
 }
+
+// TestMetricsSnapshot_HasHighCardinalityLabel_CleanSnapshot is the
+// cardinalitylint guard for the metrics.snapshot wire boundary: a
+// snapshot carrying only low-cardinality labels reports clean (D-132 /
+// Wave 13 NIT cleanup, mirroring the Phase 56 label-lint firewall).
+func TestMetricsSnapshot_HasHighCardinalityLabel_CleanSnapshot(t *testing.T) {
+	snap := types.MetricsSnapshot{
+		Counters: []types.NamedCounter{
+			{Name: "tasks_started_total", Value: 7, Labels: map[string]string{"producer": "tool:fetch"}},
+		},
+		Histograms: []types.NamedHistogram{
+			{Name: "tool_latency_seconds", Count: 3, Sum: 1.2, Labels: map[string]string{"tool": "fetch"}},
+		},
+		Gauges: []types.NamedGauge{
+			{Name: "sessions_active", Value: 2, Labels: nil},
+		},
+	}
+	if mn, lk, found := snap.HasHighCardinalityLabel(); found {
+		t.Fatalf("clean snapshot reported high-cardinality label %q on metric %q", lk, mn)
+	}
+}
+
+// TestMetricsSnapshot_HasHighCardinalityLabel_RejectsForbiddenLabel
+// asserts the guard catches each forbidden per-run identifier on every
+// metric kind. A projection that lets one of these reach the wire is a
+// cardinality-explosion bug.
+func TestMetricsSnapshot_HasHighCardinalityLabel_RejectsForbiddenLabel(t *testing.T) {
+	for _, forbidden := range types.HighCardinalityLabelKeys {
+		t.Run("counter/"+forbidden, func(t *testing.T) {
+			snap := types.MetricsSnapshot{
+				Counters: []types.NamedCounter{
+					{Name: "leaky_counter", Value: 1, Labels: map[string]string{forbidden: "R-1"}},
+				},
+			}
+			mn, lk, found := snap.HasHighCardinalityLabel()
+			if !found {
+				t.Fatalf("guard missed forbidden counter label %q", forbidden)
+			}
+			if mn != "leaky_counter" || lk != forbidden {
+				t.Fatalf("guard reported (%q,%q), want (leaky_counter,%q)", mn, lk, forbidden)
+			}
+		})
+		t.Run("histogram/"+forbidden, func(t *testing.T) {
+			snap := types.MetricsSnapshot{
+				Histograms: []types.NamedHistogram{
+					{Name: "leaky_hist", Count: 1, Labels: map[string]string{forbidden: "T-1"}},
+				},
+			}
+			if _, _, found := snap.HasHighCardinalityLabel(); !found {
+				t.Fatalf("guard missed forbidden histogram label %q", forbidden)
+			}
+		})
+		t.Run("gauge/"+forbidden, func(t *testing.T) {
+			snap := types.MetricsSnapshot{
+				Gauges: []types.NamedGauge{
+					{Name: "leaky_gauge", Value: 1, Labels: map[string]string{forbidden: "S-1"}},
+				},
+			}
+			if _, _, found := snap.HasHighCardinalityLabel(); !found {
+				t.Fatalf("guard missed forbidden gauge label %q", forbidden)
+			}
+		})
+	}
+}

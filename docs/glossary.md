@@ -730,6 +730,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **`search.artifacts`** — Wave 13 Protocol method (Phase 72c) returning paginated artifact matches; rows always carry an `ArtifactRef` (artifacts are by-reference by construction per D-026). Facets: mime, source, size, task_id. RFC §5.2 + §6.10, brief 11 §CC-4.
 
+**`SearchIndex`** — Wave 13 (Phase 72c) typed-string enum of the four canonical runtime-side search indexes — `sessions`, `tasks`, `events`, `artifacts` (the `SearchIndexSessions` / `SearchIndexTasks` / `SearchIndexEvents` / `SearchIndexArtifacts` constants in `internal/protocol/types/search.go`). A `search.query` request's `Indexes` field selects which indexes the palette dispatcher fans out across; `IsValidSearchIndex` is the closed-set validator. The four per-index `search.*` methods ignore `Indexes` and operate on their own index. RFC §5.2 + §7, brief 11 §CC-4.
+
 **`SearchRequest`** — Wave 13 Protocol wire-type (Phase 72c) shared by all five `search.*` methods. Carries free-text query + identity-aware filter + per-index facets + pagination + (for `search.query` only) the selected index set. Lives in `internal/protocol/types/search.go` per the D-002 single-source rule. RFC §5.2.
 
 **`SearchResponse`** — Wave 13 Protocol wire-type (Phase 72c) shared by all five `search.*` methods. Carries paginated result rows (`SearchResultRow`) + pagination cursors (`Page`, `PageCount`, `TotalCount`, `HasMore`). Result rows ship heavy payloads as `ArtifactRef`, NEVER inline (D-026). Goes through `audit.Redactor` before emission. RFC §5.2 + §6.13.

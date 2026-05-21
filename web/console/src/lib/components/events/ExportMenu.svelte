@@ -15,7 +15,7 @@
     triggerDownload,
     type ExportFormat
   } from '$lib/events/export.js';
-  import type { Event } from '$lib/protocol/harbor.js';
+  import type { Event } from '$lib/protocol/events.js';
 
   let {
     events

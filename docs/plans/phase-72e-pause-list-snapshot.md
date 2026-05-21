@@ -252,7 +252,7 @@ type ListResponse struct {
 
 **Cross-wave coordination:**
 
-- Phase 73 (Console state inspection surface — `Pending`; the snapshot wire shape consistency described in §"Goals" / §"Acceptance" mirrors `sessions.list` / `tasks.list` pagination. 72e is `Deps: 73` for *shape consistency*, not for behaviour — 73 ships in the same wave; pagination conventions land in whichever phase ships first and the second matches them).
+- Phase 73c / 73d (Console Sessions / Tasks pages — Wave 13 Stage 2; the snapshot wire shape consistency described in §"Goals" / §"Acceptance" mirrors the `sessions.list` / `tasks.list` pagination those pages ship. 72e is `Deps: 73c, 73d` for *shape consistency*, not for behaviour — they ship in the same wave; pagination conventions land in whichever phase ships first and the others match them).
 
 ## Risks / open questions
 

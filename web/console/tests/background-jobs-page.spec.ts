@@ -117,7 +117,7 @@ test.describe("Console Background Jobs page", () => {
     // cross-kind contamination bug.
     const rows = page.locator("[data-testid='bg-job-row']");
     const count = await rows.count();
-    test.skip(count < 1, "no background jobs in the runtime fixture");
+    test.skip(count < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
     // The page is the queue projection — its presence proves the
     // background-kind binding is wired.
     await expect(rows.first()).toBeVisible();
@@ -135,7 +135,7 @@ test.describe("Console Background Jobs page", () => {
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();
-    test.skip(checkCount < 1, "no background jobs in the runtime fixture");
+    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
 
     await checks.nth(0).check();
     await expect(
@@ -164,7 +164,7 @@ test.describe("Console Background Jobs page", () => {
 
     const rows = page.locator("[data-testid='bg-job-row']");
     const count = await rows.count();
-    test.skip(count < 1, "no background jobs in the runtime fixture");
+    test.skip(count < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
 
     await rows.first().click();
     await page.waitForLoadState("networkidle");
@@ -197,7 +197,7 @@ test.describe("Console Background Jobs page", () => {
     // one orphan exists in the fixture.
     const badges = page.locator("[data-testid='orphan-badge']");
     const badgeCount = await badges.count();
-    test.skip(badgeCount < 1, "no orphaned background jobs in the fixture");
+    test.skip(badgeCount < 1, "no orphaned background jobs in the fixture (seeding tracked in issue #178)");
 
     await badges.first().click();
     await expect(
@@ -226,7 +226,7 @@ test.describe("Console Background Jobs page", () => {
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();
-    test.skip(checkCount < 1, "no background jobs in the runtime fixture");
+    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
 
     await checks.nth(0).check();
     const bulkCancel = page.locator("[data-testid='bg-bulk-cancel']");

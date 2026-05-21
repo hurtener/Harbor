@@ -236,7 +236,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, req SearchRequest) (Searc
 - Phase 20 (tasks registry — `Shipped`)
 - Phase 17/18/19 (artifacts store — `Shipped`)
 
-**Pending dependency — Phase 73 (state inspection):** the decomposition doc §4 row 72c lists `Deps: 60, 73 (state inspection)`. Phase 73's status is `Pending` at the time of this plan. `search.sessions` and `search.tasks` query against the same shipped `sessions.SessionRegistry` / `tasks.TaskRegistry` interfaces Phase 73 will extend; this phase consumes the ALREADY-SHIPPED interfaces and does NOT block on 73's UI-feeding methods. If Phase 73 reshapes the underlying registry interfaces (unlikely — see Risks), 72c slips. See "Risks / open questions" for the contingency.
+**Same-wave coordination — Phase 73c / 73d (Console Sessions / Tasks pages):** the decomposition doc §4 row 72c lists `Deps: 60, 73 (state inspection)`; the state-inspection surface decomposed into the per-page phases 73a-73n, and `search.sessions` / `search.tasks` are consumed by the **73c** Sessions and **73d** Tasks pages. `search.sessions` and `search.tasks` query against the same shipped `sessions.SessionRegistry` / `tasks.TaskRegistry` interfaces those pages extend; this phase consumes the ALREADY-SHIPPED interfaces and does NOT block on 73c/73d's UI-feeding methods. If a Stage-2 page reshapes the underlying registry interfaces (unlikely — see Risks), 72c slips. See "Risks / open questions" for the contingency.
 
 ## Risks / open questions
 

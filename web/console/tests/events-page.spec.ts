@@ -89,7 +89,7 @@ test.describe("Events page", () => {
       "the FilterBar search input renders",
     ).toBeVisible();
     await expect(
-      page.locator("[data-testid='event-filter-chips']"),
+      page.locator("[data-testid='events-filter-chips']"),
       "the faceted filter chips render",
     ).toBeVisible();
   });
@@ -103,7 +103,7 @@ test.describe("Events page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("events");
 
-    const sparkline = page.locator("[data-testid='event-rate-sparkline']");
+    const sparkline = page.locator("[data-testid='events-rate-sparkline']");
     const empty = page.locator("[data-testid='events-empty']");
     const error = page.locator("[data-testid='page-state-error']");
     const loading = page.locator("[data-testid='page-state-loading']");
@@ -128,7 +128,7 @@ test.describe("Events page", () => {
     await expect(facet, "the Event-type facet chip renders").toBeVisible();
     await facet.click();
     await expect(
-      page.locator("[data-testid='event-type-menu']"),
+      page.locator("[data-testid='events-type-menu']"),
       "the event-type multiselect opens",
     ).toBeVisible();
     const firstOpt = page.locator("[data-testid^='type-opt-']").first();
@@ -177,19 +177,20 @@ test.describe("Events page", () => {
     // state — `togglePause` is a no-op until the subscription has
     // established. Deterministically driving the SSE subscription into
     // an established+pausable state needs an events-stream interaction
-    // fixture (a larger seam than entity seeding). Tracked as a
-    // tracked in issue #178 (live-planner-run trajectory fixtures).
+    // fixture (a larger seam than entity seeding). Tracked in
+    // issue #178 (live-planner-run trajectory fixtures).
     test.skip(
       true,
       "deferred: needs a live events.subscribe SSE-subscription " +
-        "interaction fixture (not entity seeding) — Phase 75a " +
-        "follow-up. See CLAUDE.md §17.6.",
+        "interaction fixture (not entity seeding) — tracked in " +
+        "issue #178 (live-planner-run trajectory fixtures). " +
+        "See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("events");
 
-    const toggle = page.locator("[data-testid='pause-stream-toggle']");
+    const toggle = page.locator("[data-testid='events-pause-stream-toggle']");
     await expect(toggle, "the Pause-stream toggle renders").toBeVisible();
     await expect(toggle, "the toggle starts un-pressed").toHaveAttribute(
       "aria-pressed",
@@ -236,7 +237,7 @@ test.describe("Events page", () => {
 
     const firstRow = page.locator("[data-testid^='event-row-']").first();
     if ((await firstRow.count()) === 0) {
-      test.skip(true, "no events on the dev runtime stream yet");
+      test.skip(true, "no events on the dev runtime stream yet (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstRow.click();

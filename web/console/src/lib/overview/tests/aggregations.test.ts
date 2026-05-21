@@ -16,7 +16,7 @@ import {
 	WINDOW_BUCKETS,
 	type CounterWindow
 } from '../aggregations.js';
-import type { Event } from '../../protocol/harbor.js';
+import type { Event } from '../../protocol/events.js';
 
 const MINUTE = 60_000;
 // A fixed reference instant on a minute boundary keeps the arithmetic

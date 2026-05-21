@@ -29,6 +29,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -110,4 +111,51 @@ func MetricsProvider(reg *telemetry.MetricsRegistry, log *slog.Logger) func(cont
 		}
 		return types.MetricsSnapshot{Counters: counters}
 	}
+}
+
+// HealthFromConfig builds the Phase 72f `runtime.health` seam from the
+// resolved config. The in-process dev / devstack assembly is fully wired
+// by the time the posture surface is constructed, so every
+// persistence-shaped subsystem reports `ready`.
+//
+// This is the single shared implementation consumed by BOTH the
+// `harbor dev` / `harbor console` boot path and the
+// `harbortest/devstack` fixture assembler — neither hand-rolls its own
+// copy, so the fixture cannot drift from production (CLAUDE.md §17.6;
+// D-132 / Wave 13 NIT cleanup).
+func HealthFromConfig(cfg *config.Config) []types.SubsystemHealth {
+	subs := []string{"state", "events"}
+	if cfg.Artifacts.Driver != "" {
+		subs = append(subs, "artifacts")
+	}
+	if cfg.Memory.Driver != "" {
+		subs = append(subs, "memory")
+	}
+	out := make([]types.SubsystemHealth, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, types.SubsystemHealth{Subsystem: s, Status: types.HealthStatusReady})
+	}
+	return out
+}
+
+// DriversFromConfig builds the Phase 72f `runtime.drivers` seam — the
+// configured driver name per persistence-shaped subsystem. Never the
+// DSN (CLAUDE.md §7) — the driver name only.
+//
+// Like HealthFromConfig, this is the single shared implementation both
+// the production boot path and the devstack fixture assembler consume.
+func DriversFromConfig(cfg *config.Config) []types.SubsystemDriver {
+	out := []types.SubsystemDriver{
+		{Subsystem: "state", Driver: cfg.State.Driver},
+	}
+	if cfg.Artifacts.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "artifacts", Driver: cfg.Artifacts.Driver})
+	}
+	if cfg.Memory.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "memory", Driver: cfg.Memory.Driver})
+	}
+	if cfg.Events.Driver != "" {
+		out = append(out, types.SubsystemDriver{Subsystem: "events", Driver: cfg.Events.Driver})
+	}
+	return out
 }

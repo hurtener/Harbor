@@ -11,8 +11,8 @@
   // tokens only.
   import { eventTypesByCategory } from '$lib/events/taxonomy.js';
   import type { EventFacetState } from '$lib/events/filters.js';
-  import type { TimeWindow } from '$lib/protocol/harbor.js';
-  import { WINDOW_SPEC } from '$lib/protocol/harbor.js';
+  import type { TimeWindow } from '$lib/protocol/events.js';
+  import { WINDOW_SPEC } from '$lib/protocol/events.js';
 
   let {
     facets,
@@ -55,7 +55,7 @@
   }
 </script>
 
-<div class="filter-chips" data-testid="event-filter-chips">
+<div class="filter-chips" data-testid="events-filter-chips">
   <!-- Event type ▾ -->
   <div class="chip-group">
     <button
@@ -69,7 +69,7 @@
       Event type{facets.eventTypes.length > 0 ? ` (${facets.eventTypes.length})` : ''} ▾
     </button>
     {#if typeMenuOpen}
-      <div class="type-menu" data-testid="event-type-menu" role="group" aria-label="Event types">
+      <div class="type-menu" data-testid="events-type-menu" role="group" aria-label="Event types">
         {#each eventTypesByCategory() as group (group.category)}
           <p class="type-group-label">{group.category}</p>
           {#each group.types as type (type)}

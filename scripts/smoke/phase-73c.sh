@@ -298,9 +298,23 @@ fi
 # --------------------------------------------------------------------
 # 4. Optional Playwright invocation when the Console build is present
 #    AND Playwright is installed AND the Phase 73c spec file exists.
+#
+#    "Console build present" means the SvelteKit bundle is STAGED into
+#    `cmd/harbor/consoledist/` — that is what `harbor console` embeds
+#    via `embed.FS` and serves. `make preflight` builds `bin/harbor`
+#    with a plain `go build` and does NOT run `make console-build`, so
+#    the preflight binary embeds only `consoledist/.gitkeep` and serves
+#    the "Console not bundled" placeholder — the Playwright spec then
+#    cannot hydrate. Detect the staged bundle and SKIP cleanly when it
+#    is absent (the directory-missing → SKIP convention, CLAUDE.md §4.2;
+#    D-131 console-build ordering). The CI `frontend-e2e` job runs
+#    `make console-build` before `make build`, so it exercises the spec
+#    for real.
 # --------------------------------------------------------------------
 if [ ! -f 'web/console/tests/sessions-page.spec.ts' ]; then
     skip 'phase 73c: web/console/tests/sessions-page.spec.ts absent — SKIP per the 404->SKIP convention (CLAUDE.md §4.2)'
+elif [ ! -f 'cmd/harbor/consoledist/index.html' ]; then
+    skip 'phase 73c: Console bundle not staged into cmd/harbor/consoledist/ (run `make console-build`) — SKIP per the directory-missing convention; CI frontend-e2e exercises the spec for real'
 elif [ -f 'web/console/package.json' ] && [ -d 'web/console/node_modules/@playwright/test' ]; then
     if (cd web/console && npm run test:e2e -- sessions-page.spec.ts >/dev/null 2>&1); then
         ok 'phase 73c: Playwright sessions-page.spec.ts passes (catalog rows + mockup columns + faceted filter + sub-header chips + bulk-action toolbar + right-rail Session Summary + bottom-dock tabs; SKIPs cleanly pre-Phase-73m harbor console)'

@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { exportEventsCSV, exportEventsNDJSON, exportMeta } from '../export.js';
-import type { Event, EventArtifactRef } from '../../protocol/harbor.js';
+import type { Event, EventArtifactRef } from '../../protocol/events.js';
 
 function event(overrides: Partial<Event> = {}): Event {
 	return {

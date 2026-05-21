@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { projectBuckets, rebucket } from '../sparkline.js';
-import type { EventBucket } from '../../protocol/harbor.js';
+import type { EventBucket } from '../../protocol/events.js';
 
 function bucket(startISO: string, counts: Record<string, number>): EventBucket {
 	return { bucket_start: startISO, bucket_end: startISO, counts };

@@ -22,7 +22,7 @@
  * rollup.
  */
 
-import type { Event } from '$lib/protocol/harbor.js';
+import type { Event } from '$lib/protocol/events.js';
 
 /** The closed set of cost-rollup grouping axes. */
 export type CostBreakdown = 'agent' | 'tenant';

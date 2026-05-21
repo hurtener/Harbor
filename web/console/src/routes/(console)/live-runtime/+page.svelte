@@ -74,7 +74,7 @@
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
-  import type { Event } from '$lib/protocol/harbor.js';
+  import type { Event } from '$lib/protocol/events.js';
   import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';

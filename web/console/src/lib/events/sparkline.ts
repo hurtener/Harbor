@@ -12,7 +12,7 @@
  * re-fetch). No `$state`, no Protocol call — unit-tested.
  */
 
-import type { EventBucket } from '$lib/protocol/harbor.js';
+import type { EventBucket } from '$lib/protocol/events.js';
 
 /** One rendered column of the stacked-area sparkline. */
 export interface SparklineColumn {
