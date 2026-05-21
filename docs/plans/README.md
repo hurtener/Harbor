@@ -6,7 +6,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 
 - **Source of truth:** `/RFC-001-Harbor.md` (referenced as RFC §X.X). Every phase below traces to one or more RFC sections; if a phase plan and the RFC drift, the RFC wins (`AGENTS.md` §2).
 - **Research substrate:** the eleven briefs in `docs/research/01..11.md` (canonical index: `docs/research/INDEX.md`). Decisions on shape, sharp edges, and Go-flavored types come from there.
-- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded; lettered suffixes (`26a`, `33a`, `36a`, `36b`, `53a`, `64a`, `83a`–`83e`) insert work into an existing band without renumbering. Phases 01–82 + 26a + 33a + 36a + 36b + 53a + 64a are V1; 83–99 + 83a–e are post-V1 follow-ups listed for completeness so we don't lose track.
+- **Numbering:** `phase-NN-<slug>.md`, two-digit zero-padded; lettered suffixes (`26a`, `33a`, `36a`, `36b`, `53a`, `64a`, `83a`–`83e`, `85a`–`85j`) insert work into an existing band without renumbering. Phases 01–82 + 26a + 33a + 36a + 36b + 53a + 64a are V1; 83–100 + 83a–e + 85a–j are post-V1 follow-ups listed for completeness so we don't lose track. The integer phase **85 (Skills Portico provider driver) was removed** — Portico is an MCP gateway and speaks MCP like any server, so the generic MCP client driver is its consumer; the 85-band is now MCP client/host compliance (85a–j). See brief 14.
 - **Done-definition (binding, from `AGENTS.md` §4.2):** (a) all acceptance criteria pass; (b) coverage targets met; (c) `scripts/smoke/phase-NN.sh` shows `OK ≥ count(criteria)` and `FAIL = 0`; (d) prior phases' smoke scripts still pass.
 - **Coverage defaults (override per phase):** 80% for new packages; 85% for persistence drivers and conformance-tested subsystems; 70% for CLI/tooling.
 - **Predecessor name:** does not appear in this repository, ever. (`AGENTS.md` §13.)
@@ -130,7 +130,16 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 83d| ReAct skills + memory injection (UNTRUSTED)   | planner/react        | §6.2, §6.6  | 83a, 23, 37           | 85%  | Pending  |
 | 83e| ReAct reasoning channel decoupling            | planner/react+llm    | §6.2, §6.5  | 45, 32, 33, 44        | 90%  | Pending  |
 | 84 | Reflection / critique loop                    | planner              | §12         | 45                    | n/a  | Post-V1  |
-| 85 | Skills Portico provider driver                | skills/portico       | §6.7        | 37, 28                | n/a  | Post-V1  |
+| 85a| MCP client core-compliance fixes              | tools/mcp            | §6.4        | 28                    | 85%  | Post-V1  |
+| 85b| MCP HTTP OAuth (RFC 9728 + 8707 + step-up)    | tools/mcp+auth       | §6.4, §3.3  | 28, 30, 50            | 85%  | Post-V1  |
+| 85c| MCP sampling provider                         | tools/mcp+llm        | §6.4, §6.5  | 28, 32, 50            | 85%  | Post-V1  |
+| 85d| MCP elicitation provider (form + URL mode)    | tools/mcp            | §6.4, §3.3  | 28, 50                | 85%  | Post-V1  |
+| 85e| MCP roots provider                            | tools/mcp            | §6.4        | 28, 85a               | 85%  | Post-V1  |
+| 85f| MCP remaining server features                 | tools/mcp            | §6.4        | 28, 85a               | 85%  | Post-V1  |
+| 85g| MCP Apps host (Console `ui://` renderer)      | web/console          | §6.4, §7    | 28, 85a               | 80%  | Post-V1  |
+| 85h| MCP Tasks wire types (hand-transcribed)       | tools/mcp            | §6.4        | 28                    | 90%  | Post-V1  |
+| 85i| MCP Tasks client                              | tools/mcp            | §6.4        | 85h, 28               | 85%  | Post-V1  |
+| 85j| MCP client conformance + compliance statement | tools/mcp + docs     | §6.4        | 85a–85i               | 85%  | Post-V1  |
 | 86 | Durable distributed bus driver                | distributed          | §6.12, §12  | 22                    | n/a  | Post-V1  |
 | 87 | Durable TaskService backend                   | tasks                | §12         | 20, 22                | n/a  | Post-V1  |
 | 88 | Episodic memory tier                          | memory               | §6.6, §11Q4 | 24, 25                | n/a  | Post-V1  |
@@ -147,7 +156,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 99 | Vision-aware memory summarization             | memory               | §6.6, D-021 | 24, 33, 97            | n/a  | Post-V1  |
 |100 | Recipe loader (declarative YAML flows)        | runtime/flow/recipe  | §6.1, D-023 | 26a                   | n/a  | Post-V1  |
 
-V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–100 + 83a–e (23 phases — ReAct prompt depth 83a–d, ReAct reasoning-channel decoupling 83e, Governance 91–96, Multimodal-output 97–99, Recipe loader 100). Total tracked: 100 + 26a + 36a + 36b + 83a–e + Phase 00 = 109 entries.
+V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j (MCP client/host compliance — the prioritised first post-V1 work). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
@@ -987,7 +996,21 @@ Listed for tracking. Not on the V1 critical path.
 - **83d — ReAct skills + memory injection (UNTRUSTED framing).** Render `RunContext.MemoryBlocks` and `RunContext.SkillsContext` into the system prompt as separate `llm.ChatMessage` entries with the five-line anti-prompt-injection rule list from brief 13 §2.3. Distinct `<read_only_external_memory>` / `<read_only_conversation_memory>` wrappers preserved per tier; `<skills_context>` for pre-retrieved skill bodies. Serialisation failures fail loudly via `ErrMemoryBlockUnserializable`. RFC §6.2, §6.6, §6.7. Deps: 83a, 23, 37. See `docs/plans/phase-83d-react-skills-and-memory-injection.md`.
 - **83e — ReAct reasoning channel decoupling (capture-vs-replay).** Drop `Reasoning` from `Decision_CallTool`; extend `llm.CompleteResponse` with `Reasoning string`; bifrost driver reads `BifrostChatResponse.Choices[0].Message.ReasoningDetails` — closing both the unary-path gap (today `OnReasoning` is streaming-only) and the Gemini-direct black hole (today bifrost populates `reasoning_details[]` on the message but Harbor drops it). Reasoning persists on `TrajectoryStep.ReasoningTrace`; replay is operator-controlled per agent via `PlannerConfig.ReasoningReplay` enum (`never` default for ALL models, `text` opt-in). No `provider_native` mode in V1 (Bifrost docs don't cover thinking-block round-trips). New decisions **D-106** (schema narrowing) + **D-107** (replay knob shape — two enum values, defer `provider_native`). RFC §6.2, §6.5. Deps: 45, 32, 33, 44. See `docs/plans/phase-83e-react-reasoning-channel-decoupling.md`.
 - **84 — Reflection / critique loop.** Optional per planner. Self-critique before Finish. RFC §12. Deps: 45.
-- **85 — Skills Portico provider driver.** Consume Portico-distributed skill packs via MCP; same SkillProvider interface. Deps: 37, 28.
+
+#### 85-band — MCP client/host compliance (prioritised first post-V1 work)
+
+The integer Phase 85 (Skills Portico provider driver) is **removed**: Portico is an MCP gateway and speaks MCP like any server, so the generic MCP client driver consumes it — a Portico-specific driver would duplicate the driver and couple Harbor to one ecosystem tool. The 85-band closes Harbor's MCP-client-compliance gap against spec 2025-11-25 (audit + decomposition in **brief 14**). 85a is the foundation; 85b–g stage in parallel after it; 85h precedes 85i; 85j conforms the band. This band is the **first post-V1 work** — ahead of 83/84 in execution priority.
+
+- **85a — MCP client core-compliance fixes.** Fix the `Discover` pagination-truncation bug + the roots-honesty violation (advertising `roots.listChanged` with no provider); add `*ListChanged` handlers + resource `Unsubscribe`. Gets Harbor to a clean, honest "MCP 2025-11-25 core-compliant" claim. RFC §6.4. Deps: 28. See `docs/plans/phase-85a-mcp-client-core-compliance.md`.
+- **85b — MCP HTTP OAuth.** Wire the Phase 30 `auth.Provider` into the MCP driver (today MCP HTTP servers get static headers only); add RFC 9728 protected-resource-metadata discovery, `WWW-Authenticate` 401 step-up, RFC 8707 resource indicators. Interactive flow via the unified pause/resume primitive. RFC §6.4, §3.3. Deps: 28, 30, 50. See `docs/plans/phase-85b-mcp-http-oauth.md`.
+- **85c — MCP sampling provider.** `sampling/createMessage` handler backed by `llm.LLMClient` — lets MCP servers run LLM calls through Harbor without their own keys. `modelPreferences` mapping, multimodal, tool-enabled sampling; review-gated via pause/resume. RFC §6.4, §6.5, §3.3. Deps: 28, 32, 50. See `docs/plans/phase-85c-mcp-sampling-provider.md`.
+- **85d — MCP elicitation provider.** `elicitation/create` form mode (restricted JSON Schema) + URL mode (out-of-band sensitive flows); HITL via pause/resume; form mode rejects secret-shaped schemas. RFC §6.4, §3.3. Deps: 28, 50. See `docs/plans/phase-85d-mcp-elicitation-provider.md`.
+- **85e — MCP roots provider.** Real filesystem/workspace roots; path-traversal safety (reuses `skills/importer/path_safety.go`); `roots/list_changed`. Replaces 85a's honest-empty stopgap with a real provider. RFC §6.4. Deps: 28, 85a. See `docs/plans/phase-85e-mcp-roots-provider.md`.
+- **85f — MCP remaining server features.** Completions (`completion/complete`), logging (`logging/setLevel` + `notifications/message`), resource templates (`resources/templates/list`), progress (`_meta.progressToken` + `notifications/progress`). RFC §6.4. Deps: 28, 85a. See `docs/plans/phase-85f-mcp-remaining-server-features.md`.
+- **85g — MCP Apps host.** Console-side `ui://` resource renderer: sandboxed iframe, strict CSP, the AppBridge `postMessage` JSON-RPC dialect. Closes the `registry.go` primitive-without-consumer gap (`DisplayModes` / `RawHTMLTrust` projection fields). RFC §6.4, §7. Deps: 28, 85a. See `docs/plans/phase-85g-mcp-apps-host.md`.
+- **85h — MCP Tasks wire types.** Pre-phase: hand-transcribe the `tasks/*` types + capability shapes from the 2025-11-25 spec (`go-sdk v1.6.0` exposes no Tasks surface) — same pattern as the A2A wire shapes; Dockyard's Go retrofit is the reference. Types + capability negotiation only, no client logic. RFC §6.4. Deps: 28. See `docs/plans/phase-85h-mcp-tasks-wire-types.md`.
+- **85i — MCP Tasks client.** Consume `tasks/get|result|cancel|list`; task-augmented `tools/call` honouring `execution.taskSupport`; related-task `_meta`; identity-bound task isolation; polling honouring `pollInterval` / `ttl`. RFC §6.4. Deps: 85h, 28. See `docs/plans/phase-85i-mcp-tasks-client.md`.
+- **85j — MCP client conformance.** Conformance harness — mock MCP servers exercising every capability the band added — plus the scoped, substantiated compliance statement (`docs/design/mcp-compliance.md`). RFC §6.4. Deps: 85a–85i. See `docs/plans/phase-85j-mcp-client-conformance.md`.
 - **86 — Durable distributed bus driver.** NATS / Redis Streams / Postgres-as-queue behind `MessageBus`. RFC §12. Deps: 22.
 - **87 — Durable TaskService backend.** Background tasks survive restart. RFC §12. Deps: 20, 22.
 - **88 — Episodic memory tier.** Durable summaries promoted from session → user/tenant scope. RFC §11 Q-4. Deps: 24, 25.
@@ -1075,12 +1098,12 @@ This section accumulates audit-surfaced follow-ups that warrant tracking issues 
 
 ## V1 cut line
 
-**V1 ships phases 01–82 + 36a + 36b + 53a.** Seventeen follow-ups (83–99) are intentionally deferred to post-V1: eight original (83–90), six Governance (91–96), and three Multimodality follow-ups (97–99) for media-input tool wrappers, media-output tool wrappers, and vision-aware memory summarization. Multimodal **inputs** ship in V1 (RFC §6.5 + D-021); only multimodal **outputs** and richer memory handling are post-V1. The Evaluations subsystem and code-mode (Starlark) are also post-V1 — see RFC §12.
+**V1 ships phases 01–82 + 36a + 36b + 53a.** The follow-ups (83–100) are intentionally deferred to post-V1: the original band (83, 84, 86–90 — integer 85 was removed, see below), six Governance (91–96), three Multimodality follow-ups (97–99) for media-input/output tool wrappers and vision-aware memory summarization, and the Recipe loader (100). Two lettered bands sit inside this range: 83a–e (ReAct prompt depth + reasoning-channel decoupling) and **85a–j (MCP client/host compliance — the prioritised first post-V1 work)**. Multimodal **inputs** ship in V1 (RFC §6.5 + D-021); only multimodal **outputs** and richer memory handling are post-V1. The Evaluations subsystem and code-mode (Starlark) are also post-V1 — see RFC §12.
 
 The cut line is justified by RFC §12 (Out of Scope for V1):
 
 - **Auto-sequence + reflection (83, 84)** — explicit RFC §12 entries: "optional optimization, off by default" and "optional per concrete; not on V1's critical path." Shipping the planner without them does not weaken the swappable-planner property; both can land as planner-internal upgrades without runtime change.
-- **Skills Portico provider (85)** — depends on Portico's MCP surface stabilizing; not a runtime gating factor.
+- **MCP client/host compliance (85-band, 85a–j)** — post-V1 by deferral, not by architecture: the V1 MCP southbound driver (Phase 28) is core-functional; the 85-band raises it to feature-complete (OAuth, sampling, elicitation, roots, Tasks, Apps). Prioritised as the first post-V1 work. The integer Phase 85 (Skills Portico provider driver) was removed — Portico speaks MCP like any server, so the generic MCP client driver is its consumer; no Portico-specific driver is built.
 - **Durable distributed bus + durable TaskService backend (86, 87)** — RFC §6.12 settles "V1 ships contracts only; in-process default." A durable backend is a driver phase, not a runtime-architecture phase.
 - **Episodic memory tier (88)** — RFC §11 Q-4 leans post-V1 unless V1 user feedback demands it.
 - **A2A northbound (89)** — RFC §11 Q-2 leans V1.1 unless an early adopter demands it.

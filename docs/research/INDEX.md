@@ -21,6 +21,7 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 11 | Console feature surface (from operator mockup + playground) | ~5000 | 2026-05-12 |
 | 12 | Console deployment posture + shared UI library | ~2200 | 2026-05-15 |
 | 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
+| 14 | MCP client/host compliance (spec 2025-11-25 — capability matrix audit + 85-band decomposition) | ~3600 | 2026-05-21 |
 
 ## Subsystem → briefs reverse index
 
@@ -34,6 +35,7 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Steering and unified pause/resume | §3.3, §6.3 | **02** |
 | Tool catalog + transports (in-proc / HTTP / MCP / A2A) | §6.4 | **03**, **07** |
 | Tool-side OAuth + HITL (Phase 30) | §6.4, §3.3 | **09** |
+| MCP client/host compliance (Phases 85a–j) | §6.4, §6.5, §7 | **14**, 03, 09 |
 | Agent Registry — registration identity, three-ID model, fleet control (Phase 53a) | §6.16, §7 | **09**, **11** |
 | Code-mode as a tool primitive (proposed phase) | §6.4, §6.5 | **10** |
 | Console feature surface + playground (Phases 72–75 and new phases) | §5, §7 | **11**, **12** |
