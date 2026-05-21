@@ -24,7 +24,6 @@
     RailCard,
     StatusChip,
     Pagination,
-    ConnectionFooter,
     PageState,
     type DataTableColumn
   } from '$lib/components/ui/index.js';
@@ -242,8 +241,6 @@
       {/if}
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </section>
 
 <style>

@@ -313,14 +313,16 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 16. D-093 + CLAUDE.md §4.5 #5: web/console/src/lib/protocol.ts is
-#     generated, not hand-edited.
+# 16. D-093 / D-132 (Wave 13 §17.5 W10): the `cmd/harbor-gen-protocol-ts`
+#     generator was never built — `protocol.ts` is hand-maintained. The
+#     checkpoint corrected the formerly-false `CODE GENERATED … DO NOT
+#     EDIT` header to an accurate "HAND-MAINTAINED" notice.
 # ----------------------------------------------------------------------------
 if [ -f web/console/src/lib/protocol.ts ]; then
-    if head -5 web/console/src/lib/protocol.ts | grep -q 'CODE GENERATED' 2>/dev/null; then
-        ok 'phase 73k: protocol.ts carries generated-by header (D-093)'
+    if grep -q 'HAND-MAINTAINED' web/console/src/lib/protocol.ts 2>/dev/null; then
+        ok 'phase 73k: protocol.ts carries the accurate hand-maintained header (D-093 / D-132)'
     else
-        fail 'phase 73k: protocol.ts missing generated-by header (D-093 + CLAUDE.md §4.5 #5)'
+        fail 'phase 73k: protocol.ts missing the hand-maintained header (D-093 / D-132)'
     fi
 else
     skip 'phase 73k: web/console/src/lib/protocol.ts not present (pre-Phase 73k Console build)'

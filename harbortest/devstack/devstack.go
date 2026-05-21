@@ -86,6 +86,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
@@ -105,16 +106,19 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
+	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
+	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
-	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -448,6 +452,50 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	}
 	stack.Bus = bus
 	stack.closeFns = append(stack.closeFns, bus.Close)
+
+	// Phase 56 / 72f: the MetricsRegistry + bus→metrics bridge. The
+	// devstack mirrors the production `cmd/harbor` boot path field-for-
+	// field (CLAUDE.md §17.6 — the fixture must not diverge from
+	// production) so the posture surface's `metrics.snapshot` projects
+	// a LIVE counter snapshot, not an empty stub.
+	//
+	// The reader is an in-process sdkmetric.ManualReader injected via
+	// the `WithMetricReader` seam: production resolves the metric
+	// exporter through the §4.4 driver registry (the prometheus driver
+	// is blank-imported in `cmd/harbor/main.go`), but `harbortest` is a
+	// library every integration test imports — requiring each of them
+	// to blank-import a driver would be fragile. The ManualReader keeps
+	// `devstack.Assemble` self-contained while exercising the SAME
+	// MetricsRegistry + bridge + Snapshot code path production runs.
+	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(cfg.Telemetry,
+		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
+	if err != nil {
+		return stack, fmt.Errorf("telemetry.NewMetricsRegistry: %w", err)
+	}
+	stack.closeFns = append(stack.closeFns, metricsShutdown)
+	metricsBridgeStop, err := telemetry.BridgeBusToMetrics(context.Background(), bus, metricsReg, events.Filter{Admin: true})
+	if err != nil {
+		return stack, fmt.Errorf("telemetry.BridgeBusToMetrics: %w", err)
+	}
+	stack.closeFns = append(stack.closeFns, func(context.Context) error { metricsBridgeStop(); return nil })
+
+	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —
+	// mirrors `cmd/harbor/cmd_dev.go::bootDevStack` field-for-field
+	// (§17.6 source-of-truth invariant). Without a live Run() the
+	// `notification.*` topic has no producer; the goroutine is
+	// cancelled + joined on Close.
+	notifSubscriber := notifications.NewSubscriber(bus, slog.Default())
+	notifCtx, notifCancel := context.WithCancel(context.Background())
+	notifDone := make(chan struct{})
+	go func() {
+		defer close(notifDone)
+		_ = notifSubscriber.Run(notifCtx)
+	}()
+	stack.closeFns = append(stack.closeFns, func(context.Context) error {
+		notifCancel()
+		<-notifDone
+		return nil
+	})
 
 	// State.
 	stateStore, err := state.Open(context.Background(), cfg.State)
@@ -783,15 +831,18 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			Health: func(_ context.Context) []types.SubsystemHealth {
 				return devstackPostureHealth(cfg)
 			},
-			Counters: func(_ context.Context, _ identity.Identity) types.RuntimeCounters {
-				return types.RuntimeCounters{}
-			},
+			// §17.6 F3: Counters + Metrics wired to live runtime state —
+			// the task registry's per-identity running/background counts
+			// and the MetricsRegistry's bus-fed counter snapshot. The
+			// devstack does not assemble a session registry, so the
+			// SessionLister is nil — SessionsActive then reports 0
+			// (honest: the fixture runs no sessions), never a fabricated
+			// value. This tracks the production boot field-for-field.
+			Counters: runtimeposture.CountersProvider(taskReg, nil),
 			Drivers: func() []types.SubsystemDriver {
 				return devstackPostureDrivers(cfg)
 			},
-			Metrics: func(_ context.Context) types.MetricsSnapshot {
-				return types.MetricsSnapshot{}
-			},
+			Metrics:     runtimeposture.MetricsProvider(metricsReg, slog.Default()),
 			Governance:  governance.NewPostureProvider(governanceConfigForDevstack(cfg.Governance)),
 			LLM:         llm.NewPostureProvider(llmPostureCfg),
 			Redactor:    stack.Audit,

@@ -295,9 +295,12 @@ test.describe("MCP Connections page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("mcp-connections");
 
+    // D-132 / W3: the ConnectionFooter is owned by the app shell
+    // (`(console)/+layout.svelte`) — the page no longer renders its
+    // own. Assert the single shell-provided footer.
     await expect(
-      page.locator("[data-testid='mcp-connections-list'] [data-testid='connection-footer']"),
-      "the ConnectionFooter renders",
+      page.locator("[data-testid='connection-footer']"),
+      "the shell-provided ConnectionFooter renders",
     ).toBeVisible();
     await expect(
       page.locator("[data-testid='mcp-search']"),

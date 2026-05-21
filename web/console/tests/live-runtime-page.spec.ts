@@ -123,11 +123,11 @@ test.describe("Console Live Runtime page", () => {
     // live engine run (`internal/runtime/engine/topology.go`) — NOT
     // from registry fixtures. Exercising it needs a real planner/engine
     // run fixture (a larger seam than entity seeding). Tracked as a
-    // Phase 75a follow-up; see the Phase 75a PR body.
+    // tracked in issue #178 (live-planner-run trajectory fixtures).
     test.skip(
       true,
       "deferred: needs a live engine-run topology fixture (not entity " +
-        "seeding) — Phase 75a follow-up. See CLAUDE.md §17.6.",
+        "seeding) — tracked in issue #178. See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
@@ -162,12 +162,12 @@ test.describe("Console Live Runtime page", () => {
     // §17.6 deferral — NOT a seeding-gap skip. The topology canvas is
     // the `<PageState>` `ready`-state primary view; `ready` requires a
     // non-empty `topology.snapshot`, projected from a live engine run
-    // (not registry fixtures). Tracked as a Phase 75a follow-up — see
-    // the (c) test's comment and the Phase 75a PR body.
+    // (not registry fixtures). Tracked in issue #178 — see
+    // the (c) test's comment and issue #178.
     test.skip(
       true,
       "deferred: needs a live engine-run topology fixture (not entity " +
-        "seeding) — Phase 75a follow-up. See CLAUDE.md §17.6.",
+        "seeding) — tracked in issue #178. See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);

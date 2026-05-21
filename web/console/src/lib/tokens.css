@@ -11,10 +11,11 @@
  * ONE coherent scale, extended in place — never per-phase append blocks.
  * Tokens are grouped by what they ARE (color / spacing / type / radius /
  * motion / sizing), not by which phase added them. There is exactly one
- * hairline-border token and one rail-width token (CONVENTIONS.md §7); the
- * `--border-hairline-alias` group below preserves legacy names so the five
- * pre-D-121 pages keep resolving until the page-internal refactor wave
- * migrates them onto the canonical names.
+ * hairline-border token and one rail-width token (CONVENTIONS.md §7).
+ * The pre-D-121 legacy alias tokens were removed in the Wave 13 §17.5
+ * checkpoint (D-132 / W1) — every page now references the canonical
+ * `--border-hairline` / `--border-hairline-width` / `--border-emphasis-width`
+ * and `--size-rail` names directly.
  */
 
 :root {
@@ -94,24 +95,16 @@
   --border-hairline: 1px solid var(--color-border);
   /* The hairline width on its own, for one-sided borders. */
   --border-hairline-width: 1px;
-  /* Legacy alias group — pre-D-121 pages used four distinct names. They
-     resolve to the one canonical width until the refactor wave migrates
-     them. New code uses `--border-hairline` / `--border-hairline-width`. */
-  --border-thin: var(--border-hairline-width);
-  --border-thick: 2px;
-  --border-width-hairline: var(--border-hairline-width);
-  --border-width-thin: var(--border-hairline-width);
+  /* The emphasis-border width (2px) — the one non-hairline width on the
+     token surface, used by selected-state underlines (e.g. an active
+     tab). New code references `--border-emphasis-width`. */
+  --border-emphasis-width: 2px;
 
   /* ================================================================ */
   /* Sizing — ONE rail-width token (CONVENTIONS.md §7)                 */
   /* ================================================================ */
   /* The single detail-rail width every page's right rail uses. */
   --size-rail: 22rem;
-  /* Legacy alias group — pre-D-121 pages used three distinct rail-width
-     names. They resolve to the one canonical token until the refactor
-     wave migrates them. New code uses `--size-rail`. */
-  --size-rail-width: var(--size-rail);
-  --layout-rail-width: var(--size-rail);
 
   /* Sizing — other layout dimensions */
   --size-px: 1px;

@@ -37,6 +37,29 @@ type RegistryCatalog struct {
 	registry  *flow.Registry
 	artifacts artifacts.ArtifactStore
 	threshold int
+	// clock is the wall-clock seam the trailing-24h-window aggregates
+	// read. Production wires `time.Now`; tests inject a deterministic
+	// clock so a time-sensitive run-count assertion is not a
+	// wall-clock-rollover time bomb (CLAUDE.md §11 "time-sensitive
+	// tests use a controllable clock"). Set once at construction; never
+	// mutated (D-025).
+	clock func() time.Time
+}
+
+// CatalogOption configures a RegistryCatalog at construction.
+type CatalogOption func(*RegistryCatalog)
+
+// WithCatalogClock overrides the wall-clock seam the trailing-24h-window
+// run aggregates read. A nil clock keeps the default `time.Now`.
+// Production never sets this; the Phase 73i flows integration test
+// injects a fixed clock so its run-count assertions are deterministic
+// regardless of the real wall clock.
+func WithCatalogClock(now func() time.Time) CatalogOption {
+	return func(c *RegistryCatalog) {
+		if now != nil {
+			c.clock = now
+		}
+	}
 }
 
 // NewRegistryCatalog builds the production Catalog over a flow.Registry
@@ -47,7 +70,7 @@ type RegistryCatalog struct {
 //
 // The returned *RegistryCatalog is immutable after construction and
 // safe for concurrent use by N goroutines.
-func NewRegistryCatalog(registry *flow.Registry, store artifacts.ArtifactStore, threshold int) (*RegistryCatalog, error) {
+func NewRegistryCatalog(registry *flow.Registry, store artifacts.ArtifactStore, threshold int, opts ...CatalogOption) (*RegistryCatalog, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("%w: flow.Registry is nil", ErrMisconfigured)
 	}
@@ -57,7 +80,11 @@ func NewRegistryCatalog(registry *flow.Registry, store artifacts.ArtifactStore, 
 	if threshold <= 0 {
 		return nil, fmt.Errorf("%w: heavy-content threshold %d is non-positive", ErrMisconfigured, threshold)
 	}
-	return &RegistryCatalog{registry: registry, artifacts: store, threshold: threshold}, nil
+	c := &RegistryCatalog{registry: registry, artifacts: store, threshold: threshold, clock: time.Now}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // ListFlows projects every registered flow into a wire Flow row with
@@ -65,7 +92,7 @@ func NewRegistryCatalog(registry *flow.Registry, store artifacts.ArtifactStore, 
 // aggregates are tenant-scoped: a non-admin caller's counts cover only
 // their own tenant.
 func (c *RegistryCatalog) ListFlows(ctx context.Context, id identity.Identity, adminScoped bool) ([]prototypes.Flow, error) {
-	now := time.Now()
+	now := c.clock()
 	out := make([]prototypes.Flow, 0)
 	for _, name := range c.registry.Names() {
 		def, meta, ok := c.registry.Definition(name)
@@ -87,7 +114,7 @@ func (c *RegistryCatalog) DescribeFlow(ctx context.Context, id identity.Identity
 	}
 	runs, _ := c.registry.Runs(flowID)
 	scoped := scopeRuns(runs, id, adminScoped, nil)
-	now := time.Now()
+	now := c.clock()
 	nodes, edges := projectGraph(def)
 	return prototypes.FlowDescription{
 		Flow:              projectFlow(def, meta, scoped, now),
@@ -153,7 +180,7 @@ func (c *RegistryCatalog) FlowMetrics(ctx context.Context, id identity.Identity,
 		return prototypes.FlowMetrics{}, fmt.Errorf("%w: flow %q", ErrNotFound, flowID)
 	}
 	scoped := scopeRuns(runs, id, adminScoped, nil)
-	now := time.Now()
+	now := c.clock()
 	start := now.Add(-window)
 	buckets := bucketMetrics(scoped, start, now, bucket)
 	return prototypes.FlowMetrics{

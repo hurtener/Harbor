@@ -96,6 +96,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72 | Console subscription protocol surface         | protocol             | §5.2, §7    | 60, 05, 06            | 85%  | Shipped  |
 | 72a| `events.subscribe` filter ext + `events.aggregate` | protocol+events | §5.2, §6.13 | 60, 61, 72            | 85%  | Shipped  |
 | 72b| `IdentityScope` admin-impersonation extension | protocol             | §5.5, §7    | 60, 61                | 89%  | Shipped  |
+| 72c| `search.*` cluster (5 methods)                | protocol+search      | §5.2, §7    | 60, 61, 08, 20, 05    | 85%  | Shipped  |
+| 72d| `notification.*` event topic + mapper         | protocol+events      | §5.2, §6.13 | 05, 06, 20            | 85%  | Shipped  |
 | 72e| `pause.list` snapshot Protocol method          | protocol             | §5.2, §6.3  | 50, 60, 61, 17        | 90%  | Shipped  |
 | 72f| Runtime posture surface (`runtime.*`/`metrics.snapshot`) | protocol  | §5.3, §6.15, §7 | 60, 61, 56            | 85%  | Shipped  |
 | 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
@@ -107,7 +109,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73c| Console Sessions page (Protocol + UI)         | protocol+web/console | §5.2, §6.9, §7 | 08, 60, 61, 72a, 72b, 72c, 75 | 80%  | Shipped  |
 | 74 | Console topology projection events            | protocol             | §5.2, §6.13 | 05, 09                | 85%  | Shipped  |
 | 75 | Console e2e Playwright harness baseline       | testing              | §7          | 60, 72                | n/a  | Shipped  |
-| 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Pending  |
+| 73k| Console MCP Connections page                  | web/console          | §6.4, §7    | 28, 30, 50, 60, 61, 64a, 72a, 75 | 80%  | Shipped  |
 | 73d| Console Tasks page (kanban + bulk control)    | protocol+web/console | §5.2, §6.8, §7 | 20, 21, 54, 60, 61, 72c, 75 | 85%  | Shipped  |
 | 73b| Console Live Runtime page (Protocol + UI)     | protocol+web/console | §5.2, §6.3, §6.13, §7 | 60, 61, 72a, 73, 73i, 74, 75 | 85%  | Shipped  |
 | 73n| Console Playground page (Protocol + UI)       | protocol+web/console | §5.1, §6.4, §6.13, §7 | 54, 60, 61, 72b, 73l, 74, 75 | 85%  | Shipped  |

@@ -53,7 +53,7 @@
     flex-direction: column;
     height: 100%;
     min-height: var(--layout-detail-min-height);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-md);
     background: var(--color-bg);
     overflow: hidden;

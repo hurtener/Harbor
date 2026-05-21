@@ -84,7 +84,7 @@
     gap: var(--space-1);
     padding: var(--space-3);
     border-radius: var(--radius-md);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     max-width: 80%;
   }
 

@@ -21,13 +21,16 @@
   // - Talks to the Runtime only through `HarborClient` + `connection.ts`
   //   (§6) — no hand-rolled `fetch`. Design tokens only (§7).
   //
-  // # Control verbs (page-agents.md §9, D-066)
+  // # Control verbs (page-agents.md §9, D-066, D-132)
   //
   // The five fleet-control verbs (Pause / Drain / Restart / Force-Stop /
-  // Deregister) require the elevated control-scope claim. The page gates
-  // them on `auth.ScopeAdmin` via `connection.ts::hasScope` (D-079 closed
-  // two-scope set). An operator WITHOUT the claim sees the buttons
-  // disabled-with-tooltip — never a faked success (CLAUDE.md §13).
+  // Deregister) are exposed by the shipped `registry.*` IN-PROCESS Go
+  // API — there is NO Protocol method a Console client can call. The
+  // Wave 13 §17.5 checkpoint (D-132 / F4) pinned that the previous
+  // `controlFeedback`-string wiring was a fake-success path. Until a
+  // `registry.*` Protocol surface exists, the buttons are rendered
+  // disabled-with-tooltip by `ControlButtons.svelte` — regardless of
+  // scope claim. The page wires no control handler.
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
@@ -43,7 +46,6 @@
   } from '$lib/protocol/agents.js';
   import {
     resolveConnection,
-    hasScope,
     type RuntimeConnection
   } from '$lib/connection.js';
   import {
@@ -60,10 +62,9 @@
   import CostTab from '$lib/components/agents/CostTab.svelte';
   import SkillsTab from '$lib/components/agents/SkillsTab.svelte';
   import TopologyMiniGraph from '$lib/components/agents/TopologyMiniGraph.svelte';
-  import RecentActivityFeed, {
+  import AgentActivityFeed, {
     type ActivityEntry
-  } from '$lib/components/agents/RecentActivityFeed.svelte';
-  import type { ControlVerb } from '$lib/components/agents/ControlButtons.svelte';
+  } from '$lib/components/agents/AgentActivityFeed.svelte';
 
   interface AgentsPageGlobals {
     __HARBOR_PROTOCOL_CLIENT__?: ProtocolClient;
@@ -85,7 +86,6 @@
 
   let connection = $state<RuntimeConnection | null>(null);
   let agentsApi = $state<AgentsProtocol | null>(null);
-  let controlEnabled = $state(false);
 
   let activeTab = $state<TabId>('identity');
 
@@ -258,26 +258,6 @@
     activeTab = id;
   }
 
-  /**
-   * Handles a fleet-control verb. The five verbs are gated on the
-   * elevated control-scope claim (D-066) — `controlEnabled` is false
-   * for an unscoped operator, so the ControlButtons never reach this.
-   * The control-plane Protocol surface (`registry.*`) is exposed by a
-   * later wave; until then a control click that DID pass the scope gate
-   * routes the operator to the dedicated control surface rather than
-   * faking a success (CLAUDE.md §13).
-   */
-  function onControl(verb: ControlVerb): void {
-    // The `registry.*` control verbs are the shipped fleet-control
-    // surface (D-066). Their Protocol-method exposure lands with the
-    // control-surface wave; the button is enabled only for a
-    // control-scoped operator and, until the method is wired, surfaces
-    // the deferral honestly via an inline status rather than a fake OK.
-    controlFeedback = `Control verb "${verb}" requires the fleet-control Protocol surface (D-066) — not yet exposed.`;
-  }
-
-  let controlFeedback = $state('');
-
   onMount(() => {
     connection = resolveConnection();
     if (injected.__HARBOR_PROTOCOL_CLIENT__) {
@@ -285,9 +265,6 @@
     } else if (connection !== null) {
       agentsApi = new AgentsProtocol(new HarborClient({ connection }));
     }
-    // The fleet-control claim — `auth.ScopeAdmin` (D-079 closed
-    // two-scope set; agent control gates on `admin`).
-    controlEnabled = hasScope(connection, 'admin');
 
     void loadDetail();
     void loadTools();
@@ -316,17 +293,7 @@
     {/snippet}
 
     {#if detail}
-      <DetailHeader
-        agent={detail.agent}
-        {controlEnabled}
-        oncontrol={onControl}
-      />
-
-      {#if controlFeedback}
-        <p class="control-feedback" data-testid="agent-control-feedback">
-          {controlFeedback}
-        </p>
-      {/if}
+      <DetailHeader agent={detail.agent} />
 
       <div class="detail-body">
         <main class="tab-column">
@@ -401,7 +368,7 @@
             <TopologyMiniGraph bindings={toolBindings} />
           </RailCard>
           <RailCard title="Recent activity">
-            <RecentActivityFeed entries={activityEntries} />
+            <AgentActivityFeed entries={activityEntries} />
           </RailCard>
           <RailCard title="Permissions">
             <PageState
@@ -471,12 +438,6 @@
   }
 
   .tab-empty {
-    margin: var(--space-0);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-  }
-
-  .control-feedback {
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);

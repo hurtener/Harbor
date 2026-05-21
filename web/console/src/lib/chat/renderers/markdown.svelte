@@ -52,7 +52,7 @@
     margin: var(--space-0);
     padding: var(--space-4);
     background: var(--color-surface);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-md);
     overflow: auto;
     max-height: 60vh;

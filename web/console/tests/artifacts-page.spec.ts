@@ -180,6 +180,8 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
     const pageSrc = stripComments(
       readFileSync(join(artifactsRouteDir, "+page.svelte"), "utf8"),
     );
+    // D-132 / W3: ConnectionFooter is NOT in this list — it is owned by
+    // the app shell (`(console)/+layout.svelte`), not composed per-page.
     for (const primitive of [
       "PageHeader",
       "FilterBar",
@@ -189,7 +191,6 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
       "DetailRail",
       "RailCard",
       "Pagination",
-      "ConnectionFooter",
       "PageState",
     ]) {
       expect(

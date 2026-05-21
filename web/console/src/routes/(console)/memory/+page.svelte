@@ -54,10 +54,6 @@
   } from '$lib/components/ui';
   import SelectedItemDetail from '$lib/components/memory/SelectedItemDetail.svelte';
   import MemoryHealthCard from '$lib/components/memory/MemoryHealthCard.svelte';
-  import RecentIdentityRejectionsCard from '$lib/components/memory/RecentIdentityRejectionsCard.svelte';
-  import type { IdentityRejection } from '$lib/components/memory/RecentIdentityRejectionsCard.svelte';
-  import RecoveryDropoutsCard from '$lib/components/memory/RecoveryDropoutsCard.svelte';
-  import type { RecoveryDropout } from '$lib/components/memory/RecoveryDropoutsCard.svelte';
   import StrategyOverlayChipRow from '$lib/components/memory/StrategyOverlayChipRow.svelte';
 
   // ---- test-injection seam (CONVENTIONS.md §6) ---------------------
@@ -102,10 +98,6 @@
   let savedFiltersDB = $state<MemorySavedFilters | null>(null);
   let savedViews = $state<SavedView[]>([]);
   let activeViewId = $state<string | null>(null);
-
-  // ---- right-rail event cards (events stream — a later phase) -----
-  const rejections = $state<IdentityRejection[]>([]);
-  const dropouts = $state<RecoveryDropout[]>([]);
 
   const items = $derived<MemoryItem[]>(listResp?.items ?? []);
   const totalRows = $derived(listResp?.total_rows ?? 0);
@@ -532,11 +524,20 @@
       <RailCard title="Memory health">
         <MemoryHealthCard aggregate={health} />
       </RailCard>
-      <RailCard title="Recent identity rejections">
-        <RecentIdentityRejectionsCard {rejections} />
-      </RailCard>
-      <RailCard title="Recovery dropouts">
-        <RecoveryDropoutsCard {dropouts} />
+      <RailCard title="Memory event feed">
+        <!-- D-132 / W5: the "Recent identity rejections" + "Recovery
+             dropouts" feeds need the events-stream wiring (a later
+             phase). Rather than render two permanently-empty live
+             cards, one disabled-with-tooltip card honestly states the
+             deferral (CONVENTIONS.md §5, CLAUDE.md §13). -->
+        <p
+          class="rail-deferred"
+          data-testid="memory-event-feed-deferred"
+          title="Identity-rejection + recovery-dropout feeds need the events-stream wiring — deferred to a later phase (D-132)"
+        >
+          Identity-rejection and recovery-dropout feeds are deferred —
+          they require the events-stream wiring (a later phase).
+        </p>
       </RailCard>
       <RailCard title="Selected item">
         <!-- The rail gets its OWN nested <PageState> (CONVENTIONS.md §4):
@@ -678,5 +679,12 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+  }
+
+  .rail-deferred {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    opacity: 0.7;
   }
 </style>

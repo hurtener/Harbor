@@ -25,7 +25,7 @@
   object {
     width: 100%;
     height: 60vh;
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-md);
   }
 

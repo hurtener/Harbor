@@ -26,7 +26,7 @@
     max-width: 100%;
     max-height: 60vh;
     border-radius: var(--radius-md);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
   }
 
   figcaption {

@@ -178,7 +178,7 @@ test.describe("Events page", () => {
     // established. Deterministically driving the SSE subscription into
     // an established+pausable state needs an events-stream interaction
     // fixture (a larger seam than entity seeding). Tracked as a
-    // Phase 75a follow-up; see the Phase 75a PR body.
+    // tracked in issue #178 (live-planner-run trajectory fixtures).
     test.skip(
       true,
       "deferred: needs a live events.subscribe SSE-subscription " +

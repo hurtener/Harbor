@@ -30,7 +30,7 @@
     gap: var(--space-3);
     padding: var(--space-3);
     background: var(--color-surface);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-md);
   }
 

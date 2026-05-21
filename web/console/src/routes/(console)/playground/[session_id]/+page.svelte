@@ -39,9 +39,9 @@
   import PendingInterventionsCard, {
     type PendingIntervention
   } from '$lib/components/playground/PendingInterventionsCard.svelte';
-  import RecentArtifactsCard, {
+  import PlaygroundArtifactsCard, {
     type RecentArtifactEntry
-  } from '$lib/components/playground/RecentArtifactsCard.svelte';
+  } from '$lib/components/playground/PlaygroundArtifactsCard.svelte';
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
@@ -638,7 +638,7 @@
         />
       </RailCard>
       <RailCard title="Recent artifacts">
-        <RecentArtifactsCard artifacts={recentArtifacts} onpreview={previewArtifact} />
+        <PlaygroundArtifactsCard artifacts={recentArtifacts} onpreview={previewArtifact} />
       </RailCard>
       <RailCard title="Trace">
         <TraceToggle
