@@ -101,16 +101,24 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
+	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/search"
+	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
+	searchevents "github.com/hurtener/Harbor/internal/search/events"
+	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
+	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
+	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -403,6 +411,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("events: %w", err)
 	}
 	closers = append(closers, bus.Close)
+
+	// Phase 56 / 72f: the MetricsRegistry — metrics are a derivation of
+	// the event bus (D-082). The registry is constructed once at boot;
+	// BridgeBusToMetrics fans every bus event into the registry's
+	// counter so `metrics.snapshot` (wired into PostureDeps.Metrics
+	// below) projects live numbers — never an empty stub (§17.6 F3).
+	// An Admin-scope filter feeds the fleet-wide bridge; the bridge
+	// does not widen the isolation boundary (the wire scope is the
+	// caller's responsibility — here a runtime-internal infra consumer).
+	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(cfg.Telemetry)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("telemetry metrics: %w", err)
+	}
+	closers = append(closers, metricsShutdown)
+	metricsBridgeStop, err := telemetry.BridgeBusToMetrics(ctx, bus, metricsReg, events.Filter{Admin: true})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("telemetry metrics bridge: %w", err)
+	}
+	closers = append(closers, func(context.Context) error { metricsBridgeStop(); return nil })
 
 	stateStore, err := state.Open(ctx, cfg.State)
 	if err != nil {
@@ -708,50 +737,6 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("auth: rotate surface: %w", err)
 	}
 
-	// Phase 72f / 72g (D-111 / D-112): the single posture surface — the
-	// seven read-only posture Protocol methods. The five `runtime.*` /
-	// `metrics.*` reads (72f) project the runtime's build identity,
-	// per-subsystem health, live counters, configured drivers, and a
-	// metrics snapshot; the two `governance.posture` / `llm.posture`
-	// reads (72g) project the operator-configured `IdentityTiers`
-	// (latent by default) and the bound LLM provider/model/region + the
-	// boot-captured MockMode flag. All seven are read-only; a
-	// cross-tenant read gates on `auth.ScopeAdmin` (D-079) and the
-	// governance / llm cross-tenant reads emit a `*.posture_read_admin`
-	// audit event. There is exactly ONE NewPostureSurface call site per
-	// binary.
-	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
-		Build: types.RuntimeInfo{
-			BuildVersion:   HarborVersion,
-			BuildCommit:    "dev",
-			BuildGoVersion: goruntime.Version(),
-		},
-		Clock:    time.Now,
-		BootedAt: time.Now(),
-		Health: func(_ context.Context) []types.SubsystemHealth {
-			return devPostureHealth(cfg)
-		},
-		Counters: func(_ context.Context, _ identity.Identity) types.RuntimeCounters {
-			return types.RuntimeCounters{}
-		},
-		Drivers: func() []types.SubsystemDriver {
-			return devPostureDrivers(cfg)
-		},
-		Metrics: func(_ context.Context) types.MetricsSnapshot {
-			return types.MetricsSnapshot{}
-		},
-		Governance:  governance.NewPostureProvider(governanceConfigFromConfig(cfg.Governance)),
-		LLM:         llm.NewPostureProvider(llmCfg),
-		Redactor:    red,
-		Bus:         bus,
-		DisplayName: "harbor dev",
-		InstanceID:  devInstanceID(),
-	})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("protocol posture surface: %w", err)
-	}
-
 	// Phase 73l (D-120): the artifacts surface backing the Console
 	// Artifacts page — `artifacts.list` (catalog), `artifacts.put`
 	// (upload pipeline per Brief 11 §PG-2), `artifacts.get_ref`
@@ -941,10 +926,123 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("runs/protocol service: %w", err)
 	}
 
+	// Phase 72f / 72g (D-111 / D-112): the single posture surface — the
+	// seven read-only posture Protocol methods. The five `runtime.*` /
+	// `metrics.*` reads (72f) project the runtime's build identity,
+	// per-subsystem health, live counters, configured drivers, and a
+	// metrics snapshot; the two `governance.posture` / `llm.posture`
+	// reads (72g) project the operator-configured `IdentityTiers`
+	// (latent by default) and the bound LLM provider/model/region + the
+	// boot-captured MockMode flag. All seven are read-only; a
+	// cross-tenant read gates on `auth.ScopeAdmin` (D-079) and the
+	// governance / llm cross-tenant reads emit a `*.posture_read_admin`
+	// audit event. There is exactly ONE NewPostureSurface call site per
+	// binary.
+	//
+	// §17.6 F3: Counters + Metrics are wired to LIVE runtime state — the
+	// task registry's per-identity running/background counts + the
+	// session registry's active-session count for Counters, and the
+	// MetricsRegistry's bus-fed counter snapshot for Metrics. They are
+	// NEVER an empty stub.
+	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
+		Build: types.RuntimeInfo{
+			BuildVersion:   HarborVersion,
+			BuildCommit:    "dev",
+			BuildGoVersion: goruntime.Version(),
+		},
+		Clock:    time.Now,
+		BootedAt: time.Now(),
+		Health: func(_ context.Context) []types.SubsystemHealth {
+			return devPostureHealth(cfg)
+		},
+		Counters: runtimeposture.CountersProvider(taskReg, sessionRegistry),
+		Drivers: func() []types.SubsystemDriver {
+			return devPostureDrivers(cfg)
+		},
+		Metrics:     runtimeposture.MetricsProvider(metricsReg, opts.logger),
+		Governance:  governance.NewPostureProvider(governanceConfigFromConfig(cfg.Governance)),
+		LLM:         llm.NewPostureProvider(llmCfg),
+		Redactor:    red,
+		Bus:         bus,
+		DisplayName: "harbor dev",
+		InstanceID:  devInstanceID(),
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("protocol posture surface: %w", err)
+	}
+
+	// Phase 72c (D-108): the `search.*` cluster surface — the five
+	// search methods backed by the live sessions / tasks / events /
+	// artifacts subsystems. Wired so an operator gets a working search
+	// surface out of the box (CLAUDE.md §13 — no seam to hand-wire).
+	// The events Searcher needs the bus's Replayer capability; the
+	// inmem / replay-buffered bus implements it, so a fresh dev stack
+	// serves `search.events` too.
+	searchDeps := search.Deps{Redactor: red, AdminScope: search.AdminScopeFromAuth}
+	searchSessions, err := searchsessions.New(sessionRegistry, searchDeps)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("search sessions: %w", err)
+	}
+	searchTasks, err := searchtasks.New(sessionRegistry, taskReg, searchDeps)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("search tasks: %w", err)
+	}
+	searchArtifacts, err := searchartifacts.New(artStore, searchDeps)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("search artifacts: %w", err)
+	}
+	searchers := []search.Searcher{searchSessions, searchTasks, searchArtifacts}
+	if replayer, ok := bus.(events.Replayer); ok {
+		searchEvents, eserr := searchevents.New(replayer, searchDeps)
+		if eserr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("search events: %w", eserr)
+		}
+		searchers = append(searchers, searchEvents)
+	}
+	searchRegistry, err := search.NewRegistry(searchers...)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("search registry: %w", err)
+	}
+	searchSurface, err := protocol.NewSearchSurface(searchRegistry, search.AdminScopeFromAuth)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("search surface: %w", err)
+	}
+
+	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —
+	// the bus consumer that synthesises `notification.*` events from the
+	// V1 trigger taxonomy (task.failed, tool.approval_requested, …).
+	// §17.6 F2: the Subscriber MUST be constructed and Run() here — a
+	// blank import alone only registers the event types; without a live
+	// Run the `notification.*` topic has no producer. The goroutine is
+	// cancelled + joined on shutdown via the closer below.
+	notifSubscriber := notifications.NewSubscriber(bus, opts.logger)
+	notifCtx, notifCancel := context.WithCancel(context.Background())
+	notifDone := make(chan struct{})
+	go func() {
+		defer close(notifDone)
+		if rerr := notifSubscriber.Run(notifCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+			opts.logger.ErrorContext(notifCtx, "notifications subscriber exited", slog.Any("error", rerr))
+		}
+	}()
+	closers = append(closers, func(context.Context) error {
+		notifCancel()
+		<-notifDone
+		return nil
+	})
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
 		transports.WithPostureSurface(postureSurface),
+		// Phase 72c (D-108): mount the five `search.*` methods.
+		transports.WithSearch(searchSurface),
 		transports.WithArtifactsSurface(artifactsSurface),
 		// Phase 72e: mount the `pause.list` snapshot route. The
 		// production path always wires the unified Coordinator + the
@@ -1113,6 +1211,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			memory:    memStore,
 			tools:     toolCat,
 			flows:     flowRegistry,
+			bus:       bus,
 			logger:    opts.logger,
 		}); seedErr != nil {
 			closeAll(ctx)

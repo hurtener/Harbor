@@ -94,13 +94,13 @@ test.describe("Console Playground page", () => {
     // Playground page is `ready` only when the session carries chat
     // messages. Seeding a chat history needs `user_message` /
     // planner-run trajectory fixtures — a larger seam than registry
-    // entity seeding. Tracked as a Phase 75a follow-up; see the
-    // Phase 75a PR body.
+    // entity seeding. Tracked in issue #178 (live-planner-run
+    // trajectory fixtures).
     test.skip(
       true,
       "deferred: needs a session chat-history fixture (planner-run " +
-        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
-        "CLAUDE.md §17.6.",
+        "trajectory, not entity seeding) — tracked in issue #178. " +
+        "See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
@@ -127,8 +127,8 @@ test.describe("Console Playground page", () => {
     test.skip(
       true,
       "deferred: needs a session chat-history fixture (planner-run " +
-        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
-        "CLAUDE.md §17.6.",
+        "trajectory, not entity seeding) — tracked in issue #178. " +
+        "See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
@@ -156,8 +156,8 @@ test.describe("Console Playground page", () => {
     test.skip(
       true,
       "deferred: needs a session chat-history fixture (planner-run " +
-        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
-        "CLAUDE.md §17.6.",
+        "trajectory, not entity seeding) — tracked in issue #178. " +
+        "See CLAUDE.md §17.6.",
     );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);

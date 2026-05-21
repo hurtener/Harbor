@@ -41,7 +41,6 @@
     RailCard,
     StatusChip,
     Pagination,
-    ConnectionFooter,
     PageState,
     type PageStatus,
     type SavedView,
@@ -62,7 +61,7 @@
     ArtifactsListResponse,
     ArtifactsGetRefResponse,
     ArtifactsPutResponse
-  } from '$lib/protocol.js';
+  } from '$lib/protocol/artifacts.js';
 
   /* ---- injectable seams (CONVENTIONS.md §6) ------------------------ */
 
@@ -408,13 +407,6 @@
     }
   }
 
-  function downloadZip(): void {
-    // Console-local zip-stream over the resolved presigned URLs (D-061).
-    // The V1 page records the intent; the streaming implementation is a
-    // post-V1 enhancement — the action is wired so the surface exists.
-    void copyRefsBulk();
-  }
-
   /* ---- boot -------------------------------------------------------- */
 
   onMount(() => {
@@ -514,7 +506,14 @@
 
   <BulkActionBar count={selection.size} onclear={clearSelection}>
     {#snippet actions()}
-      <button type="button" class="action" data-testid="bulk-download-zip" onclick={downloadZip}>
+      <button
+        type="button"
+        class="action deferred"
+        data-testid="bulk-download-zip"
+        disabled
+        aria-disabled="true"
+        title="Zip download — post-V1 (D-132)"
+      >
         Download (zip)
       </button>
       <button type="button" class="action" data-testid="bulk-copy-refs" onclick={copyRefsBulk}>
@@ -695,7 +694,6 @@
     </DetailRail>
   </div>
 
-  <ConnectionFooter />
   {#if protocolVersion}
     <p class="protocol-line" data-testid="artifacts-protocol-version">
       Protocol v{protocolVersion}

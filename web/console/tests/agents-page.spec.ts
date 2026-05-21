@@ -234,9 +234,11 @@ test.describe("Console Agents page", () => {
       "the control button group renders",
     ).toBeVisible();
 
-    // Each of the five control verbs is present. Whether enabled or
-    // disabled, the button carries a tooltip — it is NEVER a stubbed
-    // action that fakes a success (CONVENTIONS.md §5, CLAUDE.md §13).
+    // Each of the five control verbs is present. D-132 / F4: there is
+    // no `registry.*` Protocol surface, so every control button is
+    // rendered DISABLED-WITH-TOOLTIP regardless of scope claim — it is
+    // NEVER a stubbed action that fakes a success (CONVENTIONS.md §5,
+    // CLAUDE.md §13). The tooltip names the missing Protocol surface.
     for (const verb of [
       "pause",
       "drain",
@@ -246,19 +248,15 @@ test.describe("Console Agents page", () => {
     ]) {
       const btn = page.locator(`[data-testid='agent-control-${verb}']`);
       await expect(btn, `the ${verb} control button renders`).toBeVisible();
-      const disabled = await btn.isDisabled();
+      await expect(
+        btn,
+        `the ${verb} control button is disabled (no registry.* Protocol surface)`,
+      ).toBeDisabled();
       const title = await btn.getAttribute("title");
       expect(
-        title,
-        `the ${verb} button carries a tooltip explaining its state`,
-      ).toBeTruthy();
-      if (disabled) {
-        // Disabled-with-tooltip: the unscoped operator sees WHY.
-        expect(
-          (title ?? "").toLowerCase(),
-          `the disabled ${verb} button names the control-scope requirement`,
-        ).toContain("control-scope");
-      }
+        (title ?? "").toLowerCase(),
+        `the disabled ${verb} button names the missing fleet-control Protocol surface`,
+      ).toContain("protocol surface");
     }
   });
 

@@ -17,8 +17,9 @@
 //   (a) the shared `DataTable` renders with the mockup columns,
 //   (b) a scope-facet toggle re-issues the `memory.list` query,
 //   (c) selecting a row opens the detail rail's nested PageState,
-//   (d) the Recent-identity-rejections RailCard renders (D-033),
-//   (e) the Recovery-dropouts RailCard renders (D-035),
+//   (d) the memory event-feed RailCard is the deferred placeholder
+//       (D-132 / W5 — identity-rejection + recovery-dropout feeds need
+//       the events-stream wiring),
 //   (f) the shared `BulkActionBar` actions are disabled-with-tooltip
 //       (page-memory.md §10 — V1 is view-only),
 //   (g) the shell-provided `ConnectionFooter` renders.
@@ -131,22 +132,25 @@ test.describe("Console Memory page", () => {
     }
   });
 
-  test("(d) the Recent-identity-rejections card is present (D-033)", async ({
+  test("(d) the memory event-feed card is the deferred placeholder (D-132)", async ({
     page,
   }) => {
+    // D-132 / W5: the identity-rejection + recovery-dropout feeds need
+    // the events-stream wiring (a later phase). The two formerly-empty
+    // live cards are collapsed into one disabled-with-tooltip card that
+    // honestly states the deferral.
+    const deferred = page.locator(
+      "[data-testid='memory-event-feed-deferred']",
+    );
     await expect(
-      page.locator("[aria-label='Recent identity rejections']"),
-      "the Recent identity rejections card renders",
+      deferred,
+      "the deferred event-feed placeholder card renders",
     ).toBeVisible();
-  });
-
-  test("(e) the Recovery-dropouts card is present (D-035)", async ({
-    page,
-  }) => {
-    await expect(
-      page.locator("[aria-label='Recovery dropouts']"),
-      "the Recovery dropouts card renders",
-    ).toBeVisible();
+    const title = await deferred.getAttribute("title");
+    expect(
+      (title ?? "").toLowerCase(),
+      "the placeholder tooltip names the events-stream deferral",
+    ).toContain("events-stream");
   });
 
   test("(f) the shared BulkActionBar actions are disabled with a tooltip", async ({

@@ -130,7 +130,12 @@ func newPhase73iDeps(t *testing.T) *phase73iDeps {
 	registry := flow.NewRegistry()
 	seedPhase73iRegistry(t, registry)
 
-	cat, err := flowprotocol.NewRegistryCatalog(registry, artStore, phase73iHeavyThreshold)
+	// Inject the fixed clock so the trailing-24h-window run aggregates
+	// are deterministic regardless of the real wall clock (CLAUDE.md
+	// §11 — a time-sensitive assertion must not be a date-rollover time
+	// bomb; D-132 / Wave 13 §17.5).
+	cat, err := flowprotocol.NewRegistryCatalog(registry, artStore, phase73iHeavyThreshold,
+		flowprotocol.WithCatalogClock(func() time.Time { return fixedNowPhase73i }))
 	if err != nil {
 		_ = artStore.Close(t.Context())
 		_ = taskReg.Close(t.Context())

@@ -46,7 +46,7 @@
   import RunHistoryStrip from '$lib/components/tools/RunHistoryStrip.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
-  import { resolveConnection, type RuntimeConnection } from '$lib/connection.js';
+  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { ToolsSavedFilters } from '$lib/db/saved_filters_tools.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -366,18 +366,13 @@
   /* ================================================================ */
 
   onMount(() => {
-    // Detect the admin scope claim the way the Console shell persists it
-    // (mirrors the Flows page's `hasRunScope`). Read through no `.svelte`
-    // localStorage shortcut beyond this single boot read.
-    if (typeof localStorage !== 'undefined') {
-      const scopes = localStorage.getItem('harbor.runtime.scopes') ?? '';
-      canAdmin = scopes
-        .split(',')
-        .map((s) => s.trim())
-        .includes('admin');
-    }
-
     connection = resolveConnection();
+    // Detect the admin scope claim via the shared `hasScope` helper —
+    // the same path the Flows page uses. CONVENTIONS.md §6 forbids a
+    // `.svelte` file reading `localStorage` directly; `hasScope` is the
+    // single sanctioned read of the persisted scope set (D-132 / F5).
+    canAdmin = hasScope(connection, 'admin');
+
     if (connection === null) {
       // Disconnected — NOT an error (CONVENTIONS.md §4 state 1).
       client = null;
@@ -655,6 +650,24 @@
         {approvalResult}
         onsetpolicy={(id, policy) => void setApprovalPolicy(id, policy)}
       />
+      {#if selectedTool !== null}
+        <!-- D-132 / W4: a `tools.invoke` Protocol method is NOT shipped
+             at V1. Rather than silently omit a "try the tool" surface,
+             the page renders a disabled-with-tooltip affordance that
+             names the deferral (CONVENTIONS.md §5, CLAUDE.md §13). The
+             V1 deferral is recorded in docs/design/console/page-tools.md
+             §3 + D-132. -->
+        <button
+          type="button"
+          class="action deferred"
+          data-testid="tools-try-tool"
+          disabled
+          aria-disabled="true"
+          title="Try this tool — needs a tools.invoke Protocol method (post-V1, D-132)"
+        >
+          Try this tool
+        </button>
+      {/if}
       {#if detailStatus === 'error' && detailError !== null}
         <p class="inline-result err" data-testid="tools-detail-error">
           {detailError.code}: {detailError.message}
@@ -779,5 +792,20 @@
 
   .inline-result.err {
     color: var(--color-danger);
+  }
+
+  .action {
+    align-self: flex-start;
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .action.deferred {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

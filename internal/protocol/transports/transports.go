@@ -87,6 +87,14 @@ type muxConfig struct {
 	// transport refuses impersonation requests fail-closed with
 	// CodeRuntimeError (CLAUDE.md §13 "Silent degradation").
 	redactor audit.Redactor
+	// searchSurface is the Phase 72c (D-108) search dispatcher wired
+	// into the control transport so the five `search.*` methods route
+	// through it instead of the task-control ControlSurface. Optional —
+	// when unsupplied, the control transport rejects search calls with
+	// CodeUnknownMethod (the 404 → SKIP path the smoke script relies
+	// on). Production wiring (`harbor dev` / `harbor console`) supplies
+	// it so the Console search surface works out of the box.
+	searchSurface control.SearchSurface
 	// postureSurface is the Phase 72f / 72g (D-111 / D-112) posture
 	// dispatcher wired into the control transport so the seven posture
 	// methods — the five `runtime.*` / `metrics.*` reads plus the two
@@ -278,6 +286,26 @@ func WithPostureSurface(s control.PostureSurface) Option {
 	return func(c *muxConfig) {
 		if s != nil {
 			c.postureSurface = s
+		}
+	}
+}
+
+// WithSearch wires the Phase 72c (D-108) search dispatcher into the
+// control transport. When supplied, the handler routes the five
+// `search.*` methods to s.Dispatch instead of falling through to the
+// task-control ControlSurface.
+//
+// The surface is OPTIONAL so existing call-sites compile unchanged.
+// When unsupplied (or supplied a nil surface), the control transport
+// rejects search calls with CodeUnknownMethod — the smoke script's
+// `skip_if_404` keeps preflight green on a partial build. Production
+// wiring (`harbor dev` / `harbor console`) supplies it so the five
+// `search.*` methods serve live results. A nil surface is treated as
+// "WithSearch not supplied".
+func WithSearch(s control.SearchSurface) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.searchSurface = s
 		}
 	}
 }
@@ -607,6 +635,9 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	}
 	if cfg.redactor != nil {
 		controlOpts = append(controlOpts, control.WithRedactor(cfg.redactor))
+	}
+	if cfg.searchSurface != nil {
+		controlOpts = append(controlOpts, control.WithSearchSurface(cfg.searchSurface))
 	}
 	if cfg.postureSurface != nil {
 		controlOpts = append(controlOpts, control.WithPostureSurface(cfg.postureSurface))

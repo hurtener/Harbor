@@ -37,6 +37,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -46,9 +47,11 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/hurtener/Harbor/harbortest/devstack"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -56,6 +59,9 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
+	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/telemetry"
 
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
@@ -65,26 +71,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 )
-
-// posturePerTenantCounters records the identity triple the Counters
-// seam was called with so the test can prove identity propagation.
-type posturePerTenantCounters struct {
-	mu   sync.Mutex
-	seen map[string]identity.Identity // keyed by tenant
-}
-
-func (p *posturePerTenantCounters) record(id identity.Identity) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.seen[id.TenantID] = id
-}
-
-func (p *posturePerTenantCounters) lookup(tenant string) (identity.Identity, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	id, ok := p.seen[tenant]
-	return id, ok
-}
 
 // runtimePostureConfig builds the minimal validated *config.Config the
 // devstack helper needs.
@@ -151,10 +137,13 @@ func runtimePostureConfig(t *testing.T) *config.Config {
 }
 
 // buildPostureSurface constructs a real PostureSurface wired to the
-// devstack's real drivers. The Counters seam records the identity it is
-// called with into rec so the test can prove identity propagation. The
-// Drivers seam reflects the assembled cfg's real driver names.
-func buildPostureSurface(t *testing.T, stack *devstack.DevStack, rec *posturePerTenantCounters) *protocol.PostureSurface {
+// devstack's real drivers via the PRODUCTION posture-seam providers
+// (`internal/runtime/posture`). §17.6 F3: the Counters + Metrics seams
+// are the exact same code the `harbor dev` / `harbor console` boot path
+// and the `harbortest/devstack` assembler wire — NOT a fabricated test
+// seam. metricsReg is a real telemetry.MetricsRegistry fed by a real
+// bus→metrics bridge, so `metrics.snapshot` projects live counters.
+func buildPostureSurface(t *testing.T, stack *devstack.DevStack, metricsReg *telemetry.MetricsRegistry) *protocol.PostureSurface {
 	t.Helper()
 	cfg := stack.Cfg
 	s, err := protocol.NewPostureSurface(protocol.PostureDeps{
@@ -177,16 +166,10 @@ func buildPostureSurface(t *testing.T, stack *devstack.DevStack, rec *posturePer
 				{Subsystem: "metrics", Status: types.HealthStatusReady},
 			}
 		},
-		Counters: func(_ context.Context, ident identity.Identity) types.RuntimeCounters {
-			rec.record(ident)
-			return types.RuntimeCounters{
-				// Echo the caller's tenant length so a context bleed is
-				// observable; the production seam reads the live task
-				// registry.
-				TasksRunning:   int64(len(ident.TenantID)),
-				SessionsActive: 1,
-			}
-		},
+		// PRODUCTION seam — reads the devstack's live task registry. The
+		// devstack assembles no session registry, so SessionLister is
+		// nil (SessionsActive then honestly reports 0).
+		Counters: runtimeposture.CountersProvider(stack.Tasks, nil),
 		Drivers: func() []types.SubsystemDriver {
 			return []types.SubsystemDriver{
 				{Subsystem: "state", Driver: cfg.State.Driver},
@@ -195,13 +178,8 @@ func buildPostureSurface(t *testing.T, stack *devstack.DevStack, rec *posturePer
 				{Subsystem: "eventlog", Driver: cfg.Events.Driver},
 			}
 		},
-		Metrics: func(_ context.Context) types.MetricsSnapshot {
-			return types.MetricsSnapshot{
-				Counters: []types.NamedCounter{
-					{Name: "harbor_events_total", Value: 1, Labels: map[string]string{"event_type": "task.spawned"}},
-				},
-			}
-		},
+		// PRODUCTION seam — projects the live MetricsRegistry snapshot.
+		Metrics: runtimeposture.MetricsProvider(metricsReg, slog.Default()),
 		// Phase 72g (D-112): the governance / llm posture seams + the
 		// audit redactor + bus the merged PostureSurface requires. The
 		// runtime-posture test does not exercise governance.posture /
@@ -282,8 +260,37 @@ func TestE2E_RuntimePosture(t *testing.T) {
 		t.Fatal("devstack did not assemble the Surface / Validator / SigningKey — Phase 72f needs all three")
 	}
 
-	rec := &posturePerTenantCounters{seen: map[string]identity.Identity{}}
-	posture := buildPostureSurface(t, stack, rec)
+	// §17.6 F3: a REAL telemetry.MetricsRegistry fed by a REAL
+	// bus→metrics bridge — the exact production wiring. The bridge
+	// fans every bus event into the registry's counter, so the
+	// production `metrics.snapshot` projection reports live numbers.
+	// An in-process ManualReader is injected via WithMetricReader (the
+	// same seam devstack.Assemble uses) so the test does not depend on
+	// a metric-exporter driver blank-import.
+	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(stack.Cfg.Telemetry,
+		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
+	if err != nil {
+		t.Fatalf("telemetry.NewMetricsRegistry: %v", err)
+	}
+	defer func() { _ = metricsShutdown(context.Background()) }()
+	bridgeStop, err := telemetry.BridgeBusToMetrics(context.Background(), stack.Bus, metricsReg, eventsAdminFilter())
+	if err != nil {
+		t.Fatalf("telemetry.BridgeBusToMetrics: %v", err)
+	}
+	defer bridgeStop()
+
+	devID := identity.Identity{
+		TenantID:  devstack.DefaultDevTenant,
+		UserID:    devstack.DefaultDevUser,
+		SessionID: devstack.DefaultDevSession,
+	}
+
+	// Spawn a real RUNNING task under devID so the PRODUCTION Counters
+	// seam (which reads the live task registry) reports a non-zero
+	// TasksRunning — proving the seam reads live state, not a stub.
+	spawnRunningTask(t, stack.Tasks, devID)
+
+	posture := buildPostureSurface(t, stack, metricsReg)
 
 	// Mount a real transports mux with the posture surface wired in,
 	// behind the devstack's real ES256 validator.
@@ -296,12 +303,6 @@ func TestE2E_RuntimePosture(t *testing.T) {
 	}
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-
-	devID := identity.Identity{
-		TenantID:  devstack.DefaultDevTenant,
-		UserID:    devstack.DefaultDevUser,
-		SessionID: devstack.DefaultDevSession,
-	}
 
 	// --- (1) in-process Dispatch of every posture method --------------
 	t.Run("InProcess_AllMethods", func(t *testing.T) {
@@ -408,28 +409,48 @@ func TestE2E_RuntimePosture(t *testing.T) {
 		}
 	})
 
-	t.Run("Wire_MetricsSnapshot", func(t *testing.T) {
+	// §17.6 F3: metrics.snapshot projects the LIVE MetricsRegistry. The
+	// spawned task emitted `task.*` bus events; the bus→metrics bridge
+	// is async, so the assertion polls (bounded) until the bridge has
+	// drained at least one event into the harbor_events_total counter.
+	t.Run("Wire_MetricsSnapshot_LiveCounters", func(t *testing.T) {
 		token := signPostureToken(t, stack.SigningKey, devID, nil)
 		body, _ := json.Marshal(types.RuntimeInfoRequest{
 			Identity: types.IdentityScope{
 				Tenant: devID.TenantID, User: devID.UserID, Session: devID.SessionID,
 			},
 		})
-		status, raw := postPosture(t, srv.URL, methods.MethodMetricsSnapshot, body, token)
-		if status != http.StatusOK {
-			t.Fatalf("metrics.snapshot: status %d, want 200; body=%s", status, raw)
-		}
+		deadline := time.Now().Add(3 * time.Second)
 		var m types.MetricsSnapshot
-		if err := json.Unmarshal(raw, &m); err != nil {
-			t.Fatalf("decode MetricsSnapshot: %v", err)
+		for {
+			status, raw := postPosture(t, srv.URL, methods.MethodMetricsSnapshot, body, token)
+			if status != http.StatusOK {
+				t.Fatalf("metrics.snapshot: status %d, want 200; body=%s", status, raw)
+			}
+			m = types.MetricsSnapshot{}
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatalf("decode MetricsSnapshot: %v", err)
+			}
+			if len(m.Counters) > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("metrics.snapshot returned no counters within 3s — the bus→metrics bridge did not feed the live registry")
+			}
+			time.Sleep(25 * time.Millisecond)
 		}
-		if len(m.Counters) == 0 {
-			t.Error("metrics.snapshot returned no counters")
+		// The projected counter must be the canonical bus-fed counter.
+		if m.Counters[0].Name != "harbor_events_total" {
+			t.Errorf("metrics.snapshot counter name = %q, want harbor_events_total", m.Counters[0].Name)
 		}
 	})
 
 	// --- (3) identity propagation through runtime.counters -----------
-	t.Run("Wire_RuntimeCounters_IdentityPropagation", func(t *testing.T) {
+	// §17.6 F3: the Counters seam is the PRODUCTION seam reading the
+	// live task registry. The test spawned one RUNNING task under
+	// devID, so a devID-scoped counters read must report TasksRunning
+	// >= 1 — proving the production seam reads live state.
+	t.Run("Wire_RuntimeCounters_LiveTaskState", func(t *testing.T) {
 		token := signPostureToken(t, stack.SigningKey, devID, nil)
 		body, _ := json.Marshal(types.RuntimeInfoRequest{
 			Identity: types.IdentityScope{
@@ -444,17 +465,11 @@ func TestE2E_RuntimePosture(t *testing.T) {
 		if err := json.Unmarshal(raw, &c); err != nil {
 			t.Fatalf("decode RuntimeCounters: %v", err)
 		}
-		// The Counters seam echoes the caller's tenant length.
-		if c.TasksRunning != int64(len(devID.TenantID)) {
-			t.Errorf("runtime.counters TasksRunning = %d, want %d — identity did not propagate to the seam",
-				c.TasksRunning, len(devID.TenantID))
-		}
-		seen, ok := rec.lookup(devID.TenantID)
-		if !ok {
-			t.Fatalf("Counters seam never saw tenant %q — identity propagation broken", devID.TenantID)
-		}
-		if seen != devID {
-			t.Errorf("Counters seam saw identity %+v, want %+v", seen, devID)
+		// The production seam read the live task registry — the spawned
+		// running task must be counted.
+		if c.TasksRunning < 1 {
+			t.Errorf("runtime.counters TasksRunning = %d, want >= 1 — production seam did not read the live task registry",
+				c.TasksRunning)
 		}
 	})
 
@@ -473,7 +488,11 @@ func TestE2E_RuntimePosture(t *testing.T) {
 			t.Fatalf("cross-tenant without admin: status %d, want 403; body=%s", status, raw)
 		}
 
-		// With the admin scope the cross-tenant read succeeds.
+		// With the admin scope the cross-tenant read succeeds. The
+		// `other-tenant` scope has no tasks spawned, so the production
+		// seam honestly reports zero running tasks — proving the seam
+		// is scoped to the requested identity (no context bleed from
+		// devID's running task).
 		adminTok := signPostureToken(t, stack.SigningKey, devID, []string{"admin"})
 		status, raw = postPosture(t, srv.URL, methods.MethodRuntimeCounters, crossBody, adminTok)
 		if status != http.StatusOK {
@@ -483,9 +502,8 @@ func TestE2E_RuntimePosture(t *testing.T) {
 		if err := json.Unmarshal(raw, &c); err != nil {
 			t.Fatalf("decode cross-tenant RuntimeCounters: %v", err)
 		}
-		// The admin-scoped read reaches the other tenant's slice.
-		if c.TasksRunning != int64(len("other-tenant")) {
-			t.Errorf("admin cross-tenant counters TasksRunning = %d, want %d", c.TasksRunning, len("other-tenant"))
+		if c.TasksRunning != 0 {
+			t.Errorf("admin cross-tenant counters TasksRunning = %d, want 0 — the other tenant has no tasks (context bleed?)", c.TasksRunning)
 		}
 	})
 
@@ -548,4 +566,31 @@ func TestE2E_RuntimePosture(t *testing.T) {
 // containsSub reports whether s contains sub.
 func containsSub(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// eventsAdminFilter builds the Admin-scope events filter the production
+// bus→metrics bridge uses (mirrors cmd/harbor + devstack).
+func eventsAdminFilter() events.Filter {
+	return events.Filter{Admin: true}
+}
+
+// spawnRunningTask spawns a task under id and marks it RUNNING so the
+// production Counters seam observes a live running task.
+func spawnRunningTask(t *testing.T, reg tasks.TaskRegistry, id identity.Identity) {
+	t.Helper()
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	h, err := reg.Spawn(ctx, tasks.SpawnRequest{
+		Identity:    identity.Quadruple{Identity: id},
+		Kind:        tasks.KindForeground,
+		Description: "posture-test running task",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if err := reg.MarkRunning(ctx, h.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
 }

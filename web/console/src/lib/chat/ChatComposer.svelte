@@ -219,7 +219,7 @@
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-3);
-    border-top: var(--border-thin) solid var(--color-border);
+    border-top: var(--border-hairline);
     background: var(--color-surface);
   }
 
@@ -238,7 +238,7 @@
     gap: var(--space-1);
     padding: var(--space-1) var(--space-2);
     background: var(--color-surface-raised);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-sm);
   }
 
@@ -279,7 +279,7 @@
     justify-content: center;
     padding: var(--space-2);
     background: var(--color-surface-raised);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: var(--text-base);
@@ -295,7 +295,7 @@
     resize: vertical;
     padding: var(--space-2);
     background: var(--color-bg);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-size: var(--text-sm);
@@ -306,7 +306,7 @@
   .send-button {
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     cursor: pointer;
     font-size: var(--text-sm);
   }
