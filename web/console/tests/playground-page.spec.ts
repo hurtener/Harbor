@@ -37,10 +37,6 @@ const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 // rendered state, and the harness `seedIdentity` is a documented no-op
 // stub. Real runtime-entity seeding lands with Phase 75a (the wave-end
 // suite). See CLAUDE.md §17.6.
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
 
 // Seeds the Console's `harbor.runtime.*` storage convention so the page
 // resolves a live connection rather than the Disconnected `PageState`.
@@ -53,9 +49,9 @@ async function seedConnection(
     ([b, t]) => {
       window.localStorage.setItem("harbor.runtime.base_url", b);
       window.localStorage.setItem("harbor.runtime.token", t);
-      window.localStorage.setItem("harbor.runtime.tenant", "tenant-e2e");
-      window.localStorage.setItem("harbor.runtime.user", "user-e2e");
-      window.localStorage.setItem("harbor.runtime.session", "session-e2e");
+      window.localStorage.setItem("harbor.runtime.tenant", "dev");
+      window.localStorage.setItem("harbor.runtime.user", "dev");
+      window.localStorage.setItem("harbor.runtime.session", "dev");
     },
     [baseURL, token] as const,
   );
@@ -91,7 +87,21 @@ test.describe("Console Playground page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — NOT a seeding-gap skip. The Phase 75a fixture
+    // seeder (D-131) closes the runtime-entity gap. The Playground's
+    // `<ChatPanel>` (panel + composer) renders inside `<PageState>`,
+    // which only renders children when `status === 'ready'`; the
+    // Playground page is `ready` only when the session carries chat
+    // messages. Seeding a chat history needs `user_message` /
+    // planner-run trajectory fixtures — a larger seam than registry
+    // entity seeding. Tracked as a Phase 75a follow-up; see the
+    // Phase 75a PR body.
+    test.skip(
+      true,
+      "deferred: needs a session chat-history fixture (planner-run " +
+        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
+        "CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
@@ -112,7 +122,14 @@ test.describe("Console Playground page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — see (b). The composer is reachable only once the
+    // Playground page is `ready`, which needs a seeded chat history.
+    test.skip(
+      true,
+      "deferred: needs a session chat-history fixture (planner-run " +
+        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
+        "CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
@@ -134,7 +151,14 @@ test.describe("Console Playground page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — see (b). The attach control lives in the chat
+    // composer, reachable only once the Playground page is `ready`.
+    test.skip(
+      true,
+      "deferred: needs a session chat-history fixture (planner-run " +
+        "trajectory, not entity seeding) — Phase 75a follow-up. See " +
+        "CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");

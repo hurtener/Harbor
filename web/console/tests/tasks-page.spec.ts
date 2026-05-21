@@ -34,10 +34,6 @@ import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
 
 // The Console resolves its Runtime connection via `connection.ts`,
 // which reads the `harbor.runtime.*` storage convention. This helper
@@ -90,7 +86,6 @@ test.describe("Console Tasks page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");
@@ -120,7 +115,6 @@ test.describe("Console Tasks page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");

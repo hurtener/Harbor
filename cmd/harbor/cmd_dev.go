@@ -1096,6 +1096,30 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("dev token: %w", err)
 	}
 
+	// Phase 75a (D-131): the dev-only runtime-entity fixture seeder.
+	// When `HARBOR_DEV_SEED_FIXTURES=1`, populate the registries with
+	// a deterministic fixture set so the Console e2e Playwright suite
+	// (which boots `harbor console`) renders real rows instead of
+	// SKIPping every data-shaped per-page assertion. Gated behind an
+	// explicit env var, never the default — a production runtime boots
+	// empty (the §13 dev-only escape-hatch posture; see devseed.go).
+	if os.Getenv(EnvDevSeedFixtures) == "1" {
+		_, _ = fmt.Fprintln(opts.stderr, DevSeedBanner)
+		if seedErr := seedDevFixtures(ctx, devSeedDeps{
+			sessions:  sessionRegistry,
+			agents:    agentRegistry,
+			tasks:     taskReg,
+			artifacts: artStore,
+			memory:    memStore,
+			tools:     toolCat,
+			flows:     flowRegistry,
+			logger:    opts.logger,
+		}); seedErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("devseed: %w", seedErr)
+		}
+	}
+
 	return &devStack{
 		cfg:             cfg,
 		logger:          opts.logger,

@@ -23,21 +23,40 @@
 //       (page-memory.md §10 — V1 is view-only),
 //   (g) the shell-provided `ConnectionFooter` renders.
 //
-// SEED-DEPENDENT SKIPS: the DataTable tests below are `test.skip()`'d
-// because the `harbor console` embedded runtime boots with no seeded
-// memory entries (the page lands in PageState `empty`, so the table
-// never renders) and the harness `seedIdentity` is a documented no-op
-// stub. Real runtime-entity seeding lands with Phase 75a (the wave-end
-// suite). See CLAUDE.md §17.6.
+// Phase 75a (D-131): the runtime-entity seeding gap is closed — the
+// `harbor console` binary boots a deterministic memory-turn fixture set
+// when `HARBOR_DEV_SEED_FIXTURES=1` (set by the harness `runtime`
+// fixture; the embedded config uses `strategy: truncation` so the turns
+// persist). `seedConnection` below uses the matching `(dev, dev, dev)`
+// triple. The DataTable tests that were parked on the seeding gap now
+// run for real.
 
 import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
+import { STORAGE_KEYS } from "../src/lib/connection";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
+/**
+ * Seed the `connection.ts` storage convention so the D-121 Memory page
+ * resolves a live Runtime connection. The identity triple MUST match
+ * the `harbor console` dev token — `(dev, dev, dev)`.
+ */
+async function seedConnection(
+  page: import("@playwright/test").Page,
+  baseURL: string,
+  token: string,
+): Promise<void> {
+  await page.addInitScript(
+    ([keys, base, tok]) => {
+      window.localStorage.setItem(keys.baseURL, base);
+      window.localStorage.setItem(keys.token, tok);
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
+    },
+    [STORAGE_KEYS, baseURL, token] as const,
+  );
+}
 
 test.describe("Console Memory page", () => {
   test.skip(
@@ -45,8 +64,9 @@ test.describe("Console Memory page", () => {
     "harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built",
   );
 
-  test.beforeEach(async ({ runtime, helpers }) => {
+  test.beforeEach(async ({ page, runtime, helpers }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("memory");
   });
 
@@ -64,7 +84,6 @@ test.describe("Console Memory page", () => {
   test("(a) the shared DataTable renders with the mockup columns", async ({
     page,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     const table = page.locator("table.data-table");
     await expect(table, "the shared DataTable renders").toBeVisible();
     for (const col of [
@@ -88,7 +107,6 @@ test.describe("Console Memory page", () => {
   test("(b) a scope-facet toggle re-issues the list query", async ({
     page,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     // Selecting a scope facet drives a fresh memory.list call routed
     // through HarborClient. We assert the facet control is wired and the
     // table is still attached after the toggle (the exact row count

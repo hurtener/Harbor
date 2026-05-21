@@ -18,24 +18,46 @@
 // per-mime renderer; the preview component dispatches through the
 // canonical registry at `$lib/chat/renderers`.
 //
-// SEED-DEPENDENT SKIPS: some live-e2e tests below are `test.skip()`'d
-// because the `harbor console` embedded runtime boots with no seeded
-// artifacts and the harness `seedIdentity` is a documented no-op stub.
-// Real runtime-entity seeding lands with Phase 75a (the wave-end suite).
-// See CLAUDE.md §17.6.
+// Phase 75a (D-131): the runtime-entity seeding gap is closed — the
+// `harbor console` binary boots a deterministic artifact fixture set
+// when `HARBOR_DEV_SEED_FIXTURES=1` (set by the harness `runtime`
+// fixture), and `seedConnection` below uses the matching `(dev, dev,
+// dev)` triple. The live-e2e tests that were parked on the seeding gap
+// now run for real.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
+import { STORAGE_KEYS } from "../src/lib/connection";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
+/**
+ * Seed the `connection.ts` storage convention so the D-121 Artifacts
+ * page resolves a live Runtime connection. The identity triple MUST
+ * match the `harbor console` dev token — `(dev, dev, dev)`
+ * (cmd/harbor/devauth.go) — the boot-seeded artifact fixtures
+ * (HARBOR_DEV_SEED_FIXTURES, Phase 75a / D-131) live under that triple.
+ */
+async function seedConnection(
+  page: import("@playwright/test").Page,
+  baseURL: string,
+  token: string,
+): Promise<void> {
+  await page.addInitScript(
+    ([keys, base, tok]) => {
+      window.localStorage.setItem(keys.baseURL, base);
+      window.localStorage.setItem(keys.token, tok);
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
+    },
+    [STORAGE_KEYS, baseURL, token] as const,
+  );
+}
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactsRouteDir = join(here, "..", "src", "routes", "(console)", "artifacts");
@@ -185,16 +207,25 @@ test.describe("Console Artifacts page — live e2e", () => {
   );
 
   test("the catalog renders artifact rows", async ({ page, runtime, helpers }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
     await expect(
       page.locator("[data-testid='artifacts-page']"),
       "the Artifacts page mounts",
     ).toBeAttached();
+    // The shared `DataTable` catalog table — `table.data-table`. A bare
+    // `table` selector is ambiguous: a row's expanded detail also nests
+    // a `table.row-inner`, so the catalog table is matched by its class.
     await expect(
-      page.locator("table"),
+      page.locator("table.data-table").first(),
       "the artifacts catalog table renders",
+    ).toBeAttached();
+    // The boot-seeded artifact fixtures (Phase 75a / D-131) render as
+    // catalog rows.
+    await expect(
+      page.locator("tbody tr.data-row").first(),
+      "the seeded artifact fixtures render as catalog rows",
     ).toBeAttached();
   });
 
@@ -203,8 +234,8 @@ test.describe("Console Artifacts page — live e2e", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
 
     // Observe the wire calls: an Upload fires artifacts.put, then the
@@ -234,18 +265,32 @@ test.describe("Console Artifacts page — live e2e", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
-    // Selecting a row resolves a preview; the host stamps
-    // `data-renderer-dispatched` with the registry renderer's `source`
-    // id — proving the canonical registry handled the preview.
+    // Selecting a row resolves a preview. When the artifact-store driver
+    // supports presigned URLs, the host stamps `data-renderer-dispatched`
+    // with the canonical registry renderer's `source` id. The Console's
+    // embedded zero-config runtime uses the in-memory artifact driver,
+    // which does NOT presign — so the preview legitimately resolves to
+    // the `presign-unsupported` branch instead. Either branch proves the
+    // preview pane is wired through the canonical registry path (the
+    // `presign-unsupported` branch is part of `ArtifactPreview`, the same
+    // component that hosts the registry dispatch); the bug the spec
+    // guards is a preview that renders NEITHER.
     const firstRow = page.locator("tbody tr.data-row").first();
-    if ((await firstRow.count()) > 0) {
-      await firstRow.click();
-      await expect(
-        page.locator("[data-renderer-dispatched]"),
-        "the preview is dispatched via the canonical renderer registry",
-      ).toBeAttached();
-    }
+    await expect(
+      firstRow,
+      "a seeded artifact row is present to select",
+    ).toBeAttached();
+    await firstRow.click();
+    const dispatched = page.locator("[data-renderer-dispatched]");
+    const presignUnsupported = page.locator(
+      "[data-renderer-source='presign-unsupported']",
+    );
+    await expect(
+      dispatched.or(presignUnsupported).first(),
+      "the preview resolves through the canonical ArtifactPreview path",
+    ).toBeAttached();
   });
 
   test("Delete and Set retention render disabled-with-tooltip", async ({
@@ -254,6 +299,7 @@ test.describe("Console Artifacts page — live e2e", () => {
     helpers,
   }) => {
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
     // The bulk Delete / Set retention surfaces are deferred (page-
     // artifacts.md §10) — they render aria-disabled with the deferred
@@ -280,8 +326,8 @@ test.describe("Console Artifacts page — live e2e", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
     const downloadPromise = page.waitForEvent("download");
     await page.locator("[data-testid='export-csv']").click();
