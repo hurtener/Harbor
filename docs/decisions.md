@@ -3199,3 +3199,26 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 **Findings I'm departing from.** None — this is a documentation reconciliation of an already-settled, already-executed decomposition. No code changes.
 
 **Protocol additions.** None.
+
+---
+
+## D-134 — Phase 76 cross-tenant isolation conformance harness: home, fast-vs-soak split, real-drivers-at-the-seam
+
+**Date:** 2026-05-21
+**Status:** Settled (shipping with Phase 76)
+
+**Where it lives:** `test/integration/isolation_conformance_test.go` (the harness); `.github/workflows/ci.yml` (the `isolation` job); `scripts/smoke/phase-76.sh`; `docs/plans/phase-76-cross-tenant-isolation-harness.md`.
+
+**Decision.** Phase 76 ships the master cross-tenant + cross-session isolation conformance harness — the V1 integrity gate (RFC §4.3). Three design calls are settled here.
+
+**1. The harness home is `test/integration/`, not a new `test/conformance/` directory.** AGENTS.md §3 is the binding repository layout; adding a top-level directory is an RFC change. AGENTS.md §17.2 already names `test/integration/` as the canonical home for tests that span more than two subsystems — the harness spans six. It lives as a single `_test.go` file in package `integration_test` alongside the wave-end E2E suites it resembles. No new directory; no RFC churn.
+
+**2. The every-PR soak window is fast (~3 s); the master-plan 30 s soak is opt-in.** The master plan specifies "100 sessions × random ops × 30 s under -race". A 30 s race-instrumented soak on every PR would dominate CI wall-clock. The split: the default window is `isolationFastWindow` (~3 s) — with 100 concurrent session-workers each running thousands of randomized op-cycles, a cross-scope leak surfaces with overwhelming probability inside it. The master-plan 30 s window is available via `HARBOR_ISOLATION_SOAK=<go-duration>`; `testing.Short()` (`-short`) forces the fast window regardless. Both windows drive the identical code path — only the soak duration changes; there is no "with-flag / without-flag" parallel implementation (AGENTS.md §13). The dedicated `isolation` CI job runs the fast window on every PR.
+
+**3. Real production drivers at every seam — no mocks (AGENTS.md §17.3 #1, §17.4).** Every subsystem is opened through its production registry factory: `state.Open`, `artifacts.Open`, `memory.Open`, `skills.OpenDriver`, `tasks.Open`, `events.Open`. The harness drives the real V1 in-memory drivers for five subsystems; the SkillStore has a single V1 driver — `localdb`, SQLite-backed — which the harness runs against a `:memory:` DSN (the SQLite path is what operators ship; `:memory:` keeps the harness filesystem-free with identical isolation logic). A mock at the boundary would defeat the gate's purpose: the harness exists to prove the *shipped* drivers hold the isolation invariant under concurrent load against a single shared instance — the cross-subsystem composition of every subsystem's own D-025 + D-001 contracts.
+
+**Why.** The per-subsystem conformance suites (`internal/<subsystem>/conformancetest`) each prove their own driver isolates correctly in isolation. They do NOT prove the six subsystems hold the invariant *simultaneously* — a shared-process race or a cross-subsystem identity-context bleed only surfaces when all six are hammered together under load. Phase 76 closes that gap with one gate that runs on every PR. A regression here is a security bug (master-plan Phase 76 "Risks"), so the gate is non-skippable and the harness fails loudly with a categorized breach report naming the subsystem and the expected-vs-observed identity.
+
+**Findings I'm departing from.** None. The harness is a pure composition of patterns brief 05 (§"Concurrency tests", §"Cross-tenant isolation", §"Conformance test approach") and brief 06 (§124, §147) already established, plus the wave-end E2E shape from `test/integration/wave*_test.go`. It introduces no new design surface.
+
+**Protocol additions.** None — Phase 76 ships no Protocol method, error code, REST endpoint, or wire type. It is a `_test.go`-only integration gate.

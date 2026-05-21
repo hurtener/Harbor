@@ -116,7 +116,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73a| Console Overview page (composition-only UI)   | web/console          | §5.2, §6.13, §6.15, §7 | 54, 60, 61, 72a, 72e, 72f, 73d, 75 | 70%  | Shipped  |
 | 73m| Console Settings page + `harbor console` subcommand | protocol+web/console+cmd | §5.3, §5.5, §6.15, §7 | 72d, 72f, 72g, 72h, 75 | 75%  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Shipped  |
-| 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
+| 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Shipped  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Pending  |
 | 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Pending  |
@@ -937,11 +937,12 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 
 ### 76 — Cross-tenant isolation conformance harness (RFC §4.3)
 
-**Goal.** A master conformance harness asserting cross-tenant + cross-session isolation across StateStore / ArtifactStore / MemoryStore / SkillStore / TaskRegistry / EventBus. 100 sessions × random ops × 30 s under `-race`.
+**Goal.** A master conformance harness asserting cross-tenant + cross-session isolation across StateStore / ArtifactStore / MemoryStore / SkillStore / TaskRegistry / EventBus. 100 sessions × random ops under `-race`.
 **Acceptance.** Final invariant: every read's identity matches the caller's identity exactly; CI runs the harness on every PR.
 **Tests.** The harness is the test.
 **Deps.** 07, 17, 23, 37, 20.
 **Risks.** This is the integrity gate. A regression here is a security bug.
+**Shipped notes (D-134).** The harness lives at `test/integration/isolation_conformance_test.go` (package `integration_test`; no new top-level directory — AGENTS.md §3 / §17.2). Three shipped tests: `TestE2E_Isolation_ConformanceHarness` (the 100-session randomized soak), `TestE2E_Isolation_CrossScopeReadIsBlind` (targeted positive proof across the cross-session + cross-tenant boundaries), `TestE2E_Isolation_FailClosedOnMissingIdentity` (the §17.3 failure mode — every subsystem rejects an incomplete triple). Soak-window split (D-134): the every-PR default is a fast ~3 s window (100 workers × thousands of op-cycles still catch a leak with overwhelming probability); the master-plan 30 s soak is opt-in via `HARBOR_ISOLATION_SOAK=<go-duration>`, and `-short` forces the fast window. All six subsystems are opened through their production registry factories — no mocks at the seam; SkillStore runs against its only V1 driver, `localdb` SQLite (`:memory:` DSN). The dedicated `isolation` CI job runs the fast window on every PR.
 
 ### 77 — Goroutine leak conformance harness (RFC §5 Go conventions)
 
