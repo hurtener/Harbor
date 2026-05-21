@@ -176,7 +176,7 @@
   .control-input {
     padding: var(--space-1) var(--space-2);
     background: var(--color-bg);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-sm);
     font-size: var(--text-sm);
     color: var(--color-text);

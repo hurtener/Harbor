@@ -55,6 +55,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
@@ -411,6 +412,77 @@ func (r *MetricsRegistry) RegisterEvent(ctx context.Context, ev events.Event) {
 		attribute.String(labelProducer, producer),
 		attribute.String(labelNode, node),
 	))
+}
+
+// CounterPoint is one counter data point in a MetricSnapshot — a metric
+// name, its current value, and its low-cardinality label set. It is a
+// telemetry-local, OTel-SDK-free struct so callers (the Protocol posture
+// surface's `metrics.snapshot` projection) can read live metrics without
+// importing the OpenTelemetry SDK types (CLAUDE.md §13 single-source
+// rule — the wire `MetricsSnapshot` is projected from this shape, not
+// from `metricdata.*`).
+type CounterPoint struct {
+	// Name is the metric name (e.g. "harbor_events_total").
+	Name string
+	// Value is the counter's current cumulative value.
+	Value float64
+	// Labels is the data point's low-cardinality label set. The
+	// cardinality firewall guarantees no run_id / trace_id appears here.
+	Labels map[string]string
+}
+
+// MetricSnapshot is the telemetry-local read-out of the registry's live
+// metrics — a flat slice of counter data points collected from the
+// active SDK reader. It is the source the Protocol `metrics.snapshot`
+// projection maps onto `types.MetricsSnapshot`. The struct carries no
+// OTel SDK type so the Protocol boundary stays single-sourced.
+type MetricSnapshot struct {
+	// Counters is the flat counter-data-point slice.
+	Counters []CounterPoint
+}
+
+// Snapshot collects the registry's live metrics from the active SDK
+// reader and projects them onto the OTel-SDK-free MetricSnapshot shape.
+//
+// Snapshot is the production seam the Phase 72f `metrics.snapshot`
+// posture method reads — the boot path wires it into
+// `protocol.PostureDeps.Metrics`. It is safe for concurrent use: the
+// reader's Collect is concurrency-safe and Snapshot holds no per-call
+// state on the registry (D-025).
+//
+// A reader Collect failure is returned wrapped — never silently
+// degraded to an empty snapshot (CLAUDE.md §13 "Silent degradation").
+func (r *MetricsRegistry) Snapshot(ctx context.Context) (MetricSnapshot, error) {
+	if r == nil || r.reader == nil {
+		return MetricSnapshot{}, fmt.Errorf("%w: nil registry or reader", ErrMetricsNotConfigured)
+	}
+	var rm metricdata.ResourceMetrics
+	if err := r.reader.Collect(ctx, &rm); err != nil {
+		return MetricSnapshot{}, fmt.Errorf("telemetry: metrics collect failed: %w", err)
+	}
+	out := MetricSnapshot{Counters: []CounterPoint{}}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				// Only the int64 counter is exported at V1; a future
+				// histogram / gauge instrument extends this switch.
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				labels := map[string]string{}
+				for _, kv := range dp.Attributes.ToSlice() {
+					labels[string(kv.Key)] = kv.Value.AsString()
+				}
+				out.Counters = append(out.Counters, CounterPoint{
+					Name:   m.Name,
+					Value:  float64(dp.Value),
+					Labels: labels,
+				})
+			}
+		}
+	}
+	return out, nil
 }
 
 // PrometheusHandler returns the http.Handler that serves the Prometheus

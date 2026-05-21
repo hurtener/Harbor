@@ -16,7 +16,7 @@
   // runes mode (D-092); design tokens only.
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { PageState, StatusChip, ConnectionFooter } from '$lib/components/ui/index.js';
+  import { PageState, StatusChip } from '$lib/components/ui/index.js';
   import {
     McpDetailState,
     MCP_DETAIL_TABS,
@@ -203,8 +203,6 @@
       </div>
     {/if}
   </PageState>
-
-  <ConnectionFooter />
 </section>
 
 <style>
@@ -279,7 +277,7 @@
     background: transparent;
     color: var(--color-text-muted);
     border: none;
-    border-bottom: var(--border-thick) solid transparent;
+    border-bottom: var(--border-emphasis-width) solid transparent;
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-sm);
     cursor: pointer;

@@ -61,6 +61,34 @@ is recorded in the coverage-check script's allowlist so the binding
 "every page-spec has a matching `*.spec.ts`" rule does not flag a false
 positive for the absent Evaluations spec.
 
+## §17.6 deferral — live-planner-run trajectory fixtures (D-132 / Wave 13 §17.5 W12)
+
+Six per-page Playwright specs are NOT un-skipped by the D-131 runtime-
+entity seeder. They render content inside `<PageState>`, which shows
+children only when `status === 'ready'`, and `ready` requires
+run-trajectory data projected from a live planner/engine run — a
+non-empty `topology.snapshot`, a session chat history, an established
+SSE subscription. That is a distinct, larger fixture seam than registry
+entity seeding (which the D-131 `HARBOR_DEV_SEED_FIXTURES` seeder
+covers).
+
+The six specs:
+
+- `web/console/tests/live-runtime-page.spec.ts` — 2 skips (the
+  live-runtime tab content + the topology canvas).
+- `web/console/tests/playground-page.spec.ts` — 3 skips (the chat
+  module: composer reachability, attach control, …).
+- `web/console/tests/events-page.spec.ts` — 1 skip (the SSE
+  pause-stream toggle).
+
+Each carries an explicit `§17.6` deferral `test.skip` reason citing the
+tracking issue (**#178** — "Console e2e specs needing live-planner-run
+trajectory fixtures"). The Wave 13 §17.5 checkpoint (D-132) replaced the
+formerly-dangling "Phase 75a follow-up / PR body" references — that PR
+body did not exist — with the concrete issue number. The fixture seam
+itself is built in a follow-up tracked by #178; it is NOT a Wave 13
+deliverable.
+
 ## Goals
 
 - A wave-end Playwright aggregator at `web/console/tests/wave13.spec.ts`

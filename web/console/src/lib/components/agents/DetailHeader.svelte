@@ -4,17 +4,13 @@
   // fleet-control buttons + "Open in Playground" + copy-id. Page-specific
   // component; composes the shared StatusChip + the page's ControlButtons.
   import { StatusChip, type StatusKind } from '$lib/components/ui';
-  import ControlButtons, { type ControlVerb } from './ControlButtons.svelte';
+  import ControlButtons from './ControlButtons.svelte';
   import type { Agent, AgentHealth } from '$lib/protocol/agents.js';
 
   let {
-    agent,
-    controlEnabled,
-    oncontrol
+    agent
   }: {
     agent: Agent;
-    controlEnabled: boolean;
-    oncontrol: (verb: ControlVerb) => void;
   } = $props();
 
   /** Maps an agent health badge onto a StatusChip kind. */
@@ -68,7 +64,7 @@
       </a>
     </div>
   </div>
-  <ControlButtons {controlEnabled} oninvoke={oncontrol} />
+  <ControlButtons />
 </header>
 
 <style>

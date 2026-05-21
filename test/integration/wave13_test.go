@@ -64,7 +64,9 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tasks"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -435,6 +437,58 @@ func TestE2E_Wave13_ConcurrentSSESubscribers(t *testing.T) {
 	var got int
 	if !waitForWave13Baseline(2*time.Second, baseline+8, &got) {
 		t.Errorf("goroutine leak: baseline=%d after=%d (delta=%d)", baseline, got, got-baseline)
+	}
+}
+
+// TestE2E_Wave13_NotificationTopicHasLiveProducer is the §17.6 F2
+// regression guard: it proves the devstack boot path (which mirrors
+// `cmd/harbor/cmd_dev.go::bootDevStack` field-for-field) CONSTRUCTS and
+// RUNS the notifications.Subscriber. Without a live Subscriber the
+// `notification.*` topic has no producer — a blank import alone only
+// registers the event types. The test publishes a deliberate
+// `task.failed` onto the assembled stack's bus and asserts the
+// synthesised `notification.task_failed` arrives at a separate
+// subscriber.
+func TestE2E_Wave13_NotificationTopicHasLiveProducer(t *testing.T) {
+	id := identity.Identity{TenantID: "tenant-w13", UserID: "user-w13", SessionID: "session-w13"}
+	stack := buildWave13Stack(t, id)
+	defer stack.Close()
+	if stack.Bus == nil {
+		t.Fatal("devstack did not assemble the bus")
+	}
+
+	listener, err := stack.Bus.Subscribe(context.Background(), events.Filter{
+		Admin: true,
+		Types: []events.EventType{notifications.EventTypeNotificationTaskFailed},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe notification listener: %v", err)
+	}
+	defer listener.Cancel()
+
+	trigger := events.Event{
+		Type:     tasks.EventTypeTaskFailed,
+		Identity: identity.Quadruple{Identity: id},
+		Payload:  tasks.TaskFailedPayload{TaskID: "task-w13-f2", ErrorCode: "boom"},
+	}
+	if err := stack.Bus.Publish(context.Background(), trigger); err != nil {
+		t.Fatalf("Publish task.failed: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	select {
+	case ev, ok := <-listener.Events():
+		if !ok {
+			t.Fatal("notification listener channel closed before notification.task_failed arrived")
+		}
+		if ev.Type != notifications.EventTypeNotificationTaskFailed {
+			t.Errorf("got event type %q, want notification.task_failed", ev.Type)
+		}
+		if ev.Identity.TenantID != id.TenantID || ev.Identity.SessionID != id.SessionID {
+			t.Errorf("notification identity %+v did not propagate from the trigger %+v", ev.Identity, id)
+		}
+	case <-deadline:
+		t.Fatal("deadline before notification.task_failed arrived — the boot path did not run the notifications.Subscriber (§17.6 F2)")
 	}
 }
 

@@ -39,7 +39,7 @@
 
 <style>
   .sub-nav {
-    width: var(--layout-rail-width);
+    width: var(--size-rail);
     flex-shrink: 0;
   }
   ul {

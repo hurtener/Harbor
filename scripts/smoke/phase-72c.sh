@@ -117,20 +117,60 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 6. Live-server probes — until `harbor dev` mounts the search surface
-#    these SKIP via 404 per the AGENTS.md §4.2 convention. The shape
-#    matches the wire URL `/v1/control/{method}` the Phase 60 mux uses.
+# 6. Live-server probes — `harbor dev` mounts the five `search.*` methods
+#    via transports.WithSearch (D-132 §17.5 F1 fix). The probe POSTs an
+#    empty SearchRequest body; the merged auth middleware backfills the
+#    identity triple from the verified JWT. A 200 confirms the surface is
+#    live; a 404/405/501 means a build without the surface (SKIP); a 401
+#    with no discoverable token SKIPs (the authenticated happy path is
+#    covered by the integration test).
 # ----------------------------------------------------------------------------
 
-skip_if_404 "$(api_url /v1/control/search.query)" \
-  'phase 72c: search.query route not yet mounted by harbor dev' || true
-skip_if_404 "$(api_url /v1/control/search.sessions)" \
-  'phase 72c: search.sessions route not yet mounted by harbor dev' || true
-skip_if_404 "$(api_url /v1/control/search.tasks)" \
-  'phase 72c: search.tasks route not yet mounted by harbor dev' || true
-skip_if_404 "$(api_url /v1/control/search.events)" \
-  'phase 72c: search.events route not yet mounted by harbor dev' || true
-skip_if_404 "$(api_url /v1/control/search.artifacts)" \
-  'phase 72c: search.artifacts route not yet mounted by harbor dev' || true
+SEARCH_BODY='{}'
+
+probe_search_method() {
+    local method="$1"
+    local desc="$2"
+    local url
+    url="$(api_url "/v1/control/${method}")"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        skip "${desc}: curl not available"
+        return
+    fi
+
+    local actual
+    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        ${HARBOR_DEV_TOKEN:+-H "Authorization: Bearer ${HARBOR_DEV_TOKEN}"} \
+        --data "${SEARCH_BODY}" \
+        "${url}" 2>/dev/null) || actual="000"
+
+    case "${actual}" in
+        404|405|501|000|000000|"")
+            skip "${desc}: ${actual:-000} (Phase 72c search surface not yet wired into this build)"
+            return
+            ;;
+        401)
+            if [[ -z "${HARBOR_DEV_TOKEN:-}" ]]; then
+                skip "${desc}: 401 — HARBOR_DEV_TOKEN not discoverable; authenticated happy path covered by the integration test"
+                return
+            fi
+            ;;
+    esac
+
+    if [[ "${actual}" = "200" ]]; then
+        ok "${desc}: HTTP 200 (${url})"
+    else
+        fail "${desc}: expected 200, got ${actual} (${url})"
+    fi
+}
+
+probe_search_method 'search.query'     'phase 72c: search.query responds 200'
+probe_search_method 'search.sessions'  'phase 72c: search.sessions responds 200'
+probe_search_method 'search.tasks'     'phase 72c: search.tasks responds 200'
+probe_search_method 'search.events'    'phase 72c: search.events responds 200'
+probe_search_method 'search.artifacts' 'phase 72c: search.artifacts responds 200'
 
 smoke_summary

@@ -103,7 +103,7 @@
     gap: var(--space-2);
     padding: var(--space-2);
     background: var(--color-surface);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     border-radius: var(--radius-sm);
   }
 
@@ -133,7 +133,7 @@
     flex: 1;
     padding: var(--space-1) var(--space-2);
     border-radius: var(--radius-sm);
-    border: var(--border-thin) solid var(--color-border);
+    border: var(--border-hairline);
     font-size: var(--text-sm);
     cursor: pointer;
   }

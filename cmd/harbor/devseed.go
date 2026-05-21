@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/runtime/engine"
@@ -158,7 +159,10 @@ type devSeedDeps struct {
 	memory    memory.MemoryStore
 	tools     tools.ToolCatalog
 	flows     *flow.Registry
-	logger    *slog.Logger
+	// bus feeds the events-seeding step — a small Console-shaped event
+	// stream so the Console Events page renders rows (D-132 / W11).
+	bus    events.EventBus
+	logger *slog.Logger
 }
 
 // seedDevFixtures populates the runtime registries with a small
@@ -204,6 +208,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 	//    (`agent_id` is not an isolation principal — D-059 — but the
 	//    registry's enumeration index still scopes by the caller triple.)
 	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
+	devQuad := identity.Quadruple{Identity: devID}
 	devCtx, err := identity.With(ctx, devID)
 	if err != nil {
 		return fmt.Errorf("devseed: dev identity scope: %w", err)
@@ -349,7 +354,6 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 	//    memory subsystem.
 	memoryTurns := 0
 	if deps.memory != nil {
-		devQuad := identity.Quadruple{Identity: devID}
 		for i, turn := range devSeedMemoryTurns {
 			t := turn
 			t.Timestamp = time.Now()
@@ -358,6 +362,56 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 			}
 		}
 		memoryTurns = len(devSeedMemoryTurns)
+	}
+
+	// 6. Events — publish a small Console-shaped event stream onto the
+	//    bus so the Console Events page renders rows AND the per-row
+	//    detail-rail-on-select Playwright assertion (D-132 / W11 — the
+	//    73g events-seed gap) flips from SKIP to OK. The events are a
+	//    `tool.invoked` → `tool.completed` pair plus a `task.failed`,
+	//    all SafePayload, published under the dev-token quadruple so the
+	//    Console's identity-scoped `events.subscribe` / `events.aggregate`
+	//    query observes them.
+	eventsSeeded := 0
+	if deps.bus != nil {
+		now := time.Now()
+		seedEvents := []events.Event{
+			{
+				Type:     tools.EventTypeToolInvoked,
+				Identity: devQuad,
+				Payload: tools.ToolInvokedPayload{
+					Identity:  devQuad,
+					ToolName:  "dev-seed-fs-read",
+					Transport: tools.TransportInProcess,
+					StartedAt: now,
+				},
+			},
+			{
+				Type:     tools.EventTypeToolCompleted,
+				Identity: devQuad,
+				Payload: tools.ToolCompletedPayload{
+					Identity:   devQuad,
+					ToolName:   "dev-seed-fs-read",
+					Transport:  tools.TransportInProcess,
+					Attempts:   1,
+					DurationMS: 42,
+				},
+			},
+			{
+				Type:     tasks.EventTypeTaskFailed,
+				Identity: devQuad,
+				Payload: tasks.TaskFailedPayload{
+					TaskID:    "dev-seed-failed-task",
+					ErrorCode: "dev_seed_demo_failure",
+				},
+			},
+		}
+		for i, ev := range seedEvents {
+			if err := deps.bus.Publish(ctx, ev); err != nil {
+				return fmt.Errorf("devseed: publish event %d (%s): %w", i, ev.Type, err)
+			}
+			eventsSeeded++
+		}
 	}
 
 	if deps.logger != nil {
@@ -369,6 +423,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 			slog.Int("tools", len(devSeedTools)),
 			slog.Int("flows", len(devSeedFlows)),
 			slog.Int("memory_turns", memoryTurns),
+			slog.Int("events", eventsSeeded),
 		)
 	}
 	return nil
