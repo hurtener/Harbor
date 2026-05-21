@@ -354,6 +354,18 @@ type devBootOptions struct {
 	allowMock bool
 	logger    *slog.Logger
 	stderr    interface{ Write(p []byte) (int, error) }
+	// serveConsole, when true, mounts the embedded SvelteKit Console
+	// build (cmd/harbor/console_embed.go) onto the boot router at `/`
+	// with SPA fallback. Set ONLY by the `harbor console` subcommand
+	// (Phase 73m / D-129) — `harbor dev` leaves it false so the Console
+	// build is NEVER embedded into the dev-loop surface (D-091 binding
+	// rule). The Protocol surface (`/v1/*`) is identical either way; the
+	// flag only adds the static-asset routes.
+	serveConsole bool
+	// subcommandLabel is the subcommand name stamped into the `/healthz`
+	// JSON body + the boot log lines ("dev" or "console"). Defaults to
+	// "dev" when empty.
+	subcommandLabel string
 }
 
 // bootDevStack does the heavy lifting: it reads the config, opens
@@ -680,6 +692,22 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
 
+	// Phase 73m (D-129): the `auth.rotate_token` surface — the single
+	// net-new Console Settings-page Protocol method. The dev signer is
+	// the V1 auth.TokenIssuer (it re-mints ephemeral ES256 tokens for
+	// the caller's verified identity); a real OIDC-backed deployment
+	// wires an RFC 8693 token-exchange issuer behind the same seam.
+	// The redactor + bus are wired so every accepted rotation emits a
+	// redacted `audit.admin_scope_used` event (CLAUDE.md §7 rule 6).
+	rotateSurface, err := auth.NewRotateSurface(devSigner, red,
+		auth.WithRotateBus(bus),
+		auth.WithRotateLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("auth: rotate surface: %w", err)
+	}
+
 	// Phase 72f / 72g (D-111 / D-112): the single posture surface — the
 	// seven read-only posture Protocol methods. The five `runtime.*` /
 	// `metrics.*` reads (72f) project the runtime's build identity,
@@ -949,6 +977,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// next-message reasoning-effort / temperature / max-tokens /
 		// system-prompt overrides.
 		transports.WithRunsService(runsService),
+		// Phase 73m (D-129): mount the `auth.rotate_token` route so the
+		// Console Settings page "Rotate token" action has a live
+		// Protocol surface.
+		transports.WithAuthSurface(rotateSurface),
 	)
 	if err != nil {
 		closeAll(ctx)
@@ -960,11 +992,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// body once the server starts serving; /readyz is reserved for a
 	// later phase that gates "ready" on dep health (state migration
 	// applied, LLM provider reachable, etc.).
+	subcommandLabel := opts.subcommandLabel
+	if subcommandLabel == "" {
+		subcommandLabel = "dev"
+	}
 	router := http.NewServeMux()
+	healthzBody := fmt.Sprintf(`{"status":"ok","subcommand":%q}`, subcommandLabel)
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","subcommand":"dev"}`))
+		_, _ = w.Write([]byte(healthzBody))
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1006,6 +1043,23 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// The draft handler is registered above; this catch-all picks up
 	// everything else under /v1/.
 	router.Handle("/v1/", mux)
+
+	// Phase 73m (D-129): when booted via `harbor console`, mount the
+	// embedded SvelteKit Console build at `/` with SPA fallback. The
+	// Protocol surface (`/v1/*`, `/healthz`) registered above takes
+	// precedence — Go's http.ServeMux longest-prefix-match resolves a
+	// `/v1/...` request to the Protocol mux and only a non-`/v1/`
+	// non-`/healthz` path falls through to the Console asset handler.
+	// `harbor dev` leaves serveConsole false — the Console build is
+	// NEVER embedded into the dev-loop surface (D-091 binding rule).
+	if opts.serveConsole {
+		consoleHandler, err := newConsoleAssetHandler(opts.logger)
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("console assets: %w", err)
+		}
+		router.Handle("/", consoleHandler)
+	}
 
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
 	if opts.bindAddr != "" {
@@ -1051,6 +1105,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		devToken:        token,
 		allowMock:       opts.allowMock,
 		effectiveDriver: driverName,
+		label:           subcommandLabel,
 		closeFns:        closers,
 		bus:             bus,
 		toolCatalog:     toolCat,
@@ -1074,7 +1129,12 @@ type devStack struct {
 	devToken        string
 	allowMock       bool
 	effectiveDriver string
-	closeFns        []func(context.Context) error
+	// label is the subcommand name ("dev" or "console") used in the
+	// boot log lines. The stderr `HARBOR_DEV_TOKEN=` / `HARBOR_DEV_BOUND=`
+	// contract lines keep the `DEV_` prefix regardless of label — the
+	// preflight + e2e harnesses parse those exact prefixes (D-104).
+	label    string
+	closeFns []func(context.Context) error
 	// bus is the canonical event bus. Exposed so regression tests
 	// can assert wire-side invariants — F1 from the Wave 11.5 §17.5
 	// audit (pauseresume.New must be bus-wired in production so
@@ -1109,7 +1169,11 @@ func (s *devStack) serve(ctx context.Context) error {
 	// we DO NOT repeat it here to avoid double-emission. The
 	// boot-time banner is the §13 amendment surface — every boot
 	// prints it exactly once on stderr.
-	s.logger.InfoContext(ctx, "harbor dev: starting Protocol server",
+	label := s.label
+	if label == "" {
+		label = "dev"
+	}
+	s.logger.InfoContext(ctx, "harbor "+label+": starting Protocol server",
 		slog.String("bind", s.bindAddr),
 		slog.String("driver_llm", s.effectiveDriver),
 		slog.String("driver_state", s.cfg.State.Driver),
@@ -1118,7 +1182,7 @@ func (s *devStack) serve(ctx context.Context) error {
 		slog.String("memory_strategy", s.cfg.Memory.Strategy),
 		slog.Bool("dev_allow_mock", s.allowMock),
 	)
-	s.logger.InfoContext(ctx, "harbor dev: dev token minted",
+	s.logger.InfoContext(ctx, "harbor "+label+": dev token minted",
 		slog.String("kid", DevKID),
 		slog.String("tenant", DevTenant),
 		slog.String("user", DevUser),
@@ -1148,7 +1212,7 @@ func (s *devStack) serve(ctx context.Context) error {
 	// reflects the actual bound addr (matters when Addr was host:0).
 	s.bindAddr = boundAddr
 	_, _ = fmt.Fprintf(s.stderr, "HARBOR_DEV_BOUND=%s\n", boundAddr)
-	s.logger.InfoContext(ctx, "harbor dev: listener bound", slog.String("bind", boundAddr))
+	s.logger.InfoContext(ctx, "harbor "+label+": listener bound", slog.String("bind", boundAddr))
 
 	listenErr := make(chan error, 1)
 	go func() {
@@ -1173,7 +1237,7 @@ func (s *devStack) serve(ctx context.Context) error {
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
-		s.logger.Info("harbor dev: draining", slog.Duration("grace", grace))
+		s.logger.Info("harbor "+label+": draining", slog.Duration("grace", grace))
 		_ = s.server.Shutdown(shutdownCtx)
 		return nil
 	}

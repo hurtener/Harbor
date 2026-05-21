@@ -39,6 +39,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -49,6 +50,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 )
 
@@ -156,3 +158,28 @@ func (s *devSigner) SignDevToken(now time.Time, tenant, user, session string, sc
 // KeySet returns the auth.KeySet half of the dev signer — the value
 // callers pass to `auth.NewValidator(keys, ...)`.
 func (s *devSigner) KeySet() auth.KeySet { return s.keys }
+
+// IssueToken implements auth.TokenIssuer (Phase 73m / D-129). It
+// re-mints a Bearer-shaped ES256 JWT for the supplied — already
+// verified — identity triple + scope set, used by the
+// `auth.rotate_token` Protocol method the Console Settings page calls.
+//
+// The dev signer is the V1 TokenIssuer implementation: `harbor dev` /
+// `harbor console` mint ephemeral tokens themselves. A real deployment
+// behind an external OIDC provider wires an RFC 8693 token-exchange
+// issuer behind the same auth.TokenIssuer seam in a later
+// release-engineering phase — IssueToken's signature is the contract.
+//
+// IssueToken is read-only over the immutable signer; safe for
+// concurrent use by N goroutines (D-025).
+func (s *devSigner) IssueToken(_ context.Context, id identity.Identity, scopes []auth.Scope, now time.Time) (string, time.Time, error) {
+	strScopes := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		strScopes = append(strScopes, string(sc))
+	}
+	token, err := s.SignDevToken(now, id.TenantID, id.UserID, id.SessionID, strScopes)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("dev signer: rotate token: %w", err)
+	}
+	return token, now.Add(DevTokenTTL), nil
+}

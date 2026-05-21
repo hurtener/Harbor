@@ -112,6 +112,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73b| Console Live Runtime page (Protocol + UI)     | protocol+web/console | §5.2, §6.3, §6.13, §7 | 60, 61, 72a, 73, 73i, 74, 75 | 85%  | Shipped  |
 | 73n| Console Playground page (Protocol + UI)       | protocol+web/console | §5.1, §6.4, §6.13, §7 | 54, 60, 61, 72b, 73l, 74, 75 | 85%  | Shipped  |
 | 73a| Console Overview page (composition-only UI)   | web/console          | §5.2, §6.13, §6.15, §7 | 54, 60, 61, 72a, 72e, 72f, 73d, 75 | 70%  | Shipped  |
+| 73m| Console Settings page + `harbor console` subcommand | protocol+web/console+cmd | §5.3, §5.5, §6.15, §7 | 72d, 72f, 72g, 72h, 75 | 75%  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |

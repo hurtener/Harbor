@@ -29,6 +29,8 @@ export {
 	RunsNamespace,
 	RuntimeNamespace,
 	PauseNamespace,
+	PostureNamespace,
+	AuthNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
@@ -55,6 +57,25 @@ export type {
 	TopologyEdge,
 	TopologyProjection
 } from './topology.js';
+
+// NOTE: `SubsystemHealth` / `RuntimeHealth` are NOT re-exported here from
+// `settings.js` — the barrel sources those two names from `posture.js`
+// below (the dedicated runtime-posture module, which also carries
+// `HealthStatus`). `settings.ts` keeps its own structurally-identical
+// copies for its internal page use; barrel consumers get the single
+// `posture.js` definition.
+export {
+	MOCK_MODE_BANNER,
+	type Capability,
+	type RuntimeInfo,
+	type SubsystemDriver,
+	type RuntimeDrivers,
+	type RateLimitView,
+	type IdentityTierView,
+	type GovernancePostureResponse,
+	type LLMPostureResponse,
+	type AuthRotateTokenResponse
+} from './settings.js';
 
 export {
 	WINDOW_SPEC,
