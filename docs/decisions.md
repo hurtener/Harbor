@@ -3222,3 +3222,30 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 **Findings I'm departing from.** None. The harness is a pure composition of patterns brief 05 (§"Concurrency tests", §"Cross-tenant isolation", §"Conformance test approach") and brief 06 (§124, §147) already established, plus the wave-end E2E shape from `test/integration/wave*_test.go`. It introduces no new design surface.
 
 **Protocol additions.** None — Phase 76 ships no Protocol method, error code, REST endpoint, or wire type. It is a `_test.go`-only integration gate.
+
+---
+
+## D-135 — Goroutine-leak conformance harness: one table-driven `-race` suite over every long-lived Runtime component
+
+**Date:** 2026-05-21
+**Status:** Settled (shipping with Phase 77)
+
+**Where it lives:** `test/integration/phase77_goroutine_leak_test.go` (the harness); `.github/workflows/ci.yml` (the `leak-harness` job); `scripts/smoke/phase-77.sh` (static-only artefact smoke); `docs/plans/phase-77-goroutine-leak-harness.md` (the phase plan).
+
+**Decision.** Phase 77 generalises the per-package goroutine-leak tests that Phases 10 / 12 / 13 / 50 / 52 each shipped individually into ONE table-driven conformance suite, `TestE2E_Phase77_GoroutineLeakConformance`. The load-bearing design calls:
+
+**1. The harness is table-driven — a future long-lived component is one new row.** `leakCases` is a slice of `{name, exercise}` rows; each `exercise` closure constructs the real component with real drivers, drives a representative workload, and tears it down. The harness owns baseline capture, the bounded poll, and the assertion. V1 rows: `runtime/engine.Engine`, `events/drivers/inmem.EventBus`, `events/drivers/durable.EventBus`, `sessions.Registry`, `tasks/drivers/inprocess.TaskRegistry` — every long-lived component that starts goroutines and exposes `Stop` / `Close` / `CloseRegistry`. Components that are passive registries with no background goroutines (the `pauseresume.Coordinator`, the steering `Registry` / per-run `Inbox`, the per-run steering `RunLoop`) are deliberately NOT rows — they have no teardown seam to leak from; the Phase 50 dependency is satisfied by the pause primitive being exercised inside the Engine row's run lifecycle, not by a Coordinator `Stop`.
+
+**2. N cycles, not one.** Each row runs `leakCycles` (12) construct → exercise → teardown iterations. A single cycle hides a slow leak (one stray goroutine per cycle); 12 cycles amplify a per-cycle leak to a delta of ≥ 12, far above the `leakTolerance` (4) absolute slack. A warm-up cycle runs before the baseline is captured so first-use lazy initialisation (driver registries, `sync.Once` globals) is not miscounted.
+
+**3. Bounded eventually-poll, never an instant snapshot.** Go does not retire parked goroutines instantly; an instant `runtime.NumGoroutine()` check immediately after teardown is flaky (CLAUDE.md §17.4). The harness reuses the established bounded-poll pattern — a deadline plus a 10 ms interval plus `runtime.Gosched` — with the small absolute `leakTolerance` absorbing the test runner's own background goroutines. The harness does NOT call `t.Parallel`: `NumGoroutine` is process-global and a parallel sibling test would pollute the count.
+
+**4. CI runs it on every PR.** A dedicated `leak-harness` job in `.github/workflows/ci.yml` runs the suite under `-race` on every PR. The job is isolated so a failure names the harness directly; the suite also runs inside the `go` job's `make test`.
+
+**Why.** RFC §5 Go conventions require "goroutines started by long-lived components must be cancellable by a ctx and joined on shutdown"; RFC §3.5 guarantee #4 requires "no goroutine leaks — each invocation's goroutines are joined before the invocation returns". CLAUDE.md §11 made per-component leak tests mandatory but nothing asserted the contract across the whole component surface at once — a new long-lived component could ship without a leak test and nobody would notice. Phase 77 closes that gap with a single conformance gate that a future component opts INTO by adding a table row.
+
+**Findings I'm departing from.** None. brief 01 (core runtime / streaming leak) and brief 05 (long-lived sweepers, background task goroutines) both flag the leak sources the harness pins; the harness follows them.
+
+**Leaks found.** None — all five V1 component rows pass the conformance suite under `-race` on first run (`make test` and the dedicated `leak-harness` job). Had a component leaked, CLAUDE.md §17.6 (fix-where-you-find-it) would have required the fix in the Phase 77 PR.
+
+**Protocol additions.** None — Phase 77 ships a test harness; no Protocol method, error code, wire type, REST endpoint, or CLI subcommand.
