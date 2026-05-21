@@ -118,6 +118,16 @@ const (
 	// (brief 11 §8) makes this audit event the load-bearing record of
 	// the operator's explicit opt-in. Phase 73k / D-119.
 	EventTypeMCPRawHTMLTrustToggled EventType = "mcp.raw_html_trust_toggled"
+	// EventTypeRunOverridesSet — emitted by the runtime (the Phase 73n
+	// Runs surface) when the Console Playground page records a
+	// next-message override via `runs.set_overrides`. Payload is
+	// RunOverridesSetPayload (SafePayload by construction — the actor's
+	// identity quadruple, the session id, and a bounded set of boolean
+	// "which field was set" flags; the override VALUES themselves are
+	// NOT in the payload, since a system-prompt override is
+	// caller-supplied text that must not reach an audit subscriber
+	// unredacted — CLAUDE.md §7). Phase 73n / D-130.
+	EventTypeRunOverridesSet EventType = "runs.overrides_set"
 )
 
 // canonicalTypes is the registered set. Build via init() so the file
@@ -142,6 +152,7 @@ func init() {
 		EventTypeRuntimeRunCancelled,
 		EventTypeTopologyChanged,
 		EventTypeMCPRawHTMLTrustToggled,
+		EventTypeRunOverridesSet,
 	} {
 		canonicalTypes[t] = struct{}{}
 	}
@@ -182,6 +193,42 @@ type MCPRawHTMLTrustToggledPayload struct {
 	// Trusted is the new raw-HTML trust value.
 	Trusted bool
 	// OccurredAt is the wall-clock instant the toggle was applied.
+	OccurredAt time.Time
+}
+
+// RunOverridesSetPayload is the SafePayload carried by an
+// EventTypeRunOverridesSet event (Phase 73n / D-130). The runtime
+// publishes one on every successful `runs.set_overrides` Protocol call.
+//
+// It is SafePayload by construction (D-028): the payload carries only
+// the actor's identity quadruple, the target session id, the recording
+// instant, and a bounded set of boolean "which field was set" flags.
+// The override VALUES are deliberately NOT in the payload — a
+// system-prompt override is caller-supplied free text, and a
+// reasoning-effort / temperature / max-tokens value could leak intent;
+// the bus must never carry caller-supplied bytes unredacted (CLAUDE.md
+// §7). A subscriber that needs the values reads them from the runtime's
+// pending-override slot under the same identity scope. The bus
+// therefore skips the audit.Redactor for this payload and a subscriber
+// keeps typed access.
+type RunOverridesSetPayload struct {
+	SafeSealed
+	// Actor is the identity quadruple of the operator who recorded the
+	// override.
+	Actor identity.Quadruple
+	// SessionID is the session the override applies to.
+	SessionID string
+	// SetReasoningEffort reports whether the reasoning-effort field was
+	// set in this override.
+	SetReasoningEffort bool
+	// SetTemperature reports whether the temperature field was set.
+	SetTemperature bool
+	// SetMaxTokens reports whether the max-tokens field was set.
+	SetMaxTokens bool
+	// SetSystemPrompt reports whether the system-prompt-override field
+	// was set.
+	SetSystemPrompt bool
+	// OccurredAt is the wall-clock instant the override was recorded.
 	OccurredAt time.Time
 }
 

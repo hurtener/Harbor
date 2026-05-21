@@ -161,6 +161,8 @@ var CanonicalMethods = map[string]struct{}{
 	// Phase 73c (D-122) Console-Sessions-page cluster — two methods.
 	"sessions.list":    {}, // Phase 73c / D-122
 	"sessions.inspect": {}, // Phase 73c / D-122
+	// Phase 73n (D-130) Console-Playground-page cluster — one method.
+	"runs.set_overrides": {}, // Phase 73n / D-130
 	// Phase 73i (D-117) Console-Flows-page cluster — six methods.
 	"flows.list":          {}, // Phase 73i / D-117
 	"flows.describe":      {}, // Phase 73i / D-117
@@ -429,6 +431,11 @@ var CanonicalWireTypes = map[string]string{
 	"ArtifactRefSummary":      "types",
 	"SessionsInspectRequest":  "types",
 	"SessionsInspectResponse": "types",
+	// Phase 73n (D-130) Console Playground-page wire types — all live
+	// in internal/protocol/types (internal/protocol/types/runs.go).
+	"RunOverrides":            "types",
+	"RunSetOverridesRequest":  "types",
+	"RunSetOverridesResponse": "types",
 }
 
 // dirAllowsKind reports whether the package directory dir (a path

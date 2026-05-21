@@ -26,6 +26,7 @@ export {
 	AgentsNamespace,
 	SessionsNamespace,
 	TopologyNamespace,
+	RunsNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
