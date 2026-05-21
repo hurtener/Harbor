@@ -216,6 +216,19 @@ func filterMatches(f prototypes.TaskFilter, t prototypes.TaskRow) bool {
 			return false
 		}
 	}
+	// Phase 73h (D-128): the Background Jobs page's per-job "Related
+	// Sessions" tab issues a `tasks.list` with GroupID set to surface
+	// the sibling tasks under the same TaskGroup. An empty GroupID is
+	// the wildcard — most foreground turns aren't group members.
+	if f.GroupID != "" && t.GroupID != f.GroupID {
+		return false
+	}
+	// Phase 73h (D-128): the `Has pending approval` facet. nil = no
+	// filter; a non-nil pointer restricts to rows whose
+	// HasPendingApproval equals the pointee.
+	if f.HasPendingApproval != nil && t.HasPendingApproval != *f.HasPendingApproval {
+		return false
+	}
 	return true
 }
 
