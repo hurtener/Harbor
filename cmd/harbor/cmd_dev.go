@@ -104,6 +104,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
+	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
@@ -897,6 +898,21 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("sessions/protocol service: %w", err)
 	}
 
+	// Phase 73n (D-130): the Console Playground-page Runs service. The
+	// override Store is an in-process artifact (the next-message
+	// override slot is ephemeral per-runtime state — there is no
+	// persistence-shaped seam). Wired unconditionally so the Console
+	// Playground page can record next-message overrides out of the box.
+	runsService, err := runsprotocol.NewService(runsprotocol.NewStore(),
+		runsprotocol.WithBus(bus),
+		runsprotocol.WithRedactor(red),
+		runsprotocol.WithLogger(opts.logger),
+	)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("runs/protocol service: %w", err)
+	}
+
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
@@ -928,6 +944,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// (`sessions.list` / `sessions.inspect`) so the Console Sessions
 		// page has a live Protocol surface.
 		transports.WithSessionsService(sessionsService),
+		// Phase 73n (D-130): mount the Console Playground-page route
+		// (`runs.set_overrides`) so the Playground can record
+		// next-message reasoning-effort / temperature / max-tokens /
+		// system-prompt overrides.
+		transports.WithRunsService(runsService),
 	)
 	if err != nil {
 		closeAll(ctx)

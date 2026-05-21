@@ -25,7 +25,30 @@ Ships THREE bundled deliverables: (1) the shared chat module at `web/console/src
 
 ## Findings I'm departing from (if any)
 
-None.
+Three documented implementation deviations (recorded in `docs/decisions.md`
+D-130; none reach into RFC territory):
+
+- **Route group.** The "Files added or changed" list (authored before D-121
+  landed) places the route at `web/console/src/routes/playground/[session_id]/`.
+  `CONVENTIONS.md` §1 (D-121) is the binding cross-cutting authority and pins
+  the `(console)` route group with NO `/console/` URL prefix — the page ships
+  at `web/console/src/routes/(console)/playground/[session_id]/` accordingly
+  (CLAUDE.md §15 — a plan that contradicts a higher-priority artifact yields
+  to it).
+- **Renderer dependencies.** The plan names Shiki / KaTeX / Mermaid as
+  chat-bubble renderer dependencies. Those heavy frontend dependencies are
+  not in `web/console/package.json`, and adding them is an RFC change
+  (CLAUDE.md §13 "no heavy frameworks"). Phase 73n ships the same safe-text
+  V1 posture the shipped Phase 73l MIME renderers already take
+  (`code.svelte` / `markdown.svelte` render raw text without a highlighter);
+  the renderer-registry seam means a highlighter slots in later without a
+  chat-module reshape.
+- **Renderer file shape.** The plan lists three `.ts` renderer files
+  (`tool_call_trace.ts` / `diff_view.ts` / `artifact_reference.ts`); the
+  shipped Phase 73l registry uses `.svelte` renderer components, so 73n
+  ships three `.svelte` renderers (`ToolCallTrace` / `DiffView` /
+  `ArtifactReference`) plus one `chat_bubble.ts` registration module — the
+  same dispatch contract, matching the shipped registry shape.
 
 ## Goals
 
@@ -98,29 +121,29 @@ contract and D-121 for the rationale.
 
 ## Acceptance criteria
 
-- [ ] `web/console/src/lib/chat/` ships as a self-contained module: (a) no imports of other Console internals from inside the chat module; (b) a typed `ProtocolClient` interface that the caller injects (never a Console-private singleton); (c) the renderer registry directory at `web/console/src/lib/chat/renderers/` already EXISTS (shipped by Phase 73l with dispatch table + mime renderers); this phase adds chat-bubble renderers to that directory under the same dispatch contract.
-- [ ] Chat-bubble renderers ADDED to 73l's registry (Phase 73l ships the dispatch table + mime renderers: markdown / code / image / pdf / audio / json with their `marked` / `katex` / `mermaid` / `shiki` / image / pdf-viewer / audio-waveform / json-tree implementations). 73n adds: tool-call trace card renderer, diff-view renderer, artifact-reference card renderer.
-- [ ] `internal/protocol/methods/methods.go` declares `runs.set_overrides`.
-- [ ] `internal/protocol/types/runs.go` defines `RunOverrides` (reasoning effort, temperature, max tokens, system prompt override) — single source of truth (D-002).
-- [ ] `runs.set_overrides` enforces identity-mandatory (`session_id` required; tenant/user inferred from auth); the override applies to the NEXT message in the session, not retroactively.
-- [ ] Playground page UI (`web/console/src/routes/playground/[session_id]/+page.svelte`) renders: header with breadcrumb / agent picker / model badge / token-count chip / cost chip / Cancel-run / Restart buttons; main canvas chat-style stream; bottom composer with multimodal attach + textarea + voice input + Send (Cmd-Enter); right rail with Controls / Pending Interventions / Recent Artifacts; footer with streaming indicator + Protocol/Console versions.
-- [ ] Every message invokes the SHIPPED `user_message` Protocol method (Phase 54) — NO parallel chat protocol.
-- [ ] Cancel-run invokes SHIPPED `cancel` (`Payload.hard` toggles on Cmd-Shift-Backspace).
-- [ ] Restart invokes SHIPPED `start` with the same agent + system prompt.
-- [ ] Multimodal attach uploads via `artifacts.put` (Phase 73l surface) and auto-includes the resulting `ArtifactStub` in the next message.
-- [ ] Drift-mode toggle in Controls is visible-but-disabled with a "Post-V1" tooltip per Brief 11 §PG-5.
-- [ ] Approve / Reject in Pending Interventions invoke SHIPPED `approve` / `reject` (Phase 54).
-- [ ] Trace toggle consumes Phase 74 `topology.snapshot` for the active run.
-- [ ] No Priority field anywhere (D-065).
-- [ ] All data flows through the typed Protocol client (D-093). NO hand-rolled `fetch`.
-- [ ] Design tokens only (§13). Skeleton component primitives used per CLAUDE.md §4.5 rule 4; any custom wrappers are justified in the PR description.
-- [ ] `svelte-check --fail-on-warnings` passes (D-092).
-- [ ] Per-page Playwright spec at `web/console/tests/playground-page.spec.ts` covers: chat-stream round-trip, multimodal upload, reasoning-effort override applied to next message, intervention Approve / Reject scope-claim degradation, artifact preview.
-- [ ] **"Run as identity" selector in the header consumes 72b's `IdentityScope` triplet** (Brief 11 §PG-5). When the operator has the `auth.ScopeAdmin` claim, the header renders a "Run as identity" dropdown that surfaces tenants / users / sessions the admin can impersonate; selecting a triple populates `IdentityScope.Impersonating` on the next `user_message` / `start` Protocol call. Operators WITHOUT `auth.ScopeAdmin` do NOT see the selector (it renders as absent, not disabled — minimizes UI clutter for non-admin operators). This satisfies 72b's binding cross-reference and lands the consumer alongside the primitive in the same wave (§13 primitive-with-consumer).
-- [ ] `scripts/smoke/phase-73n.sh` asserts `runs.set_overrides` round-trip + chat module assets served.
-- [ ] **Chat module encapsulation invariant verified by grep:** no `from '$lib/'` imports inside `web/console/src/lib/chat/` that reach OUTSIDE the chat module (typed via tsconfig path aliases — only `$lib/chat/*` allowed within).
-- [ ] **Concurrent-reuse test:** N≥100 concurrent `runs.set_overrides` calls against shared session state under `-race` (D-025).
-- [ ] **Integration test:** `test/integration/playground_overrides_test.go` — real runtime + `runs.set_overrides` round-trip + next-message override application; under `-race`.
+- [x] `web/console/src/lib/chat/` ships as a self-contained module: (a) no imports of other Console internals from inside the chat module; (b) a typed `ProtocolClient` interface that the caller injects (never a Console-private singleton); (c) the renderer registry directory at `web/console/src/lib/chat/renderers/` already EXISTS (shipped by Phase 73l with dispatch table + mime renderers); this phase adds chat-bubble renderers to that directory under the same dispatch contract.
+- [x] Chat-bubble renderers ADDED to 73l's registry (Phase 73l ships the dispatch table + mime renderers: markdown / code / image / pdf / audio / json with their `marked` / `katex` / `mermaid` / `shiki` / image / pdf-viewer / audio-waveform / json-tree implementations). 73n adds: tool-call trace card renderer, diff-view renderer, artifact-reference card renderer.
+- [x] `internal/protocol/methods/methods.go` declares `runs.set_overrides`.
+- [x] `internal/protocol/types/runs.go` defines `RunOverrides` (reasoning effort, temperature, max tokens, system prompt override) — single source of truth (D-002).
+- [x] `runs.set_overrides` enforces identity-mandatory (`session_id` required; tenant/user inferred from auth); the override applies to the NEXT message in the session, not retroactively.
+- [x] Playground page UI (`web/console/src/routes/playground/[session_id]/+page.svelte`) renders: header with breadcrumb / agent picker / model badge / token-count chip / cost chip / Cancel-run / Restart buttons; main canvas chat-style stream; bottom composer with multimodal attach + textarea + voice input + Send (Cmd-Enter); right rail with Controls / Pending Interventions / Recent Artifacts; footer with streaming indicator + Protocol/Console versions.
+- [x] Every message invokes the SHIPPED `user_message` Protocol method (Phase 54) — NO parallel chat protocol.
+- [x] Cancel-run invokes SHIPPED `cancel` (`Payload.hard` toggles on Cmd-Shift-Backspace).
+- [x] Restart invokes SHIPPED `start` with the same agent + system prompt.
+- [x] Multimodal attach uploads via `artifacts.put` (Phase 73l surface) and auto-includes the resulting `ArtifactStub` in the next message.
+- [x] Drift-mode toggle in Controls is visible-but-disabled with a "Post-V1" tooltip per Brief 11 §PG-5.
+- [x] Approve / Reject in Pending Interventions invoke SHIPPED `approve` / `reject` (Phase 54).
+- [x] Trace toggle consumes Phase 74 `topology.snapshot` for the active run.
+- [x] No Priority field anywhere (D-065).
+- [x] All data flows through the typed Protocol client (D-093). NO hand-rolled `fetch`.
+- [x] Design tokens only (§13). Skeleton component primitives used per CLAUDE.md §4.5 rule 4; any custom wrappers are justified in the PR description.
+- [x] `svelte-check --fail-on-warnings` passes (D-092).
+- [x] Per-page Playwright spec at `web/console/tests/playground-page.spec.ts` covers: chat-stream round-trip, multimodal upload, reasoning-effort override applied to next message, intervention Approve / Reject scope-claim degradation, artifact preview.
+- [x] **"Run as identity" selector in the header consumes 72b's `IdentityScope` triplet** (Brief 11 §PG-5). When the operator has the `auth.ScopeAdmin` claim, the header renders a "Run as identity" dropdown that surfaces tenants / users / sessions the admin can impersonate; selecting a triple populates `IdentityScope.Impersonating` on the next `user_message` / `start` Protocol call. Operators WITHOUT `auth.ScopeAdmin` do NOT see the selector (it renders as absent, not disabled — minimizes UI clutter for non-admin operators). This satisfies 72b's binding cross-reference and lands the consumer alongside the primitive in the same wave (§13 primitive-with-consumer).
+- [x] `scripts/smoke/phase-73n.sh` asserts `runs.set_overrides` round-trip + chat module assets served.
+- [x] **Chat module encapsulation invariant verified by grep:** no `from '$lib/'` imports inside `web/console/src/lib/chat/` that reach OUTSIDE the chat module (typed via tsconfig path aliases — only `$lib/chat/*` allowed within).
+- [x] **Concurrent-reuse test:** N≥100 concurrent `runs.set_overrides` calls against shared session state under `-race` (D-025).
+- [x] **Integration test:** `test/integration/playground_overrides_test.go` — real runtime + `runs.set_overrides` round-trip + next-message override application; under `-race`.
 
 ## Files added or changed
 

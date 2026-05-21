@@ -60,6 +60,7 @@ import (
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
+	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
@@ -163,6 +164,13 @@ type muxConfig struct {
 	// (`harbor dev`) SHOULD supply it so the Console Sessions page has
 	// a live surface.
 	sessionsService *sessionsprotocol.Service
+	// runsService feeds the Phase 73n (D-130) Console Playground-page
+	// handler — the `POST /v1/runs/set_overrides` route. OPTIONAL: when
+	// unsupplied the Runs route is NOT mounted, so the smoke script's
+	// `skip_if_404` keeps preflight green on a partial build. Production
+	// wiring (`harbor dev`) SHOULD supply it so the Console Playground
+	// page can record next-message overrides.
+	runsService *runsprotocol.Service
 }
 
 // Option configures NewMux.
@@ -447,6 +455,25 @@ func WithSessionsService(s *sessionsprotocol.Service) Option {
 	}
 }
 
+// WithRunsService wires the Phase 73n (D-130) Console Playground-page
+// handler into NewMux — the `POST /v1/runs/set_overrides` route.
+//
+// The service is OPTIONAL so existing call-sites compile unchanged.
+// When unsupplied, the `POST /v1/runs/{method}` route is NOT mounted —
+// the smoke script's `skip_if_404` keeps preflight green on a partial
+// build. Production wiring (`harbor dev`) supplies it so the Console
+// Playground page (Phase 73n) can record next-message overrides. When
+// supplied AND WithValidator is set, the route is wrapped in
+// auth.Middleware like every other transport. A nil service is treated
+// as "WithRunsService not supplied".
+func WithRunsService(s *runsprotocol.Service) Option {
+	return func(c *muxConfig) {
+		if s != nil {
+			c.runsService = s
+		}
+	}
+}
+
 // WithMemory wires the Phase 73j (D-118) three `memory.*` read routes
 // into NewMux. store is the memory.MemoryStore the Console Memory page
 // projects from (Phases 23–25); driverName is the configured memory-
@@ -705,6 +732,22 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		sessionsHandler = sh
 	}
 
+	// Wave 13 (Phase 73n / D-130): the Console Playground-page handler.
+	// Built only when WithRunsService supplied a non-nil service. When
+	// unsupplied the `/v1/runs/*` route is left un-mounted — the smoke
+	// `skip_if_404` keeps preflight green on a partial build.
+	var runsHandler *stream.RunsHandler
+	if cfg.runsService != nil {
+		rh, err := stream.NewRunsHandler(
+			cfg.runsService,
+			stream.WithRunsLogger(cfg.logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("transports: build runs handler: %w", err)
+		}
+		runsHandler = rh
+	}
+
 	mux := http.NewServeMux()
 
 	// Phase 61: when WithValidator was supplied, wrap both transport
@@ -794,6 +837,15 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			mountedSessions = mw(sessionsHandler)
 		}
 		mux.Handle(stream.SessionsRoutePattern, mountedSessions)
+	}
+
+	if runsHandler != nil {
+		var mountedRuns http.Handler = runsHandler
+		if cfg.validator != nil {
+			mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
+			mountedRuns = mw(runsHandler)
+		}
+		mux.Handle(stream.RunsRoutePattern, mountedRuns)
 	}
 	return mux, nil
 }
