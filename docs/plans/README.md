@@ -119,7 +119,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Shipped  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Shipped  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Pending  |
-| 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Pending  |
+| 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Shipped  |
 | 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Pending  |
 | 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Pending  |
 | 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Pending  |
@@ -965,6 +965,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** Baseline numbers committed; perf regression threshold gates PRs (e.g. > 10% slowdown blocks).
 **Tests.** `go test -bench`.
 **Deps.** 10, 12, 05.
+**Status.** Shipped (D-136 — `test/benchmarks/` suite over engine / bus / memory against real components; `docs/perf/baseline.txt` committed; `scripts/perf/check-regression.sh` `benchstat` gate wired into CI as the `perf-regression` job — fails on a statistically-significant slowdown past a noise-tolerant 30% threshold, an empirical calibration of the master plan's illustrative "10%"; `make bench` / `make bench-check`; phase plan `phase-79-performance-benchmarks.md`).
 
 ### 80 — Documentation hygiene polish
 

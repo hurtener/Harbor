@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check
+.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check bench bench-check
 
 help:
 	@echo "Harbor — make targets"
@@ -75,6 +75,23 @@ drift-audit:
 # is excluded (post-V1, D-064). Wired into the frontend-e2e CI job.
 wave13-coverage-check:
 	@bash scripts/console/check-page-coverage.sh
+
+# bench runs the Phase 79 performance-benchmark suite (engine
+# throughput, bus fan-out, memory-strategy latency) against the real
+# components. `-benchtime=100ms` bounds each benchmark so the suite
+# completes fast and reproducibly; `-count=6` gives benchstat a
+# sample to compute variance from. Pipe the output to
+# docs/perf/baseline.txt to refresh the committed baseline
+# (deliberately, in a reviewed PR — never auto).
+bench:
+	@go test -run='^$$' -bench=. -benchmem -benchtime=100ms -count=6 ./test/benchmarks/...
+
+# bench-check is the perf-regression gate (Phase 79 / D-136): it runs
+# the suite and fails when a benchmark regresses past the threshold
+# versus docs/perf/baseline.txt, via benchstat. Wired into the
+# `perf-regression` CI job.
+bench-check:
+	@bash scripts/perf/check-regression.sh
 
 check-mirror:
 	@diff -q AGENTS.md CLAUDE.md && echo "OK: AGENTS.md == CLAUDE.md" || (echo "DRIFT: AGENTS.md != CLAUDE.md"; exit 1)

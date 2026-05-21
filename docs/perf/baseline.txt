@@ -1,0 +1,78 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/hurtener/Harbor/test/benchmarks
+cpu: Apple M4
+BenchmarkBusFanOut/subscribers=1-10      	  490602	       226.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=1-10      	  501400	       241.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=1-10      	  548623	       236.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=1-10      	  536042	       230.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=1-10      	  555715	       229.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=1-10      	  495423	       233.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   77858	      1628 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   80294	      1504 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   80035	      1549 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   77469	      1633 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   75284	      1645 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=8-10      	   73987	      1590 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   36687	      3861 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   31762	      3742 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   32206	      3766 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   32959	      4046 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   29460	      4154 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOut/subscribers=16-10     	   29671	      4459 ns/op	     128 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  248794	       463.5 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  265666	       492.4 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  230510	       512.5 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  224556	       534.3 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  232676	       561.0 ns/op	      64 B/op	       1 allocs/op
+BenchmarkBusFanOutCrossTenant-10         	  244893	       505.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   10000	     10477 ns/op	     95444 envelopes/sec	   41945 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   11289	      9302 ns/op	    107499 envelopes/sec	   41933 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   12555	     11308 ns/op	     88436 envelopes/sec	   41925 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   10000	     16814 ns/op	     59474 envelopes/sec	   41943 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   15250	     11682 ns/op	     85600 envelopes/sec	   41970 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=1-10      	   16204	      9795 ns/op	    102090 envelopes/sec	   41964 B/op	      13 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    2394	     48575 ns/op	    164694 envelopes/sec	  335408 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    2998	     58589 ns/op	    136544 envelopes/sec	  335261 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    2604	     58527 ns/op	    136690 envelopes/sec	  335347 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    2905	     59101 ns/op	    135362 envelopes/sec	  335276 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    3015	     69072 ns/op	    115821 envelopes/sec	  335253 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=8-10      	    2551	     61215 ns/op	    130688 envelopes/sec	  335359 B/op	      97 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     538	    411699 ns/op	     77727 envelopes/sec	 1341789 B/op	     371 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     768	    235255 ns/op	    136023 envelopes/sec	 1340852 B/op	     375 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     697	    193639 ns/op	    165256 envelopes/sec	 1341052 B/op	     374 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     799	    209602 ns/op	    152670 envelopes/sec	 1340747 B/op	     375 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     772	    175953 ns/op	    181867 envelopes/sec	 1340821 B/op	     375 allocs/op
+BenchmarkEngineThroughput/runs=32-10     	     816	    225494 ns/op	    141911 envelopes/sec	 1340705 B/op	     376 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    3844	     30702 ns/op	    521138 frames/sec	   51376 B/op	      95 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    3600	     29943 ns/op	    534350 frames/sec	   51320 B/op	      95 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    3816	     31595 ns/op	    506402 frames/sec	   51375 B/op	      95 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    4426	     30831 ns/op	    518960 frames/sec	   51328 B/op	      95 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    4452	     31619 ns/op	    506032 frames/sec	   51326 B/op	      95 allocs/op
+BenchmarkEngineStreamingThroughput-10    	    4209	     27738 ns/op	    576831 frames/sec	   51343 B/op	      95 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   52960	      2125 ns/op	    470535 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   58574	      1959 ns/op	    510384 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   64968	      1803 ns/op	    554700 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   67759	      1706 ns/op	    586259 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   73604	      1675 ns/op	    597018 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/truncation-10    	   74116	      1623 ns/op	    616140 turns/sec	    1699 B/op	      11 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    8070	    889969 ns/op	      1124 turns/sec	 3018106 B/op	      39 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    7711	    837421 ns/op	      1194 turns/sec	 2590307 B/op	      34 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    8258	    823030 ns/op	      1215 turns/sec	 2835120 B/op	      35 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    8658	    870216 ns/op	      1149 turns/sec	 2933497 B/op	      34 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    8588	    859988 ns/op	      1163 turns/sec	 2943873 B/op	      34 allocs/op
+BenchmarkMemoryStrategy/rolling_summary-10         	    8107	    892033 ns/op	      1121 turns/sec	 2760724 B/op	      34 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1344862	        90.61 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1270192	        94.80 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1000000	       102.4 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1000000	       112.6 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1000000	       105.1 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/truncation-10         	 1000000	       111.6 ns/op	     192 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  862275	       135.3 ns/op	     384 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  905204	       131.8 ns/op	     384 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  913995	       134.8 ns/op	     384 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  747604	       195.9 ns/op	     384 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  460423	       264.6 ns/op	     384 B/op	       1 allocs/op
+BenchmarkMemoryGetLLMContext/rolling_summary-10    	  415674	       269.9 ns/op	     384 B/op	       1 allocs/op
+PASS
+ok  	github.com/hurtener/Harbor/test/benchmarks	54.498s

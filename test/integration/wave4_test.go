@@ -635,6 +635,28 @@ func TestE2E_Wave4_Concurrent_MultiTenant(t *testing.T) {
 	}
 	prodWG.Wait()
 
+	// Cancel emits the run_cancelled event asynchronously onto the bus;
+	// the per-tenant subscriber goroutine counts it off sub.Events().
+	// Wait for every tenant's event to land BEFORE teardown — closing
+	// the subscriptions / bus while an event is still in flight would
+	// drop it (§17.4: never assert on an async event without a bounded
+	// eventually-poll). The per-tenant assertion below stays the hard
+	// gate; this poll only removes the teardown race.
+	cancelDeadline := time.Now().Add(5 * time.Second)
+	for {
+		allLanded := true
+		for _, ts := range tenantStates {
+			if ts.cancelEvents.Load() < 1 {
+				allLanded = false
+				break
+			}
+		}
+		if allLanded || time.Now().After(cancelDeadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// Tear down everything in order so subscriber goroutines drain
 	// before we sample goroutine count.
 	if err := eng.Stop(context.Background()); err != nil {
