@@ -45,9 +45,9 @@ async function seedConnection(
     ([b, t]) => {
       window.localStorage.setItem("harbor.runtime.base_url", b);
       window.localStorage.setItem("harbor.runtime.token", t);
-      window.localStorage.setItem("harbor.runtime.tenant", "tenant-e2e");
-      window.localStorage.setItem("harbor.runtime.user", "user-e2e");
-      window.localStorage.setItem("harbor.runtime.session", "session-e2e");
+      window.localStorage.setItem("harbor.runtime.tenant", "dev");
+      window.localStorage.setItem("harbor.runtime.user", "dev");
+      window.localStorage.setItem("harbor.runtime.session", "dev");
     },
     [baseURL, token] as const,
   );

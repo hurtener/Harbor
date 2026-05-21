@@ -29,6 +29,8 @@ export {
 	RunsNamespace,
 	RuntimeNamespace,
 	PauseNamespace,
+	PostureNamespace,
+	AuthNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
@@ -55,6 +57,21 @@ export type {
 	TopologyEdge,
 	TopologyProjection
 } from './topology.js';
+
+export {
+	MOCK_MODE_BANNER,
+	type Capability,
+	type RuntimeInfo,
+	type SubsystemHealth,
+	type RuntimeHealth,
+	type SubsystemDriver,
+	type RuntimeDrivers,
+	type RateLimitView,
+	type IdentityTierView,
+	type GovernancePostureResponse,
+	type LLMPostureResponse,
+	type AuthRotateTokenResponse
+} from './settings.js';
 
 export {
 	WINDOW_SPEC,

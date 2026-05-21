@@ -85,6 +85,7 @@ var wantMethods = []methods.Method{
 	methods.MethodSessionsList,
 	methods.MethodSessionsInspect,
 	methods.MethodRunsSetOverrides,
+	methods.MethodAuthRotateToken,
 }
 
 func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
@@ -96,9 +97,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
-	// Phase 73c sessions-page two + Phase 73n runs-page one = 70.
-	if len(got) != 70 {
-		t.Fatalf("Methods() returned %d methods, want 70", len(got))
+	// Phase 73c sessions-page two + Phase 73n runs-page one +
+	// Phase 73m auth.rotate_token one = 71.
+	if len(got) != 71 {
+		t.Fatalf("Methods() returned %d methods, want 71", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -192,6 +194,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSessionsInspect: "sessions.inspect",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
+		methods.MethodAuthRotateToken: "auth.rotate_token",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {
@@ -346,6 +349,20 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	if methods.IsRunsMethod(methods.MethodStart) {
 		t.Error("IsRunsMethod(start) = true, want false")
 	}
+	// Phase 73m (D-129): auth.rotate_token routes through the auth
+	// handler, NOT the steering inbox.
+	if methods.IsControlMethod(methods.MethodAuthRotateToken) {
+		t.Error("IsControlMethod(auth.rotate_token) = true, want false — auth.rotate_token routes through the auth handler")
+	}
+	if !methods.IsAuthMethod(methods.MethodAuthRotateToken) {
+		t.Error("IsAuthMethod(auth.rotate_token) = false, want true")
+	}
+	if methods.IsAuthMethod(methods.MethodStart) {
+		t.Error("IsAuthMethod(start) = true, want false")
+	}
+	if methods.IsAuthMethod(methods.Method("bogus")) {
+		t.Error("IsAuthMethod(bogus) = true, want false")
+	}
 	// Every non-start, non-streaming, non-search, non-posture, non-pause,
 	// non-topology, non-artifacts, non-memory, non-mcp, non-tools,
 	// non-tasks, non-flows, non-agents, non-sessions canonical method
@@ -363,7 +380,8 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 		}
 		if methods.IsToolsMethod(m) || methods.IsTasksMethod(m) ||
 			methods.IsFlowsMethod(m) || methods.IsAgentsMethod(m) ||
-			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) {
+			methods.IsSessionsMethod(m) || methods.IsRunsMethod(m) ||
+			methods.IsAuthMethod(m) {
 			continue
 		}
 		if !methods.IsControlMethod(m) {
