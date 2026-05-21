@@ -622,8 +622,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two = 69.
-	if len(got) != 69 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 69 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two)", len(got))
+	if len(got) != 70 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 70 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -701,6 +701,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 
 		methods.MethodSessionsList:    {},
 		methods.MethodSessionsInspect: {},
+
+		methods.MethodRunsSetOverrides: {},
 	}
 	for _, m := range got {
 		if _, ok := wantSet[m]; !ok {
@@ -918,6 +920,19 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// clusters above.
 			if methods.IsSessionsMethod(m) {
 				t.Skip("phase-73c: sessions.* methods exercised by internal/sessions/protocol tests + stream sessions_handler tests + test/integration/sessions_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
+			}
+			// Phase 73n (D-130): `runs.set_overrides` routes through the
+			// Console Playground-page handler (POST /v1/runs/set_overrides),
+			// not the REST ControlSurface — it needs a runs/protocol.Service
+			// (override Store) the conformance Stack does not wire. Its
+			// happy-path + failure modes are exercised by the
+			// internal/runtime/runs/protocol unit + concurrent-reuse tests,
+			// the stream runs_handler tests, and
+			// test/integration/playground_overrides_test.go (real Store +
+			// real wire transport + real auth). Skip with an explicit
+			// reason — same posture as the sessions / tools / flows clusters.
+			if methods.IsRunsMethod(m) {
+				t.Skip("phase-73n: runs.* methods exercised by internal/runtime/runs/protocol tests + stream runs_handler tests + test/integration/playground_overrides_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
 			t.Run("InProcess", func(t *testing.T) {
 				st := factory(t)

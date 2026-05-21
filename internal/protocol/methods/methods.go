@@ -540,6 +540,23 @@ const (
 	// cross-tenant scope contract as MethodSessionsList. The
 	// wire-transport route is `POST /v1/sessions/inspect`.
 	MethodSessionsInspect Method = "sessions.inspect"
+
+	// MethodRunsSetOverrides — Phase 73n (Wave 13 / D-130). Records the
+	// reasoning-effort / temperature / max-tokens / system-prompt
+	// override the Console Playground page applies to the NEXT message
+	// in a session. The override is session-scoped (keyed by the
+	// identity triple) and one-shot: it applies to the next
+	// `user_message` / `start` and is consumed at that point — it does
+	// NOT apply retroactively to past messages, and a session that sets
+	// an override then never sends drops it. Identity-mandatory
+	// (`session_id` required; tenant / user inferred from the verified
+	// JWT); a cross-session override is rejected with CodeScopeMismatch.
+	// NOT a control / streaming-events / search / posture / pause /
+	// topology / artifacts / memory / mcp / tools / flows / agents /
+	// sessions / tasks method — `IsRunsMethod` is its own O(1)
+	// predicate. The wire-transport route is `POST /v1/runs/set_overrides`.
+	// See `docs/plans/phase-73n-console-playground-page.md`.
+	MethodRunsSetOverrides Method = "runs.set_overrides"
 )
 
 // canonicalMethods is the registered set. It is a fixed package-level
@@ -602,6 +619,8 @@ var canonicalMethods = map[Method]struct{}{
 
 	MethodSessionsList:    {},
 	MethodSessionsInspect: {},
+
+	MethodRunsSetOverrides: {},
 
 	MethodMCPServersList:             {},
 	MethodMCPServersGet:              {},
@@ -848,6 +867,29 @@ func IsSessionsMethod(m Method) bool {
 	return ok
 }
 
+// canonicalRunsMethods is the closed sub-set of the Console Playground-
+// page `runs.*` methods landed in Phase 73n (Wave 13 / D-130). Today it
+// holds the single `runs.set_overrides` method — the next-message
+// reasoning-effort / temperature / max-tokens / system-prompt override
+// recorder. IsRunsMethod is O(1); the stream transport branches on it to
+// route the request through the Runs handler instead of the task-control
+// surface.
+var canonicalRunsMethods = map[Method]struct{}{
+	MethodRunsSetOverrides: {},
+}
+
+// IsRunsMethod reports whether m is one of the canonical `runs.*`
+// methods (Phase 73n / D-130 — today just `runs.set_overrides`). The
+// stream transport branches on this to route the request through the
+// Runs handler instead of the task-control / search / posture / pause /
+// topology / artifacts / memory / mcp / tools / flows / agents /
+// sessions surfaces. NOT a control method — a new non-control method
+// extends THIS predicate, never the steering inbox.
+func IsRunsMethod(m Method) bool {
+	_, ok := canonicalRunsMethods[m]
+	return ok
+}
+
 // canonicalSearchMethods is the closed sub-set of the five search.*
 // methods. IsSearchMethod is O(1); a transport adapter (Phase 72c
 // search handler) uses it to branch the route table.
@@ -1039,6 +1081,9 @@ func IsControlMethod(m Method) bool {
 		return false
 	}
 	if IsSessionsMethod(m) {
+		return false
+	}
+	if IsRunsMethod(m) {
 		return false
 	}
 	return true

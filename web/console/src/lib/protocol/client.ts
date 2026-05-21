@@ -567,6 +567,30 @@ export class TopologyNamespace {
 	}
 }
 
+/**
+ * The `runs.*` namespace — Phase 73n / D-130, consumed by the Console
+ * Playground page. The Runtime mounts `runs.set_overrides` at
+ * `POST /v1/runs/set_overrides`. It records the reasoning-effort /
+ * temperature / max-tokens / system-prompt override applied to the NEXT
+ * message in the operator's session.
+ */
+export class RunsNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/**
+	 * `runs.set_overrides` — record the next-message override. `overrides`
+	 * carries `session_id` plus the optional tuning fields
+	 * (`reasoning_effort` / `temperature` / `max_tokens` /
+	 * `system_prompt_override`). The override is session-scoped and
+	 * one-shot — it applies to the next `user_message` only.
+	 */
+	setOverrides<R = unknown>(overrides: Record<string, unknown>): Promise<R> {
+		return this.#t.request<R>('/v1/runs/set_overrides', { overrides });
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -597,6 +621,7 @@ export interface ProtocolClient {
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
 	readonly topology: TopologyNamespace;
+	readonly runs: RunsNamespace;
 }
 
 /**
@@ -620,6 +645,7 @@ export class HarborClient implements ProtocolClient {
 	readonly agents: AgentsNamespace;
 	readonly sessions: SessionsNamespace;
 	readonly topology: TopologyNamespace;
+	readonly runs: RunsNamespace;
 
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
@@ -634,5 +660,6 @@ export class HarborClient implements ProtocolClient {
 		this.agents = new AgentsNamespace(transport);
 		this.sessions = new SessionsNamespace(transport);
 		this.topology = new TopologyNamespace(transport);
+		this.runs = new RunsNamespace(transport);
 	}
 }

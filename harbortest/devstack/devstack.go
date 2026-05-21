@@ -106,6 +106,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -896,6 +897,19 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			muxOpts = append(muxOpts, transports.WithTasksService(tasksService))
 		}
+		// Phase 73n (D-130): mount the Console Playground-page route
+		// (`runs.set_overrides`). The devstack mirrors the production
+		// `cmd/harbor` boot path (CLAUDE.md §17.6) — the override Store
+		// is the same in-process artifact `cmd/harbor` constructs, so
+		// the wave-end E2E exercises the real route.
+		runsService, rsErr := runsprotocol.NewService(runsprotocol.NewStore(),
+			runsprotocol.WithBus(bus),
+			runsprotocol.WithRedactor(stack.Audit),
+		)
+		if rsErr != nil {
+			return stack, fmt.Errorf("runs/protocol service: %w", rsErr)
+		}
+		muxOpts = append(muxOpts, transports.WithRunsService(runsService))
 		mux, muxErr := transports.NewMux(stack.Surface, bus, muxOpts...)
 		if muxErr != nil {
 			return stack, fmt.Errorf("transports.NewMux: %w", muxErr)

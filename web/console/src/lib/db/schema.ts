@@ -98,7 +98,10 @@ export const LIST_PAGES = [
   'flows',
   // Phase 73b (D-126) — the Live Runtime page's Console-DB-backed
   // saved-view chips persist topology / trace-tab presets here.
-  'live_runtime'
+  'live_runtime',
+  // Phase 73n (D-130) — the Playground page's Console-DB-backed
+  // saved-view chips persist Controls-card override presets here.
+  'playground'
 ] as const;
 export type ListPage = (typeof LIST_PAGES)[number];
 
