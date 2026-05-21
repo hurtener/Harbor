@@ -44,7 +44,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 
-BASELINE="docs/perf/baseline.txt"
+# The base to regress against. CI sets PERF_BASE_FILE to a benchmark
+# run generated on the SAME runner from the PR's base commit — the only
+# hardware-noise-immune comparison (Go embeds GOMAXPROCS in benchmark
+# names, so a committed baseline produced on different-core-count
+# hardware cannot be paired by benchstat). With PERF_BASE_FILE unset
+# (local `make bench-check`), the committed baseline is used — valid
+# only on the machine that generated it.
+BASELINE="${PERF_BASE_FILE:-docs/perf/baseline.txt}"
 THRESHOLD="${PERF_THRESHOLD:-30}"
 COUNT="${PERF_COUNT:-6}"
 BENCHTIME="${PERF_BENCHTIME:-100ms}"
@@ -61,15 +68,27 @@ if [ ! -f "${BASELINE}" ]; then
   exit 1
 fi
 
-NEW="$(mktemp -t harbor-perf-new.XXXXXX)"
 REPORT="$(mktemp -t harbor-perf-report.XXXXXX)"
 CSV="$(mktemp -t harbor-perf-csv.XXXXXX)"
-trap 'rm -f "${NEW}" "${REPORT}" "${CSV}"' EXIT
 
-echo "perf-gate: running benchmark suite (count=${COUNT}, benchtime=${BENCHTIME})..."
-go test -run='^$' -bench=. -benchmem \
-  -count="${COUNT}" -benchtime="${BENCHTIME}" \
-  ./test/benchmarks/... | tee "${NEW}"
+# The PR-side benchmark run. CI pre-generates it (on the same runner as
+# the base) and passes it via PERF_PR_FILE; locally it is produced here.
+if [ -n "${PERF_PR_FILE:-}" ]; then
+  if [ ! -s "${PERF_PR_FILE}" ]; then
+    echo "perf-gate: ERROR — PERF_PR_FILE ${PERF_PR_FILE} missing or empty." >&2
+    exit 1
+  fi
+  NEW="${PERF_PR_FILE}"
+  trap 'rm -f "${REPORT}" "${CSV}"' EXIT
+  echo "perf-gate: using pre-generated PR benchmark file ${NEW}"
+else
+  NEW="$(mktemp -t harbor-perf-new.XXXXXX)"
+  trap 'rm -f "${NEW}" "${REPORT}" "${CSV}"' EXIT
+  echo "perf-gate: running benchmark suite (count=${COUNT}, benchtime=${BENCHTIME})..."
+  go test -run='^$' -bench=. -benchmem \
+    -count="${COUNT}" -benchtime="${BENCHTIME}" \
+    ./test/benchmarks/... | tee "${NEW}"
+fi
 
 echo
 echo "perf-gate: comparing against ${BASELINE} via benchstat (${BENCHSTAT_VERSION})..."

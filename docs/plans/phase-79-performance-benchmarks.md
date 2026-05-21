@@ -101,15 +101,21 @@ second. The threshold is overridable via `PERF_THRESHOLD`. Recorded in D-136.
 - [ ] `BenchmarkMemoryStrategy` covers both `truncation` and `rolling_summary`
       `AddTurn` paths.
 - [ ] `docs/perf/baseline.txt` is committed with baseline numbers produced by
-      the suite.
-- [ ] `scripts/perf/check-regression.sh` compares a fresh run against the
-      committed baseline via `benchstat` and exits non-zero when any
-      benchmark regresses beyond the threshold (a statistically-significant
-      slowdown past the noise-tolerant 30% default — see Risks).
+      the suite — the **local-dev** reference (`make bench-check`).
+- [ ] `scripts/perf/check-regression.sh` compares a PR run against a base run
+      via `benchstat` and exits non-zero when any benchmark regresses beyond
+      the threshold (a statistically-significant slowdown past the
+      noise-tolerant 30% default — see Risks). The base run is supplied via
+      `PERF_BASE_FILE` (CI) or defaults to the committed baseline (local dev).
 - [ ] `make bench` runs the suite; `make bench-check` runs the regression
-      gate.
+      gate against the committed baseline (local dev).
 - [ ] `.github/workflows/ci.yml` gains exactly one additive job
-      (`perf-regression`) that runs the gate.
+      (`perf-regression`) that runs the suite on both the PR commit and its
+      base commit on the same runner and `benchstat`-compares them — Go embeds
+      `GOMAXPROCS` in benchmark names, so a comparison against the committed
+      (different-hardware) baseline cannot be paired by `benchstat`; the
+      same-runner base-vs-PR pairing is the only hardware-noise-immune gate
+      (D-136 point 4).
 - [ ] `make vet test lint drift-audit check-mirror preflight` all pass.
 
 ## Files added or changed

@@ -166,24 +166,51 @@ jobs:
     name: perf-regression (benchmark gate)
     runs-on: ubuntu-latest
     # Phase 79 (D-136) — the performance-benchmark regression gate.
-    # Runs the test/benchmarks/ suite and fails the build when a
-    # benchmark regresses past 10% versus the committed baseline
-    # (docs/perf/baseline.txt), compared via `benchstat`. The gate
-    # tolerates shared-runner noise: `-count` gives benchstat a
-    # sample, and benchstat's confidence-interval `~` verdict (no
-    # statistically-significant change) is treated as a pass — so a
-    # noisy GitHub-hosted runner does not flake the job. `benchstat`
-    # is fetched via `go run` with a pinned version inside the
-    # script; it never enters the runtime binary's go.mod production
-    # require surface.
+    # Compares the PR's test/benchmarks/ numbers against the SAME
+    # benchmarks run on the PR's base commit, BOTH on this runner.
+    # Same-runner pairing is the only hardware-noise-immune
+    # comparison: Go embeds GOMAXPROCS in benchmark names, so a
+    # committed baseline generated on different-core-count hardware
+    # cannot be paired by benchstat. When the base commit has no
+    # test/benchmarks/ directory (the PR that introduces the suite),
+    # there is no prior baseline to regress against and the
+    # comparison is skipped. The gate tolerates runner noise via
+    # `-count` sampling + benchstat's `~` (non-significant) verdict +
+    # a 30% threshold (D-136). `benchstat` is fetched via `go run`
+    # inside the script; it never enters the runtime binary's go.mod.
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Run perf-regression gate
-        run: make bench-check
+      - name: perf-regression gate (base-vs-PR, same runner)
+        env:
+          BENCH_FLAGS: "-run=^$ -bench=. -benchmem -count=6 -benchtime=100ms"
+        run: |
+          set -euo pipefail
+          PR_SHA="$(git rev-parse HEAD)"
+          BASE_SHA=""
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --depth=1 origin "${GITHUB_BASE_REF}" >/dev/null 2>&1 || true
+            BASE_SHA="$(git rev-parse "origin/${GITHUB_BASE_REF}" 2>/dev/null || echo '')"
+          fi
+          [ -z "${BASE_SHA}" ] && BASE_SHA="$(git rev-parse 'HEAD^' 2>/dev/null || echo '')"
+          echo "perf-gate: PR=${PR_SHA} base=${BASE_SHA:-<none>}"
+          # shellcheck disable=SC2086
+          go test ${BENCH_FLAGS} ./test/benchmarks/... | tee /tmp/perf-pr.txt
+          if [ -n "${BASE_SHA}" ] && git cat-file -e "${BASE_SHA}:test/benchmarks" 2>/dev/null; then
+            git checkout --quiet "${BASE_SHA}"
+            # shellcheck disable=SC2086
+            go test ${BENCH_FLAGS} ./test/benchmarks/... | tee /tmp/perf-base.txt
+            git checkout --quiet "${PR_SHA}"
+            PERF_BASE_FILE=/tmp/perf-base.txt PERF_PR_FILE=/tmp/perf-pr.txt \
+              bash scripts/perf/check-regression.sh
+          else
+            echo "perf-gate: base commit has no test/benchmarks/ — no prior baseline to regress against (introducing PR); comparison skipped."
+          fi
 
   state-postgres:
     name: state/postgres conformance (postgres:16)
