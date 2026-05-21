@@ -92,17 +92,33 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Build bin/harbor
-        if: steps.detect.outputs.present == 'true'
-        run: make build
       - uses: actions/setup-node@v4
         if: steps.detect.outputs.present == 'true'
         with:
           node-version: 'lts/*'
-      - name: Install npm dependencies
+      # Phase 75a (D-131) — build + stage the SvelteKit Console bundle
+      # BEFORE `make build`. `harbor console` (D-091) serves the Console
+      # via `embed.FS` of `cmd/harbor/consoledist/`, which is gitignored
+      # except `.gitkeep` (the bundle is a build artifact — §4.5 #9).
+      # `make console-build` runs `npm ci && npm run build` in
+      # `web/console/` and copies `build/` → `cmd/harbor/consoledist/`.
+      # If `make build` ran first, it would embed an EMPTY consoledist/
+      # and `harbor console` would serve the index but never hydrate the
+      # SvelteKit app — the Playwright per-page specs would all fail.
+      # `console-build` already runs `npm ci`, so the node_modules the
+      # later Playwright steps need are installed by this step.
+      # Phase 75a (D-131): the binding page-coverage gate — every
+      # docs/design/console/page-<slug>.md has a matching
+      # web/console/tests/<slug>-page.spec.ts (operator §12 lock-in #7).
+      - name: Console page-coverage check
         if: steps.detect.outputs.present == 'true'
-        working-directory: web/console
-        run: npm ci
+        run: make wave13-coverage-check
+      - name: Build + stage the Console bundle (console-build)
+        if: steps.detect.outputs.present == 'true'
+        run: make console-build
+      - name: Build bin/harbor (embeds the staged Console bundle)
+        if: steps.detect.outputs.present == 'true'
+        run: make build
       - name: Cache Playwright browsers
         if: steps.detect.outputs.present == 'true'
         uses: actions/cache@v4

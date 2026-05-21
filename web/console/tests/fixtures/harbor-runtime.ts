@@ -100,10 +100,31 @@ export const test = base.extend<{}, { runtime: RuntimeFixture }>({
       // Boot `harbor console` on an ephemeral port. `--bind 127.0.0.1:0`
       // lets the OS pick a free port; the bound address is read back from
       // the `HARBOR_*_BOUND=` stderr line (D-104).
+      //
+      // Two dev-only env vars are set for the harness boot:
+      //   - HARBOR_DEV_ALLOW_MOCK=1 — the §13 dev-only escape hatch so
+      //     the embedded Runtime's LLM seam resolves the `mock` driver
+      //     (the zero-config `harbor console` config uses `driver:
+      //     mock`).
+      //   - HARBOR_DEV_SEED_FIXTURES=1 — Phase 75a (D-131): seed the
+      //     embedded Runtime with a deterministic fixture set (sessions /
+      //     agents / tasks) at boot, so the per-page specs render real
+      //     rows instead of SKIPping every data-shaped assertion. Both
+      //     are dev-only escape hatches gated behind explicit env vars
+      //     (the binary prints a stderr banner for each); a production
+      //     `harbor console` boots with neither.
       const child: ChildProcess = spawn(
         HARBOR_BIN,
         ["console", "--bind", "127.0.0.1:0"],
-        { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: REPO_ROOT,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            HARBOR_DEV_ALLOW_MOCK: "1",
+            HARBOR_DEV_SEED_FIXTURES: "1",
+          },
+        },
       );
 
       let stderr = "";
@@ -146,11 +167,19 @@ export const test = base.extend<{}, { runtime: RuntimeFixture }>({
         available: true,
         baseURL,
         token,
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- baseline seam; first seeding consumer is Phase 73a Overview.
+        // Phase 75a (D-131): runtime-entity seeding is performed AT BOOT
+        // by the binary's dev-only fixture seeder (HARBOR_DEV_SEED_FIXTURES
+        // — set above). The embedded Runtime is already populated with the
+        // deterministic fixture set (sessions / agents / tasks) by the time
+        // the fixture yields, so `seedIdentity` is a no-op acknowledgement
+        // that the requested triple is part of that seeded set. It returns
+        // immediately — the seeding it once stubbed now happens out-of-band
+        // at boot, which is deterministic and free of planner-run flake.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the triple is seeded at boot; this is the resolved acknowledgement.
         async seedIdentity(_triple: IdentityTriple) {
-          // Per-page specs seed deterministic Runtime state through the typed
-          // Protocol client (helpers/protocol.ts). The harness baseline ships
-          // the seam; the first real seeding consumer is Phase 73a Overview.
+          // Boot-time seeding (HARBOR_DEV_SEED_FIXTURES) has already run;
+          // nothing to do per-spec. Retained as a stable seam so specs and
+          // the wave-end aggregator read uniformly.
         },
       });
 

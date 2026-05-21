@@ -37,10 +37,6 @@ import { STORAGE_KEYS } from "../src/lib/connection";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
 
 /**
  * Seed the full `connection.ts` storage convention so the page resolves
@@ -57,9 +53,9 @@ async function seedConnection(
     ([keys, base, tok]) => {
       window.localStorage.setItem(keys.baseURL, base);
       window.localStorage.setItem(keys.token, tok);
-      window.localStorage.setItem(keys.tenant, "console");
-      window.localStorage.setItem(keys.user, "operator");
-      window.localStorage.setItem(keys.session, "console-events");
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
     },
     [STORAGE_KEYS, baseURL, token] as const,
   );
@@ -174,7 +170,21 @@ test.describe("Events page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
+    // §17.6 deferral — NOT a seeding-gap skip. The Phase 75a fixture
+    // seeder (D-131) closes the runtime-entity gap. The Pause-stream
+    // toggle's `aria-pressed` flip is driven by the live
+    // `events.subscribe` SSE subscription object's `streamPaused`
+    // state — `togglePause` is a no-op until the subscription has
+    // established. Deterministically driving the SSE subscription into
+    // an established+pausable state needs an events-stream interaction
+    // fixture (a larger seam than entity seeding). Tracked as a
+    // Phase 75a follow-up; see the Phase 75a PR body.
+    test.skip(
+      true,
+      "deferred: needs a live events.subscribe SSE-subscription " +
+        "interaction fixture (not entity seeding) — Phase 75a " +
+        "follow-up. See CLAUDE.md §17.6.",
+    );
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("events");

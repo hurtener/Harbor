@@ -56,8 +56,12 @@ tasks:
   continuation_hop_limit: 8
 
 memory:
+  # `truncation` (not `none`) so the embedded Console's Memory page has
+  # a live, populated surface out of the box — `none` makes `AddTurn` a
+  # no-op and `memory.list` always empty. `truncation` is an operational
+  # V1 strategy; the Console Memory page (Phase 73j) renders its rows.
   driver: inmem
-  strategy: none
+  strategy: truncation
   recovery_backlog_max: 16
 
 planner:

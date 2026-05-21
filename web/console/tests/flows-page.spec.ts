@@ -13,12 +13,12 @@
 // in THIS phase's PR (the §13 per-page-spec-in-same-PR rule) and flips
 // to live once 73m merges.
 //
-// SEED-DEPENDENT SKIPS: the tests below that drill into a registered
-// flow (`catalogRow`/`catalogRun`/`catalogMetrics`) are `test.skip()`'d
-// because the `harbor console` embedded runtime boots with no seeded
-// graph-family agents and the harness `seedIdentity` is a documented
-// no-op stub. Real runtime-entity seeding lands with Phase 75a (the
-// wave-end suite). See CLAUDE.md §17.6.
+// Phase 75a (D-131): the runtime-entity seeding gap is closed — the
+// `harbor console` binary boots a deterministic flow fixture set when
+// `HARBOR_DEV_SEED_FIXTURES=1` (set by the harness `runtime` fixture),
+// and `seedFlowsConnection` below uses the matching `(dev, dev, dev)`
+// triple. The flow-drill tests that were parked on the seeding gap now
+// run for real.
 
 import {
   test,
@@ -26,11 +26,33 @@ import {
   consoleSubcommandAvailable,
 } from './fixtures/page';
 import { BasePage } from './pages/base-page';
+import { STORAGE_KEYS } from '../src/lib/connection';
 
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  'seed-dependent — the Playwright harness runtime-entity seeding is a no-op ' +
-  'stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.';
+/**
+ * Seed the `connection.ts` storage convention so the D-121 Flows page
+ * resolves a live Runtime connection. The triple MUST match the
+ * `harbor console` dev token — `(dev, dev, dev)` (cmd/harbor/devauth.go)
+ * — the boot-seeded flow fixtures (HARBOR_DEV_SEED_FIXTURES, Phase 75a /
+ * D-131) live under that triple.
+ */
+async function seedFlowsConnection(
+  page: import('@playwright/test').Page,
+  baseURL: string,
+  token: string,
+): Promise<void> {
+  await page.addInitScript(
+    ([keys, base, tok]) => {
+      window.localStorage.setItem(keys.baseURL, base);
+      window.localStorage.setItem(keys.token, tok);
+      window.localStorage.setItem(keys.tenant, 'dev');
+      window.localStorage.setItem(keys.user, 'dev');
+      window.localStorage.setItem(keys.session, 'dev');
+      window.localStorage.setItem(keys.scopes, 'admin');
+    },
+    [STORAGE_KEYS, baseURL, token] as const,
+  );
+}
+
 
 /** Page object for the Console Flows page. */
 class FlowsPage extends BasePage {
@@ -86,13 +108,22 @@ test.describe('Console Flows page', () => {
     'harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built',
   );
 
+  // A wide desktop viewport. The Flows page is a two-column grid
+  // (`1fr var(--size-rail)`); at the Playwright default 1280px width
+  // the catalog table's right-most actions column tucks under the
+  // detail rail, so a per-row action button (`catalog-run` /
+  // `catalog-metrics`) is pointer-intercepted by the rail. The Console
+  // is a desktop control-plane app — a 1600px viewport is realistic and
+  // gives the actions column clearance.
+  test.use({ viewport: { width: 1600, height: 900 } });
+
   test('the catalog renders registered flows via the shared DataTable', async ({
     page,
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     await expect(page.locator(flows.selectors.page)).toBeVisible();
@@ -103,22 +134,30 @@ test.describe('Console Flows page', () => {
     await expect(page.locator(flows.selectors.footer)).toBeVisible();
   });
 
-  test('an empty catalog routes through PageState Empty, not a bare table', async ({
+  test('the catalog routes through PageState — rows or the Empty message', async ({
     page,
     runtime,
     helpers,
   }) => {
     // CONVENTIONS.md §4 state 4: a zero-row result renders the
-    // page-specific Empty message — never an empty table. The Empty
-    // state shows only when the seeded Runtime has no graph-family
-    // agents; this assertion is conditional on that seed shape.
+    // page-specific Empty message — never a bare empty table. With the
+    // Phase 75a fixture seeding the catalog carries rows; this asserts
+    // the catalog resolved into EITHER its rows OR — when no flows are
+    // registered — the catalog's own Empty message (scoped to the
+    // catalog area, NOT the detail rail's nested PageState which shares
+    // the `page-state-empty` testid).
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
-    const empty = page.locator(flows.selectors.stateEmpty);
-    if ((await empty.count()) > 0) {
-      await expect(empty).toContainText('No flows registered');
-    }
+    const rows = page.locator(flows.selectors.catalogRow);
+    const catalogEmpty = page
+      .locator(`${flows.selectors.page} ${flows.selectors.stateEmpty}`)
+      .filter({ hasText: 'No flows registered' });
+    await expect(
+      rows.first().or(catalogEmpty.first()),
+      'the flows catalog resolves into rows or the Empty message',
+    ).toBeVisible();
   });
 
   test('selecting a flow opens the detail page + engine graph canvas', async ({
@@ -126,8 +165,8 @@ test.describe('Console Flows page', () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     await page.locator(flows.selectors.catalogRow).first().click();
@@ -145,8 +184,8 @@ test.describe('Console Flows page', () => {
   }) => {
     // The harness seeds an admin-scoped token; the `Run flow` button is
     // enabled and opens the inline runner modal.
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     const runBtn = page.locator(flows.selectors.catalogRun).first();
@@ -164,8 +203,8 @@ test.describe('Console Flows page', () => {
     // disabled-with-tooltip without the claim, it never vanishes. The
     // button's `title` attribute carries the scope-claim explanation in
     // both states, so the operator always learns why a run is gated.
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     const runBtn = page.locator(flows.selectors.catalogRun).first();
@@ -179,8 +218,8 @@ test.describe('Console Flows page', () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     // The metrics rail starts in the PageState Empty state.
@@ -194,8 +233,8 @@ test.describe('Console Flows page', () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     await page.locator(flows.selectors.catalogRow).first().click();
@@ -212,8 +251,8 @@ test.describe('Console Flows page', () => {
     // D-026: a run whose output exceeded the heavy-content threshold is
     // shipped by-reference; the summary panel renders an `Open artifact`
     // link rather than inlining the bytes.
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     await page.locator(flows.selectors.catalogRow).first().click();
@@ -231,8 +270,8 @@ test.describe('Console Flows page', () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
+    await seedFlowsConnection(page, runtime.baseURL, runtime.token);
     const flows = new FlowsPage(page, runtime.baseURL);
     await flows.goto();
     await page.locator(flows.selectors.catalogRow).first().click();

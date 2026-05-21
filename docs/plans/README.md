@@ -113,7 +113,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73n| Console Playground page (Protocol + UI)       | protocol+web/console | §5.1, §6.4, §6.13, §7 | 54, 60, 61, 72b, 73l, 74, 75 | 85%  | Shipped  |
 | 73a| Console Overview page (composition-only UI)   | web/console          | §5.2, §6.13, §6.15, §7 | 54, 60, 61, 72a, 72e, 72f, 73d, 75 | 70%  | Shipped  |
 | 73m| Console Settings page + `harbor console` subcommand | protocol+web/console+cmd | §5.3, §5.5, §6.15, §7 | 72d, 72f, 72g, 72h, 75 | 75%  | Shipped  |
-| 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Pending  |
+| 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Shipped  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Pending  |
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Pending  |
@@ -919,6 +919,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** Every one of the 14 V1 Console pages has a matching per-page spec; the aggregator walks them all; the page-coverage check (`make wave13-coverage-check`) is green.
 **Tests.** `wave13.spec.ts` + `test/integration/wave13_test.go`.
 **Deps.** 75, 73a-73n.
+**Shipped notes (D-131).** Three things landed beyond the original plan: (1) a §17.6 cross-phase fix of a Phase 73m build-pipeline gap — the `frontend-e2e` CI job now runs `make console-build` before `make build` so `harbor console` embeds the real SvelteKit bundle (it was embedding an empty `consoledist/`); (2) a dev-only runtime-entity fixture seeder (`cmd/harbor/devseed.go`, gated by `HARBOR_DEV_SEED_FIXTURES=1`) so the per-page Playwright specs render real rows — the 25 `SEED_DEPENDENT` per-page skips were un-skipped and pass; (3) six per-page tests (Live Runtime tab content ×2, Playground chat ×3, Events pause-toggle ×1) carry a documented §17.6 deferral skip — they need run-trajectory fixtures (a live `topology.snapshot` / chat history / SSE subscription), a larger seam than registry seeding, tracked as a follow-up.
 
 ### 76 — Cross-tenant isolation conformance harness (RFC §4.3)
 

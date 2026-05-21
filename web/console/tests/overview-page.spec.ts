@@ -31,24 +31,23 @@ import { STORAGE_KEYS } from "../src/lib/connection";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-// SEED-DEPENDENT SKIPS: the counter-row + intervention-queue tests below
-// are `test.skip()`'d because the `harbor console` embedded runtime
-// boots with no seeded entities and the harness `seedIdentity` is a
-// documented no-op stub — the page's posture / pause reads come back
-// `identity_required` (the seeded triple does not match the harness
-// token's identity), so the panels never reach a rendered state. Real
-// runtime-entity seeding lands with Phase 75a (the wave-end suite).
-// See CLAUDE.md §17.6.
-/** Uniform tracking reason for tests gated on harness runtime-entity seeding. */
-const SEED_DEPENDENT =
-  "seed-dependent — the Playwright harness runtime-entity seeding is a no-op " +
-  "stub; wired in Phase 75a (wave-end suite). See CLAUDE.md §17.6.";
+// Phase 75a (D-131): the runtime-entity seeding gap is closed — the
+// `harbor console` binary boots with a deterministic fixture set when
+// `HARBOR_DEV_SEED_FIXTURES=1` (set by the harness `runtime` fixture),
+// and `seedConnection` below uses the matching `(dev, dev, dev)` triple.
+// The counter-row + intervention-queue tests that were parked on the
+// seeding gap now run for real.
 
 /**
  * Seed the full `connection.ts` storage convention so the page resolves
  * a live Runtime connection (the harness `seedAuth` only writes the
  * legacy console-token key; the D-121 page resolves through
  * `connection.ts`).
+ *
+ * The identity triple MUST match the `harbor console` dev token —
+ * `(dev, dev, dev)` (cmd/harbor/devauth.go). A mismatched triple makes
+ * every identity-scoped Protocol read come back `identity_required` and
+ * the page never reaches a rendered state (Phase 75a / D-131).
  */
 async function seedConnection(
   page: import("@playwright/test").Page,
@@ -59,9 +58,9 @@ async function seedConnection(
     ([keys, base, tok]) => {
       window.localStorage.setItem(keys.baseURL, base);
       window.localStorage.setItem(keys.token, tok);
-      window.localStorage.setItem(keys.tenant, "console");
-      window.localStorage.setItem(keys.user, "operator");
-      window.localStorage.setItem(keys.session, "console-overview");
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
     },
     [STORAGE_KEYS, baseURL, token] as const,
   );
@@ -109,7 +108,6 @@ test.describe("Overview page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("overview");
@@ -143,7 +141,6 @@ test.describe("Overview page", () => {
     runtime,
     helpers,
   }) => {
-    test.skip(true, SEED_DEPENDENT);
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("overview");
