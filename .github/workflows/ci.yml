@@ -307,3 +307,22 @@ jobs:
         run: |
           docker logs harbor-minio || true
           docker rm -f harbor-minio || true
+
+  isolation:
+    name: cross-tenant isolation conformance harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      # Phase 76: the master cross-tenant + cross-session isolation
+      # gate. Runs the every-PR fast soak window (~3 s, 100 concurrent
+      # sessions) under -race. The master-plan-specified 30 s soak is
+      # opt-in via HARBOR_ISOLATION_SOAK=30s; the fast window catches a
+      # cross-scope leak with overwhelming probability while keeping CI
+      # fast (D-134). CGO_ENABLED is intentionally NOT set — `go test
+      # -race` needs the cgo race runtime (CGO_ENABLED=1, the default).
+      - name: Run the isolation conformance harness
+        run: go test -race -count=1 -timeout 240s -run 'TestE2E_Isolation' ./test/integration/...
