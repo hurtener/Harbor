@@ -27,6 +27,8 @@ export {
 	SessionsNamespace,
 	TopologyNamespace,
 	RunsNamespace,
+	RuntimeNamespace,
+	PauseNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';
@@ -65,6 +67,24 @@ export {
 	type EventAggregateResponse,
 	type TimeWindow
 } from './events.js';
+
+export type {
+	RuntimeCounters,
+	RuntimeHealth,
+	SubsystemHealth,
+	HealthStatus
+} from './posture.js';
+
+export {
+	DEFAULT_PAUSE_LIST_PAGE_SIZE,
+	MAX_PAUSE_LIST_PAGE_SIZE,
+	type PauseSnapshot,
+	type PauseSnapshotState,
+	type PauseArtifactRef,
+	type PauseFilter,
+	type PauseListRequest,
+	type PauseListResponse
+} from './pause.js';
 
 export {
 	DEFAULT_MEMORY_LIST_PAGE_SIZE,
