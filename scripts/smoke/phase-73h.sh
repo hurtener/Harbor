@@ -44,15 +44,21 @@ source "scripts/smoke/common.sh"
 # 1. live-server: tasks.list with kinds=["background"] returns 200.
 # ----------------------------------------------------------------------------
 #
-# The Phase 60 wire transport binds `tasks.list` as a POST against the
-# control surface; the query-shape lives in the JSON body. Until
-# Phase 73d lands the method registration, the endpoint will 404 → SKIP.
+# The Phase 73d stream transport binds `tasks.list` as
+# `POST /v1/tasks/list`; the query-shape (incl. the Phase 73h
+# `kinds`/`group_id`/`has_pending_approval` facets) lives in the JSON
+# body. Until Phase 73d lands the method registration, the endpoint
+# will 404 → SKIP.
 
-TASKS_LIST_URL="$(api_url /v1/protocol/tasks.list)"
+TASKS_LIST_URL="$(api_url /v1/tasks/list)"
 
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
-        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","scope":"read"},"filter":{"kinds":["background"],"limit":10}}'
+        # The wire-key is `kinds` (the plural []TaskKind slice — the A2
+        # audit fix); the Background Jobs queue-mode binding is the
+        # single-element `["background"]` set, never a `type=background`
+        # scalar.
+        body='{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"kinds":["background"]}}'
         status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -X POST \
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
@@ -87,7 +93,13 @@ fi
 # ----------------------------------------------------------------------------
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
-        body='{"identity":{"tenant":"phase73h-smoke","user":"phase73h-smoke","session":"phase73h-smoke","scope":"read"},"filter":{"group_id":"phase73h-smoke-nonexistent-group","limit":10}}'
+        body='{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"group_id":"phase73h-smoke-nonexistent-group"}}'
+        list_body=$(curl -s --max-time 5 \
+            -X POST \
+            -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "${body}" \
+            "${TASKS_LIST_URL}" || echo '{}')
         status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -X POST \
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
@@ -96,7 +108,12 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
             "${TASKS_LIST_URL}" || echo "000")
         case "${status}" in
             200)
-                ok 'phase 73h: tasks.list?group_id=<synthetic> returns 200 against live server'
+                rows_type=$(printf '%s' "${list_body}" | jq -r '.rows | type' 2>/dev/null || echo '')
+                if [[ "${rows_type}" == "array" ]]; then
+                    ok 'phase 73h: tasks.list?group_id=<synthetic> returns 200 with an empty rows array'
+                else
+                    fail "phase 73h: tasks.list?group_id rows shape wrong (type='${rows_type}')"
+                fi
                 ;;
             404|405|501)
                 skip "phase 73h: tasks.list?group_id query returned ${status} — Phase 73d upstream not yet shipped"
@@ -117,7 +134,7 @@ fi
 # 3. live-server: bulk control without `tasks.control` scope returns
 #    CodeScopeMismatch (the degradation the page's bulk toolbar relies on).
 # ----------------------------------------------------------------------------
-CANCEL_URL="$(api_url /v1/protocol/cancel)"
+CANCEL_URL="$(api_url /v1/control/cancel)"
 
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [[ -n "${HARBOR_DEV_TOKEN:-}" ]]; then
@@ -178,8 +195,12 @@ fi
 
 # ----------------------------------------------------------------------------
 # 5. static: Console route exists.
+#
+# CONVENTIONS.md §1 (D-121) is the binding cross-cutting authority: the
+# page routes under the `(console)` route group with NO `/console/` URL
+# prefix. The route file lives at `(console)/background-jobs/+page.svelte`.
 # ----------------------------------------------------------------------------
-ROUTE="web/console/src/routes/background-jobs/+page.svelte"
+ROUTE="web/console/src/routes/(console)/background-jobs/+page.svelte"
 if [[ -f "${ROUTE}" ]]; then
     ok "phase 73h: Console route ${ROUTE} exists"
 else
@@ -188,8 +209,12 @@ fi
 
 # ----------------------------------------------------------------------------
 # 6. static: orphan-detector module exists and exports the pure function.
+#
+# Pure Console-side logic lives under `lib/background-jobs/` (the
+# Live Runtime page's `lib/live-runtime/` precedent); page components
+# live under `components/background-jobs/` per CONVENTIONS.md §3.
 # ----------------------------------------------------------------------------
-DETECTOR="web/console/src/lib/pages/background-jobs/orphan-detector.ts"
+DETECTOR="web/console/src/lib/background-jobs/orphan-detector.ts"
 if [[ -f "${DETECTOR}" ]]; then
     if grep -qE "export[[:space:]]+function[[:space:]]+detectOrphans|export[[:space:]]+const[[:space:]]+detectOrphans" "${DETECTOR}"; then
         ok "phase 73h: orphan-detector module ${DETECTOR} exists + exports detectOrphans"

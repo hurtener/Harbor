@@ -8,6 +8,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## A
 
+**`AwaitTask` orphan detector** — Console-side `O(N)` cross-check that flags a background job whose `parent_task_id` is non-empty and absent from the same `tasks.list` snapshot's id set (Phase 73h). The detector is a pure function (`detectOrphans(rows): Set<TaskID>` at `web/console/src/lib/background-jobs/orphan-detector.ts`) — it adds no Protocol field and issues no Protocol call. It surfaces, at the UI, the §13 binding that `SpawnTask` + `AwaitTask` MUST emit in the same phase (Phase 47 / D-056 closed this for ReAct). D-128.
+
 **Algorithm-confusion attack** — a JWT CVE family (CVE-2015-9235 and similar) where an attacker takes a server's RSA / ECDSA public key (which is, by definition, public) and re-signs a JWT with `HS*` using the public-key bytes as the HMAC secret; a verifier that does not pin the algorithm calls `hmac.Verify(pubKeyBytes, token)` and incorrectly accepts. Phase 61's mitigation is parser-level: `jwt.WithValidMethods` configured with the asymmetric allowlist rejects HS\* (and `alg:none`) BEFORE the keyfunc runs, so the HS-signed token never reaches the verification step. `auth/security_test.go` pins the exact attack shape. D-079.
 
 **Asymmetric-algorithm allowlist** — Harbor's six accepted JWT signing algorithms — `RS256` / `RS384` / `RS512` / `ES256` / `ES384` / `ES512`. Encoded as `auth.AllowedAlgorithms` and enforced at the JWT parser level via `jwt.WithValidMethods`, so HS\* and `alg:none` are structurally rejected before any keyfunc runs. The closed list is what makes the algorithm-confusion CVE family impossible. CLAUDE.md §7 rule 1 + §13. D-079.
@@ -114,7 +116,7 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## B
 
-**Background Jobs page** — Console route at `/console/background-jobs` (Phase 73h). A focused queue projection of `tasks.list?type=background` with queue-shaped affordances: faceted filter chips, saved-filter chips, virtualised queue table with priority badge / progress mini-bar / parent-session deep-link / orphan badge, bulk-action toolbar (per-row invocations of the shipped Phase 54 `cancel` / `pause` / `resume` / `prioritize` verbs — no parallel bulk endpoint), and a per-job right-rail with Details / Progress / Logs / Pending approvals / Artifacts for this Job / Related Sessions tabs. The page is a runtime lens (RFC §7.1) — every row round-trips through `tasks.list`; the Console DB holds only saved-filter chips, column visibility, and bulk-select state per D-061. D-114.
+**Background Jobs page** — Console route at `/background-jobs` (served under the `(console)` route group with no `/console/` URL prefix — CONVENTIONS.md §1 / D-121; Phase 73h). A focused queue projection of `tasks.list` with `kinds=["background"]` (the plural `[]TaskKind` slice — the canonical 73d shape, never a `type=background` scalar) with queue-shaped affordances: faceted filter chips, saved-filter chips, virtualised queue table with priority badge / progress mini-bar / parent-session deep-link / orphan badge, bulk-action toolbar (per-row invocations of the shipped Phase 54 `cancel` / `pause` / `resume` / `prioritize` verbs — no parallel bulk endpoint), and a per-job right-rail with Details / Progress / Logs / Pending approvals / Artifacts for this Job / Related Sessions tabs. The page is a runtime lens (RFC §7.1) — every row round-trips through `tasks.list`; the Console DB holds only saved-filter chips, column visibility, and bulk-select state per D-061. D-128.
 
 **Brief** — a research artifact in `docs/research/NN-*.md`, distilled from predecessor source code and authoritative for context (not design). See `docs/research/INDEX.md`.
 
@@ -840,6 +842,8 @@ Additions to this set are RFC PRs.
 **`Subflow`** — Runtime primitive (Phase 14): `(nctx *NodeContext) CallSubflow(ctx, factory) (Envelope, error)`. Runs a child engine for one parent envelope, mirrors parent cancellation via a watcher goroutine, returns the first egress payload, then `Stop`s the child. RFC §6.1, brief 01 §4.
 
 ## T
+
+**`tasks.list kinds=["background"]` filter** — `TaskFilter.Kinds = []TaskKind{"background"}` (the canonical plural-slice facet from Phase 73d) — the queue-mode filter the Background Jobs page binds. An empty `Kinds` slice matches both kinds; the single-element `["background"]` set is the focused background-task queue projection. Never a `type=background` scalar. D-128.
 
 **`tool.approval_requested`** — Phase 31 canonical event type emitted when an `ApprovalGate.RunGuarded` call's `ApprovalPolicy` returned `Required=true`. Payload `approval.ToolApprovalRequestedPayload` (SafePayload) carries `(Tool, PauseToken, Reason, Tags, ArgsSummary)`. `ArgsSummary` is the audit-redactor's output; the ORIGINAL args stay in the gate's pending map and never reach the bus. The Console subscribes to this event to render an "Approve call to `<Tool>`?" prompt. Pairs with `pause.requested` from Phase 50 — observers can correlate via `PauseToken`. D-086, RFC §6.4 + §3.3.
 

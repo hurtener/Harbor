@@ -58,11 +58,38 @@ export interface TaskRow {
   tool_count: number;
   background_acknowledged: boolean;
   group_id?: string;
+  /**
+   * Phase 73h (D-128) — the planner-emitted numeric progress hint in
+   * [0,1]. Absent (`undefined`) when the planner emitted no progress —
+   * the Background Jobs page renders an indeterminate mini-bar rather
+   * than a 0% bar.
+   */
+  progress?: number;
+  /** Phase 73h (D-128) — parent task type + planner-emitted labels. */
+  tags?: string[];
+  /**
+   * Phase 73h (D-128) — the timestamp of the most recent activity
+   * (max of `updated_at` and any event on the run's stream). The
+   * `Stuck > 1h` saved-filter chip derives off this field.
+   */
+  last_activity_at: string;
+  /** Phase 73h (D-128) — mirrors `kind === 'background'`. */
+  is_background: boolean;
+  /**
+   * Phase 73h (D-128) — true when the run has ≥1 open HITL / tool
+   * approval gate. The `Has pending approval` facet filters on it.
+   */
+  has_pending_approval: boolean;
 }
 
 /** The server-enforced facet filter on `tasks.list`. */
 export interface TaskFilter {
   statuses?: TaskStatus[];
+  /**
+   * The task-kind facet — the plural `[]TaskKind` slice (the A2 audit
+   * fix). The Background Jobs queue-mode binding is the single-element
+   * `['background']` set; an empty / absent slice matches both kinds.
+   */
   kinds?: TaskKind[];
   parent_task_id?: string;
   identities?: TaskIdentity[];
@@ -71,6 +98,18 @@ export interface TaskFilter {
   error_classes?: string[];
   latency_above_ms?: number;
   search?: string;
+  /**
+   * Phase 73h (D-128) — drill into one `TaskGroup`. Restricts to tasks
+   * whose `group_id` equals this value; the Background Jobs per-job
+   * "Related Sessions" tab issues a `tasks.list` with this set.
+   */
+  group_id?: string;
+  /**
+   * Phase 73h (D-128) — the `Has pending approval` facet. `undefined`
+   * = no filter; `true` = only tasks with an open approval gate;
+   * `false` = only tasks with none.
+   */
+  has_pending_approval?: boolean;
 }
 
 /** The per-status counters the kanban renders at each column header. */

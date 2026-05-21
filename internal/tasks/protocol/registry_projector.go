@@ -114,20 +114,43 @@ func (p *RegistryProjector) ListTasks(ctx context.Context, id identity.Identity)
 	if err != nil {
 		return nil, fmt.Errorf("tasks/protocol: registry list: %w", err)
 	}
+	// Phase 73h (D-128): build a task → TaskGroup reverse index so the
+	// projected rows carry their `GroupID`. The Background Jobs page's
+	// per-job "Related Sessions" tab issues a `tasks.list?group_id=…`
+	// drill-in; the Service-layer filterMatches pass narrows on the
+	// `TaskRow.GroupID` this index populates. ListGroups is
+	// identity-scoped; a registry without group support returns an
+	// empty slice — the index is then empty and every row's GroupID is
+	// "" (the honest "not a group member" default), never a silent
+	// degradation of a known value.
+	groupOf := map[tasks.TaskID]tasks.TaskGroupID{}
+	groups, gerr := p.registry.ListGroups(ctx, id, nil)
+	if gerr != nil {
+		return nil, fmt.Errorf("tasks/protocol: registry list groups: %w", gerr)
+	}
+	for _, g := range groups {
+		for _, member := range g.Members {
+			groupOf[member] = g.ID
+		}
+	}
 	rows := make([]prototypes.TaskRow, 0, len(summaries))
 	for _, sum := range summaries {
-		task, gerr := p.registry.Get(ctx, sum.ID)
-		if gerr != nil {
+		task, terr := p.registry.Get(ctx, sum.ID)
+		if terr != nil {
 			// A task that vanished between List and Get (a concurrent
 			// terminal GC) is skipped, not fatal — the list is a
 			// best-effort snapshot. A genuine error other than
 			// not-found is propagated.
-			if errors.Is(gerr, tasks.ErrNotFound) {
+			if errors.Is(terr, tasks.ErrNotFound) {
 				continue
 			}
-			return nil, fmt.Errorf("tasks/protocol: registry get %q: %w", sum.ID, gerr)
+			return nil, fmt.Errorf("tasks/protocol: registry get %q: %w", sum.ID, terr)
 		}
-		rows = append(rows, projectRow(task))
+		row := projectRow(task)
+		if gid, ok := groupOf[task.ID]; ok {
+			row.GroupID = string(gid)
+		}
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
@@ -183,9 +206,10 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 func projectRow(t *tasks.Task) prototypes.TaskRow {
 	started := time.Unix(0, t.CreatedAt).UTC()
 	updated := time.Unix(0, t.UpdatedAt).UTC()
+	kind := projectKind(t.Kind)
 	row := prototypes.TaskRow{
 		ID:       string(t.ID),
-		Kind:     projectKind(t.Kind),
+		Kind:     kind,
 		Status:   projectStatus(t.Status),
 		Priority: t.Priority,
 		Identity: prototypes.IdentityScope{
@@ -199,6 +223,14 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		StartedAt:       started,
 		UpdatedAt:       updated,
 		DurationMS:      updated.Sub(started).Milliseconds(),
+		// Phase 73h (D-128): IsBackground mirrors Kind so a Console
+		// row-renderer (the Background Jobs queue) branches without
+		// re-comparing the enum. LastActivityAt defaults to UpdatedAt —
+		// the registry record carries no separate event timestamp; a
+		// future Enricher seam can advance it from the run's event
+		// stream without reshaping this projection.
+		IsBackground:   kind == prototypes.TaskKindBackground,
+		LastActivityAt: updated,
 	}
 	if t.ParentTaskID != nil {
 		row.ParentTaskID = string(*t.ParentTaskID)
