@@ -117,7 +117,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 73m| Console Settings page + `harbor console` subcommand | protocol+web/console+cmd | §5.3, §5.5, §6.15, §7 | 72d, 72f, 72g, 72h, 75 | 75%  | Shipped  |
 | 75a| Console e2e Playwright wave-end suite          | testing              | §7          | 75, 73a-73n           | n/a  | Shipped  |
 | 76 | Cross-tenant isolation conformance harness    | testing              | §4.3        | 07, 17, 23, 37, 20    | 95%  | Shipped  |
-| 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Pending  |
+| 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Shipped  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Pending  |
 | 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Pending  |
 | 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Pending  |
@@ -950,6 +950,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** All Runtime components pass; CI runs on every PR.
 **Tests.** The harness is the test.
 **Deps.** 10, 13, 50.
+**Shipped.** `test/integration/phase77_goroutine_leak_test.go` ships the table-driven `TestE2E_Phase77_GoroutineLeakConformance` — `leakCases` is a slice of `{name, exercise}` rows, one per long-lived Runtime component (`Engine`, inmem + durable `EventBus`, `sessions.Registry`, inprocess `TaskRegistry`). Each row constructs the real component with real drivers, runs 12 construct → exercise → teardown cycles, and asserts `runtime.NumGoroutine()` returns to baseline via a bounded eventually-poll (deadline + interval, never an instant snapshot — CLAUDE.md §17.4). A warm-up cycle precedes baseline capture; the suite is not `t.Parallel` (`NumGoroutine` is process-global). Passive registries with no background goroutines (`pauseresume.Coordinator`, steering `Registry`/`Inbox`/`RunLoop`) are deliberately not rows — they have no teardown seam to leak from; the Phase 50 dependency is satisfied by the pause primitive being exercised inside the Engine run lifecycle. A dedicated `leak-harness` CI job runs the suite under `-race` on every PR. All five V1 component rows pass on first run — no leaks found. See D-135.
 
 ### 78 — Chaos / fault injection harness
 
