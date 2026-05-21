@@ -102,7 +102,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 72f| Runtime posture surface (`runtime.*`/`metrics.snapshot`) | protocol  | §5.3, §6.15, §7 | 60, 61, 56            | 85%  | Shipped  |
 | 72g| `governance.posture` + `llm.posture`          | protocol             | §5.5, §6.15 | 36a, 36b, 64, 72f     | 85%  | Shipped  |
 | 72h| Console DB local schema + SvelteKit scaffold  | web/console          | §7          | 60                    | 85%  | Shipped  |
-| 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Pending  |
+| 73 | Console state inspection surface              | protocol             | §5.2, §7    | 60, 07, 17            | 85%  | Shipped* |
 | 73l| Console Artifacts page                        | web/console          | §5.2, §6.10, §7 | 73, 75            | 80%  | Shipped  |
 | 73i| Console Flows page (Protocol + UI)            | protocol+web/console | §5.2, §6.1, §7 | 73, 75, 26a        | 85%  | Shipped  |
 | 73g| Console Events page                           | web/console          | §5.2, §6.13, §7 | 72a, 73, 75       | 80%  | Shipped  |
@@ -148,6 +148,8 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |100 | Recipe loader (declarative YAML flows)        | runtime/flow/recipe  | §6.1, D-023 | 26a                   | n/a  | Post-V1  |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–100 + 83a–e (23 phases — ReAct prompt depth 83a–d, ReAct reasoning-channel decoupling 83e, Governance 91–96, Multimodal-output 97–99, Recipe loader 100). Total tracked: 100 + 26a + 36a + 36b + 83a–e + Phase 00 = 109 entries.
+
+`Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
 ---
 
@@ -830,6 +832,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 
 ### 73 — Console state inspection surface (RFC §5.2, §7)
 
+**Status.** `Shipped*` — **dissolved during Wave 13** (D-133). Phase 73 never landed as a standalone phase; its surface was decomposed across the Console page phases that consumed each slice. Shipped: `sessions.inspect` (Phase 73c), `tasks.get` (Phase 73d), `artifacts.list` / `artifacts.put` / `artifacts.get_ref` (Phase 73l, D-120). Deferred post-V1 (no V1 consumer — §13 no-primitive-without-consumer): `state.history`, `state.list_trajectories`, `state.load_planner_checkpoint`, `artifacts.get`, `artifacts.delete` — each lands additively with the first Console surface that consumes it.
 **Goal.** `sessions.inspect`, `tasks.get`, `state.history`, `state.list_trajectories`, `state.load_planner_checkpoint`, `artifacts.list`, `artifacts.get`, `artifacts.get_ref`, `artifacts.delete` — all scope-checked, redacted on emit.
 **Acceptance.** Each method enforces identity; redaction applied; pagination defined.
 **Tests.** Integration + scope mismatch.
