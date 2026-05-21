@@ -3172,3 +3172,30 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 **Findings I'm departing from.** None — this is a checkpoint audit-fix PR; it implements the punch list. The 72e plan's "conformance happy-path + malformed scenario in the same PR" line yielded to the §17.6 finding W9: the conformance matrix *entry* lands in lockstep, the *scenario bodies* defer to the Phase 80 conformance-Stack harness extension (the same architectural shape every other dedicated-surface method already takes in the suite).
 
 **Protocol additions.** None — no new Protocol method, error code, or wire type. `transports.WithSearch` is a mux-wiring option over the already-shipped `search.*` methods; `MetricsRegistry.Snapshot` is a Go-internal read API.
+
+---
+
+## D-133 — Phase 73 ("Console state inspection surface") was dissolved during Wave 13: consumed methods absorbed by the page phases, unconsumed methods deferred post-V1 per §13
+
+**Date:** 2026-05-21
+**Status:** Settled (shipping as the Wave 14 Stage-0 master-plan reconciliation)
+
+**Where it lives:** `docs/plans/README.md` (the Phase 73 status-table row + detail block).
+
+**Decision.** Phase 73 was scoped as a single "Console state inspection surface" phase bundling nine Protocol methods (`sessions.inspect`, `tasks.get`, `state.history`, `state.list_trajectories`, `state.load_planner_checkpoint`, `artifacts.list`, `artifacts.get`, `artifacts.get_ref`, `artifacts.delete`). It never landed as a standalone phase — there is no `phase-73.md` plan file and no `phase-73` PR. During Wave 13 the surface was **decomposed**: each Console page phase that needed a slice landed that slice *whole* rather than depending on a separate Phase 73 PR. This was the correct application of CLAUDE.md §13 "no primitive without its consumer" — the methods shipped exactly when, and only when, a page consumed them. The decomposition was already recorded piecemeal in the Phase 73c / 72-cluster decisions entries ("Phase 73 has not shipped `sessions.inspect`, so Phase 73c lands it whole"); this entry consolidates it and reconciles the stale master-plan row.
+
+**What shipped** (each absorbed by its consuming page phase, verified present in `internal/protocol/methods/methods.go`):
+
+- `sessions.inspect` — landed by Phase 73c (Console Sessions page).
+- `tasks.get` — landed by Phase 73d (Console Tasks page).
+- `artifacts.list`, `artifacts.put`, `artifacts.get_ref` — landed by Phase 73l (Console Artifacts page, D-120). Note `artifacts.put` was added by 73l and was not in the original Phase 73 list.
+
+**What did NOT ship, and why that is correct.** `state.history`, `state.list_trajectories`, `state.load_planner_checkpoint`, `artifacts.get`, and `artifacts.delete` have **no V1 Console consumer** — no Wave 13 page needed them. Per §13, a primitive without a consumer must not land. They are therefore **deferred post-V1**: each lands additively in the same wave as the first Console surface that consumes it (a trajectory-inspector page, an artifact-detail/delete affordance, etc.). The runtime-side data they would project (`StateStore` history, `trajectory` records, the artifact store) is all already shipped; only the Protocol projection waits for a consumer.
+
+**Reconciliation.** The `docs/plans/README.md` Phase 73 row flips from `Pending` to `Shipped*` with the asterisk resolved in the detail block: "dissolved — consumed methods absorbed by 73c/73d/73l; `state.*` + `artifacts.get`/`artifacts.delete` deferred post-V1 (no V1 consumer, §13)." This removes a stale `Pending` row that would otherwise read as an unshipped V1 phase blocking the V1 cut.
+
+**Why.** CLAUDE.md §4.2 rule 11: "Stale `Pending` rows for shipped phases are a drift signal." Wave 14 is the V1-completion wave; an honest master plan is a precondition for the Phase 82 V1 cut. Leaving row 73 `Pending` would either falsely block the cut or force a misleading "all V1 phases shipped" claim.
+
+**Findings I'm departing from.** None — this is a documentation reconciliation of an already-settled, already-executed decomposition. No code changes.
+
+**Protocol additions.** None.
