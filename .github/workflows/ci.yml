@@ -162,6 +162,29 @@ jobs:
             ./bin/harbor validate "$f"
           done
 
+  perf-regression:
+    name: perf-regression (benchmark gate)
+    runs-on: ubuntu-latest
+    # Phase 79 (D-136) — the performance-benchmark regression gate.
+    # Runs the test/benchmarks/ suite and fails the build when a
+    # benchmark regresses past 10% versus the committed baseline
+    # (docs/perf/baseline.txt), compared via `benchstat`. The gate
+    # tolerates shared-runner noise: `-count` gives benchstat a
+    # sample, and benchstat's confidence-interval `~` verdict (no
+    # statistically-significant change) is treated as a pass — so a
+    # noisy GitHub-hosted runner does not flake the job. `benchstat`
+    # is fetched via `go run` with a pinned version inside the
+    # script; it never enters the runtime binary's go.mod production
+    # require surface.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Run perf-regression gate
+        run: make bench-check
+
   state-postgres:
     name: state/postgres conformance (postgres:16)
     runs-on: ubuntu-latest
