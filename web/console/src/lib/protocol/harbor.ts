@@ -58,12 +58,16 @@ export type {
 	TopologyProjection
 } from './topology.js';
 
+// NOTE: `SubsystemHealth` / `RuntimeHealth` are NOT re-exported here from
+// `settings.js` — the barrel sources those two names from `posture.js`
+// below (the dedicated runtime-posture module, which also carries
+// `HealthStatus`). `settings.ts` keeps its own structurally-identical
+// copies for its internal page use; barrel consumers get the single
+// `posture.js` definition.
 export {
 	MOCK_MODE_BANNER,
 	type Capability,
 	type RuntimeInfo,
-	type SubsystemHealth,
-	type RuntimeHealth,
 	type SubsystemDriver,
 	type RuntimeDrivers,
 	type RateLimitView,
