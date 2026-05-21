@@ -162,7 +162,7 @@ test.describe("Console Agents page", () => {
     const cardCount = await page
       .locator("[data-testid='agent-card']")
       .count();
-    test.skip(cardCount === 0, "no agents registered in the dev runtime");
+    test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await firstCard.click();
     await page.waitForLoadState("networkidle");
@@ -186,7 +186,7 @@ test.describe("Console Agents page", () => {
     const cardCount = await page
       .locator("[data-testid='agent-card']")
       .count();
-    test.skip(cardCount === 0, "no agents registered in the dev runtime");
+    test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
     await page.waitForLoadState("networkidle");
@@ -224,7 +224,7 @@ test.describe("Console Agents page", () => {
     const cardCount = await page
       .locator("[data-testid='agent-card']")
       .count();
-    test.skip(cardCount === 0, "no agents registered in the dev runtime");
+    test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
     await page.waitForLoadState("networkidle");
@@ -273,7 +273,7 @@ test.describe("Console Agents page", () => {
     const cardCount = await page
       .locator("[data-testid='agent-card']")
       .count();
-    test.skip(cardCount === 0, "no agents registered in the dev runtime");
+    test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
     await page.waitForLoadState("networkidle");

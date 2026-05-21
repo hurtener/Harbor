@@ -68,13 +68,16 @@ jobs:
     name: frontend-e2e (Console Playwright)
     runs-on: ubuntu-latest
     # Phase 75 (D-115) — the Console e2e Playwright harness baseline.
-    # Runs after `go` so `make build` has produced `bin/harbor`, which the
-    # harness boots (`harbor console`, D-091 — NOT `harbor dev`). The whole
-    # job skips gracefully when `web/console/` is absent: the Stage-1
-    # SvelteKit-scaffold phase (72h) may land in a parallel agent in the same
-    # wave, so this phase's CI must stay green before the scaffold exists
-    # (the directory-missing → SKIP analogue of the §4.2 "404/405/501 → SKIP"
-    # smoke convention).
+    # `needs: [go]` only ORDERS this job after `go`; it does NOT reuse the
+    # `go` job's `make build`. Per the D-131 console-build fix this job runs
+    # its OWN build sequence — `make console-build` (stage the SvelteKit
+    # bundle into `cmd/harbor/consoledist/`) THEN `make build` (the binary
+    # embeds the staged bundle via `embed.FS`). The order is load-bearing:
+    # `make build` before `make console-build` would embed an empty
+    # consoledist/ and `harbor console` would never hydrate. The harness
+    # boots `harbor console` (D-091 — NOT `harbor dev`). The whole job skips
+    # gracefully when `web/console/` is absent (the directory-missing → SKIP
+    # analogue of the §4.2 "404/405/501 → SKIP" smoke convention).
     needs: [go]
     steps:
       - uses: actions/checkout@v4

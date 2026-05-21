@@ -54,6 +54,32 @@ assert_grep_absent() {
     fi
 }
 
+# assert_grep_present <pattern> <path> <description>
+# Asserts an extended-regex pattern IS found in path. Used by
+# static-guard smokes to pin a load-bearing declaration in a source file.
+assert_grep_present() {
+    local pattern="$1" target="$2" desc="$3"
+    if grep -qE -- "$pattern" "$target" 2>/dev/null; then
+        ok "${desc}"
+    else
+        fail "${desc} — pattern '${pattern}' absent from ${target}"
+    fi
+}
+
+# assert_grep_count <pattern> <path> <expected> <description>
+# Asserts an extended-regex pattern appears exactly <expected> times in
+# path. Used by static-guard smokes that pin a stable count (e.g. the
+# canonical Protocol-error-code set).
+assert_grep_count() {
+    local pattern="$1" target="$2" expected="$3" desc="$4" actual
+    actual=$(grep -cE -- "$pattern" "$target" 2>/dev/null) || actual=0
+    if [ "${actual}" -eq "${expected}" ]; then
+        ok "${desc} (count=${actual})"
+    else
+        fail "${desc} — found ${actual} matches of '${pattern}' in ${target}, want ${expected}"
+    fi
+}
+
 # assert_status <expected> <url> <description>
 # Used once the dev server runs (Phase 01+).
 assert_status() {

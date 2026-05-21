@@ -12,7 +12,7 @@
   // `EventsSubscription` wrapper on `HarborClient` (CONVENTIONS.md §6).
   //
   // Svelte 5 runes mode (D-092); design tokens only.
-  import type { Event } from '$lib/protocol/harbor.js';
+  import type { Event } from '$lib/protocol/events.js';
   import TraceToggle from './trace-toggle.svelte';
 
   let {

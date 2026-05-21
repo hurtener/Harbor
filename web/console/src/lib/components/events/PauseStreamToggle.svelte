@@ -25,7 +25,7 @@
   type="button"
   class="pause-toggle"
   class:paused
-  data-testid="pause-stream-toggle"
+  data-testid="events-pause-stream-toggle"
   aria-pressed={paused}
   onclick={ontoggle}
 >

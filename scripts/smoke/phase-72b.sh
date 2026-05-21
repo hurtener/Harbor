@@ -19,6 +19,13 @@
 # assertions run via httptest in the integration suite — the live
 # `harbor dev` boot path that mounts the transport mux is exercised
 # by the Phase 64 smoke.
+#
+# Shape: this is a static-guard smoke. It routes every check through
+# the `scripts/smoke/common.sh` helper vocabulary — `assert_grep_present`
+# for load-bearing declarations, `assert_grep_absent` for forbidden
+# imports, `assert_grep_count` for the stable canonical-code count, `ok`
+# / `fail` for the test-suite gates — exactly like the other Wave 13
+# smokes (D-132 / Wave 13 NIT cleanup).
 
 set -euo pipefail
 
@@ -33,12 +40,9 @@ source "scripts/smoke/common.sh"
 # JSON tags + `omitempty`. The Phase 72b plan + Brief 11 §PG-5 pin
 # the verbatim field names.
 TYPES_FILE="internal/protocol/types/control.go"
-for field in 'Actor \*IdentityScope' 'Requester \*IdentityScope' 'Impersonating \*IdentityScope'; do
-    if grep -qE "^[[:space:]]+${field}" "${TYPES_FILE}" 2>/dev/null; then
-        ok "phase 72b: ${TYPES_FILE} declares ${field}"
-    else
-        fail "phase 72b: ${TYPES_FILE} missing the ${field} field"
-    fi
+for field in 'Actor' 'Requester' 'Impersonating'; do
+    assert_grep_present "^[[:space:]]+${field} \*IdentityScope" "${TYPES_FILE}" \
+        "phase 72b: ${TYPES_FILE} declares ${field} *IdentityScope"
 done
 
 # Tag presence: `actor,omitempty` / `requester,omitempty` /
@@ -46,12 +50,9 @@ done
 # field as `null` on the wire and break Brief 12's two-surface model
 # (a third-party Console would see `actor: null` instead of an
 # absent field).
-for tag in '"actor,omitempty"' '"requester,omitempty"' '"impersonating,omitempty"'; do
-    if grep -qF "${tag}" "${TYPES_FILE}" 2>/dev/null; then
-        ok "phase 72b: ${TYPES_FILE} carries JSON tag ${tag}"
-    else
-        fail "phase 72b: ${TYPES_FILE} missing JSON tag ${tag} — wire shape would leak null on the wire"
-    fi
+for tag in 'actor' 'requester' 'impersonating'; do
+    assert_grep_present "\"${tag},omitempty\"" "${TYPES_FILE}" \
+        "phase 72b: ${TYPES_FILE} carries JSON tag \"${tag},omitempty\""
 done
 
 # 2. The audit payload type lives in internal/protocol/auth alongside
@@ -59,42 +60,24 @@ done
 # events.AdminScopeUsedPayload covers the Phase 05 admin-filter emit
 # site; the Phase 72b emit needs the richer shape). D-107.
 AUTH_EVENTS="internal/protocol/auth/events.go"
-if grep -q 'type AdminScopeUsedPayload struct' "${AUTH_EVENTS}" 2>/dev/null; then
-    ok "phase 72b: ${AUTH_EVENTS} declares AdminScopeUsedPayload (typed audit payload for impersonation emit)"
-else
-    fail "phase 72b: ${AUTH_EVENTS} missing AdminScopeUsedPayload type (D-107)"
-fi
-if grep -q 'AdminImpersonationReason\s*=\s*"impersonation"' "${AUTH_EVENTS}" 2>/dev/null; then
-    ok "phase 72b: ${AUTH_EVENTS} declares the AdminImpersonationReason sentinel constant"
-else
-    fail "phase 72b: ${AUTH_EVENTS} missing AdminImpersonationReason sentinel (the stable wire shape a Console branches on)"
-fi
-if grep -q 'type IdentityTriple struct' "${AUTH_EVENTS}" 2>/dev/null; then
-    ok "phase 72b: ${AUTH_EVENTS} declares the flat IdentityTriple audit shape"
-else
-    fail "phase 72b: ${AUTH_EVENTS} missing IdentityTriple flat audit shape"
-fi
+assert_grep_present 'type AdminScopeUsedPayload struct' "${AUTH_EVENTS}" \
+    "phase 72b: ${AUTH_EVENTS} declares AdminScopeUsedPayload (typed audit payload for impersonation emit, D-107)"
+assert_grep_present 'AdminImpersonationReason[[:space:]]*=[[:space:]]*"impersonation"' "${AUTH_EVENTS}" \
+    "phase 72b: ${AUTH_EVENTS} declares the AdminImpersonationReason sentinel constant"
+assert_grep_present 'type IdentityTriple struct' "${AUTH_EVENTS}" \
+    "phase 72b: ${AUTH_EVENTS} declares the flat IdentityTriple audit shape"
 
 # 3. The impersonation gate is on the control transport. A non-admin
 # request with `Impersonating` set MUST be rejected at the transport
 # edge BEFORE Dispatch runs (defence in depth at the transport edge,
 # mirroring Phase 61 D-079 §4).
 CONTROL_FILE="internal/protocol/transports/control/control.go"
-if grep -q 'func (h \*Handler) assertImpersonationShape' "${CONTROL_FILE}" 2>/dev/null; then
-    ok "phase 72b: ${CONTROL_FILE} declares the assertImpersonationShape gate"
-else
-    fail "phase 72b: ${CONTROL_FILE} missing assertImpersonationShape — the transport-edge gate is the load-bearing accountability surface"
-fi
-if grep -q 'func (h \*Handler) emitAdminScopeUsed' "${CONTROL_FILE}" 2>/dev/null; then
-    ok "phase 72b: ${CONTROL_FILE} declares emitAdminScopeUsed (the audit emit)"
-else
-    fail "phase 72b: ${CONTROL_FILE} missing emitAdminScopeUsed — the audit emit is mandatory on accepted impersonation"
-fi
-if grep -q 'auth.HasScope(r.Context(), auth.ScopeAdmin)' "${CONTROL_FILE}" 2>/dev/null; then
-    ok "phase 72b: ${CONTROL_FILE} gates impersonation on auth.ScopeAdmin (the closed scope set from D-079)"
-else
-    fail "phase 72b: ${CONTROL_FILE} missing auth.ScopeAdmin gate — D-079 closed scope set requires admin"
-fi
+assert_grep_present 'func \(h \*Handler\) assertImpersonationShape' "${CONTROL_FILE}" \
+    "phase 72b: ${CONTROL_FILE} declares the assertImpersonationShape transport-edge gate"
+assert_grep_present 'func \(h \*Handler\) emitAdminScopeUsed' "${CONTROL_FILE}" \
+    "phase 72b: ${CONTROL_FILE} declares emitAdminScopeUsed (the mandatory audit emit)"
+assert_grep_present 'auth\.HasScope\(r\.Context\(\), auth\.ScopeAdmin\)' "${CONTROL_FILE}" \
+    "phase 72b: ${CONTROL_FILE} gates impersonation on auth.ScopeAdmin (the closed scope set from D-079)"
 
 # 4. No new Protocol error code minted by Phase 72b (CLAUDE.md §8 +
 # §13). The impersonation gate reuses CodeScopeMismatch /
@@ -109,22 +92,17 @@ fi
 # CLAUDE.md §17.6 ("fix what the integration test finds — no matter
 # where the bug lives") as the canonical set grows; the load-bearing
 # 72b assertion is that NO code was minted by 72b, which still holds.
-NEW_CODES=$(grep -cE 'Code[A-Z][A-Za-z]+\s*Code\s*=' internal/protocol/errors/errors.go 2>/dev/null || echo 0)
-if [ "${NEW_CODES}" -eq 11 ]; then
-    ok "phase 72b: internal/protocol/errors carries the canonical 11-code set (8 Phase 56 + Phase 72 + 2 Phase 73l) — no new code minted by 72b"
-else
-    fail "phase 72b: internal/protocol/errors has ${NEW_CODES} Code constants, want 11 — a new code would be a Protocol-surface change requiring an RFC PR"
-fi
+assert_grep_count 'Code[A-Z][A-Za-z]+[[:space:]]+Code[[:space:]]*=' \
+    internal/protocol/errors/errors.go 11 \
+    "phase 72b: internal/protocol/errors carries the canonical 11-code set (8 Phase 56 + Phase 72 + 2 Phase 73l) — no new code minted by 72b"
 
 # 5. No Console import from the impersonation surface (CLAUDE.md
 # §13 — the Runtime never imports Console code). Defence in depth
 # against accidental coupling during refactor.
 for src in "${TYPES_FILE}" "${AUTH_EVENTS}" "${CONTROL_FILE}"; do
-    if grep -qn '"github.com/hurtener/Harbor/web/console' "${src}" 2>/dev/null; then
-        fail "phase 72b: ${src} imports the Console — the Runtime never imports Console code (CLAUDE.md §13)"
-    fi
+    assert_grep_absent 'github.com/hurtener/Harbor/web/console' "${src}" \
+        "phase 72b: ${src} does not import the Console (Runtime/Console boundary preserved — CLAUDE.md §13)"
 done
-ok "phase 72b: impersonation surface does not import the Console (Runtime/Console boundary preserved — CLAUDE.md §13)"
 
 # 6. Unit tests in the touched packages pass under -race.
 for pkg in internal/protocol/types internal/protocol/auth internal/protocol/transports/control; do

@@ -829,7 +829,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			Clock:    time.Now,
 			BootedAt: time.Now(),
 			Health: func(_ context.Context) []types.SubsystemHealth {
-				return devstackPostureHealth(cfg)
+				return runtimeposture.HealthFromConfig(cfg)
 			},
 			// §17.6 F3: Counters + Metrics wired to live runtime state —
 			// the task registry's per-identity running/background counts
@@ -840,7 +840,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// value. This tracks the production boot field-for-field.
 			Counters: runtimeposture.CountersProvider(taskReg, nil),
 			Drivers: func() []types.SubsystemDriver {
-				return devstackPostureDrivers(cfg)
+				return runtimeposture.DriversFromConfig(cfg)
 			},
 			Metrics:     runtimeposture.MetricsProvider(metricsReg, slog.Default()),
 			Governance:  governance.NewPostureProvider(governanceConfigForDevstack(cfg.Governance)),
@@ -1273,43 +1273,6 @@ func governanceConfigForDevstack(in config.GovernanceConfig) governance.Config {
 		DefaultTier:   in.DefaultTier,
 		IdentityTiers: tiers,
 	}
-}
-
-// devstackPostureHealth / devstackPostureDrivers build the Phase 72f
-// `runtime.health` / `runtime.drivers` seams for the devstack posture
-// surface. They mirror `cmd/harbor/cmd_dev.go`'s `devPostureHealth` /
-// `devPostureDrivers` — duplicated because those helpers are unexported
-// and the §17.6 source-of-truth invariant means devstack MUST track
-// production field-for-field.
-func devstackPostureHealth(cfg *config.Config) []types.SubsystemHealth {
-	subs := []string{"state", "events"}
-	if cfg.Artifacts.Driver != "" {
-		subs = append(subs, "artifacts")
-	}
-	if cfg.Memory.Driver != "" {
-		subs = append(subs, "memory")
-	}
-	out := make([]types.SubsystemHealth, 0, len(subs))
-	for _, s := range subs {
-		out = append(out, types.SubsystemHealth{Subsystem: s, Status: types.HealthStatusReady})
-	}
-	return out
-}
-
-func devstackPostureDrivers(cfg *config.Config) []types.SubsystemDriver {
-	out := []types.SubsystemDriver{
-		{Subsystem: "state", Driver: cfg.State.Driver},
-	}
-	if cfg.Artifacts.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "artifacts", Driver: cfg.Artifacts.Driver})
-	}
-	if cfg.Memory.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "memory", Driver: cfg.Memory.Driver})
-	}
-	if cfg.Events.Driver != "" {
-		out = append(out, types.SubsystemDriver{Subsystem: "events", Driver: cfg.Events.Driver})
-	}
-	return out
 }
 
 // copyModelProfiles converts the config-package map shape into the

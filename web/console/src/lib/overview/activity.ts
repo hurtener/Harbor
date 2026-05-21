@@ -19,7 +19,7 @@
  * (the runtime still streams it — the feed simply does not render it).
  */
 
-import type { Event } from '$lib/protocol/harbor.js';
+import type { Event } from '$lib/protocol/events.js';
 
 /** The closed set of activity-row severities — maps over the StatusChip kinds. */
 export type ActivitySeverity = 'success' | 'warning' | 'danger' | 'accent' | 'neutral';

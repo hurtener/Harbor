@@ -18,8 +18,8 @@
  * dedicated `events.crosstenant` scope.
  */
 
-import type { EventFilter, TimeWindow } from '$lib/protocol/harbor.js';
-import { WINDOW_SPEC } from '$lib/protocol/harbor.js';
+import type { EventFilter, TimeWindow } from '$lib/protocol/events.js';
+import { WINDOW_SPEC } from '$lib/protocol/events.js';
 
 /**
  * The Console-local faceted-filter state the page's chips drive.

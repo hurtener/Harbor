@@ -159,9 +159,10 @@ type NamedCounter struct {
 	// Value is the counter's current value.
 	Value float64 `json:"value"`
 	// Labels carries the metric's low-cardinality label set. A
-	// high-cardinality label (run_id / trace_id) never appears here —
-	// the Phase 56 cardinality firewall gates it on the SDK side and
-	// the projection re-checks at the wire boundary.
+	// high-cardinality label (run_id / trace_id / span_id) never appears
+	// here — the Phase 56 cardinality firewall gates it on the SDK side,
+	// and MetricsSnapshot.HasHighCardinalityLabel is the wire-boundary
+	// cardinalitylint guard (exercised by the posture type tests).
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
@@ -212,4 +213,45 @@ type MetricsSnapshot struct {
 	Gauges []NamedGauge `json:"gauges"`
 	// SnapshotAt is the unix-millis timestamp the metrics were read.
 	SnapshotAt int64 `json:"snapshot_at"`
+}
+
+// HighCardinalityLabelKeys is the closed set of label keys that must
+// NEVER appear on a metric crossing the Protocol boundary — they are
+// unbounded per-run identifiers and would explode the metric series
+// cardinality. The Phase 56 telemetry cardinality firewall gates these
+// on the SDK side; this set lets the wire boundary re-check (D-132 /
+// Wave 13 NIT cleanup, mirroring the Phase 56 label-lint pattern).
+var HighCardinalityLabelKeys = []string{"run_id", "trace_id", "span_id"}
+
+// HasHighCardinalityLabel reports the first (metric-name, label-key)
+// pair in the snapshot that carries a forbidden high-cardinality label
+// key, or empty strings + false when the snapshot is clean. It is the
+// `cardinalitylint`-style guard for the metrics.snapshot wire boundary:
+// a projection that lets a `run_id` / `trace_id` / `span_id` label reach
+// the wire is a cardinality-explosion bug.
+func (m MetricsSnapshot) HasHighCardinalityLabel() (metric, label string, found bool) {
+	check := func(name string, labels map[string]string) (string, string, bool) {
+		for _, forbidden := range HighCardinalityLabelKeys {
+			if _, ok := labels[forbidden]; ok {
+				return name, forbidden, true
+			}
+		}
+		return "", "", false
+	}
+	for _, c := range m.Counters {
+		if mn, lk, ok := check(c.Name, c.Labels); ok {
+			return mn, lk, true
+		}
+	}
+	for _, h := range m.Histograms {
+		if mn, lk, ok := check(h.Name, h.Labels); ok {
+			return mn, lk, true
+		}
+	}
+	for _, g := range m.Gauges {
+		if mn, lk, ok := check(g.Name, g.Labels); ok {
+			return mn, lk, true
+		}
+	}
+	return "", "", false
 }

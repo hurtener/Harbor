@@ -164,7 +164,7 @@ test.describe("Console Tools page", () => {
     const rowCount = await page
       .locator("[data-testid='tools-catalog-row']")
       .count();
-    test.skip(rowCount === 0, "no tools registered in the runtime fixture");
+    test.skip(rowCount === 0, "no tools registered in the runtime fixture (seeding tracked in issue #178)");
 
     await firstRow.click();
     await expect(
@@ -192,7 +192,7 @@ test.describe("Console Tools page", () => {
     const rowCount = await page
       .locator("[data-testid='tools-catalog-row']")
       .count();
-    test.skip(rowCount === 0, "no tools registered in the runtime fixture");
+    test.skip(rowCount === 0, "no tools registered in the runtime fixture (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='tools-catalog-row']").first().click();
     await page

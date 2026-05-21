@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { deepLink, projectActivity, relativeTime } from '../activity.js';
-import type { Event } from '../../protocol/harbor.js';
+import type { Event } from '../../protocol/events.js';
 
 function ev(partial: Partial<Event> & { type: string; sequence: number }): Event {
 	return {

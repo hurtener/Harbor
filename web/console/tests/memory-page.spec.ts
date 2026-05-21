@@ -163,7 +163,7 @@ test.describe("Console Memory page", () => {
       .locator("table.data-table tbody tr.data-row td.select-col input")
       .first();
     if ((await firstCheckbox.count()) === 0) {
-      test.skip(true, "no seeded memory rows to select");
+      test.skip(true, "no seeded memory rows to select (runtime-fixture seeding tracked in issue #178)");
       return;
     }
     await firstCheckbox.check();

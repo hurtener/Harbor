@@ -39,6 +39,61 @@ None.
 - Per-tool cost dashboards. Deeper dashboards deferred to post-V1 cost subsystem expansion.
 - Bespoke per-MCP-server tool renderers. Forbidden per Brief 11 §PG-3.
 
+## Console consistency
+
+This is a Console page phase. It is **binding** on the shared Console
+design-system foundation defined in `docs/design/console/CONVENTIONS.md`
+(D-121 in `docs/decisions.md`). `CONVENTIONS.md` is the cross-cutting
+authority for every Console page; a page PR that diverges from a convention
+below is **rejected on sight**. The Tools page is a catalog surface with a
+selected-tool detail rail; it mounts inside the shared app shell and clears
+the §5 depth bar like every other page.
+
+The page MUST:
+
+- **Route under `(console)/`.** The page lives at
+  `web/console/src/routes/(console)/tools/` and is served at `/tools` with
+  **no `/console/` URL prefix** (the `(console)` route group is a
+  layout-grouping device and does not appear in the URL). Detail views live at
+  `(console)/tools/[id]/` and are served at `/tools/<id>`. All inter-page
+  links use the unprefixed form; a link to `/console/<anything>` is a bug.
+- **Render inside the shared app shell.** The page renders as a child of
+  `(console)/+layout.svelte` — the single app shell carrying the sidebar,
+  breadcrumb, identity/connection indicator, and footer. It never ships a
+  standalone layout.
+- **Use the shared `components/ui/` inventory.** It composes the cross-page
+  primitives in `web/console/src/lib/components/ui/` — `PageHeader`,
+  `FilterBar`, `DataTable`, `DetailRail`/`RailCard`, `BulkActionBar`,
+  `SavedViewChips`, `Pagination`, `StatusChip`, `ConnectionFooter`,
+  `PageState`. It **never forks a primitive that already exists**;
+  page-specific components go in `components/tools/`.
+- **Route all async state through the four-state `<PageState>`.** Every async
+  surface flows through `<PageState>`'s four mutually-exclusive states —
+  Disconnected / Loading / Error / Empty. The Error state ships a working
+  **Retry** that re-invokes the loader and suppresses any stale primary view;
+  **Disconnected** ("no Runtime attached") is detected via `connection.ts`
+  returning `null` and is **never conflated with Error**.
+- **Clear the §5 depth bar.** The page is not "done" until it has all of:
+  a `PageHeader`; a `FilterBar`; a primary `DataTable` or canvas; a
+  `DetailRail` or a tabbed detail route; Console-DB-backed `SavedViewChips`;
+  real `Pagination` (page / size / total, prev / next — not a fake "load
+  more"); a `ConnectionFooter`; and the full four-state `PageState`.
+- **Talk to the Runtime only through `HarborClient` + `connection.ts`.** All
+  Protocol calls go through the single typed `HarborClient` (adding a
+  namespace, never a new top-level client); the connection resolves through
+  `web/console/src/lib/connection.ts`. **No `fetch` in `.svelte` files, no
+  direct `localStorage` access, no hand-rolled per-page client.**
+- **Introduce no raw token literals.** No raw color / spacing / type-scale
+  literals in `.svelte` files — design tokens from `tokens.css` only
+  (Stylelint enforces this; `npm run lint` fails CI on a violation).
+- **Ship no stubbed action presented as done.** Every action either invokes
+  the real Protocol method or renders **disabled-with-tooltip** explaining
+  why. A button that fakes success with a feedback string is a §13-class
+  silent-degradation violation.
+
+See `docs/design/console/CONVENTIONS.md` §9 for the per-phase callout
+contract and D-121 for the rationale.
+
 ## Acceptance criteria
 
 - [ ] `internal/protocol/methods/methods.go` declares `tools.list`, `tools.get`, `tools.describe`, `tools.metrics`, `tools.content_stats`, `tools.set_approval_policy`, `tools.revoke_oauth`.
