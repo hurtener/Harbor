@@ -54,7 +54,7 @@ func translateRequest(provider bfschemas.ModelProvider, req llm.CompleteRequest)
 	if err != nil {
 		return nil, fmt.Errorf("translate messages: %w", err)
 	}
-	params, err := translateParams(req)
+	params, err := translateParams(provider, req)
 	if err != nil {
 		return nil, fmt.Errorf("translate params: %w", err)
 	}
@@ -324,7 +324,14 @@ func stripMIMEPrefix(mime string) string {
 // optional sampler fields + ResponseFormat + ReasoningEffort. Returns
 // nil when no parameters are set (lets bifrost use its provider
 // defaults).
-func translateParams(req llm.CompleteRequest) (*bfschemas.ChatParameters, error) {
+//
+// `provider` is consulted for the Anthropic reasoning-budget floor:
+// Anthropic's API requires `reasoning.max_tokens >= 1024` and rejects
+// lower values. Harbor maps the effort enum to a token budget for the
+// Anthropic provider and fails LOUDLY with [ErrReasoningBudgetTooLow]
+// when the resulting budget is below the floor — never silently
+// clamping (brief 13 §2.6, CLAUDE.md §5 fail-loudly).
+func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) (*bfschemas.ChatParameters, error) {
 	params := &bfschemas.ChatParameters{}
 	used := false
 
@@ -352,6 +359,20 @@ func translateParams(req llm.CompleteRequest) (*bfschemas.ChatParameters, error)
 			params.Reasoning.Enabled = &off
 		} else {
 			params.Reasoning.Effort = &eff
+			// Anthropic requires an explicit reasoning.max_tokens that
+			// meets a 1024-token floor. Map the effort enum to a
+			// budget and validate it BEFORE the request leaves the
+			// process. A budget below the floor fails loud rather than
+			// silently clamping.
+			if provider == bfschemas.Anthropic {
+				budget := anthropicReasoningBudget(req.ReasoningEffort)
+				if budget < anthropicReasoningMinTokens {
+					return nil, fmt.Errorf(
+						"%w: provider=anthropic effort=%q maps to %d tokens, floor is %d",
+						ErrReasoningBudgetTooLow, req.ReasoningEffort, budget, anthropicReasoningMinTokens)
+				}
+				params.Reasoning.MaxTokens = &budget
+			}
 		}
 		used = true
 	}
@@ -430,15 +451,35 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 
 // translateResponse builds Harbor's `llm.CompleteResponse` from
 // bifrost's non-streaming response. The assistant message's text
-// content goes into `Content`; usage and cost flow through.
+// content goes into `Content`; the message's normalised
+// `ReasoningDetails` go into `Reasoning` (Phase 83e — closes the
+// unary-path reasoning-capture gap); usage and cost flow through.
 func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse {
 	out := llm.CompleteResponse{}
 	if resp == nil {
 		return out
 	}
 	out.Content = extractContent(resp)
+	out.Reasoning = extractReasoning(resp)
 	out.Usage, out.Cost = extractUsageAndCost(resp)
 	return out
+}
+
+// extractReasoning pulls the normalised reasoning trace from the first
+// non-streaming choice's assistant message. Bifrost populates
+// `reasoning_details[]` on the message for every reasoning-capable
+// provider, including the native Gemini path where the per-delta
+// `delta.Reasoning` field is nil (brief 13 §2.6). Empty when the
+// provider surfaced no reasoning.
+func extractReasoning(resp *bfschemas.BifrostChatResponse) string {
+	if resp == nil || len(resp.Choices) == 0 {
+		return ""
+	}
+	choice := resp.Choices[0]
+	if choice.ChatNonStreamResponseChoice == nil {
+		return ""
+	}
+	return reasoningFromMessage(choice.ChatNonStreamResponseChoice.Message)
 }
 
 // extractContent pulls the assistant-message text from the first

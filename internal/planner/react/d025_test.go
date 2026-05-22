@@ -26,7 +26,7 @@ func (s *sharedClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm
 	// Emit a JSON `_finish` envelope whose payload is the run's
 	// RunID — this lets the test's per-goroutine assertion confirm
 	// each goroutine's Decision carries its OWN RunID (no bleed).
-	content := fmt.Sprintf(`{"tool":"_finish","args":{"answer":%q},"reasoning":"d025"}`, id.RunID)
+	content := fmt.Sprintf(`{"tool":"_finish","args":{"answer":%q}}`, id.RunID)
 	return llm.CompleteResponse{Content: content}, nil
 }
 

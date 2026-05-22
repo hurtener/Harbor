@@ -97,9 +97,8 @@ func TestE2E_Deterministic_SpawnAwaitResolveFinish(t *testing.T) {
 				"status":  string(members[0].Status),
 			})
 			return planner.CallTool{
-				Tool:      "use_result",
-				Args:      args,
-				Reasoning: "deterministic: resolved group via WakePoll",
+				Tool: "use_result",
+				Args: args,
 			}, nil
 		},
 	}

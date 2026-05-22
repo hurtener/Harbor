@@ -166,19 +166,21 @@ func TestRepairLoop_ConcurrentReuse_D025(t *testing.T) {
 				}
 			}
 
-			switch d := dec.(type) {
+			switch d := dec.Decision.(type) {
 			case planner.CallTool:
-				// Reasoning carries the per-call RunID — confirms
-				// the success-path response made it back.
-				if d.Reasoning != runID {
+				// RunResult.Reasoning carries the per-call RunID —
+				// confirms the success-path response (and its captured
+				// reasoning channel) made it back to THIS goroutine.
+				if dec.Reasoning != runID {
 					ctxBleedFails.Add(1)
 				}
 			case planner.CallParallel:
-				// First branch carries the per-call RunID — confirms
-				// the success-path response made it back.
-				if len(d.Branches) == 0 || d.Branches[0].Reasoning != runID {
+				// RunResult.Reasoning carries the per-call RunID for
+				// the multi-action salvage path too.
+				if dec.Reasoning != runID {
 					ctxBleedFails.Add(1)
 				}
+				_ = d
 			case planner.Finish:
 				// Graceful-failure path. The metadata MUST carry the
 				// followup signal AND the emit MUST have fired.
@@ -237,25 +239,27 @@ func TestRepairLoop_ConcurrentReuse_D025(t *testing.T) {
 //   - i%4 == 2: multi-action salvage — array of two valid envelopes.
 //   - i%4 == 3: graceful-failure path — all junk, loop must Finish{NoPath}.
 //
-// Each success envelope carries `runID` in its reasoning field so the
-// per-call identity assertion can verify no context bleed.
+// Each success response carries `runID` in its `Reasoning` field so
+// the per-call identity assertion can verify no context bleed —
+// Phase 83e routes captured reasoning through `CompleteResponse.Reasoning`,
+// not the narrowed `{tool, args}` action JSON.
 func buildPerGoroutineResponses(i int, runID string) []llm.CompleteResponse {
 	switch i % 4 {
 	case 0:
 		return []llm.CompleteResponse{
-			{Content: fmt.Sprintf(`{"tool":"x","args":{},"reasoning":"%s"}`, runID)},
+			{Content: `{"tool":"x","args":{}}`, Reasoning: runID},
 		}
 	case 1:
 		return []llm.CompleteResponse{
 			{Content: `junk`},
-			{Content: fmt.Sprintf(`{"tool":"x","args":{},"reasoning":"%s"}`, runID)},
+			{Content: `{"tool":"x","args":{}}`, Reasoning: runID},
 		}
 	case 2:
-		// Multi-action salvage produces CallParallel — Reasoning
-		// lives on the FIRST branch only (per envelope). Round-trip
-		// it via the first branch.
+		// Multi-action salvage produces CallParallel. The captured
+		// reasoning rides on the final successful response and is
+		// surfaced via RunResult.Reasoning.
 		return []llm.CompleteResponse{
-			{Content: fmt.Sprintf(`[{"tool":"a","args":{},"reasoning":"%s"}, {"tool":"b","args":{}}]`, runID)},
+			{Content: `[{"tool":"a","args":{}}, {"tool":"b","args":{}}]`, Reasoning: runID},
 		}
 	default:
 		// All junk — graceful-failure path.

@@ -28,8 +28,8 @@ Decouple the ReAct planner's **decision contract** (the JSON the model emits) fr
 
 ## Findings I'm departing from (if any)
 
-- **Schema-narrowing the Decision sum is a binary departure from Phase 45.** Phase 45 (D-051) ships `Decision_CallTool{Tool, Args, Reasoning}` as the V1 action shape. This phase removes the `Reasoning` field. The departure is recorded as **D-106** in `docs/decisions.md` with rationale: (a) the prompt-side CRITICAL clamp removes the model's expectation (Phase 83a); (b) the empirical reasoning capture happens via the provider channel (Phase 83e §2 of this plan); (c) replaying is now a per-agent knob (Phase 83e §3) so the "we need reasoning visible in the trajectory" use case is preserved by configuration rather than by schema.
-- **No `provider_native` replay mode in V1.** Brief 13 §2.6 noted three possible modes (`never`, `text`, `provider_native`). This phase ships only the first two. The `provider_native` mode would pass Anthropic's `signature`-bearing thinking blocks through bifrost as API constructs across turns; Bifrost docs do not address that round-trip, and Harbor cannot guarantee correctness today. Recorded as **D-107** (replay knob shape: enum with two values, not three; revisit when Bifrost grows the round-trip surface).
+- **Schema-narrowing the Decision sum is a binary departure from Phase 45.** Phase 45 (D-051) ships `Decision_CallTool{Tool, Args, Reasoning}` as the V1 action shape. This phase removes the `Reasoning` field. The departure is recorded as **D-147** in `docs/decisions.md` with rationale: (a) the prompt-side CRITICAL clamp removes the model's expectation (Phase 83a); (b) the empirical reasoning capture happens via the provider channel (Phase 83e §2 of this plan); (c) replaying is now a per-agent knob (Phase 83e §3) so the "we need reasoning visible in the trajectory" use case is preserved by configuration rather than by schema.
+- **No `provider_native` replay mode in V1.** Brief 13 §2.6 noted three possible modes (`never`, `text`, `provider_native`). This phase ships only the first two. The `provider_native` mode would pass Anthropic's `signature`-bearing thinking blocks through bifrost as API constructs across turns; Bifrost docs do not address that round-trip, and Harbor cannot guarantee correctness today. Recorded as **D-148** (replay knob shape: enum with two values, not three; revisit when Bifrost grows the round-trip surface).
 
 ## Goals
 
@@ -42,7 +42,7 @@ Decouple the ReAct planner's **decision contract** (the JSON the model emits) fr
 
 ## Non-goals
 
-- `provider_native` replay mode (deferred — D-107).
+- `provider_native` replay mode (deferred — D-148).
 - Auto-clamping Anthropic reasoning budgets to the 1024-token floor. We fail loudly with `ErrReasoningBudgetTooLow` instead and document the constraint in `examples/harbor.yaml`.
 - Surfacing reasoning to the Console **stream**. The existing `OnReasoning` streaming callback continues to fire as today (for providers that emit per-delta reasoning); we add a `<thinking>` SSE channel on the Protocol surface in a separate phase.
 - Per-provider reasoning effort floors for non-Anthropic providers. Effort enums map through bifrost as-is; bifrost handles model-specific constraints internally.
@@ -83,7 +83,7 @@ Decouple the ReAct planner's **decision contract** (the JSON the model emits) fr
 - `internal/llm/drivers/bifrost/testdata/reasoning_fixtures/*.json` — recorded fixtures, one per probed provider.
 - `internal/llm/drivers/bifrost/reasoning_test.go` (new) — fixture-driven tests.
 - `internal/llm/drivers/bifrost/conformance_test.go` — extend with a `ReasoningCapture` conformance pass.
-- `docs/decisions.md` — **D-106** (schema narrowing — drop `Reasoning` from `Decision_CallTool`) + **D-107** (replay knob shape — two enum values, defer `provider_native`).
+- `docs/decisions.md` — **D-147** (schema narrowing — drop `Reasoning` from `Decision_CallTool`) + **D-148** (replay knob shape — two enum values, defer `provider_native`).
 - `scripts/smoke/phase-83e.sh` — static-only assertions on the testdata fixtures + the new enum validation.
 - `docs/glossary.md` — fill in `Reasoning channel` + `Reasoning replay knob` (placeholders added with this brief 13 revision).
 - `docs/plans/README.md` — Status column flip on merge.
@@ -184,11 +184,11 @@ var ErrReasoningBudgetTooLow = errors.New("bifrost: provider-specific reasoning 
 ## Risks / open questions
 
 - **Bifrost upstream evolution.** Bifrost is at v1.5.10 as of authoring; the `ChatReasoningDetails` shape may evolve (signature semantics, type taxonomy). Harbor pins the version in `go.mod`; bumps require re-running the conformance fixtures.
-- **Provider-native pass-through demand.** Operators running Anthropic-thinking-mode workloads may benefit from passing signed thinking blocks across turns to preserve provider-side optimization. Phase 83e leaves this as **D-107**; revisit when (a) Bifrost docs cover the round-trip explicitly OR (b) we see a real workload that measurably benefits.
+- **Provider-native pass-through demand.** Operators running Anthropic-thinking-mode workloads may benefit from passing signed thinking blocks across turns to preserve provider-side optimization. Phase 83e leaves this as **D-148**; revisit when (a) Bifrost docs cover the round-trip explicitly OR (b) we see a real workload that measurably benefits.
 - **Fixture freshness.** Provider behavior shifts under us (Anthropic adds new thinking-block types, Gemini changes its parts layout). The fixture set wants periodic re-recording. Phase 83e ships a `scripts/probe/record-reasoning-fixtures.sh` helper documented in its README; running it against the live providers refreshes the fixtures. NOT a CI gate (live keys), but operator-runnable.
 - **Replay-text token cost on long histories.** Operators flipping to `text` replay on a chatty workload may see prompts balloon. Mitigation: the replay renderer respects the existing trajectory-summary pathway (Phase 46); when a summary exists, replayed reasoning lives in the summary scope, not the per-step scope. A test asserts this composition.
 - **Console SSE for live thinking.** Out of scope for this phase; tracked as a follow-up.
-- **D-106 / D-107 numbering.** Confirm against the current `docs/decisions.md` head before committing — if parallel work claimed D-106 we bump to the next free pair. (Same rule as Phase 83c's D-105.)
+- **D-147 / D-148 numbering.** Confirm against the current `docs/decisions.md` head before committing — if parallel work claimed D-147 we bump to the next free pair. (Same rule as Phase 83c's D-105.)
 
 ## Glossary additions
 
@@ -207,4 +207,4 @@ var ErrReasoningBudgetTooLow = errors.New("bifrost: provider-specific reasoning 
 - [ ] **Integration test passes** — required (Deps lists 32 + 33 + 44). Real bifrost driver path (stubbed at the bifrostClient boundary) + real schema-repair pass + real trajectory renderer.
 - [ ] **Fixture conformance pass** — five providers' recorded `ReasoningDetails` produce non-empty `Reasoning` strings after driver translation; Gemini-direct case explicitly passes.
 - [ ] Glossary updated (Reasoning channel + Reasoning replay knob).
-- [ ] `docs/decisions.md` D-106 + D-107 entries filed.
+- [ ] `docs/decisions.md` D-147 + D-148 entries filed.

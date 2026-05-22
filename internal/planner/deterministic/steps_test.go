@@ -70,7 +70,6 @@ func TestCallToolStep_EmitsCallToolOnMatch(t *testing.T) {
 		ArgsBuilder: func(_ planner.RunContext) (json.RawMessage, error) {
 			return json.RawMessage(`{"x":1}`), nil
 		},
-		Reasoning: "because",
 	}
 	dec, claimed, err := step.Decide(context.Background(), planner.RunContext{Quadruple: validQuadruple()})
 	if err != nil {
@@ -83,7 +82,7 @@ func TestCallToolStep_EmitsCallToolOnMatch(t *testing.T) {
 	if !ok {
 		t.Fatalf("dec = %T, want planner.CallTool", dec)
 	}
-	if call.Tool != "alpha" || string(call.Args) != `{"x":1}` || call.Reasoning != "because" {
+	if call.Tool != "alpha" || string(call.Args) != `{"x":1}` {
 		t.Errorf("unexpected CallTool: %+v", call)
 	}
 }

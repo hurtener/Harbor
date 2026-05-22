@@ -67,12 +67,17 @@ func bindRegistry(step DecisionTreeStep, reg tasks.TaskRegistry) {
 
 // CallToolStep is the operator-configured single-tool dispatch step.
 // When `When` is nil (or returns true), the step claims the call and
-// returns a [planner.CallTool] decision built from the tool name,
-// the args-builder closure, and the reasoning string.
+// returns a [planner.CallTool] decision built from the tool name and
+// the args-builder closure.
 //
 // `ArgsBuilder` is required: a CallToolStep with a nil ArgsBuilder
 // returns a step error from [Decide] (fail-loudly per §13 — a
 // silent default-args behaviour would mask operator bugs).
+//
+// Phase 83e (D-147) narrowed `planner.CallTool` to `{tool, args}` —
+// the former `Reasoning` field was removed. A deterministic planner
+// emits no provider-side reasoning, so the step carries no reasoning
+// either.
 type CallToolStep struct {
 	// Tool is the tool name registered in the ToolCatalogView. The
 	// runtime executor dispatches via Phase 26's catalog.
@@ -80,10 +85,6 @@ type CallToolStep struct {
 	// ArgsBuilder constructs the JSON-encoded args payload from the
 	// run context. Required; nil → step error.
 	ArgsBuilder func(planner.RunContext) (json.RawMessage, error)
-	// Reasoning is the planner's free-text justification surfaced in
-	// observability + audit. Capped by the runtime's payload bounds
-	// before emit.
-	Reasoning string
 	// When is the optional guard. nil → always match. Non-nil → step
 	// claims the call only when the guard returns true.
 	When func(planner.RunContext) bool
@@ -105,9 +106,8 @@ func (s *CallToolStep) Decide(_ context.Context, rc planner.RunContext) (planner
 		return nil, false, fmt.Errorf("CallToolStep[%s]: ArgsBuilder: %w", s.Tool, err)
 	}
 	return planner.CallTool{
-		Tool:      s.Tool,
-		Args:      args,
-		Reasoning: s.Reasoning,
+		Tool: s.Tool,
+		Args: args,
 	}, true, nil
 }
 

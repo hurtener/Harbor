@@ -1,0 +1,19 @@
+{
+  "id": "fixture-gemini-direct-gemini-flash",
+  "model": "gemini-2.5-flash",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"tool\":\"summarize\",\"args\":{\"text\":\"the document body\"}}",
+        "reasoning_details": [
+          {"index": 0, "type": "reasoning.text", "text": "The native Gemini path populates reasoning_details on the message; this is the black hole Phase 83e closes."}
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 31, "completion_tokens": 16, "total_tokens": 47}
+}

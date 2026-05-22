@@ -49,6 +49,19 @@ import (
 // into the `<additional_guidance>` section. Empty → the section is
 // omitted entirely.
 //
+// **Reasoning replay — Phase 83e contract (D-148).** The builder
+// resolves the effective [planner.ReasoningReplayMode] via
+// [planner.EffectiveReasoningReplay] — the per-run
+// `RunContext.ReasoningReplay` override wins over the agent-configured
+// `configuredReplay`. When the resolved mode is
+// [planner.ReasoningReplayText], a prior step's captured
+// `ReasoningTrace` is prepended as a text block ABOVE the prior
+// `{tool, args}` action JSON in the assistant turn. When the mode is
+// [planner.ReasoningReplayNever] (the default for ALL models), only
+// the `{tool, args}` JSON is rendered — captured reasoning is never
+// re-injected. An empty trace produces no prepended block regardless
+// of mode.
+//
 // The builder reads from rc; it MUST NOT mutate rc. The result is
 // always safe to discard / re-build per call — the builder is
 // stateless. All fields are set at construction; a `defaultBuilder`
@@ -59,6 +72,11 @@ type defaultBuilder struct {
 	// Rendered verbatim into the <additional_guidance> section.
 	// Empty string → the section is omitted from the prompt.
 	extraGuidance string
+	// configuredReplay is the agent-configured reasoning-replay mode
+	// (from config.PlannerConfig.ReasoningReplay). The per-run
+	// RunContext.ReasoningReplay override wins over it at render time.
+	// Zero value ("" → resolves to never) is the safe default.
+	configuredReplay planner.ReasoningReplayMode
 }
 
 // Build implements [PromptBuilder].
@@ -93,8 +111,9 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 	// before (the Phase 45 V1 minimum-viable shape).
 	if rc.Trajectory != nil {
 		if rc.Trajectory.Summary == nil {
+			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
 			for _, step := range rc.Trajectory.Steps {
-				asst := renderActionForLLM(step.Action)
+				asst := renderAssistantTurn(step, replayMode)
 				obs := renderObservationForLLM(step)
 				if asst != "" {
 					messages = append(messages, llm.ChatMessage{
@@ -536,11 +555,41 @@ func listTools(rc planner.RunContext) []tools.Tool {
 	return rc.Catalog.List()
 }
 
+// renderAssistantTurn renders one prior trajectory step as the
+// assistant turn for the next prompt. It is the Phase 83e (D-148)
+// replay-aware wrapper around [renderActionForLLM]: when `replayMode`
+// is [planner.ReasoningReplayText] AND the step carries a non-empty
+// `ReasoningTrace`, the trace is prepended as a text block ABOVE the
+// action JSON; when the mode is [planner.ReasoningReplayNever] (the
+// default) — or the trace is empty — only the action JSON is rendered.
+//
+// Returns the empty string when the action itself is unrenderable
+// (the prompt builder skips empty messages).
+func renderAssistantTurn(step planner.Step, replayMode planner.ReasoningReplayMode) string {
+	action := renderActionForLLM(step.Action)
+	if action == "" {
+		return ""
+	}
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		// Prepend the captured reasoning as a text block above the
+		// action JSON. The block is plainly labelled so the model
+		// reads it as prior chain-of-thought, not as another action.
+		return "Reasoning:\n" + step.ReasoningTrace + "\n\n" + action
+	}
+	return action
+}
+
 // renderActionForLLM converts a Step.Action (typed as `any` in the
 // trajectory subpackage to avoid an import cycle) into the JSON
 // envelope the LLM previously emitted. Supports the V1 minimum-viable
 // Decision shapes; non-CallTool actions render as a JSON object
 // carrying the shape's name + a debug field.
+//
+// Phase 83e (D-147) narrowed the echoed envelope to `{tool, args}` —
+// the former `reasoning` key is dropped, matching the narrowed
+// `planner.CallTool` shape. Captured reasoning is replayed (when the
+// agent opts in) as a separate text block by [renderAssistantTurn],
+// never as a field inside the action JSON.
 //
 // Returns the empty string when the action is nil or unrenderable
 // (the prompt builder skips empty messages — defensive against

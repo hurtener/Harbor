@@ -1,0 +1,19 @@
+{
+  "id": "fixture-openrouter-gemini-flash",
+  "model": "google/gemini-2.5-flash",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"tool\":\"lookup\",\"args\":{\"id\":\"x9\"}}",
+        "reasoning_details": [
+          {"index": 0, "type": "reasoning.text", "text": "The request references entity x9; the lookup tool resolves entity ids."}
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 25, "completion_tokens": 12, "total_tokens": 37}
+}

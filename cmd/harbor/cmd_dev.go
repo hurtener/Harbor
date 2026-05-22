@@ -1518,10 +1518,11 @@ func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
 		}
 	}
 	return planner.PlannerConfig{
-		Driver:        driver,
-		MaxSteps:      cfg.MaxSteps,
-		ExtraGuidance: cfg.ExtraGuidance,
-		Extra:         extra,
+		Driver:          driver,
+		MaxSteps:        cfg.MaxSteps,
+		ExtraGuidance:   cfg.ExtraGuidance,
+		ReasoningReplay: planner.ReasoningReplayMode(cfg.ReasoningReplay),
+		Extra:           extra,
 	}
 }
 

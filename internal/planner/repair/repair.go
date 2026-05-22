@@ -160,6 +160,24 @@ type RepairLoop struct {
 	parser *ActionParser
 }
 
+// RunResult is the outcome of one [RepairLoop.Run] step. It bundles
+// the resolved [planner.Decision] with the provider-side reasoning
+// trace captured from the LLM response (Phase 83e — D-147). The caller
+// (the ReAct planner) stamps `Reasoning` onto
+// `trajectory.Step.ReasoningTrace`; the loop itself never replays it.
+//
+// `Reasoning` is the trace from the LLM response that PRODUCED the
+// returned Decision — on the repair path (multiple LLM calls), it is
+// the reasoning of the final, successful response. Empty when the
+// provider surfaced no reasoning.
+type RunResult struct {
+	// Decision is the resolved planner decision for the step.
+	Decision planner.Decision
+	// Reasoning is the provider-side thinking trace from the LLM
+	// response that produced Decision. Empty when none was surfaced.
+	Reasoning string
+}
+
 // New constructs a [RepairLoop] from the supplied [Config]. A zero-
 // value Config gets [DefaultRepairAttempts] / [DefaultMaxConsecutive
 // ArgFailures]; [Config.ArgFillEnabled] is taken as-is (zero value =
@@ -210,18 +228,23 @@ func (l *RepairLoop) Config() Config {
 // identity gate (it rejects ctxes without identity); this method's
 // pre-check exists so the loop fails closed even with a stub client
 // that doesn't enforce.
+//
+// Returns a [RunResult] bundling the resolved Decision with the
+// provider-side reasoning trace captured from the LLM response that
+// produced it (Phase 83e — D-147). The caller stamps the trace onto
+// `trajectory.Step.ReasoningTrace`.
 func (l *RepairLoop) Run(
 	ctx context.Context,
 	rc planner.RunContext,
 	client llm.LLMClient,
 	req llm.CompleteRequest,
 	validateTool ToolValidator,
-) (planner.Decision, error) {
+) (RunResult, error) {
 	if client == nil {
-		return nil, errors.New("repair: nil llm.LLMClient")
+		return RunResult{}, errors.New("repair: nil llm.LLMClient")
 	}
 	if err := assertIdentity(rc); err != nil {
-		return nil, err
+		return RunResult{}, err
 	}
 
 	// Step counter. Each iteration burns one LLM call.
@@ -230,11 +253,15 @@ func (l *RepairLoop) Run(
 		consecutiveArgFails = 0
 		current             = req
 		reasons             []string
+		// lastReasoning holds the reasoning trace of the most recent
+		// LLM response — the trace that accompanies the Decision the
+		// loop ultimately returns.
+		lastReasoning string
 	)
 
 	for attempts < l.cfg.RepairAttempts {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return RunResult{}, err
 		}
 
 		// Step 0: issue the LLM call.
@@ -243,18 +270,30 @@ func (l *RepairLoop) Run(
 			// LLM-call errors bubble verbatim — retry-with-feedback
 			// (Phase 36) is composed INSIDE the client, not here.
 			// We never silently swallow upstream errors.
-			return nil, err
+			return RunResult{}, err
 		}
 		attempts++
+		lastReasoning = resp.Reasoning
 
 		// Step 1: Salvage — parse the response.
 		actions, parseErr := l.parser.Parse(resp.Content)
+		// Phase 83e (D-147): the action schema is `{tool, args}`. A
+		// model that still emits `reasoning` / `thought` has those
+		// fields silently stripped; emit one telemetry event per
+		// dropped field so the drift is observable without failing the
+		// step. Best-effort — runs only on a parseable response.
+		if parseErr == nil && len(actions) > 0 {
+			emitExtraFieldsDropped(rc, resp.Content)
+		}
 		if parseErr != nil || len(actions) == 0 {
 			reason := "parser failed: " + parserErrorReason(parseErr)
 			reasons = append(reasons, truncate(reason))
 			consecutiveArgFails++
 			if l.tripped(consecutiveArgFails) {
-				return l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons), nil
+				return RunResult{
+					Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
+					Reasoning: lastReasoning,
+				}, nil
 			}
 			// Build a corrective sub-prompt for the next attempt.
 			current = appendCorrectiveTurn(req, resp, parserCorrection(parseErr))
@@ -266,7 +305,7 @@ func (l *RepairLoop) Run(
 		// schema-repair path and surface the parser's first action(s)
 		// verbatim — letting the dispatcher reject if args are wrong.
 		if !l.cfg.ArgFillEnabled || validateTool == nil {
-			return promote(actions), nil
+			return RunResult{Decision: promote(actions), Reasoning: lastReasoning}, nil
 		}
 
 		var firstBadIdx = -1
@@ -280,7 +319,7 @@ func (l *RepairLoop) Run(
 		}
 		if firstBadIdx == -1 {
 			// All actions validate. Step 4: multi-action salvage.
-			return promote(actions), nil
+			return RunResult{Decision: promote(actions), Reasoning: lastReasoning}, nil
 		}
 
 		// At least one action failed validation. Record + decide
@@ -292,7 +331,10 @@ func (l *RepairLoop) Run(
 		consecutiveArgFails++
 
 		if l.tripped(consecutiveArgFails) {
-			return l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons), nil
+			return RunResult{
+				Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
+				Reasoning: lastReasoning,
+			}, nil
 		}
 
 		// Step 2: build the corrective sub-prompt and loop.
@@ -303,7 +345,10 @@ func (l *RepairLoop) Run(
 	// RepairAttempts exhausted without a clean parse + validate.
 	// Same graceful-failure terminal as the storm-guard path; the
 	// payload distinguishes via ConsecutiveArgFailures vs Attempts.
-	return l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons), nil
+	return RunResult{
+		Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
+		Reasoning: lastReasoning,
+	}, nil
 }
 
 // tripped reports whether the storm-guard threshold has fired.
@@ -390,6 +435,36 @@ func emitRepairExhausted(
 		},
 	})
 	_ = ctx // ctx is reserved for future cancellation-aware emits.
+}
+
+// emitExtraFieldsDropped publishes one
+// [planner.EventTypePlannerActionExtraFieldDropped] event per
+// Phase 83e-narrowed extra field (`reasoning` / `thought` — D-147) the
+// LLM response carried. The narrowed action schema is `{tool, args}`;
+// extra fields are stripped, NOT errored — this is a soft telemetry
+// signal, not a fail-loudly surface. Best-effort; never blocks on the
+// bus. A nil Emit closure (tests without observability) is a no-op.
+func emitExtraFieldsDropped(rc planner.RunContext, responseContent string) {
+	if rc.Emit == nil {
+		return
+	}
+	dropped := DroppedExtraFields(responseContent)
+	if len(dropped) == 0 {
+		return
+	}
+	now := nowFromRC(rc)
+	for _, field := range dropped {
+		rc.Emit(events.Event{
+			Type:       planner.EventTypePlannerActionExtraFieldDropped,
+			Identity:   rc.Quadruple,
+			OccurredAt: now,
+			Payload: planner.ActionExtraFieldDroppedPayload{
+				Identity:   rc.Quadruple,
+				Field:      field,
+				OccurredAt: now,
+			},
+		})
+	}
 }
 
 // nowFromRC reads the [planner.RunContext.Clock] when present, else

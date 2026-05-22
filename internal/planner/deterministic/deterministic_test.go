@@ -327,7 +327,6 @@ func TestNext_CallToolStepEndToEnd(t *testing.T) {
 			ArgsBuilder: func(_ planner.RunContext) (json.RawMessage, error) {
 				return json.RawMessage(`{"q":"foo"}`), nil
 			},
-			Reasoning: "test",
 		}),
 	)
 	if err != nil {

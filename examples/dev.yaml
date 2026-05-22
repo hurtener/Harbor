@@ -138,6 +138,7 @@ memory:
 planner:
   driver: react
   # max_steps: 12
+  # reasoning_replay: never   # never (default, all models) | text — see harbor.yaml
 
 tools:
   http_manifests: []

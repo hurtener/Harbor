@@ -336,11 +336,48 @@ func runInspectRunsList(
 // trajectoryStep is one row of the trajectory rendering. The shape
 // follows wireEvent but flattens / strips identity (the request is
 // already scoped to one run) so the output is tighter.
+//
+// `ReasoningTrace` / `ReasoningChars` are lifted from a
+// `planner.decision` event's payload (Phase 83e — D-147): the ReAct
+// planner stamps the captured provider-side reasoning trace onto that
+// event, and `inspect-runs` surfaces it here so operators can read a
+// run's reasoning channel. Empty / zero for non-decision events and
+// for decisions whose provider surfaced no reasoning.
 type trajectoryStep struct {
-	Sequence   uint64 `json:"sequence"`
-	OccurredAt string `json:"occurred_at"`
-	Type       string `json:"type"`
-	Payload    any    `json:"payload,omitempty"`
+	Sequence       uint64 `json:"sequence"`
+	OccurredAt     string `json:"occurred_at"`
+	Type           string `json:"type"`
+	Payload        any    `json:"payload,omitempty"`
+	ReasoningTrace string `json:"reasoning_trace,omitempty"`
+	ReasoningChars int    `json:"reasoning_chars,omitempty"`
+}
+
+// reasoningFromPayload extracts the captured reasoning trace from a
+// `planner.decision` event payload. The payload arrives as a generic
+// `map[string]any` (decoded from JSON); the `reasoning_trace` and
+// `reasoning_chars` keys mirror `planner.DecisionPayload`. Returns
+// ("", 0) when the payload is not a decision payload or carries no
+// reasoning.
+func reasoningFromPayload(eventType string, payload any) (string, int) {
+	if eventType != "planner.decision" {
+		return "", 0
+	}
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return "", 0
+	}
+	trace, _ := m["reasoning_trace"].(string) //nolint:errcheck // comma-ok type assertion; absent/non-string key → "" trace, the intended fallback
+	chars := 0
+	switch c := m["reasoning_chars"].(type) {
+	case float64: // JSON numbers decode to float64
+		chars = int(c)
+	case int:
+		chars = c
+	}
+	if chars == 0 && trace != "" {
+		chars = len([]rune(trace))
+	}
+	return trace, chars
 }
 
 // runInspectRunsTrajectory replays the SSE stream filtered to one run
@@ -379,11 +416,14 @@ func runInspectRunsTrajectory(
 		if runIDFromEvent(ev) != opts.TargetRun {
 			return false, nil
 		}
+		trace, chars := reasoningFromPayload(ev.Type, ev.Payload)
 		steps = append(steps, trajectoryStep{
-			Sequence:   ev.Sequence,
-			OccurredAt: ev.OccurredAt,
-			Type:       ev.Type,
-			Payload:    ev.Payload,
+			Sequence:       ev.Sequence,
+			OccurredAt:     ev.OccurredAt,
+			Type:           ev.Type,
+			Payload:        ev.Payload,
+			ReasoningTrace: trace,
+			ReasoningChars: chars,
 		})
 		return false, nil
 	})
@@ -438,12 +478,20 @@ func runInspectRunsTrajectory(
 	}
 
 	fmt.Fprintf(out, "run %s — %d events\n", opts.TargetRun, len(steps))
-	fmt.Fprintln(out, "SEQ    OCCURRED_AT                         TYPE                              PAYLOAD")
+	fmt.Fprintln(out, "SEQ    OCCURRED_AT                         TYPE                              RSN_CHARS  PAYLOAD")
 	for _, s := range steps {
-		fmt.Fprintf(out, "%-6d %-35s %-33s %s\n",
+		// RSN_CHARS surfaces the reasoning-trace size (a count, not the
+		// full text — the table stays scannable; the raw trace is in
+		// the --json output's steps[].reasoning_trace). Phase 83e.
+		rsn := "-"
+		if s.ReasoningChars > 0 {
+			rsn = fmt.Sprintf("%d", s.ReasoningChars)
+		}
+		fmt.Fprintf(out, "%-6d %-35s %-33s %-10s %s\n",
 			s.Sequence,
 			s.OccurredAt,
 			s.Type,
+			rsn,
 			payloadSketch(s.Payload),
 		)
 	}

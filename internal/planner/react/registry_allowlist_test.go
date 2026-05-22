@@ -81,6 +81,43 @@ func TestConfigAllowlist_RejectsNegativeMaxSteps(t *testing.T) {
 	}
 }
 
+// TestConfigAllowlist_ReasoningReplayMirror is the Phase 83e (D-148)
+// drift guard: the `internal/config` validator's
+// `allowedReasoningReplayModes` allowlist MUST mirror the
+// `planner.ReasoningReplayMode` enum. `internal/config` cannot import
+// `internal/planner` (§4.4); the two surfaces are duplicated by
+// design, and this test catches the drift by exercising every
+// canonical enum value through the config validator.
+func TestConfigAllowlist_ReasoningReplayMirror(t *testing.T) {
+	t.Parallel()
+
+	// Every canonical enum value (plus the empty unset sentinel) must
+	// validate through the config-side allowlist.
+	for _, mode := range []planner.ReasoningReplayMode{
+		"", planner.ReasoningReplayNever, planner.ReasoningReplayText,
+	} {
+		if !planner.IsValidReasoningReplayMode(mode) {
+			t.Errorf("planner.IsValidReasoningReplayMode(%q) = false — enum drift", mode)
+		}
+		cfg := minimalValidConfig()
+		cfg.Planner = config.PlannerConfig{Driver: react.DriverName, ReasoningReplay: string(mode)}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("config rejects planner.reasoning_replay=%q but the planner enum accepts it: %v", mode, err)
+		}
+	}
+
+	// A value the planner enum rejects must also fail config validation.
+	bogus := "provider_native"
+	if planner.IsValidReasoningReplayMode(planner.ReasoningReplayMode(bogus)) {
+		t.Fatalf("planner enum unexpectedly accepts %q", bogus)
+	}
+	cfg := minimalValidConfig()
+	cfg.Planner = config.PlannerConfig{Driver: react.DriverName, ReasoningReplay: bogus}
+	if err := cfg.Validate(); err == nil {
+		t.Errorf("config accepts planner.reasoning_replay=%q but the planner enum rejects it — allowlist drift", bogus)
+	}
+}
+
 // TestRegistryDispatch_ReactReachable proves the react driver
 // self-registered and is reachable via `planner.Resolve`. End-to-end
 // smoke for the registry-side surface.

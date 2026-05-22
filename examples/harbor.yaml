@@ -348,6 +348,26 @@ memory:
 # the key (the default) and the section is left out of the prompt
 # entirely. The validator imposes no rule beyond "string"; the
 # operator owns the content. Only the `react` driver consumes it.
+#
+# `reasoning_replay` (Phase 83e — D-148) controls whether a prior
+# step's captured provider-side reasoning trace is re-injected into the
+# next turn's prompt. Two values:
+#   - `never` (the DEFAULT for ALL models; empty resolves here) — a
+#     prior step's captured reasoning is never replayed; the next
+#     prompt sees only the prior `{tool, args}` action JSON.
+#   - `text` — the trajectory renderer prepends each prior step's
+#     captured reasoning trace as a text block above the action JSON.
+#     Per-agent opt-in for workloads that benefit from CoT continuity;
+#     note it grows prompt size on chatty trajectories.
+# There is no `provider_native` mode in V1.
+#
+# Reasoning-capture note for Anthropic: Anthropic's extended-thinking
+# API requires `reasoning.max_tokens >= 1024`. Harbor maps the LLM
+# `reasoning_effort` enum to a budget for the Anthropic provider and
+# FAILS LOUDLY (it does NOT silently clamp) when the resulting budget
+# is below the floor — `reasoning_effort: low` against an Anthropic
+# model is rejected at request-translation time. Use `medium` or
+# `high` for Anthropic reasoning, or `off` to disable it.
 planner:
   driver: react
   # max_steps: 12
@@ -355,6 +375,7 @@ planner:
   #   Answer in formal English. When the answer is tabular data,
   #   call render_table before finishing and reference the artifact
   #   in your final answer.
+  # reasoning_replay: never   # never (default) | text
 
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`

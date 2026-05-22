@@ -150,9 +150,11 @@ func (r *rejectingValidator) Validate(toolName string, _ json.RawMessage) error 
 // LLM response with one valid CallTool is returned verbatim.
 func TestRun_Salvage_SingleAction(t *testing.T) {
 	t.Parallel()
+	// Phase 83e (D-147): the action schema is narrowed to {tool, args}.
+	// A clean response carries no extra fields → no events on success.
 	client := &stubClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"search","args":{"q":"hi"},"reasoning":"r"}`},
+			{Content: `{"tool":"search","args":{"q":"hi"}}`},
 		},
 	}
 	rec := &recordingEmit{}
@@ -163,7 +165,7 @@ func TestRun_Salvage_SingleAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	call, ok := dec.(planner.CallTool)
+	call, ok := dec.Decision.(planner.CallTool)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.CallTool", dec)
 	}
@@ -202,7 +204,7 @@ func TestRun_SchemaRepair_SucceedsAfterOneRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, ok := dec.(planner.CallTool); !ok {
+	if _, ok := dec.Decision.(planner.CallTool); !ok {
 		t.Fatalf("decision = %T, want planner.CallTool after repair", dec)
 	}
 	if got := client.callCount(); got != 2 {
@@ -253,7 +255,7 @@ func TestRun_GracefulFailure_StormGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	fin, ok := dec.(planner.Finish)
+	fin, ok := dec.Decision.(planner.Finish)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.Finish", dec)
 	}
@@ -334,7 +336,7 @@ func TestRun_GracefulFailure_AttemptsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	fin, ok := dec.(planner.Finish)
+	fin, ok := dec.Decision.(planner.Finish)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.Finish", dec)
 	}
@@ -366,7 +368,7 @@ func TestRun_MultiActionSalvage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	par, ok := dec.(planner.CallParallel)
+	par, ok := dec.Decision.(planner.CallParallel)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.CallParallel", dec)
 	}
@@ -399,7 +401,7 @@ func TestRun_NilValidator_ShortCircuits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, ok := dec.(planner.CallTool); !ok {
+	if _, ok := dec.Decision.(planner.CallTool); !ok {
 		t.Fatalf("decision = %T, want planner.CallTool", dec)
 	}
 	if client.callCount() != 1 {
@@ -430,7 +432,7 @@ func TestRun_ArgFillDisabled_ShortCircuits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, ok := dec.(planner.CallTool); !ok {
+	if _, ok := dec.Decision.(planner.CallTool); !ok {
 		t.Fatalf("decision = %T, want planner.CallTool (ArgFillEnabled=false short-circuits)", dec)
 	}
 	if client.callCount() != 1 {
@@ -465,7 +467,7 @@ func TestRun_ParserFails_BuildsParserCorrection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, ok := dec.(planner.CallTool); !ok {
+	if _, ok := dec.Decision.(planner.CallTool); !ok {
 		t.Fatalf("decision = %T, want planner.CallTool after parser-correction", dec)
 	}
 	if client.callCount() != 2 {
@@ -588,5 +590,79 @@ func TestNew_PreservesExplicitConfig(t *testing.T) {
 	cfg := loop.Config()
 	if cfg.RepairAttempts != 7 || cfg.MaxConsecutiveArgFailures != 5 || !cfg.ArgFillEnabled {
 		t.Errorf("Config not preserved: %+v", cfg)
+	}
+}
+
+// TestRun_ExtraFieldDropped_EmitsTelemetry is the Phase 83e (D-147)
+// gate: an LLM response whose action JSON still carries the legacy
+// `reasoning` field is parsed cleanly (the field is stripped) AND a
+// `planner.action_extra_field_dropped` event fires for the dropped
+// field. The runtime fails OPEN — strip-and-warn, never error.
+func TestRun_ExtraFieldDropped_EmitsTelemetry(t *testing.T) {
+	t.Parallel()
+	client := &stubClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"search","args":{"q":"hi"},"reasoning":"legacy field","thought":"also legacy"}`},
+		},
+	}
+	rec := &recordingEmit{}
+	loop := repair.New(repair.Config{ArgFillEnabled: true})
+
+	dec, err := loop.Run(ctxWithIdentity(t), rcWithIdentity(rec.emit),
+		client, sampleRequest(), passValidator)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The step still succeeds — extra fields are stripped, not errored.
+	call, ok := dec.Decision.(planner.CallTool)
+	if !ok {
+		t.Fatalf("decision = %T, want planner.CallTool", dec.Decision)
+	}
+	if call.Tool != "search" {
+		t.Errorf("Tool = %q, want search", call.Tool)
+	}
+	// Two dropped fields → two telemetry events.
+	evs := rec.snapshot()
+	if len(evs) != 2 {
+		t.Fatalf("emitted %d events, want 2 (one per dropped field)", len(evs))
+	}
+	seen := map[string]bool{}
+	for _, ev := range evs {
+		if ev.Type != planner.EventTypePlannerActionExtraFieldDropped {
+			t.Errorf("event type = %q, want planner.action_extra_field_dropped", ev.Type)
+		}
+		payload, ok := ev.Payload.(planner.ActionExtraFieldDroppedPayload)
+		if !ok {
+			t.Fatalf("payload = %T, want planner.ActionExtraFieldDroppedPayload", ev.Payload)
+		}
+		seen[payload.Field] = true
+		if payload.Identity.RunID == "" {
+			t.Error("payload.Identity.RunID is empty — identity must propagate")
+		}
+	}
+	if !seen["reasoning"] || !seen["thought"] {
+		t.Errorf("dropped fields = %v, want both reasoning and thought", seen)
+	}
+}
+
+// TestRun_ReasoningSurfacedOnResult asserts the captured provider-side
+// reasoning trace flows from CompleteResponse.Reasoning onto
+// RunResult.Reasoning (Phase 83e — D-147).
+func TestRun_ReasoningSurfacedOnResult(t *testing.T) {
+	t.Parallel()
+	const trace = "the model thought carefully about this"
+	client := &stubClient{
+		responses: []llm.CompleteResponse{
+			{Content: `{"tool":"search","args":{"q":"hi"}}`, Reasoning: trace},
+		},
+	}
+	loop := repair.New(repair.Config{ArgFillEnabled: true})
+	dec, err := loop.Run(ctxWithIdentity(t), rcWithIdentity(nil),
+		client, sampleRequest(), passValidator)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dec.Reasoning != trace {
+		t.Errorf("RunResult.Reasoning = %q, want %q", dec.Reasoning, trace)
 	}
 }

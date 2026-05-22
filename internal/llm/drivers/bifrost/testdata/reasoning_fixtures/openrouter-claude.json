@@ -1,0 +1,19 @@
+{
+  "id": "fixture-openrouter-claude",
+  "model": "anthropic/claude-sonnet-4.6",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"tool\":\"search\",\"args\":{\"q\":\"weather\"}}",
+        "reasoning_details": [
+          {"index": 0, "type": "reasoning.text", "text": "The user is asking about the weather. I should call the search tool with a weather query."}
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 40, "completion_tokens": 22, "total_tokens": 62}
+}

@@ -905,6 +905,15 @@ const (
 // other drivers ignore it. The validator imposes no rule beyond
 // "string" — operator copy is operator copy.
 //
+// `ReasoningReplay` controls whether the ReAct planner re-injects a
+// prior step's captured provider-side reasoning trace into the next
+// turn's prompt (Phase 83e — D-148). The enum has two values:
+// `never` (the default for ALL models — a prior step's captured
+// reasoning is never re-injected) and `text` (prepend the captured
+// trace as a text block above the prior `{tool, args}` action JSON).
+// Empty defaults to `never`; the validator rejects any other value
+// loudly pre-boot. There is no `provider_native` mode in V1.
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -914,8 +923,9 @@ const (
 // runtime would race with in-flight RunLoop goroutines holding the old
 // concrete.
 type PlannerConfig struct {
-	Driver        string            `yaml:"driver,omitempty"`
-	MaxSteps      int               `yaml:"max_steps,omitempty"`
-	ExtraGuidance string            `yaml:"extra_guidance,omitempty"`
-	Extra         map[string]string `yaml:"extra,omitempty"`
+	Driver          string            `yaml:"driver,omitempty"`
+	MaxSteps        int               `yaml:"max_steps,omitempty"`
+	ExtraGuidance   string            `yaml:"extra_guidance,omitempty"`
+	ReasoningReplay string            `yaml:"reasoning_replay,omitempty"`
+	Extra           map[string]string `yaml:"extra,omitempty"`
 }

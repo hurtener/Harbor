@@ -1,0 +1,19 @@
+{
+  "id": "fixture-openrouter-deepseek-r1",
+  "model": "deepseek/deepseek-r1",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"tool\":\"_finish\",\"args\":{\"answer\":\"42\"}}",
+        "reasoning_details": [
+          {"index": 0, "type": "reasoning.text", "text": "Let me reason step by step. The question reduces to a known constant."}
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 33, "completion_tokens": 18, "total_tokens": 51}
+}

@@ -109,6 +109,17 @@ type Step struct {
 	// map[string]any).
 	Action any `json:"action,omitempty"`
 
+	// ReasoningTrace is the provider-side thinking trace captured for
+	// this step (Phase 83e — D-147). The planner stamps it from
+	// `llm.CompleteResponse.Reasoning` after the step's LLM call.
+	// It is captured content, kept for observability and `inspect-runs`
+	// — it is NEVER re-injected into a subsequent prompt unless the
+	// agent's `ReasoningReplay` mode is `text` (D-148). Empty when the
+	// provider surfaced no reasoning. Reasoning content can be
+	// sensitive; any sink that persists or logs it routes through the
+	// audit redactor (CLAUDE.md §7).
+	ReasoningTrace string `json:"reasoning_trace,omitempty"`
+
 	// Observation is the runtime's executed-decision result. Shape
 	// depends on the Decision: a CallTool yields a ToolResult; a
 	// SpawnTask yields a TaskHandle; etc.

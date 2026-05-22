@@ -63,6 +63,15 @@ type PlannerConfig struct {
 	// other drivers ignore it. Empty by default.
 	ExtraGuidance string
 
+	// ReasoningReplay is the agent-configured reasoning-replay mode
+	// (Phase 83e — D-148). Empty string resolves to
+	// `ReasoningReplayNever` — replay is OFF unless an operator opts
+	// in. The dev stack maps `config.PlannerConfig.ReasoningReplay`
+	// onto this field; the react factory passes it to
+	// `react.WithReasoningReplay`. The validator rejects non-canonical
+	// values pre-boot.
+	ReasoningReplay ReasoningReplayMode
+
 	// Extra is the driver-specific extras map. Reserved for future
 	// drivers' per-flow knobs; unused by the V1 `react` driver.
 	Extra map[string]string

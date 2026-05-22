@@ -640,7 +640,7 @@ func (p *slowMidStepPlanner) Next(_ context.Context, rc planner.RunContext) (pla
 			return nil, fmt.Errorf("slowMidStepPlanner: Enqueue: %w", eqErr)
 		}
 		// Continue the loop: emit CallTool so the RunLoop re-drains.
-		return planner.CallTool{Tool: "noop", Reasoning: "mid-step continuation"}, nil
+		return planner.CallTool{Tool: "noop"}, nil
 	}
 	// Step 1+: the RunLoop drained the CANCEL → Control.Cancelled is
 	// set → finish cancelled.

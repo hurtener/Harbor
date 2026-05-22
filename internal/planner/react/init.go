@@ -40,5 +40,12 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.ExtraGuidance != "" {
 		opts = append(opts, WithSystemPromptExtra(cfg.ExtraGuidance))
 	}
+	// Phase 83e (D-148): propagate the agent-configured reasoning-
+	// replay mode. An empty mode resolves to `never` inside the
+	// planner; WithReasoningReplay no-ops on an invalid value (config
+	// validation already rejected those pre-boot).
+	if cfg.ReasoningReplay != "" {
+		opts = append(opts, WithReasoningReplay(cfg.ReasoningReplay))
+	}
 	return New(deps.LLM, opts...), nil
 }

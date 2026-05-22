@@ -63,7 +63,6 @@ func TestDeterministic_Conformance(t *testing.T) {
 								ArgsBuilder: func(_ planner.RunContext) (json.RawMessage, error) {
 									return json.RawMessage(`{"x":1}`), nil
 								},
-								Reasoning: "top-prompt scenario: single tool call",
 							},
 						),
 					)
