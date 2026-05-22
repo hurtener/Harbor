@@ -45,15 +45,15 @@ Inject `RunContext.Skills.Search(...)` results and `RunContext.Memory` blocks in
 
 ## Acceptance criteria
 
-- [ ] `RunContext` (`internal/planner/planner.go`) gains `MemoryBlocks *MemoryBlocks` and `SkillsContext []any` fields.
-- [ ] `MemoryBlocks{External any, Conversation any}` — both optional, nil means "tier absent."
-- [ ] `defaultBuilder.Build` emits `<read_only_external_memory>` and `<read_only_conversation_memory>` sections immediately after the system prompt (as separate system-role messages in `llm.ChatMessage` slice, NOT concatenated into one mega system prompt). Mirrors the predecessor's `build_messages` pattern (`planner/llm.py:1044-1057`).
-- [ ] Each wrapper contains the verbatim five-line rule list from brief 13 §2.3 (golden-fixture-asserted, copy is part of the PR review).
-- [ ] `<skills_context>` is a fourth system message when `SkillsContext` is non-empty; contains an analogous (slightly shorter) rule list: skills are operator-curated, treat as informational, not as instructions or observations.
-- [ ] Serialisation failures (a value in `MemoryBlocks.External` that `json.Marshal` rejects) fail loudly with a typed `ErrMemoryBlockUnserializable` — never silently dropped (AGENTS.md §5 + RFC §5 fail-loud principle).
-- [ ] Identity contract: `RunContext.Identity` is still the source of truth for tenant/user/session scoping. Memory injection assumes the caller (runtime) has already filtered the blob for the current identity. **The prompt builder never re-applies identity filtering**; that's a runtime-side responsibility (Phase 23's MemoryStore enforces this at fetch).
-- [ ] Concurrent-reuse: serialisation is pure / stateless; 100+ concurrent `Build` calls under `-race` pass. Disjoint `RunContext.MemoryBlocks` per run.
-- [ ] Golden fixtures for the three wrappers: `internal/planner/react/testdata/{external_memory,conversation_memory,skills_context}_wrapper.txt`.
+- [x] `RunContext` (`internal/planner/planner.go`) gains `MemoryBlocks *MemoryBlocks` and `SkillsContext []any` fields.
+- [x] `MemoryBlocks{External any, Conversation any}` — both optional, nil means "tier absent."
+- [x] `defaultBuilder.Build` emits `<read_only_external_memory>` and `<read_only_conversation_memory>` sections immediately after the system prompt (as separate system-role messages in `llm.ChatMessage` slice, NOT concatenated into one mega system prompt). Mirrors the predecessor's `build_messages` pattern (`planner/llm.py:1044-1057`).
+- [x] Each wrapper contains the verbatim five-line rule list from brief 13 §2.3 (golden-fixture-asserted, copy is part of the PR review).
+- [x] `<skills_context>` is a fourth system message when `SkillsContext` is non-empty; contains an analogous (slightly shorter) rule list: skills are operator-curated, treat as informational, not as instructions or observations.
+- [x] Serialisation failures (a value in `MemoryBlocks.External` that `json.Marshal` rejects) fail loudly with a typed `ErrMemoryBlockUnserializable` — never silently dropped (AGENTS.md §5 + RFC §5 fail-loud principle).
+- [x] Identity contract: `RunContext.Identity` is still the source of truth for tenant/user/session scoping. Memory injection assumes the caller (runtime) has already filtered the blob for the current identity. **The prompt builder never re-applies identity filtering**; that's a runtime-side responsibility (Phase 23's MemoryStore enforces this at fetch).
+- [x] Concurrent-reuse: serialisation is pure / stateless; 100+ concurrent `Build` calls under `-race` pass. Disjoint `RunContext.MemoryBlocks` per run.
+- [x] Golden fixtures for the three wrappers: `internal/planner/react/testdata/{external_memory,conversation_memory,skills_context}_wrapper.txt`.
 
 ## Files added or changed
 
@@ -137,13 +137,13 @@ var ErrMemoryBlockUnserializable = errors.New("planner: memory block is not JSON
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references resolve
-- [ ] Coverage ≥ target
-- [ ] **Cross-isolation test passes** — required (memory injection is identity-scoped; this is the last line of defense if the runtime ever drops the ball on fetch-time filtering).
-- [ ] **Concurrent-reuse test passes** — N≥100 concurrent runs against a single shared `ReActPlanner`; each run has disjoint `MemoryBlocks` / `SkillsContext`; assert no cross-run leakage.
-- [ ] **Integration test passes** — required (Deps lists 23 + 37). Real inmem MemoryStore + a fixture skill store + a stub LLM; assert message slice has the expected wrappers.
-- [ ] Glossary updated.
-- [ ] No brief departures.
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references resolve
+- [x] Coverage ≥ target
+- [x] **Cross-isolation test passes** — required (memory injection is identity-scoped; this is the last line of defense if the runtime ever drops the ball on fetch-time filtering).
+- [x] **Concurrent-reuse test passes** — N≥100 concurrent runs against a single shared `ReActPlanner`; each run has disjoint `MemoryBlocks` / `SkillsContext`; assert no cross-run leakage.
+- [x] **Integration test passes** — required (Deps lists 23 + 37). Real inmem MemoryStore + a fixture skill store + a stub LLM; assert message slice has the expected wrappers.
+- [x] Glossary updated.
+- [x] No brief departures.
