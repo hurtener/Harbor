@@ -53,10 +53,10 @@ func (p *stubProvider) Discover(ctx context.Context) ([]tools.ToolDescriptor, er
 }
 
 // idCtx returns a ctx carrying a complete identity triple.
-func idCtx(t *testing.T, tenant string) context.Context {
+func idCtx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), identity.Identity{
-		TenantID:  tenant,
+		TenantID:  "t-1",
 		UserID:    "u-1",
 		SessionID: "s-1",
 	})
@@ -94,7 +94,7 @@ func newTestRegistry(t *testing.T) *Registry {
 
 func TestRegistry_ListServers_Happy(t *testing.T) {
 	r := newTestRegistry(t)
-	servers, cur, err := r.ListServers(idCtx(t, "t-1"), ListFilter{})
+	servers, cur, err := r.ListServers(idCtx(t), ListFilter{})
 	if err != nil {
 		t.Fatalf("ListServers: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRegistry_ListServers_FailsClosed_MissingIdentity(t *testing.T) {
 
 func TestRegistry_ListServers_FilterByTransport(t *testing.T) {
 	r := newTestRegistry(t)
-	servers, _, err := r.ListServers(idCtx(t, "t-1"), ListFilter{Transport: []string{"stdio"}})
+	servers, _, err := r.ListServers(idCtx(t), ListFilter{Transport: []string{"stdio"}})
 	if err != nil {
 		t.Fatalf("ListServers: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestRegistry_ListServers_FilterByTransport(t *testing.T) {
 func TestRegistry_ListServers_FilterByHasOAuth(t *testing.T) {
 	r := newTestRegistry(t)
 	yes := true
-	servers, _, err := r.ListServers(idCtx(t, "t-1"), ListFilter{HasOAuth: &yes})
+	servers, _, err := r.ListServers(idCtx(t), ListFilter{HasOAuth: &yes})
 	if err != nil {
 		t.Fatalf("ListServers: %v", err)
 	}
@@ -142,14 +142,14 @@ func TestRegistry_ListServers_FilterByHasOAuth(t *testing.T) {
 
 func TestRegistry_ListServers_PaginationCursorStable(t *testing.T) {
 	r := newTestRegistry(t)
-	page1, cur1, err := r.ListServers(idCtx(t, "t-1"), ListFilter{PageSize: 1})
+	page1, cur1, err := r.ListServers(idCtx(t), ListFilter{PageSize: 1})
 	if err != nil {
 		t.Fatalf("page1: %v", err)
 	}
 	if len(page1) != 1 || cur1.NextPageToken == "" {
 		t.Fatalf("page1 shape wrong: %v cursor=%q", page1, cur1.NextPageToken)
 	}
-	page2, cur2, err := r.ListServers(idCtx(t, "t-1"), ListFilter{PageSize: 1, PageToken: cur1.NextPageToken})
+	page2, cur2, err := r.ListServers(idCtx(t), ListFilter{PageSize: 1, PageToken: cur1.NextPageToken})
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestRegistry_ListServers_PaginationCursorStable(t *testing.T) {
 
 func TestRegistry_GetServer_Happy(t *testing.T) {
 	r := newTestRegistry(t)
-	v, err := r.GetServer(idCtx(t, "t-1"), "github-server")
+	v, err := r.GetServer(idCtx(t), "github-server")
 	if err != nil {
 		t.Fatalf("GetServer: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestRegistry_GetServer_Happy(t *testing.T) {
 
 func TestRegistry_GetServer_NotFound(t *testing.T) {
 	r := newTestRegistry(t)
-	_, err := r.GetServer(idCtx(t, "t-1"), "nope-server")
+	_, err := r.GetServer(idCtx(t), "nope-server")
 	if !errors.Is(err, ErrServerNotFound) {
 		t.Fatalf("want ErrServerNotFound, got %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRegistry_GetServer_NotFound(t *testing.T) {
 
 func TestRegistry_ListResources_Happy(t *testing.T) {
 	r := newTestRegistry(t)
-	res, err := r.ListResources(idCtx(t, "t-1"), "github-server")
+	res, err := r.ListResources(idCtx(t), "github-server")
 	if err != nil {
 		t.Fatalf("ListResources: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestRegistry_ListResources_Happy(t *testing.T) {
 
 func TestRegistry_ListPrompts_Happy(t *testing.T) {
 	r := newTestRegistry(t)
-	pr, err := r.ListPrompts(idCtx(t, "t-1"), "github-server")
+	pr, err := r.ListPrompts(idCtx(t), "github-server")
 	if err != nil {
 		t.Fatalf("ListPrompts: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRegistry_ListPrompts_Happy(t *testing.T) {
 
 func TestRegistry_RefreshDiscovery_UpdatesCounts(t *testing.T) {
 	r := newTestRegistry(t)
-	res, err := r.RefreshDiscovery(idCtx(t, "t-1"), "github-server")
+	res, err := r.RefreshDiscovery(idCtx(t), "github-server")
 	if err != nil {
 		t.Fatalf("RefreshDiscovery: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestRegistry_RefreshDiscovery_UpdatesCounts(t *testing.T) {
 	if res.DiscoveryID == "" {
 		t.Fatalf("want non-empty discovery id")
 	}
-	v, _ := r.GetServer(idCtx(t, "t-1"), "github-server")
+	v, _ := r.GetServer(idCtx(t), "github-server")
 	if v.ToolCount != 1 || v.State != ServerStateOnline {
 		t.Fatalf("RefreshDiscovery did not update server view: %+v", v)
 	}
@@ -222,7 +222,7 @@ func TestRegistry_RefreshDiscovery_UpdatesCounts(t *testing.T) {
 
 func TestRegistry_Probe_Happy(t *testing.T) {
 	r := newTestRegistry(t)
-	res, err := r.Probe(idCtx(t, "t-1"), "github-server")
+	res, err := r.Probe(idCtx(t), "github-server")
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -239,14 +239,14 @@ func TestRegistry_Probe_ErrorRecorded(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	res, err := r.Probe(idCtx(t, "t-1"), "bad-server")
+	res, err := r.Probe(idCtx(t), "bad-server")
 	if err != nil {
 		t.Fatalf("Probe should not error on a probe-failure: %v", err)
 	}
 	if res.OK {
 		t.Fatalf("want failed probe, got %+v", res)
 	}
-	v, _ := r.GetServer(idCtx(t, "t-1"), "bad-server")
+	v, _ := r.GetServer(idCtx(t), "bad-server")
 	if v.State != ServerStateError {
 		t.Fatalf("want error state after failed probe, got %v", v.State)
 	}
@@ -254,11 +254,11 @@ func TestRegistry_Probe_ErrorRecorded(t *testing.T) {
 
 func TestRegistry_Health_Snapshot(t *testing.T) {
 	r := newTestRegistry(t)
-	if _, err := r.RefreshDiscovery(idCtx(t, "t-1"), "github-server"); err != nil {
+	if _, err := r.RefreshDiscovery(idCtx(t), "github-server"); err != nil {
 		t.Fatalf("RefreshDiscovery: %v", err)
 	}
 	r.RecordReconnect("github-server", "transport reset")
-	snap, err := r.Health(idCtx(t, "t-1"), "github-server", 0)
+	snap, err := r.Health(idCtx(t), "github-server", 0)
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}
@@ -272,14 +272,14 @@ func TestRegistry_Health_Snapshot(t *testing.T) {
 
 func TestRegistry_SetRawHTMLTrust_PersistsFlag(t *testing.T) {
 	r := newTestRegistry(t)
-	prev, err := r.SetRawHTMLTrust(idCtx(t, "t-1"), "github-server", true)
+	prev, err := r.SetRawHTMLTrust(idCtx(t), "github-server", true)
 	if err != nil {
 		t.Fatalf("SetRawHTMLTrust: %v", err)
 	}
 	if prev {
 		t.Fatalf("want prior value false, got true")
 	}
-	v, _ := r.GetServer(idCtx(t, "t-1"), "github-server")
+	v, _ := r.GetServer(idCtx(t), "github-server")
 	if !v.RawHTMLTrusted {
 		t.Fatalf("trust flag not persisted")
 	}

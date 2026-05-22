@@ -63,7 +63,7 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, n*8)
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(fx fixture) {
 			defer wg.Done()
 

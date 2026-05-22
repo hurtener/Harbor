@@ -2,7 +2,6 @@ package governance
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -81,18 +80,4 @@ func (w *wrappedClient) Close(ctx context.Context) error {
 // so per-policy emit sites stay readable.
 func errorWith(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: %s", sentinel, fmt.Sprintf(format, args...))
-}
-
-// asIdentityRequired classifies a state-layer or identity-layer error
-// for fail-closed propagation. Identity-related state errors surface as
-// `ErrIdentityRequired`; other state errors surface as
-// `ErrStateUnavailable`.
-func asIdentityRequired(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, ErrIdentityRequired) {
-		return err
-	}
-	return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
 }

@@ -8,7 +8,7 @@ import (
 
 func TestControlHistory_CapsAtMax_NewestWins(t *testing.T) {
 	h := newControlHistory(4)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		h.record("sess-1", AppliedControl{
 			Type:      ControlInjectContext,
 			RunID:     "run-1",

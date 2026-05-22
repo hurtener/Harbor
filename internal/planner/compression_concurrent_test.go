@@ -72,8 +72,7 @@ func TestCompressionRunner_ConcurrentReuse_D025(t *testing.T) {
 		nonCancelSuccess int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 
@@ -202,8 +201,7 @@ func TestCompressionRunner_SharedAcrossGoroutines_NoRaceOnEstimator(t *testing.T
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 			rc := planner.RunContext{
@@ -241,8 +239,7 @@ func TestCompressionRunner_EmitClosure_ConcurrentSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 			rc := planner.RunContext{

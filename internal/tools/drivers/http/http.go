@@ -252,13 +252,13 @@ func RegisterHTTPTool(
 
 	urlTmpl, err := compileTemplate("url:"+name, urlTemplate)
 	if err != nil {
-		return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %v", name, ErrTemplateRender, err)
+		return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %w", name, ErrTemplateRender, err)
 	}
 	var bodyTmpl *stdtemplate.Template
 	if cfg.bodyTmpl != "" {
 		bodyTmpl, err = compileTemplate("body:"+name, cfg.bodyTmpl)
 		if err != nil {
-			return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %v", name, ErrTemplateRender, err)
+			return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %w", name, ErrTemplateRender, err)
 		}
 	}
 
@@ -369,20 +369,20 @@ func doHTTPInvoke(
 	var argsAny any
 	if len(args) > 0 && !bytes.Equal(bytes.TrimSpace(args), []byte("null")) {
 		if err := json.Unmarshal(args, &argsAny); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	tmplData := map[string]any{"Args": argsAny}
 
 	renderedURL, err := renderTemplate(urlTmpl, tmplData)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: %v", ErrTemplateRender, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: %w", ErrTemplateRender, err)
 	}
 
 	// Sanity: URL must parse.
 	parsedURL, err := url.Parse(renderedURL)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: url parse %q: %v", ErrTemplateRender, renderedURL, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: url parse %q: %w", ErrTemplateRender, renderedURL, err)
 	}
 
 	var body io.Reader
@@ -390,7 +390,7 @@ func doHTTPInvoke(
 	if bodyTmpl != nil {
 		rendered, err := renderTemplate(bodyTmpl, tmplData)
 		if err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: body: %v", ErrTemplateRender, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: body: %w", ErrTemplateRender, err)
 		}
 		bodyBytes = []byte(rendered)
 		body = bytes.NewReader(bodyBytes)

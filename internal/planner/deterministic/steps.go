@@ -337,11 +337,13 @@ func (s *SpawnAndAwaitStep) stateKey(q identity.Quadruple) string {
 func (s *SpawnAndAwaitStep) getState(q identity.Quadruple) *spawnState {
 	key := s.stateKey(q)
 	if existing, ok := s.states.Load(key); ok {
-		return existing.(*spawnState)
+		st, _ := existing.(*spawnState) //nolint:errcheck // states map values are always *spawnState by construction
+		return st
 	}
 	fresh := &spawnState{}
 	actual, _ := s.states.LoadOrStore(key, fresh)
-	return actual.(*spawnState)
+	st, _ := actual.(*spawnState) //nolint:errcheck // states map values are always *spawnState by construction
+	return st
 }
 
 // Decide implements [DecisionTreeStep]. See type godoc for the
@@ -535,7 +537,7 @@ func (s *WatchGroupStep) Decide(ctx context.Context, rc planner.RunContext) (pla
 
 	key := rc.Quadruple.SessionID + "::" + string(s.GroupID)
 	if v, has := s.resolved.Load(key); has {
-		if v.(bool) {
+		if done, _ := v.(bool); done { //nolint:errcheck // resolved map values are always bool by construction
 			return nil, false, nil
 		}
 	}

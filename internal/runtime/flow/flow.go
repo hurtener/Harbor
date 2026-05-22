@@ -238,8 +238,10 @@ func invokeFlow(ctx context.Context, def Definition, eng engine.Engine, args jso
 	parent := budgetFromCtx(ctx)
 	acc := newBudgetAccumulator(def.Budget, parent)
 
-	flowCtx := ctx
-	var cancelFn context.CancelFunc
+	var (
+		flowCtx  context.Context
+		cancelFn context.CancelFunc
+	)
 	if acc.deadline.IsZero() {
 		flowCtx, cancelFn = context.WithCancel(ctx)
 	} else {
@@ -400,6 +402,13 @@ func (a *budgetAccumulator) tryHop(n int) bool {
 	return next >= 0
 }
 
+// tryCost debits the per-invocation CostCap budget. The accumulator
+// fields are populated from Budget.CostCap; the call site that debits
+// per-hop cost is not yet wired (cost-per-hop accounting lands with the
+// LLM-cost integration). Kept so the staged enforcement surface stays
+// visible alongside tryHop.
+//
+//nolint:unused // staged CostCap enforcement; debit call site lands with LLM-cost accounting
 func (a *budgetAccumulator) tryCost(usd float64) bool {
 	if !a.costEnabled {
 		return true
@@ -422,7 +431,7 @@ func emitBudgetExceeded(ctx context.Context, flowName string, q identity.Quadrup
 			Axis:     axis,
 		},
 	}
-	_ = bus.Publish(ctx, ev)
+	_ = bus.Publish(ctx, ev) //nolint:errcheck // best-effort budget-exceeded emit; observability only
 }
 
 func wrap(sentinel error, format string, args ...any) error {

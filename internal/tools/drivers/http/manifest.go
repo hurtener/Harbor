@@ -123,15 +123,15 @@ func LoadManifest(path string) (*Manifest, error) {
 	clean := filepath.Clean(path)
 	abs, err := filepath.Abs(clean)
 	if err != nil {
-		return nil, fmt.Errorf("%w: resolve path %q: %v", ErrManifestInvalid, path, err)
+		return nil, fmt.Errorf("%w: resolve path %q: %w", ErrManifestInvalid, path, err)
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read %q: %v", ErrManifestInvalid, abs, err)
+		return nil, fmt.Errorf("%w: read %q: %w", ErrManifestInvalid, abs, err)
 	}
 	var m Manifest
 	if err := yaml.UnmarshalWithOptions(data, &m, yaml.Strict()); err != nil {
-		return nil, fmt.Errorf("%w: parse %q: %v", ErrManifestInvalid, abs, err)
+		return nil, fmt.Errorf("%w: parse %q: %w", ErrManifestInvalid, abs, err)
 	}
 	if err := m.validate(abs); err != nil {
 		return nil, err
@@ -169,16 +169,16 @@ func (m *Manifest) validate(source string) error {
 		}
 		// Secret-leak check on the URL + body + headers BEFORE compile.
 		if err := checkNoSecretLeak("url_template", t.URLTemplate); err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrManifestInvalid, path, err)
+			return fmt.Errorf("%w: %s: %w", ErrManifestInvalid, path, err)
 		}
 		if t.Body != "" {
 			if err := checkNoSecretLeak("body_template", t.Body); err != nil {
-				return fmt.Errorf("%w: %s: %v", ErrManifestInvalid, path, err)
+				return fmt.Errorf("%w: %s: %w", ErrManifestInvalid, path, err)
 			}
 		}
 		for k, v := range t.Headers {
 			if err := checkNoSecretLeak("header["+k+"]", v); err != nil {
-				return fmt.Errorf("%w: %s: %v", ErrManifestInvalid, path, err)
+				return fmt.Errorf("%w: %s: %w", ErrManifestInvalid, path, err)
 			}
 		}
 
@@ -199,7 +199,7 @@ func (m *Manifest) validate(source string) error {
 		// auth_ref MUST resolve to an entry in m.Auth.
 		if t.AuthRef != "" {
 			if _, ok := m.Auth[t.AuthRef]; !ok {
-				return fmt.Errorf("%w: %s auth_ref %q has no matching entry under top-level auth:",
+				return fmt.Errorf("%w: %s auth_ref %q has no matching entry under the top-level auth section",
 					ErrManifestInvalid, path, t.AuthRef)
 			}
 		}
@@ -214,7 +214,7 @@ func (m *Manifest) validate(source string) error {
 			Kind: a.Kind, HeaderName: a.Header, QueryParam: a.Query, CookieName: a.Cookie,
 		}
 		if err := spec.Validate(); err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrManifestInvalid, path, err)
+			return fmt.Errorf("%w: %s: %w", ErrManifestInvalid, path, err)
 		}
 		if a.Kind == AuthKindNone {
 			// Auth entries should never declare Kind=none — that's

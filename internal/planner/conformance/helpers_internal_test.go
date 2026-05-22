@@ -53,7 +53,7 @@ func TestMapDepth_BoundedAtCap(t *testing.T) {
 	// Build a 40-deep nested map; expect depth = 32 (cap).
 	root := map[string]any{}
 	curr := root
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		next := map[string]any{}
 		curr["k"] = next
 		curr = next

@@ -404,7 +404,7 @@ func (d *driver) AcknowledgeBackground(ctx context.Context, sessionID identity.I
 	type emit struct {
 		ev events.Event
 	}
-	var emits []emit
+	emits := make([]emit, 0, len(ids))
 	count := 0
 	for _, tid := range ids {
 		t, ok := d.tasks[tid]
@@ -1009,4 +1009,3 @@ func marshalGroup(g *tasks.TaskGroup) ([]byte, error) {
 func marshalPatch(p *tasks.Patch) ([]byte, error) {
 	return json.Marshal(p)
 }
-

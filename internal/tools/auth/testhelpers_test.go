@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -314,7 +313,7 @@ type providerHarness struct {
 func newProviderHarness(t *testing.T) *providerHarness {
 	t.Helper()
 	server := newFakeAuthServer(t)
-	store, _ := mkTokenStore(t)
+	store := mkTokenStore(t)
 	red := mkRedactor(t)
 	bus := mkBus(t, red)
 	coord := mkCoordinator(t)
@@ -361,51 +360,6 @@ func newProviderHarness(t *testing.T) *providerHarness {
 		userCfg:     userCfg,
 		agentCfg:    agentCfg,
 	}
-}
-
-// drainEvent subscribes for one event of the given type then cancels.
-// Returns the captured payload. Used to assert tool.auth_required /
-// tool.auth_completed shapes end-to-end.
-func drainEvent(t *testing.T, bus events.EventBus, filter events.Filter, deadline time.Duration) events.Event {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
-	sub, err := bus.Subscribe(ctx, filter)
-	if err != nil {
-		t.Fatalf("bus.Subscribe: %v", err)
-	}
-	select {
-	case ev, ok := <-sub.Events():
-		if !ok {
-			t.Fatalf("bus channel closed before event arrived")
-		}
-		sub.Cancel()
-		return ev
-	case <-ctx.Done():
-		sub.Cancel()
-		t.Fatalf("timed out waiting for event")
-		return events.Event{}
-	}
-}
-
-// formEncode is a tiny helper because url.Values{}.Encode is a bit
-// verbose to inline.
-func formEncode(kv map[string]string) string {
-	v := url.Values{}
-	for k, val := range kv {
-		v.Set(k, val)
-	}
-	return v.Encode()
-}
-
-// stringSliceContains is a tiny helper for slice assertions.
-func stringSliceContains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // importMarker keeps `tools` import live in this file regardless of

@@ -66,8 +66,7 @@ func TestHTTPTool_ConcurrentReuse_NoRace(t *testing.T) {
 	}
 	results := make([]result, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

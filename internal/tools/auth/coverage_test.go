@@ -48,7 +48,7 @@ func TestOAuthConfig_Validate_AllFailureModes(t *testing.T) {
 		{"no server url no token url", OAuthConfig{Source: "s", BindingScope: ScopeUser, RedirectURI: "x"}, ErrConfigInvalid},
 	}
 	for _, c := range cases {
-		c := c
+
 		t.Run(c.name, func(t *testing.T) {
 			err := c.cfg.Validate()
 			if !errors.Is(err, c.want) {

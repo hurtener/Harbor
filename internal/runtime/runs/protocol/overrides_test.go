@@ -59,9 +59,9 @@ func newService(t *testing.T, opts ...runsprotocol.Option) (*runsprotocol.Servic
 	return svc, store
 }
 
-func wireReq(session string, o prototypes.RunOverrides) prototypes.RunSetOverridesRequest {
+func wireReq(o prototypes.RunOverrides) prototypes.RunSetOverridesRequest {
 	return prototypes.RunSetOverridesRequest{
-		Identity:  prototypes.IdentityScope{Tenant: testTenant, User: testUser, Session: session},
+		Identity:  prototypes.IdentityScope{Tenant: testTenant, User: testUser, Session: testSession},
 		Overrides: o,
 	}
 }
@@ -77,7 +77,7 @@ func TestSetOverrides_RecordsOverrideForNextMessage(t *testing.T) {
 	at := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	svc, store := newService(t, runsprotocol.WithClock(fixedClock(at)))
 
-	req := wireReq(testSession, prototypes.RunOverrides{
+	req := wireReq(prototypes.RunOverrides{
 		SessionID:       testSession,
 		ReasoningEffort: strPtr("high"),
 		Temperature:     f64Ptr(0.7),
@@ -114,7 +114,7 @@ func TestSetOverrides_AppliesToNextMessageOnly_NotRetroactive(t *testing.T) {
 	svc, store := newService(t)
 	id := identity.Identity{TenantID: testTenant, UserID: testUser, SessionID: testSession}
 
-	if _, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID: testSession, ReasoningEffort: strPtr("low"),
 	})); err != nil {
 		t.Fatalf("SetOverrides: %v", err)
@@ -136,12 +136,12 @@ func TestSetOverrides_LastWriteWins(t *testing.T) {
 	svc, store := newService(t)
 	id := identity.Identity{TenantID: testTenant, UserID: testUser, SessionID: testSession}
 
-	if _, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID: testSession, ReasoningEffort: strPtr("low"),
 	})); err != nil {
 		t.Fatalf("SetOverrides #1: %v", err)
 	}
-	if _, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID: testSession, ReasoningEffort: strPtr("high"),
 	})); err != nil {
 		t.Fatalf("SetOverrides #2: %v", err)
@@ -176,7 +176,7 @@ func TestSetOverrides_RejectsCrossSessionOverride(t *testing.T) {
 	svc, store := newService(t)
 	// The verified session is testSession; the override names a
 	// DIFFERENT session — a cross-session escalation attempt.
-	_, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	_, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID:       "some-other-session",
 		ReasoningEffort: strPtr("high"),
 	}))
@@ -191,7 +191,7 @@ func TestSetOverrides_RejectsCrossSessionOverride(t *testing.T) {
 
 func TestSetOverrides_RejectsEmptyOverrideSessionID(t *testing.T) {
 	svc, _ := newService(t)
-	_, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	_, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID: "", ReasoningEffort: strPtr("high"),
 	}))
 	if !errors.Is(err, runsprotocol.ErrInvalidRequest) {
@@ -210,7 +210,7 @@ func TestSetOverrides_ValidatesOverridePayload(t *testing.T) {
 	}
 	for name, o := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := svc.SetOverrides(context.Background(), wireReq(testSession, o))
+			_, err := svc.SetOverrides(context.Background(), wireReq(o))
 			if !errors.Is(err, runsprotocol.ErrInvalidRequest) {
 				t.Fatalf("error = %v, want ErrInvalidRequest", err)
 			}
@@ -221,7 +221,7 @@ func TestSetOverrides_ValidatesOverridePayload(t *testing.T) {
 func TestSetOverrides_AcceptsSystemPromptOverride(t *testing.T) {
 	svc, store := newService(t)
 	id := identity.Identity{TenantID: testTenant, UserID: testUser, SessionID: testSession}
-	if _, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID:            testSession,
 		SystemPromptOverride: strPtr("You are a terse assistant."),
 	})); err != nil {
@@ -237,7 +237,7 @@ func TestSetOverrides_HonoursContextCancellation(t *testing.T) {
 	svc, _ := newService(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := svc.SetOverrides(ctx, wireReq(testSession, prototypes.RunOverrides{
+	_, err := svc.SetOverrides(ctx, wireReq(prototypes.RunOverrides{
 		SessionID: testSession, ReasoningEffort: strPtr("high"),
 	}))
 	if !errors.Is(err, context.Canceled) {
@@ -259,7 +259,7 @@ func TestSetOverrides_EmitsAuditEventOnBus(t *testing.T) {
 	defer sub.Cancel()
 
 	svc, _ := newService(t, runsprotocol.WithBus(bus))
-	if _, err := svc.SetOverrides(context.Background(), wireReq(testSession, prototypes.RunOverrides{
+	if _, err := svc.SetOverrides(context.Background(), wireReq(prototypes.RunOverrides{
 		SessionID:       testSession,
 		ReasoningEffort: strPtr("high"),
 		Temperature:     f64Ptr(0.5),

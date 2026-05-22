@@ -55,7 +55,7 @@ func TestRateLimiter_LatentPermitsAllCalls(t *testing.T) {
 	}
 	defer rl.Close(context.Background())
 	ctx := ctxWith(t, "T", "U", "S", "R")
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if err := rl.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
 			t.Errorf("PreCall[%d] under latent default: %v", i, err)
 		}
@@ -88,7 +88,7 @@ func TestRateLimiter_DrainsAndRefills(t *testing.T) {
 	req := llm.CompleteRequest{Model: "m", MaxTokens: &one}
 
 	// Drain 3 calls (Capacity).
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := rl.PreCall(ctx, req); err != nil {
 			t.Fatalf("drain #%d: %v", i, err)
 		}
@@ -173,7 +173,7 @@ func TestRateLimiter_IdentityIsolation(t *testing.T) {
 	ctxA := ctxWith(t, "A", "uA", "sA", "rA")
 	ctxB := ctxWith(t, "B", "uB", "sB", "rB")
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := rl.PreCall(ctxA, req); err != nil {
 			t.Fatalf("A drain[%d]: %v", i, err)
 		}
@@ -212,7 +212,7 @@ func TestRateLimiter_ConcurrentDrainNeverNegative(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	var permitted, blocked atomic.Int32
-	for i := 0; i < N; i++ {
+	for range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -268,7 +268,7 @@ func TestRateLimiter_RequestedTokensDefault(t *testing.T) {
 	defer rl.Close(context.Background())
 	ctx := ctxWith(t, "T", "U", "S", "R")
 	// No MaxTokens — default drain = 1 each → 5 calls succeed, 6th blocks.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := rl.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
 			t.Fatalf("drain[%d]: %v", i, err)
 		}
@@ -299,7 +299,7 @@ func TestRateLimiter_OneShotBucket_NoRefill(t *testing.T) {
 	one := 1
 	req := llm.CompleteRequest{Model: "m", MaxTokens: &one}
 	// Drain to zero.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := rl.PreCall(ctx, req); err != nil {
 			t.Fatalf("drain[%d]: %v", i, err)
 		}

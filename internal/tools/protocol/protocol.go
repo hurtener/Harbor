@@ -201,7 +201,7 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 		SessionID: scope.Session,
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return id, nil
 }

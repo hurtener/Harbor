@@ -103,7 +103,7 @@ func TestRegistry_PerRunIsolation(t *testing.T) {
 		t.Fatalf("Open runB: %v", err)
 	}
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := inA.Enqueue(validEvent(runA)); err != nil {
 			t.Fatalf("Enqueue runA: %v", err)
 		}

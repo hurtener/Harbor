@@ -20,13 +20,13 @@ import (
 func identityFromContext(ctx context.Context) (identity.Identity, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {
-			return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q.Identity, nil
 	}
 	if id, ok := identity.From(ctx); ok {
 		if err := identity.Validate(id); err != nil {
-			return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return id, nil
 	}

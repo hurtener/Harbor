@@ -541,7 +541,7 @@ func (r *Registry) requireIdentity(ctx context.Context) (identity.Identity, erro
 		return identity.Identity{}, fmt.Errorf("%w: no identity in context", ErrIdentityRequired)
 	}
 	if err := identity.Validate(ident); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return ident, nil
 }
@@ -632,7 +632,7 @@ func (r *Registry) saveRecord(ctx context.Context, ident identity.Identity, ar *
 // that misses the event can still query the registry. This mirrors
 // sessions.Registry.publish.
 func (r *Registry) publish(ctx context.Context, _ identity.Identity, ev events.Event) {
-	_ = r.bus.Publish(ctx, ev)
+	_ = r.bus.Publish(ctx, ev) //nolint:errcheck // best-effort emit; StateStore is source of truth (see doc above)
 }
 
 // redactString runs an operator-supplied string through the configured

@@ -124,7 +124,7 @@ func (p *RegistryProjector) projectRecord(ctx context.Context, id identity.Ident
 	a := prototypes.Agent{
 		ID:           rec.AgentID,
 		Name:         rec.DisplayName,
-		Incarnation:  int64(rec.Incarnation),
+		Incarnation:  int64(rec.Incarnation), //nolint:gosec // Incarnation is a per-process-start counter; it cannot reach the int64 ceiling
 		VersionHash:  rec.VersionHash,
 		Owner:        rec.RegistrationKey,
 		Status:       projectStatus(rec.Health),
@@ -290,7 +290,7 @@ func mapRegistryErr(err error) error {
 	case errors.Is(err, registry.ErrAgentNotFound):
 		return ErrAgentNotFound
 	case errors.Is(err, registry.ErrIdentityRequired):
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	default:
 		return fmt.Errorf("registry/protocol: registry: %w", err)
 	}

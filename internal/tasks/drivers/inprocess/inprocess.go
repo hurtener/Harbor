@@ -81,9 +81,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 }
 
 func init() {
-	tasks.Register("inprocess", func(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
-		return New(deps)
-	})
+	tasks.Register("inprocess", New)
 }
 
 // idempotencyKey scopes IdempotencyKey by SessionID. Spec'd by the

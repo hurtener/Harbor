@@ -40,7 +40,6 @@ func runWithReliability(
 	policy NodePolicy,
 	nctx *NodeContext,
 	nodeName string,
-	jitter func() float64,
 	rcCancel *runCancellation,
 ) (messages.Envelope, error) {
 	// 1. Input validation.
@@ -51,10 +50,8 @@ func runWithReliability(
 		}
 	}
 
-	// Default jitter source.
-	if jitter == nil {
-		jitter = rand.Float64
-	}
+	// Backoff jitter source.
+	jitter := rand.Float64
 
 	totalAttempts := policy.MaxRetries + 1
 	if totalAttempts <= 0 {
@@ -62,7 +59,7 @@ func runWithReliability(
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < totalAttempts; attempt++ {
+	for attempt := range totalAttempts {
 		// Honor ctx cancellation before each (re)try.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return messages.Envelope{}, newRunError(in, nodeName, CodeRunCancelled,

@@ -46,7 +46,7 @@ func TestRequest_MintsUniqueOpaqueToken(t *testing.T) {
 	ctx := runCtx(t, testID, "run-1")
 
 	seen := make(map[pauseresume.Token]struct{})
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		p, err := c.Request(ctx, pauseresume.PauseRequest{
 			Identity: testID,
 			Reason:   pauseresume.ReasonApprovalRequired,

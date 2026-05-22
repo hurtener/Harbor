@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
@@ -151,7 +150,7 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 	}
 
 	// Drain the success event.
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypeTrajectoryCompressed {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypeTrajectoryCompressed)
 	}
@@ -272,7 +271,7 @@ func TestE2E_ReactCompression_SummariserFailure_SurfacesOnBus(t *testing.T) {
 		t.Errorf("tr.Summary stamped on failure path — want nil (no silent fall-through)")
 	}
 
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypeTrajectoryCompressionFailed {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypeTrajectoryCompressionFailed)
 	}

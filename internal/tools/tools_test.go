@@ -131,7 +131,7 @@ func TestCatalog_List_NameRegex(t *testing.T) {
 			t.Fatalf("register %q: %v", name, err)
 		}
 	}
-	list := cat.List(tools.CatalogFilter{NameRegex: regexp.MustCompile("^http\\.")})
+	list := cat.List(tools.CatalogFilter{NameRegex: regexp.MustCompile(`^http\.`)})
 	if len(list) != 2 {
 		t.Fatalf("expected 2, got %v", names(list))
 	}

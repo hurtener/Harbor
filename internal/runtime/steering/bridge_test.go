@@ -66,13 +66,13 @@ type bridgeFixture struct {
 // be constructed with the SAME coord — otherwise the bridge's "skip
 // direct Resume" path silently no-ops (the gate's Resume calls one
 // Coordinator, the applier's fall-through would call a different one).
-func mkBridgeFixture(t *testing.T, policy approval.ApprovalPolicy) *bridgeFixture {
+func mkBridgeFixture(t *testing.T) *bridgeFixture {
 	t.Helper()
 	red := patternsAudit.New()
 	bus := mkBridgeBus(t, red)
 	coord := pauseresume.New(pauseresume.WithBus(bus))
 	g, err := approval.NewApprovalGate(approval.GateDeps{
-		Policy:      policy,
+		Policy:      alwaysRequirePolicy{},
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    red,
@@ -93,11 +93,15 @@ func (alwaysRequirePolicy) ShouldApprove(_ context.Context, _ *approval.Approval
 	return true, "bridge-test", nil
 }
 
+// approvalRequestedTimeout bounds waitForApprovalRequested's channel
+// receive — a real-time deadline, not a synchronisation sleep.
+const approvalRequestedTimeout = 2 * time.Second
+
 // waitForApprovalRequested blocks until a tool.approval_requested
 // event arrives on the bus or the timeout fires. Returns the minted
 // pause Token. The subscription MUST be opened before the RunGuarded
 // goroutine starts so it does not race the publish.
-func waitForApprovalRequested(t *testing.T, sub events.Subscription, d time.Duration) pauseresume.Token {
+func waitForApprovalRequested(t *testing.T, sub events.Subscription) pauseresume.Token {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -109,7 +113,7 @@ func waitForApprovalRequested(t *testing.T, sub events.Subscription, d time.Dura
 			t.Fatalf("subscribed event payload type = %T, want approval.ToolApprovalRequestedPayload", ev.Payload)
 		}
 		return pauseresume.Token(p.PauseToken)
-	case <-time.After(d):
+	case <-time.After(approvalRequestedTimeout):
 		t.Fatal("timeout waiting for tool.approval_requested")
 		return ""
 	}
@@ -171,7 +175,7 @@ func TestBridge_NoGates_DirectResume_Backcompat(t *testing.T) {
 // steering apply path; the bridge routes it through gate.ResolveApproval;
 // the wrapped goroutine unblocks with the original args.
 func TestBridge_Approve_RoutesThroughGate(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	// Open the subscription BEFORE starting the RunGuarded goroutine
 	// so we never race the publish.
@@ -201,7 +205,7 @@ func TestBridge_Approve_RoutesThroughGate(t *testing.T) {
 		resCh <- outcome{args: args, err: err}
 	}()
 
-	token := waitForApprovalRequested(t, sub, 2*time.Second)
+	token := waitForApprovalRequested(t, sub)
 
 	// Fire the apply path with an APPROVE control carrying the
 	// gate's token in the wire payload (the canonical wire shape).
@@ -244,7 +248,7 @@ func TestBridge_Approve_RoutesThroughGate(t *testing.T) {
 // TestBridge_Reject_RoutesThroughGate — the rejection path. The
 // wrapped goroutine returns *approval.ErrToolRejected.
 func TestBridge_Reject_RoutesThroughGate(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	sub, cancelSub := subscribeForApprovalRequested(t, fx.bus, bridgeTestID)
 	defer cancelSub()
@@ -268,7 +272,7 @@ func TestBridge_Reject_RoutesThroughGate(t *testing.T) {
 		resCh <- outcome{args: args, err: err}
 	}()
 
-	token := waitForApprovalRequested(t, sub, 2*time.Second)
+	token := waitForApprovalRequested(t, sub)
 
 	sc := &stepControl{}
 	q := identity.Quadruple{Identity: bridgeTestID, RunID: "run-bridge-reject"}
@@ -307,7 +311,7 @@ func TestBridge_Reject_RoutesThroughGate(t *testing.T) {
 // direct call) by asserting NO error fires on the apply path AND the
 // Coordinator's Status reflects exactly one resume.
 func TestBridge_NoDoubleResume(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	sub, cancelSub := subscribeForApprovalRequested(t, fx.bus, bridgeTestID)
 	defer cancelSub()
@@ -326,7 +330,7 @@ func TestBridge_NoDoubleResume(t *testing.T) {
 		})
 		resCh <- err
 	}()
-	token := waitForApprovalRequested(t, sub, 2*time.Second)
+	token := waitForApprovalRequested(t, sub)
 
 	sc := &stepControl{}
 	q := identity.Quadruple{Identity: bridgeTestID, RunID: "run-bridge-no-double"}
@@ -373,7 +377,7 @@ func TestBridge_NoDoubleResume(t *testing.T) {
 // `RequestPause` — OAuth flow, A2A AUTH_REQUIRED, etc.), the bridge
 // is inert; the direct path resumes the RunLoop's outstandingToken.
 func TestBridge_NoWirePayloadToken_DirectResumeOnRunLoopToken(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	stub := &stubCoordinator{}
 	a := &applier{
@@ -409,7 +413,7 @@ func TestBridge_NoWirePayloadToken_DirectResumeOnRunLoopToken(t *testing.T) {
 // `token` key), routeThroughGate returns (false, nil) and the direct
 // path resumes the RunLoop's outstandingToken with the wire payload.
 func TestBridge_WireTokenNotOwnedByAnyGate_FallsThroughAndResumesRunLoop(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	stub := &stubCoordinator{}
 	a := &applier{
@@ -441,7 +445,7 @@ func TestBridge_WireTokenNotOwnedByAnyGate_FallsThroughAndResumesRunLoop(t *test
 // through any gate, even when gates are configured. Pins the
 // approval/RESUME boundary the bridge respects.
 func TestBridge_ResumeStaysOnDirectPath(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	stub := &stubCoordinator{}
 	a := &applier{
@@ -499,7 +503,7 @@ func TestBridge_NilGateInMap_Skipped(t *testing.T) {
 // TestRunLoop_WithApprovalGates_OptionWires — the public option
 // surface wires the map onto the applier.
 func TestRunLoop_WithApprovalGates_OptionWires(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 	gates := map[string]*approval.ApprovalGate{"bridge-tool": fx.gate}
 	rl, _, _ := newTestRunLoop(t, WithApprovalGates(gates))
 	if rl.applier == nil {
@@ -552,7 +556,7 @@ func bridgeCallerCtx(t *testing.T) context.Context {
 //     caller's ctx (proves the bridge preserves the (tenant,user,session)
 //     triple across the elevation).
 func TestBridge_IdentityElevation_DoesNotLeakBackToCaller(t *testing.T) {
-	fx := mkBridgeFixture(t, alwaysRequirePolicy{})
+	fx := mkBridgeFixture(t)
 
 	sub, cancelSub := subscribeForApprovalRequested(t, fx.bus, bridgeTestID)
 	defer cancelSub()
@@ -581,7 +585,7 @@ func TestBridge_IdentityElevation_DoesNotLeakBackToCaller(t *testing.T) {
 		resCh <- outcome{args: args, err: err}
 	}()
 
-	token := waitForApprovalRequested(t, sub, 2*time.Second)
+	token := waitForApprovalRequested(t, sub)
 
 	// Caller ctx: identity attached, ZERO scopes. This is the shape
 	// the steering apply path would receive after Phase 54's

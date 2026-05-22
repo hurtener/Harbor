@@ -32,7 +32,7 @@ func nextBackoff(attempt int, base, max time.Duration, mult float64, rand func()
 
 	// Geometric growth: base * mult^attempt
 	growth := float64(base)
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		growth *= mult
 	}
 	// Saturating add to int64 nanoseconds to avoid float overflow at

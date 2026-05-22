@@ -191,7 +191,7 @@ func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 		return identity.Identity{}, fmt.Errorf("%w: no identity in ctx", ErrIdentityRequired)
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return id, nil
 }
@@ -202,7 +202,7 @@ func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 func quadrupleFromCtx(ctx context.Context) (identity.Quadruple, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {
-			return identity.Quadruple{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return identity.Quadruple{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}

@@ -52,14 +52,14 @@ func TestEmitChunk_CrossRun_NoDeadlock(t *testing.T) {
 		frames []engine.StreamFrame
 	}
 	deliveries := make(map[string]*producedSet, tenants)
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		deliveries[fmt.Sprintf("r-%d", i)] = &producedSet{}
 	}
 	var deliveriesMu sync.Mutex
 
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		runID := env.RunID
-		for i := 0; i < framesPerRun; i++ {
+		for i := range framesPerRun {
 			frame := engine.StreamFrame{
 				StreamID: runID,
 				Text:     fmt.Sprintf("%s-%d", runID, i),
@@ -137,8 +137,8 @@ func TestEmitChunk_CrossRun_NoDeadlock(t *testing.T) {
 	// Producers: one Emit per RunID, each emitting `framesPerRun`
 	// frames inside the node.
 	var prodWG sync.WaitGroup
-	for i := 0; i < tenants; i++ {
-		i := i
+	for i := range tenants {
+
 		prodWG.Add(1)
 		go func() {
 			defer prodWG.Done()
@@ -228,14 +228,14 @@ func TestEngine_ConcurrentReuse_Streaming(t *testing.T) {
 		frames []engine.StreamFrame
 	}
 	seen := make(map[string]*seenRun, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		seen[fmt.Sprintf("r-%d", i)] = &seenRun{}
 	}
 	var seenMu sync.Mutex
 
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		runID := env.RunID
-		for i := 0; i < framesPerRun; i++ {
+		for i := range framesPerRun {
 			frame := engine.StreamFrame{
 				StreamID: runID,
 				Text:     fmt.Sprintf("%s-%d", runID, i),
@@ -295,8 +295,8 @@ func TestEngine_ConcurrentReuse_Streaming(t *testing.T) {
 	}()
 
 	var prodWG sync.WaitGroup
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		prodWG.Add(1)
 		go func() {
 			defer prodWG.Done()
@@ -388,7 +388,7 @@ func TestEngine_NoGoroutineLeak_AfterStop_WithStreaming(t *testing.T) {
 				}
 				_ = eng.Emit(runCtx, env)
 				// Drain a couple to let the stream actually start.
-				for i := 0; i < 2; i++ {
+				for range 2 {
 					fctx, cancel := context.WithTimeout(runCtx, 1*time.Second)
 					_, _ = eng.Fetch(fctx)
 					cancel()
@@ -414,7 +414,7 @@ func TestEngine_NoGoroutineLeak_AfterStop_WithStreaming(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			baseline := runtime.NumGoroutine()
 			nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
-				for i := 0; i < 10; i++ {
+				for i := range 10 {
 					if err := nctx.EmitChunk(ctx, engine.StreamFrame{Text: fmt.Sprintf("f%d", i)}); err != nil {
 						return messages.Envelope{}, err
 					}

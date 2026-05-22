@@ -682,7 +682,7 @@ func TestStepsTaken_TracksSuccessfulNextCalls(t *testing.T) {
 	}
 	p := react.New(client)
 	q := fixedQuadruple(t, "r-counter")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil)); err != nil {
 			t.Fatalf("Next #%d: %v", i+1, err)
 		}
