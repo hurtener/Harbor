@@ -3,9 +3,9 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -593,86 +593,140 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 	}
 }
 
-// TestE2E_React_RepairGuidanceCrossRunIsolation is the D-145
-// headline guarantee at the integration level: two concurrent runs
-// share ONE *ReActPlanner but carry disjoint RepairCounters. Run A
-// repeatedly trips the args counter; run B never does. Run B's
-// rendered prompts must NEVER carry repair guidance — no cross-run
-// counter bleed through the shared planner artifact.
+// demuxRecordingClient is an llm.LLMClient that routes scripted
+// responses by `identity.QuadrupleFrom(ctx).RunID` and records every
+// captured system prompt keyed by RunID. It lets one shared planner
+// serve N concurrent runs with per-run scripts and per-run prompt
+// inspection — which is what the D-145 shared-planner contract needs
+// to be tested honestly (the §17.5 Wave 15 audit flagged the prior
+// version of this test using one planner per run, which proved a
+// weaker property).
+type demuxRecordingClient struct {
+	mu      sync.Mutex
+	scripts map[string][]llm.CompleteResponse // keyed by RunID
+	cursors map[string]int                    // RunID → next response index
+	systems map[string][]string               // RunID → ordered system prompts
+}
+
+func newDemuxRecordingClient(scripts map[string][]llm.CompleteResponse) *demuxRecordingClient {
+	return &demuxRecordingClient{
+		scripts: scripts,
+		cursors: make(map[string]int, len(scripts)),
+		systems: make(map[string][]string, len(scripts)),
+	}
+}
+
+func (c *demuxRecordingClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	q, ok := identity.QuadrupleFrom(ctx)
+	if !ok {
+		return llm.CompleteResponse{}, fmt.Errorf("demuxRecordingClient: ctx carries no identity quadruple")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sys := ""
+	if len(req.Messages) > 0 && req.Messages[0].Content.Text != nil {
+		sys = *req.Messages[0].Content.Text
+	}
+	c.systems[q.RunID] = append(c.systems[q.RunID], sys)
+
+	cur := c.cursors[q.RunID]
+	resps := c.scripts[q.RunID]
+	var resp llm.CompleteResponse
+	switch {
+	case cur < len(resps):
+		resp = resps[cur]
+		c.cursors[q.RunID] = cur + 1
+	case len(resps) > 0:
+		// Stay on the last scripted response for additional steps.
+		resp = resps[len(resps)-1]
+	}
+	return resp, nil
+}
+
+func (c *demuxRecordingClient) Close(_ context.Context) error { return nil }
+
+// systemsFor returns the system prompts recorded against runID, in
+// invocation order. Safe to call after the WaitGroup join.
+func (c *demuxRecordingClient) systemsFor(runID string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	src := c.systems[runID]
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
+// containsAny reports whether any of the recorded system prompts for
+// runID contains the needle. The bleed assertions in the cross-run
+// isolation test below scan every recorded prompt for the run.
+func (c *demuxRecordingClient) containsAny(runID, needle string) bool {
+	for _, s := range c.systemsFor(runID) {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestE2E_React_RepairGuidanceCrossRunIsolation is the D-145 headline
+// guarantee at the integration level: ONE shared *ReActPlanner serves
+// two concurrent runs with disjoint *RepairCounters on their per-run
+// RunContexts. Run A's script is malformed-then-valid (Phase 44's
+// repair pipeline trips and increments A's counter); run B's script is
+// always clean. B's rendered prompts must NEVER carry repair guidance
+// — proving the counters live on the per-run RunContext and never bleed
+// through the shared planner artifact (D-145).
+//
+// The §17.5 Wave 15 audit flagged the prior version of this test as
+// using one planner per goroutine (a `_ = p` dead-store with two
+// `react.New(...)` calls inside the runs), which proved only that two
+// separate planners with disjoint RunContexts don't bleed. The
+// rewrite below uses a demuxing client (`demuxRecordingClient`) so the
+// shared-planner contract is actually exercised end-to-end.
 func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 	bus := integrationBus(t)
-	p := react.New(&recordingScriptedClient{
-		responses: []llm.CompleteResponse{{Content: `{"tool":"_finish","args":{"answer":"ok"}}`}},
+	client := newDemuxRecordingClient(map[string][]llm.CompleteResponse{
+		// Run A: malformed-then-valid drives Phase 44 to trip the args
+		// counter on every step. The cursor advances per call; once the
+		// script is exhausted the client replays the last (valid) entry,
+		// so an extra repair-validate call on a step doesn't deadlock.
+		"r-A": {
+			{Content: `garbage`},
+			{Content: `{"tool":"search","args":{"q":"a"}}`},
+			{Content: `garbage`},
+			{Content: `{"tool":"search","args":{"q":"a"}}`},
+			{Content: `garbage`},
+			{Content: `{"tool":"search","args":{"q":"a"}}`},
+			{Content: `garbage`},
+			{Content: `{"tool":"search","args":{"q":"a"}}`},
+		},
+		// Run B: always clean — no repair pipeline ever fires.
+		"r-B": {{Content: `{"tool":"search","args":{"q":"y"}}`}},
 	})
+	// ONE shared planner. Both runs call Next on this instance
+	// concurrently with their own RunContexts.
+	shared := react.New(client)
 
-	// Run B: a clean run sharing the planner. Its own client + its
-	// own (nil-then-zero) counters. We record B's prompts.
-	runB := func() (badPrompt bool) {
-		q := identity.Quadruple{
-			Identity: identity.Identity{TenantID: "t-B", UserID: "u", SessionID: "s"},
-			RunID:    "r-B",
-		}
-		ctx, cerr := identity.WithRun(t.Context(), q.Identity, q.RunID)
-		if cerr != nil {
-			t.Errorf("WithRun B: %v", cerr)
-			return false
-		}
-		clientB := &recordingScriptedClient{
-			responses: []llm.CompleteResponse{{Content: `{"tool":"search","args":{"q":"y"}}`}},
-		}
-		pB := react.New(clientB)
-		traj := &planner.Trajectory{}
-		countersB := &planner.RepairCounters{} // B's own counters, always clean
-		for range 5 {
-			rc := integrationRC(bus, q, "clean run B")
-			rc.Trajectory = traj
-			rc.RepairCounters = countersB
-			dec, nerr := pB.Next(ctx, rc)
-			if nerr != nil {
-				t.Errorf("run B Next: %v", nerr)
-				return false
-			}
-			traj.Steps = append(traj.Steps, planner.Step{Action: dec})
-		}
-		// B's rendered prompts must carry NO repair guidance.
-		for _, needle := range []string{
-			react.ReminderArgsGuidance, react.WarningArgsGuidance, react.CriticalArgsGuidance,
-			react.ReminderFinishGuidance, react.ReminderMultiActionGuidance,
-		} {
-			if clientB.firstSystemContaining(needle) >= 0 {
-				return true
-			}
-		}
-		return false
-	}
+	const steps = 4
 
-	// Run A: trips the args counter hard, concurrently with B.
-	runA := func() {
+	runA := func(done chan<- struct{}) {
+		defer close(done)
 		q := identity.Quadruple{
 			Identity: identity.Identity{TenantID: "t-A", UserID: "u", SessionID: "s"},
 			RunID:    "r-A",
 		}
-		ctx, cerr := identity.WithRun(t.Context(), q.Identity, q.RunID)
-		if cerr != nil {
-			t.Errorf("WithRun A: %v", cerr)
+		ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		if err != nil {
+			t.Errorf("WithRun A: %v", err)
 			return
 		}
-		clientA := &recordingScriptedClient{
-			responses: []llm.CompleteResponse{
-				{Content: `garbage`}, {Content: `{"tool":"search","args":{"q":"a"}}`},
-			},
-		}
-		pA := react.New(clientA)
 		traj := &planner.Trajectory{}
 		countersA := &planner.RepairCounters{}
-		for range 5 {
+		for range steps {
 			rc := integrationRC(bus, q, "noisy run A")
 			rc.Trajectory = traj
 			rc.RepairCounters = countersA
-			clientA.mu.Lock()
-			clientA.cursor = 0 // replay malformed-then-valid each step
-			clientA.mu.Unlock()
-			dec, nerr := pA.Next(ctx, rc)
+			dec, nerr := shared.Next(ctx, rc)
 			if nerr != nil {
 				t.Errorf("run A Next: %v", nerr)
 				return
@@ -681,15 +735,53 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 		}
 	}
 
-	var wg sync.WaitGroup
-	var bLeaked atomic.Bool
-	wg.Add(2)
-	go func() { defer wg.Done(); runA() }()
-	go func() { defer wg.Done(); bLeaked.Store(runB()) }()
-	wg.Wait()
-	_ = p // the top-level planner is intentionally unused beyond construction
+	runB := func(done chan<- struct{}) {
+		defer close(done)
+		q := identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t-B", UserID: "u", SessionID: "s"},
+			RunID:    "r-B",
+		}
+		ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		if err != nil {
+			t.Errorf("WithRun B: %v", err)
+			return
+		}
+		traj := &planner.Trajectory{}
+		countersB := &planner.RepairCounters{} // always clean
+		for range steps {
+			rc := integrationRC(bus, q, "clean run B")
+			rc.Trajectory = traj
+			rc.RepairCounters = countersB
+			dec, nerr := shared.Next(ctx, rc)
+			if nerr != nil {
+				t.Errorf("run B Next: %v", nerr)
+				return
+			}
+			traj.Steps = append(traj.Steps, planner.Step{Action: dec})
+		}
+	}
 
-	if bLeaked.Load() {
-		t.Error("run B's prompt carried repair guidance — cross-run counter bleed (D-145 violation)")
+	doneA, doneB := make(chan struct{}), make(chan struct{})
+	go runA(doneA)
+	go runB(doneB)
+	<-doneA
+	<-doneB
+
+	// B's recorded prompts must carry NONE of the repair-guidance
+	// markers, even though A was concurrently tripping the args
+	// counter via the SAME shared planner. This is the D-145 contract.
+	for _, needle := range []string{
+		react.ReminderArgsGuidance, react.WarningArgsGuidance, react.CriticalArgsGuidance,
+		react.ReminderFinishGuidance, react.ReminderMultiActionGuidance,
+	} {
+		if client.containsAny("r-B", needle) {
+			t.Errorf("D-145 violation: B's prompt carried repair-guidance marker %q (cross-run counter bleed through the shared planner)", needle)
+		}
+	}
+	// Positive control: A's prompts MUST carry the args repair
+	// guidance — proving the malformed script actually drove Phase 44
+	// to trip the counter via the shared planner.
+	if !client.containsAny("r-A", react.ReminderArgsGuidance) {
+		t.Error("A's prompts never carried any args repair-guidance marker — the test setup did not actually trip the counter (positive control failed)")
 	}
 }
