@@ -3372,3 +3372,31 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — this is a checkpoint audit-fix PR. It changes documentation (research briefs, this log), one CI workflow step, and one drift-audit shell script; it ships no Protocol method, error code, wire type, or runtime-behaviour change.
+
+---
+
+## D-141 — Lint hardening before the v1.0.0 cut: `govet` drops `fieldalignment` + `shadow`; the full `make lint` becomes the enforced CI gate
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping across the Wave 14 lint-hardening PRs)
+
+**Where it lives:** `.golangci.yml` (the `govet.disable` list); `.github/workflows/ci.yml` (the `lint` job, flipped to the full `make lint` once the backlog clears); the `fix(lint): ...` burn-down PRs.
+
+**Context.** Phase 80 (D-138) discovered the CI `lint` job had been a silent no-op since the project's start — `golangci-lint` was never installed on the runner, so `make lint`'s `command -v` guard skipped it. Phase 80 fixed the silent skip but scoped the *enforced* gate to `revive` only (the doc-hygiene linter it named), tracking the wider backlog in issue #190. The operator's call for the v1.0.0 cut: burn the full backlog down and make the complete `make lint` the enforced gate.
+
+**Decision.** Two load-bearing calls.
+
+**1. `govet` no longer enables `fieldalignment` or `shadow`.** `.golangci.yml` carried `govet.enable-all: true`, which force-enables every `govet` analyzer including the two that are widely left off by deliberate choice:
+
+- **`fieldalignment`** reorders struct fields to minimise memory padding. Its autofixer *destructively strips struct-field doc comments* when it reorders — a burn-down agent measured 761 comment lines deleted from `internal/protocol/types/` wire structs alone. The memory-packing win is negligible on structs that exist to be JSON-serialised onto the wire, and byte-packing actively fights logical field grouping and readability. Enforcing it trades documentation and clarity for a non-benefit.
+- **`shadow`** flags variable shadowing, including the idiomatic Go `if err := f(); err != nil` / per-iteration `err :=`. The mechanical "fix" (`:=`→`=`) reintroduces **data races** when the shadowed variable is an `err` inside a goroutine body — each goroutine needs its own binding. A linter whose fix introduces races is net-negative.
+
+Together these accounted for ~180 of the ~327 raw backlog issues — the low-value, harmful-to-enforce half. They are disabled via `govet.disable`; every other `govet` analyzer stays on. The remaining ~147 issues (`errcheck`, `unparam`, `unused`, `gocritic`, `gosec`, `errorlint`, `nilerr`, `stylecheck`, `ineffassign`, `staticcheck`, `copyloopvar`, `intrange`, …) are genuinely worth fixing and are burned down to zero.
+
+**2. The full `make lint` becomes the enforced CI gate.** Once the backlog is zero, the CI `lint` job flips from `make lint-revive` (the Phase 80 interim narrow gate) back to the full `make lint`. The `revive` doc-hygiene rules remain part of that full run. This closes issue #190 — the gate can no longer silently rot, because every linter in `.golangci.yml` now runs on every PR.
+
+**Why.** A v1.0.0 framework should enforce the lint rules that catch real defects and *not* enforce micro-optimisation noise whose autofix damages the codebase. Disabling `fieldalignment`/`shadow` is not lowering the bar — it is removing two rules that were never a quality signal, so the gate that remains is entirely load-bearing.
+
+**Findings I'm departing from.** The naive reading of "burn the whole backlog down" would have hand-reordered 42+ structs for `fieldalignment` and rewritten ~90 `shadow` sites. That path destroys Protocol wire-type godoc and risks races; this decision rejects it in favour of disabling the two analyzers — the reasonable-deviation call (CLAUDE.md §4.3), recorded here because it is a permanent `.golangci.yml` policy change.
+
+**Protocol additions.** None — `.golangci.yml` + `.github/workflows/ci.yml` only; no Protocol method, error code, wire type, or runtime-behaviour change.
