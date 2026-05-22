@@ -1,8 +1,7 @@
 # Memory + Skills — Phase-Ready Technical Brief
 
 > Internal research note. Phase planning depth, not encyclopedia coverage.
-> All concepts re-expressed in Harbor-native vocabulary.
-> Source citations point to `~/Repos/Penguiflow/penguiflow/...` for traceability only.
+> All concepts expressed in Harbor-native vocabulary.
 
 ---
 
@@ -10,10 +9,10 @@
 
 Harbor's runtime exposes **two cooperating durable subsystems** that keep the planner cheap and the agent useful across long conversations:
 
-- **Memory** — declared-policy short-term conversational memory. The previous-generation runtime treats memory as the strongest of its seams: configuration (`strategy`, `budget`, `isolation`) is explicit, fail-closed when keys are missing, and pluggable across persistence backends. Harbor inherits this *shape* cleanly and extends the isolation key from `(tenant, user, session)` config-resolved to a first-class `IdentityTriple` carried through `context.Context`.
+- **Memory** — declared-policy short-term conversational memory. Memory is one of the runtime's strongest seams: configuration (`strategy`, `budget`, `isolation`) is explicit, fail-closed when keys are missing, and pluggable across persistence backends. Harbor's isolation key is a first-class `IdentityTriple` — `(tenant, user, session)` carried through `context.Context`, not config-resolved.
 - **Skills** — token-savvy, DB-backed playbook store with three planner-facing tools (`skill_search`, `skill_get`, `skill_list`) plus a virtual-directory snapshot for cheap browsing. Distinct from Portico's *distribution* role: Portico ships skill packs across tenants; Harbor *consumes* and locally optimizes for retrieval, scoring, capability filtering, and PII/tool-name redaction at injection time.
 
-The single biggest Harbor upgrade in this surface is closing two gaps the predecessor leaves open: (a) no native importer for the open **Skills.md** standard (every external skill needs hand adaptation today), and (b) the in-runtime skill-author tool drafts a skill but cannot persist it (`Do not claim to save or persist anything.` is hardcoded into its prompt — see `skills/tools/skill_propose_tool.py:43-44`).
+Two gaps are common in DB-backed skill stores, and Harbor closes both: (a) no native importer for the open **Skills.md** standard, so every external skill needs hand adaptation; and (b) an in-runtime skill-author tool that drafts a skill but cannot persist it (its prompt hardcodes "do not claim to save or persist anything" because the runtime cannot back the claim).
 
 ---
 
@@ -151,14 +150,14 @@ type VirtualDir struct {
 
 **Planner-facing tools** (always-loaded; the planner sees them by name; capability + identity context is injected by the runtime, never by the model):
 
-- `skill_search(query, search_type, limit, task_type?) -> SearchResponse` — ranked candidates with `name/title/trigger/task_type/score`. See `skills/tools/skill_search_tool.py`.
-- `skill_get(names[], format=injection|raw, max_tokens) -> {skills, formatted_context}` — full content fetch with tiered downsizing (drop optional → cap steps to 3) until the budget fits. See `skills/tools/skill_get_tool.py:1-45` and the injection formatter at `skills/provider.py:248-360`.
+- `skill_search(query, search_type, limit, task_type?) -> SearchResponse` — ranked candidates with `name/title/trigger/task_type/score`.
+- `skill_get(names[], format=injection|raw, max_tokens) -> {skills, formatted_context}` — full content fetch with tiered downsizing (drop optional → cap steps to 3) until the budget fits.
 - `skill_list(page, page_size, task_type?, origin?) -> ListResponse` — paged enumeration filtered by capability.
-- `skill_propose(source_material, hints) -> SkillDraft` (Harbor adds: `&& persist?: bool=false, scope?: Scope`) — the predecessor stops at draft; Harbor extends with **explicit persistence** that respects the identity triple.
+- `skill_propose(source_material, hints) -> SkillDraft` (Harbor adds: `&& persist?: bool=false, scope?: Scope`) — a draft-only proposer stops at the draft; Harbor extends with **explicit persistence** that respects the identity triple.
 
 **Author/operator surface:**
 
-- File-based skill packs: `*.skill.md` (frontmatter), `*.skill.yaml`, `*.skill.json`, `*.skill.jsonl`. See `skills/pack_loader.py:18-23`.
+- File-based skill packs: `*.skill.md` (frontmatter), `*.skill.yaml`, `*.skill.json`, `*.skill.jsonl`.
 - Harbor adds: `*.md` Skills.md-standard files (no `.skill` infix) recognized natively.
 - Skills config (YAML, embedded in agent config):
 
@@ -197,69 +196,69 @@ read-only. Snapshots only: `MemorySnapshot`, `SkillIndexHealth`, `RecentSearches
 
 - **`none`** — `AddTurn` is a no-op; `GetLLMContext` returns empty.
 - **`truncation`** — append turn → keep last `FullZoneTurns` verbatim → enforce `TotalMaxTokens` per `OverflowPolicy`. Synchronous.
-- **`rolling_summary`** — append turn → evict older turns into `pending` → schedule background summarization. Summarizer is an injectable async callable: input `{previous_summary, turns}`, output `{summary: string}`. The runtime spawns one task at a time per memory key and lock-protects all state. See `planner/memory.py:544-606`. Health states (`healthy → retry → degraded → recovering → healthy`) gate behavior: in `degraded`, the memory falls back to truncation-style and queues a recovery loop bounded by `RecoveryBacklogMax`.
+- **`rolling_summary`** — append turn → evict older turns into `pending` → schedule background summarization. Summarizer is an injectable async callable: input `{previous_summary, turns}`, output `{summary: string}`. The runtime spawns one task at a time per memory key and lock-protects all state. Health states (`healthy → retry → degraded → recovering → healthy`) gate behavior: in `degraded`, the memory falls back to truncation-style and queues a recovery loop bounded by `RecoveryBacklogMax`.
 - **Failure semantics:** summarizer exceptions never leak. The store falls to `degraded`, drops summarization, keeps the conversation usable from a recent window, and emits a `memory.health_changed` event the Console can render.
 
 ### 4.2 Identity-keyed isolation (fail-closed)
 
-The Harbor invariant: **if the identity triple is incomplete, the operation behaves as if memory is disabled and emits an audit event**, never returns data scoped to a default. The predecessor enforces this with `require_explicit_key=True` in `MemoryIsolation`; Harbor makes it the only mode by removing the toggle. See `planner/memory.py:77-94`. Memory keys are `composite = "tenant:user:session"`; persistence stores key it directly. Cross-key reads are impossible by API construction.
+The Harbor invariant: **if the identity triple is incomplete, the operation behaves as if memory is disabled and emits an audit event**, never returns data scoped to a default. A `require_explicit_key` toggle is the wrong shape — Harbor makes fail-closed the only mode, with no toggle. Memory keys are `composite = "tenant:user:session"`; persistence stores key it directly. Cross-key reads are impossible by API construction.
 
 ### 4.3 Skill store internals
 
-Reference implementation in `skills/local_store.py:26-450`:
+The LocalDB driver shape:
 
 - SQLite schema with a `skills` table keyed by `id` (sha256-derived) and unique on `name`. Columns include `scope_mode`, `scope_tenant_id`, `scope_project_id`, `task_type`, `tags` (JSON), `steps` (JSON), `preconditions/failure_modes` (JSON), `origin`, `origin_ref`, `content_hash`, lifecycle timestamps, `use_count`, `extra` (JSON).
-- FTS5 virtual table (`skills_fts` over `name|title|trigger|description|tags`, porter unicode61 tokenizer) with INSERT/DELETE/UPDATE triggers maintaining sync. Falls back to regex/exact when FTS5 is unavailable (`_ensure_fts` returns false → `_fts_fallback_to_regex` toggles the path). Harbor: keep the same fallback ladder, ship `modernc.org/sqlite` (CGo-free) and verify FTS5 is compiled in.
+- FTS5 virtual table (`skills_fts` over `name|title|trigger|description|tags`, porter unicode61 tokenizer) with INSERT/DELETE/UPDATE triggers maintaining sync. Falls back to regex/exact when FTS5 is unavailable. Harbor: keep the fallback ladder, ship `modernc.org/sqlite` (CGo-free) and verify FTS5 is compiled in.
 - WAL journal mode set on every connection.
 
 ### 4.4 Search ranking
 
-- **FTS path** (`skills/local_store.py:670-742`): tokenize via `[A-Za-z0-9]+`, run strict AND first, then OR fallback if no rows. Score is `bm25 → 1/(1+raw) → min-max normalized 0..1`.
-- **Regex path** (`skills/local_store.py:830-863`): try compiling the query; for queries with whitespace, fall back to OR-of-tokens regex (NL queries are rarely intentional regex). Scoring: `name fullmatch=0.95`, `name match=0.90`, `name search=0.85`, body `search=0.75`.
-- **Exact path** (`skills/local_store.py:810-827`): lowercase equality on `name|title|trigger|tags`.
+- **FTS path**: tokenize via `[A-Za-z0-9]+`, run strict AND first, then OR fallback if no rows. Score is `bm25 → 1/(1+raw) → min-max normalized 0..1`.
+- **Regex path**: try compiling the query; for queries with whitespace, fall back to OR-of-tokens regex (NL queries are rarely intentional regex). Scoring: `name fullmatch=0.95`, `name match=0.90`, `name search=0.85`, body `search=0.75`.
+- **Exact path**: lowercase equality on `name|title|trigger|tags`.
 
-Harbor port keeps the same three-tier fallback and the same scoring constants — it's calibrated for this corpus and easy to test.
+Harbor keeps the three-tier fallback and the scoring constants — they are calibrated for this corpus and easy to test.
 
 ### 4.5 Capability filtering + redaction (injection-time)
 
 - The runtime computes `CapabilityContext{allTools, allowedTools, allowedNamespaces, allowedTags}` from the planner's tool-visibility decisions.
-- `_skill_is_applicable` (`skills/provider.py:156-166`) gates each candidate: the skill's `RequiredTools/Namespaces/Tags` must be subsets of the allowed sets.
-- Disallowed tool names are scrubbed from skill text before injection; replacement is `"a suitable tool (use tool_search)"` when search is available, else `"a suitable tool"`. PII redaction (email/phone/bearer-tokens/URL query strings) runs over titles/triggers/steps/preconditions/failure_modes when `redact_pii=true`. See `skills/redaction.py` and `skills/provider.py:189-245`.
-- **Tiered injection budgeter:** start full → drop optional (preconditions, failure_modes) → cap steps to 3. Stop at the first attempt that fits within `max_tokens`. See `skills/provider.py:248-360`.
+- An applicability gate filters each candidate: the skill's `RequiredTools/Namespaces/Tags` must be subsets of the allowed sets.
+- Disallowed tool names are scrubbed from skill text before injection; replacement is `"a suitable tool (use tool_search)"` when search is available, else `"a suitable tool"`. PII redaction (email/phone/bearer-tokens/URL query strings) runs over titles/triggers/steps/preconditions/failure_modes when `redact_pii=true`.
+- **Tiered injection budgeter:** start full → drop optional (preconditions, failure_modes) → cap steps to 3. Stop at the first attempt that fits within `max_tokens`.
 
 ### 4.6 Virtual directory
 
-The "virtual directory" (in Harbor terms `VirtualDir`) is a small, identity-scoped, capability-filtered snapshot of the catalog for cheap browsing. The provider blends pinned skills (config-declared) with either *most-recently-used* or *most-frequently-used* up to `max_entries`. Output is `[]DirectoryEntry{name, title?, trigger?, task_type?}`, redacted before injection. See `skills/provider.py:685-751`. The virtual-directory pattern is the right *user-visible namespace* abstraction even when the backing storage swaps (LocalDB ↔ Portico ↔ Git ↔ OCI) — that pluggability is what Harbor preserves.
+The "virtual directory" (in Harbor terms `VirtualDir`) is a small, identity-scoped, capability-filtered snapshot of the catalog for cheap browsing. The provider blends pinned skills (config-declared) with either *most-recently-used* or *most-frequently-used* up to `max_entries`. Output is `[]DirectoryEntry{name, title?, trigger?, task_type?}`, redacted before injection. The virtual-directory pattern is the right *user-visible namespace* abstraction even when the backing storage swaps (LocalDB ↔ Portico ↔ Git ↔ OCI) — Harbor builds in that pluggability.
 
 ### 4.7 Skills.md import pipeline (Harbor-only)
 
-Today the predecessor's `.skill.md` reads only YAML frontmatter into a dict and validates against a custom schema (`skills/pack_loader.py:32-87`). The open **Skills.md** standard (Anthropic-style) carries authorial procedure prose in the markdown *body* with frontmatter that is intentionally lean (`name`, `description`, optional `license`, optional `allowed-tools`). Harbor's importer must:
+A `.skill.md` file that reads only YAML frontmatter into a dict and validates against a custom schema misses the open **Skills.md** standard, which carries authorial procedure prose in the markdown *body* with frontmatter that is intentionally lean (`name`, `description`, optional `license`, optional `allowed-tools`). Harbor's importer must:
 
 1. **Parse** YAML frontmatter + markdown body via a deterministic CommonMark-only parser.
-2. **Normalize** body sections into Harbor's structured fields. Headings like `## Steps`, `## Preconditions`, `## Failure modes` map to lists; absent sections default to empty. The body's narrative becomes `description`. `name` is taken from frontmatter; if missing, derived from filename via slugify (mirroring `pack_loader._slugify`).
+2. **Normalize** body sections into Harbor's structured fields. Headings like `## Steps`, `## Preconditions`, `## Failure modes` map to lists; absent sections default to empty. The body's narrative becomes `description`. `name` is taken from frontmatter; if missing, derived from filename via slugify.
 3. **Resolve** sibling resource files (e.g. `examples/`, `assets/`) referenced by relative path; record them as `Extra.attachments` for later injection by `skill_get`.
 4. **Validate + index** via the same `Skill` validator the loader uses; fail loud on a non-empty `trigger` and non-empty `steps`.
 5. **Round-trip** test: any spec-compliant Skills.md imports without source edits and re-exports byte-stable.
 
-This is where the predecessor's per-skill manual-adaptation gap is closed once and tested as an invariant.
+This is where the per-skill manual-adaptation gap is closed once and tested as an invariant.
 
 ### 4.8 Generator with persistence (Harbor-only)
 
-The predecessor's `skill_propose` tool calls the LLM with a JSON-schema-constrained `SkillProposalDraft`, emits a `skill_propose` planner event, and **stops at draft** (the system prompt explicitly forbids claiming persistence — `skills/tools/skill_propose_tool.py:43-44`). Harbor adds a **persist phase**:
+A draft-only `skill_propose` tool calls the LLM with a JSON-schema-constrained `SkillProposalDraft`, emits a `skill_propose` planner event, and **stops at draft** (its system prompt forbids claiming persistence because no runtime backing exists). Harbor adds a **persist phase**:
 
-- New tool (or `skill_propose` with `persist=true`): validates the draft via the same `SkillDefinition` validator the importer uses, stamps `Origin=Generated`, stamps `OriginRef = "gen:{session_id}:{trace_id}"`, scopes by the operator-provided `Scope` (default to current project), and inserts via the `LocalSkillStore.upsert_pack_skill` equivalent. Conflict policy: refuse to overwrite a `Origin=PackImport` skill with the same `name` (matches the predecessor's `existing_origin != "pack"` guard at `local_store.py:124`). For `Origin=Generated → Origin=Generated`, last-write-wins gated by `content_hash` change.
+- New tool (or `skill_propose` with `persist=true`): validates the draft via the same `SkillDefinition` validator the importer uses, stamps `Origin=Generated`, stamps `OriginRef = "gen:{session_id}:{trace_id}"`, scopes by the operator-provided `Scope` (default to current project), and inserts via the LocalDB upsert path. Conflict policy: refuse to overwrite a `Origin=PackImport` skill with the same `name` (an `origin != PackImport` guard). For `Origin=Generated → Origin=Generated`, last-write-wins gated by `content_hash` change.
 - Audit: record `(actor=identity_triple, action="skill.created", skill_id, content_hash, source_excerpt_hash)`. Console renders this in the activity timeline.
 
 ---
 
-## 5. Sharp edges from the source
+## 5. Sharp edges to design out
 
-- **Memory page moved.** `docs/MEMORY_GUIDE.md` (top-level) is a stub redirect to `docs/planner/memory.md`. Indicates a redesign mid-life. Harbor lesson: get this right in the RFC and don't ship the redirect.
-- **Migration document is real.** `docs/migration/MEMORY_ADOPTION.md` walks adopters from "stateless" → truncation → rolling summary → persistence. Each step has explicit safeguards. Harbor inherits the *staging* idea as the V1 default rollout for any production agent.
-- **`llm_context` vs `tool_context` separation is the load-bearing decision.** Identifiers (tenant/user/session) live in `tool_context` (LLM-invisible); `conversation_memory` lives in `llm_context`. Harbor must keep this split — the Go analogue is "identity flows via `context.Context`, never through prompt-visible state."
-- **Per-skill adaptation is the real gap.** No code in `skills/pack_loader.py` knows the open Skills.md format; every external skill must be reshaped by hand into the predecessor's frontmatter dialect. Closing this is a Harbor-defining feature.
-- **Generator is intentionally crippled today.** The system prompt at `skills/tools/skill_propose_tool.py:43-44` prevents the LLM from claiming persistence because the runtime cannot back the claim. Harbor inverts this — runtime ships persistence, prompt is updated, audit is mandatory.
-- **`require_explicit_key=True` is *configurable* in the source** (`planner/memory.py:85`). Harbor removes the knob: identity is mandatory, period.
+- **Memory documentation drift.** A top-level memory guide that is just a stub redirect to a deeper page signals a mid-life redesign. Harbor lesson: get this right in the RFC and don't ship the redirect.
+- **Staged adoption is worth keeping.** A migration document that walks adopters from "stateless" → truncation → rolling summary → persistence, with explicit safeguards at each step, is a good pattern. Harbor adopts the *staging* idea as the V1 default rollout for any production agent.
+- **`llm_context` vs `tool_context` separation is the load-bearing decision.** Identifiers (tenant/user/session) live in `tool_context` (LLM-invisible); `conversation_memory` lives in `llm_context`. Harbor keeps this split — the Go analogue is "identity flows via `context.Context`, never through prompt-visible state."
+- **Per-skill adaptation is the real gap.** A pack loader that does not know the open Skills.md format forces every external skill to be reshaped by hand into a bespoke frontmatter dialect. Closing this is a Harbor-defining feature.
+- **A draft-only generator is a half-feature.** A skill-author tool whose prompt forbids claiming persistence because the runtime cannot back the claim is incomplete. Harbor inverts this — the runtime ships persistence, the prompt is updated, and audit is mandatory.
+- **A configurable fail-closed key is the wrong shape.** Harbor removes the knob: identity is mandatory, period.
 - **FTS5 is conditionally available.** Skill search must work even on SQLite builds without FTS5. Test the regex/exact fallback ladder with `FTS5=off` builds in CI.
 
 ---
@@ -327,8 +326,8 @@ Each phase is one shippable subsystem with tests + smoke + protocol surface + do
 
 ## 9. Open questions for the user
 
-1. **Skill versioning model.** Today the predecessor uses `content_hash` for change detection but has no explicit version field; cross-pack name collisions are origin-gated. For Harbor: do we ship semver-style explicit versions on each skill, or stick with content-hash-as-version and rely on `OriginRef` for lineage? Versioning matters once Portico distribution lands (rolling forward across tenants).
-2. **Conflict policy when a Portico-distributed skill collides with a locally generated skill of the same `name`.** Options: (a) refuse to import (Portico cannot overwrite Generated), (b) refuse to generate (Generated cannot overwrite Portico), (c) namespace by source so collisions are impossible, (d) operator-resolved with a Console diff. The predecessor's `existing_origin != "pack"` short-circuit suggests (a) by default — confirm.
+1. **Skill versioning model.** Content-hash change detection without an explicit version field works, with cross-pack name collisions origin-gated. For Harbor: do we ship semver-style explicit versions on each skill, or stick with content-hash-as-version and rely on `OriginRef` for lineage? Versioning matters once Portico distribution lands (rolling forward across tenants).
+2. **Conflict policy when a Portico-distributed skill collides with a locally generated skill of the same `name`.** Options: (a) refuse to import (Portico cannot overwrite Generated), (b) refuse to generate (Generated cannot overwrite Portico), (c) namespace by source so collisions are impossible, (d) operator-resolved with a Console diff. An `origin != PackImport` short-circuit suggests (a) by default — confirm.
 3. **Memory budget at very long sessions.** `rolling_summary` is fine for hours; what about days or weeks? Do we need a tier above (e.g. *episodic memory* — durable summaries promoted from session to user scope) at V1, or is that explicitly a post-V1 satellite (Harbor Memory in the ecosystem map)?
-4. **Generator scope default.** When an agent calls `skill_propose(persist=true)` mid-session, should the default scope be `project` (matches predecessor `scope_mode`), `session-only` (most isolated, requires explicit promotion), or *no default* (operator config required)?
+4. **Generator scope default.** When an agent calls `skill_propose(persist=true)` mid-session, should the default scope be `project` (matches the `scope_mode` default), `session-only` (most isolated, requires explicit promotion), or *no default* (operator config required)?
 5. **Skills.md attachment policy.** Skills.md often references sibling files (examples, assets). Do we (a) inline at import (simple, blows up the row), (b) store as artifact references (clean but couples to artifact subsystem), or (c) keep filesystem-backed and re-resolve at injection (fast but breaks once skills move between machines)? Recommend (b); confirm.
