@@ -1,0 +1,1 @@
+warning: you have emitted multiple JSON action blocks twice. One turn = one action. To run tools concurrently, use a single `parallel` action — never several separate JSON objects.

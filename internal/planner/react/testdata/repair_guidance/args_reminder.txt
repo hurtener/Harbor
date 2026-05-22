@@ -1,0 +1,1 @@
+reminder: your previous tool call had arguments that failed the tool's schema. Match every argument name and type to the tool's `args_schema` exactly before calling it again.

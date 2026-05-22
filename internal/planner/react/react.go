@@ -456,6 +456,14 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return nil, mapErr
 	}
 
+	// Phase 83c (D-145): update the per-run RepairCounters from this
+	// step's outcome so the NEXT turn's prompt builder can escalate
+	// repair guidance. The counters live on rc (the per-run scope),
+	// never on the planner struct — D-145 + D-025. A nil
+	// rc.RepairCounters means the runtime opted out of augmentation;
+	// the update is then a no-op.
+	updateRepairCounters(rc, final, result.Repair)
+
 	// Phase 83e (D-147): emit planner.decision carrying the captured
 	// provider-side reasoning trace. The runtime's trajectory-append
 	// path stamps `trajectory.Step.ReasoningTrace` from the same

@@ -170,12 +170,48 @@ type RepairLoop struct {
 // returned Decision — on the repair path (multiple LLM calls), it is
 // the reasoning of the final, successful response. Empty when the
 // provider surfaced no reasoning.
+//
+// `Repair` carries the Phase 83c across-step failure classification
+// (D-145): the ReAct planner reads it to update the per-run
+// [planner.RepairCounters] so the next turn's prompt builder can
+// escalate repair guidance. The loop itself does NOT mutate the
+// counters — it only classifies; the counters live on the per-run
+// [planner.RunContext] and the planner owns the increment/reset call
+// (D-145 + D-025: no mutable state on the shared loop artifact).
 type RunResult struct {
 	// Decision is the resolved planner decision for the step.
 	Decision planner.Decision
 	// Reasoning is the provider-side thinking trace from the LLM
 	// response that produced Decision. Empty when none was surfaced.
 	Reasoning string
+	// Repair carries the across-step failure classification for the
+	// step (Phase 83c — D-145).
+	Repair RepairOutcome
+}
+
+// RepairOutcome is the Phase 83c (D-145) across-step failure
+// classification of one [RepairLoop.Run] step. The ReAct planner maps
+// it onto the per-run [planner.RepairCounters]:
+//
+//   - ArgsRepaired   — at least one args-validation failure occurred
+//     during the step (the schema-repair path fired). Drives the
+//     ArgsRepair counter.
+//   - MultiAction    — the parser salvaged more than one well-formed
+//     action from a single LLM response (multi-action / multi-JSON
+//     emission). Drives the MultiAction counter.
+//
+// Both fields are false on a clean step (a single well-formed action
+// whose args validated first try) — which signals the planner to
+// RESET the corresponding counters. The finish-repair counter is
+// classified by the ReAct planner itself (it owns `_finish` reserved-
+// name semantics — the repair loop sees only [planner.CallTool]).
+type RepairOutcome struct {
+	// ArgsRepaired is true when the schema-repair path fired at least
+	// once during the step.
+	ArgsRepaired bool
+	// MultiAction is true when the parser salvaged > 1 action from a
+	// single response.
+	MultiAction bool
 }
 
 // New constructs a [RepairLoop] from the supplied [Config]. A zero-
@@ -257,6 +293,12 @@ func (l *RepairLoop) Run(
 		// LLM response — the trace that accompanies the Decision the
 		// loop ultimately returns.
 		lastReasoning string
+		// argsRepaired records whether ANY args-validation failure
+		// fired during the step — the Phase 83c (D-145) across-step
+		// classification the ReAct planner maps onto the ArgsRepair
+		// counter. Distinct from `consecutiveArgFails`, which is the
+		// storm-guard counter reset semantics never touch.
+		argsRepaired bool
 	)
 
 	for attempts < l.cfg.RepairAttempts {
@@ -289,10 +331,15 @@ func (l *RepairLoop) Run(
 			reason := "parser failed: " + parserErrorReason(parseErr)
 			reasons = append(reasons, truncate(reason))
 			consecutiveArgFails++
+			// A parser failure is an LLM-output-format failure — count
+			// it toward the Phase 83c args-repair classification so the
+			// next turn's prompt builder escalates guidance (D-145).
+			argsRepaired = true
 			if l.tripped(consecutiveArgFails) {
 				return RunResult{
 					Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
 					Reasoning: lastReasoning,
+					Repair:    RepairOutcome{ArgsRepaired: argsRepaired},
 				}, nil
 			}
 			// Build a corrective sub-prompt for the next attempt.
@@ -305,7 +352,14 @@ func (l *RepairLoop) Run(
 		// schema-repair path and surface the parser's first action(s)
 		// verbatim — letting the dispatcher reject if args are wrong.
 		if !l.cfg.ArgFillEnabled || validateTool == nil {
-			return RunResult{Decision: promote(actions), Reasoning: lastReasoning}, nil
+			return RunResult{
+				Decision:  promote(actions),
+				Reasoning: lastReasoning,
+				Repair: RepairOutcome{
+					ArgsRepaired: argsRepaired,
+					MultiAction:  len(actions) > 1,
+				},
+			}, nil
 		}
 
 		var firstBadIdx = -1
@@ -319,7 +373,14 @@ func (l *RepairLoop) Run(
 		}
 		if firstBadIdx == -1 {
 			// All actions validate. Step 4: multi-action salvage.
-			return RunResult{Decision: promote(actions), Reasoning: lastReasoning}, nil
+			return RunResult{
+				Decision:  promote(actions),
+				Reasoning: lastReasoning,
+				Repair: RepairOutcome{
+					ArgsRepaired: argsRepaired,
+					MultiAction:  len(actions) > 1,
+				},
+			}, nil
 		}
 
 		// At least one action failed validation. Record + decide
@@ -329,11 +390,15 @@ func (l *RepairLoop) Run(
 			safeName(bad.Tool), firstBadErr.Error())
 		reasons = append(reasons, truncate(reason))
 		consecutiveArgFails++
+		// A schema-repair failure is the canonical Phase 83c args-
+		// repair signal (D-145).
+		argsRepaired = true
 
 		if l.tripped(consecutiveArgFails) {
 			return RunResult{
 				Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
 				Reasoning: lastReasoning,
+				Repair:    RepairOutcome{ArgsRepaired: argsRepaired},
 			}, nil
 		}
 
@@ -348,6 +413,7 @@ func (l *RepairLoop) Run(
 	return RunResult{
 		Decision:  l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons),
 		Reasoning: lastReasoning,
+		Repair:    RepairOutcome{ArgsRepaired: argsRepaired},
 	}, nil
 }
 

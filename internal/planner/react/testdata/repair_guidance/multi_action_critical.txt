@@ -1,0 +1,1 @@
+critical: you have emitted multiple JSON action blocks three or more times. Respond with ONE and only one JSON object. If you need concurrent tool calls, wrap them in a single `{"tool": "parallel", "args": {"steps": [...]}}` action.

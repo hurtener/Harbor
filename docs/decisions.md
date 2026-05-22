@@ -3484,3 +3484,20 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 **Findings I'm departing from.** Brief 13 §2.6 noted three candidate modes (`never`, `text`, `provider_native`). V1 ships only the first two. `provider_native` would round-trip Anthropic's `signature`-bearing thinking blocks through bifrost as API constructs across turns; Bifrost's docs do not address that round-trip, so Harbor cannot guarantee correctness today. Deferred — revisit when (a) Bifrost documents the signed-thinking-block round-trip or (b) a real workload measurably benefits.
 
 **Protocol additions.** None — `PlannerConfig.ReasoningReplay` is a `harbor.yaml` config key (restart-required; no `reload:"live"` tag). No Protocol method, error code, wire type, or CLI subcommand change.
+
+---
+
+## D-145 — Repair counters live on `RunContext`, not on the `ReActPlanner` struct
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83c)
+
+**Where it lives:** `internal/planner/planner.go` (`RepairCounters`, `PlanningHints`, `BudgetHints`, `RunContext.RepairCounters`, `RunContext.PlanningHints`, `PlanningNudges`); `internal/planner/events.go` (`EventTypePlannerRepairGuidanceInjected`, `RepairGuidanceInjectedPayload`); `internal/planner/react/repair_guidance.go` + `planning_hints.go` + `prompt.go`; `internal/planner/repair/repair.go` (`RunResult.Repair`, `RepairOutcome`).
+
+**Decision.** Phase 83c's per-run, across-step failure counters — `RepairCounters{FinishRepair, ArgsRepair, MultiAction}` — live on the per-run `planner.RunContext`, never on the shared `ReActPlanner` struct. The runtime constructs one `RepairCounters` per run and threads the same pointer through every per-step `RunContext`; the ReAct planner reads the counters in its prompt builder and updates them after each step (`updateRepairCounters`). A nil pointer means "no augmentation". The richer `PlanningHints` struct (constraints, preferred order, parallel groups, disallow/preferred tools, budget caps) also lives on `RunContext` as `RunContext.PlanningHints` and renders into the `<planning_constraints>` prompt section; the pre-existing parallel/transport nudge struct was renamed `PlanningHints → PlanningNudges` to free the name.
+
+**Why.** The reference design the brief drew from stores failure counters on the planner instance, persisting across runs ("no orchestrator wiring required"). Harbor cannot: the `ReActPlanner` is a shared compiled artifact (D-025), and a mutable counter field on it would be a §13-forbidden mutable-state-on-a-compiled-artifact bug — two concurrent runs sharing the planner would cross-contaminate each other's counters. Scoping the counters to the per-run `RunContext` is the only shape that satisfies the concurrent-reuse contract. The cost — the counters must be threaded through `RunContext` rather than read off `this` — is the wiring the reference design saved; Harbor pays it deliberately. The cross-run isolation test (`TestE2E_React_RepairGuidanceCrossRunIsolation`, plus `TestUpdateRepairCounters_ConcurrentDisjointRunContexts` at N=128) is the proof.
+
+**Findings I'm departing from.** Brief 13 §2.2's "planner-instance counters, no orchestrator wiring" — departed for the D-025 reason above. The departure is the whole point of this decision; the per-run scope is the chosen contract.
+
+**Protocol additions.** None — `RepairCounters` / `PlanningHints` / `RepairOutcome` are internal Go types, not Protocol wire types. `planner.repair_guidance_injected` is an internal event-bus type (registered in `internal/planner/events.go`), surfaced to operators via the Console / `harbor inspect-runs` event replay — not a new Protocol method, error code, or CLI subcommand.

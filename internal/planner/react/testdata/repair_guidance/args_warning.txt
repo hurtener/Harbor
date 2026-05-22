@@ -1,0 +1,1 @@
+warning: your tool arguments have failed schema validation twice. Re-read the chosen tool's `args_schema` in <available_tools>. Include every required field, use the exact field names, and match the declared types — strings quoted, numbers unquoted.

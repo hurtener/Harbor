@@ -78,6 +78,19 @@ const (
 	// for compression failures (§13 — silent degradation banned). D-055.
 	EventTypeTrajectoryCompressionFailed events.EventType = "trajectory.compression_failed"
 
+	// EventTypePlannerRepairGuidanceInjected — emitted by the Phase 83c
+	// ReAct prompt builder each turn it merges an escalating repair-
+	// guidance block into the system prompt because a
+	// [RunContext.RepairCounters] field tripped. Payload
+	// (RepairGuidanceInjectedPayload, SafePayload) carries the run
+	// identity + the tier (`reminder` / `warning` / `critical`) + the
+	// counter name (`finish` / `args` / `multi_action`) + the counter
+	// value at render time. The emit lets the Console / operator see
+	// when the LLM is struggling to produce well-formed output across
+	// steps — the across-step companion to `planner.repair_exhausted`
+	// (the per-step terminal). D-145.
+	EventTypePlannerRepairGuidanceInjected events.EventType = "planner.repair_guidance_injected"
+
 	// EventTypePlannerActionExtraFieldDropped — emitted by the Phase 44
 	// repair loop when an incoming action object carried a field the
 	// Phase 83e-narrowed action schema no longer recognises (`reasoning`
@@ -97,6 +110,7 @@ func init() {
 	events.RegisterEventType(EventTypePlannerMaxStepsExceeded)
 	events.RegisterEventType(EventTypeTrajectoryCompressed)
 	events.RegisterEventType(EventTypeTrajectoryCompressionFailed)
+	events.RegisterEventType(EventTypePlannerRepairGuidanceInjected)
 	events.RegisterEventType(EventTypePlannerActionExtraFieldDropped)
 }
 
@@ -151,6 +165,33 @@ type ActionExtraFieldDroppedPayload struct {
 	events.SafeSealed
 	Identity   identity.Quadruple
 	Field      string
+	OccurredAt time.Time
+}
+
+// RepairGuidanceInjectedPayload is the typed payload for
+// EventTypePlannerRepairGuidanceInjected (Phase 83c — D-145).
+// SafePayload — every field is operator-visible debug data, never
+// secret-shaped:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `Tier` is the escalation tier the builder rendered: `reminder`
+//     (counter == 1), `warning` (counter == 2), `critical`
+//     (counter >= 3).
+//   - `Counter` names the tripped counter: `finish`, `args`, or
+//     `multi_action`.
+//   - `Count` is the [RepairCounters] field value at render time.
+//
+// The emit is the observability surface that lets the Console show an
+// operator when the LLM is repeatedly producing malformed output —
+// the across-step companion to `planner.repair_exhausted` (the
+// per-step terminal). Phase 83c ships the payload alongside the first
+// emitter (the ReAct prompt builder).
+type RepairGuidanceInjectedPayload struct {
+	events.SafeSealed
+	Identity   identity.Quadruple
+	Tier       string
+	Counter    string
+	Count      int
 	OccurredAt time.Time
 }
 

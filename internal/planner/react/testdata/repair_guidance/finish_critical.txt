@@ -1,0 +1,1 @@
+critical: your `_finish` action has failed validation three or more times. Stop and emit this exact shape, substituting only the answer text: `{"tool": "_finish", "args": {"answer": "<your full plain-text answer here>"}}`. No other keys. No code fence commentary.

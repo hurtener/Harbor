@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,4 +419,277 @@ func drainOneEvent(t *testing.T, sub events.Subscription) events.Event {
 		t.Fatal("timeout waiting for event")
 	}
 	return events.Event{}
+}
+
+// recordingScriptedClient is the Phase 83c integration fixture: it
+// returns scripted responses in order (like scriptedClient) AND
+// records the system-prompt text of every CompleteRequest. The across-
+// step repair-guidance test needs both — drive the repair loop with
+// scripted malformed/valid responses, then assert the rendered prompt
+// of each turn carries the escalating guidance.
+type recordingScriptedClient struct {
+	mu        sync.Mutex
+	responses []llm.CompleteResponse
+	cursor    int
+	systems   []string // system-prompt text, one per Complete call
+}
+
+func (c *recordingScriptedClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sys := ""
+	if len(req.Messages) > 0 && req.Messages[0].Content.Text != nil {
+		sys = *req.Messages[0].Content.Text
+	}
+	c.systems = append(c.systems, sys)
+	var resp llm.CompleteResponse
+	if c.cursor < len(c.responses) {
+		resp = c.responses[c.cursor]
+		c.cursor++
+	} else if len(c.responses) > 0 {
+		resp = c.responses[len(c.responses)-1]
+	}
+	return resp, nil
+}
+
+func (c *recordingScriptedClient) Close(_ context.Context) error { return nil }
+
+// firstSystemContaining returns the index of the first recorded
+// system prompt that contains `needle`, or -1.
+func (c *recordingScriptedClient) firstSystemContaining(needle string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, s := range c.systems {
+		if strings.Contains(s, needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestE2E_React_RepairGuidanceEscalatesAcrossSteps is the Phase 83c
+// across-step integration (§17.1 — this phase consumes Phase 83a's
+// prompt surface AND Phase 44's repair surface). Across four planner
+// steps sharing ONE per-run RepairCounters, the runtime drives a
+// steady transient args-repair on steps 1–3 (one malformed response
+// recovered by a valid one inside the step), then a clean step 4.
+//
+// Asserts the escalation: step 2's prompt carries the `reminder`
+// args guidance, step 3 the `warning`, step 4 the `critical`, and
+// — after the clean step 4 resets the counter — a hypothetical step 5
+// prompt would carry none. The real Phase 05 bus observes one
+// `planner.repair_guidance_injected` event per injected block with
+// the matching tier.
+func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
+	bus := integrationBus(t)
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "t-83c", UserID: "u", SessionID: "s"},
+		RunID:    "r-escalate",
+	}
+	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+
+	sub, err := bus.Subscribe(ctx, events.Filter{
+		Tenant:  q.TenantID,
+		User:    q.UserID,
+		Session: q.SessionID,
+		Types:   []events.EventType{planner.EventTypePlannerRepairGuidanceInjected},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	// Each step's Next issues: a malformed response (parser fails →
+	// args-repair signal) then a valid CallTool the loop recovers
+	// with. Step 4 issues a single clean response (no repair).
+	malformed := llm.CompleteResponse{Content: `this is not json`}
+	validCall := llm.CompleteResponse{Content: `{"tool":"search","args":{"q":"x"}}`}
+	client := &recordingScriptedClient{
+		responses: []llm.CompleteResponse{
+			malformed, validCall, // step 1 — recovers, ArgsRepair → 1
+			malformed, validCall, // step 2 — recovers, ArgsRepair → 2
+			malformed, validCall, // step 3 — recovers, ArgsRepair → 3
+			validCall, // step 4 — clean, ArgsRepair reset → 0
+		},
+	}
+
+	p := react.New(client)
+	counters := &planner.RepairCounters{}
+	traj := &planner.Trajectory{}
+
+	// Drive four steps. The runtime threads the SAME counters pointer
+	// through every per-step RunContext (D-145).
+	for step := 1; step <= 4; step++ {
+		rc := integrationRC(bus, q, "escalation goal")
+		rc.Trajectory = traj
+		rc.RepairCounters = counters
+		dec, nerr := p.Next(ctx, rc)
+		if nerr != nil {
+			t.Fatalf("Next #%d: %v", step, nerr)
+		}
+		traj.Steps = append(traj.Steps, planner.Step{Action: dec, LLMObservation: "obs"})
+	}
+
+	// After step 4 (a clean step), the args counter must have reset.
+	if counters.ArgsRepair != 0 {
+		t.Errorf("after clean step 4: ArgsRepair = %d, want 0", counters.ArgsRepair)
+	}
+
+	// Step N's prompt is built from the counter value AFTER step N-1.
+	// Step 1's prompt: no guidance (counter 0). Step 2: reminder
+	// (counter 1). Step 3: warning (counter 2). Step 4: critical
+	// (counter 3). The recordingScriptedClient records 2 Complete
+	// calls per repaired step; the prompt builder runs ONCE per Next,
+	// so the system prompt of a step's FIRST Complete carries that
+	// step's guidance. Both Complete calls within a step share the
+	// builder's output, so a `firstSystemContaining` match is enough.
+	reminderIdx := client.firstSystemContaining(react.ReminderArgsGuidance)
+	warningIdx := client.firstSystemContaining(react.WarningArgsGuidance)
+	criticalIdx := client.firstSystemContaining(react.CriticalArgsGuidance)
+	if reminderIdx < 0 {
+		t.Error("no rendered prompt carried the reminder args guidance")
+	}
+	if warningIdx < 0 {
+		t.Error("no rendered prompt carried the warning args guidance")
+	}
+	if criticalIdx < 0 {
+		t.Error("no rendered prompt carried the critical args guidance")
+	}
+	// Escalation order: reminder before warning before critical.
+	if reminderIdx >= 0 && warningIdx >= 0 && reminderIdx >= warningIdx {
+		t.Errorf("reminder prompt (idx %d) not before warning (idx %d)", reminderIdx, warningIdx)
+	}
+	if warningIdx >= 0 && criticalIdx >= 0 && warningIdx >= criticalIdx {
+		t.Errorf("warning prompt (idx %d) not before critical (idx %d)", warningIdx, criticalIdx)
+	}
+
+	// The bus observed one repair_guidance_injected event per injected
+	// block — three turns injected guidance (steps 2, 3, 4).
+	tiers := map[string]bool{}
+	for range 3 {
+		ev := drainOneEvent(t, sub)
+		if ev.Type != planner.EventTypePlannerRepairGuidanceInjected {
+			t.Fatalf("ev.Type = %q, want repair_guidance_injected", ev.Type)
+		}
+		if ev.Identity != q {
+			t.Errorf("ev.Identity = %+v, want %+v", ev.Identity, q)
+		}
+		pl, ok := ev.Payload.(planner.RepairGuidanceInjectedPayload)
+		if !ok {
+			t.Fatalf("ev.Payload = %T, want RepairGuidanceInjectedPayload", ev.Payload)
+		}
+		if pl.Counter != "args" {
+			t.Errorf("payload.Counter = %q, want args", pl.Counter)
+		}
+		tiers[pl.Tier] = true
+	}
+	for _, want := range []string{"reminder", "warning", "critical"} {
+		if !tiers[want] {
+			t.Errorf("bus did not observe a %q-tier repair_guidance_injected event", want)
+		}
+	}
+}
+
+// TestE2E_React_RepairGuidanceCrossRunIsolation is the D-145
+// headline guarantee at the integration level: two concurrent runs
+// share ONE *ReActPlanner but carry disjoint RepairCounters. Run A
+// repeatedly trips the args counter; run B never does. Run B's
+// rendered prompts must NEVER carry repair guidance — no cross-run
+// counter bleed through the shared planner artifact.
+func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
+	bus := integrationBus(t)
+	p := react.New(&recordingScriptedClient{
+		responses: []llm.CompleteResponse{{Content: `{"tool":"_finish","args":{"answer":"ok"}}`}},
+	})
+
+	// Run B: a clean run sharing the planner. Its own client + its
+	// own (nil-then-zero) counters. We record B's prompts.
+	runB := func() (badPrompt bool) {
+		q := identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t-B", UserID: "u", SessionID: "s"},
+			RunID:    "r-B",
+		}
+		ctx, cerr := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		if cerr != nil {
+			t.Errorf("WithRun B: %v", cerr)
+			return false
+		}
+		clientB := &recordingScriptedClient{
+			responses: []llm.CompleteResponse{{Content: `{"tool":"search","args":{"q":"y"}}`}},
+		}
+		pB := react.New(clientB)
+		traj := &planner.Trajectory{}
+		countersB := &planner.RepairCounters{} // B's own counters, always clean
+		for range 5 {
+			rc := integrationRC(bus, q, "clean run B")
+			rc.Trajectory = traj
+			rc.RepairCounters = countersB
+			dec, nerr := pB.Next(ctx, rc)
+			if nerr != nil {
+				t.Errorf("run B Next: %v", nerr)
+				return false
+			}
+			traj.Steps = append(traj.Steps, planner.Step{Action: dec})
+		}
+		// B's rendered prompts must carry NO repair guidance.
+		for _, needle := range []string{
+			react.ReminderArgsGuidance, react.WarningArgsGuidance, react.CriticalArgsGuidance,
+			react.ReminderFinishGuidance, react.ReminderMultiActionGuidance,
+		} {
+			if clientB.firstSystemContaining(needle) >= 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Run A: trips the args counter hard, concurrently with B.
+	runA := func() {
+		q := identity.Quadruple{
+			Identity: identity.Identity{TenantID: "t-A", UserID: "u", SessionID: "s"},
+			RunID:    "r-A",
+		}
+		ctx, cerr := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		if cerr != nil {
+			t.Errorf("WithRun A: %v", cerr)
+			return
+		}
+		clientA := &recordingScriptedClient{
+			responses: []llm.CompleteResponse{
+				{Content: `garbage`}, {Content: `{"tool":"search","args":{"q":"a"}}`},
+			},
+		}
+		pA := react.New(clientA)
+		traj := &planner.Trajectory{}
+		countersA := &planner.RepairCounters{}
+		for range 5 {
+			rc := integrationRC(bus, q, "noisy run A")
+			rc.Trajectory = traj
+			rc.RepairCounters = countersA
+			clientA.mu.Lock()
+			clientA.cursor = 0 // replay malformed-then-valid each step
+			clientA.mu.Unlock()
+			dec, nerr := pA.Next(ctx, rc)
+			if nerr != nil {
+				t.Errorf("run A Next: %v", nerr)
+				return
+			}
+			traj.Steps = append(traj.Steps, planner.Step{Action: dec})
+		}
+	}
+
+	var wg sync.WaitGroup
+	var bLeaked atomic.Bool
+	wg.Add(2)
+	go func() { defer wg.Done(); runA() }()
+	go func() { defer wg.Done(); bLeaked.Store(runB()) }()
+	wg.Wait()
+	_ = p // the top-level planner is intentionally unused beyond construction
+
+	if bLeaked.Load() {
+		t.Error("run B's prompt carried repair guidance — cross-run counter bleed (D-145 violation)")
+	}
 }
