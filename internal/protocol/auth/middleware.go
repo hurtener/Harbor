@@ -151,6 +151,8 @@ func extractBearer(header string) (string, error) {
 // (the request lacks an identity scope per RFC §5.5). Everything else
 // → CodeAuthRejected (the request carried an identity claim but it
 // failed verification).
+//
+//nolint:unparam // (Code, HTTP-status) pair is a deliberate wire-contract shape — every auth error is 401 today, but the status stays explicit so a future 403-mapping error doesn't need a signature change at the call site.
 func protocolErrorFor(err error) (protoerrors.Code, int) {
 	switch {
 	case errors.Is(err, ErrTokenMissing):
@@ -203,5 +205,5 @@ func writeProtocolError(w http.ResponseWriter, status int, perr *protoerrors.Err
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write(buf)
+	_, _ = w.Write(buf) //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 }

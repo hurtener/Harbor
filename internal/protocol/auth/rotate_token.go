@@ -183,7 +183,7 @@ func (s *RotateSurface) Rotate(ctx context.Context, verified Verified, req types
 	// identity.Validate — defend anyway in case a non-middleware path
 	// hands a zero Verified.
 	if err := identity.Validate(verified.Identity); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRotateIdentityRequired, err)
+		return nil, fmt.Errorf("%w: %w", ErrRotateIdentityRequired, err)
 	}
 
 	// Defence-in-depth: the body's identity scope MUST agree with the
@@ -202,7 +202,7 @@ func (s *RotateSurface) Rotate(ctx context.Context, verified Verified, req types
 	now := time.Now().UTC()
 	token, expiresAt, err := s.issuer.IssueToken(ctx, verified.Identity, verified.Scopes, now)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrRotateIssueFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrRotateIssueFailed, err)
 	}
 
 	// Audit the successful rotation (CLAUDE.md §7 rule 6). The emit

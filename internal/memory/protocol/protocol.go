@@ -168,9 +168,9 @@ func snapshotTurns(snap memory.Snapshot, id identity.Quadruple, driver string, h
 	if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
 		return nil, fmt.Errorf("memory/protocol: decode snapshot record: %w", err)
 	}
-	strat := string(rec.Strategy)
-	if strat == "" {
-		strat = string(snap.Strategy)
+	start := string(rec.Strategy)
+	if start == "" {
+		start = string(snap.Strategy)
 	}
 	out := make([]projectedTurn, 0, len(rec.Turns))
 	for i, turn := range rec.Turns {
@@ -183,7 +183,7 @@ func snapshotTurns(snap memory.Snapshot, id identity.Quadruple, driver string, h
 		out = append(out, projectedTurn{
 			item: prototypes.MemoryItem{
 				Key:      memTurnKey(id, i, ts),
-				Strategy: strat,
+				Strategy: start,
 				// Memory is session-scoped by default (CLAUDE.md §6
 				// rule 4); the snapshot surface is the session record.
 				Scope: string(prototypes.MemoryScopeSession),

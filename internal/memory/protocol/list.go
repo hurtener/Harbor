@@ -101,7 +101,7 @@ func List(ctx context.Context, deps ListDeps, req prototypes.MemoryListRequest, 
 	}
 
 	now := time.Now().UTC()
-	filtered := applyFilter(rows, req.Filter, id, now)
+	filtered := applyFilter(rows, req.Filter, now)
 	sortByLastUpdatedDesc(filtered)
 
 	total := len(filtered)
@@ -179,7 +179,7 @@ func validateFilterEnums(f prototypes.MemoryFilter) error {
 // applyFilter narrows the projected rows by every facet axis on the
 // filter. Each axis is an AND: a row survives only if it matches every
 // non-empty facet.
-func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter, id identity.Quadruple, now time.Time) []projectedTurn {
+func applyFilter(rows []projectedTurn, f prototypes.MemoryFilter, now time.Time) []projectedTurn {
 	out := make([]projectedTurn, 0, len(rows))
 	for _, r := range rows {
 		if !matchStringSet(f.Scopes, r.item.Scope) {

@@ -81,7 +81,7 @@ func (e *noneExec) Restore(ctx context.Context, id identity.Quadruple, snap memo
 	}
 	var rec memoryStateRecord
 	if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-		return fmt.Errorf("%w: %v", memory.ErrInvalidSnapshot, err)
+		return fmt.Errorf("%w: %w", memory.ErrInvalidSnapshot, err)
 	}
 	if rec.Strategy != memory.StrategyNone {
 		return fmt.Errorf("%w: record strategy=%q", memory.ErrInvalidSnapshot, rec.Strategy)

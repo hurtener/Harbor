@@ -94,7 +94,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 	var wg sync.WaitGroup
 
 	for _, idx := range indexes {
-		idx := idx
+
 		searcher, ok := reg.Get(idx)
 		if !ok {
 			// Skip silently for unregistered indexes — a partial

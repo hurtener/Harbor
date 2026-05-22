@@ -37,7 +37,7 @@ func TestConcurrentReuse_ControlSurface(t *testing.T) {
 	// goroutine has a live target. Open is the run-lifecycle entry; the
 	// Protocol surface does not own inbox lifecycle.
 	runs := make([]identity.Quadruple, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		runs[i] = identity.Quadruple{
 			Identity: identity.Identity{
 				TenantID:  fmt.Sprintf("tenant-%d", i),
@@ -58,7 +58,7 @@ func TestConcurrentReuse_ControlSurface(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n*2)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -164,7 +164,7 @@ func TestConcurrentReuse_ControlSurface_Topology(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

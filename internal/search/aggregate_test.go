@@ -60,9 +60,9 @@ func mkRow(idx types.SearchIndex, id string, occurred time.Time) types.SearchRes
 	}
 }
 
-func callerID(tenant string) identity.Identity {
+func callerID() identity.Identity {
 	return identity.Identity{
-		TenantID:  tenant,
+		TenantID:  "t1",
 		UserID:    "u1",
 		SessionID: "sess-1",
 	}
@@ -70,7 +70,7 @@ func callerID(tenant string) identity.Identity {
 
 func TestQuery_RejectsNilRegistry(t *testing.T) {
 	t.Parallel()
-	_, err := search.Query(context.Background(), nil, callerID("t1"), allowAdmin, types.SearchRequest{})
+	_, err := search.Query(context.Background(), nil, callerID(), allowAdmin, types.SearchRequest{})
 	if !errors.Is(err, search.ErrInvalidRequest) {
 		t.Fatalf("Query nil registry: got err=%v, want ErrInvalidRequest", err)
 	}
@@ -91,7 +91,7 @@ func TestQuery_RejectsCrossTenantWithoutAdminScope(t *testing.T) {
 	req := types.SearchRequest{
 		Filter: types.SearchFilter{TenantIDs: []string{"t1", "t2"}},
 	}
-	_, err := search.Query(context.Background(), reg, callerID("t1"), denyAdmin, req)
+	_, err := search.Query(context.Background(), reg, callerID(), denyAdmin, req)
 	if !errors.Is(err, search.ErrCrossTenantRequiresAdmin) {
 		t.Fatalf("Query cross-tenant w/o admin: got err=%v, want ErrCrossTenantRequiresAdmin", err)
 	}
@@ -107,7 +107,7 @@ func TestQuery_AllowsCrossTenantWithAdminScope(t *testing.T) {
 		Filter:  types.SearchFilter{TenantIDs: []string{"t1", "t2"}},
 		Indexes: []types.SearchIndex{types.SearchIndexSessions},
 	}
-	resp, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, req)
+	resp, err := search.Query(context.Background(), reg, callerID(), allowAdmin, req)
 	if err != nil {
 		t.Fatalf("Query cross-tenant w/ admin: unexpected error %v", err)
 	}
@@ -143,7 +143,7 @@ func TestQuery_FansOutAndMergesAcrossIndexes(t *testing.T) {
 		Query:   "",
 		Indexes: nil, // empty = all four
 	}
-	resp, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, req)
+	resp, err := search.Query(context.Background(), reg, callerID(), allowAdmin, req)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestQuery_PaginatesUnion(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	makeRows := func(idx types.SearchIndex, n int, prefix string) []types.SearchResultRow {
 		out := make([]types.SearchResultRow, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			out[i] = mkRow(idx, fmt.Sprintf("%s-%d", prefix, i), now.Add(time.Duration(n-i)*time.Second))
 		}
 		return out
@@ -189,7 +189,7 @@ func TestQuery_PaginatesUnion(t *testing.T) {
 		Page:     1,
 		PageSize: 20,
 	}
-	resp, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, req)
+	resp, err := search.Query(context.Background(), reg, callerID(), allowAdmin, req)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestQuery_PaginatesUnion(t *testing.T) {
 	}
 
 	req.Page = 3
-	resp, err = search.Query(context.Background(), reg, callerID("t1"), allowAdmin, req)
+	resp, err = search.Query(context.Background(), reg, callerID(), allowAdmin, req)
 	if err != nil {
 		t.Fatalf("Query page 3: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestQuery_GracefullyDegradesOnSoftIndexFailure(t *testing.T) {
 		err: errors.New("some upstream blew up"),
 	}
 	reg, _ := search.NewRegistry(good, bad)
-	resp, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, types.SearchRequest{})
+	resp, err := search.Query(context.Background(), reg, callerID(), allowAdmin, types.SearchRequest{})
 	if err != nil {
 		t.Fatalf("Query: should degrade gracefully on soft failure, got %v", err)
 	}
@@ -247,7 +247,7 @@ func TestQuery_PropagatesHardIdentityErrorAsFailure(t *testing.T) {
 		err: search.ErrIdentityRequired,
 	}
 	reg, _ := search.NewRegistry(bad)
-	_, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, types.SearchRequest{})
+	_, err := search.Query(context.Background(), reg, callerID(), allowAdmin, types.SearchRequest{})
 	if !errors.Is(err, search.ErrIdentityRequired) {
 		t.Fatalf("Query: hard identity error should propagate, got %v", err)
 	}
@@ -259,7 +259,7 @@ func TestQuery_RejectsUnknownIndex(t *testing.T) {
 	req := types.SearchRequest{
 		Indexes: []types.SearchIndex{types.SearchIndexSessions, "tools"}, // 'tools' is Console-side
 	}
-	_, err := search.Query(context.Background(), reg, callerID("t1"), allowAdmin, req)
+	_, err := search.Query(context.Background(), reg, callerID(), allowAdmin, req)
 	if !errors.Is(err, search.ErrUnknownIndex) {
 		t.Fatalf("Query: unknown index should reject, got %v", err)
 	}
@@ -286,8 +286,8 @@ func TestQuery_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	failures := make(chan string, N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

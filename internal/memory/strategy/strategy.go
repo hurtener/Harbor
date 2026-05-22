@@ -58,7 +58,7 @@ import (
 // it); concrete implementations are unexported types behind the
 // package's `New` factory.
 //
-//nolint:revive // strategy.StrategyExecutor stutters but reads cleaner than strategy.Executor at call sites that already import memory.
+
 type StrategyExecutor interface {
 	AddTurn(ctx context.Context, id identity.Quadruple, turn memory.ConversationTurn) error
 	GetLLMContext(ctx context.Context, id identity.Quadruple) (memory.LLMContextPatch, error)

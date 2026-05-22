@@ -34,41 +34,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
-	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/distributed"
 	"github.com/hurtener/Harbor/internal/distributed/a2a"
 	"github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
 	"github.com/hurtener/Harbor/internal/events"
-	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
-
-func mustAuditRedactor(t *testing.T) audit.Redactor {
-	t.Helper()
-	return auditpatterns.New()
-}
-
-func mustEventBus(t *testing.T) events.EventBus {
-	t.Helper()
-	bus, err := eventsinmem.New(config.EventsConfig{
-		Driver:                   "inmem",
-		MaxSubscribersPerSession: 32,
-		SubscriberBufferSize:     2048,
-		IdleTimeout:              60 * time.Second,
-		DropWindow:               1 * time.Second,
-		ReplayBufferSize:         128,
-	}, mustAuditRedactor(t))
-	if err != nil {
-		t.Fatalf("events bus: %v", err)
-	}
-	return bus
-}
 
 func tripleA() identity.Quadruple {
 	return identity.Quadruple{
@@ -237,10 +212,10 @@ func RunBus(t *testing.T, factory BusFactory) {
 
 		var wg sync.WaitGroup
 		wg.Add(workers)
-		for w := 0; w < workers; w++ {
+		for w := range workers {
 			go func(w int) {
 				defer wg.Done()
-				for i := 0; i < perWorker; i++ {
+				for i := range perWorker {
 					env := distributed.BusEnvelope{
 						Edge:      "concurrent",
 						Identity:  triple,
@@ -275,7 +250,7 @@ func RunBus(t *testing.T, factory BusFactory) {
 		baseline := runtime.NumGoroutine()
 		bus, _, cleanup := factory(t)
 		triple := tripleA()
-		_ = bus.Publish(ctxWith(triple), distributed.BusEnvelope{
+		_ = bus.Publish(ctxWith(triple), distributed.BusEnvelope{ //nolint:errcheck // warm-up publish for a goroutine-leak probe — the publish result is irrelevant to the leak assertion.
 			Edge: "x", Identity: triple, EventID: "evt", Payload: []byte(`{}`), Timestamp: time.Now().UTC(),
 		})
 		if err := bus.Close(context.Background()); err != nil {
@@ -814,7 +789,7 @@ func RunRemoteTransport(t *testing.T, factory RemoteTransportFactory) {
 		var wg sync.WaitGroup
 		wg.Add(workers)
 		errs := make(chan error, workers)
-		for w := 0; w < workers; w++ {
+		for w := range workers {
 			triple := tripleA()
 			if w%2 == 1 {
 				triple = tripleB()

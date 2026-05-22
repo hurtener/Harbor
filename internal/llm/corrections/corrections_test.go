@@ -529,7 +529,7 @@ func TestCorrections_ConcurrentReuse_D025(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(nWorkers)
 	errs := make(chan error, nWorkers*nRequests)
-	for i := 0; i < nWorkers; i++ {
+	for i := range nWorkers {
 		go func(i int) {
 			defer wg.Done()
 			id := identity.Identity{
@@ -542,7 +542,7 @@ func TestCorrections_ConcurrentReuse_D025(t *testing.T) {
 				errs <- err
 				return
 			}
-			for j := 0; j < nRequests; j++ {
+			for j := range nRequests {
 				req := makeRequest(model, []llm.ChatMessage{
 					{Role: llm.RoleUser, Content: llm.Content{Text: strPtr(fmt.Sprintf("hi-%d-%d", i, j))}},
 				})

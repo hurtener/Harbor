@@ -92,10 +92,10 @@ func newSurfaceFixture(t *testing.T) *surfaceFixture {
 }
 
 // testRun is a documented dummy run quadruple — no secrets.
-func testRun(tenant, run string) identity.Quadruple {
+func testRun(run string) identity.Quadruple {
 	return identity.Quadruple{
 		Identity: identity.Identity{
-			TenantID:  tenant,
+			TenantID:  "tenant-a",
 			UserID:    "user-1",
 			SessionID: "session-x",
 		},
@@ -259,7 +259,7 @@ func TestDispatch_Control_WrongRequestType_FailsClosed(t *testing.T) {
 
 func TestDispatch_Control_UnknownScope_FailsClosed(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	run := testRun("tenant-a", "run-scope")
+	run := testRun("run-scope")
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestDispatch_Control_NoLiveInbox_FailsClosed(t *testing.T) {
 
 func TestDispatch_Control_ScopeBelowMinimum_FailsClosed(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	run := testRun("tenant-a", "run-lowscope")
+	run := testRun("run-lowscope")
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestDispatch_Control_ScopeBelowMinimum_FailsClosed(t *testing.T) {
 
 func TestDispatch_Control_OversizePayload_FailsClosed(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	run := testRun("tenant-a", "run-oversize")
+	run := testRun("run-oversize")
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestDispatch_Control_CrossTenantNonAdmin_FailsClosed(t *testing.T) {
 	// gate fires. To exercise this we open the inbox under tenant-a but
 	// send the control with tenant-b in the identity scope: the inbox
 	// Enqueue rejects it because the event identity != inbox identity.
-	run := testRun("tenant-a", "run-xtenant")
+	run := testRun("run-xtenant")
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}

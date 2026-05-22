@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -456,7 +457,11 @@ func withIdentity(ctx context.Context, id identity.Identity) (context.Context, *
 
 // handleList serves mcp.servers.list.
 func (s *MCPSurface) handleList(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServersListRequest)
+	r, ok := req.(*types.MCPServersListRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServersListRequest, got %T", req)
+	}
 	idCtx, perr := withIdentity(ctx, id)
 	if perr != nil {
 		return nil, perr
@@ -489,7 +494,11 @@ func (s *MCPSurface) handleList(ctx context.Context, id identity.Identity, req a
 
 // handleGet serves mcp.servers.get.
 func (s *MCPSurface) handleGet(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerGetRequest)
+	r, ok := req.(*types.MCPServerGetRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerGetRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersGet))
@@ -518,7 +527,11 @@ func (s *MCPSurface) handleGet(ctx context.Context, id identity.Identity, req an
 
 // handleResources serves mcp.servers.resources.
 func (s *MCPSurface) handleResources(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerResourcesRequest)
+	r, ok := req.(*types.MCPServerResourcesRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerResourcesRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersResources))
@@ -549,7 +562,11 @@ func (s *MCPSurface) handleResources(ctx context.Context, id identity.Identity, 
 
 // handlePrompts serves mcp.servers.prompts.
 func (s *MCPSurface) handlePrompts(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerPromptsRequest)
+	r, ok := req.(*types.MCPServerPromptsRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerPromptsRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersPrompts))
@@ -586,7 +603,11 @@ func (s *MCPSurface) handlePrompts(ctx context.Context, id identity.Identity, re
 
 // handleRefreshDiscovery serves mcp.servers.refresh_discovery.
 func (s *MCPSurface) handleRefreshDiscovery(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerRefreshDiscoveryRequest)
+	r, ok := req.(*types.MCPServerRefreshDiscoveryRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerRefreshDiscoveryRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersRefreshDiscovery))
@@ -601,16 +622,20 @@ func (s *MCPSurface) handleRefreshDiscovery(ctx context.Context, id identity.Ide
 	}
 	return &types.MCPServerRefreshDiscoveryResponse{
 		DiscoveryID:     row.DiscoveryID,
-		ToolCount:       int32(row.ToolCount),
-		ResourceCount:   int32(row.ResourceCount),
-		PromptCount:     int32(row.PromptCount),
+		ToolCount:       mcpCountToWire(row.ToolCount),
+		ResourceCount:   mcpCountToWire(row.ResourceCount),
+		PromptCount:     mcpCountToWire(row.PromptCount),
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
 }
 
 // handleProbe serves mcp.servers.probe.
 func (s *MCPSurface) handleProbe(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerProbeRequest)
+	r, ok := req.(*types.MCPServerProbeRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerProbeRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersProbe))
@@ -633,7 +658,11 @@ func (s *MCPSurface) handleProbe(ctx context.Context, id identity.Identity, req 
 
 // handleHealth serves mcp.servers.health.
 func (s *MCPSurface) handleHealth(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerHealthRequest)
+	r, ok := req.(*types.MCPServerHealthRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerHealthRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersHealth))
@@ -664,7 +693,11 @@ func (s *MCPSurface) handleHealth(ctx context.Context, id identity.Identity, req
 
 // handleBindingsList serves mcp.servers.bindings.list.
 func (s *MCPSurface) handleBindingsList(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerBindingsListRequest)
+	r, ok := req.(*types.MCPServerBindingsListRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerBindingsListRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersBindingsList))
@@ -695,7 +728,11 @@ func (s *MCPSurface) handleBindingsList(ctx context.Context, id identity.Identit
 
 // handlePolicy serves mcp.servers.policy.
 func (s *MCPSurface) handlePolicy(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerPolicyRequest)
+	r, ok := req.(*types.MCPServerPolicyRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerPolicyRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersPolicy))
@@ -716,7 +753,11 @@ func (s *MCPSurface) handlePolicy(ctx context.Context, id identity.Identity, req
 
 // handleRefreshBinding serves mcp.servers.refresh_binding (admin verb).
 func (s *MCPSurface) handleRefreshBinding(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerRefreshBindingRequest)
+	r, ok := req.(*types.MCPServerRefreshBindingRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerRefreshBindingRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersRefreshBinding))
@@ -738,7 +779,11 @@ func (s *MCPSurface) handleRefreshBinding(ctx context.Context, id identity.Ident
 
 // handleRevokeBinding serves mcp.servers.revoke_binding (admin verb).
 func (s *MCPSurface) handleRevokeBinding(ctx context.Context, id identity.Identity, req any) (any, error) {
-	r := req.(*types.MCPServerRevokeBindingRequest)
+	r, ok := req.(*types.MCPServerRevokeBindingRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerRevokeBindingRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(methods.MethodMCPServersRevokeBinding))
@@ -763,7 +808,11 @@ func (s *MCPSurface) handleRevokeBinding(ctx context.Context, id identity.Identi
 // trust toggle is refused (CLAUDE.md §5, §7).
 func (s *MCPSurface) handleSetRawHTMLTrust(ctx context.Context, id identity.Identity, _ bool, req any) (any, error) {
 	method := methods.MethodMCPServersSetRawHTMLTrust
-	r := req.(*types.MCPServerSetRawHTMLTrustRequest)
+	r, ok := req.(*types.MCPServerSetRawHTMLTrustRequest)
+	if !ok {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"expected *types.MCPServerSetRawHTMLTrustRequest, got %T", req)
+	}
 	if r.Name == "" {
 		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
 			"method %q: name is required", string(method))
@@ -830,12 +879,12 @@ func projectServerRow(row MCPServerRow) types.MCPServerView {
 		URLOrCommand:      row.URLOrCommand,
 		State:             types.MCPServerStateView(row.State),
 		LastDiscoveryAt:   row.LastDiscoveryAt,
-		ToolCount:         int32(row.ToolCount),
-		ResourceCount:     int32(row.ResourceCount),
-		PromptCount:       int32(row.PromptCount),
+		ToolCount:         mcpCountToWire(row.ToolCount),
+		ResourceCount:     mcpCountToWire(row.ResourceCount),
+		PromptCount:       mcpCountToWire(row.PromptCount),
 		RecentLatencyMs:   row.RecentLatencyMs,
 		ErrorRatePerMin:   row.ErrorRatePerMin,
-		OAuthBindingCount: int32(row.OAuthBindingCount),
+		OAuthBindingCount: mcpCountToWire(row.OAuthBindingCount),
 		RawHTMLTrusted:    row.RawHTMLTrusted,
 	}
 }
@@ -845,8 +894,8 @@ func projectServerRow(row MCPServerRow) types.MCPServerView {
 func projectPolicy(row MCPServerRow) types.MCPToolPolicyView {
 	return types.MCPToolPolicyView{
 		TimeoutMs:      row.PolicyTimeoutMs,
-		MaxRetries:     int32(row.PolicyMaxRetries),
-		ConcurrencyCap: int32(row.PolicyConcurrency),
+		MaxRetries:     mcpCountToWire(row.PolicyMaxRetries),
+		ConcurrencyCap: mcpCountToWire(row.PolicyConcurrency),
 	}
 }
 
@@ -909,6 +958,22 @@ func isMCPNotFound(err error) bool {
 
 func isMCPIdentityMissing(err error) bool {
 	return err != nil && containsMarker(err.Error(), "identity missing")
+}
+
+// mcpCountToWire converts a runtime int count (tool / resource /
+// prompt / binding counts, retry / concurrency caps) to the int32 the
+// Protocol wire types carry. Counts are always non-negative and bounded
+// well below int32 max in any real deployment; the explicit clamp keeps
+// the conversion provably safe rather than relying on that invariant
+// implicitly.
+func mcpCountToWire(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
 }
 
 // containsMarker reports whether s contains sub.

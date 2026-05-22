@@ -18,7 +18,7 @@ func TestSessionStatus_IsValid(t *testing.T) {
 		"":                           false,
 		"RUNNING":                    false,
 		"closed":                     false,
-		"running ":                   false,
+		"running ":                   false, //nolint:gocritic // trailing space is the deliberate test input — whitespace must not match a valid status.
 	}
 	for s, expected := range want {
 		if got := types.IsValidSessionStatus(s); got != expected {

@@ -48,7 +48,7 @@ func buildAgentCard(serverURL string) *a2atypes.AgentCard {
 // newWireTransport constructs a wire driver bound to the mock server.
 // The server URL is registered as a single peer with TrustTier=3 and
 // AllowInsecureLoopback=true so the test can speak HTTP.
-func newWireTransport(t *testing.T, mock *mockA2AServer) (distributed.RemoteTransport, *a2adrv.Registry) {
+func newWireTransport(t *testing.T, mock *mockA2AServer) distributed.RemoteTransport {
 	t.Helper()
 	reg := a2adrv.NewRegistry()
 	if err := reg.AddPeer(a2adrv.PeerSpec{
@@ -63,7 +63,7 @@ func newWireTransport(t *testing.T, mock *mockA2AServer) (distributed.RemoteTran
 	if err != nil {
 		t.Fatalf("a2adrv.New: %v", err)
 	}
-	return tr, reg
+	return tr
 }
 
 // newWireTransportWithAlias constructs a wire driver where both the
@@ -135,7 +135,7 @@ func TestWireTransport_RejectsNonRegisteredPeer(t *testing.T) {
 	mock.SetAgentCard(buildAgentCard(mock.URL()))
 	mock.BindAgent("", &stubEchoAgent{})
 
-	tr, _ := newWireTransport(t, mock)
+	tr := newWireTransport(t, mock)
 	defer func() { _ = tr.Close(context.Background()) }()
 
 	ctx := ctxWithIdentity(context.Background(), "tenant-a", "user-a", "session-a")
@@ -202,14 +202,14 @@ func TestWireTransport_ConcurrentSend_D025(t *testing.T) {
 	}
 	mock.BindAgent("", agent)
 
-	tr, _ := newWireTransport(t, mock)
+	tr := newWireTransport(t, mock)
 	defer func() { _ = tr.Close(context.Background()) }()
 
 	const workers = 128
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	errs := make(chan error, workers)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(w int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("tenant-%d", w%4) // 4 distinct tenants
@@ -257,7 +257,7 @@ func TestWireTransport_StreamingHonoursCancel(t *testing.T) {
 		},
 	})
 
-	tr, _ := newWireTransport(t, mock)
+	tr := newWireTransport(t, mock)
 	defer func() { _ = tr.Close(context.Background()) }()
 
 	ctx, cancel := context.WithCancel(ctxWithIdentity(context.Background(), "t", "u", "s"))
@@ -295,14 +295,14 @@ func TestWireTransport_AgentCardCoalescesConcurrentFetch(t *testing.T) {
 	mock.SetAgentCard(buildAgentCard(mock.URL()))
 	mock.BindAgent("", &stubEchoAgent{})
 
-	tr, _ := newWireTransport(t, mock)
+	tr := newWireTransport(t, mock)
 	defer func() { _ = tr.Close(context.Background()) }()
 
 	const N = 32
 	var wg sync.WaitGroup
 	wg.Add(N)
 	errs := make(chan error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(w int) {
 			defer wg.Done()
 			ctx := ctxWithIdentity(context.Background(), "t", "u", fmt.Sprintf("s-%d", w))
@@ -347,7 +347,7 @@ func TestWireTransport_GoroutineLeak_AfterClose(t *testing.T) {
 			return ch, nil
 		},
 	})
-	tr, _ := newWireTransport(t, mock)
+	tr := newWireTransport(t, mock)
 	ctx := ctxWithIdentity(context.Background(), "t", "u", "s")
 	stream, err := tr.Stream(ctx, distributed.RemoteCallRequest{
 		Kind:    distributed.RemoteCallKindStream,

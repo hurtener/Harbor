@@ -54,7 +54,7 @@ func TestSecurity_AlgConfusion_HS256Token_RejectedAtParser(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	_ = priv
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
@@ -89,7 +89,7 @@ func TestSecurity_AlgConfusion_HS256Token_RejectedAtParser(t *testing.T) {
 func TestSecurity_AlgNone_RejectedAtParser(t *testing.T) {
 	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -170,7 +170,7 @@ func TestSecurity_ScopeEscalation_WithAdminScope_RequestAllowed(t *testing.T) {
 func TestSecurity_KIDSubstitution_UnknownSigner_SignatureFails(t *testing.T) {
 	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -193,7 +193,7 @@ func TestSecurity_KIDSubstitution_UnknownSigner_SignatureFails(t *testing.T) {
 func TestSecurity_ExpiredToken_Rejected(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -213,7 +213,7 @@ func TestSecurity_ExpiredToken_Rejected(t *testing.T) {
 func TestSecurity_TamperedBody_SignatureFails(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -246,7 +246,7 @@ func TestSecurity_EveryRejectionAudits_NoTokenLeaks(t *testing.T) {
 	const sentinelMarker = "ATTACK-MARKER-VALUE-XYZZY-9876"
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	rec := &recordingLogger{}
 	v, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),

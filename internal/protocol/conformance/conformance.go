@@ -772,7 +772,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 	t.Helper()
 
 	for _, m := range methods.Methods() {
-		m := m
+
 		if methods.IsStreamingEventsMethod(m) {
 			// Streaming-events methods — covered by
 			// EventsSubscribe_HappyPath, EventFilterMatrix, and the
@@ -1019,7 +1019,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 						Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 						Query:    "conformance",
 					})
-					status, decoded, _ := postControl(t, srv.URL, m, body, tok)
+					status, decoded := postControl(t, srv.URL, m, body, tok)
 					if status != http.StatusOK {
 						t.Fatalf("POST /v1/control/start: status = %d, want 200; body=%s", status, decoded)
 					}
@@ -1052,7 +1052,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 					},
 					Payload: happyPayloadFor(m),
 				})
-				status, decoded, _ := postControl(t, srv.URL, m, body, tok)
+				status, decoded := postControl(t, srv.URL, m, body, tok)
 				if status != http.StatusOK {
 					t.Fatalf("POST /v1/control/%s: status = %d, want 200; body=%s", m, status, decoded)
 				}
@@ -1081,7 +1081,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 	t.Helper()
 	for _, m := range methods.Methods() {
-		m := m
+
 		if methods.IsStreamingEventsMethod(m) {
 			continue
 		}
@@ -1182,7 +1182,7 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 				tok := st.SignToken(t, identity.Identity{
 					TenantID: "t", UserID: "u", SessionID: "s",
 				}, nil)
-				status, body, _ := postControl(t, srv.URL, m, []byte("not json at all"), tok)
+				status, body := postControl(t, srv.URL, m, []byte("not json at all"), tok)
 				if status != http.StatusBadRequest {
 					t.Fatalf("wire malformed body: status = %d, want 400; body=%s", status, body)
 				}
@@ -1301,7 +1301,7 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 		body := mustJSON(t, types.StartRequest{
 			Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		})
-		status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, hsTok)
+		status, decoded := postControl(t, srv.URL, methods.MethodStart, body, hsTok)
 		if status != http.StatusUnauthorized {
 			t.Fatalf("HS256 attack: status = %d, want 401; body=%s", status, decoded)
 		}
@@ -1365,7 +1365,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1386,7 +1389,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		// Two event types: the runtime.error type from Phase 04 + the
 		// bus-internal dropped type. Both are in the canonical
@@ -1412,7 +1418,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		// A bare reconnect cursor — the inmem driver advertises
 		// Replayer and accepts Sequence=0 as "from the beginning".
@@ -1436,7 +1445,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, []auth.Scope{auth.ScopeAdmin})
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1455,7 +1467,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		defer srv.Close()
 		id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
 		tok := st.SignToken(t, id, nil) // No scopes.
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+		req, reqErr := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1482,7 +1497,10 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("X-Harbor-Run", "run-conformance-42")
 		resp, err := http.DefaultClient.Do(req)
@@ -1523,7 +1541,10 @@ func runEventsSubscribeNegotiation(t *testing.T, factory Factory) {
 		tok := st.SignToken(t, id, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
+		if reqErr != nil {
+			t.Fatalf("build request: %v", reqErr)
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1672,7 +1693,7 @@ func runAuthPipeline(t *testing.T, factory Factory) {
 		body := mustJSON(t, types.StartRequest{
 			Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		})
-		status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, tok)
+		status, decoded := postControl(t, srv.URL, methods.MethodStart, body, tok)
 		if status != http.StatusUnauthorized {
 			t.Fatalf("HS256 status = %d, want 401", status)
 		}
@@ -1689,7 +1710,7 @@ func runAuthPipeline(t *testing.T, factory Factory) {
 		body := mustJSON(t, types.StartRequest{
 			Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		})
-		status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, tok)
+		status, decoded := postControl(t, srv.URL, methods.MethodStart, body, tok)
 		if status != http.StatusUnauthorized {
 			t.Fatalf("alg:none status = %d, want 401", status)
 		}
@@ -1706,7 +1727,7 @@ func runAuthPipeline(t *testing.T, factory Factory) {
 		body := mustJSON(t, types.StartRequest{
 			Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 		})
-		status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, tok)
+		status, decoded := postControl(t, srv.URL, methods.MethodStart, body, tok)
 		if status != http.StatusUnauthorized {
 			t.Fatalf("expired token status = %d, want 401", status)
 		}
@@ -1721,7 +1742,7 @@ func runAuthPipeline(t *testing.T, factory Factory) {
 		body := mustJSON(t, types.StartRequest{
 			Identity: types.IdentityScope{Tenant: "t1", User: "u1", Session: "s1"},
 		})
-		status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, "")
+		status, decoded := postControl(t, srv.URL, methods.MethodStart, body, "")
 		if status != http.StatusUnauthorized {
 			t.Fatalf("missing bearer status = %d, want 401", status)
 		}
@@ -1781,7 +1802,7 @@ func runTracePropagation(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatalf("telemetry.NewTracer: %v", err)
 	}
-	defer func() { _ = shutdown(context.Background()) }()
+	defer func() { _ = shutdown(context.Background()) }() //nolint:errcheck // test-cleanup tracer shutdown — a shutdown error cannot affect the test outcome.
 
 	// Start a root span so we have a known traceparent to inject.
 	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
@@ -1913,8 +1934,8 @@ func runConcurrentReuse(t *testing.T, factory Factory) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1938,7 +1959,11 @@ func runConcurrentReuse(t *testing.T, factory Factory) {
 					errs <- fmt.Errorf("in-process start %d: %w", i, err)
 					return
 				}
-				sr := resp.(*types.StartResponse)
+				sr, ok := resp.(*types.StartResponse)
+				if !ok {
+					errs <- fmt.Errorf("in-process start %d: response type %T, want *types.StartResponse", i, resp)
+					return
+				}
 				if sr.TaskID == "" {
 					errs <- fmt.Errorf("in-process start %d: empty TaskID", i)
 					return
@@ -1950,7 +1975,7 @@ func runConcurrentReuse(t *testing.T, factory Factory) {
 					Identity: types.IdentityScope{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID},
 					Query:    fmt.Sprintf("conc-wire-%d", i),
 				})
-				status, decoded, _ := postControl(t, srv.URL, methods.MethodStart, body, tok)
+				status, decoded := postControl(t, srv.URL, methods.MethodStart, body, tok)
 				if status != http.StatusOK {
 					errs <- fmt.Errorf("wire start %d: status %d body %s", i, status, decoded)
 					return
@@ -1974,7 +1999,7 @@ func runConcurrentReuse(t *testing.T, factory Factory) {
 					},
 					Payload: map[string]any{"note": fmt.Sprintf("conc-%d", i)},
 				})
-				status, decoded, _ := postControl(t, srv.URL, methods.MethodInjectContext, body, tok)
+				status, decoded := postControl(t, srv.URL, methods.MethodInjectContext, body, tok)
 				if status != http.StatusOK {
 					errs <- fmt.Errorf("wire inject_context %d: status %d body %s", i, status, decoded)
 					return
@@ -2014,7 +2039,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // postControl issues a POST /v1/control/{method} request and returns
 // the HTTP status + the body bytes. When bearer is non-empty, the
 // Authorization header is set.
-func postControl(t *testing.T, baseURL string, m methods.Method, body []byte, bearer string) (int, []byte, http.Header) {
+func postControl(t *testing.T, baseURL string, m methods.Method, body []byte, bearer string) (int, []byte) {
 	t.Helper()
 	url := baseURL + "/v1/control/" + string(m)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -2034,7 +2059,7 @@ func postControl(t *testing.T, baseURL string, m methods.Method, body []byte, be
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
 	}
-	return resp.StatusCode, decoded, resp.Header
+	return resp.StatusCode, decoded
 }
 
 // assertCode asserts err wraps a *protoerrors.Error with the expected

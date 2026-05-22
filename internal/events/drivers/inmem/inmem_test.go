@@ -98,9 +98,9 @@ func defaultCfg() config.EventsConfig {
 	}
 }
 
-func newBus(t *testing.T, opts ...inmem.Option) events.EventBus {
+func newBus(t *testing.T) events.EventBus {
 	t.Helper()
-	bus, err := inmem.New(defaultCfg(), auditpatterns.New(), opts...)
+	bus, err := inmem.New(defaultCfg(), auditpatterns.New())
 	if err != nil {
 		t.Fatalf("inmem.New: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestPublishSubscribe_RoundTrip(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := bus.Publish(context.Background(), mkEvent(1)); err != nil {
 			t.Fatalf("Publish: %v", err)
 		}
@@ -257,7 +257,7 @@ func TestSubscribe_PerSessionLimit(t *testing.T) {
 	id := mkID(1)
 	f := events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID}
 	subs := []events.Subscription{}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		s, err := bus.Subscribe(context.Background(), f)
 		if err != nil {
 			t.Fatalf("subscribe %d: %v", i, err)
@@ -291,7 +291,7 @@ func TestPublish_CrossTenantIsolation(t *testing.T) {
 	defer subA.Cancel()
 
 	// Publish 50 events as tenant B.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		evB := mkEvent(2)
 		if err := bus.Publish(context.Background(), evB); err != nil {
 			t.Fatalf("publish B: %v", err)
@@ -329,7 +329,7 @@ func TestPublish_DropOldestEmitsBusDropped(t *testing.T) {
 	defer sub.Cancel()
 
 	// Publish far more than the buffer holds without consuming.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_ = bus.Publish(context.Background(), mkEvent(1))
 	}
 	// Trigger the windowed emit.
@@ -397,7 +397,7 @@ func TestReaper_CancelsIdleSubscription_SaturatedConsumer(t *testing.T) {
 
 	// Saturate without consuming. Past the 4th publish the displace
 	// path freezes lastDrain.
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		_ = bus.Publish(context.Background(), mkEvent(1))
 	}
 
@@ -524,7 +524,7 @@ func TestBus_CloseDuringActivePublish(t *testing.T) {
 	// Publishers running concurrently with Close.
 	stop := make(chan struct{})
 	var pwg sync.WaitGroup
-	for p := 0; p < 8; p++ {
+	for range 8 {
 		pwg.Add(1)
 		go func() {
 			defer pwg.Done()
@@ -700,7 +700,7 @@ func TestBus_ConcurrentReuse_ReuseContract(t *testing.T) {
 	// Subscribers spread across distinct identity tuples.
 	ids := make([]identity.Quadruple, subscribers)
 	subs := make([]events.Subscription, subscribers)
-	for i := 0; i < subscribers; i++ {
+	for i := range subscribers {
 		ids[i] = mkID(i)
 		s, err := bus.Subscribe(context.Background(), events.Filter{
 			Tenant: ids[i].TenantID, User: ids[i].UserID, Session: ids[i].SessionID,
@@ -733,11 +733,11 @@ func TestBus_ConcurrentReuse_ReuseContract(t *testing.T) {
 
 	// Publishers each emit eventsPerProducer events with random identity.
 	var pwg sync.WaitGroup
-	for p := 0; p < publishers; p++ {
+	for p := range publishers {
 		pwg.Add(1)
 		go func(p int) {
 			defer pwg.Done()
-			for j := 0; j < eventsPerProducer; j++ {
+			for range eventsPerProducer {
 				ev := mkEvent(p % subscribers)
 				_ = bus.Publish(context.Background(), ev)
 			}
@@ -773,7 +773,7 @@ func TestBus_GoroutineLeak_AfterClose(t *testing.T) {
 	}
 
 	// Saturate.
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		_ = bus.Publish(context.Background(), mkEvent(1))
 	}
 

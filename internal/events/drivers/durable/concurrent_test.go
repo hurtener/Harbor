@@ -48,7 +48,7 @@ func TestConcurrentReuse_DurableBus(t *testing.T) {
 	wg.Add(n)
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(idx int) {
 			defer wg.Done()
 			id := identity.Quadruple{Identity: identity.Identity{
@@ -65,7 +65,7 @@ func TestConcurrentReuse_DurableBus(t *testing.T) {
 				ctx = c
 			}
 
-			for j := 0; j < perGoroutine; j++ {
+			for j := range perGoroutine {
 				ev := events.Event{
 					Type:     events.EventTypeRuntimeWarning,
 					Identity: id,

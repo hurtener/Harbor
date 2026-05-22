@@ -80,7 +80,7 @@ func runtimeWarn(note string) events.EventPayload {
 
 func publishN(t *testing.T, bus events.EventBus, id identity.Quadruple, n int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeWarning,
 			Identity: id,
@@ -340,7 +340,7 @@ func TestDurable_Subscribe_LiveFanOut(t *testing.T) {
 
 	publishN(t, bus, id, 3)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		select {
 		case ev := <-sub.Events():
 			if ev.Identity.SessionID != "s1" {

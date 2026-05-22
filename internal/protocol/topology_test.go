@@ -51,18 +51,14 @@ func sampleProjection() types.TopologyProjection {
 }
 
 // newTopologySurface builds a ControlSurface with a wired topology
-// accessor + an injected scope checker. adminScopes is the set of
-// scopes the checker reports true for.
-func newTopologySurface(t *testing.T, accessor protocol.TopologyAccessor, adminScopes ...auth.Scope) *protocol.ControlSurface {
+// accessor + an injected scope checker. The checker reports false for
+// every scope — no test currently exercises an admin-scoped topology
+// read; a future one re-adds an explicit scope set.
+func newTopologySurface(t *testing.T, accessor protocol.TopologyAccessor) *protocol.ControlSurface {
 	t.Helper()
 	fx := newSurfaceFixture(t)
-	scopeSet := map[auth.Scope]struct{}{}
-	for _, s := range adminScopes {
-		scopeSet[s] = struct{}{}
-	}
-	checker := func(_ context.Context, s auth.Scope) bool {
-		_, ok := scopeSet[s]
-		return ok
+	checker := func(_ context.Context, _ auth.Scope) bool {
+		return false
 	}
 	surface, err := protocol.NewControlSurface(fx.tasks, fx.steering,
 		protocol.WithTopologyAccessor(accessor),

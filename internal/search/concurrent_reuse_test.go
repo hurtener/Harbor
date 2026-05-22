@@ -45,8 +45,8 @@ func TestSearchers_ConcurrentReuse_AllFourIndexes_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	failures := make(chan string, N*5)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
