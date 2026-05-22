@@ -361,6 +361,12 @@ memory:
 #     note it grows prompt size on chatty trajectories.
 # There is no `provider_native` mode in V1.
 #
+# `max_tool_examples_per_tool` (Phase 83b — D-144) caps how many curated
+# examples the rendered `<available_tools>` section emits per tool.
+# Examples are ranked `minimal` > `common` > `edge-case` > untagged; the
+# renderer keeps the top N. Zero / unset resolves to 3. Dial it down for
+# catalogs with many tools to keep prompt token usage bounded.
+#
 # Reasoning-capture note for Anthropic: Anthropic's extended-thinking
 # API requires `reasoning.max_tokens >= 1024`. Harbor maps the LLM
 # `reasoning_effort` enum to a budget for the Anthropic provider and
@@ -376,6 +382,7 @@ planner:
   #   call render_table before finishing and reference the artifact
   #   in your final answer.
   # reasoning_replay: never   # never (default) | text
+  # max_tool_examples_per_tool: 3   # 0/unset → 3
 
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`

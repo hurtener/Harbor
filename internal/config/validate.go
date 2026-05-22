@@ -968,6 +968,11 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedReasoningReplayModes), c.Planner.ReasoningReplay))
 	}
+	if c.Planner.MaxToolExamplesPerTool < 0 {
+		return fieldError("planner.max_tool_examples_per_tool",
+			fmt.Sprintf("must be >= 0 (0 = use driver default of 3), got %d",
+				c.Planner.MaxToolExamplesPerTool))
+	}
 	return nil
 }
 

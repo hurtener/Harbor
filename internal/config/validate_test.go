@@ -1224,6 +1224,33 @@ func TestValidate_Planner_ReasoningReplay(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_MaxToolExamplesPerTool covers the Phase 83b
+// (D-144) `planner.max_tool_examples_per_tool` knob: zero (→driver
+// default 3) and positive values validate; a negative value fails
+// loud pre-boot with the field named in the error.
+func TestValidate_Planner_MaxToolExamplesPerTool(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{0, 1, 3, 10} {
+		t.Run("accepts", func(t *testing.T) {
+			t.Parallel()
+			cfg := mustLoadValid(t)
+			cfg.Planner = config.PlannerConfig{Driver: "react", MaxToolExamplesPerTool: n}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate(planner.max_tool_examples_per_tool=%d): %v", n, err)
+			}
+		})
+	}
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", MaxToolExamplesPerTool: -1}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.max_tool_examples_per_tool=-1) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "max_tool_examples_per_tool") {
+		t.Errorf("err = %q, want it to name the planner.max_tool_examples_per_tool field", err.Error())
+	}
+}
+
 // mustLoadValid loads the canonical valid fixture and returns a
 // mutable copy callers can break in subtests.
 func mustLoadValid(t *testing.T) *config.Config {

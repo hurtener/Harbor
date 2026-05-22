@@ -237,6 +237,23 @@ func WithReasoningReplay(mode planner.ReasoningReplayMode) Option {
 	}
 }
 
+// WithMaxToolExamplesPerTool caps how many curated examples each tool
+// renders in the `<available_tools>` section of the system prompt
+// (Phase 83b — D-144). The runtime wires this from
+// `config.PlannerConfig.MaxToolExamplesPerTool`. A value ≤ 0 (the
+// default) resolves to [defaultMaxToolExamples] (3) at render time.
+// Examples are ranked `minimal` > `common` > `edge-case` > untagged;
+// the renderer keeps the top N.
+//
+// The option applies only when the default prompt builder is in use;
+// an operator-supplied [WithPromptBuilder] owns its own prompt
+// assembly and ignores this value.
+func WithMaxToolExamplesPerTool(n int) Option {
+	return func(p *ReActPlanner) {
+		p.maxToolExamples = n
+	}
+}
+
 // WithSystemPrompt overrides the [DefaultSystemPrompt]. An empty
 // string falls back to [DefaultSystemPrompt].
 //
@@ -322,6 +339,15 @@ type ReActPlanner struct {
 	// render time.
 	reasoningReplay planner.ReasoningReplayMode
 
+	// maxToolExamples is the agent-configured per-tool curated-example
+	// cap for the rendered <available_tools> section (Phase 83b —
+	// D-144). Set via [WithMaxToolExamplesPerTool] from
+	// `config.PlannerConfig.MaxToolExamplesPerTool`; a value ≤ 0
+	// resolves to [defaultMaxToolExamples] (3) at render time. Applied
+	// to the default prompt builder at construction; read-only
+	// thereafter (D-025).
+	maxToolExamples int
+
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
@@ -373,6 +399,7 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 		p.builder = defaultBuilder{
 			extraGuidance:    p.extraGuidance,
 			configuredReplay: p.reasoningReplay,
+			maxToolExamples:  p.maxToolExamples,
 		}
 	}
 	return p
