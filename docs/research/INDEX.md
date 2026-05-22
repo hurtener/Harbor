@@ -2,7 +2,7 @@
 
 Reverse map from "I'm authoring a phase about X" → "these are the briefs to read first."
 
-The briefs themselves live alongside this file (`docs/research/01..NN.md`). Briefs 01–07 are phase-planning research artifacts distilled from the predecessor's source code; 08 onward are empirical-validation or third-party-reference briefs (bifrost, etc.). Collectively they encode the hard-won lessons Harbor inherits. **A phase plan that doesn't list at least one informing brief is a drift signal** — the drift-audit script enforces this.
+The briefs themselves live alongside this file (`docs/research/01..NN.md`). Briefs 01–07 are phase-planning research artifacts distilled from prior-art agent-runtime design; 08 onward are empirical-validation or third-party-reference briefs (bifrost, etc.). Collectively they encode the hard-won lessons Harbor inherits. **A phase plan that doesn't list at least one informing brief is a drift signal** — the drift-audit script enforces this.
 
 ## Briefs at a glance
 
@@ -59,7 +59,7 @@ Bold = primary brief for that subsystem. Non-bold = relevant context.
 
 ## How briefs interact with the RFC and phase plans
 
-- **Briefs** are *authoritative for context*, not for design (AGENTS.md §2). They encode what the predecessor did, what worked, what broke, and what Harbor must inherit cleanly vs. fix.
+- **Briefs** are *authoritative for context*, not for design (AGENTS.md §2). They encode prior-art design lessons — what worked, what broke, and what Harbor must inherit cleanly vs. fix.
 - **The RFC** distills brief findings into Harbor's settled design.
 - **A phase plan** translates an RFC section into a shippable unit of work.
 
@@ -83,6 +83,6 @@ A new brief lands when:
 
 - A new subsystem is being scoped that's not covered above.
 - An empirical validation produces phase-shaping findings (brief 08 is an example).
-- A surface in the predecessor needs deeper investigation than the existing briefs covered.
+- A Harbor subsystem surface needs deeper investigation than the existing briefs covered.
 
 When you add a brief, update this index in the same PR.

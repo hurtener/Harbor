@@ -17,7 +17,7 @@ But measured against the MCP capability matrix, Harbor is **not cleanly "core co
 
 Everything else is *missing feature*, not *broken*: no MCP HTTP OAuth (the existing `auth.Provider` is not wired into the MCP driver at all), no sampling, no elicitation, no real roots, no completions / logging / resource-templates / progress, no Apps, no Tasks.
 
-This brief inventories the gap against the matrix, fixes the framing of what Harbor can *claim*, and decomposes the closure into ten lettered phases (85a–85j). The predecessor's Phase 85 ("Skills Portico provider driver") is **deleted** — Portico is an MCP gateway; the generic MCP client driver *is* the Portico client, so a Portico-specific driver is an anti-pattern.
+This brief inventories the gap against the matrix, fixes the framing of what Harbor can *claim*, and decomposes the closure into ten lettered phases (85a–85j). The originally-scoped Phase 85 ("Skills Portico provider driver") is **deleted** — Portico is an MCP gateway; the generic MCP client driver *is* the Portico client, so a Portico-specific driver is an anti-pattern.
 
 ## 1. Where the MCP client code lives
 
