@@ -32,7 +32,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -221,7 +220,7 @@ func TestE2E_Phase64_ProtocolSurface_Boots_AndAcceptsBearerToken(t *testing.T) {
 	defer ticker.Stop()
 	deadline := time.After(5 * time.Second)
 
-	_ = submitTokenedStart(t, srv.URL, token, "phase64-e2e")
+	submitTokenedStart(t, srv.URL, token, "phase64-e2e")
 	for {
 		select {
 		case et, ok := <-eventTypes:
@@ -232,7 +231,7 @@ func TestE2E_Phase64_ProtocolSurface_Boots_AndAcceptsBearerToken(t *testing.T) {
 				return // pass — both directions over the wire, end-to-end.
 			}
 		case <-ticker.C:
-			_ = submitTokenedStart(t, srv.URL, token, "phase64-e2e")
+			submitTokenedStart(t, srv.URL, token, "phase64-e2e")
 		case <-deadline:
 			t.Fatal("timed out waiting for task.spawned on SSE stream")
 		}
@@ -282,7 +281,7 @@ func TestE2E_Phase64_ConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -353,9 +352,8 @@ func openTokenedStream(t *testing.T, ctx context.Context, baseURL, token string)
 }
 
 // submitTokenedStart submits a `start` control over REST with the
-// supplied Bearer token. Returns the spawned task id (or fails the
-// test on non-200).
-func submitTokenedStart(t *testing.T, baseURL, token, query string) string {
+// supplied Bearer token. Fails the test on non-200.
+func submitTokenedStart(t *testing.T, baseURL, token, query string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":%q}`, query)
 	req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/control/start",
@@ -371,11 +369,6 @@ func submitTokenedStart(t *testing.T, baseURL, token, query string) string {
 		b, _ := readShortBody(resp)
 		t.Fatalf("start status = %d, want 200 (body: %s)", resp.StatusCode, b)
 	}
-	var dec struct {
-		TaskID string `json:"task_id"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&dec)
-	return dec.TaskID
 }
 
 // readShortBody pulls up to 512 bytes off a response for error

@@ -29,6 +29,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/s3"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/sqlite"
+
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	// Distributed drivers — Phase 22 loopback MessageBus + RemoteTransport.
@@ -101,6 +102,7 @@ import (
 	// them.
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlp"
+
 	// Telemetry metric exporters — Phase 56 OTel metrics. The
 	// prometheus driver is the default (built-in /metrics pull
 	// endpoint, no collector); the otlpmetric driver pushes metrics to
@@ -109,6 +111,7 @@ import (
 	// `telemetry.NewMetricsRegistry` resolves them.
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlpmetric"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/prometheus"
+
 	// Tools driver — Phase 29 A2A southbound ToolProvider. The package
 	// has no init-time registration (catalogs are constructed in code,
 	// not from a factory registry); the blank import documents the
@@ -164,6 +167,7 @@ func main() {
 			Message: fmt.Sprintf("invocation error: %s", err.Error()),
 			Code:    "invocation_error",
 		}
+		//nolint:errcheck // last-ditch error print before exit; if stderr is unwritable there is nothing left to do
 		_ = PrintCLIError(os.Stderr, false, fallback)
 		os.Exit(1)
 	}

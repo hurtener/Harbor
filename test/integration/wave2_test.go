@@ -111,7 +111,7 @@ func TestE2E_Wave2_FullSurface_Aliveness(t *testing.T) {
 	// 5. Subscriber receives the runtime.error event with a redacted
 	//    RedactedMap payload (RuntimeErrorPayload is NOT SafePayload,
 	//    so the bus runs it through the redactor).
-	got := mustReceive(t, sub, 2*time.Second)
+	got := mustReceive(t, sub)
 	if got.Type != events.EventTypeRuntimeError {
 		t.Fatalf("type=%v, want runtime.error", got.Type)
 	}
@@ -212,7 +212,7 @@ func TestE2E_Wave2_Concurrent_Stress(t *testing.T) {
 
 	// One subscriber per tenant; they only see their tenant's events.
 	subs := make([]events.Subscription, tenants)
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		id := tripleN(i)
 		sub, err := bus.Subscribe(context.Background(), events.Filter{
 			Tenant:  id.TenantID,
@@ -245,7 +245,7 @@ func TestE2E_Wave2_Concurrent_Stress(t *testing.T) {
 	// Producers: each tenant emits opsPerTenant log entries AND
 	// state.Saves in parallel.
 	var prodWG sync.WaitGroup
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		prodWG.Add(1)
 		go func(seed int) {
 			defer prodWG.Done()
@@ -255,7 +255,7 @@ func TestE2E_Wave2_Concurrent_Stress(t *testing.T) {
 				t.Errorf("WithRun: %v", err)
 				return
 			}
-			for j := 0; j < opsPerTenant; j++ {
+			for j := range opsPerTenant {
 				logger.Error(ctx, "stress",
 					slog.Int("iter", j),
 					slog.String("tenant_marker", id.TenantID))
@@ -446,7 +446,10 @@ func tripleN(seed int) identity.Quadruple {
 	}
 }
 
-func mustReceive(t *testing.T, sub events.Subscription, timeout time.Duration) events.Event {
+// mustReceiveTimeout bounds every mustReceive call.
+const mustReceiveTimeout = 2 * time.Second
+
+func mustReceive(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -454,8 +457,8 @@ func mustReceive(t *testing.T, sub events.Subscription, timeout time.Duration) e
 			t.Fatal("subscription channel closed unexpectedly")
 		}
 		return ev
-	case <-time.After(timeout):
-		t.Fatalf("timed out waiting for event after %v", timeout)
+	case <-time.After(mustReceiveTimeout):
+		t.Fatalf("timed out waiting for event after %v", mustReceiveTimeout)
 	}
 	return events.Event{}
 }

@@ -399,7 +399,7 @@ func exerciseBus(t *testing.T, driver string) {
 // would pollute the count.
 func TestE2E_Phase77_GoroutineLeakConformance(t *testing.T) {
 	for _, tc := range leakCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			// One warm-up cycle so first-use lazy initialisation
 			// (driver registries, sync.Once-guarded globals) is not
@@ -408,7 +408,7 @@ func TestE2E_Phase77_GoroutineLeakConformance(t *testing.T) {
 			settle()
 
 			baseline := runtime.NumGoroutine()
-			for i := 0; i < leakCycles; i++ {
+			for range leakCycles {
 				tc.exercise(t)
 			}
 

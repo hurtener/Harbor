@@ -77,7 +77,7 @@ func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 	if _, err := reg.Open(ctx, id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	got := mustReceive(t, sub, 2*time.Second)
+	got := mustReceive(t, sub)
 	if got.Type != sessions.EventTypeSessionOpened {
 		t.Fatalf("first event type=%v, want session.opened", got.Type)
 	}
@@ -89,7 +89,7 @@ func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 	if err := reg.Touch(ctx, id.SessionID); err != nil {
 		t.Fatalf("Touch: %v", err)
 	}
-	got = mustReceive(t, sub, 2*time.Second)
+	got = mustReceive(t, sub)
 	if got.Type != sessions.EventTypeSessionTouched {
 		t.Fatalf("second event type=%v, want session.touched", got.Type)
 	}
@@ -109,7 +109,7 @@ func TestE2E_Phase08_SessionLifecycle_RoundTrip(t *testing.T) {
 	if err := reg.Close(ctx, id.SessionID, "e2e"); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	got = mustReceive(t, sub, 2*time.Second)
+	got = mustReceive(t, sub)
 	if got.Type != sessions.EventTypeSessionClosed {
 		t.Fatalf("third event type=%v, want session.closed", got.Type)
 	}

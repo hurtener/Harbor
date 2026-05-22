@@ -38,7 +38,7 @@ import (
 // truncation strategy round-trips a multi-turn buffer through real
 // drivers. Per AGENTS.md §17: real drivers everywhere on the seam.
 func TestE2E_Phase24_Truncation_RoundTripsBuffer(t *testing.T) {
-	bus, store, _ := buildE2EDeps(t)
+	bus, store := buildE2EDeps(t)
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
 		Strategy:     memory.StrategyTruncation,
@@ -53,7 +53,7 @@ func TestE2E_Phase24_Truncation_RoundTripsBuffer(t *testing.T) {
 		Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"},
 	}
 	ctx := context.Background()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := mem.AddTurn(ctx, id, memory.ConversationTurn{
 			UserMessage:       "hello",
 			AssistantResponse: "world",
@@ -90,7 +90,7 @@ func TestE2E_Phase24_Truncation_RoundTripsBuffer(t *testing.T) {
 // (b) the summary materialises in subsequent GetLLMContext calls,
 // (c) Health stays healthy across the lifecycle.
 func TestE2E_Phase24_RollingSummary_HappyPath(t *testing.T) {
-	bus, store, _ := buildE2EDeps(t)
+	bus, store := buildE2EDeps(t)
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:   "inmem",
 		Strategy: memory.StrategyRollingSummary,
@@ -106,7 +106,7 @@ func TestE2E_Phase24_RollingSummary_HappyPath(t *testing.T) {
 		Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"},
 	}
 	ctx := context.Background()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if err := mem.AddTurn(ctx, id, memory.ConversationTurn{
 			UserMessage:       "hello",
 			AssistantResponse: "world",
@@ -135,7 +135,7 @@ func TestE2E_Phase24_RollingSummary_HappyPath(t *testing.T) {
 // observable `memory.health_changed` events on the bus. Per
 // AGENTS.md §17 ≥1 failure mode.
 func TestE2E_Phase24_RollingSummary_DegradedTransitionObservable(t *testing.T) {
-	bus, store, _ := buildE2EDeps(t)
+	bus, store := buildE2EDeps(t)
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:   "inmem",
 		Strategy: memory.StrategyRollingSummary,
@@ -163,7 +163,7 @@ func TestE2E_Phase24_RollingSummary_DegradedTransitionObservable(t *testing.T) {
 	ctx := context.Background()
 	// Push enough turns to spill into pending repeatedly and
 	// exhaust the retry budget.
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if err := mem.AddTurn(ctx, id, memory.ConversationTurn{
 			UserMessage:       "u",
 			AssistantResponse: "a",
@@ -211,7 +211,7 @@ func TestE2E_Phase24_RollingSummary_DegradedTransitionObservable(t *testing.T) {
 // identity still fails closed and emits `memory.identity_rejected`
 // even when the strategy is `truncation` or `rolling_summary`.
 func TestE2E_Phase24_FailsClosedOnMissingIdentity(t *testing.T) {
-	bus, store, _ := buildE2EDeps(t)
+	bus, store := buildE2EDeps(t)
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:   "inmem",
 		Strategy: memory.StrategyTruncation,
@@ -256,7 +256,7 @@ func (*alwaysFailSummarizer) Summarize(_ context.Context, _ identity.Quadruple, 
 	return memory.SummarizeResponse{}, errors.New("forced summariser failure")
 }
 
-func buildE2EDeps(t *testing.T) (events.EventBus, state.StateStore, *config.Config) {
+func buildE2EDeps(t *testing.T) (events.EventBus, state.StateStore) {
 	t.Helper()
 	cfg := phase24Config()
 	red, err := audit.Open(context.Background(), cfg.Audit)
@@ -273,7 +273,7 @@ func buildE2EDeps(t *testing.T) (events.EventBus, state.StateStore, *config.Conf
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
-	return bus, store, cfg
+	return bus, store
 }
 
 func phase24Config() *config.Config {

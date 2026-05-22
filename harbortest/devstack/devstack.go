@@ -433,6 +433,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	stack.Close = func() {
 		ctx := context.Background()
 		for i := len(stack.closeFns) - 1; i >= 0; i-- {
+			//nolint:errcheck // test-stack teardown; a Close error is non-actionable and the test is already done
 			_ = stack.closeFns[i](ctx)
 		}
 		// Idempotency: a second Close walks an empty slice.
@@ -489,7 +490,10 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	notifDone := make(chan struct{})
 	go func() {
 		defer close(notifDone)
-		_ = notifSubscriber.Run(notifCtx)
+		if err := notifSubscriber.Run(notifCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Default().Warn("devstack: notification subscriber stopped with error",
+				slog.String("error", err.Error()))
+		}
 	}()
 	stack.closeFns = append(stack.closeFns, func(context.Context) error {
 		notifCancel()
@@ -969,11 +973,13 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			//nolint:errcheck // health-probe response write; a failure is non-actionable
 			_, _ = w.Write([]byte(`{"status":"ok","subcommand":"dev"}`))
 		})
 		router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			//nolint:errcheck // readiness-probe response write; a failure is non-actionable
 			_, _ = w.Write([]byte(`{"status":"ready"}`))
 		})
 		// Phase 66 / D-100 — mirror production: mount the draft
@@ -1219,20 +1225,32 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		if errors.Is(err, context.Canceled) {
 			code = "cancelled"
 		}
-		_ = d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 			Code:    code,
 			Message: err.Error(),
-		})
+		}); mErr != nil {
+			d.logger.Warn("devstack runloop: MarkFailed failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
 		return
 	}
 	if fin.Reason == planner.FinishGoal {
-		_ = d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{})
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
+			d.logger.Warn("devstack runloop: MarkComplete failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
 		return
 	}
-	_ = d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 		Code:    string(fin.Reason),
 		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
-	})
+	}); mErr != nil {
+		d.logger.Warn("devstack runloop: MarkFailed failed",
+			slog.String("task_id", string(taskID)),
+			slog.String("err", mErr.Error()))
+	}
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {

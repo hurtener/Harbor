@@ -394,7 +394,7 @@ func TestE2E_Phase73k_SSESubscriberStress(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	subs := make([]events.Subscription, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		sub, err := env.bus.Subscribe(context.Background(), events.Filter{
 			Tenant:  mcpPageTenant,
 			User:    mcpPageUser,
@@ -410,7 +410,7 @@ func TestE2E_Phase73k_SSESubscriberStress(t *testing.T) {
 	// Each subscriber waits for exactly one event.
 	var wg sync.WaitGroup
 	got := make([]int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -441,7 +441,7 @@ func TestE2E_Phase73k_SSESubscriberStress(t *testing.T) {
 	}
 	wg.Wait()
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if got[i] != 1 {
 			t.Errorf("subscriber %d received %d events, want exactly 1", i, got[i])
 		}

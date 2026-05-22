@@ -589,7 +589,7 @@ func pathsOf(files []DraftFile) []string {
 func drainEvents(t *testing.T, ch <-chan events.Event, n int) []events.EventType {
 	t.Helper()
 	out := make([]events.EventType, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		select {
 		case ev, ok := <-ch:
 			if !ok {
@@ -605,4 +605,3 @@ func drainEvents(t *testing.T, ch <-chan events.Event, n int) []events.EventType
 	}
 	return out
 }
-

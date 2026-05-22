@@ -328,7 +328,7 @@ func seedDevFixtures(ctx context.Context, deps devSeedDeps) error {
 		}
 		// Record two run-history entries per flow so the Console Flows
 		// page detail's run-history table renders rows.
-		for run := 0; run < 2; run++ {
+		for run := range 2 {
 			if err := deps.flows.RecordRun(flow.RunRecord{
 				RunID:     fmt.Sprintf("%s-run-%d", f.name, run),
 				FlowName:  f.name,

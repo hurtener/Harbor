@@ -25,6 +25,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
+
 	// D-103 — `internal/planner/react` self-registers under "react" via
 	// init() so devstack.Assemble's `planner.Resolve` call can construct
 	// the V1 reference planner from the cfg.

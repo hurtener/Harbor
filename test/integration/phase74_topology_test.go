@@ -553,7 +553,7 @@ func TestE2E_Phase74_Concurrency_NoCrossTalk(t *testing.T) {
 	const n = 10
 	var wg sync.WaitGroup
 	errs := make(chan string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

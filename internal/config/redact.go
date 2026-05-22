@@ -52,7 +52,7 @@ func redactValue(v reflect.Value) {
 		return
 	}
 	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
+	for i := range v.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
 			continue

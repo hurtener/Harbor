@@ -144,7 +144,7 @@ func TestE2E_Wave4_FullKernel_Aliveness(t *testing.T) {
 	streamer := engine.Node{
 		Name: "streamer",
 		Func: func(ctx context.Context, in messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
-			for i := 0; i < frameCount; i++ {
+			for i := range frameCount {
 				if err := nctx.EmitChunk(ctx, engine.StreamFrame{
 					Text: fmt.Sprintf("chunk-%d", i),
 				}); err != nil {
@@ -496,11 +496,11 @@ func TestE2E_Wave4_Concurrent_MultiTenant(t *testing.T) {
 	// We don't want the worker stuck in an infinite loop here; the
 	// CancelMidStream test already covers the infinite-stream case.
 	adjacencies := make([]engine.Adjacency, 0, tenants)
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		streamer := engine.Node{
 			Name: fmt.Sprintf("streamer-%d", ti),
 			Func: func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
-				for i := 0; i < framesPerRun; i++ {
+				for i := range framesPerRun {
 					if err := nctx.EmitChunk(ctx, engine.StreamFrame{Text: fmt.Sprintf("c-%d", i)}); err != nil {
 						return messages.Envelope{}, err
 					}
@@ -530,7 +530,7 @@ func TestE2E_Wave4_Concurrent_MultiTenant(t *testing.T) {
 		foreignTenantID atomic.Int64
 	}
 	tenantStates := make([]*tenantState, tenants)
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		tenantID := fmt.Sprintf("t-%d", ti)
 		userID := fmt.Sprintf("u-%d", ti)
 		sessionID := fmt.Sprintf("s-%d", ti)
@@ -555,7 +555,7 @@ func TestE2E_Wave4_Concurrent_MultiTenant(t *testing.T) {
 	}
 
 	// Open one session per tenant.
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("t-%d", ti),
 			UserID:    fmt.Sprintf("u-%d", ti),
@@ -577,7 +577,7 @@ func TestE2E_Wave4_Concurrent_MultiTenant(t *testing.T) {
 	// run completes its drain — start the drain in a goroutine that
 	// finishes cleanly on ErrRunCancelled.
 	var prodWG sync.WaitGroup
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		prodWG.Add(1)
 		go func(tenant int) {
 			defer prodWG.Done()

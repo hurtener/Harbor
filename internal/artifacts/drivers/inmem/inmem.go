@@ -48,9 +48,7 @@ func New(_ config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 }
 
 func init() {
-	artifacts.Register("inmem", func(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
-		return New(cfg)
-	})
+	artifacts.Register("inmem", New)
 }
 
 // indexKey is the composite primary key. Struct-typed (rather than

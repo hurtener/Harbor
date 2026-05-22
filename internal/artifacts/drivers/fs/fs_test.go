@@ -326,10 +326,10 @@ func TestFS_FilterDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []artifacts.ArtifactScope{
-		{TenantID: "X"},                                                 // tenant mismatch
-		{TenantID: "T", UserID: "X"},                                    // user mismatch
-		{TenantID: "T", UserID: "U", SessionID: "X"},                    // session mismatch
-		{TenantID: "T", UserID: "U", SessionID: "S", TaskID: "X"},       // task mismatch
+		{TenantID: "X"},                                           // tenant mismatch
+		{TenantID: "T", UserID: "X"},                              // user mismatch
+		{TenantID: "T", UserID: "U", SessionID: "X"},              // session mismatch
+		{TenantID: "T", UserID: "U", SessionID: "S", TaskID: "X"}, // task mismatch
 	}
 	for i, filter := range cases {
 		got, err := s.List(context.Background(), filter)

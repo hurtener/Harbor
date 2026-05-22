@@ -102,7 +102,7 @@ func TestScaffold_InvalidName_FailsLoud(t *testing.T) {
 		{"too-long", strings.Repeat("a", 65), "must match"},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			out := filepath.Join(t.TempDir(), "out")

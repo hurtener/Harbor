@@ -357,9 +357,8 @@ func TestE2E_Wave5_Concurrent_MultiTenant_PersistAndArtifact(t *testing.T) {
 	)
 	wg.Add(tenants * sessionsPerTenant)
 
-	for ti := 0; ti < tenants; ti++ {
-		for sj := 0; sj < sessionsPerTenant; sj++ {
-			ti, sj := ti, sj
+	for ti := range tenants {
+		for sj := range sessionsPerTenant {
 			go func() {
 				defer wg.Done()
 				ctx := context.Background()
@@ -379,7 +378,7 @@ func TestE2E_Wave5_Concurrent_MultiTenant_PersistAndArtifact(t *testing.T) {
 					},
 				}
 
-				for w := 0; w < writesPerSession; w++ {
+				for w := range writesPerSession {
 					// 1) StateStore write.
 					eventID := state.NewEventID()
 					rec := state.StateRecord{
@@ -439,7 +438,7 @@ func TestE2E_Wave5_Concurrent_MultiTenant_PersistAndArtifact(t *testing.T) {
 	// Cross-tenant isolation post-stress: tenant T-0's List(filter)
 	// returns ONLY T-0's artifacts; same for T-1. Sample two for
 	// brevity; the per-package conformance suite covers the matrix.
-	for ti := 0; ti < 2; ti++ {
+	for ti := range 2 {
 		filter := artifacts.ArtifactScope{TenantID: fmt.Sprintf("T-%d", ti)}
 		refs, err := artStore.List(context.Background(), filter)
 		if err != nil {

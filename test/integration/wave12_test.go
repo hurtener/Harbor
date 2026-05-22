@@ -313,7 +313,7 @@ func waitForGoroutineBaseline(maxWait time.Duration, target int, finalCount *int
 		}
 		// Yield then re-check; no time.Sleep — runtime.Gosched is the
 		// non-sleep scheduler-yield.
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			runtime.Gosched()
 		}
 	}
@@ -548,7 +548,7 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 	// (yield + collect prior goroutines) rather than time.Sleep — the
 	// scheduler-yield converges to a stable count deterministically.
 	runtime.GC()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		runtime.Gosched()
 	}
 	baseline := runtime.NumGoroutine()
@@ -556,7 +556,7 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 	const N = 10
 	var wg sync.WaitGroup
 	var fail atomic.Int32
-	for i := 0; i < N; i++ {
+	for i := range N {
 		runID := fmt.Sprintf("run-stress-%03d", i)
 		wg.Add(1)
 		go func(rid string) {
@@ -585,7 +585,7 @@ func TestE2E_Wave12_InspectTopology_Concurrency_NoCrossTalk(t *testing.T) {
 			}
 			// And NO other run id from the loop should appear (no
 			// cross-talk).
-			for j := 0; j < N; j++ {
+			for j := range N {
 				if j == i {
 					continue
 				}

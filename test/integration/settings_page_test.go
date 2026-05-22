@@ -312,7 +312,7 @@ func TestE2E_SettingsPage_RotateToken(t *testing.T) {
 		const n = 16
 		var wg sync.WaitGroup
 		codes := make([]int, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -340,7 +340,7 @@ func TestE2E_SettingsPage_RotateToken(t *testing.T) {
 		}
 		// Goroutine baseline restored after all requests return (D-025).
 		settled := false
-		for attempt := 0; attempt < 50; attempt++ {
+		for range 50 {
 			if runtime.NumGoroutine() <= baseline+8 {
 				settled = true
 				break

@@ -342,7 +342,7 @@ func hexDiff(a, b []byte) string {
 	if len(b) > n {
 		n = len(b)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var ac, bc string
 		if i < len(a) {
 			ac = fmt.Sprintf("%02x", a[i])

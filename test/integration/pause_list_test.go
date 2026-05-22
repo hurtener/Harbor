@@ -421,7 +421,7 @@ func TestE2E_Phase72e_PauseListConcurrentStress(t *testing.T) {
 
 	const N = 24
 	ids := make([]identity.Identity, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		ids[i] = identity.Identity{
 			TenantID:  "tenant-" + string(rune('A'+i%26)) + strconv.Itoa(i),
 			UserID:    "user-" + strconv.Itoa(i),
@@ -434,7 +434,7 @@ func TestE2E_Phase72e_PauseListConcurrentStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	errCh := make(chan error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tok := signES256Wave10(t, deps.priv, phase72eClaims(ids[i], nil), phase72eKid)
@@ -445,7 +445,7 @@ func TestE2E_Phase72e_PauseListConcurrentStress(t *testing.T) {
 			}
 			var resp prototypes.PauseListResponse
 			if err := json.Unmarshal(body, &resp); err != nil {
-				errCh <- fmt.Errorf("g%d: decode %v", i, err)
+				errCh <- fmt.Errorf("g%d: decode %w", i, err)
 				return
 			}
 			// Context-bleed check: each caller sees ONLY its own row.

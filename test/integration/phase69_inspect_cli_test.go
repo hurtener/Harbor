@@ -95,8 +95,8 @@ func TestE2E_Phase69_InspectEvents_SnapshotsLiveTaskSpawnedEvent(t *testing.T) {
 	// short wait — the in-mem bus's replay buffer carries the event
 	// regardless of subscription order, but the second start makes
 	// the assertion robust if the buffer was reset between runs.
-	taskID := submitStart(t, srv.URL, "t1", "u1", "s1")
-	_ = submitStart(t, srv.URL, "t1", "u1", "s1")
+	taskID := submitStart(t, srv.URL, "s1")
+	_ = submitStart(t, srv.URL, "s1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -152,8 +152,8 @@ func TestE2E_Phase69_InspectRuns_ListReturnsLiveRun(t *testing.T) {
 	srv := httptest.NewServer(deps.mux)
 	defer srv.Close()
 
-	taskA := submitStart(t, srv.URL, "t1", "u1", "s1")
-	taskB := submitStart(t, srv.URL, "t1", "u1", "s1")
+	taskA := submitStart(t, srv.URL, "s1")
+	taskB := submitStart(t, srv.URL, "s1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -206,8 +206,8 @@ func TestE2E_Phase69_InspectRuns_TrajectoryFiltersToOneRun(t *testing.T) {
 	srv := httptest.NewServer(deps.mux)
 	defer srv.Close()
 
-	taskA := submitStart(t, srv.URL, "t1", "u1", "s1")
-	_ = submitStart(t, srv.URL, "t1", "u1", "s1") // taskB — should not appear
+	taskA := submitStart(t, srv.URL, "s1")
+	_ = submitStart(t, srv.URL, "s1") // taskB — should not appear
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

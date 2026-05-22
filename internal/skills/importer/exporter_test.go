@@ -115,16 +115,13 @@ func TestDesubstituteArtifacts_NoRefsPassThrough(t *testing.T) {
 }
 
 func TestSynthesiseFrontmatter_EmptyFieldsOmitted(t *testing.T) {
-	out, err := synthesiseFrontmatter(skills.Skill{
+	out := synthesiseFrontmatter(skills.Skill{
 		Name:    "min",
 		Trigger: "t",
 		Steps:   []string{"s"},
 		Origin:  skills.OriginPack,
 		Scope:   skills.ScopeProject,
 	})
-	if err != nil {
-		t.Fatalf("synthesiseFrontmatter: %v", err)
-	}
 	s := string(out)
 	if strings.Contains(s, "title:") {
 		t.Errorf("title should be omitted")
@@ -138,16 +135,13 @@ func TestSynthesiseFrontmatter_EmptyFieldsOmitted(t *testing.T) {
 }
 
 func TestSynthesiseFrontmatter_NonDefaultScopeEmitted(t *testing.T) {
-	out, err := synthesiseFrontmatter(skills.Skill{
+	out := synthesiseFrontmatter(skills.Skill{
 		Name:    "tenant-scoped",
 		Trigger: "t",
 		Steps:   []string{"s"},
 		Origin:  skills.OriginPack,
 		Scope:   skills.ScopeTenant,
 	})
-	if err != nil {
-		t.Fatalf("synthesiseFrontmatter: %v", err)
-	}
 	if !strings.Contains(string(out), "scope: tenant\n") {
 		t.Errorf("non-default scope should be emitted: %q", out)
 	}

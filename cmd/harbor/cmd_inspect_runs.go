@@ -30,6 +30,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,14 +83,16 @@ Examples:
 // mode based on positional args, opens a snapshot SSE stream against
 // /v1/events with replay-from-cursor, and renders the result.
 func runInspectRuns(cmd *cobra.Command, args []string) error {
-	bind, _ := cmd.Flags().GetString(flagBind)
+	// Every flag below is statically registered on this command, so the
+	// GetX lookups cannot fail; the blank-error discards are intentional.
+	bind, _ := cmd.Flags().GetString(flagBind) //nolint:errcheck // flag statically registered; lookup cannot fail
 	jsonMode := resolveJSONMode(cmd)
 
 	filter := inspectFilter{}
-	filter.Tenant, _ = cmd.Flags().GetString(flagTenant)
-	filter.User, _ = cmd.Flags().GetString(flagUser)
-	filter.Sess, _ = cmd.Flags().GetString(flagSession)
-	filter.Since, _ = cmd.Flags().GetString(flagSince)
+	filter.Tenant, _ = cmd.Flags().GetString(flagTenant) //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.User, _ = cmd.Flags().GetString(flagUser)     //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Sess, _ = cmd.Flags().GetString(flagSession)  //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Since, _ = cmd.Flags().GetString(flagSince)   //nolint:errcheck // flag statically registered; lookup cannot fail
 	// NOTE: we deliberately do NOT set filter.Run from the positional
 	// arg. The SSE handler filters server-side by Event.Identity.RunID,
 	// which is empty on `task.spawned` (the `start` Protocol method
@@ -222,6 +225,9 @@ func runInspectRunsList(
 		}
 		var ev wireEvent
 		if dErr := json.Unmarshal([]byte(frame.Data), &ev); dErr != nil {
+			// A malformed frame is a Runtime bug, not a CLI bug; surface
+			// it and keep aggregating rather than tearing down the tail.
+			fmt.Fprintf(out, "# decode error: %v\n", dErr)
 			return false, nil
 		}
 		runID := runIDFromEvent(ev)
@@ -262,7 +268,8 @@ func runInspectRunsList(
 		return false, nil
 	})
 	if err != nil {
-		if cli, ok := err.(CLIError); ok {
+		var cli CLIError
+		if errors.As(err, &cli) {
 			cli.Subcommand = "inspect-runs"
 			return emit(cli)
 		}
@@ -294,7 +301,13 @@ func runInspectRunsList(
 				Message:    fmt.Sprintf("marshal runs list: %v", mErr),
 			})
 		}
-		_, _ = out.Write(append(buf, '\n'))
+		if _, wErr := out.Write(append(buf, '\n')); wErr != nil {
+			return emit(CLIError{
+				Subcommand: "inspect-runs",
+				Code:       CodeStreamFailed,
+				Message:    fmt.Sprintf("write runs list: %v", wErr),
+			})
+		}
 		return nil
 	}
 
@@ -353,6 +366,9 @@ func runInspectRunsTrajectory(
 		}
 		var ev wireEvent
 		if dErr := json.Unmarshal([]byte(frame.Data), &ev); dErr != nil {
+			// A malformed frame is a Runtime bug, not a CLI bug; surface
+			// it and keep aggregating rather than tearing down the tail.
+			fmt.Fprintf(out, "# decode error: %v\n", dErr)
 			return false, nil
 		}
 		// Defensive: filter.applyHeaders set X-Harbor-Run, but the
@@ -372,7 +388,8 @@ func runInspectRunsTrajectory(
 		return false, nil
 	})
 	if err != nil {
-		if cli, ok := err.(CLIError); ok {
+		var cli CLIError
+		if errors.As(err, &cli) {
 			cli.Subcommand = "inspect-runs"
 			return emit(cli)
 		}
@@ -410,7 +427,13 @@ func runInspectRunsTrajectory(
 				Message:    fmt.Sprintf("marshal trajectory: %v", mErr),
 			})
 		}
-		_, _ = out.Write(append(buf, '\n'))
+		if _, wErr := out.Write(append(buf, '\n')); wErr != nil {
+			return emit(CLIError{
+				Subcommand: "inspect-runs",
+				Code:       CodeStreamFailed,
+				Message:    fmt.Sprintf("write trajectory: %v", wErr),
+			})
+		}
 		return nil
 	}
 
@@ -426,4 +449,3 @@ func runInspectRunsTrajectory(
 	}
 	return nil
 }
-

@@ -206,8 +206,8 @@ func TestE2E_Wave3_Concurrent_CrossTenant_Replay(t *testing.T) {
 	// Producers: each tenant runs lifecyclesPerTenant Open→Touch→Close
 	// triples in parallel.
 	var prodWG sync.WaitGroup
-	for ti := 0; ti < tenants; ti++ {
-		for li := 0; li < lifecyclesPerTenant; li++ {
+	for ti := range tenants {
+		for li := range lifecyclesPerTenant {
 			prodWG.Add(1)
 			go func(tenant, life int) {
 				defer prodWG.Done()
@@ -243,7 +243,7 @@ func TestE2E_Wave3_Concurrent_CrossTenant_Replay(t *testing.T) {
 	var viewWG sync.WaitGroup
 	mismatches := atomic.Int64{}
 	expectedPerTenant := lifecyclesPerTenant * 3 // open + touch + close
-	for ti := 0; ti < tenants; ti++ {
+	for ti := range tenants {
 		viewWG.Add(1)
 		go func(tenant int) {
 			defer viewWG.Done()
@@ -252,7 +252,7 @@ func TestE2E_Wave3_Concurrent_CrossTenant_Replay(t *testing.T) {
 			// per-session loop because Cursor.SessionID scopes the
 			// snapshot. The Filter still enforces tenant isolation.
 			seen := 0
-			for li := 0; li < lifecyclesPerTenant; li++ {
+			for li := range lifecyclesPerTenant {
 				cursor := events.Cursor{
 					SessionID: fmt.Sprintf("s-%d-%d", tenant, li),
 					Sequence:  0,
@@ -350,7 +350,7 @@ func TestE2E_Wave3_RingOverrun_ReplayDegradesLoudly(t *testing.T) {
 	// Saturate the ring with N more lifecycles (3 events each — opened,
 	// touched, closed). With ringSize=16 and N=10 lifecycles=30 events,
 	// the canary's "session.opened" gets evicted.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		id := identity.Identity{TenantID: "T", UserID: "U", SessionID: fmt.Sprintf("filler-%d", i)}
 		ctx, _ := identity.With(context.Background(), id)
 		if _, err := reg.Open(ctx, id.SessionID, id); err != nil {

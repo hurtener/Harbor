@@ -168,10 +168,10 @@ func phase73hClaims(id identity.Identity, scopes []string) jwt.MapClaims {
 	}
 }
 
-// postTasksPhase73h issues a POST /v1/tasks/{verb} with the supplied JWT.
-func postTasksPhase73h(t *testing.T, srvURL, verb, body, token string) (int, []byte) {
+// postTasksPhase73h issues a POST /v1/tasks/list with the supplied JWT.
+func postTasksPhase73h(t *testing.T, srvURL, body, token string) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/tasks/"+verb, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/tasks/list", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 	//     tasks — cross-kind contamination is a failure.
 	t.Run("kinds_background_only", func(t *testing.T) {
 		body := `{"filter":{"kinds":["background"]}}`
-		status, raw := postTasksPhase73h(t, srv.URL, "list", body, tokAdminA)
+		status, raw := postTasksPhase73h(t, srv.URL, body, tokAdminA)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list kinds=[background]: status = %d, want 200; body=%s", status, raw)
 		}
@@ -287,7 +287,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 	// (ii) `tasks.list` with kinds=["foreground"] returns only foreground.
 	t.Run("kinds_foreground_only", func(t *testing.T) {
 		body := `{"filter":{"kinds":["foreground"]}}`
-		status, raw := postTasksPhase73h(t, srv.URL, "list", body, tokAdminA)
+		status, raw := postTasksPhase73h(t, srv.URL, body, tokAdminA)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list kinds=[foreground]: status = %d, want 200", status)
 		}
@@ -305,7 +305,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 
 	// (iii) empty kinds (no filter) returns ALL kinds.
 	t.Run("empty_kinds_all", func(t *testing.T) {
-		status, raw := postTasksPhase73h(t, srv.URL, "list", `{}`, tokAdminA)
+		status, raw := postTasksPhase73h(t, srv.URL, `{}`, tokAdminA)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list (no filter): status = %d, want 200", status)
 		}
@@ -321,7 +321,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 	// (iv) cross-tenant isolation — tenant B sees ZERO tenant-A rows.
 	t.Run("cross_tenant_isolation", func(t *testing.T) {
 		body := `{"filter":{"kinds":["background"]}}`
-		status, raw := postTasksPhase73h(t, srv.URL, "list", body, tokB)
+		status, raw := postTasksPhase73h(t, srv.URL, body, tokB)
 		if status != http.StatusOK {
 			t.Fatalf("tenant B tasks.list: status = %d, want 200", status)
 		}
@@ -354,7 +354,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 			t.Fatalf("ResolveOrCreateGroup: %v", err)
 		}
 		// Spawn two members directly into the group.
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			if _, serr := deps.reg.Spawn(ctxA, tasks.SpawnRequest{
 				Identity:    identity.Quadruple{Identity: idA},
 				Kind:        tasks.KindBackground,
@@ -366,7 +366,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 			}
 		}
 		body := `{"filter":{"group_id":"` + string(grp.ID) + `"}}`
-		status, raw := postTasksPhase73h(t, srv.URL, "list", body, tokAdminA)
+		status, raw := postTasksPhase73h(t, srv.URL, body, tokAdminA)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list?group_id: status = %d, want 200; body=%s", status, raw)
 		}
@@ -425,7 +425,7 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 		}
 
 		// Pull the wire snapshot the Console page's detector consumes.
-		status, raw := postTasksPhase73h(t, srv.URL, "list", `{}`, tokC)
+		status, raw := postTasksPhase73h(t, srv.URL, `{}`, tokC)
 		if status != http.StatusOK {
 			t.Fatalf("tenant C tasks.list: status = %d, want 200; body=%s", status, raw)
 		}
@@ -492,11 +492,11 @@ func TestE2E_Phase73h_BackgroundJobsPage(t *testing.T) {
 		const n = 16
 		var wg sync.WaitGroup
 		wg.Add(n)
-		for i := 0; i < n; i++ {
+		for range n {
 			go func() {
 				defer wg.Done()
 				body := `{"filter":{"kinds":["background"]}}`
-				status, _ := postTasksPhase73h(t, srv.URL, "list", body, tokAdminA)
+				status, _ := postTasksPhase73h(t, srv.URL, body, tokAdminA)
 				if status != http.StatusOK {
 					t.Errorf("concurrent tasks.list: status = %d, want 200", status)
 				}

@@ -102,9 +102,11 @@ Examples:
 // three flags, calls scaffold.Scaffold, and routes any error through
 // emitCLIError so the structured-error shape is uniform.
 func runScaffold(cmd *cobra.Command, _ []string) error {
-	name, _ := cmd.Flags().GetString(flagScaffoldName)
-	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate)
-	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput)
+	// Every flag below is statically registered on this command, so the
+	// GetString lookups cannot fail; the blank-error discards are intentional.
+	name, _ := cmd.Flags().GetString(flagScaffoldName)     //nolint:errcheck // flag statically registered; lookup cannot fail
+	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate) //nolint:errcheck // flag statically registered; lookup cannot fail
+	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput) //nolint:errcheck // flag statically registered; lookup cannot fail
 	if outDir == "" {
 		// Default to ./<name>. validateName (inside Scaffold) will
 		// reject an empty/invalid name with ErrInvalidName, which

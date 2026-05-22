@@ -363,7 +363,7 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 		// the surfaced error so the caller sees both.
 		delErr := store.Delete(ctx, q, skill.Name)
 		if delErr != nil {
-			return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed AND rollback delete failed: emit=%w deleteErr=%v", emitErr, delErr)
+			return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed AND rollback delete failed: emit=%w deleteErr=%w", emitErr, delErr)
 		}
 		return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed (persist rolled back): %w", emitErr)
 	}
@@ -470,7 +470,7 @@ func Promote(ctx context.Context, store skills.SkillStore, deps Deps, src identi
 			// first failure and don't continue).
 			delErr := store.Delete(ctx, target, copyForTarget.Name)
 			if delErr != nil {
-				return fmt.Errorf("skills/generator: Promote audit emit failed AND rollback delete failed for target=%s/%s/%s: emit=%w delete=%v",
+				return fmt.Errorf("skills/generator: Promote audit emit failed AND rollback delete failed for target=%s/%s/%s: emit=%w delete=%w",
 					target.TenantID, target.UserID, target.SessionID, err, delErr)
 			}
 			return fmt.Errorf("skills/generator: Promote audit emit failed for target=%s/%s/%s (rolled back): %w",

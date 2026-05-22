@@ -398,7 +398,7 @@ func TestE2E_Phase73e_AgentsConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	errCh := make(chan error, workers)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(n int) {
 			defer wg.Done()
 			id := tenants[n%len(tenants)]
@@ -425,7 +425,7 @@ func TestE2E_Phase73e_AgentsConcurrencyStress(t *testing.T) {
 	}
 
 	http.DefaultClient.CloseIdleConnections()
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		if runtime.NumGoroutine() <= baseline+8 {
 			return
 		}

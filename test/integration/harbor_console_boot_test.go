@@ -189,7 +189,7 @@ func consoleGET(t *testing.T, url string) (int, string) {
 	t.Helper()
 	// Retry briefly — the listener is bound before serve starts.
 	var lastErr error
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		resp, err := http.Get(url)
 		if err != nil {
 			lastErr = err

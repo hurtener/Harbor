@@ -43,8 +43,9 @@ func newBus(t *testing.T) events.EventBus {
 	return bus
 }
 
-func openStore(t *testing.T, dsn string) skills.SkillStore {
+func openStore(t *testing.T) skills.SkillStore {
 	t.Helper()
+	const dsn = ":memory:"
 	store, err := localdb.New(skills.ConfigSnapshot{Driver: "localdb", DSN: dsn}, skills.Deps{Bus: newBus(t)})
 	if err != nil {
 		t.Fatalf("localdb.New(%q): %v", dsn, err)
@@ -82,7 +83,7 @@ func TestConformance(t *testing.T) {
 // fail validation at the boundary.
 func TestUpsert_RejectsInvalidSkill(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 
 	noTrigger := skills.Skill{
 		Name:   "no-trigger",
@@ -111,7 +112,7 @@ func TestUpsert_RejectsInvalidSkill(t *testing.T) {
 // the FTS path should return all three with deterministic ordering.
 func TestSearch_FTSPath(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 
 	now := time.Now().UTC()
 	corpus := []skills.Skill{
@@ -180,7 +181,7 @@ func TestSearch_FTSPath(t *testing.T) {
 // and returns score=1.0.
 func TestSearch_ExactPath(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 	s := mustHash(skills.Skill{
 		Name:        "exact-target",
 		Title:       "Exact Target",
@@ -319,7 +320,7 @@ func TestIdentityRejected(t *testing.T) {
 // other's skills.
 func TestSearch_IsolatesByIdentity(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 
 	idA := fixtureID
 	idB := identity.Quadruple{
@@ -363,7 +364,7 @@ func TestSearch_IsolatesByIdentity(t *testing.T) {
 // query returns no results without erroring (still emits audit).
 func TestSearch_EmptyQueryReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 	out, err := store.Search(ctx, fixtureID, "   ", 5)
 	if err != nil {
 		t.Fatalf("Search empty: %v", err)
@@ -376,7 +377,7 @@ func TestSearch_EmptyQueryReturnsEmpty(t *testing.T) {
 // TestGet_AfterClose — methods on a closed store return ErrStoreClosed.
 func TestGet_AfterClose(t *testing.T) {
 	ctx := context.Background()
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 	if err := store.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

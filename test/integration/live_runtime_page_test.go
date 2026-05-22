@@ -217,10 +217,14 @@ func phase73bClaims(id identity.Identity, scopes []string) jwt.MapClaims {
 	}
 }
 
-// postTasksPhase73b issues a POST /v1/tasks/{verb} with the supplied JWT.
-func postTasksPhase73b(t *testing.T, srvURL, verb, body, token string) (int, []byte) {
+// postTasksPhase73bBody is the canonical tasks.list request the Live
+// Runtime page issues — it always asks for the status-counter strip.
+const postTasksPhase73bBody = `{"include_status_counter_strip":true}`
+
+// postTasksPhase73b issues a POST /v1/tasks/list with the supplied JWT.
+func postTasksPhase73b(t *testing.T, srvURL, token string) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/tasks/"+verb, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/tasks/list", strings.NewReader(postTasksPhase73bBody))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -258,7 +262,7 @@ func postTopologyPhase73b(t *testing.T, srvURL, body, token string) (int, []byte
 
 // seedTaskPhase73b spawns one foreground task in id and advances it to
 // the requested status.
-func seedTaskPhase73b(t *testing.T, reg tasks.TaskRegistry, id identity.Identity, status tasks.TaskStatus) tasks.TaskID {
+func seedTaskPhase73b(t *testing.T, reg tasks.TaskRegistry, id identity.Identity, status tasks.TaskStatus) {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), id)
 	if err != nil {
@@ -290,7 +294,6 @@ func seedTaskPhase73b(t *testing.T, reg tasks.TaskRegistry, id identity.Identity
 	default:
 		t.Fatalf("seedTaskPhase73b: unsupported status %q", status)
 	}
-	return h.ID
 }
 
 // TestE2E_Phase73b_LiveRuntimePage is the §13 primitive-with-consumer
@@ -317,8 +320,7 @@ func TestE2E_Phase73b_LiveRuntimePage(t *testing.T) {
 	// (i) the status-counter-strip aggregate — the header five-chip
 	// strip — round-trips and is identity-scoped.
 	t.Run("status_counter_strip_aggregate", func(t *testing.T) {
-		status, body := postTasksPhase73b(t, srv.URL, "list",
-			`{"include_status_counter_strip":true}`, tokA)
+		status, body := postTasksPhase73b(t, srv.URL, tokA)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list: status = %d, want 200; body=%s", status, body)
 		}
@@ -337,8 +339,7 @@ func TestE2E_Phase73b_LiveRuntimePage(t *testing.T) {
 
 	// (ii) the strip is identity-scoped — session B never sees A's counts.
 	t.Run("status_counter_strip_identity_scoped", func(t *testing.T) {
-		status, body := postTasksPhase73b(t, srv.URL, "list",
-			`{"include_status_counter_strip":true}`, tokB)
+		status, body := postTasksPhase73b(t, srv.URL, tokB)
 		if status != http.StatusOK {
 			t.Fatalf("tasks.list(B): status = %d, want 200; body=%s", status, body)
 		}
@@ -380,8 +381,7 @@ func TestE2E_Phase73b_LiveRuntimePage(t *testing.T) {
 	// (iv) failure mode — a tasks.list without the identity triple is
 	// rejected at the Phase 61 edge with identity_required (401).
 	t.Run("missing_identity_rejected", func(t *testing.T) {
-		status, body := postTasksPhase73b(t, srv.URL, "list",
-			`{"include_status_counter_strip":true}`, "")
+		status, body := postTasksPhase73b(t, srv.URL, "")
 		if status != http.StatusUnauthorized {
 			t.Fatalf("tasks.list without identity: status = %d, want 401; body=%s", status, body)
 		}
@@ -436,7 +436,7 @@ func TestE2E_Phase73b_LiveRuntimePage(t *testing.T) {
 		const n = 14
 		var wg sync.WaitGroup
 		errCh := make(chan string, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(useA bool) {
 				defer wg.Done()
@@ -446,8 +446,7 @@ func TestE2E_Phase73b_LiveRuntimePage(t *testing.T) {
 					tok = tokB
 					wantRunning = 0
 				}
-				status, body := postTasksPhase73b(t, srv.URL, "list",
-					`{"include_status_counter_strip":true}`, tok)
+				status, body := postTasksPhase73b(t, srv.URL, tok)
 				if status != http.StatusOK {
 					errCh <- "list status=" + http.StatusText(status)
 					return

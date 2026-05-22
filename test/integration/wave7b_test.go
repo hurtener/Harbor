@@ -188,7 +188,7 @@ func TestE2E_Wave7b_GovernanceLatent_NoConfig_Permits(t *testing.T) {
 	ctx := wave7bIdentity(t, "latent")
 	text := "should permit"
 	const calls = 8
-	for i := 0; i < calls; i++ {
+	for i := range calls {
 		resp, err := client.Complete(ctx, llm.CompleteRequest{
 			Model: "mock-model",
 			Messages: []llm.ChatMessage{
@@ -252,7 +252,7 @@ func TestE2E_Wave7b_GovernanceCeiling_FailsClosed(t *testing.T) {
 	}
 	// Each PostCall records 0.02 USD; after 3 calls the cumulative
 	// total is 0.06 > 0.05 ceiling.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		err := acc.PostCall(ctx, req, llm.CompleteResponse{
 			Cost: llm.Cost{TotalCost: 0.02},
 		}, nil)

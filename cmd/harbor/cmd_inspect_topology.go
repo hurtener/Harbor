@@ -186,12 +186,14 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 	}
 	runID := args[0]
 
-	bind, _ := cmd.Flags().GetString(flagInspectTopologyBind)
-	tenant, _ := cmd.Flags().GetString(flagInspectTopologyTenant)
-	user, _ := cmd.Flags().GetString(flagInspectTopologyUser)
-	session, _ := cmd.Flags().GetString(flagInspectTopologySession)
-	width, _ := cmd.Flags().GetInt(flagInspectTopologyWidth)
-	idle, _ := cmd.Flags().GetDuration(flagInspectTopologyIdleTimeout)
+	// Every flag below is statically registered on this command, so the
+	// GetX lookups cannot fail; the blank-error discards are intentional.
+	bind, _ := cmd.Flags().GetString(flagInspectTopologyBind)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	tenant, _ := cmd.Flags().GetString(flagInspectTopologyTenant)      //nolint:errcheck // flag statically registered; lookup cannot fail
+	user, _ := cmd.Flags().GetString(flagInspectTopologyUser)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	session, _ := cmd.Flags().GetString(flagInspectTopologySession)    //nolint:errcheck // flag statically registered; lookup cannot fail
+	width, _ := cmd.Flags().GetInt(flagInspectTopologyWidth)           //nolint:errcheck // flag statically registered; lookup cannot fail
+	idle, _ := cmd.Flags().GetDuration(flagInspectTopologyIdleTimeout) //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	if err := validateInspectBind(bind); err != nil {
 		return emitCLIError(cmd, CLIError{
@@ -277,7 +279,14 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 				Hint:       "internal renderer error; please report",
 			})
 		}
-		_, _ = cmd.OutOrStdout().Write(out)
+		if _, wErr := cmd.OutOrStdout().Write(out); wErr != nil {
+			return emitCLIError(cmd, CLIError{
+				Subcommand: "inspect-topology",
+				Message:    fmt.Sprintf("write JSON output: %v", wErr),
+				Code:       CodeInspectTopologyConnectFailed,
+				Hint:       "stdout write failed; check the output pipe",
+			})
+		}
 		return nil
 	}
 
@@ -290,7 +299,14 @@ func runInspectTopology(cmd *cobra.Command, args []string) error {
 			Hint:       "internal renderer error; please report",
 		})
 	}
-	_, _ = cmd.OutOrStdout().Write(rendered)
+	if _, wErr := cmd.OutOrStdout().Write(rendered); wErr != nil {
+		return emitCLIError(cmd, CLIError{
+			Subcommand: "inspect-topology",
+			Message:    fmt.Sprintf("write ASCII output: %v", wErr),
+			Code:       CodeInspectTopologyConnectFailed,
+			Hint:       "stdout write failed; check the output pipe",
+		})
+	}
 	return nil
 }
 
@@ -331,7 +347,8 @@ func validateInspectBind(bind string) error {
 func resolveInspectToken() (string, error) {
 	auth, err := resolveTokenFromOS()
 	if err != nil {
-		if ce, ok := err.(CLIError); ok {
+		var ce CLIError
+		if errors.As(err, &ce) {
 			// Preserve the rich Phase 69 message + hint.
 			return "", errors.New(ce.Message)
 		}
@@ -422,6 +439,7 @@ func fetchSSEUntilIdle(ctx context.Context, opts sseFetchOpts) ([]byte, error) {
 		// Drain a bounded prefix of the body so the error message
 		// can quote the server-side reason.
 		prefix := make([]byte, 256)
+		//nolint:errcheck // a short read (EOF/ErrUnexpectedEOF) is expected and fine — n bounds the slice below
 		n, _ := io.ReadFull(resp.Body, prefix)
 		return nil, fetchError{
 			Kind:   "status",
@@ -561,11 +579,12 @@ func fetchErrorToCLIError(err error) CLIError {
 		switch fe.Kind {
 		case "status":
 			hint := "verify the Bearer token claims and that the Runtime is healthy at the given --bind"
-			if fe.Status == http.StatusUnauthorized {
+			switch fe.Status {
+			case http.StatusUnauthorized:
 				hint = "the Bearer token was rejected — check HARBOR_TOKEN claims and expiry"
-			} else if fe.Status == http.StatusForbidden {
+			case http.StatusForbidden:
 				hint = "the token's scope did not authorise this subscription — admin scope is required for cross-tenant reads"
-			} else if fe.Status == http.StatusNotFound {
+			case http.StatusNotFound:
 				hint = "the /v1/events endpoint was not found — is the Runtime running Phase 60 or later?"
 			}
 			return CLIError{

@@ -188,7 +188,7 @@ func newPhase73jDeps(t *testing.T) *phase73jDeps {
 	}
 }
 
-func phase73jClaims(id identity.Identity, scopes []string) jwt.MapClaims {
+func phase73jClaims(id identity.Identity) jwt.MapClaims {
 	return jwt.MapClaims{
 		"iss":     "https://idp.test",
 		"sub":     id.UserID,
@@ -197,7 +197,7 @@ func phase73jClaims(id identity.Identity, scopes []string) jwt.MapClaims {
 		"tenant":  id.TenantID,
 		"user":    id.UserID,
 		"session": id.SessionID,
-		"scopes":  scopes,
+		"scopes":  []string(nil),
 	}
 }
 
@@ -247,7 +247,7 @@ func TestE2E_Phase73j_MemoryPageHappyPath(t *testing.T) {
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
 	seedPhase73jTurn(t, deps.store, id, "first question", "first answer")
 	seedPhase73jTurn(t, deps.store, id, "second question", "second answer")
-	tok := signES256Wave10(t, priv, phase73jClaims(id, nil), phase73jKid)
+	tok := signES256Wave10(t, priv, phase73jClaims(id), phase73jKid)
 
 	// memory.list — caller's own scope, 200 + 2 items.
 	status, body := postMemory(t, srv.URL, "/v1/memory/list", `{}`, tok)
@@ -308,7 +308,7 @@ func TestE2E_Phase73j_CrossTenantRejectedWithoutAdminScope(t *testing.T) {
 	defer srv.Close()
 
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
-	tok := signES256Wave10(t, priv, phase73jClaims(id, nil), phase73jKid)
+	tok := signES256Wave10(t, priv, phase73jClaims(id), phase73jKid)
 
 	status, body := postMemory(t, srv.URL, "/v1/memory/list",
 		`{"filter":{"tenant_ids":["tenant-other"]}}`, tok)
@@ -400,7 +400,7 @@ func TestE2E_Phase73j_HeavyValueRoutesThroughArtifacts(t *testing.T) {
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
 	seedPhase73jTurn(t, deps.store, id, "heavy",
 		strings.Repeat("X", phase73jHeavyThreshold*3))
-	tok := signES256Wave10(t, priv, phase73jClaims(id, nil), phase73jKid)
+	tok := signES256Wave10(t, priv, phase73jClaims(id), phase73jKid)
 
 	status, body := postMemory(t, srv.URL, "/v1/memory/list", `{}`, tok)
 	if status != http.StatusOK {
@@ -449,8 +449,8 @@ func TestE2E_Phase73j_TwoTenantConcurrencyStress(t *testing.T) {
 	seedPhase73jTurn(t, deps.store, idA, "A-q1", "A-a1")
 	seedPhase73jTurn(t, deps.store, idA, "A-q2", "A-a2")
 	seedPhase73jTurn(t, deps.store, idB, "B-q1", "B-a1")
-	tokA := signES256Wave10(t, priv, phase73jClaims(idA, nil), phase73jKid)
-	tokB := signES256Wave10(t, priv, phase73jClaims(idB, nil), phase73jKid)
+	tokA := signES256Wave10(t, priv, phase73jClaims(idA), phase73jKid)
+	tokB := signES256Wave10(t, priv, phase73jClaims(idB), phase73jKid)
 
 	time.Sleep(50 * time.Millisecond)
 	baseline := runtime.NumGoroutine()
@@ -458,7 +458,7 @@ func TestE2E_Phase73j_TwoTenantConcurrencyStress(t *testing.T) {
 	const callers = 24
 	var wg sync.WaitGroup
 	errs := make(chan string, callers)
-	for i := 0; i < callers; i++ {
+	for i := range callers {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()

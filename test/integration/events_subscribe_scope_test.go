@@ -234,10 +234,13 @@ func readPEMBlockPhase72(t *testing.T, abs string) []byte {
 	return block.Bytes
 }
 
-func signES256Phase72(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims, kid string) string {
+// phase72Kid is the key ID every signES256Phase72 token carries.
+const phase72Kid = "k1"
+
+func signES256Phase72(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	tok.Header["kid"] = kid
+	tok.Header["kid"] = phase72Kid
 	signed, err := tok.SignedString(priv)
 	if err != nil {
 		t.Fatalf("sign ES256: %v", err)
@@ -293,7 +296,7 @@ func TestE2E_Phase72_TripleScoped_NoCrossTenantLeak(t *testing.T) {
 
 	tenantA := identity.Identity{TenantID: "t-A", UserID: "u-A", SessionID: "s-A"}
 	tenantB := identity.Identity{TenantID: "t-B", UserID: "u-B", SessionID: "s-B"}
-	tokA := signES256Phase72(t, deps.priv, validClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID, nil), "k1")
+	tokA := signES256Phase72(t, deps.priv, validClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID, nil))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -344,7 +347,7 @@ func TestE2E_Phase72_CrossTenant_WithoutScope_Rejected403(t *testing.T) {
 	defer srv.Close()
 
 	tenantA := identity.Identity{TenantID: "t-A", UserID: "u-A", SessionID: "s-A"}
-	tok := signES256Phase72(t, deps.priv, validClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID, nil), "k1")
+	tok := signES256Phase72(t, deps.priv, validClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID, nil))
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -392,8 +395,7 @@ func runCrossTenantAcceptCase(t *testing.T, scope string) {
 	tenantA := identity.Identity{TenantID: "t-A", UserID: "u-A", SessionID: "s-A"}
 	tenantB := identity.Identity{TenantID: "t-B", UserID: "u-B", SessionID: "s-B"}
 	tok := signES256Phase72(t, deps.priv,
-		validClaimsPhase72(adminID.TenantID, adminID.UserID, adminID.SessionID, []string{scope}),
-		"k1")
+		validClaimsPhase72(adminID.TenantID, adminID.UserID, adminID.SessionID, []string{scope}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -460,7 +462,7 @@ func TestE2E_Phase72_ExpiredToken_Returns401AuthRejected(t *testing.T) {
 	defer srv.Close()
 
 	tenantA := identity.Identity{TenantID: "t-A", UserID: "u-A", SessionID: "s-A"}
-	tok := signES256Phase72(t, deps.priv, expiredClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID), "k1")
+	tok := signES256Phase72(t, deps.priv, expiredClaimsPhase72(tenantA.TenantID, tenantA.UserID, tenantA.SessionID))
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/events?admin=1", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -574,7 +576,7 @@ func TestE2E_Phase72_BodyVsTokenIdentityMismatch(t *testing.T) {
 	defer srv.Close()
 
 	tokenID := identity.Identity{TenantID: "t-token", UserID: "u-token", SessionID: "s-token"}
-	tok := signES256Phase72(t, deps.priv, validClaimsPhase72(tokenID.TenantID, tokenID.UserID, tokenID.SessionID, nil), "k1")
+	tok := signES256Phase72(t, deps.priv, validClaimsPhase72(tokenID.TenantID, tokenID.UserID, tokenID.SessionID, nil))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()

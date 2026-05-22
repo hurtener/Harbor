@@ -47,7 +47,7 @@ func TestSubset(t *testing.T) {
 		{"exact match passes", []string{"x", "y", "z"}, allowed, true},
 	}
 	for _, tc := range tests {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := capfilter.Subset(tc.required, tc.allowed); got != tc.want {

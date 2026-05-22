@@ -61,8 +61,6 @@ var phase31ID = identity.Identity{
 	SessionID: "session-phase31",
 }
 
-const phase31RunID = "run-phase31"
-
 type phase31Env struct {
 	bus         events.EventBus
 	coordinator pauseresume.Coordinator
@@ -225,7 +223,10 @@ func phase31SubFor(t *testing.T, bus events.EventBus, id identity.Identity, type
 	}
 }
 
-func phase31WaitEv(t *testing.T, sub events.Subscription, d time.Duration) events.Event {
+// phase31WaitEvTimeout bounds every phase31WaitEv call.
+const phase31WaitEvTimeout = 2 * time.Second
+
+func phase31WaitEv(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -233,7 +234,7 @@ func phase31WaitEv(t *testing.T, sub events.Subscription, d time.Duration) event
 			t.Fatal("subscription channel closed")
 		}
 		return ev
-	case <-time.After(d):
+	case <-time.After(phase31WaitEvTimeout):
 		t.Fatal("timed out waiting for event")
 		return events.Event{}
 	}
@@ -274,7 +275,7 @@ func TestE2E_Phase31_FullApproveCycle(t *testing.T) {
 	}()
 
 	// Observe the request event, capture the pause token.
-	requestedEv := phase31WaitEv(t, requestedSub, 2*time.Second)
+	requestedEv := phase31WaitEv(t, requestedSub)
 	if requestedEv.Type != approval.EventTypeToolApprovalRequested {
 		t.Fatalf("requested ev.Type: got %s", requestedEv.Type)
 	}
@@ -311,7 +312,7 @@ func TestE2E_Phase31_FullApproveCycle(t *testing.T) {
 	}
 
 	// tool.approved event lands.
-	approvedEv := phase31WaitEv(t, approvedSub, 2*time.Second)
+	approvedEv := phase31WaitEv(t, approvedSub)
 	approvedPayload, ok := approvedEv.Payload.(approval.ToolApprovedPayload)
 	if !ok {
 		t.Fatalf("approved payload type: got %T", approvedEv.Payload)
@@ -374,7 +375,7 @@ func TestE2E_Phase31_FullRejectCycle(t *testing.T) {
 		resCh <- outcome{out: out, err: err}
 	}()
 
-	requestedEv := phase31WaitEv(t, requestedSub, 2*time.Second)
+	requestedEv := phase31WaitEv(t, requestedSub)
 	requestedPayload, _ := requestedEv.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(requestedPayload.PauseToken)
 
@@ -386,7 +387,7 @@ func TestE2E_Phase31_FullRejectCycle(t *testing.T) {
 
 	// tool.rejected event lands with the verified identity in the
 	// envelope (the master-plan acceptance criterion shape).
-	rejectedEv := phase31WaitEv(t, rejectedSub, 2*time.Second)
+	rejectedEv := phase31WaitEv(t, rejectedSub)
 	if rejectedEv.Identity.TenantID != phase31ID.TenantID {
 		t.Fatalf("rejected event identity: got %+v want %+v",
 			rejectedEv.Identity.Identity, phase31ID)
@@ -442,7 +443,7 @@ func TestE2E_Phase31_ScopeGating_RejectsUnscoped(t *testing.T) {
 				Identity: phase31ID,
 			})
 	}()
-	ev := phase31WaitEv(t, requestedSub, 2*time.Second)
+	ev := phase31WaitEv(t, requestedSub)
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -488,7 +489,7 @@ func TestE2E_Phase31_CrossIdentity_Rejected(t *testing.T) {
 				Identity: idA,
 			})
 	}()
-	ev := phase31WaitEv(t, sub, 2*time.Second)
+	ev := phase31WaitEv(t, sub)
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -540,7 +541,7 @@ func TestE2E_Phase31_AdminCtx_UnblocksGate_ResolveApproval(t *testing.T) {
 		}
 	}()
 
-	ev := phase31WaitEv(t, requestedSub, 2*time.Second)
+	ev := phase31WaitEv(t, requestedSub)
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -573,7 +574,7 @@ func TestE2E_Phase31_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
 	defer cancelReq()
 
 	baseline := runtime.NumGoroutine()
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		ctx, cancel := context.WithCancel(phase31Ctx(t, phase31ID))
 		done := make(chan struct{})
 		go func() {
@@ -583,7 +584,7 @@ func TestE2E_Phase31_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
 				Identity: phase31ID,
 			})
 		}()
-		_ = phase31WaitEv(t, requestedSub, 2*time.Second)
+		_ = phase31WaitEv(t, requestedSub)
 		cancel()
 		<-done
 	}
@@ -626,8 +627,8 @@ func TestE2E_Phase31_Concurrency_NoCrossTalk(t *testing.T) {
 	errCh := make(chan error, N)
 
 	// Spawn N callers.
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -643,7 +644,7 @@ func TestE2E_Phase31_Concurrency_NoCrossTalk(t *testing.T) {
 					Args: args, Identity: id,
 				})
 			if err != nil {
-				errCh <- fmt.Errorf("g%d RunGuarded: %v", i, err)
+				errCh <- fmt.Errorf("g%d RunGuarded: %w", i, err)
 				return
 			}
 			if string(out) != string(args) {
@@ -674,7 +675,7 @@ func TestE2E_Phase31_Concurrency_NoCrossTalk(t *testing.T) {
 			)
 			if err := env.gate.ResolveApproval(adminCtx, tok,
 				approval.DecisionApprove, ""); err != nil {
-				errCh <- fmt.Errorf("resolver: %v", err)
+				errCh <- fmt.Errorf("resolver: %w", err)
 				return
 			}
 			seen++

@@ -165,10 +165,10 @@ func phase73nClaims(id identity.Identity, scopes []string) jwt.MapClaims {
 	}
 }
 
-// postRuns issues a POST /v1/runs/{verb} with the supplied JWT.
-func postRuns(t *testing.T, srvURL, verb, body, token string) (int, []byte) {
+// postRuns issues a POST /v1/runs/set_overrides with the supplied JWT.
+func postRuns(t *testing.T, srvURL, body, token string) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/runs/"+verb, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, srvURL+"/v1/runs/set_overrides", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 
 	// (a) Happy path: the override is recorded for the operator's
 	// session and applies to the NEXT message.
-	status, body := postRuns(t, srv.URL, "set_overrides",
+	status, body := postRuns(t, srv.URL,
 		`{"overrides":{"session_id":"sess-A","reasoning_effort":"high","temperature":0.7,"max_tokens":2048}}`,
 		tok)
 	if status != http.StatusOK {
@@ -227,7 +227,7 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 
 	// (b) Cross-session override → CodeScopeMismatch (403). The verified
 	// session is sess-A; the override names a different session.
-	status, body = postRuns(t, srv.URL, "set_overrides",
+	status, body = postRuns(t, srv.URL,
 		`{"overrides":{"session_id":"sess-OTHER","reasoning_effort":"high"}}`, tok)
 	if status != http.StatusForbidden {
 		t.Fatalf("cross-session override: status = %d, want 403; body=%s", status, body)
@@ -239,7 +239,7 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 	}
 
 	// (c) Invalid override payload → CodeInvalidRequest (400).
-	status, body = postRuns(t, srv.URL, "set_overrides",
+	status, body = postRuns(t, srv.URL,
 		`{"overrides":{"session_id":"sess-A","temperature":9.9}}`, tok)
 	if status != http.StatusBadRequest {
 		t.Fatalf("invalid override: status = %d, want 400; body=%s", status, body)
@@ -265,7 +265,7 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 			auditCh <- ev
 		}
 	}()
-	status, body = postRuns(t, srv.URL, "set_overrides",
+	status, body = postRuns(t, srv.URL,
 		`{"overrides":{"session_id":"sess-A","reasoning_effort":"low"}}`, tok)
 	if status != http.StatusOK {
 		t.Fatalf("runs.set_overrides for audit: status = %d; body=%s", status, body)
@@ -289,15 +289,15 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 	const n = 16
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		go func() {
 			defer wg.Done()
 			sid := fmt.Sprintf("stress-sess-%02d", i)
 			sessID := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: sid}
 			stok := signES256Wave10(t, deps.priv, phase73nClaims(sessID, nil), phase73nKid)
 			effort := []string{"low", "medium", "high"}[i%3]
-			st, b := postRuns(t, srv.URL, "set_overrides",
+			st, b := postRuns(t, srv.URL,
 				fmt.Sprintf(`{"overrides":{"session_id":%q,"reasoning_effort":%q}}`, sid, effort),
 				stok)
 			if st != http.StatusOK {
@@ -306,7 +306,7 @@ func TestE2E_Phase73n_PlaygroundOverrides(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		sid := fmt.Sprintf("stress-sess-%02d", i)
 		wantEffort := []string{"low", "medium", "high"}[i%3]
 		sessID := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: sid}

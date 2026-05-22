@@ -223,9 +223,11 @@ Examples:
 // Every failure path returns a CLIError so the structured-error
 // surface routes through the root.
 func runDev(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)
-	port, _ := cmd.Flags().GetInt(flagDevPort)
-	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload)
+	// Every flag below is statically registered on this command, so the
+	// GetX lookups cannot fail; the blank-error discards are intentional.
+	cfgPath, _ := cmd.Flags().GetString(flagDevConfig)        //nolint:errcheck // flag statically registered; lookup cannot fail
+	port, _ := cmd.Flags().GetInt(flagDevPort)                //nolint:errcheck // flag statically registered; lookup cannot fail
+	noHotReload, _ := cmd.Flags().GetBool(flagDevNoHotReload) //nolint:errcheck // flag statically registered; lookup cannot fail
 	bindAddrOverride := os.Getenv("HARBOR_BIND")
 	if bindAddrOverride != "" {
 		// HARBOR_BIND=host:port overrides --port (used by preflight,
@@ -392,10 +394,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 
 	// Construct subsystems in dependency order. Every "close everything
 	// we've opened so far" path is funneled through `closers`.
-	var closers []func(context.Context) error
+	closers := make([]func(context.Context) error, 0, 16)
 	closeAll := func(ctx context.Context) {
 		for i := len(closers) - 1; i >= 0; i-- {
-			_ = closers[i](ctx)
+			if cErr := closers[i](ctx); cErr != nil && opts.logger != nil {
+				opts.logger.Warn("harbor dev: error closing subsystem during boot rollback",
+					slog.String("error", cErr.Error()))
+			}
 		}
 	}
 
@@ -1099,11 +1104,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // health-probe response write; a failure is non-actionable and the probe just retries
 		_, _ = w.Write([]byte(healthzBody))
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // readiness-probe response write; a failure is non-actionable and the probe just retries
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 	// Phase 66 / D-100 — `harbor dev` draft-save scaffolding. The
@@ -1361,7 +1368,10 @@ func (s *devStack) serve(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
 		s.logger.Info("harbor "+label+": draining", slog.Duration("grace", grace))
-		_ = s.server.Shutdown(shutdownCtx)
+		if err := s.server.Shutdown(shutdownCtx); err != nil {
+			s.logger.Warn("harbor "+label+": graceful shutdown did not complete within the grace period",
+				slog.String("error", err.Error()))
+		}
 		return nil
 	}
 }
@@ -1370,7 +1380,10 @@ func (s *devStack) serve(ctx context.Context) error {
 // Idempotent — safe to call after `serve` returned normally.
 func (s *devStack) close(ctx context.Context) {
 	for i := len(s.closeFns) - 1; i >= 0; i-- {
-		_ = s.closeFns[i](ctx)
+		if cErr := s.closeFns[i](ctx); cErr != nil && s.logger != nil {
+			s.logger.Warn("harbor dev: error closing subsystem during drain",
+				slog.String("error", cErr.Error()))
+		}
 	}
 }
 

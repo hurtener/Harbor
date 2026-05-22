@@ -127,9 +127,7 @@ func New(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error)
 }
 
 func init() {
-	skills.Register(driverName, func(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error) {
-		return New(cfg, deps)
-	})
+	skills.Register(driverName, New)
 }
 
 // driver is the SQLite-backed SkillStore. Safe for concurrent use by
@@ -204,7 +202,7 @@ func (d *driver) Upsert(ctx context.Context, id identity.Quadruple, skill skills
 				OccurredAt: time.Now(),
 				Payload:    payload,
 			}); pubErr != nil {
-				return fmt.Errorf("%w: emit pack_overwrite_refused: %v",
+				return fmt.Errorf("%w: emit pack_overwrite_refused: %w",
 					skills.ErrPackOverwriteRefused, pubErr)
 			}
 			return fmt.Errorf("%w: name=%q existing_origin=pack incoming=%s",
@@ -363,10 +361,10 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 		limit = maxListLimit
 	}
 
-	var (
-		sb   strings.Builder
-		args []any
-	)
+	var sb strings.Builder
+	// 3 identity args + limit + offset are always present; optional
+	// scope / task_type / per-tag filters grow the slice past this.
+	args := make([]any, 0, 5+len(filter.Tags))
 	sb.WriteString(selectSkillsSQL)
 	sb.WriteString(` WHERE tenant = ? AND user = ? AND session = ?`)
 	args = append(args, id.TenantID, id.UserID, id.SessionID)

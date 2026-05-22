@@ -52,7 +52,7 @@ func busBenchEvent(id identity.Quadruple) events.Event {
 // resolved through their §4.4 factories — no mocks (CLAUDE.md §13).
 func BenchmarkBusFanOut(b *testing.B) {
 	for _, subs := range []int{1, 8, 16} {
-		subs := subs
+
 		b.Run(fmt.Sprintf("subscribers=%d", subs), func(b *testing.B) {
 			red, err := audit.Open(context.Background(), config.AuditConfig{})
 			if err != nil {
@@ -76,7 +76,7 @@ func BenchmarkBusFanOut(b *testing.B) {
 			// their channels concurrently so the bus never blocks on
 			// a full subscriber buffer — the benchmark measures the
 			// fan-out send cost, not back-pressure stalls.
-			for s := 0; s < subs; s++ {
+			for range subs {
 				sub, err := bus.Subscribe(context.Background(), events.Filter{
 					Tenant:  id.TenantID,
 					User:    id.UserID,
@@ -95,7 +95,7 @@ func BenchmarkBusFanOut(b *testing.B) {
 
 			ev := busBenchEvent(id)
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				if err := bus.Publish(context.Background(), ev); err != nil {
 					b.Fatalf("Publish: %v", err)
 				}
@@ -124,7 +124,7 @@ func BenchmarkBusFanOutCrossTenant(b *testing.B) {
 	b.Cleanup(func() { _ = bus.Close(context.Background()) })
 
 	ids := make([]identity.Quadruple, tenants)
-	for t := 0; t < tenants; t++ {
+	for t := range tenants {
 		id := identity.Quadruple{
 			Identity: identity.Identity{
 				TenantID:  fmt.Sprintf("tenant-%d", t),
@@ -150,7 +150,7 @@ func BenchmarkBusFanOutCrossTenant(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		id := ids[i%tenants]
 		if err := bus.Publish(context.Background(), busBenchEvent(id)); err != nil {
 			b.Fatalf("Publish: %v", err)

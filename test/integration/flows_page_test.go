@@ -471,8 +471,8 @@ func TestE2E_Phase73i_ConcurrentFlowsListNoCrossTalk(t *testing.T) {
 	wg.Add(goroutines)
 	errCh := make(chan error, goroutines)
 
-	for g := 0; g < goroutines; g++ {
-		g := g
+	for g := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			var id identity.Identity

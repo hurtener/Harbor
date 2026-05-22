@@ -183,7 +183,7 @@ func scanFrontmatter(src []byte) (frontmatterRaw, []byte, error) {
 func parseFrontmatter(raw []byte) (frontmatterFields, error) {
 	var f frontmatterFields
 	if err := yaml.Unmarshal(raw, &f); err != nil {
-		return frontmatterFields{}, fmt.Errorf("%w: %v", ErrMalformedYAML, err)
+		return frontmatterFields{}, fmt.Errorf("%w: %w", ErrMalformedYAML, err)
 	}
 	return f, nil
 }
@@ -416,7 +416,7 @@ func splitLinesKeepEmpty(b []byte) []string {
 	}
 	var lines []string
 	start := 0
-	for i := 0; i < len(b); i++ {
+	for i := range b {
 		if b[i] == '\n' {
 			lines = append(lines, string(b[start:i+1]))
 			start = i + 1
@@ -455,11 +455,9 @@ func slugify(s string) string {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			prevDash = false
-		} else {
-			if !prevDash && b.Len() > 0 {
-				b.WriteByte('-')
-				prevDash = true
-			}
+		} else if !prevDash && b.Len() > 0 {
+			b.WriteByte('-')
+			prevDash = true
 		}
 	}
 	out := b.String()

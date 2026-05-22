@@ -55,7 +55,7 @@ import (
 func TestE2E_NotificationsTopic_AllV1Mappings(t *testing.T) {
 	t.Parallel()
 
-	bus, _ := openNotificationsBus(t)
+	bus := openNotificationsBus(t)
 
 	// Subscribe an admin-scope listener for the entire notification.*
 	// family so we can confirm each mapping by class.
@@ -229,7 +229,7 @@ func TestE2E_NotificationsTopic_AllV1Mappings(t *testing.T) {
 func TestE2E_NotificationsTopic_MissingIdentityFailsLoudly(t *testing.T) {
 	t.Parallel()
 
-	bus, _ := openNotificationsBus(t)
+	bus := openNotificationsBus(t)
 
 	// Listen for BOTH the rejection event AND any notification.task_failed
 	// that might be (erroneously) synthesised.
@@ -313,7 +313,7 @@ func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
 
 	baseline := stableGoroutines(t)
 
-	bus, _ := openNotificationsBus(t)
+	bus := openNotificationsBus(t)
 
 	const N = 20
 	const triggersPerProducer = 5
@@ -332,7 +332,7 @@ func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
 	// Generate distinct identities + correlate them with their
 	// notifications so we can assert no cross-talk.
 	producerIdentities := make([]identity.Quadruple, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		producerIdentities[i] = identity.Quadruple{
 			Identity: identity.Identity{
 				TenantID:  fmt.Sprintf("t-stress-%d", i),
@@ -349,12 +349,12 @@ func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
 		publishedSum int64
 	)
 	wgPub.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wgPub.Done()
 			id := producerIdentities[i]
-			for j := 0; j < triggersPerProducer; j++ {
+			for j := range triggersPerProducer {
 				// Rotate over the five V1 trigger types so the bus
 				// sees a balanced mix.
 				ev := buildTrigger(id, j, i)
@@ -389,7 +389,7 @@ func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
 	// Per-identity assertion: every producer's triggers map 1:1 to
 	// notifications carrying that producer's identity. Cross-talk
 	// would show up as a non-equal count.
-	for i := 0; i < N; i++ {
+	for i := range N {
 		want := triggersPerProducer
 		got := received[producerIdentities[i].TenantID]
 		if got != want {
@@ -412,10 +412,8 @@ func TestE2E_NotificationsTopic_ConcurrencyStress(t *testing.T) {
 //      this file doesn't grow cross-test coupling) ---
 
 // openNotificationsBus opens a fresh in-memory bus with the production
-// audit redactor. Returns both the bus and the underlying audit redactor
-// so callers can sanity-check on the §17.3 "real drivers everywhere"
-// rule if needed.
-func openNotificationsBus(t *testing.T) (events.EventBus, *auditpatterns.Driver) {
+// audit redactor (§17.3 "real drivers everywhere").
+func openNotificationsBus(t *testing.T) events.EventBus {
 	t.Helper()
 	red := auditpatterns.New()
 	bus, err := events.Open(context.Background(), config.EventsConfig{
@@ -429,7 +427,7 @@ func openNotificationsBus(t *testing.T) (events.EventBus, *auditpatterns.Driver)
 		t.Fatalf("events.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close(context.Background()) })
-	return bus, red
+	return bus
 }
 
 // startSubscriber launches notifications.Subscriber and waits until its
@@ -446,7 +444,7 @@ func startSubscriber(t *testing.T, bus events.EventBus) {
 		t.Fatalf("probe Subscribe: %v", err)
 	}
 	// Drain probe's own AdminScopeUsed.
-	waitFirstEvent(t, probe, 2*time.Second)
+	waitFirstEvent(t, probe)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -466,21 +464,22 @@ func startSubscriber(t *testing.T, bus events.EventBus) {
 	})
 	// Wait for Subscriber's Subscribe — observable as the next
 	// AdminScopeUsed event on the probe.
-	waitFirstEvent(t, probe, 2*time.Second)
+	waitFirstEvent(t, probe)
 	probe.Cancel()
 }
 
-func waitFirstEvent(t *testing.T, sub events.Subscription, timeout time.Duration) events.Event {
+// waitFirstEventTimeout bounds every waitFirstEvent call.
+const waitFirstEventTimeout = 2 * time.Second
+
+func waitFirstEvent(t *testing.T, sub events.Subscription) {
 	t.Helper()
 	select {
-	case ev, ok := <-sub.Events():
+	case _, ok := <-sub.Events():
 		if !ok {
 			t.Fatal("subscription channel closed before delivery")
 		}
-		return ev
-	case <-time.After(timeout):
-		t.Fatalf("waitFirstEvent timed out after %v", timeout)
-		return events.Event{}
+	case <-time.After(waitFirstEventTimeout):
+		t.Fatalf("waitFirstEvent timed out after %v", waitFirstEventTimeout)
 	}
 }
 
@@ -586,7 +585,7 @@ func indexOf(haystack, needle string) int {
 
 func stableGoroutines(t *testing.T) int {
 	t.Helper()
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		a := runtime.NumGoroutine()
 		runtime.Gosched()
 		time.Sleep(5 * time.Millisecond)

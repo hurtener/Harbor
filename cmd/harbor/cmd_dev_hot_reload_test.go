@@ -308,7 +308,7 @@ func TestHotReloadSupervisor_FileChangeTriggersRebuild(t *testing.T) {
 	// the supervisor's CurrentStack() to swap to a new instance —
 	// that confirms the rebuild completed. The new bus is a fresh
 	// *events.EventBus pointer; we compare pointer identity.
-	if !waitForCondition(5*time.Second, func() bool {
+	if !waitForCondition(func() bool {
 		return sup.CurrentStack() != nil && sup.CurrentStack() != stack
 	}) {
 		t.Fatal("supervisor did not swap in a new stack within 5s after the trigger")
@@ -383,7 +383,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	if err := os.WriteFile(target1, []byte("phase1"), 0o600); err != nil {
 		t.Fatalf("write trigger1: %v", err)
 	}
-	if !waitForCondition(5*time.Second, func() bool {
+	if !waitForCondition(func() bool {
 		cur := sup.CurrentStack()
 		return cur != nil && cur != stack
 	}) {
@@ -408,7 +408,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	}
 
 	// Wait for the second rebuild's stack swap.
-	if !waitForCondition(5*time.Second, func() bool {
+	if !waitForCondition(func() bool {
 		cur := sup.CurrentStack()
 		return cur != nil && cur != newStack
 	}) {
@@ -431,7 +431,7 @@ func TestHotReloadSupervisor_RebuildEmitsCompletedOnNewBus(t *testing.T) {
 	// Poll for the completed event — it may take a few ms after the
 	// stack swap for the emit to land. Bounded by the same 5s window.
 	var completed *events.Event
-	if !waitForCondition(5*time.Second, func() bool {
+	if !waitForCondition(func() bool {
 		evs, err := replayer.Replay(bootCtx, events.Cursor{}, events.Filter{
 			Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
 			Types: []events.EventType{EventTypeDevHotReloadCompleted},
@@ -629,11 +629,14 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
+// waitForConditionTimeout bounds every waitForCondition poll loop.
+const waitForConditionTimeout = 5 * time.Second
+
 // waitForCondition polls f at 25ms intervals until f returns true OR
-// the timeout fires. Returns whether f ever returned true. Stdlib-free
-// so we don't pull in a test-helper library for one call site.
-func waitForCondition(timeout time.Duration, f func() bool) bool {
-	deadline := time.Now().Add(timeout)
+// waitForConditionTimeout fires. Returns whether f ever returned true.
+// Stdlib-free so we don't pull in a test-helper library.
+func waitForCondition(f func() bool) bool {
+	deadline := time.Now().Add(waitForConditionTimeout)
 	for time.Now().Before(deadline) {
 		if f() {
 			return true

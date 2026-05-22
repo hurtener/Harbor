@@ -154,7 +154,7 @@ func TestPropose_RejectsInvalidDraft(t *testing.T) {
 		{label: "empty steps", mut: func(d *generator.SkillDraft) { d.Steps = nil }},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.label, func(t *testing.T) {
 			d := validDraft("bad-" + tc.label)
 			tc.mut(&d)

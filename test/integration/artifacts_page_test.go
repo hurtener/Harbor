@@ -204,7 +204,6 @@ func TestE2E_Phase73l_ArtifactsPage_DriverParity(t *testing.T) {
 	}
 
 	for name, mk := range drivers {
-		name, mk := name, mk
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			deps := newArtifactsStack(t, mk(t))
@@ -384,20 +383,20 @@ func TestE2E_Phase73l_ArtifactsPage_ConcurrentStress(t *testing.T) {
 	const n = 16
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("tenant-%02d", idx)
 			scope := map[string]any{"tenant": tenant, "user": "u1", "session": "s1"}
-			status, body := callArtifacts(t, srv.URL, methods.MethodArtifactsPut, map[string]any{
+			status, _ := callArtifacts(t, srv.URL, methods.MethodArtifactsPut, map[string]any{
 				"scope": scope, "bytes": []byte(fmt.Sprintf("payload-%02d", idx)),
 			})
 			if status != http.StatusOK {
 				errs[idx] = fmt.Errorf("client %d: put status %d", idx, status)
 				return
 			}
-			status, body = callArtifacts(t, srv.URL, methods.MethodArtifactsList, map[string]any{"scope": scope})
+			status, body := callArtifacts(t, srv.URL, methods.MethodArtifactsList, map[string]any{"scope": scope})
 			if status != http.StatusOK {
 				errs[idx] = fmt.Errorf("client %d: list status %d", idx, status)
 				return

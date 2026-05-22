@@ -285,14 +285,14 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 //  2. Map runLoop.Run's exit to a Mark* call. Three shapes:
 //     - Run returned nil + Finish.Reason == FinishGoal → MarkComplete.
 //     - Run returned nil + Finish.Reason ∈ {NoPath, Cancelled,
-//       DeadlineExceeded, ConstraintsConflict} → MarkFailed with the
-//       reason as the error code. These are RunLoop-side terminal
-//       states that DID reach Finish; they are not goal-satisfied so
-//       the task FSM transitions to Failed (the FSM has no
-//       "no-path-but-not-failed" status; Failed is the closest match).
+//     DeadlineExceeded, ConstraintsConflict} → MarkFailed with the
+//     reason as the error code. These are RunLoop-side terminal
+//     states that DID reach Finish; they are not goal-satisfied so
+//     the task FSM transitions to Failed (the FSM has no
+//     "no-path-but-not-failed" status; Failed is the closest match).
 //     - Run returned a non-nil error → MarkFailed with code
-//       "runloop_error" (or "cancelled" for context.Canceled, per
-//       below) and the error string as the message.
+//     "runloop_error" (or "cancelled" for context.Canceled, per
+//     below) and the error string as the message.
 //  3. ctx.Canceled is the third terminal shape (driver shutdown OR an
 //     explicit cancel of the run's ctx). The FSM has no
 //     "auto-cancelled by ctx" path — Cancel(ctx, id, reason) is the

@@ -627,7 +627,7 @@ func selectRef(ctx context.Context, db *sql.DB, scope artifacts.ArtifactScope, i
 			return artifacts.ArtifactRef{}, false, nil
 		}
 		// The Scan error from a missing row may be wrapped — unwrap.
-		var unwrap error = err
+		var unwrap = err
 		for unwrap != nil {
 			if errors.Is(unwrap, sql.ErrNoRows) {
 				return artifacts.ArtifactRef{}, false, nil
@@ -651,7 +651,7 @@ func selectRefTx(ctx context.Context, tx *sql.Tx, scope artifacts.ArtifactScope,
 		scope.TenantID, scope.UserID, scope.SessionID, scope.TaskID, id)
 	ref, err := scanRefRow(row)
 	if err != nil {
-		var unwrap error = err
+		var unwrap = err
 		for unwrap != nil {
 			if errors.Is(unwrap, sql.ErrNoRows) {
 				return artifacts.ArtifactRef{}, false, nil

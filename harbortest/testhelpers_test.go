@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 )
@@ -26,10 +25,10 @@ func (stubRedactor) Redact(_ context.Context, v any) (any, error) {
 }
 
 // openInmemBus opens a fresh in-mem EventBus with kit-typical
-// settings + the given redactor; the bus closes automatically when
-// the test ends via t.Cleanup. Returned to the test as a real
+// settings + the kit's stub redactor; the bus closes automatically
+// when the test ends via t.Cleanup. Returned to the test as a real
 // events.EventBus — production driver, no shortcuts.
-func openInmemBus(t *testing.T, red audit.Redactor) events.EventBus {
+func openInmemBus(t *testing.T) events.EventBus {
 	t.Helper()
 	bus, err := events.Open(context.Background(), config.EventsConfig{
 		Driver:                   "inmem",
@@ -38,7 +37,7 @@ func openInmemBus(t *testing.T, red audit.Redactor) events.EventBus {
 		IdleTimeout:              60 * time.Second,
 		DropWindow:               time.Second,
 		ReplayBufferSize:         256,
-	}, red)
+	}, stubRedactor{})
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
 	}

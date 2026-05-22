@@ -47,8 +47,8 @@ func TestS3_Concurrent_PutGet_NoRace(t *testing.T) {
 	var wg sync.WaitGroup
 	var errs atomic.Int64
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
@@ -58,7 +58,7 @@ func TestS3_Concurrent_PutGet_NoRace(t *testing.T) {
 				SessionID: fmt.Sprintf("s-%d", i%8),
 				TaskID:    fmt.Sprintf("k-%d", i),
 			}
-			for j := 0; j < opsPerGo; j++ {
+			for j := range opsPerGo {
 				data := []byte(fmt.Sprintf("payload-%d-%d", i, j))
 				ref, err := s.PutBytes(ctx, scope, data, artifacts.PutOpts{
 					Namespace: fmt.Sprintf("ns-%d", j%2),

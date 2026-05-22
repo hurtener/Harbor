@@ -210,8 +210,8 @@ func TestE2E_Phase10_ConcurrentRuns_BusAndEngineCompose(t *testing.T) {
 
 	const tenants = 4
 	const perTenant = 16
-	for i := 0; i < tenants; i++ {
-		for j := 0; j < perTenant; j++ {
+	for i := range tenants {
+		for j := range perTenant {
 			in := messages.Envelope{
 				Headers: messages.Headers{
 					TenantID: tenantStr(i),
@@ -229,7 +229,7 @@ func TestE2E_Phase10_ConcurrentRuns_BusAndEngineCompose(t *testing.T) {
 	}
 
 	// Drain.
-	for i := 0; i < tenants*perTenant; i++ {
+	for i := range tenants * perTenant {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		got, err := e.Fetch(ctx)
 		cancel()

@@ -50,9 +50,9 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
-	"github.com/hurtener/Harbor/internal/runtime/steering"
 )
 
 const phase72gKid = "harbor-phase72g-k1"
@@ -392,8 +392,8 @@ func TestE2E_Phase72g_ConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	errCh := make(chan string, n*2)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{

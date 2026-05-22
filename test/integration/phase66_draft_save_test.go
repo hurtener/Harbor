@@ -256,8 +256,8 @@ func TestE2E_Phase66_DraftSave_ConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(clients)
 	ids := make(chan string, clients)
-	for i := 0; i < clients; i++ {
-		i := i
+	for i := range clients {
+
 		go func() {
 			defer wg.Done()
 			createResp := authedPost(t, srv.URL+devdraft.RoutePrefix+"/", token, map[string]any{
@@ -377,7 +377,7 @@ func drainEventTypes(t *testing.T, ch <-chan events.Event, n int, timeout time.D
 	t.Helper()
 	out := make([]events.EventType, 0, n)
 	deadline := time.After(timeout)
-	for i := 0; i < n; i++ {
+	for range n {
 		select {
 		case ev, ok := <-ch:
 			if !ok {

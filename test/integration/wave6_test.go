@@ -154,7 +154,7 @@ func TestE2E_Wave6_TaskGroup_WatchGroup_ResolvePath(t *testing.T) {
 	// Spawn three foreground members of the group.
 	const memberCount = 3
 	memberIDs := make([]tasks.TaskID, memberCount)
-	for i := 0; i < memberCount; i++ {
+	for i := range memberCount {
 		h, err := deps.reg.Spawn(ctxA, tasks.SpawnRequest{
 			Identity:    identity.Quadruple{Identity: tenA},
 			Kind:        tasks.KindForeground,
@@ -340,7 +340,7 @@ func TestE2E_Wave6_TaskGroup_CancelPath_DeliversReason(t *testing.T) {
 
 	const memberCount = 3
 	memberIDs := make([]tasks.TaskID, memberCount)
-	for i := 0; i < memberCount; i++ {
+	for i := range memberCount {
 		h, err := deps.reg.Spawn(ctx, tasks.SpawnRequest{
 			Identity: identity.Quadruple{Identity: id},
 			Kind:     tasks.KindForeground,
@@ -537,9 +537,8 @@ func TestE2E_Wave6_Concurrent_MultiTenant_TaskGroups(t *testing.T) {
 	)
 	wg.Add(tenantCount * sessionsPerTenant)
 
-	for ti := 0; ti < tenantCount; ti++ {
-		for sj := 0; sj < sessionsPerTenant; sj++ {
-			ti, sj := ti, sj
+	for ti := range tenantCount {
+		for sj := range sessionsPerTenant {
 			go func() {
 				defer wg.Done()
 				id := identity.Identity{
@@ -573,7 +572,7 @@ func TestE2E_Wave6_Concurrent_MultiTenant_TaskGroups(t *testing.T) {
 				defer unsub()
 
 				memberIDs := make([]tasks.TaskID, membersPerGroup)
-				for m := 0; m < membersPerGroup; m++ {
+				for m := range membersPerGroup {
 					h, err := deps.reg.Spawn(ctx, tasks.SpawnRequest{
 						Identity:    identity.Quadruple{Identity: id},
 						Kind:        tasks.KindForeground,

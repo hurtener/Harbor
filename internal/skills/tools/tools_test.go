@@ -157,7 +157,7 @@ func TestRegister_NilArgsRejected(t *testing.T) {
 		{"nil bus", func() error { return skilltools.Register(catalog, store, skilltools.Deps{}) }},
 	}
 	for _, c := range cases {
-		c := c
+
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			if err := c.fn(); err == nil {

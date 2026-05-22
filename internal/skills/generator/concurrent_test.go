@@ -49,9 +49,9 @@ func TestConcurrent_DistinctSkillsPerIdentity(t *testing.T) {
 		bleedErrs   atomic.Int64
 		cancelledOk atomic.Int64
 	)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
-		i := i
+
 		go func() {
 			defer wg.Done()
 			q := identity.Quadruple{
@@ -164,7 +164,7 @@ func TestConcurrent_SameNameResolvesDeterministically(t *testing.T) {
 		conflictCnt atomic.Int64
 		otherErrs   atomic.Int64
 	)
-	for i := 0; i < N; i++ {
+	for range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -153,12 +153,12 @@ func openStream(t *testing.T, ctx context.Context, baseURL string, tenant, user,
 	return resp, out
 }
 
-// submitStart submits a `start` control over the REST transport and
-// returns the spawned task id.
-func submitStart(t *testing.T, baseURL, tenant, user, session string) string {
+// submitStart submits a `start` control over the REST transport for
+// the canonical t1/u1 identity and returns the spawned task id.
+func submitStart(t *testing.T, baseURL, session string) string {
 	t.Helper()
 	body := fmt.Sprintf(`{"identity":{"tenant":%q,"user":%q,"session":%q},"query":"e2e"}`,
-		tenant, user, session)
+		"t1", "u1", session)
 	resp, err := http.Post(baseURL+"/v1/control/start", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST /v1/control/start: %v", err)
@@ -202,7 +202,7 @@ func TestE2E_Phase60_WireTransport_BothDirections(t *testing.T) {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 	deadline := time.After(5 * time.Second)
-	_ = submitStart(t, srv.URL, "t1", "u1", "s1")
+	_ = submitStart(t, srv.URL, "s1")
 	for {
 		select {
 		case et, ok := <-eventTypes:
@@ -213,7 +213,7 @@ func TestE2E_Phase60_WireTransport_BothDirections(t *testing.T) {
 				return // both directions composed end-to-end — pass.
 			}
 		case <-ticker.C:
-			_ = submitStart(t, srv.URL, "t1", "u1", "s1")
+			_ = submitStart(t, srv.URL, "s1")
 		case <-deadline:
 			t.Fatal("timed out waiting for task.spawned on the SSE stream")
 		}
@@ -270,7 +270,7 @@ func TestE2E_Phase60_FullDuplexStress(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -286,7 +286,7 @@ func TestE2E_Phase60_FullDuplexStress(t *testing.T) {
 			// ONLY task.spawned it can see is its own.
 			ticker := time.NewTicker(150 * time.Millisecond)
 			defer ticker.Stop()
-			_ = submitStart(t, srv.URL, "t1", "u1", session)
+			_ = submitStart(t, srv.URL, session)
 			for {
 				select {
 				case et, ok := <-eventTypes:
@@ -298,7 +298,7 @@ func TestE2E_Phase60_FullDuplexStress(t *testing.T) {
 						return // observed our own spawn — pass.
 					}
 				case <-ticker.C:
-					_ = submitStart(t, srv.URL, "t1", "u1", session)
+					_ = submitStart(t, srv.URL, session)
 				case <-ctx.Done():
 					errs <- fmt.Errorf("session %s: timed out waiting for task.spawned", session)
 					return

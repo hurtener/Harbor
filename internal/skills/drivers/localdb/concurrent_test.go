@@ -35,7 +35,7 @@ func TestConcurrentReuse_D025(t *testing.T) {
 		duration   = 1500 * time.Millisecond
 	)
 
-	store := openStore(t, ":memory:")
+	store := openStore(t)
 
 	baselineGoroutines := runtime.NumGoroutine()
 
@@ -51,7 +51,7 @@ func TestConcurrentReuse_D025(t *testing.T) {
 		cancelledN atomic.Int64
 	)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(gid int) {
 			defer wg.Done()

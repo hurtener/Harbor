@@ -43,7 +43,7 @@ var stubCases = []stubCase{
 // stderr; Execute returns a non-nil error so main() exits non-zero.
 func TestStubSubcommands_Human_ReturnsCLIError(t *testing.T) {
 	for _, tc := range stubCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := NewRootCmd()
@@ -89,7 +89,7 @@ func TestStubSubcommands_Human_ReturnsCLIError(t *testing.T) {
 // documented fields. Smoke scripts depend on this exactly.
 func TestStubSubcommands_JSON_StructuredErrorShape(t *testing.T) {
 	for _, tc := range stubCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			root := NewRootCmd()

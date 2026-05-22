@@ -232,11 +232,14 @@ func readPEMBlock(t *testing.T, abs string) []byte {
 	return block.Bytes
 }
 
+// phase61Kid is the key ID every signES256Phase61 token carries.
+const phase61Kid = "k1"
+
 // signES256Phase61 mints a JWT signed with the ES256 private key.
-func signES256Phase61(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims, kid string) string {
+func signES256Phase61(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	tok.Header["kid"] = kid
+	tok.Header["kid"] = phase61Kid
 	signed, err := tok.SignedString(priv)
 	if err != nil {
 		t.Fatalf("sign ES256: %v", err)
@@ -272,7 +275,7 @@ func TestE2E_Phase61_HappyPath_StartOverRESTAppearsOnSSE(t *testing.T) {
 	defer srv.Close()
 
 	tenant, user, session := "tenant-acme", "user-alice", "sess-01HX-PHASE61"
-	tok := signES256Phase61(t, deps.priv, validClaimsPhase61(tenant, user, session, nil), "k1")
+	tok := signES256Phase61(t, deps.priv, validClaimsPhase61(tenant, user, session, nil))
 
 	// Open the SSE stream first so the event lands while we're tailing.
 	streamCtx, cancelStream := context.WithCancel(context.Background())
@@ -444,7 +447,7 @@ func TestE2E_Phase61_ExpiredToken_RejectedWithAuthRejected(t *testing.T) {
 
 	c := validClaimsPhase61("t1", "u1", "s1", nil)
 	c["exp"] = fixedNowPhase61.Add(-1 * time.Hour).Unix()
-	tok := signES256Phase61(t, deps.priv, c, "k1")
+	tok := signES256Phase61(t, deps.priv, c)
 
 	body := `{"identity":{},"query":"q"}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))
@@ -475,7 +478,7 @@ func TestE2E_Phase61_BodyIdentityMismatch_Rejected(t *testing.T) {
 
 	// Token says tenant=tenant-acme; body says tenant=tenant-evil.
 	tok := signES256Phase61(t, deps.priv,
-		validClaimsPhase61("tenant-acme", "u1", "s1", nil), "k1")
+		validClaimsPhase61("tenant-acme", "u1", "s1", nil))
 
 	body := `{"identity":{"tenant":"tenant-evil","user":"u1","session":"s1"},"query":"q"}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))
@@ -503,7 +506,7 @@ func TestE2E_Phase61_AdminQuery_WithoutScope_403(t *testing.T) {
 
 	// Token has NO scopes claimed.
 	tok := signES256Phase61(t, deps.priv,
-		validClaimsPhase61("tenant-acme", "u1", "s1", nil), "k1")
+		validClaimsPhase61("tenant-acme", "u1", "s1", nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -529,7 +532,7 @@ func TestE2E_Phase61_AdminQuery_WithScope_200(t *testing.T) {
 	defer srv.Close()
 
 	tok := signES256Phase61(t, deps.priv,
-		validClaimsPhase61("tenant-acme", "u1", "s1", []string{"admin"}), "k1")
+		validClaimsPhase61("tenant-acme", "u1", "s1", []string{"admin"}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -555,7 +558,7 @@ func TestE2E_Phase61_TamperedToken_Rejected(t *testing.T) {
 	defer srv.Close()
 
 	tok := signES256Phase61(t, deps.priv,
-		validClaimsPhase61("tenant-acme", "u1", "s1", nil), "k1")
+		validClaimsPhase61("tenant-acme", "u1", "s1", nil))
 	parts := strings.Split(tok, ".")
 	if len(parts) != 3 {
 		t.Fatalf("signed token does not have 3 parts: %q", tok)
@@ -596,7 +599,7 @@ func TestE2E_Phase61_ConcurrencyStress(t *testing.T) {
 	const N = 16
 	var wg sync.WaitGroup
 	errs := make([]error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -604,7 +607,7 @@ func TestE2E_Phase61_ConcurrencyStress(t *testing.T) {
 			user := fmt.Sprintf("user-%04d", idx)
 			session := fmt.Sprintf("sess-%04d", idx)
 			tok := signES256Phase61(t, deps.priv,
-				validClaimsPhase61(tenant, user, session, nil), "k1")
+				validClaimsPhase61(tenant, user, session, nil))
 
 			body := fmt.Sprintf(`{"identity":{},"query":"q-%d"}`, idx)
 			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))

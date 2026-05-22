@@ -97,7 +97,7 @@ func TestE2E_Phase13_CancelRun_EmitsBusEvent(t *testing.T) {
 	makeProducer := func(started chan<- struct{}) engine.NodeFunc {
 		return func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 			started <- struct{}{}
-			for i := 0; i < 1000; i++ {
+			for i := range 1000 {
 				select {
 				case <-stopProducer:
 					return messages.Envelope{}, nil
@@ -181,7 +181,7 @@ func TestE2E_Phase13_CancelRun_EmitsBusEvent(t *testing.T) {
 	<-startedB
 
 	// Drain a few frames so producers are mid-flight.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		fctx, fcancel := context.WithTimeout(ctx, 2*time.Second)
 		_, _ = eng.Fetch(fctx)
 		fcancel()

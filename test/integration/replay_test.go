@@ -81,7 +81,7 @@ func TestE2E_Phase06_Replay_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe 1: %v", err)
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		logger.Error(ctx, "wave3 first batch", slog.Int("iter", i))
 	}
 	got1 := mustDrain(t, sub1, 4, 2*time.Second)
@@ -187,7 +187,7 @@ func TestE2E_Phase06_Replay_RingOverrun(t *testing.T) {
 	}()
 
 	// Overrun the ring (cap=8, publish 50).
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		logger.Error(ctx, "overflow")
 	}
 

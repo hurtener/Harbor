@@ -52,7 +52,7 @@ func EmitIdentityRejected(ctx context.Context, bus events.EventBus, q identity.Q
 		Payload:    payload,
 	}
 	if pubErr := bus.Publish(ctx, ev); pubErr != nil {
-		return fmt.Errorf("%w: %s (audit emit failed: %v)",
+		return fmt.Errorf("%w: %s (audit emit failed: %w)",
 			ErrIdentityRequired, reason, pubErr)
 	}
 	return fmt.Errorf("%w: %s", ErrIdentityRequired, reason)

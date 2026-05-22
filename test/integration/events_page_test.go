@@ -341,11 +341,11 @@ func TestE2E_Phase73g_EventsPage_AggregateSparklineCorrectness(t *testing.T) {
 
 	// Deliberate emission: 6 runtime.error + 4 governance.budget_exceeded
 	// across a 25-minute window, plus 1 cross-tenant event.
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		publishEventsPageEvent(t, stack.bus, events.EventTypeRuntimeError, id,
 			now.Add(-time.Duration(i+1)*time.Minute))
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		publishEventsPageEvent(t, stack.bus, events.EventTypeGovernanceBudgetExceeded, id,
 			now.Add(-time.Duration(i+1)*time.Minute))
 	}
@@ -484,8 +484,8 @@ func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 	)
 	wg.Add(concurrency)
 	ready.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
-		i := i
+	for i := range concurrency {
+
 		go func() {
 			defer wg.Done()
 			tenant := "tenant-" + string(rune('A'+(i%tenantCount)))
@@ -509,7 +509,7 @@ func TestE2E_Phase73g_EventsPage_ConcurrentSubscribers(t *testing.T) {
 	// One runtime.error per tenant — each subscriber for that tenant
 	// receives exactly that tenant's event.
 	now := time.Now().UTC()
-	for tc := 0; tc < tenantCount; tc++ {
+	for tc := range tenantCount {
 		tenant := "tenant-" + string(rune('A'+tc))
 		publishEventsPageEvent(t, stack.bus, events.EventTypeRuntimeError,
 			identity.Identity{TenantID: tenant, UserID: "u", SessionID: "s"}, now)

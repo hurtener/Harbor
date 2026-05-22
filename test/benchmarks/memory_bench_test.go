@@ -78,15 +78,14 @@ func memBenchTurn(i int) memory.ConversationTurn {
 // inside the benchmark.
 func BenchmarkMemoryStrategy(b *testing.B) {
 	cases := []struct {
-		name  string
-		strat memory.Strategy
+		name     string
+		strategy memory.Strategy
 	}{
 		{"truncation", memory.StrategyTruncation},
 		{"rolling_summary", memory.StrategyRollingSummary},
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			deps := memBenchDeps(b)
 			// A small per-key budget so truncation actually evicts
@@ -94,9 +93,9 @@ func BenchmarkMemoryStrategy(b *testing.B) {
 			// benchmark must hit the hot path, not the trivial
 			// "buffer not yet full" path.
 			deps.BudgetTokens = 64
-			exec, err := strategy.New(tc.strat, deps)
+			exec, err := strategy.New(tc.strategy, deps)
 			if err != nil {
-				b.Fatalf("strategy.New(%s): %v", tc.strat, err)
+				b.Fatalf("strategy.New(%s): %v", tc.strategy, err)
 			}
 			b.Cleanup(func() { _ = exec.Close(context.Background()) })
 
@@ -110,7 +109,7 @@ func BenchmarkMemoryStrategy(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				if err := exec.AddTurn(context.Background(), id, memBenchTurn(i)); err != nil {
 					b.Fatalf("AddTurn: %v", err)
 				}
@@ -132,21 +131,20 @@ func BenchmarkMemoryStrategy(b *testing.B) {
 // context-patch construction.
 func BenchmarkMemoryGetLLMContext(b *testing.B) {
 	cases := []struct {
-		name  string
-		strat memory.Strategy
+		name     string
+		strategy memory.Strategy
 	}{
 		{"truncation", memory.StrategyTruncation},
 		{"rolling_summary", memory.StrategyRollingSummary},
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			deps := memBenchDeps(b)
 			deps.BudgetTokens = 64
-			exec, err := strategy.New(tc.strat, deps)
+			exec, err := strategy.New(tc.strategy, deps)
 			if err != nil {
-				b.Fatalf("strategy.New(%s): %v", tc.strat, err)
+				b.Fatalf("strategy.New(%s): %v", tc.strategy, err)
 			}
 			b.Cleanup(func() { _ = exec.Close(context.Background()) })
 
@@ -158,14 +156,14 @@ func BenchmarkMemoryGetLLMContext(b *testing.B) {
 				},
 				RunID: "bench-run",
 			}
-			for i := 0; i < 16; i++ {
+			for i := range 16 {
 				if err := exec.AddTurn(context.Background(), id, memBenchTurn(i)); err != nil {
 					b.Fatalf("AddTurn(setup): %v", err)
 				}
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				if _, err := exec.GetLLMContext(context.Background(), id); err != nil {
 					b.Fatalf("GetLLMContext: %v", err)
 				}
