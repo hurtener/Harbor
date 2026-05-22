@@ -1,0 +1,11 @@
+<available_tools>
+- search: Search the knowledge base for documents matching a query.
+  args_schema: {"properties":{"limit":{"type":"integer"},"query":{"type":"string"}},"required":["query"],"type":"object"}
+  side_effects: read
+  examples:
+    - broadest search → {"query":"quarterly revenue"}
+    - bounded result set → {"limit":5,"query":"revenue"}
+
+- ping: Health-check the upstream service.
+  side_effects: pure
+</available_tools>

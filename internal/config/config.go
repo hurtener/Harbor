@@ -914,6 +914,13 @@ const (
 // Empty defaults to `never`; the validator rejects any other value
 // loudly pre-boot. There is no `provider_native` mode in V1.
 //
+// `MaxToolExamplesPerTool` caps how many curated examples the ReAct
+// prompt's `<available_tools>` section renders per tool (Phase 83b —
+// D-144). Examples are ranked `minimal` > `common` > `edge-case` >
+// untagged; the renderer keeps the top N. Zero (the default) resolves
+// to 3 inside the react driver. The validator rejects negative values
+// loudly pre-boot. Other drivers ignore it.
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -923,9 +930,10 @@ const (
 // runtime would race with in-flight RunLoop goroutines holding the old
 // concrete.
 type PlannerConfig struct {
-	Driver          string            `yaml:"driver,omitempty"`
-	MaxSteps        int               `yaml:"max_steps,omitempty"`
-	ExtraGuidance   string            `yaml:"extra_guidance,omitempty"`
-	ReasoningReplay string            `yaml:"reasoning_replay,omitempty"`
-	Extra           map[string]string `yaml:"extra,omitempty"`
+	Driver                 string            `yaml:"driver,omitempty"`
+	MaxSteps               int               `yaml:"max_steps,omitempty"`
+	ExtraGuidance          string            `yaml:"extra_guidance,omitempty"`
+	ReasoningReplay        string            `yaml:"reasoning_replay,omitempty"`
+	MaxToolExamplesPerTool int               `yaml:"max_tool_examples_per_tool,omitempty"`
+	Extra                  map[string]string `yaml:"extra,omitempty"`
 }

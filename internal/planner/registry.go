@@ -72,6 +72,13 @@ type PlannerConfig struct {
 	// values pre-boot.
 	ReasoningReplay ReasoningReplayMode
 
+	// MaxToolExamplesPerTool caps how many curated examples the ReAct
+	// prompt's <available_tools> section renders per tool (Phase 83b —
+	// D-144). Zero resolves to the react driver's default of 3; the
+	// react factory passes it to `react.WithMaxToolExamplesPerTool`.
+	// Other drivers ignore it.
+	MaxToolExamplesPerTool int
+
 	// Extra is the driver-specific extras map. Reserved for future
 	// drivers' per-flow knobs; unused by the V1 `react` driver.
 	Extra map[string]string

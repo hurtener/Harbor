@@ -46,6 +46,12 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	if d.Invoke == nil {
 		return wrap(ErrToolDuplicateName, "tool %q has nil Invoke", d.Tool.Name)
 	}
+	// Phase 83b (D-144): a curated example whose Args name a key the
+	// tool's args_schema does not declare would teach the planner a
+	// shape the catalog edge then rejects. Fail loudly at registration.
+	if err := validateExamples(d.Tool); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, exists := c.byName[d.Tool.Name]; exists {
