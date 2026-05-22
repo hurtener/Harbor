@@ -1,9 +1,16 @@
 // cmd/harbor/cmd_version.go — the `harbor version` subcommand.
 //
-// `harbor version` is the only subcommand fully implemented at Phase 63.
-// It prints the harbor binary's semver (HarborVersion), the Phase 59
-// Protocol version (types.ProtocolVersion, RFC §5.3, D-077), and the
-// VCS build hash from runtime/debug.ReadBuildInfo().
+// `harbor version` prints three distinct version facts:
+//
+//   - HarborVersion   — the product RELEASE version of the binary,
+//     stamped at link time by the Phase 81 release build (D-139). An
+//     un-stamped build reports the "v0.0.0-dev" sentinel.
+//   - types.ProtocolVersion — the Harbor PROTOCOL version (Phase 59,
+//     RFC §5.3, D-077): the Runtime↔Console wire contract. It is
+//     DISTINCT from HarborVersion and versioned independently — a
+//     Runtime refactor that bumps the release version need not bump
+//     the Protocol version, and vice versa.
+//   - the VCS build hash from runtime/debug.ReadBuildInfo().
 //
 // Human-mode output (default), pinned by D-084:
 //

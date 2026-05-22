@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint lint-revive preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check bench bench-check
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun
 
 help:
 	@echo "Harbor — make targets"
@@ -11,6 +11,8 @@ help:
 	@echo "  preflight       Build + boot + run smoke checks + drift-audit + tear down"
 	@echo "  drift-audit     Verify design coherence (RFC, plans, briefs, mirror)"
 	@echo "  wave13-coverage-check  Assert every Console page has a Playwright spec"
+	@echo "  release-build   Build the version-stamped static release artifact into dist/"
+	@echo "  release-dryrun  Exercise the release build end-to-end without a tag (Phase 81)"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -112,6 +114,25 @@ bench:
 # `perf-regression` CI job.
 bench-check:
 	@bash scripts/perf/check-regression.sh
+
+# release-build produces the CGo-free static `harbor` release artifact
+# (Phase 81 / D-139). It delegates to scripts/release-build.sh — the
+# SINGLE home of the `-ldflags -X 'main.HarborVersion=...'` version-
+# stamping incantation. The version is derived from `git describe
+# --tags` (or HARBOR_RELEASE_VERSION when set, as the release workflow
+# sets it from the pushed tag); an un-tagged tree falls back to
+# v0.0.0-dev. The artifact + a SHA-256 checksum land in dist/.
+release-build:
+	@bash scripts/release-build.sh
+
+# release-dryrun exercises the release build end-to-end WITHOUT pushing
+# a `v*` tag — the master plan's Phase 81 "release dry-run" test. It
+# runs the exact scripts/release-build.sh path the release workflow
+# runs, forcing a synthetic dry-run version, then verifies the artifact
+# + checksum exist, the checksum verifies, and the stamped binary's
+# `harbor version` reports the stamped string. Run it before tagging.
+release-dryrun:
+	@bash scripts/release-dryrun.sh
 
 check-mirror:
 	@diff -q AGENTS.md CLAUDE.md && echo "OK: AGENTS.md == CLAUDE.md" || (echo "DRIFT: AGENTS.md != CLAUDE.md"; exit 1)
