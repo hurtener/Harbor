@@ -3349,3 +3349,26 @@ The Subscriber's Admin-scope subscribe is necessary because the trigger events s
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — Phase 81 ships no Protocol method, error code, or wire type. The single production-code change is the `const → var` conversion of `cmd/harbor.HarborVersion`; it changes no runtime behaviour and no Protocol surface.
+
+---
+
+## D-140 — Wave 14 §17.5 checkpoint: zero-FAIL V1-readiness verdict, research-brief predecessor-name scrub, drift-audit scan extension, and CI examples-job CGo alignment
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with this PR)
+
+**Where it lives:** `docs/research/01-core-runtime.md` … `07-code-level-tool-calling.md` (the seven source-distilled briefs); `scripts/drift-audit.sh` (forbidden-name scan file set); `.github/workflows/ci.yml` (the `examples` job test step).
+
+**Decision.** Wave 14's read-only V1-readiness checkpoint audit (§17.5) returned **zero FAIL**, one WARN, and one actionable NIT. This entry records the verdict and the audit-fix PR that closes the WARN and the NIT. Three load-bearing calls.
+
+**1. Wave 14 is clean — zero FAIL.** The checkpoint audit read every shipped phase in the wave (source, tests, plan, RFC reference) hunting for wiring gaps, RFC drift, depth issues, weak tests, and hygiene regressions. It found no FAIL-class issue: the V1 surface holds together. The only blocking-adjacent finding was a hygiene WARN (below); the rest of the wave passed without remediation.
+
+**2. The predecessor project name is scrubbed from the research briefs, not carved out.** The WARN: the predecessor project's name appeared 62 times across the seven source-distilled briefs (`docs/research/01`–`07`), almost entirely as external source-path citations (`~/Repos/<name>/.../core.py:1557`) and a "Source path" table column. The `scripts/drift-audit.sh` forbidden-name scan deliberately excluded `docs/research/`, which is why the leak survived — CLAUDE.md §13 forbids the predecessor's name *and any synonym* ("the prior project", "the predecessor", "the reference implementation", "the source", abbreviations, author names) anywhere in committed text. The operator's call was explicit: **scrub, do not carve out.** Every name occurrence and every external repo-path citation is removed; each brief's actual design finding is kept and re-expressed as a standalone Harbor design statement (a finding attached to a source path becomes the finding alone — e.g. "`DeadlineAt` is wall-clock, not duration" with the trailing path dropped); "Source map" tables become non-referential "Concept map" tables. The briefs now read as Harbor's own design research with no allusion to any specific prior project. A case-insensitive scan for the predecessor's name across `docs/research/` returns nothing.
+
+**3. The drift-audit forbidden-name scan now covers `docs/research/*.md`; the CI examples job pins `CGO_ENABLED=0` on its test step.** The scan-extension is the structural fix that makes the scrub permanent: `scripts/drift-audit.sh` previously scanned rule files, phase plans, indices, and Go source but not the research briefs — so the leak could recur silently. The scan now globs every `docs/research/*.md` brief, and the success message names the wider scope. The NIT: the `examples` job's `go test -race` step had no explicit `CGO_ENABLED` while its sibling `go build` step pinned `CGO_ENABLED: '0'`; the test step now pins it too, aligning with the repo-wide CGo-free discipline (CLAUDE.md §5). On Go 1.26 the race detector runs cgo-free, so the pin is harmless and consistent.
+
+**Why.** The §17.5 checkpoint audit gates the next wave's planning. Recording the zero-FAIL verdict closes Wave 14; scrubbing the briefs and widening the drift-audit scan turn a one-time cleanup into an enforced invariant so the predecessor's name cannot leak back into the research tree.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — this is a checkpoint audit-fix PR. It changes documentation (research briefs, this log), one CI workflow step, and one drift-audit shell script; it ships no Protocol method, error code, wire type, or runtime-behaviour change.

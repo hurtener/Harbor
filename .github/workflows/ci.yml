@@ -102,6 +102,8 @@ jobs:
           CGO_ENABLED: '0'
         run: go build ./examples/...
       - name: Test examples
+        env:
+          CGO_ENABLED: '0'
         run: go test -race ./examples/...
 
   frontend-e2e:

@@ -129,12 +129,18 @@ files_to_scan=(
     docs/plans/README.md
     docs/glossary.md
     docs/decisions.md
-    docs/research/INDEX.md
     docs/plans/_template.md
     docs/rfc/README.md
 )
 for plan in docs/plans/phase-*.md; do
     files_to_scan+=("$plan")
+done
+# Extend the scan to every research brief. Briefs are distilled from the
+# predecessor's source, so they are the most likely place the name leaks in;
+# INDEX.md alone is not enough.
+for brief in docs/research/*.md; do
+    [ -f "$brief" ] || continue
+    files_to_scan+=("$brief")
 done
 # Extend the scan to shipped Go source so a stray comment can't sneak
 # the predecessor's name into a release binary. find used over a glob
@@ -160,7 +166,7 @@ for f in "${files_to_scan[@]}"; do
     done
 done
 if [ "$scan_failed" -eq 0 ]; then
-    ok 'forbidden-name scan clean (rule files + phase plans + indices + Go source)'
+    ok 'forbidden-name scan clean (rule files + phase plans + research briefs + indices + Go source)'
 fi
 
 # 8. Ensure `make` knows about drift-audit.

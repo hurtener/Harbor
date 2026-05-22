@@ -1,6 +1,6 @@
 # Research Brief 03 — Tools, Integrations, and LLM Client
 
-**Status:** research input for RFC and phase plans. Internal context derived from a non-Go reference implementation; not a public-facing artifact.
+**Status:** research input for RFC and phase plans; not a public-facing artifact.
 
 **Scope:** the unified tool abstraction that lets the planner address MCP servers, A2A peers, HTTP endpoints, and in-process Go functions through a single contract; tool-side OAuth/HITL plumbing; and the LLM client layer (provider abstraction, structured-output strategies, streaming, retry, cost). Out of scope (other briefs own these): DAG runtime, planner internals, memory/skills, state store/artifacts/tasks/sessions, CLI, test kit.
 
@@ -15,19 +15,19 @@ The planner reasons about exactly one concept: a **`Tool`** with a name, a JSON-
 - a **remote A2A skill** discovered via an Agent Card and called via `message/send` or `message/stream`,
 - a **plain HTTP endpoint** described by an external manifest.
 
-This unification is the single largest leverage point in the runtime. The reference implementation already moves in this direction (see `~/Repos/Penguiflow/penguiflow/penguiflow/catalog.py` for the in-process catalog and `~/Repos/Penguiflow/penguiflow/penguiflow/tools/node.py` for the MCP/UTCP integration), but Harbor will go further: in the reference, MCP/A2A/HTTP each have their own framing and their unification is implementation-level (each backend produces `NodeSpec` records, but they reach the planner via different code paths). Harbor moves the unification to the **type level** — every `Tool` is *the same struct* regardless of source, and the dispatch is one switch in one place.
+This unification is the single largest leverage point in the runtime. A common partial approach gives MCP/A2A/HTTP each their own framing and unifies them only at the implementation level (each backend produces records that reach the planner via different code paths). Harbor moves the unification to the **type level** — every `Tool` is *the same struct* regardless of source, and the dispatch is one switch in one place.
 
 Three load-bearing properties follow:
 
 1. **Source pluggability.** Adding a new transport (gRPC, WebSocket-JSON-RPC, broker-mediated) is a `ToolProvider` driver; nothing else changes.
-2. **Visibility scoping.** The catalog filter is keyed on the `(tenant, user, session)` triple from `harbor_isolation.md`. The reference filters by `tenant` only; Harbor filters on the full triple plus the policy-driven `auth_scopes` and `tags`.
+2. **Visibility scoping.** The catalog filter is keyed on the `(tenant, user, session)` triple from `harbor_isolation.md`. Filtering by `tenant` alone is insufficient; Harbor filters on the full triple plus the policy-driven `auth_scopes` and `tags`.
 3. **Provenance uniformity.** A tool call's audit record looks the same whether the call hit a localhost Go function or a remote agent across the network. The planner, the event bus, and the artifact store care about `(tool_name, args, result, source_id, transport, latency, cost)` — never about transport-specific framing.
 
 ---
 
 ## 2. Key Data Shapes (Go-flavored sketches)
 
-These names are Harbor's. They are not 1:1 translations of the source.
+These names are Harbor's.
 
 ```go
 // Tool is the unified planner-addressable unit.
@@ -122,7 +122,7 @@ type ToolResult struct {
 }
 ```
 
-The reference's typed parts (`TextPart`, `ToolCallPart`, `ToolResultPart`, `ImagePart` in `~/Repos/Penguiflow/penguiflow/penguiflow/llm/types.py`) are a good pattern to inherit verbatim — the message envelope is provider-agnostic, individual providers adapt to/from these parts.
+Typed content parts (`TextPart`, `ToolCallPart`, `ToolResultPart`, `ImagePart`) are the right pattern — the message envelope is provider-agnostic, individual providers adapt to/from these parts.
 
 ---
 
@@ -144,7 +144,7 @@ harbor.RegisterTool(catalog, harbor.ToolMeta{
 }, WeatherLookup)
 ```
 
-The registration helper uses generics + reflection to derive `ArgsSchema` and `OutSchema` from the `WeatherArgs` / `WeatherOut` types — equivalent to how the reference derives schemas from Pydantic models. No decorator equivalent is needed: type inference replaces it.
+The registration helper uses generics + reflection to derive `ArgsSchema` and `OutSchema` from the `WeatherArgs` / `WeatherOut` types. No decorator equivalent is needed: type inference replaces it.
 
 **External-source authors** implement `ToolProvider` and register a driver:
 
@@ -173,25 +173,25 @@ catalog.AttachProvider(ctx, provider)
 
 **Cross-transport dispatch:** every `ToolDescriptor.Invoke` is the same shape `(ctx, args, rc) -> (ToolResult, error)`. Inside, an MCP descriptor calls FastMCP-equivalent client; an A2A descriptor calls the A2A transport (see §5); an HTTP descriptor builds a request from a UTCP-style manual; an in-process descriptor calls the Go function directly. The planner is unaware.
 
-**Argument validation** runs at the catalog edge. The reference uses Pydantic; Harbor uses a JSON-Schema validator (e.g. `santhosh-tekuri/jsonschema`) plus an optional user-supplied `Validator` for cross-field invariants. Validation failures are *not* tool errors — they are routed back to the planner as a typed `tool.invalid_args` event so the planner can reformulate, with the error fed in via `LLMClient` retry feedback (the reference does this in `~/Repos/Penguiflow/penguiflow/penguiflow/llm/retry.py`).
+**Argument validation** runs at the catalog edge. Harbor uses a JSON-Schema validator (e.g. `santhosh-tekuri/jsonschema`) plus an optional user-supplied `Validator` for cross-field invariants. Validation failures are *not* tool errors — they are routed back to the planner as a typed `tool.invalid_args` event so the planner can reformulate, with the error fed in via `LLMClient` retry feedback.
 
-**Result normalization** is the most subtle part. MCP returns `TextContent | ImageContent | EmbeddedResource | ResourceLink`. A2A returns `TextPart | FilePart | DataPart`. HTTP returns whatever the endpoint returns. Harbor's normalizer is a layered pipeline — explicit field-extraction rules for known tools first, then typed-content-block extraction, then heuristic binary detection, then a size-based safety net (anything over `MaxInlineSize` chars routes to the artifact store). The reference encodes the same five layers in `_transform_output` at `~/Repos/Penguiflow/penguiflow/penguiflow/tools/node.py:1140`. Harbor inherits the layered approach but enforces it: artifacts are mandatory, not opt-in (per `harbor_design_principles.md` seam #5).
+**Result normalization** is the most subtle part. MCP returns `TextContent | ImageContent | EmbeddedResource | ResourceLink`. A2A returns `TextPart | FilePart | DataPart`. HTTP returns whatever the endpoint returns. Harbor's normalizer is a layered pipeline — explicit field-extraction rules for known tools first, then typed-content-block extraction, then heuristic binary detection, then a size-based safety net (anything over `MaxInlineSize` chars routes to the artifact store). Harbor enforces the layered approach: artifacts are mandatory, not opt-in (per `harbor_design_principles.md` seam #5).
 
-**LLM provider quirks** are real and need a single correction layer. Examples observed in the reference (paths in `~/Repos/Penguiflow/penguiflow/penguiflow/llm/`): NIM rejects mixed system/developer-then-user message ordering and needs reorder/collapse (`protocol.py:91`); OpenRouter `x-ai/*` routes need an explicit `reasoning_enabled` flag; some OpenAI-compatible proxies reject `{"allOf": [...]}` schemas without root `"type": "object"`; structured-output downgrades `json_schema → json_object → text` on `invalid_json_schema` errors (`native_policy.py`); some streaming proxies report `0/0` tokens, estimate from byte length when pricing is known. Harbor folds these into **provider drivers** under one `LLMClient` — not a parallel "native vs LiteLLM" mode (§5).
+**LLM provider quirks** are real and need a single correction layer. Representative quirks: NIM rejects mixed system/developer-then-user message ordering and needs reorder/collapse; OpenRouter `x-ai/*` routes need an explicit `reasoning_enabled` flag; some OpenAI-compatible proxies reject `{"allOf": [...]}` schemas without root `"type": "object"`; structured output downgrades `json_schema → json_object → text` on `invalid_json_schema` errors; some streaming proxies report `0/0` tokens, so estimate from byte length when pricing is known. Harbor folds these into **provider drivers** under one `LLMClient` — not a parallel "native vs LiteLLM" mode (§5).
 
-**LLM mode planning.** Per `~/Repos/Penguiflow/penguiflow/penguiflow/llm/schema/plan.py`, `OutputMode = Native | Tools | Prompted` is selected per provider via a `ModelProfile`. Harbor inherits this: `SchemaPlan` decides between provider-native schema mode, function-calling, or schema-in-prompt + parse-retry. Mode is observable.
+**LLM mode planning.** `OutputMode = Native | Tools | Prompted` is selected per provider via a `ModelProfile`: `SchemaPlan` decides between provider-native schema mode, function-calling, or schema-in-prompt + parse-retry. Mode is observable.
 
 ---
 
-## 5. Sharp Edges from the Source
+## 5. Sharp Edges Harbor Must Avoid
 
-**Two parallel LLM modes (the toggle smell).** The reference exposes `use_native_llm=True/False` toggling between LiteLLM and a `NativeLLMAdapter` that re-implements provider-specific normalization (`~/Repos/Penguiflow/penguiflow/penguiflow/llm/protocol.py:161`). The two modes ship in parallel because LiteLLM didn't cover provider quirks well enough. **Harbor must pick one architecture and bake the correction in.** The recommendation: ship a thin abstraction over `liter-llm` (the Go LiteLLM client; see `harbor_tech_stack.md`) with the correction layer compiled in as a stack of provider drivers — no toggle. If `liter-llm` falls short of the surface needed (streaming with reasoning deltas, tool calling, structured output across all six provider families, cancellation, cost), we go provider-native via official SDKs and drop the LiteLLM dependency entirely.
+**Two parallel LLM modes (the toggle smell).** A `use_native_llm=true/false` toggle between a LiteLLM path and a hand-rolled adapter that re-implements provider-specific normalization is an anti-pattern — two modes shipping in parallel because the LiteLLM path didn't cover provider quirks well enough. **Harbor picks one architecture and bakes the correction in.** The recommendation: ship a thin abstraction over `liter-llm` (the Go LiteLLM client; see `harbor_tech_stack.md`) with the correction layer compiled in as a stack of provider drivers — no toggle. If `liter-llm` falls short of the surface needed (streaming with reasoning deltas, tool calling, structured output across all six provider families, cancellation, cost), we go provider-native via official SDKs and drop the LiteLLM dependency entirely.
 
-**A2A docs lagging the code.** The reference's public docs flag an "A2A compliance gap"; the actual code (`~/Repos/Penguiflow/penguiflow/penguiflow_a2a/models.py`, `core.py`, `server.py`, `transport.py`, ~3500 lines) implements the full A2A spec — Agent Cards with `protocol_versions`, `supported_interfaces`, `capabilities`, `security_schemes`, `skills`, `signatures`; tasks with `TaskState` lifecycle including `INPUT_REQUIRED` and `AUTH_REQUIRED`; `message/send` and `message/stream`; `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` as SSE events; `TaskPushNotificationConfig` with bearer-token push. Harbor: **never let docs lag code** — the `feedback_harbor_doc_hygiene.md` rule covers this. The phase that ships A2A also ships the A2A docs.
+**A2A docs lagging the code.** Public docs that flag an "A2A compliance gap" while the code already implements the full A2A spec are a doc-hygiene failure. The full spec surface — Agent Cards with `protocol_versions`, `supported_interfaces`, `capabilities`, `security_schemes`, `skills`, `signatures`; tasks with `TaskState` lifecycle including `INPUT_REQUIRED` and `AUTH_REQUIRED`; `message/send` and `message/stream`; `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` as SSE events; `TaskPushNotificationConfig` with bearer-token push — is substantial. Harbor: **never let docs lag code** — the `feedback_harbor_doc_hygiene.md` rule covers this. The phase that ships A2A also ships the A2A docs.
 
-**A2A wire shape (worth inheriting).** Discovery via Agent Card at `GET /.well-known/agent-card.json`. JSON-RPC dispatch: `message/send` (blocking), `message/stream` (SSE), `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/*`. Streaming events are union types (one of `task | message | statusUpdate | artifactUpdate`). The registry (`~/Repos/Penguiflow/penguiflow/penguiflow_a2a/registry.py`) scores remote skills by tenant, trust tier, latency tier, capability match — the "MCP/A2A/HTTP appear as one tool source" abstraction expressed at the catalog layer.
+**A2A wire shape (worth inheriting).** Discovery via Agent Card at `GET /.well-known/agent-card.json`. JSON-RPC dispatch: `message/send` (blocking), `message/stream` (SSE), `tasks/get`, `tasks/cancel`, `tasks/pushNotificationConfig/*`. Streaming events are union types (one of `task | message | statusUpdate | artifactUpdate`). The registry scores remote skills by tenant, trust tier, latency tier, capability match — the "MCP/A2A/HTTP appear as one tool source" abstraction expressed at the catalog layer.
 
-**Tool-side HITL plumbing.** When a tool needs OAuth, the runtime emits a typed `tool.auth_required` event (auth URL, scopes, state), pauses the run via the runtime pause/resume primitive (brief 02 owns the protocol), waits for callback, stores the token in `TokenStore`, resumes. The reference's `OAuthManager` (`~/Repos/Penguiflow/penguiflow/penguiflow/tools/auth.py`, ~170 lines) is a clean inheritance target. Critical: the pause is **runtime-level, not planner-level** — the same primitive serves A2A's `TaskState.AUTH_REQUIRED`. Both transports converge.
+**Tool-side HITL plumbing.** When a tool needs OAuth, the runtime emits a typed `tool.auth_required` event (auth URL, scopes, state), pauses the run via the runtime pause/resume primitive (brief 02 owns the protocol), waits for callback, stores the token in `TokenStore`, resumes. A small `OAuthManager` abstraction is the right shape. Critical: the pause is **runtime-level, not planner-level** — the same primitive serves A2A's `TaskState.AUTH_REQUIRED`. Both transports converge.
 
 **MCP transport auto-detect.** Stdio if connection looks like a command; SSE vs streamable-HTTP for URLs. Harbor inherits with one knob: `MCPTransportMode = Auto | SSE | StreamableHTTP`. URL connections require explicit headers for auth (no implicit env passthrough).
 
@@ -242,7 +242,7 @@ Sized for the "many phases is fine, never thin" stance. Each phase ships accepta
 ## 9. Open Questions for the User
 
 1. **`liter-llm` surface validation.** Before locking the LLM client to liter-llm, confirm it covers: (a) streaming with separable text + reasoning deltas, (b) tool calling across all six provider families we care about (OpenAI, Anthropic, Google, Bedrock, Databricks, OpenRouter, NIM), (c) JSON-schema and JSON-object structured output with downgrade hooks, (d) cancellation, (e) cost reporting (or our own pricing table is fine). If any is missing, do we (a) add a thin shim, or (b) drop liter-llm and go provider-native?
-2. **A2A protocol version.** The reference targets the A2A draft that defines `TaskState`, Agent Card with `protocol_versions`/`supported_interfaces`/`signatures`, and SSE streaming. Confirm Harbor V1 targets the same version and ships a compatibility matrix. Are extensions (`AgentExtension`) in V1 scope?
+2. **A2A protocol version.** The candidate A2A draft defines `TaskState`, Agent Card with `protocol_versions`/`supported_interfaces`/`signatures`, and SSE streaming. Confirm Harbor V1 targets this version and ships a compatibility matrix. Are extensions (`AgentExtension`) in V1 scope?
 3. **HTTP tool definitions.** Do we ship inline HTTP tool definitions (Go code: `RegisterHTTPTool(name, method, urlTemplate, ...)`) or only out-of-process via a UTCP-style manifest file, or both?
 4. **A2A northbound in V1?** Is exposing Harbor as an A2A *server* (so other agents can call us) in V1, or do we ship southbound only and add northbound post-V1?
 5. **Tool-call audit redaction.** `harbor_isolation.md` and Portico AGENTS.md both forbid logging unredacted tool args/results. Where does the redactor live — tool subsystem (per-descriptor `Redact` hook) or audit subsystem (a single redactor over the event stream)? The latter is cleaner if the event payload is the canonical record.

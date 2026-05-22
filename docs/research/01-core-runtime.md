@@ -97,54 +97,54 @@ type RunError struct {
 
 ### Key design choices to bake in
 
-- **Identity is a quadruple, not a single id.** `(TenantID, UserID, SessionID, RunID)` is the runtime identity. `RunID` is the active concurrency boundary; `SessionID` groups runs into a multi-turn conversation. The source uses `tenant + trace_id` only; Harbor must extend.
-- **`DeadlineAt` is wall-clock, not duration.** Set once at the boundary; checked before scheduling each node. Source: `~/Repos/Penguiflow/penguiflow/penguiflow/core.py:1557`.
+- **Identity is a quadruple, not a single id.** `(TenantID, UserID, SessionID, RunID)` is the runtime identity. `RunID` is the active concurrency boundary; `SessionID` groups runs into a multi-turn conversation.
+- **`DeadlineAt` is wall-clock, not duration.** Set once at the boundary; checked before scheduling each node.
 - **`Meta` is free-form.** It survives fan-out, fan-in, and subflow boundaries. Last-write-wins on key collisions unless an explicit merge function is registered (deferred to an RFC follow-up).
-- **`Validate` is per-node.** `both / in / out / none` exactly as in the source — the perf escape hatch (`none` on hot streaming paths) is necessary, keep it.
+- **`Validate` is per-node.** `both / in / out / none` — the perf escape hatch (`none` on hot streaming paths) is necessary, keep it.
 
 ## 3. Public API surface
 
 What the runtime exposes to other subsystems:
 
-- `engine.New(adjacencies ..., opts ...)` — build an Engine from a list of `(Node, []Node)` adjacency pairs. Cycle detection runs at construction; `WithAllowCycles()` opts in. Source: `core.py:307-433`.
+- `engine.New(adjacencies ..., opts ...)` — build an Engine from a list of `(Node, []Node)` adjacency pairs. Cycle detection runs at construction; `WithAllowCycles()` opts in.
 - `engine.Run(registry)` — start the worker goroutines, one per node.
-- `engine.Stop()` — graceful shutdown: cancel workers, drain in-flight invocations, release dispatchers, clear capacity waiters. Source: `core.py:516-573`.
-- `engine.Emit(env, ..., WithRunID(id))` — ingress. Without `WithRunID`, the run identity is read from the envelope. Source: `core.py:673-720`.
-- `engine.Fetch(WithRunID(id))` — egress. Without `WithRunID`, returns whatever lands first in the global egress queue. With `WithRunID`, demultiplexes per-run via a dispatcher goroutine. Source: `core.py:763-810`.
-- `engine.Cancel(runID)` — idempotent per-run cancellation that propagates through queues and active invocations. Source: `core.py:1408-1451`.
+- `engine.Stop()` — graceful shutdown: cancel workers, drain in-flight invocations, release dispatchers, clear capacity waiters.
+- `engine.Emit(env, ..., WithRunID(id))` — ingress. Without `WithRunID`, the run identity is read from the envelope.
+- `engine.Fetch(WithRunID(id))` — egress. Without `WithRunID`, returns whatever lands first in the global egress queue. With `WithRunID`, demultiplexes per-run via a dispatcher goroutine.
+- `engine.Cancel(runID)` — idempotent per-run cancellation that propagates through queues and active invocations.
 - `NodeContext` exposes `Emit / EmitNoWait / EmitChunk / Fetch / FetchAny / FetchNoWait / CallSubflow`. The subset is wider than most graph runtimes need because the planner uses it for fan-out, controller-style multi-hop loops, and SSE-style streaming sinks.
-- `Subflow(factory, parent, opts...)` — runs a child Engine with the parent's run id, mirrors parent cancellation into the child, returns the first egress payload. Source: `core.py:1700-1759`.
-- `NodeRegistry` — Pydantic-typed adapters in the source (`registry.py`). In Go, this becomes per-node `(InType, OutType)` registration plus a validator function (e.g. JSON-schema or Go-generic validator). Validation is opt-in per `NodePolicy.Validate`.
+- `Subflow(factory, parent, opts...)` — runs a child Engine with the parent's run id, mirrors parent cancellation into the child, returns the first egress payload.
+- `NodeRegistry` — per-node `(InType, OutType)` registration plus a validator function (e.g. JSON-schema or Go-generic validator). Validation is opt-in per `NodePolicy.Validate`.
 
 ## 4. Internal mechanics
 
-**Worker loop.** One goroutine per `Node`. Each iteration: `Fetch` from incoming channels → check deadline → check cancel → invoke under reliability shell → emit to outgoing channels (or to the Outlet) → finalize bookkeeping. Source: `core.py:448-514`. Cancellation propagation uses a sentinel error (`RunCancelled`) that unwinds the loop without killing the worker.
+**Worker loop.** One goroutine per `Node`. Each iteration: `Fetch` from incoming channels → check deadline → check cancel → invoke under reliability shell → emit to outgoing channels (or to the Outlet) → finalize bookkeeping. Cancellation propagation uses a sentinel error (`RunCancelled`) that unwinds the loop without killing the worker.
 
-**Channel semantics.** Each adjacency `(A, B)` gets a bounded queue of size `QueueMaxSize` (default 64 in source). Backpressure is implicit: a slow consumer pauses upstream `Emit`. Two synthetic endpoints — `Inlet` (ingress) and `Outlet` (egress) — receive channels from "nodes with no parents" and "nodes with no children" respectively, so external code talks to the engine via the same channel mechanic. Source: `core.py:68-83, 361-403`.
+**Channel semantics.** Each adjacency `(A, B)` gets a bounded queue of size `QueueMaxSize` (default 64). Backpressure is implicit: a slow consumer pauses upstream `Emit`. Two synthetic endpoints — `Inlet` (ingress) and `Outlet` (egress) — receive channels from "nodes with no parents" and "nodes with no children" respectively, so external code talks to the engine via the same channel mechanic.
 
-**Backpressure inside streaming.** A run that emits hundreds of stream frames could fill its outgoing queue and block the producing goroutine. The source addresses this with `_await_trace_capacity` (`core.py:1453`): per-run pending counters with capacity waiters, gating chunk emissions when a single run's pending count exceeds the queue maxsize. Harbor must port this — it is *not* a nice-to-have. Without it, parallel runs can deadlock each other through shared bounded queues.
+**Backpressure inside streaming.** A run that emits hundreds of stream frames could fill its outgoing queue and block the producing goroutine. Harbor addresses this with a per-run capacity waiter: per-run pending counters gate chunk emissions when a single run's pending count exceeds the queue maxsize. This is *not* a nice-to-have — without it, parallel runs can deadlock each other through shared bounded queues.
 
-**Cancellation propagation.** `Cancel(runID)` does four things: sets a per-run `Event`/atomic flag, drops the run's already-enqueued envelopes from every channel, cancels active invocation goroutines, and drains the per-run egress queue. Source: `core.py:1408-1451`. Subflow runs mirror parent cancellation via a watcher goroutine (`core.py:1716-1731`). Harbor port: `Cancel` returns `bool` indicating whether the run was active; idempotent.
+**Cancellation propagation.** `Cancel(runID)` does four things: sets a per-run atomic flag, drops the run's already-enqueued envelopes from every channel, cancels active invocation goroutines, and drains the per-run egress queue. Subflow runs mirror parent cancellation via a watcher goroutine. `Cancel` returns `bool` indicating whether the run was active; idempotent.
 
-**Reliability shell.** `_execute_with_reliability` (`core.py:890-1067`) wraps the node call with timeout, retry-with-backoff, and run-cancel checks. On terminal failure it constructs a `RunError` and optionally routes it to the egress (`emit_errors_to_rookery`). Harbor: keep the shell, keep the optional error-to-egress, and add an "error-to-protocol" hook so Console can render failures without the egress consumer needing to handle them.
+**Reliability shell.** The reliability shell wraps the node call with timeout, retry-with-backoff, and run-cancel checks. On terminal failure it constructs a `RunError` and optionally routes it to the egress. Harbor keeps the shell, keeps the optional error-to-egress, and adds an "error-to-protocol" hook so Console can render failures without the egress consumer needing to handle them.
 
-**Trace-scoped fetch dispatcher.** A separate goroutine reads from the egress queue and demultiplexes results into per-run subqueues so that callers can `FetchByRun(runID)` without ordering surprises. Source: `core.py:609-632`. This is non-trivial — it is what makes the API "one engine, many concurrent runs, each addressable" instead of "one engine, one outstanding consumer at a time."
+**Trace-scoped fetch dispatcher.** A separate goroutine reads from the egress queue and demultiplexes results into per-run subqueues so that callers can `FetchByRun(runID)` without ordering surprises. This is non-trivial — it is what makes the API "one engine, many concurrent runs, each addressable" instead of "one engine, one outstanding consumer at a time."
 
-**Subflow lifecycle.** A subflow is a freshly-built engine that runs to completion for one parent envelope, then `Stop`s. Cancellation is mirrored from the parent. Source: `core.py:1700-1759`. Harbor port: same pattern, but the cleanup is `defer cancel(); defer engine.Stop()` instead of try/finally.
+**Subflow lifecycle.** A subflow is a freshly-built engine that runs to completion for one parent envelope, then `Stop`s. Cancellation is mirrored from the parent. The cleanup is `defer cancel(); defer engine.Stop()`.
 
-## 5. Sharp edges from the source
+## 5. Sharp edges to design out
 
 Catalogued so they are designed-out, not rediscovered:
 
-- **The egress endpoint has two modes that are bolted-on relative to each other.** Pre-dispatcher: `Fetch` reads directly from incoming channels in a `select` style. Post-dispatcher (after the first call to `WithRunID`): a separate goroutine demuxes into per-run subqueues, and `Fetch(from=...)` filtering becomes unsupported. See the runtime-error guards in `core.py:769-810`. Harbor: pick one model and ship it. Recommendation — the dispatcher is on by default, always, and the API is consistent. The pre-dispatcher mode exists in the source for backward compatibility; Harbor has no "before" to be compatible with.
-- **`emit_nowait(trace_id=...)` is silently unsupported.** Source raises a runtime error if you pass `trace_id` to the non-blocking emit (`core.py:730`). Harbor: the API should be type-shaped so this can't be expressed at compile time, e.g. only `Emit` takes `WithRunID`, not `EmitNoWait`.
-- **Type-mismatch between declared and returned message types is a `warnings.warn`, not a hard error.** A node registered for `Envelope -> Envelope` that returns a raw payload triggers a Python `RuntimeWarning` at `core.py:931`. Harbor: fail loudly. Static typing in Go catches most of this; the runtime check on top should `RunError` rather than log-and-continue.
-- **`Stop` releases capacity waiters by setting them.** Any goroutine awaiting `_await_trace_capacity` resumes, sees no engine, and must error out cleanly (`core.py:570-572`). Harbor: same pattern, but the waiter's resumption path needs an explicit "engine stopped" sentinel, not "you happen to observe trace_count=0."
-- **`_handle_deadline_expired` synthesizes a `FinalAnswer` payload.** That's a planner-layer concern leaking into the runtime (`core.py:1562-1567`). Harbor: the runtime emits a `RunError(DeadlineExceeded)` to the egress; planners can choose to convert that into a final answer for the user, but the runtime stays out of presentation.
-- **WM-hop dedup lives in the runtime.** `_latest_wm_hops` short-circuits emit calls when a working-memory payload's `hops` matches the last seen value (`core.py:702-720`). That's a controller-loop optimization that doesn't belong in the core. Harbor: planner subsystem owns this, runtime stays generic.
-- **Per-run roundtrip locks** (`_trace_roundtrip_locks`, `core.py:685-697`) serialize concurrent emit/fetch calls sharing the same run id. The semantics are subtle and the failure mode (lock not released on error path) is mitigated with `suppress(RuntimeError)`. Harbor: design `Emit/Fetch` so concurrent same-run roundtrips either work natively or are forbidden by the API; no half-measure.
-- **Bus publishing failures are logged, not surfaced.** `_publish_to_bus` (`core.py:1287-1307`) catches all exceptions. Harbor: surface to the protocol/observability path; never silently swallow a downstream-bus failure during graph emit.
-- **Subflow registries are recreated each call.** A subflow factory returns a fresh engine and registry on every invocation. Fine for correctness, expensive for hot paths. Harbor: cache the validator adapters at registration time (TypeAdapter equivalent in Go); construct the engine cheaply.
+- **An egress endpoint with two bolted-on modes is a trap.** A pre-dispatcher mode where `Fetch` reads directly from incoming channels, plus a post-dispatcher mode where a separate goroutine demuxes into per-run subqueues, leaves `Fetch(from=...)` filtering unsupported once the dispatcher engages. Harbor: pick one model and ship it. Recommendation — the dispatcher is on by default, always, and the API is consistent. There is no legacy "before" mode to be compatible with.
+- **A non-blocking emit that silently rejects a run id is a trap.** Harbor: the API should be type-shaped so this can't be expressed at compile time, e.g. only `Emit` takes `WithRunID`, not `EmitNoWait`.
+- **A type-mismatch between declared and returned message types must be a hard error, not a warning.** A node registered for `Envelope -> Envelope` that returns a raw payload must fail loudly. Static typing in Go catches most of this; the runtime check on top should `RunError` rather than log-and-continue.
+- **`Stop` releases capacity waiters by setting them.** Any goroutine awaiting capacity resumes, sees no engine, and must error out cleanly. The waiter's resumption path needs an explicit "engine stopped" sentinel, not "you happen to observe run_count=0."
+- **Deadline expiry must not synthesize a planner-layer payload.** Synthesizing a `FinalAnswer` on deadline is a planner-layer concern leaking into the runtime. Harbor: the runtime emits a `RunError(DeadlineExceeded)` to the egress; planners can choose to convert that into a final answer for the user, but the runtime stays out of presentation.
+- **Working-memory hop dedup does not belong in the runtime.** Short-circuiting emit calls when a working-memory payload's `hops` matches the last seen value is a controller-loop optimization. Harbor: the planner subsystem owns this, the runtime stays generic.
+- **Per-run roundtrip locks are subtle.** Locks that serialize concurrent emit/fetch calls sharing the same run id have a subtle failure mode (lock not released on error path). Harbor: design `Emit/Fetch` so concurrent same-run roundtrips either work natively or are forbidden by the API; no half-measure.
+- **Bus publishing failures must be surfaced, not logged.** Harbor: surface a downstream-bus failure to the protocol/observability path during graph emit; never silently swallow it.
+- **Subflow registries recreated each call cost hot paths.** A subflow factory returning a fresh engine and registry on every invocation is correct but expensive. Harbor: cache the validator adapters at registration time; construct the engine cheaply.
 
 ## 6. Tests required
 
@@ -229,7 +229,7 @@ Six phases for this subsystem, each shippable on its own:
 ### Phase 01f — Routers, concurrency utilities, subflows
 
 - Scope: `PredicateRouter`, `UnionRouter`, `RoutePolicy`, `MapConcurrent`, `JoinK`, `Subflow`.
-- Acceptance: each pattern matches its source-side behavior; subflow cancellation mirrors parent.
+- Acceptance: each pattern matches its specified behavior; subflow cancellation mirrors parent.
 - Tests: integration per pattern.
 - Smoke: a fan-out / join-K example flow runs to completion via the dev binary.
 
@@ -250,25 +250,25 @@ Six phases for this subsystem, each shippable on its own:
 
 ## 9. Open questions for the user
 
-1. **Run vs trace vocabulary.** The source uses `trace_id`. Harbor user notes already establish `RunID` as the runtime concurrency boundary. Confirm: keep `RunID` as the canonical name; reserve `TraceID` for OpenTelemetry-style traces (often spanning multiple runs). OK?
-2. **Subflow as a first-class API or as planner sugar?** The source exposes `call_playbook` directly to node code. Harbor could keep `Subflow` in the runtime, or push it to the planner subsystem since it is mostly used for controller-style reasoning. Strong runtime reason to keep it: cancellation mirroring is engine-level, not planner-level.
-3. **Per-node validation: schema-first or Go-generic-first?** The source uses Pydantic adapters. Harbor options: (a) per-node `(In, Out any)` plus a function pointer, (b) JSON-schema validation independent of Go types, (c) generics-typed nodes (`Node[I, O]`) so the compiler enforces shape and runtime validation only handles wire-form ingress. Recommendation: (c) for the typed core, (b) reserved for protocol-edge ingress where the type is dynamic.
-4. **Default queue maxsize.** Source defaults to 64. Harbor's three persistence backends (in-mem / SQLite / Postgres) imply different practical bounds. Set per-engine in config, or per-channel? Recommendation: per-engine default plus a per-channel override.
-5. **Error routing default.** Source defaults `emit_errors_to_rookery=False`. Harbor's protocol-first stance suggests errors should *always* surface to the protocol's event stream regardless of whether they also go to the egress envelope path. Confirm: errors go to protocol unconditionally; egress emission is the optional one.
+1. **Run vs trace vocabulary.** Harbor user notes already establish `RunID` as the runtime concurrency boundary. Confirm: keep `RunID` as the canonical name; reserve `TraceID` for OpenTelemetry-style traces (often spanning multiple runs). OK?
+2. **Subflow as a first-class API or as planner sugar?** Harbor could keep `Subflow` in the runtime, or push it to the planner subsystem since it is mostly used for controller-style reasoning. Strong runtime reason to keep it: cancellation mirroring is engine-level, not planner-level.
+3. **Per-node validation: schema-first or Go-generic-first?** Harbor options: (a) per-node `(In, Out any)` plus a function pointer, (b) JSON-schema validation independent of Go types, (c) generics-typed nodes (`Node[I, O]`) so the compiler enforces shape and runtime validation only handles wire-form ingress. Recommendation: (c) for the typed core, (b) reserved for protocol-edge ingress where the type is dynamic.
+4. **Default queue maxsize.** Default to 64. Harbor's three persistence backends (in-mem / SQLite / Postgres) imply different practical bounds. Set per-engine in config, or per-channel? Recommendation: per-engine default plus a per-channel override.
+5. **Error routing default.** Harbor's protocol-first stance suggests errors should *always* surface to the protocol's event stream regardless of whether they also go to the egress envelope path. Confirm: errors go to protocol unconditionally; egress emission is the optional one.
 
 ---
 
-### Source map (internal-only reference)
+### Subsystem concept map
 
-| Concept in this brief | Source file | Notes |
-|---|---|---|
-| `Engine`, `Channel`, `Inlet`, `Outlet` | `~/Repos/Penguiflow/penguiflow/penguiflow/core.py` | runtime container, queue edges, synthetic endpoints |
-| `Envelope`, `Headers`, `StreamFrame` | `.../penguiflow/types.py` | typed wire shapes |
-| `Node`, `NodePolicy`, validate modes | `.../penguiflow/node.py` | node wrapper + execution policy |
-| Reliability shell, retry, timeout | `.../penguiflow/core.py:890-1067` | per-invocation |
-| `Cancel`, capacity waiter | `.../penguiflow/core.py:1408-1483` | per-run lifecycle |
-| `RoutePolicy`, predicate / union router | `.../penguiflow/policies.py`, `.../patterns.py` | routing |
-| `MapConcurrent`, `JoinK` | `.../penguiflow/patterns.py` | concurrency utilities |
-| `Subflow` (was `call_playbook`) | `.../penguiflow/core.py:1700-1759` | subgraph execution |
-| `RunError` (was `FlowError`) | `.../penguiflow/errors.py` | structured error envelope |
-| Streaming primitive | `.../penguiflow/streaming.py`, `core.py:177-236` | chunked output + adapters |
+| Concept in this brief | Notes |
+|---|---|
+| `Engine`, `Channel`, `Inlet`, `Outlet` | runtime container, queue edges, synthetic endpoints |
+| `Envelope`, `Headers`, `StreamFrame` | typed wire shapes |
+| `Node`, `NodePolicy`, validate modes | node wrapper + execution policy |
+| Reliability shell, retry, timeout | per-invocation |
+| `Cancel`, capacity waiter | per-run lifecycle |
+| `RoutePolicy`, predicate / union router | routing |
+| `MapConcurrent`, `JoinK` | concurrency utilities |
+| `Subflow` | subgraph execution |
+| `RunError` | structured error envelope |
+| Streaming primitive | chunked output + adapters |
