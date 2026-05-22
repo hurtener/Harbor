@@ -126,7 +126,33 @@ type RunContext struct {
 	// Planners MAY honour them; the Runtime enforces the hard caps
 	// (system absolute_max_parallel, identity-tier budget) outside
 	// the planner.
-	Hints PlanningHints
+	Hints PlanningNudges
+
+	// RepairCounters carries the per-run across-step failure counters
+	// the runtime increments when Phase 44's schema-repair pipeline had
+	// to fix an LLM-output-format failure, and resets on a clean turn at
+	// that surface (Phase 83c — D-145). Nil means "no augmentation": the
+	// ReAct prompt builder renders no repair guidance.
+	//
+	// The pointer is owned by the runtime, which constructs ONE
+	// RepairCounters per run and threads the SAME pointer through every
+	// per-step RunContext. The counters live here — on the per-run
+	// scope — and NEVER on the planner struct: a mutable counter field
+	// on the shared `ReActPlanner` artifact would violate the D-025
+	// concurrent-reuse contract (CLAUDE.md §5 + §13). See D-145.
+	RepairCounters *RepairCounters
+
+	// PlanningHints carries runtime-supplied planning constraints the
+	// ReAct prompt builder renders into the `<planning_constraints>`
+	// section (Phase 83a anchor; Phase 83c body — D-145). Nil means "no
+	// hints": the optional section is omitted from the prompt entirely.
+	//
+	// Unlike Hints (caller nudges the planner MAY honour), PlanningHints
+	// is operator/runtime steering: tenant-specific policy, or guiding
+	// the planner around a known-bad path, without forking the prompt
+	// (brief 13 §2.5). The Runtime populates it from the per-run options;
+	// the planner reads only.
+	PlanningHints *PlanningHints
 
 	// Catalog is the planner-facing tool view (schemas only — never
 	// Descriptors). Phase 26 ships the production ToolCatalog; the
@@ -372,9 +398,15 @@ type Budget struct {
 	TokenBudget int
 }
 
-// PlanningHints are caller-provided nudges the planner MAY honour.
+// PlanningNudges are caller-provided nudges the planner MAY honour.
 // The Runtime hard caps win in every case.
-type PlanningHints struct {
+//
+// Phase 83c renamed this type from `PlanningHints` to free that name
+// for the richer runtime-supplied [PlanningHints] struct rendered into
+// the `<planning_constraints>` prompt section (D-145). PlanningNudges
+// stays the type of [RunContext.Hints] — the legacy parallel/transport
+// nudge surface; [PlanningHints] is the new operator-steering surface.
+type PlanningNudges struct {
 	// MaxParallel hints the maximum CallParallel branch count the
 	// planner should produce. The Runtime's system cap
 	// (absolute_max_parallel = 50, per RFC §6.2 / Phase 47) wins.
@@ -384,6 +416,103 @@ type PlanningHints struct {
 	// given transport kind when multiple tools satisfy the same
 	// goal. Empty means no preference.
 	PreferTransport string
+}
+
+// RepairCounters carries the per-run, across-step failure counters
+// that drive the ReAct planner's escalating repair guidance (Phase
+// 83c — D-145). Each counter tracks one class of LLM-output-format
+// failure the runtime had to repair:
+//
+//   - FinishRepair  — a `_finish` action that failed Phase 44
+//     validation (malformed finish args, missing answer).
+//   - ArgsRepair    — a tool-call action whose args failed the tool's
+//     schema validation.
+//   - MultiAction   — the LLM emitted more than one JSON action block
+//     in a single turn (multi-action / multi-JSON emission).
+//
+// The runtime increments the matching counter when Phase 44's repair
+// pipeline had to fix an output, and resets it when a clean turn
+// lands at that surface (a clean finish resets FinishRepair; a clean
+// single-action-with-valid-args turn resets ArgsRepair AND
+// MultiAction). The ReAct prompt builder reads the counters per turn
+// and merges escalating `reminder → warning → critical` guidance into
+// the system prompt for that turn only — closing the across-step
+// feedback loop Phase 44's per-step repair leaves open (brief 13
+// §2.2).
+//
+// **Concurrent-reuse (D-145 + D-025).** RepairCounters lives on the
+// per-run [RunContext], NEVER on the `ReActPlanner` struct. The
+// runtime constructs one RepairCounters per run and threads the same
+// pointer through every per-step RunContext; the shared planner
+// artifact stays immutable. A counter field on the planner would be a
+// §13-forbidden mutable-state-on-a-compiled-artifact bug.
+//
+// **Parallel-branch failures do NOT increment these counters.** A
+// `parallel` plan whose branches fail at tool execution is a
+// tool-execution failure, not an LLM-output-format failure — the
+// counters track only the latter (Phase 83c non-goal; see
+// repair_guidance.go).
+type RepairCounters struct {
+	// FinishRepair counts consecutive `_finish` actions that failed
+	// Phase 44 validation. Reset to 0 on a clean finish.
+	FinishRepair int
+	// ArgsRepair counts consecutive tool-call actions whose args
+	// failed schema validation. Reset to 0 on a clean single action.
+	ArgsRepair int
+	// MultiAction counts consecutive turns that emitted more than one
+	// JSON action block. Reset to 0 on a clean single action.
+	MultiAction int
+}
+
+// BudgetHints carries the optional budget caps a runtime may surface
+// to the planner through [PlanningHints.Budget] (Phase 83c — D-145).
+// Every field is a pointer: nil means "no cap for this dimension", so
+// a partial BudgetHints renders only the dimensions it pins. The
+// caps are advisory prompt content — the runtime's Governance
+// subsystem (Phase 47+) and [Budget] enforce the hard caps; the
+// planner reads BudgetHints to make budget-aware decisions.
+type BudgetHints struct {
+	// MaxSteps is the advisory planner-step ceiling. Nil = no hint.
+	MaxSteps *int
+	// MaxCostUSD is the advisory cost ceiling, in USD. Nil = no hint.
+	MaxCostUSD *float64
+	// MaxLatencyMS is the advisory wall-clock latency ceiling, in
+	// milliseconds. Nil = no hint.
+	MaxLatencyMS *int64
+}
+
+// PlanningHints carries runtime-supplied planning constraints the
+// ReAct prompt builder renders into the `<planning_constraints>`
+// section of the system prompt (Phase 83c — D-145). It is the
+// operator/runtime steering surface: tenant-specific policy, or
+// guiding the planner around a known-bad path, expressed as prompt
+// content rather than Go code (brief 13 §2.5).
+//
+// Every field is optional. An empty field is omitted from the
+// rendered section entirely — never emitted as an empty line. A
+// PlanningHints whose every field is empty renders the empty string,
+// so the prompt builder omits the `<planning_constraints>` section.
+//
+// PlanningHints is distinct from [PlanningNudges] ([RunContext.Hints]):
+// nudges are the legacy parallel/transport hints the planner MAY
+// honour; PlanningHints is the richer runtime-steering surface
+// rendered directly into the prompt.
+type PlanningHints struct {
+	// Constraints is free-form constraint text rendered verbatim.
+	Constraints string
+	// PreferredOrder lists tool names the planner should prefer to
+	// invoke in the given order.
+	PreferredOrder []string
+	// ParallelGroups lists groups of tool names that may be invoked
+	// in parallel — each inner slice is one independent group.
+	ParallelGroups [][]string
+	// DisallowTools lists tool names the planner must NOT invoke.
+	DisallowTools []string
+	// PreferredTools lists tool names the planner should prefer when
+	// multiple tools satisfy the same goal.
+	PreferredTools []string
+	// Budget carries advisory budget caps. Nil = no budget hints.
+	Budget *BudgetHints
 }
 
 // PauseReason is the planner-side enum mirroring RFC §6.3's pause

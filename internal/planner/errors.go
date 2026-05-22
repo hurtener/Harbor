@@ -103,7 +103,7 @@ var (
 // AbsoluteMaxParallel is the system cap on CallParallel branch counts
 // (RFC §6.2 — settled). Any CallParallel with more branches fails the
 // whole call with ErrParallelCapExceeded BEFORE execution. The cap is
-// defence in depth — the planner's PlanningHints.MaxParallel is the
+// defence in depth — the planner's PlanningNudges.MaxParallel is the
 // soft cap; this constant is the hard cap that protects the runtime
 // from a runaway emission (a buggy LLM emitting 1000 branches).
 //

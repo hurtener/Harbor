@@ -23,7 +23,7 @@ Add the per-turn dynamic augmentation pass described in brief 13 §2.2: planner-
 
 ## Findings I'm departing from (if any)
 
-- The predecessor stores failure counters on the planner instance, persisting across runs ("no orchestrator wiring required" — brief 13 §2.2). Harbor scopes counters to the run via `RunContext` instead, because Harbor's `ReActPlanner` is a **shared compiled artifact** (D-025) — mutable per-run state on the planner struct violates the concurrent-reuse contract (AGENTS.md §5). Departure recorded as **D-105** in `docs/decisions.md`.
+- The predecessor stores failure counters on the planner instance, persisting across runs ("no orchestrator wiring required" — brief 13 §2.2). Harbor scopes counters to the run via `RunContext` instead, because Harbor's `ReActPlanner` is a **shared compiled artifact** (D-025) — mutable per-run state on the planner struct violates the concurrent-reuse contract (AGENTS.md §5). Departure recorded as **D-145** in `docs/decisions.md`.
 
 ## Goals
 
@@ -51,7 +51,7 @@ Add the per-turn dynamic augmentation pass described in brief 13 §2.2: planner-
 - [ ] A successful step resets the relevant counter (the runtime's responsibility; tested via integration test).
 - [ ] Hint tier copy lives in exported constants (`ReminderFinishGuidance`, `WarningFinishGuidance`, `CriticalFinishGuidance`, …); copy itself is reviewable as part of this PR.
 - [ ] Event emission: `planner.repair_guidance_injected` with `{tier: "reminder"|"warning"|"critical", counter: "finish"|"args"|"multi_action", count: N}`.
-- [ ] Concurrent-reuse: counter mutation is keyed to `RunContext`, not the planner struct (D-105). Test: 100+ concurrent runs against a shared `ReActPlanner`, each with its own `RunContext`, assert no cross-run counter bleed.
+- [ ] Concurrent-reuse: counter mutation is keyed to `RunContext`, not the planner struct (D-145). Test: 100+ concurrent runs against a shared `ReActPlanner`, each with its own `RunContext`, assert no cross-run counter bleed.
 - [ ] Golden fixtures for tier copy: three text files per counter type (9 total) under `internal/planner/react/testdata/repair_guidance/` so copy changes show up as a reviewable diff.
 
 ## Files added or changed
@@ -65,7 +65,7 @@ Add the per-turn dynamic augmentation pass described in brief 13 §2.2: planner-
 - `internal/planner/react/testdata/repair_guidance/{finish,args,multi_action}_{reminder,warning,critical}.txt` — nine golden files.
 - `internal/planner/react/repair_guidance_test.go` — extensive table-driven tests.
 - `internal/planner/react/integration_test.go` (existing) — extend with end-to-end finish-failure-recovery flow.
-- `docs/decisions.md` — **D-105** "Repair counters live in `RunContext`, not on the `ReActPlanner` struct" (≥10 lines: context, decision, consequences).
+- `docs/decisions.md` — **D-145** "Repair counters live in `RunContext`, not on the `ReActPlanner` struct" (≥10 lines: context, decision, consequences).
 - `scripts/smoke/phase-83c.sh` — static-only assertions on the nine golden files + the event-taxonomy enum.
 - `docs/glossary.md` — fill in `Repair guidance` and `Planning hints` entries (placeholders added in Phase 83a).
 - `docs/plans/README.md` — Status column flip on merge.
@@ -139,8 +139,8 @@ type RunContext struct {
 
 - **Coordination with Phase 35 (Structured Output Strategies).** If a provider supports structured output / function-calling natively, the repair counters may never trip in the first place. Documented contract: repair guidance is **additive** and ignored by providers that natively constrain output. The counters still increment if Phase 44 had to repair, regardless of provider — that signal is real and worth surfacing.
 - **Hint copy needs care.** Bad copy is worse than no hint (an aggressive `critical` tier hint can confuse the model). The constants live in code precisely so copy changes are reviewed; the 9 golden files make the diff legible at PR time.
-- **Counter-reset semantics on `parallel` decisions.** A parallel plan that has 3 branches and 2 succeed + 1 fails — does that count as a finish/args failure? Decision: parallel branch failures do **not** increment the finish/args counters (they are tool-execution failures, not LLM-output-format failures). Documented in `repair_guidance.go` and in **D-105**.
-- **D-105 numbering.** Confirm with the most recent `docs/decisions.md` entry that D-104 (preflight classification) is the highest existing number. If parallel work has claimed D-105, bump to the next free integer. (The README's preflight gate prevents two PRs landing the same D-NNN; this is the operational-cost reminder.)
+- **Counter-reset semantics on `parallel` decisions.** A parallel plan that has 3 branches and 2 succeed + 1 fails — does that count as a finish/args failure? Decision: parallel branch failures do **not** increment the finish/args counters (they are tool-execution failures, not LLM-output-format failures). Documented in `repair_guidance.go` and in **D-145**.
+- **D-145 numbering.** Phase 83c is pre-assigned **D-145** by the Wave 15 dispatch (the prior speculative "D-105" in earlier drafts is superseded). D-148 is the highest number already merged (Phase 83e); D-145 is free. The README's preflight gate prevents two PRs landing the same D-NNN.
 
 ## Glossary additions
 
@@ -158,4 +158,4 @@ type RunContext struct {
 - [ ] **Concurrent-reuse test passes** — N≥100 concurrent runs against a single shared `ReActPlanner` + disjoint `RunContext.RepairCounters`. The d025_test extension is mandatory.
 - [ ] Integration test — required (Deps lists 44 + 05). Real Phase 44 + real Phase 05 bus assertion.
 - [ ] Glossary updated (Repair guidance + Planning hints).
-- [ ] `docs/decisions.md` D-105 entry filed.
+- [ ] `docs/decisions.md` D-145 entry filed.
