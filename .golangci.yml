@@ -43,6 +43,16 @@ linters-settings:
     comparison: true
   govet:
     enable-all: true
+    # fieldalignment + shadow are deliberately disabled (D-141).
+    # fieldalignment: its autofixer strips struct-field doc comments
+    # when reordering fields, and the memory-packing win is negligible
+    # on JSON-serialised Protocol wire structs — it fights logical
+    # field grouping for no runtime benefit. shadow: flags idiomatic
+    # `err :=` shadowing; the mechanical `:=`→`=` "fix" reintroduces
+    # data races inside goroutine bodies. Both are noise, not quality.
+    disable:
+      - fieldalignment
+      - shadow
   revive:
     severity: warning
     rules:
