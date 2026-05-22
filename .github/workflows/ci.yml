@@ -65,12 +65,15 @@ jobs:
       # actually RUNS. Before Phase 80 the binary was never installed
       # in CI, so `make lint`'s `command -v` guard silently skipped —
       # the `revive` `exported` / `package-comments` documentation-
-      # hygiene gate was unenforced. The pinned version matches the
-      # Makefile's stated v1.61+ requirement.
+      # hygiene gate was unenforced. golangci-lint is installed via
+      # `go install` (NOT a prebuilt release download): the prebuilt
+      # v1.64.8 release binary is built with go1.24, and golangci-lint
+      # refuses to load a config whose target Go (1.26) is newer than
+      # its own build-Go. `go install` compiles it here with the
+      # runner's go1.26 toolchain, so build-Go == target-Go.
       - name: Install golangci-lint
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v1.64.8
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # `make lint-revive` runs ONLY the `revive` linter via
       # .golangci-revive.yml — the narrow, binding Phase 80 acceptance
