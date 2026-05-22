@@ -331,7 +331,7 @@ func TestConcurrentReuse_Tracer(t *testing.T) {
 	const n = 150
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			q := identity.Quadruple{

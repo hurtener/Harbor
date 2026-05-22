@@ -230,8 +230,8 @@ func TestIdentity_RaceFreeConcurrentDerivedCtx(t *testing.T) {
 	start := make(chan struct{})
 
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			<-start

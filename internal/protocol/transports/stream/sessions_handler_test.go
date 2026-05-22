@@ -253,13 +253,13 @@ func TestSessionsHandler_ConcurrentReuse(t *testing.T) {
 	h := newSessionsHandler(t)
 	const N = 120
 	done := make(chan int, N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			code, _ := doSessionsRequest(t, h, "list", `{"filter":{}}`, &sessionsHandlerID, nil)
 			done <- code
 		}()
 	}
-	for i := 0; i < N; i++ {
+	for i := range N {
 		if code := <-done; code != http.StatusOK {
 			t.Errorf("concurrent list request %d: code = %d, want 200", i, code)
 		}

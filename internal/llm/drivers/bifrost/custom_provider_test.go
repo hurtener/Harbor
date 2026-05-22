@@ -397,7 +397,7 @@ func TestConcurrent_D025_Account_Mixed(t *testing.T) {
 		ok atomic.Int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			cfg, err := a.GetConfigForProvider(bfschemas.OpenAI)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"context"
+
 	"github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"

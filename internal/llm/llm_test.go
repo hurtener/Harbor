@@ -73,10 +73,10 @@ func makeSnapshot(model string, ctxTokens int) llm.ConfigSnapshot {
 	}
 }
 
-// withIdentity attaches a deterministic test identity to ctx.
-func withIdentity(t *testing.T, ctx context.Context, tenant, user, session string) context.Context {
+// withIdentity attaches the deterministic test identity (T/U/S) to ctx.
+func withIdentity(t *testing.T, ctx context.Context) context.Context {
 	t.Helper()
-	c, err := identity.With(ctx, identity.Identity{TenantID: tenant, UserID: user, SessionID: session})
+	c, err := identity.With(ctx, identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"})
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestComplete_TextRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	text := "hello world"
 	resp, err := client.Complete(ctx, llm.CompleteRequest{
 		Model:    "m",
@@ -168,7 +168,7 @@ func TestComplete_RejectsUnsupportedModel(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	text := "x"
 	_, err = client.Complete(ctx, llm.CompleteRequest{
 		Model:    "unknown-model",
@@ -188,7 +188,7 @@ func TestComplete_RejectsInvalidContent(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 
 	// Both Text and Parts set → invalid.
 	text := "x"
@@ -229,7 +229,7 @@ func TestComplete_CloseIdempotentAndPostClose(t *testing.T) {
 	if err := client.Close(context.Background()); err != nil {
 		t.Errorf("Close 2 (idempotent): %v", err)
 	}
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	text := "x"
 	_, err = client.Complete(ctx, llm.CompleteRequest{
 		Model:    "m",

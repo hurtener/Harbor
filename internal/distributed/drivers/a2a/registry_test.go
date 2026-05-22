@@ -109,7 +109,7 @@ func TestRegistry_ConcurrentResolve_NoRace(t *testing.T) {
 	const N = 128
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			if routes, err := reg.Resolve("echo"); err != nil || len(routes) == 0 {

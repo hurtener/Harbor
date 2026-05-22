@@ -142,7 +142,7 @@ func TestAuthHandler_ConcurrentReuse(t *testing.T) {
 	const n = 120
 	var wg sync.WaitGroup
 	codes := make([]int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

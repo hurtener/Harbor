@@ -79,7 +79,7 @@ func TestHealth_CounterArithmetic(t *testing.T) {
 	// counter picks them up. The driver fails closed AND emits the
 	// event (D-033).
 	const n = 4
-	for i := 0; i < n; i++ {
+	for range n {
 		_ = h.store.AddTurn(context.Background(),
 			identity.Quadruple{Identity: identity.Identity{TenantID: id.TenantID, UserID: id.UserID}},
 			memory.ConversationTurn{})
@@ -103,7 +103,7 @@ func TestHealth_RecoveryDroppedCounter(t *testing.T) {
 	// Emit M memory.recovery_dropped events directly onto the bus
 	// (D-035). EmitRecoveryDropped is the shipped helper.
 	const m = 3
-	for i := 0; i < m; i++ {
+	for i := range m {
 		if err := memory.EmitRecoveryDropped(context.Background(), h.bus, id, "backlog_overflow"); err != nil {
 			t.Fatalf("EmitRecoveryDropped[%d]: %v", i, err)
 		}

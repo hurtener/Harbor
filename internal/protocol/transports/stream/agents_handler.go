@@ -376,7 +376,7 @@ func writeAgentsJSON(w http.ResponseWriter, logger *slog.Logger, r *http.Request
 func writeAgentsError(w http.ResponseWriter, code protoerrors.Code, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&protoerrors.Error{
+	_ = json.NewEncoder(w).Encode(&protoerrors.Error{ //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 		Code:    code,
 		Message: message,
 	})

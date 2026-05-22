@@ -44,11 +44,11 @@ func newArtifactStore(t *testing.T) artifacts.ArtifactStore {
 
 // newPauseListHandler builds a PauseListHandler over a fresh Coordinator
 // + in-mem ArtifactStore; returns both so the test can seed pauses.
-func newPauseListHandler(t *testing.T, opts ...stream.PauseListOption) (*stream.PauseListHandler, pauseresume.Coordinator) {
+func newPauseListHandler(t *testing.T) (*stream.PauseListHandler, pauseresume.Coordinator) {
 	t.Helper()
 	coord := pauseresume.New()
 	store := newArtifactStore(t)
-	h, err := stream.NewPauseListHandler(coord, store, heavyThresholdBytes, opts...)
+	h, err := stream.NewPauseListHandler(coord, store, heavyThresholdBytes)
 	if err != nil {
 		t.Fatalf("NewPauseListHandler: %v", err)
 	}

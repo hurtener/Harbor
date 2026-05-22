@@ -242,7 +242,7 @@ func TestSummarize_ConcurrentReuse(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -268,7 +268,7 @@ func TestSummarize_ConcurrentReuse(t *testing.T) {
 	for _, c := range client.seenCalls() {
 		seen[c.id.SessionID]++
 	}
-	for i := 0; i < N; i++ {
+	for i := range N {
 		session := fmt.Sprintf("s-%d", i)
 		if seen[session] != 1 {
 			t.Errorf("session %s observed %d times; want exactly 1", session, seen[session])

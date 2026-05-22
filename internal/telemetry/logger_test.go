@@ -56,12 +56,11 @@ func validCfg() config.TelemetryConfig {
 	}
 }
 
-func newLogger(t *testing.T, opts ...telemetry.Option) (*telemetry.Logger, *lockedBuf) {
+func newLogger(t *testing.T) (*telemetry.Logger, *lockedBuf) {
 	t.Helper()
 	red := auditpatterns.New()
 	buf := &lockedBuf{}
-	all := append([]telemetry.Option{telemetry.WithWriter(buf)}, opts...)
-	l, err := telemetry.New(validCfg(), red, all...)
+	l, err := telemetry.New(validCfg(), red, telemetry.WithWriter(buf))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -488,8 +487,8 @@ func TestLogger_ConcurrentReuse_ReuseContract(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{
@@ -498,7 +497,7 @@ func TestLogger_ConcurrentReuse_ReuseContract(t *testing.T) {
 				SessionID: fmt.Sprintf("s-%d", i),
 			}
 			derived := l.WithIdentity(id)
-			for j := 0; j < 8; j++ {
+			for j := range 8 {
 				derived.Info(context.Background(), "msg",
 					slog.Int("iter", j),
 					slog.String("session_marker", id.SessionID))

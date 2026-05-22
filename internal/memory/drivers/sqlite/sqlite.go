@@ -162,9 +162,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 }
 
 func init() {
-	memory.Register(driverName, func(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
-		return New(cfg, deps)
-	})
+	memory.Register(driverName, New)
 }
 
 // driver is the SQLite-backed MemoryStore. It is safe for concurrent
@@ -324,7 +322,7 @@ func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory
 		// Decode + reject anything that carries actual turns.
 		var rec memory.Record
 		if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-			return fmt.Errorf("%w: %v", memory.ErrInvalidSnapshot, err)
+			return fmt.Errorf("%w: %w", memory.ErrInvalidSnapshot, err)
 		}
 		if rec.Strategy != memory.StrategyNone {
 			return fmt.Errorf("%w: record strategy=%q", memory.ErrInvalidSnapshot, rec.Strategy)

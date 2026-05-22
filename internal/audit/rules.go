@@ -36,13 +36,13 @@ const MaxDepth = 64
 // tag names). The list is intentionally short: it covers the shapes
 // every downstream subsystem agreed are universally sensitive.
 var (
-	apiKeyAliases       = []string{"api_key", "apikey", "api-key", "x-api-key"}
-	bearerKeyAliases    = []string{"bearer", "bearer_token"}
-	authorizationKeys   = []string{"authorization", "authorisation"}
-	passwordAliases     = []string{"password", "passwd", "pass"}
-	secretAliases       = []string{"secret", "client_secret", "private_key", "signing_key"}
-	tokenAliases        = []string{"token", "access_token", "refresh_token", "id_token"}
-	cookieAliases       = []string{"cookie", "set-cookie"}
+	apiKeyAliases     = []string{"api_key", "apikey", "api-key", "x-api-key"}
+	bearerKeyAliases  = []string{"bearer", "bearer_token"}
+	authorizationKeys = []string{"authorization", "authorisation"}
+	passwordAliases   = []string{"password", "passwd", "pass"}
+	secretAliases     = []string{"secret", "client_secret", "private_key", "signing_key"}
+	tokenAliases      = []string{"token", "access_token", "refresh_token", "id_token"}
+	cookieAliases     = []string{"cookie", "set-cookie"}
 )
 
 // keyRule redacts values whose containing key (map key OR struct
@@ -84,11 +84,11 @@ func (r *regexValueRule) Apply(_ context.Context, payload any) (any, error) {
 //
 // Rules in order:
 //
-//   1. api_key, password, secret, token, cookie, authorization,
-//      bearer (key-based redaction).
-//   2. bearer_in_value (regex over string values for embedded
-//      `Bearer xxx` credentials).
-//   3. multimodal (inline DataURL / base64 image|audio|file content).
+//  1. api_key, password, secret, token, cookie, authorization,
+//     bearer (key-based redaction).
+//  2. bearer_in_value (regex over string values for embedded
+//     `Bearer xxx` credentials).
+//  3. multimodal (inline DataURL / base64 image|audio|file content).
 //
 // Each rule's Name() is enumerable via patterns.Driver.Names() (the
 // production driver shipped in this phase).
@@ -195,7 +195,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 	case reflect.Struct:
 		t := rv.Type()
 		out := make(map[string]any, t.NumField())
-		for i := 0; i < t.NumField(); i++ {
+		for i := range t.NumField() {
 			f := t.Field(i)
 			if !f.IsExported() {
 				continue
@@ -244,7 +244,7 @@ func reflectiveRedactKeys(v any, aliases []string, depth int) (any, error) {
 		return out, nil
 	case reflect.Slice, reflect.Array:
 		out := make([]any, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
+		for i := range rv.Len() {
 			r, err := walkRedactKeys(rv.Index(i).Interface(), aliases, depth+1)
 			if err != nil {
 				return nil, err
@@ -339,7 +339,7 @@ func reflectiveReplaceStrings(v any, replace func(string) string, depth int) (an
 	case reflect.Struct:
 		t := rv.Type()
 		out := make(map[string]any, t.NumField())
-		for i := 0; i < t.NumField(); i++ {
+		for i := range t.NumField() {
 			f := t.Field(i)
 			if !f.IsExported() {
 				continue
@@ -367,7 +367,7 @@ func reflectiveReplaceStrings(v any, replace func(string) string, depth int) (an
 		return out, nil
 	case reflect.Slice, reflect.Array:
 		out := make([]any, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
+		for i := range rv.Len() {
 			r, err := walkReplaceStrings(rv.Index(i).Interface(), replace, depth+1)
 			if err != nil {
 				return nil, err

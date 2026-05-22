@@ -30,7 +30,7 @@ func TestMaterialize_OversizeDataURLBecomesArtifact(t *testing.T) {
 
 	sub := subscribeBus(t, deps.Bus, llm.EventTypeImageMaterialized)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	const size = 40 * 1024 // > 32 KiB threshold
 	req := llm.CompleteRequest{
 		Model: "m",
@@ -98,7 +98,7 @@ func TestMaterialize_BelowThreshold_NoOp(t *testing.T) {
 
 	sub := subscribeBus(t, deps.Bus, llm.EventTypeImageMaterialized)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	req := llm.CompleteRequest{
 		Model: "m",
 		Messages: []llm.ChatMessage{{
@@ -133,7 +133,7 @@ func TestMaterialize_ExistingArtifactNoOp(t *testing.T) {
 
 	sub := subscribeBus(t, deps.Bus, llm.EventTypeImageMaterialized)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	stub := &llm.ArtifactStub{Ref: "ref-existing", MIME: "image/png", SizeBytes: 1234}
 	req := llm.CompleteRequest{
 		Model: "m",

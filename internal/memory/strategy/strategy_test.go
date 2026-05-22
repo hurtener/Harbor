@@ -48,7 +48,6 @@ func TestValidateHealthTransition_Matrix(t *testing.T) {
 	}
 	for _, p := range allHealths {
 		for _, n := range allHealths {
-			p, n := p, n
 			t.Run(string(p)+"_to_"+string(n), func(t *testing.T) {
 				_, ok := validEdges[[2]memory.Health{p, n}]
 				err := memory.ValidateHealthTransition(p, n)
@@ -92,7 +91,6 @@ func TestNew_RoutesByStrategy(t *testing.T) {
 		"unknown":         {s: memory.Strategy("bogus"), want: false},
 	}
 	for name, tc := range cases {
-		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			exec, err := strategy.New(tc.s, deps)
 			if tc.want {
@@ -100,11 +98,9 @@ func TestNew_RoutesByStrategy(t *testing.T) {
 					t.Fatalf("New(%q): %v", tc.s, err)
 				}
 				_ = exec.Close(context.Background())
-			} else {
-				if err == nil {
-					_ = exec.Close(context.Background())
-					t.Fatalf("New(%q): err=nil, want non-nil", tc.s)
-				}
+			} else if err == nil {
+				_ = exec.Close(context.Background())
+				t.Fatalf("New(%q): err=nil, want non-nil", tc.s)
 			}
 		})
 	}
@@ -178,7 +174,7 @@ func TestTruncation_AddTurn_RoundTrip(t *testing.T) {
 	}
 	defer exec.Close(context.Background())
 	ctx := context.Background()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := exec.AddTurn(ctx, tripleA(), memory.ConversationTurn{
 			UserMessage:       "u",
 			AssistantResponse: "a",
@@ -227,8 +223,8 @@ func TestTruncation_Concurrent_NoRace(t *testing.T) {
 	var wg sync.WaitGroup
 	var errCount atomic.Int64
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
@@ -239,7 +235,7 @@ func TestTruncation_Concurrent_NoRace(t *testing.T) {
 					SessionID: "s" + intToStr(i),
 				},
 			}
-			for j := 0; j < opsPerGo; j++ {
+			for j := range opsPerGo {
 				switch j % 4 {
 				case 0:
 					if err := exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "x"}); err != nil {
@@ -302,7 +298,7 @@ func TestRollingSummary_FailureDegradesAndEmits(t *testing.T) {
 	id := tripleA()
 	// Push enough turns to spill into pending repeatedly and
 	// exhaust the retry budget.
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		if err := exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"}); err != nil {
 			t.Fatalf("AddTurn %d: %v", i, err)
 		}
@@ -373,7 +369,7 @@ func TestRollingSummary_BacklogBound(t *testing.T) {
 	// `pending` queue contents at AddTurn time; we need
 	// (retryAttempts + backlogMax + extra) failing AddTurns to see
 	// the drop emit.
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		_ = exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"})
 	}
 
@@ -412,7 +408,7 @@ func TestRollingSummary_HappyPath(t *testing.T) {
 	defer exec.Close(context.Background())
 	ctx := context.Background()
 	id := tripleA()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if err := exec.AddTurn(ctx, id, memory.ConversationTurn{
 			UserMessage:       "u" + intToStr(i),
 			AssistantResponse: "a" + intToStr(i),
@@ -452,8 +448,8 @@ func TestRollingSummary_Concurrent_NoRace(t *testing.T) {
 	var wg sync.WaitGroup
 	var errCount atomic.Int64
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
@@ -464,7 +460,7 @@ func TestRollingSummary_Concurrent_NoRace(t *testing.T) {
 					SessionID: "s" + intToStr(i),
 				},
 			}
-			for j := 0; j < opsPerGo; j++ {
+			for j := range opsPerGo {
 				switch j % 5 {
 				case 0:
 					if err := exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "x"}); err != nil {

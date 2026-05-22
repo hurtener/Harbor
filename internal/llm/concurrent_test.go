@@ -60,8 +60,8 @@ func TestConcurrent_D025_LLMClient(t *testing.T) {
 		issued atomic.Int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{

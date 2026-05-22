@@ -134,7 +134,7 @@ func validateRequest(req CompleteRequest) error {
 	}
 	for mi, m := range req.Messages {
 		if err := validateContent(m.Content); err != nil {
-			return fmt.Errorf("Messages[%d]: %w", mi, err)
+			return fmt.Errorf("messages[%d]: %w", mi, err)
 		}
 	}
 	return nil
@@ -234,7 +234,7 @@ func emitContextLeak(ctx context.Context, bus events.EventBus, id identity.Quadr
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit — never block the request path on the bus (see func doc).
 		Type:       EventTypeContextLeak,
 		Identity:   id,
 		OccurredAt: time.Now(),
@@ -255,7 +255,7 @@ func emitContextWindowExceeded(ctx context.Context, bus events.EventBus, id iden
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit — never block the request path on the bus (see func doc).
 		Type:       EventTypeContextWindowExceeded,
 		Identity:   id,
 		OccurredAt: time.Now(),

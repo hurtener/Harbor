@@ -46,7 +46,7 @@ type memHarness struct {
 // the memory strategy; budgetTokens bounds the truncation window. The
 // EventBus is constructed with a non-zero replay buffer so the events
 // Aggregator's Replayer surface works.
-func newMemHarness(t *testing.T, strat memory.Strategy, budgetTokens int) memHarness {
+func newMemHarness(t *testing.T, start memory.Strategy, budgetTokens int) memHarness {
 	t.Helper()
 	red, err := audit.Open(context.Background(), config.AuditConfig{})
 	if err != nil {
@@ -73,11 +73,11 @@ func newMemHarness(t *testing.T, strat memory.Strategy, budgetTokens int) memHar
 
 	store, err := memoryinmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
-		Strategy:     strat,
+		Strategy:     start,
 		BudgetTokens: budgetTokens,
 	}, memory.Deps{State: stateStore, Bus: bus}, memoryinmem.Options{})
 	if err != nil {
-		t.Fatalf("memoryinmem.New(%q): %v", strat, err)
+		t.Fatalf("memoryinmem.New(%q): %v", start, err)
 	}
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
@@ -96,7 +96,7 @@ func newMemHarness(t *testing.T, strat memory.Strategy, budgetTokens int) memHar
 // substring.
 func seedTurns(t *testing.T, h memHarness, id identity.Quadruple, n int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		turn := memory.ConversationTurn{
 			UserMessage:       "question " + strings.Repeat("q", i),
 			AssistantResponse: "answer " + strings.Repeat("a", i),

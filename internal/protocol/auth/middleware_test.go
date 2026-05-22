@@ -254,7 +254,7 @@ func TestMiddleware_AuditOnRejection_DoesNotLeakToken(t *testing.T) {
 
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	// Build a real validator with a recording logger to assert the
 	// token never appears in the audit emit.

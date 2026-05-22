@@ -63,7 +63,7 @@ func openSSEStream(ctx context.Context, httpc *http.Client, endpoint, method str
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Drain & close to release the connection promptly.
-		bod, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		bod, _ := io.ReadAll(io.LimitReader(resp.Body, 256)) //nolint:errcheck // best-effort drain of an error-response body for a diagnostic snippet; a read error just yields a shorter snippet.
 		_ = resp.Body.Close()
 		cancel()
 		return nil, fmt.Errorf("a2a: sse open: status=%d body=%q", resp.StatusCode, snippet(bod, 256))
@@ -186,11 +186,11 @@ func (s *sseStream) Recv(ctx context.Context) (a2a.StreamResponse, error) {
 		var sr a2a.StreamResponse
 		if err := json.Unmarshal([]byte(payload), &sr); err != nil {
 			n := s.frameCount.Add(1)
-			return a2a.StreamResponse{}, fmt.Errorf("%w: frame=%d: %v", ErrSSEStreamMalformed, n, err)
+			return a2a.StreamResponse{}, fmt.Errorf("%w: frame=%d: %w", ErrSSEStreamMalformed, n, err)
 		}
 		if err := sr.Validate(); err != nil {
 			n := s.frameCount.Add(1)
-			return a2a.StreamResponse{}, fmt.Errorf("%w: frame=%d: %v", ErrSSEStreamMalformed, n, err)
+			return a2a.StreamResponse{}, fmt.Errorf("%w: frame=%d: %w", ErrSSEStreamMalformed, n, err)
 		}
 		s.frameCount.Add(1)
 		return sr, nil
@@ -210,7 +210,7 @@ func (s *sseStream) readEvent(ctx context.Context) ([]string, bool, error) {
 		if err := ctx.Err(); err != nil {
 			return data, false, err
 		}
-		line, err := s.br.ReadString('\n')
+		line, err := readBoundedLine(s.br)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if line == "" {
@@ -241,6 +241,31 @@ func (s *sseStream) readEvent(ctx context.Context) ([]string, bool, error) {
 		// event: / id: / retry: labels are advisory; we don't
 		// inspect them — the StreamResponse discriminator is the
 		// load-bearing field.
+	}
+}
+
+// readBoundedLine reads a single SSE line (terminated by '\n') from br,
+// enforcing the sseMaxLineBytes cap so a hostile peer streaming an
+// unterminated line cannot force unbounded buffer growth. The returned
+// line includes any trailing newline (the caller strips CR/LF). On a
+// genuine io.EOF the partial bytes read so far are returned alongside
+// io.EOF, matching bufio.Reader.ReadString semantics. When the cap is
+// exceeded, ErrSSELineTooLong is returned with whatever was buffered.
+func readBoundedLine(br *bufio.Reader) (string, error) {
+	var sb strings.Builder
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			return sb.String(), err
+		}
+		sb.WriteByte(b)
+		if b == '\n' {
+			return sb.String(), nil
+		}
+		if sb.Len() > sseMaxLineBytes {
+			return sb.String(), fmt.Errorf("%w: %d bytes without a newline (cap %d)",
+				ErrSSELineTooLong, sb.Len(), sseMaxLineBytes)
+		}
 	}
 }
 

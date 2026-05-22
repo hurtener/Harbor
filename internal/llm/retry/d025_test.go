@@ -48,7 +48,7 @@ func TestWrap_ConcurrentReuse_D025(t *testing.T) {
 		}
 		return llm.CompleteResponse{Content: orig}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 2})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 2})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	baseline := goroutineBaseline()
@@ -59,7 +59,7 @@ func TestWrap_ConcurrentReuse_D025(t *testing.T) {
 		passCount atomic.Int64
 		failCount atomic.Int64
 	)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenantID := fmt.Sprintf("t-%d", i)
@@ -84,7 +84,7 @@ func TestWrap_ConcurrentReuse_D025(t *testing.T) {
 				}
 				return nil
 			}
-			req := sampleRequest("m", validator)
+			req := sampleRequest(validator)
 			req.Messages[0].Content.Text = &body
 			_, err = client.Complete(ctx, req)
 			if err == nil {

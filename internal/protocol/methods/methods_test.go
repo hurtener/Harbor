@@ -194,7 +194,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodSessionsInspect: "sessions.inspect",
 
 		methods.MethodRunsSetOverrides: "runs.set_overrides",
-		methods.MethodAuthRotateToken: "auth.rotate_token",
+		methods.MethodAuthRotateToken:  "auth.rotate_token",
 	}
 	for m, want := range wireStrings {
 		if string(m) != want {

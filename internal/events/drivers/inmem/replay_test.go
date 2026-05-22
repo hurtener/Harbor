@@ -30,9 +30,9 @@ func replayCfgN(n int) config.EventsConfig {
 
 // newReplayBus returns a bus opened with a non-zero replay buffer
 // and asserts the type assertion to events.Replayer succeeds.
-func newReplayBus(t *testing.T, opts ...inmem.Option) (events.EventBus, events.Replayer) {
+func newReplayBus(t *testing.T) (events.EventBus, events.Replayer) {
 	t.Helper()
-	bus, err := inmem.New(replayCfg(), auditpatterns.New(), opts...)
+	bus, err := inmem.New(replayCfg(), auditpatterns.New())
 	if err != nil {
 		t.Fatalf("inmem.New: %v", err)
 	}
@@ -42,29 +42,6 @@ func newReplayBus(t *testing.T, opts ...inmem.Option) (events.EventBus, events.R
 		t.Fatalf("bus does not implement events.Replayer")
 	}
 	return bus, rp
-}
-
-// publishN emits n runtime.error events for identity id with a fresh
-// payload each time. Returns the highest sequence assigned.
-func publishN(t *testing.T, bus events.EventBus, id identity.Quadruple, n int) uint64 {
-	t.Helper()
-	var lastSeq uint64
-	for i := 0; i < n; i++ {
-		ev := events.Event{
-			Type:     events.EventTypeRuntimeError,
-			Identity: id,
-			Payload:  events.SubscriptionIdleClosedPayload{SubscriberID: uint64(i)},
-		}
-		if err := bus.Publish(context.Background(), ev); err != nil {
-			t.Fatalf("Publish %d: %v", i, err)
-		}
-		// We don't have direct access to the assigned sequence on the
-		// caller side; we infer it from a Subscribe drain in tests
-		// that need it. publishN is used when the caller doesn't
-		// need the value.
-		_ = lastSeq
-	}
-	return lastSeq
 }
 
 // TestReplay_HappyPath_ReturnsRequestedRange exercises the canonical
@@ -83,7 +60,7 @@ func TestReplay_HappyPath_ReturnsRequestedRange(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -128,7 +105,7 @@ func TestReplay_ZeroCursor_ReturnsEntireRing(t *testing.T) {
 	bus, rp := newReplayBus(t)
 	id := mkID(1)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -163,7 +140,7 @@ func TestReplay_HeadCursor_ReturnsNilNil(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -209,7 +186,7 @@ func TestReplay_FilterApplied(t *testing.T) {
 	id := mkID(1)
 
 	// Publish 4 runtime.error events.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -275,7 +252,7 @@ func TestReplay_DisabledByConfig_ErrReplayUnavailable(t *testing.T) {
 // failure: a cursor older than the ring tail returns the sentinel
 // with the (oldest, requested) detail wrapped in the message.
 func TestReplay_RingOverrun_ErrCursorTooOld(t *testing.T) {
-	bus, rp := newReplayBus(t, /* default cap=64 */)
+	bus, rp := newReplayBus(t /* default cap=64 */)
 	id := mkID(1)
 
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
@@ -298,7 +275,7 @@ func TestReplay_RingOverrun_ErrCursorTooOld(t *testing.T) {
 
 	// Publish enough to overrun the ring (capacity 64, so 200
 	// guarantees overrun).
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -388,7 +365,7 @@ func TestReplay_GapFreeWithinRunID(t *testing.T) {
 	idB := identity.Quadruple{Identity: tri, RunID: "rB"}
 
 	// Interleave 10 events of A and 10 of B.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		evA := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: idA,
@@ -460,7 +437,7 @@ func TestReplay_NoDuplicatesWithLiveSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -570,7 +547,7 @@ func TestReplay_CrossTenant_Isolation(t *testing.T) {
 	idB := mkID(2)
 
 	// Interleave 50 events from A and 50 from B.
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		evA := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: idA,
@@ -637,7 +614,7 @@ func TestReplay_ConcurrentReuse_ReuseContract(t *testing.T) {
 
 	// Subscribers — one per tenant.
 	subs := make([]events.Subscription, subscribers)
-	for i := 0; i < subscribers; i++ {
+	for i := range subscribers {
 		id := ids[i%tenants]
 		s, err := bus.Subscribe(context.Background(), events.Filter{
 			Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
@@ -668,12 +645,12 @@ func TestReplay_ConcurrentReuse_ReuseContract(t *testing.T) {
 
 	// Publishers + replayers run concurrently.
 	var wg sync.WaitGroup
-	for p := 0; p < publishers; p++ {
+	for p := range publishers {
 		wg.Add(1)
 		go func(p int) {
 			defer wg.Done()
 			id := ids[p%tenants]
-			for j := 0; j < eventsPerPublisher; j++ {
+			for j := range eventsPerPublisher {
 				ev := events.Event{
 					Type:     events.EventTypeRuntimeError,
 					Identity: id,
@@ -685,12 +662,12 @@ func TestReplay_ConcurrentReuse_ReuseContract(t *testing.T) {
 	}
 
 	replayInconsistencies := atomic.Int64{}
-	for r := 0; r < replayers; r++ {
+	for r := range replayers {
 		wg.Add(1)
 		go func(r int) {
 			defer wg.Done()
 			id := ids[r%tenants]
-			for j := 0; j < 8; j++ {
+			for range 8 {
 				out, err := rp.Replay(context.Background(), events.Cursor{},
 					events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
 				if err != nil && !errors.Is(err, events.ErrBusClosed) {
@@ -744,7 +721,7 @@ func TestReplay_NoGoroutineLeak_AfterClose(t *testing.T) {
 	id := mkID(1)
 
 	// Saturate ring + run a few replays.
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		ev := events.Event{
 			Type:     events.EventTypeRuntimeError,
 			Identity: id,
@@ -752,7 +729,7 @@ func TestReplay_NoGoroutineLeak_AfterClose(t *testing.T) {
 		}
 		_ = bus.Publish(context.Background(), ev)
 	}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_, _ = rp.Replay(context.Background(), events.Cursor{},
 			events.Filter{Tenant: id.TenantID, User: id.UserID, Session: id.SessionID})
 	}
@@ -784,11 +761,11 @@ func TestCursor_OrderingInvariant(t *testing.T) {
 	const goroutines = 8
 	const perGoroutine = 64
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for j := 0; j < perGoroutine; j++ {
+			for j := range perGoroutine {
 				ev := events.Event{
 					Type:     events.EventTypeRuntimeError,
 					Identity: id,

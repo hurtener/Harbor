@@ -66,7 +66,7 @@ func RegisterMockModeCaptured(v bool) {
 // Used only by package-internal tests that exercise both the captured
 // and uncaptured posture paths; the flag is otherwise write-once-at-boot.
 //
-//nolint:unused // referenced by tests in same package.
+
 func resetMockModeCapturedForTesting() {
 	mockModeCaptured.Store(false)
 }

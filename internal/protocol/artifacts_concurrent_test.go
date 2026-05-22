@@ -33,7 +33,7 @@ func TestArtifactsHandler_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 
 	// Pre-seed one artifact per tenant so each goroutine has a row to
 	// find — proves the list is genuinely per-tenant.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		tenant := fmt.Sprintf("tenant-%03d", i)
 		scope := types.ArtifactScope{Tenant: tenant, User: "u1", Session: "s1"}
 		putFixture(t, surface, scope, []byte(fmt.Sprintf("payload for %s", tenant)),
@@ -44,7 +44,7 @@ func TestArtifactsHandler_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -115,7 +115,7 @@ func TestArtifactsHandler_ConcurrentPutGet_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

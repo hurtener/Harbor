@@ -29,7 +29,7 @@ func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quad
 		return
 	}
 	now := time.Now()
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort cost-telemetry emit — must not block the LLM call path.
 		Type:       llm.EventTypeCostRecorded,
 		Identity:   id,
 		OccurredAt: now,

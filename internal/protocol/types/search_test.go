@@ -19,7 +19,7 @@ func TestSearchIndex_IsValid(t *testing.T) {
 		"tools":                    false,
 		"agents":                   false,
 		"flows":                    false,
-		"sessions ":                false,
+		"sessions ":                false, //nolint:gocritic // trailing space is the deliberate test input — whitespace must not match a valid index.
 		"SESSIONS":                 false,
 	}
 	for idx, expected := range want {
@@ -33,10 +33,10 @@ func TestSearchIndex_IsValid(t *testing.T) {
 func TestSearchRequest_PageBounds_Defaults(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name      string
-		in        types.SearchRequest
-		wantPage  int
-		wantSize  int
+		name     string
+		in       types.SearchRequest
+		wantPage int
+		wantSize int
 	}{
 		{"empty", types.SearchRequest{}, 1, types.DefaultSearchPageSize},
 		{"explicit", types.SearchRequest{Page: 3, PageSize: 50}, 3, 50},
@@ -44,7 +44,7 @@ func TestSearchRequest_PageBounds_Defaults(t *testing.T) {
 		{"zero-size", types.SearchRequest{Page: 2, PageSize: 0}, 2, types.DefaultSearchPageSize},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p, s := tc.in.PageBounds()

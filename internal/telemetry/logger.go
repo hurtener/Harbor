@@ -236,7 +236,7 @@ func (l *Logger) emit(ctx context.Context, level slog.Level, msg string, attrs [
 
 	rec := slog.NewRecord(time.Now(), level, redactedMsg, 0)
 	rec.AddAttrs(redactedAttrs...)
-	_ = l.handler.Handle(ctx, rec)
+	_ = l.handler.Handle(ctx, rec) //nolint:errcheck // slog handlers report write failures out-of-band; the stdlib slog.Logger also discards this error.
 	return redactedMsg, redactedAttrs, true
 }
 
@@ -244,7 +244,7 @@ func (l *Logger) emit(ctx context.Context, level slog.Level, msg string, attrs [
 // attrs. Used when audit.Redactor.Redact returns an error.
 func (l *Logger) emitSentinel(ctx context.Context, level slog.Level) {
 	rec := slog.NewRecord(time.Now(), level, redactedSentinel, 0)
-	_ = l.handler.Handle(ctx, rec)
+	_ = l.handler.Handle(ctx, rec) //nolint:errcheck // slog handlers report write failures out-of-band; the stdlib slog.Logger also discards this error.
 }
 
 // emitInternalSentinel writes a canned message that is NOT routed
@@ -255,7 +255,7 @@ func (l *Logger) emitSentinel(ctx context.Context, level slog.Level) {
 func (l *Logger) emitInternalSentinel(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
 	rec := slog.NewRecord(time.Now(), level, msg, 0)
 	rec.AddAttrs(attrs...)
-	_ = l.handler.Handle(ctx, rec)
+	_ = l.handler.Handle(ctx, rec) //nolint:errcheck // slog handlers report write failures out-of-band; the stdlib slog.Logger also discards this error.
 }
 
 // appendCtxIdentity adds tenant_id / user_id / session_id (and run_id
@@ -340,7 +340,7 @@ func (l *Logger) redact(ctx context.Context, msg string, attrs []slog.Attr) (str
 		return "", nil, fmt.Errorf("%w: redactor returned %T for msg, want map[string]any",
 			audit.ErrRedactionFailed, msgAny)
 	}
-	redactedMsg, _ := msgMap["_msg"].(string)
+	redactedMsg, _ := msgMap["_msg"].(string) //nolint:errcheck // a missing/non-string _msg key is deliberately tolerated as empty.
 	return redactedMsg, mapToOrderedAttrs(redactedMap, attrs), nil
 }
 

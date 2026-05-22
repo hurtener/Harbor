@@ -573,16 +573,16 @@ type subscription struct {
 	ch     chan events.Event
 
 	// Drop bookkeeping.
-	mu             sync.Mutex // serialises enqueue against itself
-	dropOpen       bool       // a drop window is in progress
-	dropFromSeq    uint64
-	dropToSeq      uint64
-	dropCount      uint64
-	lastDropEmit   atomic.Int64 // unix nano of last bus.dropped emit
-	lastDrain      atomic.Int64 // unix nano of last successful read
-	cancelled      atomic.Bool
-	cancelledOnce  sync.Once
-	closeChanOnce  sync.Once
+	mu            sync.Mutex // serialises enqueue against itself
+	dropOpen      bool       // a drop window is in progress
+	dropFromSeq   uint64
+	dropToSeq     uint64
+	dropCount     uint64
+	lastDropEmit  atomic.Int64 // unix nano of last bus.dropped emit
+	lastDrain     atomic.Int64 // unix nano of last successful read
+	cancelled     atomic.Bool
+	cancelledOnce sync.Once
+	closeChanOnce sync.Once
 }
 
 // Events implements events.Subscription. Returns s.ch directly so

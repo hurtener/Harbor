@@ -419,8 +419,8 @@ func Run(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errs atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
+
 			go func() {
 				defer wg.Done()
 				ctx := context.Background()
@@ -435,7 +435,7 @@ func Run(t *testing.T, factory Factory) {
 				// iteration so the conformance gate covers every
 				// method's concurrent-correctness contract — Phase 15
 				// SQLite + Phase 16 Postgres inherit this.
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					eventID := state.EventID(fmt.Sprintf("ev-%d-%d", i, j))
 					rec := state.StateRecord{
 						ID:       eventID,
@@ -494,13 +494,15 @@ func Run(t *testing.T, factory Factory) {
 		// kicked in (there are none for InMem; future drivers may
 		// spin pumps).
 		ctx := context.Background()
-		for i := 0; i < 8; i++ {
-			_ = s.Save(ctx, state.StateRecord{
+		for i := range 8 {
+			if err := s.Save(ctx, state.StateRecord{
 				ID:       state.EventID(fmt.Sprintf("leak-%02d", i)),
 				Identity: tripleA(),
 				Kind:     "task.checkpoint",
 				Bytes:    []byte("x"),
-			})
+			}); err != nil {
+				t.Fatalf("warm-up Save(%d): %v", i, err)
+			}
 		}
 		if err := s.Close(ctx); err != nil {
 			t.Fatalf("Close: %v", err)

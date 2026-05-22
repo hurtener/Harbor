@@ -213,7 +213,7 @@ func TestAggregate_RejectsBadWindow(t *testing.T) {
 		{"non-dividing pair", prototypes.EventAggregateRequest{Window: time.Hour, Bucket: 7 * time.Minute}},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := agg.Aggregate(context.Background(), tc.req)
@@ -311,12 +311,12 @@ func TestAggregate_ConcurrentReuse(t *testing.T) {
 		count  int64
 	}
 	sigs := make([]tenantSig, tenantCount)
-	for i := 0; i < tenantCount; i++ {
+	for i := range tenantCount {
 		t.Helper()
 		tenant := "tenant-" + string(rune('A'+i))
 		// Publish i+1 events for tenant i, so a tenant=A filter returns 1,
 		// tenant=B returns 2, etc.
-		for j := 0; j < i+1; j++ {
+		for j := range i + 1 {
 			publishEvent(t, bus, events.EventTypeRuntimeError, tenant, "u", "s",
 				windowStart.Add(time.Duration(j+1)*time.Minute))
 		}
@@ -335,12 +335,12 @@ func TestAggregate_ConcurrentReuse(t *testing.T) {
 
 	const concurrency = 128 // > 100 per D-025
 	var (
-		wg      sync.WaitGroup
+		wg       sync.WaitGroup
 		failures atomic.Int64
 	)
 	wg.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
-		i := i
+	for i := range concurrency {
+
 		go func() {
 			defer wg.Done()
 			sig := sigs[i%tenantCount]

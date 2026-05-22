@@ -7,6 +7,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/distributed"
+
 	// Pull in the loopback driver to register itself.
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
 )

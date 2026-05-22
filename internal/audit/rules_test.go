@@ -227,7 +227,7 @@ func TestRedact_DepthCapTriggersError(t *testing.T) {
 	// Build a payload deeper than MaxDepth via a chain of nested maps.
 	deep := map[string]any{}
 	cur := deep
-	for i := 0; i < audit.MaxDepth+10; i++ {
+	for range audit.MaxDepth + 10 {
 		next := map[string]any{}
 		cur["next"] = next
 		cur = next

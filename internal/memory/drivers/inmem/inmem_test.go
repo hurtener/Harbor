@@ -34,7 +34,7 @@ func TestInMem_ConformanceSuite(t *testing.T) {
 		memory.StrategyRollingSummary,
 	}
 	for _, s := range strategies {
-		s := s
+
 		t.Run(string(s), func(t *testing.T) {
 			conformancetest.Run(t, func() conformancetest.Harness {
 				return newHarness(t, s)

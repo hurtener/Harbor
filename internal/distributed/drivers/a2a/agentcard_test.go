@@ -46,7 +46,7 @@ func TestAgentCard_TTLExpiry(t *testing.T) {
 
 	// Force fetches by varying the alias URL between calls — each
 	// alias triggers its own cache slot.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		alias := mock.URL() + "/v" + string(rune('A'+i))
 		tr := newWireTransportWithAlias(t, mock, alias)
 		ctx := ctxWithIdentity(context.Background(), "t", "u", "s")

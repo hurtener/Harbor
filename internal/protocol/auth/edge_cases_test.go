@@ -33,7 +33,7 @@ func (failingRedactor) Redact(_ context.Context, _ any) (any, error) {
 func TestValidate_AuditPath_RedactorFailure_EmitsBareReason(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	rec := &recordingLogger{}
 	v, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),
@@ -75,7 +75,7 @@ func TestValidate_WithRedactor_NilRedactor_FailsLoud(t *testing.T) {
 	// production defaults on operator-facing seams").
 	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	_, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),
 		auth.WithRedactor(nil),
@@ -91,7 +91,7 @@ func TestValidate_WithRedactor_RealRedactor_RedactsPayload(t *testing.T) {
 	// option end-to-end.
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	// passthroughRedactor mirrors what audit/drivers/noop does — it
 	// exists so the WithRedactor branch is covered with a non-nil
@@ -135,7 +135,7 @@ var _ audit.Redactor = passthroughRedactor{}
 func TestValidate_ScopesShapes_Comprehensive(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -172,7 +172,7 @@ func TestValidate_ScopesShapes_Comprehensive(t *testing.T) {
 func TestValidate_AudienceShapes_Comprehensive(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys,
 		auth.WithAudience("harbor-runtime"),
 		auth.WithClock(func() time.Time { return fixedNow }),
@@ -234,7 +234,7 @@ func TestMiddleware_ExtractBearer_BearerOnly_NoSpace_Rejected(t *testing.T) {
 func TestValidate_KIDHeaderMissing_RejectedAsUnknownKey(t *testing.T) {
 	_, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)

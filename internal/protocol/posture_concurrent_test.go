@@ -49,12 +49,12 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 		Drivers: func() []types.SubsystemDriver {
 			return []types.SubsystemDriver{{Subsystem: "state", Driver: "inmem"}}
 		},
-		Metrics:     func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
-		Governance:  newPostureGovernance(),
-		LLM:         newPostureLLM(),
-		Redactor:    patterns.New(),
-		Bus:         newPostureBus(t),
-		InstanceID:  "inst-concurrent",
+		Metrics:    func(context.Context) types.MetricsSnapshot { return types.MetricsSnapshot{} },
+		Governance: newPostureGovernance(),
+		LLM:        newPostureLLM(),
+		Redactor:   patterns.New(),
+		Bus:        newPostureBus(t),
+		InstanceID: "inst-concurrent",
 	})
 	if err != nil {
 		t.Fatalf("NewPostureSurface: %v", err)
@@ -66,7 +66,7 @@ func TestConcurrentReuse_PostureSurface(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n*5)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

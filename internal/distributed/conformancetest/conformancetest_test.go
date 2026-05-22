@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/audit"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/distributed"
@@ -17,7 +16,7 @@ import (
 
 // freshDeps constructs a fresh EventBus + Dependencies wrapper for a
 // single test invocation. The EventBus is closed by the cleanup.
-func freshDeps(t *testing.T) (events.EventBus, audit.Redactor, distributed.Dependencies, func()) {
+func freshDeps(t *testing.T) (events.EventBus, distributed.Dependencies, func()) {
 	t.Helper()
 	red := auditpatterns.New()
 	eb, err := eventsinmem.New(config.EventsConfig{
@@ -38,12 +37,12 @@ func freshDeps(t *testing.T) (events.EventBus, audit.Redactor, distributed.Depen
 	cleanup := func() {
 		_ = eb.Close(context.Background())
 	}
-	return eb, red, deps, cleanup
+	return eb, deps, cleanup
 }
 
 func TestConformance_Bus_Loopback(t *testing.T) {
 	conformancetest.RunBus(t, func(t *testing.T) (distributed.MessageBus, events.EventBus, func()) {
-		eb, _, deps, evCleanup := freshDeps(t)
+		eb, deps, evCleanup := freshDeps(t)
 		bus, err := loopback.NewBus(deps)
 		if err != nil {
 			evCleanup()
@@ -59,7 +58,7 @@ func TestConformance_Bus_Loopback(t *testing.T) {
 
 func TestConformance_RemoteTransport_Loopback(t *testing.T) {
 	conformancetest.RunRemoteTransport(t, func(t *testing.T) (distributed.RemoteTransport, conformancetest.AgentBinding, func()) {
-		_, _, deps, evCleanup := freshDeps(t)
+		_, deps, evCleanup := freshDeps(t)
 		rt, err := loopback.NewRemoteTransport(deps)
 		if err != nil {
 			evCleanup()

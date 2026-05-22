@@ -37,7 +37,7 @@ func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.method), func(t *testing.T) {
 			fx := newSurfaceFixture(t)
-			run := testRun("tenant-a", "run-"+string(tc.method))
+			run := testRun("run-" + string(tc.method))
 			inbox, err := fx.steering.Open(run)
 			if err != nil {
 				t.Fatalf("steering.Open: %v", err)
@@ -100,7 +100,7 @@ func TestDispatch_AllNineControls_RoundTrip(t *testing.T) {
 // test proves the surface does not add a stricter check.
 func TestDispatch_AdminSatisfiesLowerScopes(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	run := testRun("tenant-a", "run-adminlow")
+	run := testRun("run-adminlow")
 	if _, err := fx.steering.Open(run); err != nil {
 		t.Fatalf("steering.Open: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestDispatch_AdminSatisfiesLowerScopes(t *testing.T) {
 // gate (CLAUDE.md §6). Two runs in the same session get distinct inboxes.
 func TestDispatch_PerRunIsolation(t *testing.T) {
 	fx := newSurfaceFixture(t)
-	runA := testRun("tenant-a", "run-A")
-	runB := testRun("tenant-a", "run-B")
+	runA := testRun("run-A")
+	runB := testRun("run-B")
 	inboxA, err := fx.steering.Open(runA)
 	if err != nil {
 		t.Fatalf("steering.Open(A): %v", err)

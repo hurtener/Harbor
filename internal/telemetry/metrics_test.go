@@ -305,7 +305,7 @@ func TestConcurrentReuse_MetricsRegistry(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			// Goroutine-unique identity (must NOT reach a label) and
@@ -329,7 +329,7 @@ func TestConcurrentReuse_MetricsRegistry(t *testing.T) {
 	got := collectSum(t, reader)
 	// Every goroutine's own series must be present with exactly count 1
 	// — no cross-talk, no lost increments.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		key := fmt.Sprintf("runtime.error|producer-%d|node-%d", i, i)
 		if got[key] != 1 {
 			t.Fatalf("series %q = %d, want 1 (label cross-talk or lost increment)", key, got[key])

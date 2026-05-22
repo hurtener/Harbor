@@ -68,7 +68,7 @@ func (a *Adapter) EmitRuntimeError(ctx context.Context, msg string, attrs []slog
 		Payload:  events.RuntimeErrorPayload{Message: msg, Fields: fields},
 	}
 	// Best-effort. Don't propagate Publish errors back to Logger.
-	_ = a.bus.Publish(ctx, ev)
+	_ = a.bus.Publish(ctx, ev) //nolint:errcheck // best-effort emit — a logger must not fail on bus congestion.
 }
 
 // quadrupleFrom returns a fully-specified Quadruple from ctx, or

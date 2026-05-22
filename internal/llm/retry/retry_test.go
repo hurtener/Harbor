@@ -75,12 +75,12 @@ func testBus(t *testing.T) events.EventBus {
 	return bus
 }
 
-func snapshotWithProfile(model string, profile llm.ModelProfile) llm.ConfigSnapshot {
+func snapshotWithProfile(profile llm.ModelProfile) llm.ConfigSnapshot {
 	return llm.ConfigSnapshot{
 		Driver:               "mock",
 		ContextWindowReserve: 0.05,
 		HeavyOutputThreshold: 32_768,
-		ModelProfiles:        map[string]llm.ModelProfile{model: profile},
+		ModelProfiles:        map[string]llm.ModelProfile{"m": profile},
 	}
 }
 
@@ -94,10 +94,10 @@ func ctxWithIdentity(t *testing.T) context.Context {
 	return ctx
 }
 
-func sampleRequest(model string, validator func(llm.CompleteResponse) error) llm.CompleteRequest {
+func sampleRequest(validator func(llm.CompleteResponse) error) llm.CompleteRequest {
 	t := "hello"
 	return llm.CompleteRequest{
-		Model: model,
+		Model: "m",
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleUser, Content: llm.Content{Text: &t}},
 		},
@@ -113,10 +113,10 @@ func TestWrap_NoValidator_PassesThrough(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Content: "ok"}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
-	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", nil))
+	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest(nil))
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestWrap_ValidatorPasses_NoRetry(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Content: `{"ok":true}`}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	validator := func(r llm.CompleteResponse) error {
@@ -146,7 +146,7 @@ func TestWrap_ValidatorPasses_NoRetry(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", validator))
+	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest(validator))
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestWrap_SingleRetryThenPass(t *testing.T) {
 		}
 		return llm.CompleteResponse{Content: "good"}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	var validatorCalls atomic.Int64
@@ -190,7 +190,7 @@ func TestWrap_SingleRetryThenPass(t *testing.T) {
 		return nil
 	}
 
-	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", validator))
+	resp, err := client.Complete(ctxWithIdentity(t), sampleRequest(validator))
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -246,14 +246,14 @@ func TestWrap_BoundedRetries(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Content: "always bad"}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 2})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 2})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	validator := func(r llm.CompleteResponse) error {
 		return fmt.Errorf("rejected: %s", r.Content)
 	}
 
-	_, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", validator))
+	_, err := client.Complete(ctxWithIdentity(t), sampleRequest(validator))
 	if !errors.Is(err, llm.ErrRetryExhausted) {
 		t.Fatalf("expected ErrRetryExhausted, got %v", err)
 	}
@@ -276,11 +276,11 @@ func TestWrap_DefaultMaxRetries(t *testing.T) {
 		return llm.CompleteResponse{Content: "bad"}, nil
 	})
 	// No MaxRetries → DefaultMaxRetries (1).
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	validator := func(_ llm.CompleteResponse) error { return errors.New("nope") }
-	_, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", validator))
+	_, err := client.Complete(ctxWithIdentity(t), sampleRequest(validator))
 	if !errors.Is(err, llm.ErrRetryExhausted) {
 		t.Fatalf("expected ErrRetryExhausted, got %v", err)
 	}
@@ -298,11 +298,11 @@ func TestWrap_InnerError_NoRetry(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{}, errors.New("transient: connection reset")
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 3})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	validator := func(_ llm.CompleteResponse) error { return errors.New("nope") }
-	_, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", validator))
+	_, err := client.Complete(ctxWithIdentity(t), sampleRequest(validator))
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -322,14 +322,14 @@ func TestWrap_CtxCancel_AbortsLoop(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Content: "x"}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 5})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 5})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	ctx, cancel := context.WithCancel(ctxWithIdentity(t))
 	cancel() // pre-cancel
 
 	validator := func(_ llm.CompleteResponse) error { return errors.New("nope") }
-	_, err := client.Complete(ctx, sampleRequest("m", validator))
+	_, err := client.Complete(ctx, sampleRequest(validator))
 	if err == nil {
 		t.Fatalf("expected ctx error")
 	}
@@ -356,7 +356,7 @@ func TestWrap_Close_Idempotent(t *testing.T) {
 	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{}, nil
 	})
-	cfg := snapshotWithProfile("m", llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 1})
+	cfg := snapshotWithProfile(llm.ModelProfile{ContextWindowTokens: 1000, MaxRetries: 1})
 	client := retry.Wrap(rec, cfg, llm.Deps{Bus: bus})
 
 	if err := client.Close(context.Background()); err != nil {
@@ -365,7 +365,7 @@ func TestWrap_Close_Idempotent(t *testing.T) {
 	if err := client.Close(context.Background()); err != nil {
 		t.Errorf("second Close: %v", err)
 	}
-	_, err := client.Complete(ctxWithIdentity(t), sampleRequest("m", nil))
+	_, err := client.Complete(ctxWithIdentity(t), sampleRequest(nil))
 	if !errors.Is(err, llm.ErrClientClosed) {
 		t.Errorf("expected ErrClientClosed; got %v", err)
 	}

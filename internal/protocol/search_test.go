@@ -135,8 +135,8 @@ func TestSearchSurface_QueryDispatch_ConcurrentSafe(t *testing.T) {
 
 	const N = 32
 	errs := make(chan error, N)
-	for i := 0; i < N; i++ {
-		go func(i int) {
+	for range N {
+		go func() {
 			ctx, _ := identity.With(context.Background(), identity.Identity{
 				TenantID:  "t1",
 				UserID:    "u",
@@ -144,9 +144,9 @@ func TestSearchSurface_QueryDispatch_ConcurrentSafe(t *testing.T) {
 			})
 			_, derr := surf.Dispatch(ctx, methods.MethodSearchQuery, &types.SearchRequest{})
 			errs <- derr
-		}(i)
+		}()
 	}
-	for i := 0; i < N; i++ {
+	for i := range N {
 		if e := <-errs; e != nil {
 			t.Errorf("g%d: %v", i, e)
 		}

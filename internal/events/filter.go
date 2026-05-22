@@ -96,19 +96,21 @@ func FilterFromWire(
 	// multiple is preserved for the aggregator (Filter.Matches is
 	// single-valued, so a multi-user predicate uses Filter.Admin=true at
 	// the bus and the aggregator filters in Go).
-	if len(wire.UserIDs) == 1 {
+	switch len(wire.UserIDs) {
+	case 1:
 		out.Filter.User = wire.UserIDs[0]
-	} else if len(wire.UserIDs) == 0 {
+	case 0:
 		out.Filter.User = callerUser
-	} else {
+	default:
 		out.Filter.User = callerUser
 		out.RequiresAdminScope = true
 	}
-	if len(wire.SessionIDs) == 1 {
+	switch len(wire.SessionIDs) {
+	case 1:
 		out.Filter.Session = wire.SessionIDs[0]
-	} else if len(wire.SessionIDs) == 0 {
+	case 0:
 		out.Filter.Session = callerSession
-	} else {
+	default:
 		out.Filter.Session = callerSession
 		out.RequiresAdminScope = true
 	}

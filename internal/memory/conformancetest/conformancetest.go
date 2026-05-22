@@ -175,7 +175,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Skipf("subtest only runs under StrategyTruncation; got %q", h.strategy())
 		}
 		ctx := context.Background()
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
 				t.Fatalf("AddTurn %d: %v", i, err)
 			}
@@ -205,7 +205,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 		// Push enough turns to overflow the test budget (64 tokens
 		// in newHarness); buffer must drop oldest to fit.
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			if err := h.Store.AddTurn(ctx, tripleA(), bigTurn); err != nil {
 				t.Fatalf("AddTurn %d: %v", i, err)
 			}
@@ -256,7 +256,7 @@ func Run(t *testing.T, factory Factory) {
 		// Add enough turns to spill into pending and trigger
 		// summarisation (FullZoneTurns is 4 inside the strategy
 		// package; 6 AddTurns guarantees spillage).
-		for i := 0; i < 6; i++ {
+		for i := range 6 {
 			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
 				t.Fatalf("AddTurn %d: %v", i, err)
 			}
@@ -279,7 +279,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Skipf("subtest only runs under StrategyRollingSummary; got %q", h.strategy())
 		}
 		ctx := context.Background()
-		for i := 0; i < 6; i++ {
+		for i := range 6 {
 			if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
 				t.Fatalf("AddTurn %d: %v", i, err)
 			}
@@ -426,7 +426,6 @@ func Run(t *testing.T, factory Factory) {
 			},
 		}
 		for name, op := range methods {
-			name, op := name, op
 			t.Run(name, func(t *testing.T) {
 				assertIdentityMandatory(t, factory, name, op)
 			})
@@ -505,8 +504,8 @@ func Run(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errCount atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
+
 			go func() {
 				defer wg.Done()
 				ctx := context.Background()
@@ -517,7 +516,7 @@ func Run(t *testing.T, factory Factory) {
 						SessionID: fmt.Sprintf("s-%d", i),
 					},
 				}
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					switch j % 7 {
 					case 0:
 						if err := h.Store.AddTurn(ctx, ident, sampleTurn()); err != nil {
@@ -645,7 +644,6 @@ func assertIdentityMandatory(
 		},
 	}
 	for name, q := range cases {
-		name, q := name, q
 		t.Run(name, func(t *testing.T) {
 			h := factory()
 			defer h.Cleanup()

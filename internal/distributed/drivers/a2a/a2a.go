@@ -105,11 +105,6 @@ func WithRegistry(r *Registry) Option {
 	return func(cfg *driverConfig) { cfg.registry = r }
 }
 
-// withClock injects a deterministic clock for cache-TTL tests.
-func withClock(now func() time.Time) Option {
-	return func(cfg *driverConfig) { cfg.now = now }
-}
-
 // transport is the wire driver state. Constructed once; safe for N
 // concurrent goroutines against the single instance (D-025).
 type transport struct {
@@ -167,7 +162,7 @@ func New(deps distributed.Dependencies, opts ...Option) (distributed.RemoteTrans
 func buildRegistryFromConfig(peers []config.A2APeerConfig) (*Registry, error) {
 	reg := NewRegistry()
 	for i, p := range peers {
-		if _, err := validatePeerURL(p.URL, p.AllowInsecureLoopback); err != nil {
+		if err := validatePeerURL(p.URL, p.AllowInsecureLoopback); err != nil {
 			return nil, fmt.Errorf("a2a.New: peers[%d]: %w", i, err)
 		}
 		spec := PeerSpec{
@@ -217,7 +212,7 @@ func (t *transport) resolveEndpoint(ctx context.Context, peerURL string) (string
 	if !ok {
 		return "", nil, fmt.Errorf("%w: %q", ErrPeerNotAllowed, canonical)
 	}
-	if _, err := validatePeerURL(canonical, spec.AllowInsecureLoopback); err != nil {
+	if err := validatePeerURL(canonical, spec.AllowInsecureLoopback); err != nil {
 		return "", nil, err
 	}
 	ttl := spec.AgentCardTTL

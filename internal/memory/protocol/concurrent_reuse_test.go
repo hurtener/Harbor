@@ -52,7 +52,7 @@ func TestConcurrentReuse_MemoryListUnderRace(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines)
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()

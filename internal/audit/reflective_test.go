@@ -16,13 +16,13 @@ import (
 // The reflective walker must descend into it and redact the
 // secret-named fields.
 type EventStruct struct {
-	RequestID    string  `json:"request_id"`
-	APIKey       string  `json:"api_key"`
-	Password     string  `json:"password"`
-	NestedStruct *Nested `json:"nested,omitempty"`
-	Items        []Item  `json:"items"`
+	RequestID    string   `json:"request_id"`
+	APIKey       string   `json:"api_key"`
+	Password     string   `json:"password"`
+	NestedStruct *Nested  `json:"nested,omitempty"`
+	Items        []Item   `json:"items"`
 	Tags         []string `json:"tags"`
-	HiddenField  string  // unexported-style: no tag, reflected as "hiddenfield"
+	HiddenField  string   // unexported-style: no tag, reflected as "hiddenfield"
 }
 
 type Nested struct {
@@ -194,9 +194,9 @@ func TestReflective_StringKeyedReflectMap(t *testing.T) {
 	driver := patterns.New()
 	// A typed map[string]string forces the reflective path.
 	in := map[string]string{
-		"api_key":   "real",
-		"hostname":  "example.com",
-		"password":  "hunter2",
+		"api_key":  "real",
+		"hostname": "example.com",
+		"password": "hunter2",
 	}
 	out, err := driver.Redact(context.Background(), in)
 	if err != nil {
@@ -354,8 +354,8 @@ func TestReflectiveReplace_TypedSliceOfStrings(t *testing.T) {
 func TestReflectiveReplace_TypedStringMap(t *testing.T) {
 	driver := patterns.New()
 	in := map[string]string{
-		"clean":   "plain text",
-		"tagged":  "Bearer xyz",
+		"clean":  "plain text",
+		"tagged": "Bearer xyz",
 	}
 	out, err := driver.Redact(context.Background(), in)
 	if err != nil {
@@ -674,8 +674,8 @@ func TestRedact_DataURL_InvalidBase64_FallsBackToEstimation(t *testing.T) {
 // empty map[string]any after redaction, silently losing timestamps.
 func TestRedact_TimeTimePassesThrough(t *testing.T) {
 	type Probe struct {
-		Note string `json:"note"`
-		At   time.Time `json:"at"`
+		Note string        `json:"note"`
+		At   time.Time     `json:"at"`
 		Dur  time.Duration `json:"dur"`
 	}
 	driver := patterns.New()

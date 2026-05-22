@@ -142,7 +142,7 @@ func (a *Aggregator) Aggregate(ctx context.Context, req prototypes.EventAggregat
 	// present even if empty so the rendering client sees a contiguous
 	// time axis without gap arithmetic.
 	buckets := make([]prototypes.EventBucket, bucketCount)
-	for i := 0; i < bucketCount; i++ {
+	for i := range bucketCount {
 		buckets[i] = prototypes.EventBucket{
 			Start:  windowStart.Add(time.Duration(i) * req.Bucket),
 			End:    windowStart.Add(time.Duration(i+1) * req.Bucket),

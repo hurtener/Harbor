@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// validatePeerURL returns the parsed URL when peerURL is acceptable for
-// the A2A wire driver, an error otherwise.
+// validatePeerURL returns nil when peerURL is acceptable for the A2A
+// wire driver, an error otherwise.
 //
 // AGENTS.md §7 (security rule 1-equivalent for outbound calls):
 //   - HTTPS is required by default.
@@ -20,35 +20,35 @@ import (
 //
 // The error wraps ErrInvalidPeerURL or ErrInsecureScheme so callers can
 // errors.Is on either.
-func validatePeerURL(peerURL string, allowInsecureLoopback bool) (*url.URL, error) {
+func validatePeerURL(peerURL string, allowInsecureLoopback bool) error {
 	if peerURL == "" {
-		return nil, fmt.Errorf("%w: empty URL", ErrInvalidPeerURL)
+		return fmt.Errorf("%w: empty URL", ErrInvalidPeerURL)
 	}
 	u, err := url.Parse(peerURL)
 	if err != nil {
-		return nil, fmt.Errorf("%w: parse: %v", ErrInvalidPeerURL, err)
+		return fmt.Errorf("%w: parse: %w", ErrInvalidPeerURL, err)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("%w: missing scheme/host: %q", ErrInvalidPeerURL, peerURL)
+		return fmt.Errorf("%w: missing scheme/host: %q", ErrInvalidPeerURL, peerURL)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
 		// Always accepted.
-		return u, nil
+		return nil
 	case "http":
 		if isLoopbackHost(u.Host) {
-			return u, nil
+			return nil
 		}
 		if allowInsecureLoopback {
 			// Flag is reserved for loopback-shaped peers (e.g. test
 			// servers binding 0.0.0.0 on a docker bridge); a non-
 			// loopback HTTP host is still rejected so an operator
 			// cannot accidentally allow plaintext to a public peer.
-			return nil, fmt.Errorf("%w: AllowInsecureLoopback set but host %q is not loopback", ErrInsecureScheme, u.Host)
+			return fmt.Errorf("%w: AllowInsecureLoopback set but host %q is not loopback", ErrInsecureScheme, u.Host)
 		}
-		return nil, fmt.Errorf("%w: HTTP scheme requires loopback host (got %q) or AllowInsecureLoopback flag", ErrInsecureScheme, u.Host)
+		return fmt.Errorf("%w: HTTP scheme requires loopback host (got %q) or AllowInsecureLoopback flag", ErrInsecureScheme, u.Host)
 	default:
-		return nil, fmt.Errorf("%w: unsupported scheme %q", ErrInsecureScheme, u.Scheme)
+		return fmt.Errorf("%w: unsupported scheme %q", ErrInsecureScheme, u.Scheme)
 	}
 }
 

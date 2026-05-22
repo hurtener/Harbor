@@ -143,7 +143,7 @@ func TestMatchWire_AxisMatrix(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := events.MatchWire(ev, tc.f)
@@ -210,7 +210,7 @@ func TestMatchWire_TimeBounds(t *testing.T) {
 		},
 	}
 	for _, tc := range tests {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ev := makeEvent(events.EventTypeRuntimeError, "t1", "u1", "s1", "r1", tc.at)

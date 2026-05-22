@@ -108,11 +108,11 @@ func newRollingSummaryExec(deps Deps) *rollingSummaryExec {
 func (e *rollingSummaryExec) keyState(id identity.Quadruple) *rollingKeyState {
 	k := quadKeyFor(id)
 	if v, ok := e.keys.Load(k); ok {
-		return v.(*rollingKeyState)
+		return v.(*rollingKeyState) //nolint:errcheck // e.keys only ever stores *rollingKeyState — the assertion cannot fail by construction.
 	}
 	fresh := &rollingKeyState{health: memory.HealthHealthy}
 	actual, _ := e.keys.LoadOrStore(k, fresh)
-	return actual.(*rollingKeyState)
+	return actual.(*rollingKeyState) //nolint:errcheck // e.keys only ever stores *rollingKeyState — the assertion cannot fail by construction.
 }
 
 // loadIfNeeded fills per-key state from the StateStore on first
@@ -173,7 +173,7 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 		}
 		if len(ks.backlog) >= e.recoveryBacklogMax {
 			// Drop oldest; emit recovery_dropped (best-effort).
-			_ = memory.EmitRecoveryDropped(ctx, e.bus, id, "backlog_overflow")
+			_ = memory.EmitRecoveryDropped(ctx, e.bus, id, "backlog_overflow") //nolint:errcheck // best-effort emit — a broken bus must not fail in-band degradation.
 			ks.backlog = ks.backlog[1:]
 		}
 		ks.backlog = append(ks.backlog, req)
@@ -238,6 +238,8 @@ func (e *rollingSummaryExec) AddTurn(ctx context.Context, id identity.Quadruple,
 // godoc + D-035). Returning an error here would force AddTurn to
 // surface the summariser failure to the caller, which is exactly
 // the silent-context-loss path we're closing.
+//
+//nolint:unparam // the always-nil error return is deliberate (see godoc): a non-nil return would force AddTurn to surface the summariser failure, re-opening the silent-context-loss path D-035 closed. The signature keeps the `return e.onSummarizerFailure(...)` call site honest.
 func (e *rollingSummaryExec) onSummarizerFailure(
 	ctx context.Context,
 	ks *rollingKeyState,
@@ -262,7 +264,7 @@ func (e *rollingSummaryExec) onSummarizerFailure(
 		// Drop oldest; emit recovery_dropped (best-effort — if
 		// the bus is broken we don't want to fail the in-band
 		// degradation).
-		_ = memory.EmitRecoveryDropped(ctx, e.bus, id, "backlog_overflow")
+		_ = memory.EmitRecoveryDropped(ctx, e.bus, id, "backlog_overflow") //nolint:errcheck // best-effort emit — a broken bus must not fail in-band degradation.
 		ks.backlog = ks.backlog[1:]
 	}
 	ks.backlog = append(ks.backlog, req)
@@ -286,7 +288,7 @@ func (e *rollingSummaryExec) transitionHealth(ctx context.Context, ks *rollingKe
 		return
 	}
 	ks.health = next
-	_ = memory.EmitHealthChanged(ctx, e.bus, id, prior, next, reason)
+	_ = memory.EmitHealthChanged(ctx, e.bus, id, prior, next, reason) //nolint:errcheck // best-effort emit — a bus failure must not block the in-memory health transition (see func doc).
 }
 
 func (e *rollingSummaryExec) GetLLMContext(ctx context.Context, id identity.Quadruple) (memory.LLMContextPatch, error) {
@@ -431,7 +433,7 @@ func (e *rollingSummaryExec) Restore(ctx context.Context, id identity.Quadruple,
 	}
 	var rec memoryStateRecord
 	if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-		return fmt.Errorf("%w: %v", memory.ErrInvalidSnapshot, err)
+		return fmt.Errorf("%w: %w", memory.ErrInvalidSnapshot, err)
 	}
 	if rec.Strategy != memory.StrategyRollingSummary {
 		return fmt.Errorf("%w: record strategy=%q", memory.ErrInvalidSnapshot, rec.Strategy)
@@ -511,7 +513,7 @@ func (e *rollingSummaryExec) drainBacklogs() {
 	}
 	var work []entry
 	e.keys.Range(func(k, v any) bool {
-		key := k.(quadKey)
+		key := k.(quadKey) //nolint:errcheck // e.keys only ever uses quadKey keys — the assertion cannot fail by construction.
 		work = append(work, entry{
 			id: identity.Quadruple{
 				Identity: identity.Identity{
@@ -521,7 +523,7 @@ func (e *rollingSummaryExec) drainBacklogs() {
 				},
 				RunID: key.Run,
 			},
-			ks: v.(*rollingKeyState),
+			ks: v.(*rollingKeyState), //nolint:errcheck // e.keys only ever stores *rollingKeyState — the assertion cannot fail by construction.
 		})
 		return true
 	})
@@ -582,7 +584,7 @@ func (e *rollingSummaryExec) recoverOne(id identity.Quadruple, ks *rollingKeySta
 	}
 	// Best-effort persist; ignore failure (the in-memory state is
 	// authoritative; the next persist landing AddTurn will re-sync).
-	_ = persistRecord(ctx, e.state, id, memoryStateRecord{
+	_ = persistRecord(ctx, e.state, id, memoryStateRecord{ //nolint:errcheck // best-effort persist — the in-memory state is authoritative; the next AddTurn re-syncs (see comment above).
 		Strategy: memory.StrategyRollingSummary,
 		Turns:    ks.recent,
 		Summary:  ks.summary,

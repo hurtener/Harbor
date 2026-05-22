@@ -731,7 +731,7 @@ type APIKeySecurityScheme struct {
 }
 
 // Kind returns SecurityKindAPIKey.
-func (s *APIKeySecurityScheme) Kind() string  { return SecurityKindAPIKey }
+func (s *APIKeySecurityScheme) Kind() string      { return SecurityKindAPIKey }
 func (s *APIKeySecurityScheme) isSecurityScheme() {}
 
 // HTTPAuthSecurityScheme defines a security scheme using HTTP authentication.
@@ -747,7 +747,7 @@ type HTTPAuthSecurityScheme struct {
 }
 
 // Kind returns SecurityKindHTTPAuth.
-func (s *HTTPAuthSecurityScheme) Kind() string  { return SecurityKindHTTPAuth }
+func (s *HTTPAuthSecurityScheme) Kind() string      { return SecurityKindHTTPAuth }
 func (s *HTTPAuthSecurityScheme) isSecurityScheme() {}
 
 // OAuth2SecurityScheme defines a security scheme using OAuth 2.0.
@@ -763,7 +763,7 @@ type OAuth2SecurityScheme struct {
 }
 
 // Kind returns SecurityKindOAuth2.
-func (s *OAuth2SecurityScheme) Kind() string  { return SecurityKindOAuth2 }
+func (s *OAuth2SecurityScheme) Kind() string      { return SecurityKindOAuth2 }
 func (s *OAuth2SecurityScheme) isSecurityScheme() {}
 
 // MarshalJSON encodes OAuth2SecurityScheme with the OAuthFlows oneof
@@ -806,6 +806,8 @@ func (s *OAuth2SecurityScheme) UnmarshalJSON(data []byte) error {
 // OpenIdConnectSecurityScheme defines a security scheme using OIDC.
 //
 // Proto: message OpenIdConnectSecurityScheme.
+//
+//nolint:stylecheck // ST1003: name is transcribed verbatim from the A2A proto message OpenIdConnectSecurityScheme; keeping it in sync with the proto contract wins over Go initialism style.
 type OpenIdConnectSecurityScheme struct {
 	// Description — proto: `string description = 1`.
 	Description string `json:"description,omitempty"`
@@ -814,19 +816,21 @@ type OpenIdConnectSecurityScheme struct {
 }
 
 // Kind returns SecurityKindOpenIDConnect.
-func (s *OpenIdConnectSecurityScheme) Kind() string  { return SecurityKindOpenIDConnect }
+func (s *OpenIdConnectSecurityScheme) Kind() string      { return SecurityKindOpenIDConnect }
 func (s *OpenIdConnectSecurityScheme) isSecurityScheme() {}
 
 // MutualTlsSecurityScheme defines a security scheme using mTLS.
 //
 // Proto: message MutualTlsSecurityScheme.
+//
+//nolint:stylecheck // ST1003: name is transcribed verbatim from the A2A proto message MutualTlsSecurityScheme; keeping it in sync with the proto contract wins over Go initialism style.
 type MutualTlsSecurityScheme struct {
 	// Description — proto: `string description = 1`.
 	Description string `json:"description,omitempty"`
 }
 
 // Kind returns SecurityKindMutualTLS.
-func (s *MutualTlsSecurityScheme) Kind() string  { return SecurityKindMutualTLS }
+func (s *MutualTlsSecurityScheme) Kind() string      { return SecurityKindMutualTLS }
 func (s *MutualTlsSecurityScheme) isSecurityScheme() {}
 
 // securitySchemeWire is the on-the-wire JSON form used to dispatch
@@ -1014,7 +1018,7 @@ type AuthorizationCodeOAuthFlow struct {
 }
 
 // Kind returns OAuthFlowKindAuthorizationCode.
-func (f *AuthorizationCodeOAuthFlow) Kind() string { return OAuthFlowKindAuthorizationCode }
+func (f *AuthorizationCodeOAuthFlow) Kind() string  { return OAuthFlowKindAuthorizationCode }
 func (f *AuthorizationCodeOAuthFlow) isOAuthFlows() {}
 
 // ClientCredentialsOAuthFlow is the Client Credentials flow.
@@ -1030,7 +1034,7 @@ type ClientCredentialsOAuthFlow struct {
 }
 
 // Kind returns OAuthFlowKindClientCredentials.
-func (f *ClientCredentialsOAuthFlow) Kind() string { return OAuthFlowKindClientCredentials }
+func (f *ClientCredentialsOAuthFlow) Kind() string  { return OAuthFlowKindClientCredentials }
 func (f *ClientCredentialsOAuthFlow) isOAuthFlows() {}
 
 // ImplicitOAuthFlow is the (deprecated) Implicit flow. Included for
@@ -1049,7 +1053,7 @@ type ImplicitOAuthFlow struct {
 }
 
 // Kind returns OAuthFlowKindImplicit.
-func (f *ImplicitOAuthFlow) Kind() string { return OAuthFlowKindImplicit }
+func (f *ImplicitOAuthFlow) Kind() string  { return OAuthFlowKindImplicit }
 func (f *ImplicitOAuthFlow) isOAuthFlows() {}
 
 // PasswordOAuthFlow is the (deprecated) Resource Owner Password
@@ -1068,7 +1072,7 @@ type PasswordOAuthFlow struct {
 }
 
 // Kind returns OAuthFlowKindPassword.
-func (f *PasswordOAuthFlow) Kind() string { return OAuthFlowKindPassword }
+func (f *PasswordOAuthFlow) Kind() string  { return OAuthFlowKindPassword }
 func (f *PasswordOAuthFlow) isOAuthFlows() {}
 
 // DeviceCodeOAuthFlow is the OAuth 2.0 Device Code flow (RFC 8628).
@@ -1086,7 +1090,7 @@ type DeviceCodeOAuthFlow struct {
 }
 
 // Kind returns OAuthFlowKindDeviceCode.
-func (f *DeviceCodeOAuthFlow) Kind() string { return OAuthFlowKindDeviceCode }
+func (f *DeviceCodeOAuthFlow) Kind() string  { return OAuthFlowKindDeviceCode }
 func (f *DeviceCodeOAuthFlow) isOAuthFlows() {}
 
 // OAuthFlowsWire is the JSON envelope used by OAuth2SecurityScheme to

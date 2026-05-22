@@ -22,7 +22,7 @@ import (
 func TestValidate_BusEmit_PublishesAuthRejectedEvent(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	red := auditpatterns.New()
 	bus, err := events.Open(context.Background(), config.EventsConfig{
@@ -114,7 +114,7 @@ func TestValidate_BusEmit_PublishesAuthRejectedEvent(t *testing.T) {
 func TestValidate_NoBus_NoBusEmit(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	v, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),
@@ -140,7 +140,7 @@ func TestValidate_NoBus_NoBusEmit(t *testing.T) {
 func TestValidate_BusEmit_NilBus_NoBusEmit(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 
 	v, err := auth.NewValidator(keys,
 		auth.WithClock(func() time.Time { return fixedNow }),
