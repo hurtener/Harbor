@@ -122,7 +122,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Shipped  |
 | 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Shipped  |
 | 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Shipped  |
-| 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Pending  |
+| 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Shipped  |
 | 83 | Auto-sequence detection (planner opt.)        | planner              | §12         | 45                    | n/a  | Post-V1  |
 | 83a| ReAct prompt structured sections              | planner/react        | §6.2        | 45                    | 85%  | Pending  |
 | 83b| ReAct tool schema injection (catalog rendering)| planner/react       | §6.2, §6.4  | 83a, 26               | 85%  | Pending  |

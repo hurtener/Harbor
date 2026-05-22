@@ -15,14 +15,12 @@ Two versions move independently in Harbor (RFC §5.3):
   `0.1.0`). A breaking Protocol change is an RFC change and carries its
   own deprecation window.
 
-V1 is delivered phase-by-phase in waves; the `[Unreleased]` section
-below records every V1 phase (01–81, including the lettered phases) that
-has landed on `main`. The `v1.0.0` cut (Phase 82) will move this content
-under a dated `[1.0.0]` heading.
+## [1.0.0] — 2026-05-22
 
-## [Unreleased]
+The first stable release. The entry below is the complete V1 surface,
+grouped by subsystem.
 
-### Added — Identity, configuration, and foundations (Wave 1, phases 00–04)
+### Added — Identity, configuration, and foundations
 
 - **Identity & isolation triple** — `internal/identity`: the
   `(tenant, user, session)` triple, the `Quadruple` (triple + `run`),
@@ -38,7 +36,7 @@ under a dated `[1.0.0]` heading.
   identity-aware structured logger that redacts every record through the
   audit redactor, plus the `BusEmitter` seam for `runtime.error` events.
 
-### Added — Events, state, and sessions (Wave 2, phases 05–08)
+### Added — Events, state, and sessions
 
 - **Event taxonomy + in-memory `EventBus`** — `internal/events`: a typed
   event bus with server-enforced identity-scoped filtering, drop-oldest
@@ -53,7 +51,7 @@ under a dated `[1.0.0]` heading.
 - **`SessionRegistry` + lifecycle + GC** — `internal/sessions`: session
   creation, lifecycle states, and garbage collection.
 
-### Added — Runtime engine (Wave 3, phases 09–14)
+### Added — Runtime engine
 
 - **Envelopes, headers, identity quadruple** — `internal/runtime/messages`:
   the message envelope, headers, and `trace_id` propagation.
@@ -71,7 +69,7 @@ under a dated `[1.0.0]` heading.
   `internal/runtime/routers`, `concurrency`, `playbooks`: routing
   policies, `map_concurrent` / `join_k`, and composable subflows.
 
-### Added — Persistence drivers (phases 15–19)
+### Added — Persistence drivers
 
 - **SQLite `StateStore` driver** — `internal/state/drivers/sqlite`: a
   CGo-free (`modernc.org/sqlite`) driver with forward-only migrations
@@ -87,7 +85,7 @@ under a dated `[1.0.0]` heading.
 - **`ArtifactStore` S3-style driver** — `internal/artifacts/drivers/s3`:
   an S3-compatible driver, exercised against MinIO in CI.
 
-### Added — Tasks, distributed contracts, and memory (phases 20–25)
+### Added — Tasks, distributed contracts, and memory
 
 - **`TaskRegistry` interface + in-process driver + lifecycle** —
   `internal/tasks`: a unified foreground/background task service keyed
@@ -103,7 +101,7 @@ under a dated `[1.0.0]` heading.
 - **SQLite + Postgres `MemoryStore` drivers** — durable memory on the
   persistence triad.
 
-### Added — Tools and integrations (phases 26–31)
+### Added — Tools and integrations
 
 - **Tool catalog core + in-process registration + `ToolPolicy`** —
   `internal/tools`: a transport-agnostic tool catalog with identity-
@@ -121,7 +119,7 @@ under a dated `[1.0.0]` heading.
 - **Tool-side approval gates** — human-in-the-loop approval gates on
   tool execution.
 
-### Added — LLM client and governance (phases 32–36b)
+### Added — LLM client and governance
 
 - **LLM client core + `StreamSink` contract + context-window safety
   net** — `internal/llm`: the LLM client surface, streaming sink, and
@@ -138,11 +136,11 @@ under a dated `[1.0.0]` heading.
 - **Retry with feedback** — retry of malformed LLM responses with
   corrective feedback, failing loudly with `ErrRetryExhausted`.
 - **Cost accumulator + per-identity ceilings** — `internal/governance`:
-  per-identity cost ceilings (latent until a factory is registered).
+  per-identity cost ceilings.
 - **Per-identity rate limits + per-call `MaxTokens`** — per-identity
   rate limiting and per-call token caps.
 
-### Added — Skills subsystem (phases 37–41)
+### Added — Skills subsystem
 
 - **Skill store + LocalDB driver + FTS5 ladder** — `internal/skills`: a
   DB-backed, token-savvy skill catalog with a full-text-search ranking
@@ -156,7 +154,7 @@ under a dated `[1.0.0]` heading.
 - **In-runtime skill generator with persistence** — generating and
   persisting new skills at runtime.
 
-### Added — Planner subsystem (phases 42–49)
+### Added — Planner subsystem
 
 - **Planner interface + Decision sum + RunContext** — `internal/planner`:
   the one `Planner` interface, the Decision sum type, and the per-run
@@ -166,8 +164,8 @@ under a dated `[1.0.0]` heading.
   silently dropping context.
 - **Schema repair pipeline** — `internal/planner/repair`: salvage →
   schema repair → graceful failure → multi-action salvage.
-- **Reference ReAct planner** — `internal/planner/react`: the minimum-
-  viable reference planner.
+- **Reference ReAct planner** — `internal/planner/react`: the reference
+  planner, shipped in the box.
 - **Trajectory compression / summariser** — trajectory compaction for
   long runs.
 - **Parallel-call executor + ReAct `CallParallel` / `SpawnTask` /
@@ -178,7 +176,7 @@ under a dated `[1.0.0]` heading.
 - **Planner conformance pack** — a conformance suite every planner
   concrete must pass.
 
-### Added — Steering, pause/resume, and the Agent Registry (phases 50–53a)
+### Added — Steering, pause/resume, and the Agent Registry
 
 - **Pause/Resume Coordinator + handle registry** —
   `internal/runtime/pauseresume`: Harbor's one pause/resume primitive,
@@ -196,7 +194,7 @@ under a dated `[1.0.0]` heading.
   identity, the three-ID model (`agent_id`, `version_hash`,
   `incarnation`), and `agent.*` events.
 
-### Added — Observability and the durable event log (phases 54–57)
+### Added — Observability and the durable event log
 
 - **Protocol task control surface** — the start/cancel/pause/resume/
   redirect/inject control surface.
@@ -208,7 +206,7 @@ under a dated `[1.0.0]` heading.
   StateStore-backed durable event log (load-bearing for post-V1
   replay-based evaluation).
 
-### Added — Harbor Protocol (phases 58–62)
+### Added — Harbor Protocol
 
 - **Protocol types/methods/errors single source** — `internal/protocol`:
   the canonical wire-type / method / error-code home, lint-enforced as
@@ -224,56 +222,50 @@ under a dated `[1.0.0]` heading.
 - **Protocol conformance suite** — a conformance suite for the Protocol
   surface.
 
-### Added — Harbor CLI (phases 63–71)
+### Added — Harbor CLI
 
-- **Harbor CLI skeleton** — `cmd/harbor`: a cobra-rooted `harbor` binary
-  with global `--quiet` / `--json` flags and the `version` subcommand.
-- **`harbor dev` v1** — boot the local Runtime + Protocol surface.
-- **Tool catalog OAuth + approval wiring** — `harbor dev` wiring for
-  tool OAuth and approval gates.
-- **`harbor dev` hot-reload** — an `fsnotify` watcher with graceful
-  drain on agent-source change.
-- **`harbor dev` draft-save scaffolding** — dynamic agent scaffolding
-  with draft saving.
-- **`harbor scaffold`** — scaffold a new agent project.
-- **`harbor validate`** — validate a Harbor config; wired into CI as a
+- **`harbor` binary** — `cmd/harbor`: a cobra-rooted CLI with global
+  `--quiet` / `--json` flags.
+- **`harbor dev`** — boots the local Runtime + Protocol surface, with
+  hot-reload on agent-source change and draft-save scaffolding.
+- **`harbor console`** — serves the Harbor Console (baked into the
+  binary) against a co-resident Runtime.
+- **`harbor scaffold`** — scaffolds a new agent project.
+- **`harbor validate`** — validates a Harbor config; wired into CI as a
   pre-flight check for the example configs.
-- **`harbor inspect-events` / `harbor inspect-runs`** — inspect the
-  event stream and run history.
-- **`harbor inspect-topology`** — inspect and render the runtime
-  topology.
+- **`harbor version`** — reports the product release version and the
+  Harbor Protocol version as distinct fields.
+- **`harbor inspect-events` / `inspect-runs` / `inspect-topology`** —
+  inspect the event stream, run history, and runtime topology.
 - **`harbortest` test kit package** — `harbortest/`: an operator-
-  importable public test kit.
+  importable public test kit (`RunOnce`, `AssertSequence`,
+  `AssertNoLeaks`, `SimulateFailure`, `RecordedEvents`).
 
-### Added — Harbor Console (phases 72–75a)
+### Added — Harbor Console
 
 - **Console subscription protocol surface** — the `events.subscribe`
-  Protocol surface the Console consumes.
-- **`events.subscribe` filter extensions + `events.aggregate`** — richer
-  event filters and a time-bucket aggregation method.
-- **Runtime posture surface** — the read-only `runtime.*` / `metrics.*`
-  posture methods.
-- **`pause.list` snapshot Protocol method** — a pause-snapshot Protocol
-  method.
-- **`governance.posture` + `llm.posture`** — governance and LLM posture
-  Protocol methods.
+  Protocol surface the Console consumes, with filter extensions and an
+  `events.aggregate` time-bucket method.
+- **Runtime / governance / LLM posture surfaces** — the read-only
+  `runtime.*`, `metrics.*`, `governance.posture`, `llm.posture`, and
+  `pause.list` Protocol methods.
 - **Console DB local schema + SvelteKit scaffold** — `web/console`: the
-  Console-local schema and the SvelteKit (Svelte 5 runes) scaffold.
+  Console-local schema and the SvelteKit (Svelte 5 runes) application.
 - **Console pages** — Overview, Live Runtime, Sessions, Tasks, Agents,
   Tools, MCP Connections, Background Jobs, Events, Flows, Memory,
-  Artifacts, and Playground pages, each a Protocol client.
-- **Console state inspection surface** — the state-snapshot Protocol
-  surface.
-- **Console topology projection events** — topology projection events
-  for the Console topology view.
-- **Console e2e Playwright harness + wave-end suite** — the Playwright
-  e2e harness baseline and the Wave 13 wave-end suite.
+  Artifacts, Settings, and Playground — fourteen pages, each a Protocol
+  client that never reads a Runtime object directly.
+- **Console state inspection + topology projection** — the
+  state-snapshot Protocol surface and the topology projection events
+  behind the Console topology view.
+- **Console e2e Playwright harness** — the Playwright e2e suite, gated
+  by the `frontend-e2e` CI job.
 
-### Added — Release hardening (phases 76–81)
+### Added — Conformance harnesses, benchmarks, and release engineering
 
-- **Cross-tenant isolation conformance harness** —
-  `test/integration`: a `-race` harness running concurrent sessions and
-  asserting no cross-tenant or cross-session leak.
+- **Cross-tenant isolation conformance harness** — `test/integration`:
+  a `-race` harness running concurrent sessions and asserting no
+  cross-tenant or cross-session leak. The integrity gate.
 - **Goroutine leak conformance harness** — a `-race` harness that
   constructs, exercises, and tears down every long-lived component and
   asserts the goroutine count returns to baseline.
@@ -283,16 +275,15 @@ under a dated `[1.0.0]` heading.
   produces its documented loud error and recovery path.
 - **Performance benchmarks** — `test/benchmarks`: a `go test -bench`
   suite over the hottest runtime seams, with a CI perf-regression gate.
-- **Documentation hygiene polish** — an enforced `revive` godoc /
-  package-comment lint gate, worked examples under `examples/`, and
-  recipe how-to guides under `docs/recipes/`.
-- **Release engineering** — this phase. `CHANGELOG.md`; build-time
-  product-version stamping via `-ldflags -X 'main.HarborVersion=…'`
-  (`harbor version` reports it); `scripts/release-build.sh` and
-  `scripts/release-dryrun.sh` plus the `make release-build` /
-  `make release-dryrun` targets; the `.github/workflows/release.yml`
-  release workflow that builds the CGo-free static binary on a `v*`
-  tag push, emits a SHA-256 checksum, attaches SLSA-style build
-  provenance, and publishes a GitHub Release.
+- **Documentation hygiene** — an enforced `golangci-lint` gate (godoc /
+  package-comment + the full linter set), worked examples under
+  `examples/`, and recipe how-to guides under `docs/recipes/`.
+- **Release engineering** — build-time product-version stamping via
+  `-ldflags -X` (`harbor version` reports it); `scripts/release-build.sh`
+  and `scripts/release-dryrun.sh` with the `make release-build` /
+  `make release-dryrun` targets; and the `release.yml` workflow that, on
+  a `v*` tag push, builds the CGo-free static binary, emits a SHA-256
+  checksum, attaches SLSA-style build provenance, and publishes a GitHub
+  Release.
 
-[Unreleased]: https://github.com/hurtener/Harbor/commits/main
+[1.0.0]: https://github.com/hurtener/Harbor/releases/tag/v1.0.0
