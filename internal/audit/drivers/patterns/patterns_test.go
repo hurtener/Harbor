@@ -68,8 +68,8 @@ func TestDriver_ConcurrentReuse_ReuseContract(t *testing.T) {
 	var mismatches atomic.Int64
 
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			id := fmt.Sprintf("req-%d", i)

@@ -91,8 +91,8 @@ func TestStreamHandler_ConcurrentScopedReuse(t *testing.T) {
 	var wg sync.WaitGroup
 	startGate := make(chan struct{})
 
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -168,7 +168,7 @@ func TestStreamHandler_ConcurrentScopedReuse(t *testing.T) {
 
 	// Publish a handful of events from each tenant — provides traffic
 	// to expose any cross-talk.
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		tenant := fmt.Sprintf("tenant-conc-%03d", i)
 		_ = bus.Publish(context.Background(), events.Event{
 			Type: events.EventTypeRuntimeRunCancelled,
@@ -256,7 +256,7 @@ func scopeMiddleware(next http.Handler) http.Handler {
 // complete before a NumGoroutine snapshot. Matches the shape used by
 // internal/protocol/transports/concurrent_test.go's settle().
 func settleConc() {
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		runtime.GC()
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -122,8 +122,8 @@ func Run(t *testing.T, factory func() context.Context) {
 		var mismatches atomic.Int64
 		root := factory()
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
+
 			go func() {
 				defer wg.Done()
 				want := identity.Identity{

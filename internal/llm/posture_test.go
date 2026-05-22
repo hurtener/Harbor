@@ -132,7 +132,7 @@ func TestPostureProvider_Posture_ConcurrentReuse(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	errCh := make(chan string, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			defer wg.Done()
 			snap, err := p.Posture(context.Background())

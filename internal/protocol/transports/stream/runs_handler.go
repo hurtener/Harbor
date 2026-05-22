@@ -226,5 +226,5 @@ func writeRunsJSON(w http.ResponseWriter, r *http.Request, v any, logger *slog.L
 func writeRunsError(w http.ResponseWriter, code protoerrors.Code, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&protoerrors.Error{Code: code, Message: message})
+	_ = json.NewEncoder(w).Encode(&protoerrors.Error{Code: code, Message: message}) //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 }

@@ -84,28 +84,28 @@ func TestSearchHandler_HappyPath_DispatchesToSearchSurface(t *testing.T) {
 func TestSearchHandler_MappedErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name    string
-		err     error
+		name     string
+		err      error
 		wantHTTP int
 	}{
 		{
-			name:    "identity_required → 401",
-			err:     protoerrors.Newf(protoerrors.CodeIdentityRequired, "missing identity"),
+			name:     "identity_required → 401",
+			err:      protoerrors.Newf(protoerrors.CodeIdentityRequired, "missing identity"),
 			wantHTTP: http.StatusUnauthorized,
 		},
 		{
-			name:    "scope_mismatch → 403",
-			err:     protoerrors.Newf(protoerrors.CodeScopeMismatch, "cross-tenant"),
+			name:     "scope_mismatch → 403",
+			err:      protoerrors.Newf(protoerrors.CodeScopeMismatch, "cross-tenant"),
 			wantHTTP: http.StatusForbidden,
 		},
 		{
-			name:    "invalid_request → 400",
-			err:     protoerrors.Newf(protoerrors.CodeInvalidRequest, "bad page"),
+			name:     "invalid_request → 400",
+			err:      protoerrors.Newf(protoerrors.CodeInvalidRequest, "bad page"),
 			wantHTTP: http.StatusBadRequest,
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			srv := httptest.NewServer(newSearchHandler(t, &stubSearch{err: tc.err}))

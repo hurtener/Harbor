@@ -52,7 +52,7 @@ func TestRollingSummary_RecoveryLoop_DrainsBacklog(t *testing.T) {
 	ctx := context.Background()
 	id := tripleA()
 	// Push enough turns to fill the backlog.
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		_ = exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"})
 	}
 	if got := r.HealthForTest(id); got != memory.HealthDegraded {
@@ -78,7 +78,7 @@ func TestRollingSummary_RecoveryLoop_DrainsBacklog(t *testing.T) {
 
 	// Drain repeatedly until backlog is empty (each drain
 	// processes one batch per key).
-	for attempts := 0; attempts < 16; attempts++ {
+	for range 16 {
 		_ = r.DrainBacklogsForTest()
 		if r.BacklogSize(id) == 0 {
 			break
@@ -145,7 +145,7 @@ func TestRollingSummary_RecoveryLoop_RetriesBatchOnFailure(t *testing.T) {
 
 	ctx := context.Background()
 	id := tripleA()
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		_ = exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"})
 	}
 	if r.BacklogSize(id) == 0 {
@@ -181,7 +181,7 @@ func TestRollingSummary_RecoveryLoop_NoOpWhenHealthy(t *testing.T) {
 
 	ctx := context.Background()
 	id := tripleA()
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		_ = exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"})
 	}
 	// Drain on a healthy executor should be a no-op.

@@ -20,17 +20,17 @@ const jsonRPCVersion = "2.0"
 // over POST against the peer's JSON-RPC endpoint (the AgentInterface
 // URL discovered from the AgentCard).
 const (
-	MethodSendMessage                       = "message/send"
-	MethodSendStreamingMessage              = "message/stream"
-	MethodGetTask                           = "tasks/get"
-	MethodListTasks                         = "tasks/list"
-	MethodCancelTask                        = "tasks/cancel"
-	MethodSubscribeToTask                   = "tasks/subscribe"
-	MethodCreateTaskPushNotificationConfig  = "tasks/pushNotificationConfig/set"
-	MethodGetTaskPushNotificationConfig     = "tasks/pushNotificationConfig/get"
-	MethodListTaskPushNotificationConfigs   = "tasks/pushNotificationConfig/list"
-	MethodDeleteTaskPushNotificationConfig  = "tasks/pushNotificationConfig/delete"
-	MethodGetExtendedAgentCard              = "agent/getAuthenticatedExtendedCard"
+	MethodSendMessage                      = "message/send"
+	MethodSendStreamingMessage             = "message/stream"
+	MethodGetTask                          = "tasks/get"
+	MethodListTasks                        = "tasks/list"
+	MethodCancelTask                       = "tasks/cancel"
+	MethodSubscribeToTask                  = "tasks/subscribe"
+	MethodCreateTaskPushNotificationConfig = "tasks/pushNotificationConfig/set"
+	MethodGetTaskPushNotificationConfig    = "tasks/pushNotificationConfig/get"
+	MethodListTaskPushNotificationConfigs  = "tasks/pushNotificationConfig/list"
+	MethodDeleteTaskPushNotificationConfig = "tasks/pushNotificationConfig/delete"
+	MethodGetExtendedAgentCard             = "agent/getAuthenticatedExtendedCard"
 )
 
 // JSON-RPC application error codes. The spec's standard codes are in
@@ -38,12 +38,12 @@ const (
 // integers. We treat code 1 as ErrTaskNotFound per the A2A's
 // `TaskNotFoundError` convention.
 const (
-	jsonRPCErrParse           = -32700
-	jsonRPCErrInvalidRequest  = -32600
-	jsonRPCErrMethodNotFound  = -32601
-	jsonRPCErrInvalidParams   = -32602
-	jsonRPCErrInternal        = -32603
-	a2aErrTaskNotFound        = 1
+	jsonRPCErrParse          = -32700
+	jsonRPCErrInvalidRequest = -32600
+	jsonRPCErrMethodNotFound = -32601
+	jsonRPCErrInvalidParams  = -32602
+	jsonRPCErrInternal       = -32603
+	a2aErrTaskNotFound       = 1
 )
 
 // jsonRPCRequest is the wire request envelope. ID is monotonically

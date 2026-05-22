@@ -203,7 +203,7 @@ func classifyAggregateError(err error) (protoerrors.Code, int, string) {
 func writeAggregateError(w http.ResponseWriter, code protoerrors.Code, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&protoerrors.Error{
+	_ = json.NewEncoder(w).Encode(&protoerrors.Error{ //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 		Code:    code,
 		Message: message,
 	})
@@ -227,4 +227,3 @@ func (r *bytesIOReader) Read(p []byte) (int, error) {
 	r.off += n
 	return n, nil
 }
-

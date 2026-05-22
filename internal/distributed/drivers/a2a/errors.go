@@ -33,6 +33,11 @@ var (
 	// frame number.
 	ErrSSEStreamMalformed = errors.New("a2a: SSE stream malformed")
 
+	// ErrSSELineTooLong — an SSE line exceeded sseMaxLineBytes. A
+	// hostile peer streaming an unterminated line cannot force
+	// unbounded buffer growth; the parser bails loudly instead.
+	ErrSSELineTooLong = errors.New("a2a: SSE line exceeds maximum length")
+
 	// ErrInvalidPeerURL — a configured peer URL did not parse.
 	ErrInvalidPeerURL = errors.New("a2a: invalid peer URL")
 )

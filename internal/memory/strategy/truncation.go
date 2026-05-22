@@ -40,9 +40,9 @@ type truncationExec struct {
 // truncationKeyState is the per-`(identity.Quadruple)` mutable state
 // the truncation strategy maintains.
 type truncationKeyState struct {
-	mu      sync.Mutex
-	turns   []memory.ConversationTurn
-	loaded  bool // true once we've attempted to load from StateStore
+	mu     sync.Mutex
+	turns  []memory.ConversationTurn
+	loaded bool // true once we've attempted to load from StateStore
 }
 
 func newTruncationExec(deps Deps) *truncationExec {
@@ -56,11 +56,11 @@ func newTruncationExec(deps Deps) *truncationExec {
 func (e *truncationExec) keyState(id identity.Quadruple) *truncationKeyState {
 	k := quadKeyFor(id)
 	if v, ok := e.keys.Load(k); ok {
-		return v.(*truncationKeyState)
+		return v.(*truncationKeyState) //nolint:errcheck // e.keys only ever stores *truncationKeyState — the assertion cannot fail by construction.
 	}
 	fresh := &truncationKeyState{}
 	actual, _ := e.keys.LoadOrStore(k, fresh)
-	return actual.(*truncationKeyState)
+	return actual.(*truncationKeyState) //nolint:errcheck // e.keys only ever stores *truncationKeyState — the assertion cannot fail by construction.
 }
 
 // loadIfNeeded fills the per-key buffer from StateStore on first
@@ -74,12 +74,13 @@ func (e *truncationExec) loadIfNeeded(ctx context.Context, ks *truncationKeyStat
 	if err != nil {
 		return err
 	}
-	// Empty record (or none-strategy record) → start fresh.
-	if rec.Strategy == "" || rec.Strategy == memory.StrategyNone {
+	switch rec.Strategy {
+	case "", memory.StrategyNone:
+		// Empty record (or none-strategy record) → start fresh.
 		ks.turns = nil
-	} else if rec.Strategy == memory.StrategyTruncation {
+	case memory.StrategyTruncation:
 		ks.turns = rec.Turns
-	} else {
+	default:
 		// Cross-strategy load: don't clobber the persisted record;
 		// start an empty in-memory buffer so the executor's writes
 		// land cleanly on the next persist.
@@ -206,7 +207,7 @@ func (e *truncationExec) Restore(ctx context.Context, id identity.Quadruple, sna
 	}
 	var rec memoryStateRecord
 	if err := json.Unmarshal(snap.Bytes, &rec); err != nil {
-		return fmt.Errorf("%w: %v", memory.ErrInvalidSnapshot, err)
+		return fmt.Errorf("%w: %w", memory.ErrInvalidSnapshot, err)
 	}
 	if rec.Strategy != memory.StrategyTruncation {
 		return fmt.Errorf("%w: record strategy=%q", memory.ErrInvalidSnapshot, rec.Strategy)

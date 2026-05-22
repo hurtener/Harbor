@@ -529,7 +529,7 @@ const (
 	// method — `IsAuthMethod` is its own O(1) predicate. The
 	// wire-transport route is `POST /v1/auth/rotate_token`. See
 	// `docs/plans/phase-73m-console-settings-page.md`.
-	MethodAuthRotateToken Method = "auth.rotate_token"
+	MethodAuthRotateToken Method = "auth.rotate_token" //nolint:gosec // G101 false positive — this is a Protocol method name, not a credential.
 
 	// MethodSessionsList — Phase 73c (Wave 13 / D-122). Returns the
 	// paginated, identity-scope-filtered projection of the

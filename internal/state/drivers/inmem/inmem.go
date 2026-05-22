@@ -43,9 +43,7 @@ func New(_ config.StateConfig) (state.StateStore, error) {
 }
 
 func init() {
-	state.Register("inmem", func(cfg config.StateConfig) (state.StateStore, error) {
-		return New(cfg)
-	})
+	state.Register("inmem", New)
 }
 
 // indexKey is the composite primary key. Struct-typed (rather than

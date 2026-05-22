@@ -48,8 +48,8 @@ func TestSQLite_Memory_Concurrent_BusyTimeoutAbsorbsContention(t *testing.T) {
 	var wg sync.WaitGroup
 	var errCount atomic.Int64
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
@@ -61,7 +61,7 @@ func TestSQLite_Memory_Concurrent_BusyTimeoutAbsorbsContention(t *testing.T) {
 				},
 				RunID: fmt.Sprintf("run-%d", i),
 			}
-			for j := 0; j < opsPerGo; j++ {
+			for j := range opsPerGo {
 				switch j % 5 {
 				case 0:
 					if err := s.Restore(ctx, ident, memory.Snapshot{}); err != nil {

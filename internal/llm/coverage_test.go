@@ -86,7 +86,7 @@ func TestComplete_RejectsEmptyModel(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	text := "x"
 	_, err = client.Complete(ctx, llm.CompleteRequest{
 		Model:    "",
@@ -106,7 +106,7 @@ func TestComplete_PartTypeMismatchIsInvalidContent(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 
 	// Type=image but Image=nil.
 	req := llm.CompleteRequest{
@@ -145,7 +145,7 @@ func TestEstimateTokens_MultimodalBreakdown(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	name := "claude"
 	req := llm.CompleteRequest{
 		Model: "m",
@@ -189,7 +189,7 @@ func TestApplyDefaults_FillsZeros(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	text := "x"
 	if _, err := client.Complete(ctx, llm.CompleteRequest{
 		Model:    "m",
@@ -226,7 +226,7 @@ func TestDecodeDataURL_NonBase64Payload(t *testing.T) {
 	// non-base64 decode branch in decodeDataURL.
 	raw := strings.Repeat("ABCD", 12*1024) // 48 KiB, > 32 KiB threshold
 	dataURL := "data:image/png," + raw
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	req := llm.CompleteRequest{
 		Model: "m",
 		Messages: []llm.ChatMessage{{
@@ -251,7 +251,7 @@ func TestDecodeDataURL_Malformed(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	// Threshold-sized DataURL with malformed base64 should fail
 	// loudly via ErrInvalidContent.
 	bad := "data:image/png;base64," + strings.Repeat("!", 50*1024)
@@ -275,24 +275,25 @@ func TestEvents_PayloadShapes_NonZero(t *testing.T) {
 	// the payload structs from being eliminated by dead-code
 	// detection in callers, and tests at-least-once the field
 	// names line up with the per-type tests' assertions.
-	p1 := llm.ImageMaterializedPayload{ArtifactRef: "r", MIME: "image/png", SizeBytes: 10, OccurredAt: time.Now()}
-	if p1.ArtifactRef != "r" {
+	now := time.Now()
+	p1 := llm.ImageMaterializedPayload{ArtifactRef: "r", MIME: "image/png", SizeBytes: 10, OccurredAt: now}
+	if p1.ArtifactRef != "r" || p1.MIME != "image/png" || p1.SizeBytes != 10 || !p1.OccurredAt.Equal(now) {
 		t.Fatal("ImageMaterializedPayload assignment broke")
 	}
-	p2 := llm.ContextLeakPayload{LeakSite: "Messages[0].Content.Text", SizeBytes: 1, Threshold: 32 * 1024, OccurredAt: time.Now()}
-	if p2.LeakSite == "" {
+	p2 := llm.ContextLeakPayload{LeakSite: "Messages[0].Content.Text", SizeBytes: 1, Threshold: 32 * 1024, OccurredAt: now}
+	if p2.LeakSite == "" || p2.SizeBytes != 1 || p2.Threshold != 32*1024 || !p2.OccurredAt.Equal(now) {
 		t.Fatal("ContextLeakPayload assignment broke")
 	}
-	p3 := llm.ContextWindowExceededPayload{EstimatedTokens: 100, ContextWindowTokens: 1000, ContextWindowReserve: 0.05, OccurredAt: time.Now()}
-	if p3.ContextWindowTokens == 0 {
+	p3 := llm.ContextWindowExceededPayload{EstimatedTokens: 100, ContextWindowTokens: 1000, ContextWindowReserve: 0.05, OccurredAt: now}
+	if p3.ContextWindowTokens == 0 || p3.EstimatedTokens != 100 || p3.ContextWindowReserve != 0.05 || !p3.OccurredAt.Equal(now) {
 		t.Fatal("ContextWindowExceededPayload assignment broke")
 	}
-	p4 := llm.CostRecordedPayload{Model: "m", Cost: llm.Cost{TotalCost: 1.0}, OccurredAt: time.Now()}
-	if p4.Model == "" {
+	p4 := llm.CostRecordedPayload{Model: "m", Cost: llm.Cost{TotalCost: 1.0}, OccurredAt: now}
+	if p4.Model == "" || p4.Cost.TotalCost != 1.0 || !p4.OccurredAt.Equal(now) {
 		t.Fatal("CostRecordedPayload assignment broke")
 	}
-	p5 := llm.ModeDowngradedPayload{From: llm.FormatJSONSchema, To: llm.FormatJSONObject, Reason: "test", OccurredAt: time.Now()}
-	if p5.From == "" {
+	p5 := llm.ModeDowngradedPayload{From: llm.FormatJSONSchema, To: llm.FormatJSONObject, Reason: "test", OccurredAt: now}
+	if p5.From == "" || p5.To != llm.FormatJSONObject || p5.Reason != "test" || !p5.OccurredAt.Equal(now) {
 		t.Fatal("ModeDowngradedPayload assignment broke")
 	}
 }
@@ -301,7 +302,7 @@ func TestHasIdentity_BothShapes(t *testing.T) {
 	if llm.HasIdentity(context.Background()) {
 		t.Fatal("HasIdentity returned true on empty ctx")
 	}
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t, context.Background())
 	if !llm.HasIdentity(ctx) {
 		t.Fatal("HasIdentity returned false with identity in ctx")
 	}

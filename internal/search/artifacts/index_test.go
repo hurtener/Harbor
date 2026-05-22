@@ -146,7 +146,7 @@ func TestArtifactsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	store := newStore(t)
 	defer store.Close(context.Background())
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		scope := artifactsubsys.ArtifactScope{
 			TenantID:  fmt.Sprintf("t-%d", i),
 			UserID:    "u",
@@ -168,8 +168,8 @@ func TestArtifactsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	failures := make(chan string, N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

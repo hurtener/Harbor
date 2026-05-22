@@ -155,4 +155,3 @@ func telemetryCfg() config.TelemetryConfig {
 		ServiceName: "harbor-test",
 	}
 }
-

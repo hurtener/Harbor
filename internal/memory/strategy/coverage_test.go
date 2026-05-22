@@ -11,6 +11,7 @@ package strategy_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -158,7 +159,7 @@ func TestRollingSummary_Flush(t *testing.T) {
 	ctx := context.Background()
 	id := tripleA()
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		if err := exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"}); err != nil {
 			t.Fatalf("AddTurn %d: %v", i, err)
 		}
@@ -192,7 +193,7 @@ func TestRollingSummary_Restore(t *testing.T) {
 	ctx := context.Background()
 	id := tripleA()
 
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		if err := exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"}); err != nil {
 			t.Fatalf("AddTurn %d: %v", i, err)
 		}
@@ -297,7 +298,7 @@ func TestRollingSummary_HealthChangedEvents(t *testing.T) {
 
 	ctx := context.Background()
 	id := tripleA()
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		_ = exec.AddTurn(ctx, id, memory.ConversationTurn{UserMessage: "u", AssistantResponse: "a"})
 	}
 	// Drain a few events; assert at least one healthy → retry and
@@ -372,25 +373,25 @@ func TestTruncation_AfterClose_ErrorsCleanly(t *testing.T) {
 	}
 	ctx := context.Background()
 	id := tripleA()
-	if err := exec.AddTurn(ctx, id, memory.ConversationTurn{}); err != memory.ErrStoreClosed {
+	if err := exec.AddTurn(ctx, id, memory.ConversationTurn{}); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("AddTurn after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.GetLLMContext(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.GetLLMContext(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("GetLLMContext after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.EstimateTokens(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.EstimateTokens(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("EstimateTokens after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if err := exec.Flush(ctx, id); err != memory.ErrStoreClosed {
+	if err := exec.Flush(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Flush after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.Health(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.Health(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Health after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.Snapshot(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.Snapshot(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Snapshot after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if err := exec.Restore(ctx, id, memory.Snapshot{}); err != memory.ErrStoreClosed {
+	if err := exec.Restore(ctx, id, memory.Snapshot{}); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Restore after Close: err=%v, want ErrStoreClosed", err)
 	}
 }
@@ -412,25 +413,25 @@ func TestRollingSummary_AfterClose_ErrorsCleanly(t *testing.T) {
 	}
 	ctx := context.Background()
 	id := tripleA()
-	if err := exec.AddTurn(ctx, id, memory.ConversationTurn{}); err != memory.ErrStoreClosed {
+	if err := exec.AddTurn(ctx, id, memory.ConversationTurn{}); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("AddTurn after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.GetLLMContext(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.GetLLMContext(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("GetLLMContext after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.Health(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.Health(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Health after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.Snapshot(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.Snapshot(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Snapshot after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if err := exec.Restore(ctx, id, memory.Snapshot{}); err != memory.ErrStoreClosed {
+	if err := exec.Restore(ctx, id, memory.Snapshot{}); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Restore after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if err := exec.Flush(ctx, id); err != memory.ErrStoreClosed {
+	if err := exec.Flush(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("Flush after Close: err=%v, want ErrStoreClosed", err)
 	}
-	if _, err := exec.EstimateTokens(ctx, id); err != memory.ErrStoreClosed {
+	if _, err := exec.EstimateTokens(ctx, id); !errors.Is(err, memory.ErrStoreClosed) {
 		t.Errorf("EstimateTokens after Close: err=%v, want ErrStoreClosed", err)
 	}
 }

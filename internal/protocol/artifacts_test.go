@@ -450,7 +450,7 @@ func TestArtifactsGetRefHandler_RejectsOutOfRangeExpiry(t *testing.T) {
 		{"below floor", 30 * time.Second},
 		{"above ceiling", 14 * 24 * time.Hour},
 	} {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := s.Dispatch(context.Background(), methods.MethodArtifactsGetRef, &types.ArtifactsGetRefRequest{
 				Scope: scope, ID: ref.ID, Expiry: tc.expiry,

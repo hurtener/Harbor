@@ -501,7 +501,7 @@ func parseLastEventID(r *http.Request, sessionID string) (events.Cursor, bool) {
 func writePlainError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(msg + "\n"))
+	_, _ = w.Write([]byte(msg + "\n")) //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 }
 
 // writeProtocolError writes a pre-stream rejection as the canonical
@@ -519,5 +519,5 @@ func writeProtocolError(w http.ResponseWriter, status int, perr *protoerrors.Err
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write(buf)
+	_, _ = w.Write(buf) //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 }

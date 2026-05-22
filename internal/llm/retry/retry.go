@@ -213,7 +213,7 @@ func emitRetryWithFeedback(ctx context.Context, bus events.EventBus, id identity
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort telemetry emit — must not block the LLM retry path.
 		Type:       llm.EventTypeRetryWithFeedback,
 		Identity:   id,
 		OccurredAt: time.Now(),

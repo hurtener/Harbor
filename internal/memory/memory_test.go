@@ -268,10 +268,10 @@ func TestSnapshot_IsEmpty(t *testing.T) {
 		snap memory.Snapshot
 		want bool
 	}{
-		"zero value":           {memory.Snapshot{}, true},
-		"strategy only":        {memory.Snapshot{Strategy: memory.StrategyNone}, false},
-		"bytes only":           {memory.Snapshot{Bytes: []byte("x")}, false},
-		"strategy and bytes":   {memory.Snapshot{Strategy: memory.StrategyTruncation, Bytes: []byte("x")}, false},
+		"zero value":         {memory.Snapshot{}, true},
+		"strategy only":      {memory.Snapshot{Strategy: memory.StrategyNone}, false},
+		"bytes only":         {memory.Snapshot{Bytes: []byte("x")}, false},
+		"strategy and bytes": {memory.Snapshot{Strategy: memory.StrategyTruncation, Bytes: []byte("x")}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

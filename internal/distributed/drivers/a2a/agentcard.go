@@ -144,7 +144,7 @@ func (c *agentCardCache) doFetch(ctx context.Context, peerBaseURL string) (*a2a.
 
 	var card a2a.AgentCard
 	if err := json.Unmarshal(body, &card); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrAgentCardSchemaInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrAgentCardSchemaInvalid, err)
 	}
 	// Validate the minimum invariants the spec requires before the
 	// card is usable.

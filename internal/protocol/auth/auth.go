@@ -382,11 +382,11 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 		if !isAllowedMethod(t.Method) {
 			return nil, ErrAlgNotAllowed
 		}
-		kid, _ := t.Header["kid"].(string)
+		kid, _ := t.Header["kid"].(string) //nolint:errcheck // a missing/non-string kid is deliberately tolerated as empty — KeyByID then fails loudly.
 		kidSeen = kid
 		key, alg, err := v.keys.KeyByID(kid)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrUnknownKey, err)
+			return nil, fmt.Errorf("%w: %w", ErrUnknownKey, err)
 		}
 		// Defence in depth: if the KeySet returns an algorithm name
 		// that disagrees with the JWT header's alg, treat it as
@@ -421,8 +421,8 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 	}
 
 	// Pull `iss` + `sub` for audit + optional issuer-match.
-	iss, _ := claims["iss"].(string)
-	sub, _ := claims["sub"].(string)
+	iss, _ := claims["iss"].(string) //nolint:errcheck // a missing/non-string iss is deliberately tolerated as empty — the issuer check below treats empty as "no claim".
+	sub, _ := claims["sub"].(string) //nolint:errcheck // a missing/non-string sub is deliberately tolerated as empty.
 
 	// Issuer / audience checks. Both are optional (empty configured
 	// value disables the check). When set, a mismatch fails loud.
@@ -458,13 +458,13 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 
 	// Identity-mandatory at the Protocol edge (RFC §5.5, CLAUDE.md §6
 	// rule 9). Each component must be a non-empty string claim.
-	tenant, _ := claims["tenant"].(string)
-	user, _ := claims["user"].(string)
-	session, _ := claims["session"].(string)
+	tenant, _ := claims["tenant"].(string)   //nolint:errcheck // a missing/non-string claim is deliberately tolerated as empty — identity.Validate below rejects it loudly.
+	user, _ := claims["user"].(string)       //nolint:errcheck // a missing/non-string claim is deliberately tolerated as empty — identity.Validate below rejects it loudly.
+	session, _ := claims["session"].(string) //nolint:errcheck // a missing/non-string claim is deliberately tolerated as empty — identity.Validate below rejects it loudly.
 	id := identity.Identity{TenantID: tenant, UserID: user, SessionID: session}
 	if err := identity.Validate(id); err != nil {
 		v.audit(ctx, kidSeen, iss, sub, ErrIdentityClaimMissing)
-		return Verified{}, fmt.Errorf("%w: %v", ErrIdentityClaimMissing, err)
+		return Verified{}, fmt.Errorf("%w: %w", ErrIdentityClaimMissing, err)
 	}
 
 	scopes := extractScopes(claims["scopes"])

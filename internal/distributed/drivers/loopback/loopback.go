@@ -14,12 +14,8 @@ import (
 )
 
 func init() {
-	distributed.RegisterBus(distributed.DefaultDriver, func(deps distributed.Dependencies) (distributed.MessageBus, error) {
-		return NewBus(deps)
-	})
-	distributed.RegisterRemoteTransport(distributed.DefaultDriver, func(deps distributed.Dependencies) (distributed.RemoteTransport, error) {
-		return NewRemoteTransport(deps)
-	})
+	distributed.RegisterBus(distributed.DefaultDriver, NewBus)
+	distributed.RegisterRemoteTransport(distributed.DefaultDriver, NewRemoteTransport)
 }
 
 // -----------------------------------------------------------------------------
@@ -105,10 +101,10 @@ func (b *bus) Close(_ context.Context) error {
 // Agent for the target URL.
 type transport struct {
 	mu         sync.RWMutex
-	agents     map[string]Agent     // by URL
-	defaultURL string               // URL used when a call's AgentURL is empty
+	agents     map[string]Agent      // by URL
+	defaultURL string                // URL used when a call's AgentURL is empty
 	cardSource func() *a2a.AgentCard // populates GetExtendedAgentCard if set
-	streams    sync.WaitGroup       // tracks open stream goroutines for GoroutineLeak gate
+	streams    sync.WaitGroup        // tracks open stream goroutines for GoroutineLeak gate
 	closed     atomic.Bool
 }
 
@@ -502,4 +498,3 @@ var (
 	_ distributed.RemoteTransport = (*transport)(nil)
 	_ LoopbackTransport           = (*transport)(nil)
 )
-

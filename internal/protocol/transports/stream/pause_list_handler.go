@@ -501,7 +501,7 @@ func classifyPauseListError(err error) (protoerrors.Code, int, string) {
 func writePauseListError(w http.ResponseWriter, code protoerrors.Code, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&protoerrors.Error{
+	_ = json.NewEncoder(w).Encode(&protoerrors.Error{ //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 		Code:    code,
 		Message: message,
 	})

@@ -39,12 +39,6 @@ import (
 	"github.com/hurtener/Harbor/internal/memory/strategy"
 )
 
-// kindMemoryState aliases the canonical `memory.KindMemoryState`
-// constant for ergonomic in-package use. The exported symbol lives
-// in `internal/memory/wire.go` so SQLite + Postgres drivers (Phase
-// 25) share the same routing key.
-const kindMemoryState = memory.KindMemoryState
-
 // Options carries InMem-driver-specific knobs that don't live on
 // the generic `memory.ConfigSnapshot`. The summariser is the only
 // Phase-24-relevant option; future drivers may add more.
@@ -137,12 +131,6 @@ type driver struct {
 	mu     sync.Mutex
 	closed atomic.Bool
 }
-
-// memoryStateRecord aliases `memory.Record` — the canonical wire
-// envelope shared by every driver (Phase 25 SQLite + Postgres
-// inherit the same shape). Centralised in `internal/memory/wire.go`
-// so cross-driver `Snapshot/Restore` is byte-stable.
-type memoryStateRecord = memory.Record
 
 // AddTurn implements memory.MemoryStore. Identity validated at the
 // boundary; missing triple → fail-closed with bus emit. The

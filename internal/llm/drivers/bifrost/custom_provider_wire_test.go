@@ -3,7 +3,6 @@ package bifrost
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -251,14 +250,12 @@ func TestE2E_CustomProvider_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("Complete succeeded but server slept past per-provider timeout; expected error")
 	}
-	// Accept any "deadline / timeout / canceled" shape — bifrost
-	// wraps differently per provider but the surface here is "the
-	// call did NOT succeed against a slow server."
-	if errors.Is(err, context.Canceled) {
-		// Parent ctx cancellation isn't what we want — but the
-		// per-provider timeout caused the underlying call to abort.
-		// Either is acceptable for this assertion.
-	}
+	// Accept any "deadline / timeout / canceled" shape — bifrost wraps
+	// differently per provider but the surface here is "the call did
+	// NOT succeed against a slow server." Parent ctx cancellation
+	// (context.Canceled) and a per-provider timeout are both
+	// acceptable outcomes, so the non-nil check above is the whole
+	// assertion — no error-shape narrowing is required.
 }
 
 // TestE2E_CustomProvider_5xxFailsLoud exercises the surface a custom

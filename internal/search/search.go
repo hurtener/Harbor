@@ -230,7 +230,7 @@ func (r *SearcherRegistry) Indexes() []types.SearchIndex {
 // apply.
 func ValidateRequest(callerID identity.Identity, req types.SearchRequest) error {
 	if err := identity.Validate(callerID); err != nil {
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	if req.PageSize < 0 {
 		return fmt.Errorf("%w: page_size %d must be non-negative", ErrInvalidRequest, req.PageSize)
@@ -403,7 +403,7 @@ func RedactAndCapPreview(ctx context.Context, redactor audit.Redactor, preview s
 	}
 	redacted, rerr := redactor.Redact(ctx, preview)
 	if rerr != nil {
-		return "", false, fmt.Errorf("%w: %v", ErrRedactionFailed, rerr)
+		return "", false, fmt.Errorf("%w: %w", ErrRedactionFailed, rerr)
 	}
 	redactedStr, ok := redacted.(string)
 	if !ok {

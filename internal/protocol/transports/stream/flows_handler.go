@@ -333,7 +333,7 @@ func (h *FlowsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, body
 // for a read dispatch. When no bus is wired it logs at Info so Flows-
 // page traffic is never fully silent.
 func (h *FlowsHandler) emitPageViewed(r *http.Request, method methods.Method, flowID string, adminScoped bool) {
-	id, _ := resolveIdentity(r)
+	id, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
 	h.logger.InfoContext(r.Context(), "flows: page viewed",
 		slog.String("method", string(method)),
 		slog.String("flow_id", flowID),
@@ -360,7 +360,7 @@ func (h *FlowsHandler) emitPageViewed(r *http.Request, method methods.Method, fl
 // emitRunInvoked publishes the `flows.run_invoked` audit observation
 // for an accepted `flows.run` dispatch.
 func (h *FlowsHandler) emitRunInvoked(r *http.Request, flowID, runID string) {
-	id, _ := resolveIdentity(r)
+	id, _ := resolveIdentity(r) //nolint:errcheck // best-effort audit-observation emit, post-authorization — a re-derivation miss degrades to a zero-value identity tag, never blocks the request.
 	h.logger.InfoContext(r.Context(), "flows: run invoked",
 		slog.String("flow_id", flowID),
 		slog.String("run_id", runID),
@@ -482,5 +482,5 @@ func writeFlowsJSON(w http.ResponseWriter, r *http.Request, v any, logger *slog.
 func writeFlowsError(w http.ResponseWriter, code protoerrors.Code, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&protoerrors.Error{Code: code, Message: message})
+	_ = json.NewEncoder(w).Encode(&protoerrors.Error{Code: code, Message: message}) //nolint:errcheck // response status already committed — a write error cannot be recovered here.
 }

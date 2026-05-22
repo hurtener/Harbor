@@ -44,12 +44,12 @@ import (
 // authedAdminCtx builds a request context that mirrors what
 // auth.Middleware would produce for an authenticated admin: the
 // verified identity attached + the admin scope claim attached.
-func authedAdminCtx(t *testing.T, tenant, user, session string) context.Context {
+func authedAdminCtx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), identity.Identity{
-		TenantID:  tenant,
-		UserID:    user,
-		SessionID: session,
+		TenantID:  "tenant-acme",
+		UserID:    "admin-alice",
+		SessionID: "sess-admin",
 	})
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
@@ -73,13 +73,20 @@ func authedNonAdminCtx(t *testing.T, tenant, user, session string) context.Conte
 }
 
 // impersonationStartBody renders a JSON body for a `start` request
-// carrying a fully-populated impersonation triplet.
-func impersonationStartBody(adminTenant, adminUser, adminSession, targetTenant, targetUser, targetSession string) string {
+// carrying a fully-populated impersonation triplet. The tenant and the
+// target principal are fixed (every caller impersonates the same
+// "user-target"); only the admin user/session vary per call.
+func impersonationStartBody(adminUser, adminSession string) string {
+	const (
+		tenant        = "tenant-acme"
+		targetUser    = "user-target"
+		targetSession = "sess-target"
+	)
 	return `{"identity":{` +
-		`"tenant":"` + targetTenant + `","user":"` + targetUser + `","session":"` + targetSession + `",` +
-		`"actor":{"tenant":"` + adminTenant + `","user":"` + adminUser + `","session":"` + adminSession + `"},` +
-		`"requester":{"tenant":"` + adminTenant + `","user":"` + adminUser + `","session":"` + adminSession + `"},` +
-		`"impersonating":{"tenant":"` + targetTenant + `","user":"` + targetUser + `","session":"` + targetSession + `"}` +
+		`"tenant":"` + tenant + `","user":"` + targetUser + `","session":"` + targetSession + `",` +
+		`"actor":{"tenant":"` + tenant + `","user":"` + adminUser + `","session":"` + adminSession + `"},` +
+		`"requester":{"tenant":"` + tenant + `","user":"` + adminUser + `","session":"` + adminSession + `"},` +
+		`"impersonating":{"tenant":"` + tenant + `","user":"` + targetUser + `","session":"` + targetSession + `"}` +
 		`},"query":"q"}`
 }
 
@@ -95,7 +102,7 @@ func doImpersonation(t *testing.T, h http.Handler, ctx context.Context, method, 
 // (1) Admin + complete impersonation triplet + body-triple ==
 // impersonating triple → 200 + AdminScopeUsedPayload on the bus.
 func TestImpersonation_AdminAccepted_EmitsAuditEvent(t *testing.T) {
-	h, bus, _, cleanup := newImpersonationHandler(t)
+	h, bus, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
 	// Subscribe BEFORE the request so we don't miss the emit.
@@ -110,11 +117,8 @@ func TestImpersonation_AdminAccepted_EmitsAuditEvent(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	ctx := authedAdminCtx(t)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -176,10 +180,10 @@ loop:
 // (2) Admin + body's top-level triple != Impersonating triple → 401
 // CodeIdentityRequired.
 func TestImpersonation_BodyTripleMismatch_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"OTHER-USER","session":"sess-target",` +
 		`"actor":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},` +
@@ -197,10 +201,10 @@ func TestImpersonation_BodyTripleMismatch_Rejected(t *testing.T) {
 // CodeIdentityRequired. Identity is mandatory; the impersonated triple
 // IS identity (CLAUDE.md §6 rule 9).
 func TestImpersonation_IncompleteTriple_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	// Missing session on Impersonating.
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
@@ -218,16 +222,13 @@ func TestImpersonation_IncompleteTriple_Rejected(t *testing.T) {
 // (4) Non-admin + impersonation → CodeScopeMismatch. The transport
 // fails closed BEFORE Dispatch runs.
 func TestImpersonation_NonAdminRejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
 	// The verified identity is the would-be admin's, but the token
 	// doesn't carry the admin scope.
 	ctx := authedNonAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (CodeScopeMismatch); body=%s", rec.Code, rec.Body.String())
@@ -239,10 +240,10 @@ func TestImpersonation_NonAdminRejected(t *testing.T) {
 // backward-compat). The Impersonating field is absent, every other
 // path is unchanged.
 func TestImpersonation_BackwardCompat_AdminNoImpersonation_Accepted(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},"query":"q"}`
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusOK {
@@ -253,15 +254,12 @@ func TestImpersonation_BackwardCompat_AdminNoImpersonation_Accepted(t *testing.T
 // (6) Admin + impersonation + Actor != JWT identity → CodeScopeMismatch.
 // The actor is the audit anchor; faking it is privilege escalation.
 func TestImpersonation_ActorMismatchesJWT_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
 	// JWT says admin-alice but the body's Actor claims admin-bob.
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-bob", "sess-bob", // body Actor != JWT
-		"tenant-acme", "user-target", "sess-target",
-	)
+	ctx := authedAdminCtx(t)
+	body := impersonationStartBody("admin-bob", "sess-bob") // body Actor != JWT
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (CodeScopeMismatch); body=%s", rec.Code, rec.Body.String())
@@ -273,10 +271,10 @@ func TestImpersonation_ActorMismatchesJWT_Rejected(t *testing.T) {
 // V1 invariant: Requester == Actor (delegated impersonation is
 // post-V1).
 func TestImpersonation_RequesterDivergesFromActor_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
 		`"actor":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},` +
@@ -294,10 +292,10 @@ func TestImpersonation_RequesterDivergesFromActor_Rejected(t *testing.T) {
 // Actor is the audit anchor; without it, the request cannot be
 // attributed.
 func TestImpersonation_MissingActor_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
 		`"requester":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},` +
@@ -317,7 +315,7 @@ func TestImpersonation_MissingActor_Rejected(t *testing.T) {
 // THAT is the post-gate path — proves the gate did not silently
 // short-circuit.
 func TestImpersonation_AcrossControlMethod_GateRunsIdentically(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
 	// Non-admin → gate fails CodeScopeMismatch BEFORE Dispatch
@@ -341,10 +339,10 @@ func TestImpersonation_AcrossControlMethod_GateRunsIdentically(t *testing.T) {
 // impersonation gate does NOT widen the check, it adds a separate
 // field that's verified separately.
 func TestImpersonation_NonImpersonationMismatch_StillRejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	// No impersonation triplet — just a body claiming a different
 	// tenant. The Phase 61 gate STILL rejects this.
 	body := `{"identity":{"tenant":"tenant-evil","user":"u","session":"s"},"query":"q"}`
@@ -364,11 +362,8 @@ func TestImpersonation_UnwiredHandler_RefusesFailClosed(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	ctx := authedAdminCtx(t)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("bare handler accepted impersonation without audit emit; status=200 body=%s", rec.Body.String())
@@ -379,10 +374,10 @@ func TestImpersonation_UnwiredHandler_RefusesFailClosed(t *testing.T) {
 // (12) Admin + impersonation + missing Requester → CodeIdentityRequired.
 // Mirrors (8) for the Requester field.
 func TestImpersonation_MissingRequester_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
 		`"actor":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},` +
@@ -398,10 +393,10 @@ func TestImpersonation_MissingRequester_Rejected(t *testing.T) {
 // (13) Admin + impersonation + Actor with empty Session →
 // CodeIdentityRequired. Actor itself must Validate.
 func TestImpersonation_ActorIncomplete_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
 		`"actor":{"tenant":"tenant-acme","user":"admin-alice","session":""},` +
@@ -418,10 +413,10 @@ func TestImpersonation_ActorIncomplete_Rejected(t *testing.T) {
 // (14) Admin + impersonation + Requester with empty Tenant →
 // CodeIdentityRequired. Requester itself must Validate.
 func TestImpersonation_RequesterIncomplete_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
+	ctx := authedAdminCtx(t)
 	body := `{"identity":{` +
 		`"tenant":"tenant-acme","user":"user-target","session":"sess-target",` +
 		`"actor":{"tenant":"tenant-acme","user":"admin-alice","session":"sess-admin"},` +
@@ -440,16 +435,13 @@ func TestImpersonation_RequesterIncomplete_Rejected(t *testing.T) {
 // cannot verify the actor without ctx-identity, so refuses
 // fail-closed.
 func TestImpersonation_NoCtxIdentity_Rejected(t *testing.T) {
-	h, _, _, cleanup := newImpersonationHandler(t)
+	h, _, cleanup := newImpersonationHandler(t)
 	defer cleanup()
 
 	// Bare context — no identity attached. The admin scope alone
 	// is not enough; we need to verify the Actor matches the JWT.
 	ctx := auth.WithScopes(context.Background(), []auth.Scope{auth.ScopeAdmin})
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (CodeScopeMismatch); body=%s", rec.Code, rec.Body.String())
@@ -500,11 +492,8 @@ func TestImpersonation_RedactorReturnsNonMap_LogsLoud(t *testing.T) {
 		t.Fatalf("control.NewHandler: %v", err)
 	}
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	ctx := authedAdminCtx(t)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("non-map redactor status: %d, want 200 (emit failure is logged not propagated)", rec.Code)
@@ -571,11 +560,8 @@ func TestImpersonation_RedactorFailure_LogsLoud_Not200Regression(t *testing.T) {
 		t.Fatalf("control.NewHandler: %v", err)
 	}
 
-	ctx := authedAdminCtx(t, "tenant-acme", "admin-alice", "sess-admin")
-	body := impersonationStartBody(
-		"tenant-acme", "admin-alice", "sess-admin",
-		"tenant-acme", "user-target", "sess-target",
-	)
+	ctx := authedAdminCtx(t)
+	body := impersonationStartBody("admin-alice", "sess-admin")
 	rec := doImpersonation(t, h, ctx, string(methods.MethodStart), body)
 	// The Dispatch already succeeded; we return 200 but logged the
 	// emit failure loudly. CLAUDE.md §5 — fail loudly, never silent.

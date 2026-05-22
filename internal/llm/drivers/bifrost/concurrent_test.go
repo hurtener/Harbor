@@ -37,8 +37,8 @@ func TestConcurrent_D025_BifrostDriver(t *testing.T) {
 		ok   atomic.Int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{
@@ -105,7 +105,7 @@ func TestConcurrent_PerCallCancellationIsIsolated(t *testing.T) {
 		go func() {
 			defer close(ch)
 			piece := "x"
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				select {
 				case ch <- &bfschemas.BifrostStreamChunk{
 					BifrostChatResponse: &bfschemas.BifrostChatResponse{

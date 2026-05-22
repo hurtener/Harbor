@@ -91,7 +91,7 @@ func newTestHandler(t *testing.T) (*control.Handler, func()) {
 // the control handler so the admin-impersonation gate runs end-to-end
 // (the unwired bus/redactor variant refuses impersonation requests
 // fail-closed, which is its own assertion shape — covered below).
-func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, audit.Redactor, func()) {
+func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, func()) {
 	t.Helper()
 	red := auditpatterns.New()
 	bus, err := events.Open(context.Background(), config.EventsConfig{
@@ -137,18 +137,18 @@ func newImpersonationHandler(t *testing.T) (*control.Handler, events.EventBus, a
 		_ = bus.Close(context.Background())
 		t.Fatalf("control.NewHandler: %v", err)
 	}
-	return h, bus, audit.Redactor(red), func() {
+	return h, bus, func() {
 		_ = taskReg.Close(context.Background())
 		_ = store.Close(context.Background())
 		_ = bus.Close(context.Background())
 	}
 }
 
-// do issues a request against the handler via httptest and returns the
-// recorded response.
-func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {
+// do issues a POST request against the handler via httptest and
+// returns the recorded response.
+func do(t *testing.T, h http.Handler, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	// The bare handler does not get a PathValue unless mounted on a mux
 	// with the {method} wildcard; mount it so r.PathValue works.
@@ -174,7 +174,7 @@ func TestNewHandler_WithLogger(t *testing.T) {
 	}
 	// A nil logger option is ignored; the handler still serves.
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
-	rec := do(t, h, http.MethodPost, "/v1/control/start", body)
+	rec := do(t, h, "/v1/control/start", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -202,7 +202,7 @@ func TestServeHTTP_Start_OK(t *testing.T) {
 	defer cleanup()
 
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"hello"}`
-	rec := do(t, h, http.MethodPost, "/v1/control/start", body)
+	rec := do(t, h, "/v1/control/start", body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -230,7 +230,7 @@ func TestServeHTTP_Start_MissingIdentity_FailsClosed401(t *testing.T) {
 	defer cleanup()
 
 	body := `{"identity":{"tenant":"t1","user":"","session":"s1"}}`
-	rec := do(t, h, http.MethodPost, "/v1/control/start", body)
+	rec := do(t, h, "/v1/control/start", body)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
@@ -250,7 +250,7 @@ func TestServeHTTP_UnknownMethod_404(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	rec := do(t, h, http.MethodPost, "/v1/control/teleport", `{}`)
+	rec := do(t, h, "/v1/control/teleport", `{}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
@@ -269,7 +269,7 @@ func TestServeHTTP_MalformedBody_400(t *testing.T) {
 	h, cleanup := newTestHandler(t)
 	defer cleanup()
 
-	rec := do(t, h, http.MethodPost, "/v1/control/start", `{not json`)
+	rec := do(t, h, "/v1/control/start", `{not json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
@@ -289,7 +289,7 @@ func TestServeHTTP_Control_NoLiveRun_404(t *testing.T) {
 	defer cleanup()
 
 	body := `{"identity":{"tenant":"t1","user":"u1","session":"s1","run":"r-nonexistent","scope":"owner_user"}}`
-	rec := do(t, h, http.MethodPost, "/v1/control/cancel", body)
+	rec := do(t, h, "/v1/control/cancel", body)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
@@ -328,7 +328,7 @@ func TestServeHTTP_OversizeBody_400(t *testing.T) {
 
 	huge := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"` +
 		strings.Repeat("x", 128<<10) + `"}`
-	rec := do(t, h, http.MethodPost, "/v1/control/start", huge)
+	rec := do(t, h, "/v1/control/start", huge)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for oversize body", rec.Code)
 	}
@@ -351,9 +351,9 @@ func TestServeHTTP_ConcurrentRequests_NoCrossTalk(t *testing.T) {
 	const n = 50
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
 			body := `{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}`
 			resp, err := http.Post(srv.URL+"/v1/control/start", "application/json", strings.NewReader(body))
@@ -374,7 +374,7 @@ func TestServeHTTP_ConcurrentRequests_NoCrossTalk(t *testing.T) {
 			if sr.TaskID == "" {
 				errs <- err
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 	close(errs)

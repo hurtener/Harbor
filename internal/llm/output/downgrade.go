@@ -63,12 +63,10 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 	id := identityFromCtx(ctx)
 	mode := profile.OutputMode
 
-	var (
-		attempts []attemptRecord
-		lastErr  error
-	)
+	var lastErr error
+	attempts := make([]attemptRecord, 0, maxDowngradeAttempts)
 
-	for step := 0; step < maxDowngradeAttempts; step++ {
+	for range maxDowngradeAttempts {
 		if err := ctx.Err(); err != nil {
 			return llm.CompleteResponse{}, err
 		}
@@ -311,7 +309,7 @@ func emitModeDowngraded(ctx context.Context, bus events.EventBus, id identity.Qu
 		return
 	}
 	fromKind, toKind := outputModeToResponseFormatKind(from), outputModeToResponseFormatKind(to)
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort telemetry emit — must not block the LLM call path.
 		Type:       llm.EventTypeModeDowngraded,
 		Identity:   id,
 		OccurredAt: time.Now(),

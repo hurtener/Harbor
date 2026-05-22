@@ -41,7 +41,7 @@ func TestConcurrentReuse_SharedMux_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -117,7 +117,7 @@ func TestGoroutineLeak_StreamsDrainAfterShutdown(t *testing.T) {
 
 	const streams = 25
 	var wg sync.WaitGroup
-	for i := 0; i < streams; i++ {
+	for range streams {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -156,7 +156,7 @@ func TestGoroutineLeak_StreamsDrainAfterShutdown(t *testing.T) {
 // it is a best-effort quiesce before a NumGoroutine snapshot, which is
 // the accepted shape for a leak test.
 func settle() {
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		runtime.GC()
 		time.Sleep(10 * time.Millisecond)
 	}

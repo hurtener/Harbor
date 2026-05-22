@@ -294,14 +294,22 @@ func TestDeprecations_RegistryIsValidAndEmpty(t *testing.T) {
 	}
 
 	// The returned slice is a copy — mutating it must not affect the
-	// next call.
-	if len(got) == 0 {
-		got = append(got, validDeprecation())
-	} else {
-		got[0] = types.Deprecation{}
+	// next call. We exercise both mutation shapes: appending past the
+	// slice's length (which, if the registry's backing array were
+	// shared and had spare capacity, would overwrite registry storage)
+	// and overwriting an element in place.
+	got = append(got, validDeprecation())
+	if len(got) != 1 {
+		t.Fatalf("append to Deprecations() result produced len %d, want 1", len(got))
 	}
-	if again := types.Deprecations(); len(again) != 0 {
-		t.Errorf("Deprecations() returned %d entries after the caller mutated a prior result — the registry is not copy-protected", len(again))
+	if len(types.Deprecations()) != 0 {
+		t.Error("Deprecations() is non-empty after the caller appended to a prior result — the registry is not copy-protected against append")
+	}
+	if base := types.Deprecations(); len(base) > 0 {
+		base[0] = types.Deprecation{}
+		if again := types.Deprecations(); len(again) > 0 && again[0] == (types.Deprecation{}) {
+			t.Error("Deprecations() reflects an element overwrite from a prior result — the registry is not copy-protected against in-place mutation")
+		}
 	}
 }
 

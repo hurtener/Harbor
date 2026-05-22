@@ -330,7 +330,7 @@ func TestList_AggregatesIdentityRejectedCount(t *testing.T) {
 	// Drive 3 memory.identity_rejected events by calling AddTurn with
 	// an incomplete triple — the driver fails closed AND emits the
 	// event on the bus (D-033).
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_ = h.store.AddTurn(context.Background(),
 			identity.Quadruple{Identity: identity.Identity{TenantID: id.TenantID, UserID: id.UserID}},
 			memory.ConversationTurn{})

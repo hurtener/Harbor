@@ -171,7 +171,7 @@ func TestSessionsSearcher_PaginationMath(t *testing.T) {
 	h := newHarness(t)
 	defer h.cleanup()
 
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		openSession(t, h, identity.Identity{
 			TenantID:  "t1",
 			UserID:    "u1",
@@ -257,7 +257,7 @@ func TestSessionsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 	defer h.cleanup()
 
 	// Seed 1 session per tenant.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		openSession(t, h, identity.Identity{
 			TenantID:  fmt.Sprintf("tenant-%d", i),
 			UserID:    "u",
@@ -278,8 +278,8 @@ func TestSessionsSearcher_Concurrent_NoCrossTalk(t *testing.T) {
 
 	var wg sync.WaitGroup
 	failures := make(chan string, N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

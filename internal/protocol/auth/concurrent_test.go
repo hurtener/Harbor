@@ -44,7 +44,7 @@ const (
 func TestConcurrentReuse_Validator(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -82,7 +82,7 @@ func TestConcurrentReuse_Validator(t *testing.T) {
 		start = make(chan struct{})
 		errs  = make([]error, concurrentN)
 	)
-	for i := 0; i < concurrentN; i++ {
+	for i := range concurrentN {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -134,7 +134,7 @@ func TestConcurrentReuse_Validator(t *testing.T) {
 func TestConcurrentReuse_Validator_CancellationIsolated(t *testing.T) {
 	priv, pub := loadTestRS256(t)
 	keys := newStaticKeySet()
-	keys.add("k1", "RS256", pub)
+	keys.add("RS256", pub)
 	v, err := auth.NewValidator(keys, auth.WithClock(func() time.Time { return fixedNow }), withTestRedactor())
 	if err != nil {
 		t.Fatalf("NewValidator: %v", err)
@@ -169,7 +169,7 @@ func TestConcurrentReuse_Validator_CancellationIsolated(t *testing.T) {
 // goroutines must do this — the test runner itself spawns / reaps
 // goroutines (timers, GC workers) in the background.
 func settleGoroutines() {
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.GC()
 		runtime.Gosched()
 		time.Sleep(5 * time.Millisecond)
