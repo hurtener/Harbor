@@ -31,14 +31,17 @@ source "scripts/smoke/common.sh"
 assert_file "CHANGELOG.md" "CHANGELOG.md exists at the repo root"
 assert_grep_present 'Keep a Changelog' "CHANGELOG.md" \
     "CHANGELOG follows the Keep-a-Changelog format"
-assert_grep_present 'Unreleased' "CHANGELOG.md" \
-    "CHANGELOG carries an Unreleased section"
-# The CHANGELOG must cover the V1 phase span — assert the first and
-# last subsystem waves are both present.
-assert_grep_present 'phases 00–04' "CHANGELOG.md" \
-    "CHANGELOG covers the foundation phases"
-assert_grep_present 'phases 76–81' "CHANGELOG.md" \
-    "CHANGELOG covers the release-hardening phases"
+# The v1.0.0 cut rolled the CHANGELOG to a dated [1.0.0] section.
+assert_grep_present '\[1\.0\.0\]' "CHANGELOG.md" \
+    "CHANGELOG carries a [1.0.0] release section"
+# The CHANGELOG must cover the V1 surface — assert the first and last
+# subsystem groups are both present. Public release surfaces describe
+# the product in feature terms, not internal phase numbering (D-142),
+# so these assert subsystem content, not "phases NN–MM".
+assert_grep_present 'Identity & isolation triple' "CHANGELOG.md" \
+    "CHANGELOG covers the identity / foundation subsystems"
+assert_grep_present 'conformance harness' "CHANGELOG.md" \
+    "CHANGELOG covers the conformance-harness / release-hardening work"
 
 # ----------------------------------------------------------------------------
 # Release tooling — the version-stamping single source + the dry-run.
