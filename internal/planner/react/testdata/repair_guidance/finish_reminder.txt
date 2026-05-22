@@ -1,0 +1,1 @@
+reminder: your previous `_finish` action failed validation. When you finish, emit exactly `{"tool": "_finish", "args": {"answer": "..."}}` with `answer` as the only field — plain text, no metadata.

@@ -47,7 +47,25 @@ import (
 // `extraGuidance` is operator-supplied content (Phase 83a — set by
 // [WithSystemPromptExtra] / `PlannerConfig.ExtraGuidance`) injected
 // into the `<additional_guidance>` section. Empty → the section is
-// omitted entirely.
+// omitted entirely (unless Phase 83c repair guidance fills it).
+//
+// **Dynamic-augmentation pass — Phase 83c contract (D-145).** Build
+// merges two runtime-supplied, per-turn surfaces into the otherwise
+// static twelve-section layout:
+//
+//   - `<additional_guidance>` (section 11) — below the operator
+//     content, the builder appends escalating repair guidance
+//     (`reminder → warning → critical`) for each non-zero
+//     `RunContext.RepairCounters` field. This closes the across-step
+//     feedback loop Phase 44's per-step repair leaves open (brief 13
+//     §2.2). One [planner.EventTypePlannerRepairGuidanceInjected]
+//     event is emitted per rendered block.
+//   - `<planning_constraints>` (section 12) — rendered from
+//     `RunContext.PlanningHints`; omitted entirely when nil / empty.
+//
+// Both surfaces are read from `rc`; the builder still MUST NOT mutate
+// `rc`. The counters live on the per-run `rc`, never on the builder
+// or planner struct (D-145 + D-025).
 //
 // **Reasoning replay — Phase 83e contract (D-148).** The builder
 // resolves the effective [planner.ReasoningReplayMode] via
@@ -93,6 +111,14 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 		Role:    llm.RoleSystem,
 		Content: textContent(sysContent),
 	})
+
+	// Phase 83c (D-145): emit one planner.repair_guidance_injected
+	// event per escalating guidance block merged into
+	// <additional_guidance> this turn. The emit reflects exactly what
+	// the LLM will see — a nil RepairCounters / all-zero counters is a
+	// no-op. Best-effort; a nil rc.Emit (tests without observability)
+	// is a no-op.
+	emitRepairGuidanceInjected(rc)
 
 	// 2. User block: goal/query + optional summary.
 	userContent := buildUserContent(rc)
@@ -160,7 +186,8 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 //   - 83b replaces sectionAvailableToolsTag's body with per-tool
 //     `args_schema` + curated examples.
 //   - 83c populates the <planning_constraints> section from
-//     `RunContext.PlanningHints` and merges per-turn repair guidance.
+//     `RunContext.PlanningHints` and merges per-turn repair guidance
+//     into <additional_guidance> (D-145 — done).
 //   - 83d injects `<read_only_*_memory>` UNTRUSTED-framed blocks.
 //
 // The `{{current_date}}` placeholder in <identity> is the ONLY
@@ -398,8 +425,10 @@ If you cannot complete the task after reasonable attempts:
 //  8. <tone>                 — voice defaults + the CRITICAL clamp.
 //  9. <error_handling>       — recovery framing; no requires_followup.
 //  10. <available_tools>      — rendered tool catalog (per-tool).
-//  11. <additional_guidance>  — operator-supplied. OMITTED when empty.
-//  12. <planning_constraints> — runtime-supplied. OMITTED when empty.
+//  11. <additional_guidance>  — operator-supplied content + Phase 83c
+//     per-turn repair guidance. OMITTED only when BOTH are empty.
+//  12. <planning_constraints> — runtime-supplied PlanningHints
+//     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
 // when an operator passes a non-default string it REPLACES the entire
@@ -438,14 +467,21 @@ func buildSystemContent(systemPrompt, extraGuidance string, rc planner.RunContex
 	// "no tools" marker when the catalog is empty).
 	sections = append(sections, renderAvailableToolsSection(rc))
 
-	// Section 11: <additional_guidance> — omitted entirely when empty.
-	if g := strings.TrimSpace(extraGuidance); g != "" {
+	// Section 11: <additional_guidance> — operator-supplied guidance
+	// PLUS the Phase 83c per-turn repair guidance (D-145). The repair
+	// guidance is the across-step feedback loop: when a
+	// `RunContext.RepairCounters` field is non-zero, an escalating
+	// `reminder → warning → critical` block is merged below the
+	// operator content for THIS TURN ONLY. The section is omitted
+	// entirely only when BOTH are empty.
+	if g := buildAdditionalGuidance(extraGuidance, rc); g != "" {
 		sections = append(sections, "<additional_guidance>\n"+g+"\n</additional_guidance>")
 	}
 
-	// Section 12: <planning_constraints> — omitted entirely until
-	// Phase 83c wires `RunContext.PlanningHints`. The anchor exists so
-	// 83c is a localised edit, not a structural change.
+	// Section 12: <planning_constraints> — runtime-supplied planning
+	// hints (Phase 83c — D-145). Rendered from `RunContext.PlanningHints`
+	// and omitted entirely when nil / empty (brief 13 §2.1: optional
+	// sections are omitted, never emitted as empty tag pairs).
 	if hints := renderPlanningConstraints(rc); hints != "" {
 		sections = append(sections, hints)
 	}
@@ -488,16 +524,35 @@ func renderAvailableToolsSection(rc planner.RunContext) string {
 	return b.String()
 }
 
+// buildAdditionalGuidance composes the `<additional_guidance>` section
+// body (Phase 83c — D-145): operator-supplied guidance first, then the
+// per-turn repair guidance below it when a `RunContext.RepairCounters`
+// field has tripped. A blank line separates the two when both are
+// present. Returns the empty string when neither contributes — the
+// caller then omits the section entirely.
+//
+// Pure read of `extraGuidance` + `rc`: it never mutates the counters.
+func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string {
+	op := strings.TrimSpace(extraGuidance)
+	repair := renderRepairGuidance(rc.RepairCounters)
+	switch {
+	case op != "" && repair != "":
+		return op + "\n\n" + repair
+	case op != "":
+		return op
+	default:
+		return repair
+	}
+}
+
 // renderPlanningConstraints renders the <planning_constraints> section
-// (brief 13 §2.1 section 12) from runtime-supplied hints. Phase 83a
-// ships the anchor only — it always returns the empty string, so the
-// section is omitted from the prompt. Phase 83c wires
-// `RunContext.PlanningHints` and gives this function a real body.
-func renderPlanningConstraints(_ planner.RunContext) string {
-	// Phase 83c populates this from RunContext.PlanningHints. Until
-	// then the section is omitted entirely (acceptance criterion:
-	// missing optional injections omit their section).
-	return ""
+// (brief 13 §2.1 section 12) from `RunContext.PlanningHints`
+// (Phase 83c — D-145). Returns the empty string when the hints are
+// nil or carry no content, so the section is omitted from the prompt
+// (acceptance criterion: missing optional injections omit their
+// section). The render is delegated to [renderPlanningHints].
+func renderPlanningConstraints(rc planner.RunContext) string {
+	return renderPlanningHints(rc.PlanningHints)
 }
 
 // buildUserContent composes the user goal + optional summary.

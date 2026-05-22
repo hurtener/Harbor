@@ -1,0 +1,1 @@
+critical: your tool arguments have failed schema validation three or more times. Pick the simplest tool that can make progress, copy its `args_schema` field-for-field, and supply only the fields that schema declares. If no tool fits, `_finish` with an explanation.
