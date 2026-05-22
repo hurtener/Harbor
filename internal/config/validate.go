@@ -963,7 +963,24 @@ func (c *Config) validatePlanner() error {
 		return fieldError("planner.max_steps",
 			fmt.Sprintf("must be >= 0 (0 = use driver default), got %d", c.Planner.MaxSteps))
 	}
+	if _, ok := allowedReasoningReplayModes[c.Planner.ReasoningReplay]; !ok {
+		return fieldError("planner.reasoning_replay",
+			fmt.Sprintf("must be one of %s, got %q",
+				sortedKeys(allowedReasoningReplayModes), c.Planner.ReasoningReplay))
+	}
 	return nil
+}
+
+// allowedReasoningReplayModes mirrors the `planner.ReasoningReplayMode`
+// enum (Phase 83e — D-148). The empty string is accepted — it is the
+// unset sentinel that the planner resolves to `never`. `internal/config`
+// MUST NOT import `internal/planner` (the allowlist-mirror pattern, same
+// as `allowedPlannerDrivers`); the planner package's
+// `TestConfigAllowlist_ReasoningReplayMirror` test asserts no drift.
+var allowedReasoningReplayModes = map[string]struct{}{
+	"":      {},
+	"never": {},
+	"text":  {},
 }
 
 // fieldError formats a validation error with the offending path so

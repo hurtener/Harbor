@@ -1193,6 +1193,37 @@ func TestValidate_Planner_AcceptsExtraGuidance(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_ReasoningReplay covers the Phase 83e (D-148)
+// reasoning_replay enum: empty (→never), `never`, and `text` validate;
+// any other value fails loud pre-boot with the allowlist in the error.
+func TestValidate_Planner_ReasoningReplay(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"", "never", "text"} {
+		t.Run("accepts/"+mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := mustLoadValid(t)
+			cfg.Planner = config.PlannerConfig{Driver: "react", ReasoningReplay: mode}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate(planner.reasoning_replay=%q): %v", mode, err)
+			}
+		})
+	}
+	for _, mode := range []string{"provider_native", "always", "Never", "yes"} {
+		t.Run("rejects/"+mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := mustLoadValid(t)
+			cfg.Planner = config.PlannerConfig{Driver: "react", ReasoningReplay: mode}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate(planner.reasoning_replay=%q) returned nil, want error", mode)
+			}
+			if !strings.Contains(err.Error(), "reasoning_replay") {
+				t.Errorf("err = %q, want it to name the planner.reasoning_replay field", err.Error())
+			}
+		})
+	}
+}
+
 // mustLoadValid loads the canonical valid fixture and returns a
 // mutable copy callers can break in subtests.
 func mustLoadValid(t *testing.T) *config.Config {

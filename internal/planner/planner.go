@@ -168,6 +168,73 @@ type RunContext struct {
 	// `planner.error` — see events.go). May be nil in tests; concretes
 	// MUST nil-check.
 	Emit func(events.Event)
+
+	// ReasoningReplay is a per-run override for the agent's reasoning-
+	// replay policy (Phase 83e — D-148). When nil, the planner uses
+	// the agent's configured `config.PlannerConfig.ReasoningReplay`.
+	// When non-nil, this value wins — letting a tenant-specific or
+	// run-specific policy override the per-agent default (e.g. an
+	// operator disabling replay for a cost-sensitive run). The Runtime
+	// populates it from the per-run options; the planner reads only.
+	ReasoningReplay *ReasoningReplayMode
+}
+
+// ReasoningReplayMode controls whether the ReAct planner re-injects a
+// prior step's captured reasoning trace into the next turn's prompt
+// (Phase 83e — D-148). The predecessor never replayed; Harbor's stance
+// is never-replay default for ALL models, with a per-agent operator
+// opt-in. V1 ships exactly two modes — no `provider_native` mode,
+// because Bifrost's docs do not address signed-thinking-block round-
+// trips.
+type ReasoningReplayMode string
+
+// Reasoning replay modes (D-148). The zero value is deliberately the
+// empty string, which `EffectiveReasoningReplay` resolves to
+// `ReasoningReplayNever` — replay is OFF unless an operator opts in.
+const (
+	// ReasoningReplayNever — the trajectory renderer emits prior
+	// `{tool, args}` JSON only; captured reasoning is never re-injected
+	// into prompts. The default for ALL models.
+	ReasoningReplayNever ReasoningReplayMode = "never"
+	// ReasoningReplayText — the trajectory renderer prepends each prior
+	// step's captured reasoning trace as a text block ABOVE the prior
+	// `{tool, args}` JSON in the assistant turn. Per-agent operator
+	// opt-in for workloads that benefit from CoT continuity.
+	ReasoningReplayText ReasoningReplayMode = "text"
+)
+
+// IsValidReasoningReplayMode reports whether m is one of the canonical
+// replay modes. The empty string is accepted — it is the unset
+// sentinel that resolves to `ReasoningReplayNever`. Config validation
+// uses this to reject typo'd values loudly pre-boot.
+func IsValidReasoningReplayMode(m ReasoningReplayMode) bool {
+	switch m {
+	case "", ReasoningReplayNever, ReasoningReplayText:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveReasoningReplay resolves the replay mode in effect for a
+// planner step (D-148). The per-run `RunContext.ReasoningReplay`
+// override wins when non-nil; otherwise the agent-configured
+// `configured` value applies. An empty `configured` value — or an
+// empty override — resolves to `ReasoningReplayNever`: replay is OFF
+// unless an operator explicitly opted in. Any non-canonical value also
+// resolves to `ReasoningReplayNever` (fail-closed; config validation
+// already rejects bad values pre-boot, so this is defence in depth).
+func EffectiveReasoningReplay(rc RunContext, configured ReasoningReplayMode) ReasoningReplayMode {
+	mode := configured
+	if rc.ReasoningReplay != nil {
+		mode = *rc.ReasoningReplay
+	}
+	switch mode {
+	case ReasoningReplayText:
+		return ReasoningReplayText
+	default:
+		return ReasoningReplayNever
+	}
 }
 
 // ToolCatalogView is the planner-facing read view over the production

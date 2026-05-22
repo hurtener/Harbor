@@ -3450,3 +3450,37 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 **Findings I'm departing from.** None — this phase matches brief 13's 2026-05-19 revised design exactly. The brief's own §9 records the departure from the superseded "rich-output deferred to V2" note; Phase 83a inherits that closed departure rather than re-opening it.
 
 **Protocol additions.** None — Phase 83a is a planner-internal prompt-content refactor plus one operator-facing config key (`planner.extra_guidance`) and one constructor Option (`WithSystemPromptExtra`). No Protocol method, error code, wire type, or CLI subcommand changes.
+
+---
+
+## D-147 — The ReAct action schema is narrowed to `{tool, args}`; reasoning is captured on the provider channel, not the decision
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83e)
+
+**Where it lives:** `internal/planner/decision.go` (`CallTool`); `internal/llm/llm.go` (`CompleteResponse.Reasoning`); `internal/llm/drivers/bifrost/reasoning.go` + `bifrost.go` + `translate.go`; `internal/planner/repair/parser.go` + `repair.go`; `internal/planner/trajectory/trajectory.go` (`Step.ReasoningTrace`); `internal/planner/react/react.go`; `internal/planner/events.go` (`DecisionPayload`, `ActionExtraFieldDroppedPayload`).
+
+**Decision.** The `planner.CallTool` decision shape drops its `Reasoning` field. The model emits `{tool, args}` only. The provider-side thinking trace — Anthropic extended thinking, OpenAI o-series, DeepSeek native, Gemini `thought:true` parts — is captured separately: `llm.CompleteResponse` gains a `Reasoning string` field, the bifrost driver reads `BifrostChatResponse.Choices[0].Message.ReasoningDetails` (bifrost's normalised canonical surface) on BOTH the unary and streaming paths, and the captured trace persists on `trajectory.Step.ReasoningTrace`. This closes two gaps brief 13 §2.6's empirical Bifrost probe pinned: the unary-path gap (`OnReasoning` was streaming-only) and the Gemini-direct black hole (bifrost populated `reasoning_details[]` on the message but Harbor dropped it). Phase 44's schema-repair parser tolerates incoming `reasoning` / `thought` fields by silently stripping them and emitting a `planner.action_extra_field_dropped` telemetry event per dropped field — the runtime fails OPEN for backward compatibility with older trained models.
+
+**Why.** A reasoning string inside the structured decision conflates two concerns: the action the runtime executes, and the model's chain of thought. The conflation cost a schema field the model had to fill on every step, and it never carried the *real* provider thinking trace — only whatever free text the model echoed. Reading the provider's normalised reasoning channel captures the genuine trace; narrowing the action schema removes the model's expectation of an echo field. The "we need reasoning visible in the trajectory" use case is preserved by D-148's replay knob — by configuration, not by schema.
+
+**Findings I'm departing from.** This is a binary departure from Phase 45 / D-051, which shipped `CallTool{Tool, Args, Reasoning}` as the V1 action shape. The departure is recorded here; the deterministic planner's `CallToolStep.Reasoning` field is dropped in the same change since it has nowhere to land.
+
+**Protocol additions.** None — `CompleteResponse` and the planner Decision sum are internal Go types, not Protocol wire types. The `planner.decision` and `planner.action_extra_field_dropped` events are internal event-bus types (registered in `internal/planner/events.go`), surfaced to operators via `harbor inspect-runs` event replay — not new Protocol methods.
+
+---
+
+## D-148 — Reasoning replay is a per-agent operator knob; `never` by default for ALL models, two modes only
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83e)
+
+**Where it lives:** `internal/planner/planner.go` (`ReasoningReplayMode`, `RunContext.ReasoningReplay`, `EffectiveReasoningReplay`); `internal/config/config.go` (`PlannerConfig.ReasoningReplay`) + `internal/config/validate.go`; `internal/planner/react/react.go` (`WithReasoningReplay`) + `prompt.go`; `internal/planner/registry.go` + `react/init.go`.
+
+**Decision.** Whether a prior step's captured reasoning trace is re-injected into the next turn's prompt is an operator-controlled per-agent knob: `config.PlannerConfig.ReasoningReplay`, a string enum validated to `never` / `text` (empty resolves to `never`). The `ReasoningReplayMode` Go enum's zero value resolves to `never` — replay is OFF unless an operator opts in, for ALL models. When the mode is `text`, the ReAct trajectory renderer prepends each prior step's captured `ReasoningTrace` as a text block above the prior `{tool, args}` action JSON. A per-run `RunContext.ReasoningReplay *ReasoningReplayMode` override wins over the agent-configured value for tenant- or run-specific policy. V1 ships exactly two modes — there is NO `provider_native` mode.
+
+**Why.** The predecessor never replayed reasoning; Harbor's stance is the same default (never-replay for every model — thinking-class or not), with a deliberate per-agent opt-in for workloads where chain-of-thought continuity across turns measurably helps. Making it a knob rather than a hardcoded behaviour means the "reasoning visible in the trajectory" use case D-147 removed from the schema is recovered by configuration. The zero-value-resolves-to-`never` contract is load-bearing: a misconfigured or zero-value enum must NOT silently opt an agent into replay.
+
+**Findings I'm departing from.** Brief 13 §2.6 noted three candidate modes (`never`, `text`, `provider_native`). V1 ships only the first two. `provider_native` would round-trip Anthropic's `signature`-bearing thinking blocks through bifrost as API constructs across turns; Bifrost's docs do not address that round-trip, so Harbor cannot guarantee correctness today. Deferred — revisit when (a) Bifrost documents the signed-thinking-block round-trip or (b) a real workload measurably benefits.
+
+**Protocol additions.** None — `PlannerConfig.ReasoningReplay` is a `harbor.yaml` config key (restart-required; no `reload:"live"` tag). No Protocol method, error code, wire type, or CLI subcommand change.

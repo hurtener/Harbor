@@ -167,12 +167,13 @@ func (d *Driver) streamComplete(
 	}
 
 	var (
-		contentB    strings.Builder
-		reasoningB  strings.Builder
-		finalUsage  llm.Usage
-		finalCost   llm.Cost
-		streamErr   error
-		gotAnyChunk bool
+		contentB     strings.Builder
+		reasoningB   strings.Builder
+		finalDetails []bfschemas.ChatReasoningDetails
+		finalUsage   llm.Usage
+		finalCost    llm.Cost
+		streamErr    error
+		gotAnyChunk  bool
 	)
 
 readLoop:
@@ -199,7 +200,7 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
-				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
+				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
 	}
@@ -222,10 +223,21 @@ readLoop:
 		// silent success-with-no-content.
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: stream returned no chunks")
 	}
+	// Reasoning capture (Phase 83e): prefer the message-level
+	// `ReasoningDetails` a final stream chunk carried — bifrost's
+	// canonical normalised surface — over the per-delta accumulator.
+	// Fall back to the accumulated builder when the stream emitted
+	// reasoning deltas but no final message-level details array (some
+	// providers stream `delta.Reasoning` without a normalised tail).
+	reasoning := joinReasoningDetails(finalDetails)
+	if reasoning == "" {
+		reasoning = reasoningB.String()
+	}
 	out := llm.CompleteResponse{
-		Content: contentB.String(),
-		Usage:   finalUsage,
-		Cost:    finalCost,
+		Content:   contentB.String(),
+		Reasoning: reasoning,
+		Usage:     finalUsage,
+		Cost:      finalCost,
 	}
 	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage)
 	return out, nil
@@ -241,6 +253,7 @@ func processStreamChunk(
 	resp *bfschemas.BifrostChatResponse,
 	contentB *strings.Builder,
 	reasoningB *strings.Builder,
+	details *[]bfschemas.ChatReasoningDetails,
 	usage *llm.Usage,
 	cost *llm.Cost,
 	onContent func(string, bool),
@@ -265,6 +278,14 @@ func processStreamChunk(
 			if onReasoning != nil {
 				onReasoning(*delta.Reasoning, false)
 			}
+		}
+		// Collect message-level normalised reasoning details. Bifrost
+		// emits `reasoning_details[]` on stream deltas for providers
+		// whose stream carries the normalised tail (the Gemini-direct
+		// path among them — brief 13 §2.6); the driver prefers these
+		// over the per-delta `delta.Reasoning` accumulator.
+		if len(delta.ReasoningDetails) > 0 {
+			*details = append(*details, delta.ReasoningDetails...)
 		}
 	}
 	// Backfill usage / cost when bifrost reports it (typically on

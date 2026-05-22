@@ -217,6 +217,26 @@ func WithPromptBuilder(b PromptBuilder) Option {
 	}
 }
 
+// WithReasoningReplay sets the agent-configured reasoning-replay mode
+// (Phase 83e — D-148). The runtime wires this from
+// `config.PlannerConfig.ReasoningReplay`. The default — and the value
+// for an empty / unset mode — is [planner.ReasoningReplayNever]: a
+// prior step's captured reasoning is NEVER re-injected into the next
+// prompt. [planner.ReasoningReplayText] opts the agent into prepending
+// each prior step's captured `ReasoningTrace` as a text block above
+// the action JSON. A per-run `RunContext.ReasoningReplay` override
+// wins over this configured value at render time.
+//
+// An invalid mode is rejected (the option is a no-op) — config
+// validation already rejects bad values pre-boot.
+func WithReasoningReplay(mode planner.ReasoningReplayMode) Option {
+	return func(p *ReActPlanner) {
+		if planner.IsValidReasoningReplayMode(mode) {
+			p.reasoningReplay = mode
+		}
+	}
+}
+
 // WithSystemPrompt overrides the [DefaultSystemPrompt]. An empty
 // string falls back to [DefaultSystemPrompt].
 //
@@ -294,6 +314,14 @@ type ReActPlanner struct {
 	// this field. Read-only after construction (D-025).
 	extraGuidance string
 
+	// reasoningReplay is the agent-configured reasoning-replay mode
+	// (Phase 83e — D-148). Set via [WithReasoningReplay] from
+	// `config.PlannerConfig.ReasoningReplay`; defaults to
+	// [planner.ReasoningReplayNever]. Applied to the default prompt
+	// builder at construction; a per-run RunContext override wins at
+	// render time.
+	reasoningReplay planner.ReasoningReplayMode
+
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
@@ -318,10 +346,11 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 		panic("react.New: nil llm.LLMClient")
 	}
 	p := &ReActPlanner{
-		client:       client,
-		maxSteps:     DefaultMaxSteps,
-		builder:      defaultBuilder{},
-		systemPrompt: DefaultSystemPrompt,
+		client:          client,
+		maxSteps:        DefaultMaxSteps,
+		builder:         defaultBuilder{},
+		systemPrompt:    DefaultSystemPrompt,
+		reasoningReplay: planner.ReasoningReplayNever,
 		repairCfg: repair.Config{
 			ArgFillEnabled:            true,
 			RepairAttempts:            repair.DefaultRepairAttempts,
@@ -332,14 +361,19 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 		opt(p)
 	}
 	// Finalise the in-package builder with operator-supplied
-	// <additional_guidance> content. Skipped when an operator injected
-	// their own builder via WithPromptBuilder — a custom builder owns
-	// its own prompt assembly (the option order is "later overrides
-	// earlier", so a WithPromptBuilder after a WithSystemPromptExtra is
-	// the operator's deliberate choice). The builder is rebuilt as a
-	// fresh value so it stays an immutable compiled artifact (D-025).
+	// <additional_guidance> content and the agent-configured
+	// reasoning-replay mode (Phase 83a + 83e — D-148). Skipped when an
+	// operator injected their own builder via WithPromptBuilder — a
+	// custom builder owns its own prompt assembly and replay handling
+	// (the option order is "later overrides earlier", so a
+	// WithPromptBuilder after a WithSystemPromptExtra is the operator's
+	// deliberate choice). The builder is rebuilt as a fresh value so it
+	// stays an immutable compiled artifact (D-025).
 	if _, ok := p.builder.(defaultBuilder); ok {
-		p.builder = defaultBuilder{extraGuidance: p.extraGuidance}
+		p.builder = defaultBuilder{
+			extraGuidance:    p.extraGuidance,
+			configuredReplay: p.reasoningReplay,
+		}
 	}
 	return p
 }
@@ -408,7 +442,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// (Phase 44 contract) and surfaces the parser's first action(s)
 	// verbatim; the dispatcher rejects misshaped args downstream.
 	loop := repair.New(p.repairCfg)
-	dec, err := loop.Run(ctx, rc, p.client, req, nil)
+	result, err := loop.Run(ctx, rc, p.client, req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -417,13 +451,73 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// The mapper may surface a typed error when translating reserved
 	// names (`_spawn_task`, `_await_task`) whose args are malformed —
 	// silent degradation is forbidden per §13.
-	final, mapErr := p.mapDecision(dec)
+	final, mapErr := p.mapDecision(result.Decision)
 	if mapErr != nil {
 		return nil, mapErr
 	}
 
+	// Phase 83e (D-147): emit planner.decision carrying the captured
+	// provider-side reasoning trace. The runtime's trajectory-append
+	// path stamps `trajectory.Step.ReasoningTrace` from the same
+	// `RunResult.Reasoning`; the event is the observability surface
+	// `harbor inspect-runs` replays to reconstruct the reasoning
+	// channel. Reasoning is captured content — it is NOT replayed into
+	// the next prompt unless the agent's ReasoningReplay mode is `text`
+	// (D-148; the trajectory renderer enforces this).
+	p.emitDecision(rc, final, result.Reasoning)
+
 	p.stepsTaken.Add(1)
 	return final, nil
+}
+
+// emitDecision publishes a [planner.EventTypePlannerDecision] event
+// carrying the resolved Decision shape + the captured reasoning trace
+// (Phase 83e — D-147). Best-effort; a nil Emit closure (tests without
+// observability) is a no-op. The event is the load-bearing surface
+// `harbor inspect-runs` replays to reconstruct a run's reasoning
+// channel; the audit redactor processes the payload on the bus before
+// any sink persists it (CLAUDE.md §7 — reasoning can be sensitive).
+func (p *ReActPlanner) emitDecision(rc planner.RunContext, dec planner.Decision, reasoning string) {
+	if rc.Emit == nil {
+		return
+	}
+	kind, tool := decisionKindAndTool(dec)
+	now := nowFromRC(rc)
+	rc.Emit(events.Event{
+		Type:       planner.EventTypePlannerDecision,
+		Identity:   rc.Quadruple,
+		OccurredAt: now,
+		Payload: planner.DecisionPayload{
+			Identity:       rc.Quadruple,
+			DecisionKind:   kind,
+			Tool:           tool,
+			ReasoningChars: len([]rune(reasoning)),
+			ReasoningTrace: reasoning,
+			OccurredAt:     now,
+		},
+	})
+}
+
+// decisionKindAndTool returns the Decision shape name and — for a
+// CallTool — its tool name. A nil or unrecognised Decision yields
+// ("unknown", "").
+func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
+	switch d := dec.(type) {
+	case planner.CallTool:
+		return "CallTool", d.Tool
+	case planner.CallParallel:
+		return "CallParallel", ""
+	case planner.Finish:
+		return "Finish", ""
+	case planner.SpawnTask:
+		return "SpawnTask", ""
+	case planner.AwaitTask:
+		return "AwaitTask", ""
+	case planner.RequestPause:
+		return "RequestPause", ""
+	default:
+		return "unknown", ""
+	}
 }
 
 // mapDecision converts the repair loop's Decision into the planner's
@@ -522,7 +616,6 @@ func (p *ReActPlanner) translateFinishCall(call planner.CallTool) planner.Finish
 		_ = json.Unmarshal(call.Args, &args) //nolint:errcheck // best-effort decode; a missing answer surfaces as nil Payload (see doc above)
 	}
 	metadata := map[string]any{
-		"reasoning":  call.Reasoning,
 		"raw_args":   string(call.Args),
 		"via":        "react._finish",
 		"tool":       FinishToolName,

@@ -25,11 +25,15 @@ func TestParser_GreedyDecode_SingleObject(t *testing.T) {
 	if actions[0].Tool != "search" {
 		t.Errorf("Tool = %q, want %q", actions[0].Tool, "search")
 	}
-	if actions[0].Reasoning != "user wants info" {
-		t.Errorf("Reasoning = %q, want %q", actions[0].Reasoning, "user wants info")
-	}
 	if string(actions[0].Args) != `{"q":"hello"}` {
 		t.Errorf("Args = %q, want %q", string(actions[0].Args), `{"q":"hello"}`)
+	}
+	// Phase 83e (D-147): the action schema is narrowed to {tool, args}.
+	// The incoming `reasoning` field is stripped silently; the parser
+	// reports it via DroppedExtraFields so the loop can emit telemetry.
+	dropped := repair.DroppedExtraFields(text)
+	if len(dropped) != 1 || dropped[0] != "reasoning" {
+		t.Errorf("DroppedExtraFields = %v, want [reasoning]", dropped)
 	}
 }
 
@@ -258,5 +262,42 @@ func TestParser_PreservesArgsBytes(t *testing.T) {
 	}
 	if !strings.Contains(string(actions[0].Args), `"b":2`) {
 		t.Errorf("args were re-marshalled — original byte order lost: %s", string(actions[0].Args))
+	}
+}
+
+// TestDroppedExtraFields_Phase83e covers the D-147 extra-field scanner
+// across the parser's salvage paths: single object, fenced block,
+// prose-wrapped object, multi-action array, and the clean (no-extra)
+// case.
+func TestDroppedExtraFields_Phase83e(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"clean_object", `{"tool":"x","args":{}}`, nil},
+		{"reasoning_field", `{"tool":"x","args":{},"reasoning":"r"}`, []string{"reasoning"}},
+		{"thought_field", `{"tool":"x","args":{},"thought":"t"}`, []string{"thought"}},
+		{"both_fields", `{"tool":"x","args":{},"reasoning":"r","thought":"t"}`, []string{"reasoning", "thought"}},
+		{"fenced", "```json\n{\"tool\":\"x\",\"args\":{},\"reasoning\":\"r\"}\n```", []string{"reasoning"}},
+		{"prose_wrapped", `Here is my action: {"tool":"x","args":{},"thought":"t"}`, []string{"thought"}},
+		{"array_two", `[{"tool":"a","args":{},"reasoning":"r1"},{"tool":"b","args":{},"reasoning":"r2"}]`, []string{"reasoning", "reasoning"}},
+		{"empty", ``, nil},
+		{"junk", `not json at all`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := repair.DroppedExtraFields(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("DroppedExtraFields(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("DroppedExtraFields[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }

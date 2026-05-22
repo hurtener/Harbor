@@ -30,12 +30,17 @@ var (
 // the predecessor's "magic strings as next_node" pattern (RFC §6.2
 // settled decisions; D-047). The envelope is intentionally minimal:
 //
-//	{"tool": "<catalog name>", "args": {...}, "reasoning": "..."}
+//	{"tool": "<catalog name>", "args": {...}}
 //
-// `reasoning` is optional free-form text the planner echoes back to
-// the LLM via [planner.CallTool.Reasoning]. The parser does NOT
-// recognise the predecessor's `next_node` discriminator — that
-// vocabulary is explicitly rejected.
+// Phase 83e (D-147) narrowed the shape — the former `reasoning` /
+// `thought` fields are dropped. A model that still emits them (older
+// trained checkpoints) has the extra fields silently stripped, with a
+// `planner.action_extra_field_dropped` telemetry event per dropped
+// field. The runtime fails OPEN here — strip-and-warn, never error —
+// for backward compatibility; the captured thinking trace flows
+// through the provider channel onto `trajectory.Step.ReasoningTrace`
+// instead. The parser does NOT recognise the predecessor's `next_node`
+// discriminator — that vocabulary is explicitly rejected.
 //
 // The parser does NOT extract [planner.CallParallel] / [planner.Finish]
 // envelopes — those are runtime opcodes, not tool calls. Phase 45
@@ -44,10 +49,18 @@ var (
 // the planner concrete's call, not the repair loop's. The repair loop
 // runs on the [planner.CallTool] shape only.
 type ActionEnvelope struct {
-	Tool      string          `json:"tool"`
-	Args      json.RawMessage `json:"args"`
-	Reasoning string          `json:"reasoning,omitempty"`
+	Tool string          `json:"tool"`
+	Args json.RawMessage `json:"args"`
 }
+
+// extraActionFields lists the JSON keys the parser strips from an
+// incoming action object before mapping it to a [planner.CallTool].
+// `reasoning` / `thought` are legacy free-text fields older models
+// were trained to emit; Phase 83e (D-147) narrowed the action schema
+// to `{tool, args}`, so the parser strip-and-warns rather than
+// carrying them. Each stripped key emits one
+// `planner.action_extra_field_dropped` event.
+var extraActionFields = []string{"reasoning", "thought"}
 
 // ActionParser extracts one OR many [planner.CallTool] actions from
 // raw LLM text. Tolerant of the failure modes brief 07 §3 catalogued:
@@ -287,14 +300,131 @@ func trimLeftJunk(s string) string {
 // [planner.CallTool] shape the loop returns. Args is preserved as
 // the original RawMessage so the downstream tool-validator sees the
 // exact bytes the LLM emitted.
+//
+// Phase 83e (D-147): the action schema is `{tool, args}` only. Extra
+// fields (`reasoning` / `thought`) are dropped silently by the typed
+// unmarshal — [DroppedExtraFields] reports which ones a raw object
+// carried so the parser can emit telemetry.
 func envelopeToCallTool(env ActionEnvelope) planner.CallTool {
 	args := env.Args
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
 	return planner.CallTool{
-		Tool:      env.Tool,
-		Args:      args,
-		Reasoning: env.Reasoning,
+		Tool: env.Tool,
+		Args: args,
 	}
+}
+
+// droppedFieldsInObject reports which Phase 83e-narrowed extra keys
+// ([extraActionFields] — `reasoning` / `thought`) a single raw
+// action-object JSON carries. A non-object payload, or an object with
+// none of the keys, returns nil.
+func droppedFieldsInObject(raw []byte) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	var dropped []string
+	for _, k := range extraActionFields {
+		if _, present := obj[k]; present {
+			dropped = append(dropped, k)
+		}
+	}
+	return dropped
+}
+
+// DroppedExtraFields scans an LLM response for Phase 83e-narrowed
+// extra action fields (`reasoning` / `thought` — D-147) and returns
+// every dropped key across every action object the response carries
+// (a multi-action array contributes one entry per object). The repair
+// loop calls it after a successful parse to emit one
+// `planner.action_extra_field_dropped` event per dropped field. The
+// scan mirrors the parser's salvage ladder so a fenced or prose-
+// wrapped object is still inspected. Returns nil when the response
+// carries no extra fields.
+func DroppedExtraFields(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	objs := collectActionObjects(text)
+	var dropped []string
+	for _, raw := range objs {
+		dropped = append(dropped, droppedFieldsInObject(raw)...)
+	}
+	return dropped
+}
+
+// collectActionObjects walks the parser's salvage ladder (greedy
+// decode → fenced extraction → decoder scan) and returns the raw JSON
+// bytes of every action OBJECT it finds — single objects and the
+// elements of top-level arrays alike. Used by [DroppedExtraFields] so
+// the extra-field scan sees the same objects the parser mapped to
+// actions.
+func collectActionObjects(text string) [][]byte {
+	tryOne := func(s string) [][]byte {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		// Single object.
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(s), &obj); err == nil {
+			if _, ok := obj["tool"]; ok {
+				return [][]byte{[]byte(s)}
+			}
+		}
+		// Array of objects.
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(s), &arr); err == nil && len(arr) > 0 {
+			out := make([][]byte, 0, len(arr))
+			for _, el := range arr {
+				out = append(out, []byte(el))
+			}
+			return out
+		}
+		return nil
+	}
+	if out := tryOne(text); len(out) > 0 {
+		return out
+	}
+	var out [][]byte
+	for _, block := range extractFencedBlocks(text) {
+		out = append(out, tryOne(block)...)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	// Decoder scan — most tolerant pass.
+	remaining := trimLeftJunk(text)
+	for remaining != "" {
+		dec := json.NewDecoder(strings.NewReader(remaining))
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			advanced := int(dec.InputOffset())
+			if advanced <= 0 {
+				advanced = 1
+			}
+			if advanced >= len(remaining) {
+				break
+			}
+			remaining = trimLeftJunk(remaining[advanced:])
+			continue
+		}
+		advanced := int(dec.InputOffset())
+		if advanced <= 0 {
+			advanced = len(raw)
+		}
+		out = append(out, tryOne(string(raw))...)
+		if advanced >= len(remaining) {
+			break
+		}
+		remaining = trimLeftJunk(remaining[advanced:])
+	}
+	return out
 }
