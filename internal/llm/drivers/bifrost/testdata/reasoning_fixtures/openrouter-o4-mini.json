@@ -1,0 +1,19 @@
+{
+  "id": "fixture-openrouter-o4-mini",
+  "model": "openai/o4-mini",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"tool\":\"calculate\",\"args\":{\"expr\":\"2+2\"}}",
+        "reasoning_details": [
+          {"index": 0, "type": "reasoning.summary", "summary": "Planned to evaluate the arithmetic expression with the calculate tool."}
+        ]
+      }
+    }
+  ],
+  "usage": {"prompt_tokens": 28, "completion_tokens": 14, "total_tokens": 42}
+}

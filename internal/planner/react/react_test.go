@@ -257,8 +257,11 @@ func TestNext_FinishToolNameMappedToFinishDecision(t *testing.T) {
 	if fin.Payload != "42" {
 		t.Errorf("Payload = %v, want %q", fin.Payload, "42")
 	}
-	if v, _ := fin.Metadata["reasoning"].(string); v != "the answer" {
-		t.Errorf("Metadata[reasoning] = %v, want %q", v, "the answer")
+	// Phase 83e (D-147): the action schema is narrowed to {tool, args};
+	// translateFinishCall no longer stamps Metadata["reasoning"]. The
+	// `reasoning` field in the fixture above is stripped at parse time.
+	if _, present := fin.Metadata["reasoning"]; present {
+		t.Errorf("Metadata[reasoning] should be absent post-D-147, got %v", fin.Metadata["reasoning"])
 	}
 	if v, _ := fin.Metadata["via"].(string); v != "react._finish" {
 		t.Errorf("Metadata[via] = %v, want react._finish", v)

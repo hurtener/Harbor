@@ -70,9 +70,9 @@ func TestE2E_RepairLoop_RecoversOnRetry(t *testing.T) {
 
 	client := &stubClient{
 		responses: []llm.CompleteResponse{
-			{Content: `garbage no JSON here`}, // attempt 1: parse fails
-			{Content: `still garbage`},        // attempt 2: parse fails
-			{Content: `{"tool":"answer","args":{"text":"finally"},"reasoning":"got it"}`}, // attempt 3: valid
+			{Content: `garbage no JSON here`},                        // attempt 1: parse fails
+			{Content: `still garbage`},                               // attempt 2: parse fails
+			{Content: `{"tool":"answer","args":{"text":"finally"}}`}, // attempt 3: valid
 		},
 	}
 
@@ -86,7 +86,7 @@ func TestE2E_RepairLoop_RecoversOnRetry(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	call, ok := dec.(planner.CallTool)
+	call, ok := dec.Decision.(planner.CallTool)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.CallTool", dec)
 	}
@@ -149,7 +149,7 @@ func TestE2E_RepairLoop_GracefulFailure_EmitsEvent(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	fin, ok := dec.(planner.Finish)
+	fin, ok := dec.Decision.(planner.Finish)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.Finish", dec)
 	}
@@ -217,7 +217,7 @@ func TestE2E_RepairLoop_MultiActionSalvageOnRealBus(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	par, ok := dec.(planner.CallParallel)
+	par, ok := dec.Decision.(planner.CallParallel)
 	if !ok {
 		t.Fatalf("decision = %T, want planner.CallParallel", dec)
 	}
@@ -273,7 +273,7 @@ func TestE2E_RepairLoop_RejectingValidatorRepairsThenSucceeds(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
-	if _, ok := dec.(planner.CallTool); !ok {
+	if _, ok := dec.Decision.(planner.CallTool); !ok {
 		t.Fatalf("decision = %T, want planner.CallTool", dec)
 	}
 	if client.callCount() != 2 {

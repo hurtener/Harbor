@@ -32,9 +32,13 @@ type Decision interface {
 // dispatches via the production ToolCatalog + ToolPolicy
 // (Phase 26 + 26a); the planner does not block on the call.
 //
-// `Reasoning` is the planner's free-text justification — surfaced in
-// observability + audit; capped by the Runtime's payload bounds before
-// emit.
+// The action shape is intentionally narrow — `{tool, args}` only.
+// Phase 83e (D-147) dropped the former `Reasoning` field: the model
+// emits the action JSON, and the provider-side thinking trace is
+// captured separately on `trajectory.Step.ReasoningTrace` via
+// `llm.CompleteResponse.Reasoning`. Reasoning is captured content, not
+// part of the structured decision; replaying it into prompts is an
+// operator-controlled per-agent knob (D-148), never a schema field.
 type CallTool struct {
 	// Tool is the name registered in the ToolCatalogView.
 	Tool string
@@ -42,8 +46,6 @@ type CallTool struct {
 	// ArgsSchema. Validation happens at the catalog edge; an invalid
 	// payload produces `tools.ErrToolInvalidArgs` from dispatch.
 	Args json.RawMessage
-	// Reasoning is the planner's free-text justification.
-	Reasoning string
 }
 
 func (CallTool) isDecision() {}

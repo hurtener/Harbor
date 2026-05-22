@@ -77,6 +77,16 @@ const (
 	// error message. The load-bearing fail-loudly observability surface
 	// for compression failures (§13 — silent degradation banned). D-055.
 	EventTypeTrajectoryCompressionFailed events.EventType = "trajectory.compression_failed"
+
+	// EventTypePlannerActionExtraFieldDropped — emitted by the Phase 44
+	// repair loop when an incoming action object carried a field the
+	// Phase 83e-narrowed action schema no longer recognises (`reasoning`
+	// / `thought` — D-147). The loop strips the field and emits this
+	// event for telemetry; it is a soft signal, NOT a failure — the
+	// runtime fails open on extra fields for backward compatibility with
+	// older trained models. Payload (ActionExtraFieldDroppedPayload,
+	// SafePayload) carries the run identity + the dropped field name.
+	EventTypePlannerActionExtraFieldDropped events.EventType = "planner.action_extra_field_dropped"
 )
 
 func init() {
@@ -87,6 +97,61 @@ func init() {
 	events.RegisterEventType(EventTypePlannerMaxStepsExceeded)
 	events.RegisterEventType(EventTypeTrajectoryCompressed)
 	events.RegisterEventType(EventTypeTrajectoryCompressionFailed)
+	events.RegisterEventType(EventTypePlannerActionExtraFieldDropped)
+}
+
+// DecisionPayload is the typed payload for EventTypePlannerDecision.
+// Phase 42 registered the event type; Phase 83e (D-147) ships the
+// first emitter (the ReAct planner) AND the payload — satisfying the
+// §13 primitive-with-consumer rule for the long-registered type.
+// SafePayload — every field is operator-visible debug data:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `DecisionKind` is the resolved Decision shape name (`CallTool`,
+//     `CallParallel`, `Finish`, `SpawnTask`, `AwaitTask`,
+//     `RequestPause`).
+//   - `Tool` is the tool name when DecisionKind is `CallTool`; empty
+//     otherwise.
+//   - `ReasoningChars` is the rune count of the captured reasoning
+//     trace — a scannable size signal that never carries raw content.
+//   - `ReasoningTrace` is the provider-side thinking trace captured
+//     for the step (Phase 83e). Reasoning can be sensitive; the event
+//     is published onto the bus where the audit redactor processes it
+//     before any sink persists it (CLAUDE.md §7). `inspect-runs`
+//     surfaces it as `steps[].reasoning_trace`.
+//
+// The emit is the observability surface that lets `harbor inspect-runs`
+// reconstruct a run's reasoning channel from the event stream.
+type DecisionPayload struct {
+	events.SafeSealed
+	Identity       identity.Quadruple
+	DecisionKind   string
+	Tool           string
+	ReasoningChars int
+	ReasoningTrace string
+	OccurredAt     time.Time
+}
+
+// ActionExtraFieldDroppedPayload is the typed payload for
+// EventTypePlannerActionExtraFieldDropped (Phase 83e — D-147).
+// SafePayload — every field is operator-visible debug data, never
+// secret-shaped:
+//
+//   - `Identity` is the run's identity quadruple.
+//   - `Field` is the name of the dropped extra field (`reasoning` or
+//     `thought`) — the parser strips fields the narrowed `{tool, args}`
+//     action schema no longer recognises.
+//
+// The event is a SOFT telemetry signal: extra fields are stripped, the
+// step proceeds. It is NOT a fail-loudly surface — the runtime fails
+// OPEN on extra fields for backward compatibility with older trained
+// models. The captured thinking trace flows through the provider
+// channel onto `trajectory.Step.ReasoningTrace` instead.
+type ActionExtraFieldDroppedPayload struct {
+	events.SafeSealed
+	Identity   identity.Quadruple
+	Field      string
+	OccurredAt time.Time
 }
 
 // RepairExhaustedPayload is the typed payload for

@@ -151,14 +151,26 @@ type CompleteRequest struct {
 // `PlannerAction` per brief 07; the LLM never emits provider-native
 // tool calls.
 //
+// `Reasoning` carries the provider-side thinking trace (Anthropic
+// extended thinking, OpenAI o-series, DeepSeek native, Gemini
+// `thought:true` parts) normalised by the driver. It is the canonical
+// captured trace for BOTH unary and streaming calls — distinct from
+// the per-delta `OnReasoning` streaming callback, which exists for
+// live UX. Empty when the provider did not surface reasoning, or when
+// the driver does not read a reasoning channel. Reasoning is captured
+// content, NOT replayed into prompts: the planner persists it on
+// `trajectory.Step.ReasoningTrace` and only re-injects it when an
+// operator opts into replay (D-148). Phase 83e (RFC §6.2 + §6.5).
+//
 // `Cost` + `Usage` propagate the provider's reported figures.
 // Governance (Phase 36a/36b) subscribes to `llm.cost.recorded` events
 // emitted by the runtime when a `Complete` returns; the event payload
 // re-stamps these shapes.
 type CompleteResponse struct {
-	Content string
-	Cost    Cost
-	Usage   Usage
+	Content   string
+	Reasoning string
+	Cost      Cost
+	Usage     Usage
 }
 
 // Role is the chat-message role. Settled at the four canonical

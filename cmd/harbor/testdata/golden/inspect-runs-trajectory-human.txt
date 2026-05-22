@@ -1,4 +1,4 @@
 run r-1 — 2 events
-SEQ    OCCURRED_AT                         TYPE                              PAYLOAD
-1      2026-05-17T12:00:00.000Z            task.spawned                      {Kind=foreground TaskID=r-1}
-2      2026-05-17T12:00:01.000Z            task.completed                    {TaskID=r-1}
+SEQ    OCCURRED_AT                         TYPE                              RSN_CHARS  PAYLOAD
+1      2026-05-17T12:00:00.000Z            task.spawned                      -          {Kind=foreground TaskID=r-1}
+2      2026-05-17T12:00:01.000Z            task.completed                    -          {TaskID=r-1}
