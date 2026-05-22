@@ -61,11 +61,11 @@ func TestSimulateFailure_FailsThenResumes(t *testing.T) {
 	args, _ := json.Marshal(addArgs{A: 1, B: 2})
 
 	results := make([]error, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := d.Invoke(context.Background(), args)
 		results[i] = err
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if !errors.Is(results[i], harbortest.ErrSimulatedFailure) {
 			t.Errorf("invocation %d: err = %v, want errors.Is ErrSimulatedFailure", i, results[i])
 		}
@@ -161,11 +161,11 @@ func TestSimulateFailure_StacksFifo(t *testing.T) {
 	args, _ := json.Marshal(addArgs{A: 1, B: 2})
 
 	got := make([]error, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, got[i] = d.Invoke(context.Background(), args)
 	}
 	// First two: transient → ErrSimulatedFailure wrap.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if !errors.Is(got[i], harbortest.ErrSimulatedFailure) {
 			t.Errorf("invocation %d: err = %v, want ErrSimulatedFailure (transient)", i, got[i])
 		}

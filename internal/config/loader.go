@@ -326,7 +326,7 @@ func findFieldByYAML(v reflect.Value, segment string) (reflect.Value, bool) {
 		return reflect.Value{}, false
 	}
 	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
+	for i := range v.NumField() {
 		name := yamlName(t.Field(i))
 		if name == segment {
 			return v.Field(i), true
@@ -340,7 +340,7 @@ func findFieldByYAML(v reflect.Value, segment string) (reflect.Value, bool) {
 // (no exported fields) are skipped. Unexported fields are skipped.
 func walkLeaves(v reflect.Value, prefix []string, visit func(path []string, leaf reflect.Value) error) error {
 	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
+	for i := range v.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
 			continue
@@ -349,7 +349,11 @@ func walkLeaves(v reflect.Value, prefix []string, visit func(path []string, leaf
 		if name == "" || name == "-" {
 			continue
 		}
-		path := append(prefix, name)
+		// Build a child path without aliasing `prefix` — a bare
+		// append could share backing storage across sibling fields.
+		path := make([]string, 0, len(prefix)+1)
+		path = append(path, prefix...)
+		path = append(path, name)
 		fv := v.Field(i)
 		switch fv.Kind() {
 		case reflect.Struct:

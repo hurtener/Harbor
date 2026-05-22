@@ -429,7 +429,7 @@ func TestE2E_Phase52_ConcurrencyStress(t *testing.T) {
 	wg.Add(n)
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			run := phase52Run(fmt.Sprintf("tenant-%d", i), fmt.Sprintf("run-%d", i))
@@ -460,7 +460,7 @@ func TestE2E_Phase52_ConcurrencyStress(t *testing.T) {
 			}
 			rejErr := inbox.Enqueue(badEv)
 			if !errors.Is(rejErr, steering.ErrScopeMismatch) {
-				errCh <- fmt.Errorf("goroutine %d: Enqueue(PRIORITIZE) = %v, want ErrScopeMismatch", i, rejErr)
+				errCh <- fmt.Errorf("goroutine %d: Enqueue(PRIORITIZE) = %w, want ErrScopeMismatch", i, rejErr)
 				return
 			}
 			if err := steering.EmitRejection(context.Background(), bus, run, steering.ControlPrioritize, steering.ScopeOwnerUser, rejErr); err != nil {

@@ -164,7 +164,7 @@ func TestE2E_Phase14_PredicateRouter_FanOut(t *testing.T) {
 		// and assert it's the matching branch.
 		var taken string
 		drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			got, err := e.Fetch(drainCtx)
 			if err != nil {
 				cancel()
@@ -347,6 +347,9 @@ func TestE2E_Phase14_Subflow_FactoryError(t *testing.T) {
 	boom := errors.New("synthetic factory boom")
 
 	// Parent engine whose `in` node calls a failing subflow factory.
+	// The nil Engine is deliberate — the factory's contract is to fail;
+	// the signature is fixed by CallSubflow's factory parameter type.
+	//nolint:unparam // factory deliberately always fails; signature fixed by CallSubflow
 	failingFactory := func() (engine.Engine, error) {
 		return nil, boom
 	}
@@ -425,7 +428,7 @@ func TestE2E_Phase14_MapConcurrent_OverEngine(t *testing.T) {
 
 	const total = 30
 	in := make([]messages.Envelope, total)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		in[i] = messages.Envelope{
 			Headers:   messages.Headers{TenantID: "T", UserID: "U"},
 			SessionID: "S",
@@ -443,7 +446,7 @@ func TestE2E_Phase14_MapConcurrent_OverEngine(t *testing.T) {
 	if len(out) != total {
 		t.Fatalf("len(out)=%d, want %d", len(out), total)
 	}
-	for i := 0; i < total; i++ {
+	for i := range total {
 		if got := out[i].Payload.(int); got != i {
 			t.Errorf("out[%d]=%d, want %d (order broken)", i, got, i)
 		}

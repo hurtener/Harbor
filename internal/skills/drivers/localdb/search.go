@@ -139,6 +139,10 @@ func (d *driver) materializeFTSHits(ctx context.Context, hits []ftsHit) ([]skill
 		placeholders[i] = "?"
 		rawByRowID[h.rowID] = h.rawScore
 	}
+	// The concatenated parts are a compile-time column constant plus a
+	// run of literal "?" placeholders — no user input reaches the SQL
+	// text; the rowids flow in via the parameterised `ids...` args.
+	//nolint:gosec // G202 false positive: only a const + literal "?" placeholders are concatenated
 	sel := `SELECT ` + skillCols + `, rowid FROM skills WHERE rowid IN (` + strings.Join(placeholders, ",") + `)`
 	rows, err := d.db.QueryContext(ctx, sel, ids...)
 	if err != nil {

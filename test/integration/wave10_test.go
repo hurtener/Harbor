@@ -431,8 +431,8 @@ func TestE2E_Wave10_Concurrency_NoCrossTalk(t *testing.T) {
 		ti tasks.TaskID
 	}, n)
 
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

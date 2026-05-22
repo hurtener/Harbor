@@ -272,10 +272,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	draft, err := h.store.Create(r.Context(), CreateOptions{
-		Name:     req.Name,
-		Template: req.Template,
-	})
+	draft, err := h.store.Create(r.Context(), CreateOptions(req))
 	if err != nil {
 		h.writeStoreError(w, err)
 		return
@@ -351,10 +348,7 @@ func (h *Handler) handleSave(w http.ResponseWriter, r *http.Request, draftID str
 		})
 		return
 	}
-	res, err := h.store.Save(r.Context(), draftID, SaveOptions{
-		Name:      req.Name,
-		OutputDir: req.OutputDir,
-	})
+	res, err := h.store.Save(r.Context(), draftID, SaveOptions(req))
 	if err != nil {
 		h.writeStoreError(w, err)
 		return
@@ -482,11 +476,13 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 		// construction"; fall through with a generic 500 envelope.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
+		//nolint:errcheck // response-body write; a failure means the client disconnected and is non-actionable
 		_, _ = w.Write([]byte(`{"error":"json marshal failed","code":"internal_error"}`))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	//nolint:errcheck // response-body write; a failure means the client disconnected and is non-actionable
 	_, _ = w.Write(raw)
 }
 

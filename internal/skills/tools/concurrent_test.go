@@ -54,7 +54,7 @@ func TestPlannerTools_ConcurrentReuse_D025(t *testing.T) {
 	)
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t-%d", i)
@@ -135,8 +135,8 @@ func TestPlannerTools_ConcurrentReuse_D025(t *testing.T) {
 // identity it saw per tenant. Used by the D-025 test to assert no
 // context bleed.
 type spyStore struct {
-	mu      sync.Mutex
-	seen    map[string]identity.Identity
+	mu           sync.Mutex
+	seen         map[string]identity.Identity
 	storedSkills []skills.Skill
 }
 
@@ -184,7 +184,7 @@ func (s *spyStore) Upsert(ctx context.Context, id identity.Quadruple, skill skil
 
 func (s *spyStore) Get(ctx context.Context, id identity.Quadruple, name string) (skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
-		return skills.Skill{}, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
+		return skills.Skill{}, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
 	for _, sk := range s.storedSkills {
@@ -197,7 +197,7 @@ func (s *spyStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 
 func (s *spyStore) List(ctx context.Context, id identity.Quadruple, filter skills.ListFilter) ([]skills.Skill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
-		return nil, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
+		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
 	out := make([]skills.Skill, len(s.storedSkills))
@@ -207,7 +207,7 @@ func (s *spyStore) List(ctx context.Context, id identity.Quadruple, filter skill
 
 func (s *spyStore) Search(ctx context.Context, id identity.Quadruple, query string, limit int) ([]skills.RankedSkill, error) {
 	if err := identity.Validate(id.Identity); err != nil {
-		return nil, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
+		return nil, fmt.Errorf("%w: %w", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
 	out := make([]skills.RankedSkill, 0, len(s.storedSkills))

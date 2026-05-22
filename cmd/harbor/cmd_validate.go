@@ -183,7 +183,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		// rendering; the body carries the originating category /
 		// line via a single-entry `errors[]` array.
 		finding := internalFindingFor(path, internalErr)
-		return emitValidationResult(cmd, flags, path,
+		return emitValidationResult(cmd, flags,
 			[]validationFinding{finding},
 			CodeValidationInternal,
 			finding.Message,
@@ -195,7 +195,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			summary += "s"
 		}
 		summary += " in " + path
-		return emitValidationResult(cmd, flags, path, findings,
+		return emitValidationResult(cmd, flags, findings,
 			CodeValidationFailed, summary,
 			"see RFC §10 (Configuration) and CLAUDE.md §10",
 		)
@@ -211,7 +211,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}{OK: true, File: path}
 		buf, marshalErr := json.Marshal(body)
 		if marshalErr != nil {
-			return emitValidationResult(cmd, flags, path,
+			return emitValidationResult(cmd, flags,
 				[]validationFinding{{Category: CategoryConfigParse, File: path, Message: fmt.Sprintf("marshal success body: %v", marshalErr)}},
 				CodeValidationInternal, "marshal success body failed",
 				"this is a Harbor internal bug; please file an issue",
@@ -401,7 +401,7 @@ func hintForSemanticField(field string) string {
 // We accept any prefix-context, scan for the first '[', and parse.
 func parseLineFromGoccyMessage(msg string) int {
 	// Find the first '[N:M]' triple. goccy emits this verbatim.
-	for i := 0; i < len(msg); i++ {
+	for i := range len(msg) {
 		if msg[i] != '[' {
 			continue
 		}
@@ -551,7 +551,7 @@ func splitPathSegments(p string) []string {
 	out := []string{}
 	cur := strings.Builder{}
 	depth := 0
-	for i := 0; i < len(p); i++ {
+	for i := range len(p) {
 		c := p[i]
 		switch c {
 		case '[':
@@ -671,7 +671,7 @@ func internalFindingFor(path string, err error) validationFinding {
 // The returned CLIError is what cobra surfaces; the body is written
 // to cmd.ErrOrStderr() so it shows up on the error channel exactly
 // like every other Phase 63 error.
-func emitValidationResult(cmd *cobra.Command, flags validateFlags, path string, findings []validationFinding, code, summary, summaryHint string) error {
+func emitValidationResult(cmd *cobra.Command, flags validateFlags, findings []validationFinding, code, summary, summaryHint string) error {
 	w := cmd.ErrOrStderr()
 	if flags.jsonMode {
 		body := validationBody{

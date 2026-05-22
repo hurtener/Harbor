@@ -65,7 +65,7 @@ func (propertyTestCase) Generate(rnd *rand.Rand, _ int) reflect.Value {
 	pinned := make([]string, 0, n)
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	seen := make(map[string]struct{}, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		name := uniqueName(rnd, seen)
 		s := skills.Skill{
 			Name:          name,

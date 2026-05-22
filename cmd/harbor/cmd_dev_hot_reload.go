@@ -146,11 +146,11 @@ const debounceWindow = 250 * time.Millisecond
 // Construct via newHotReloadSupervisor; the supervisor is NOT
 // reusable across boots (each `harbor dev` invocation gets one).
 type hotReloadSupervisor struct {
-	logger      *slog.Logger
-	bootOpts    devBootOptions
-	cfg         config.DevHotReloadConfig
-	watchRoots  []string
-	policy      string
+	logger       *slog.Logger
+	bootOpts     devBootOptions
+	cfg          config.DevHotReloadConfig
+	watchRoots   []string
+	policy       string
 	drainTimeout time.Duration
 
 	mu    sync.Mutex
@@ -496,7 +496,7 @@ func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *devStack
 		UserID:    DevUser,
 		SessionID: DevSession,
 	}
-	_ = stack.bus.Publish(ctx, events.Event{
+	if err := stack.bus.Publish(ctx, events.Event{
 		Type:     EventTypeDevHotReloadTriggered,
 		Identity: identity.Quadruple{Identity: id},
 		Payload: DevHotReloadTriggeredPayload{
@@ -504,7 +504,11 @@ func (s *hotReloadSupervisor) emitTriggered(ctx context.Context, stack *devStack
 			Op:     op,
 			Policy: s.policy,
 		},
-	})
+	}); err != nil {
+		// Observability is best-effort, not correctness — log and continue.
+		s.logger.Debug("hot-reload: failed to publish triggered event",
+			slog.String("error", err.Error()))
+	}
 }
 
 // emitCompleted publishes EventTypeDevHotReloadCompleted on the
@@ -525,7 +529,7 @@ func (s *hotReloadSupervisor) emitCompleted(
 		UserID:    DevUser,
 		SessionID: DevSession,
 	}
-	_ = stack.bus.Publish(ctx, events.Event{
+	if err := stack.bus.Publish(ctx, events.Event{
 		Type:     EventTypeDevHotReloadCompleted,
 		Identity: identity.Quadruple{Identity: id},
 		Payload: DevHotReloadCompletedPayload{
@@ -536,7 +540,11 @@ func (s *hotReloadSupervisor) emitCompleted(
 			Success:      success,
 			ErrorMessage: errMsg,
 		},
-	})
+	}); err != nil {
+		// Observability is best-effort, not correctness — log and continue.
+		s.logger.Debug("hot-reload: failed to publish completed event",
+			slog.String("error", err.Error()))
+	}
 }
 
 // shouldTrigger filters fsnotify events down to those that warrant a

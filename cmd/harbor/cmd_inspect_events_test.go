@@ -198,7 +198,7 @@ func assertGolden(t *testing.T, name, got string) {
 	t.Helper()
 	path := filepath.Join("testdata", "golden", name)
 	if updateRequested() {
-		if err := os.WriteFile(path, []byte(got), 0o644); err != nil { //nolint:gosec // golden testdata
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
 			t.Fatalf("write golden %s: %v", path, err)
 		}
 		t.Logf("updated golden %s", path)

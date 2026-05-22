@@ -339,7 +339,7 @@ func TestE2E_Phase73f_ToolsConcurrencyStress(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	errCh := make(chan error, workers)
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(n int) {
 			defer wg.Done()
 			id := identity.Identity{
@@ -372,7 +372,7 @@ func TestE2E_Phase73f_ToolsConcurrencyStress(t *testing.T) {
 	// Close keep-alive connections so the httptest server's per-conn
 	// goroutines are reaped before the leak measurement.
 	http.DefaultClient.CloseIdleConnections()
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		if runtime.NumGoroutine() <= baseline+8 {
 			return
 		}

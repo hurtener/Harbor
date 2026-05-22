@@ -35,8 +35,8 @@ func TestStore_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
-		i := i
+	for i := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{

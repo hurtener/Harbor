@@ -93,9 +93,7 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 }
 
 func init() {
-	artifacts.Register("fs", func(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
-		return New(cfg)
-	})
+	artifacts.Register("fs", New)
 }
 
 // indexKey is the composite primary key (mirrors the InMem driver's

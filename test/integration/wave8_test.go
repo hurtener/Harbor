@@ -537,7 +537,7 @@ func TestE2E_Wave8_Concurrency_NoCrossTalk(t *testing.T) {
 	var errs atomic.Int32
 	var bled atomic.Int32
 
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()

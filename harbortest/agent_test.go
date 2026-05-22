@@ -49,8 +49,7 @@ func registerHelloTool(t *testing.T, cat tools.ToolCatalog, bus events.EventBus)
 // alongside the audit.admin_scope_used emit the subscription
 // triggers.
 func TestRunOnce_RoundTrip_CapturesEvents(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 	cat := tools.NewCatalog()
 	registerHelloTool(t, cat, bus)
 
@@ -85,8 +84,7 @@ func TestRunOnce_RoundTrip_CapturesEvents(t *testing.T) {
 // the synthesised identity uses the canonical harbortest triple. The
 // test also confirms RunIDs are distinct across two zero-deps calls.
 func TestRunOnce_DefaultIdentity_IsCanonical(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	var seenA, seenB identity.Quadruple
 	agentA := harbortest.AgentFunc(func(ctx context.Context, _ any) (any, error) {
@@ -200,8 +198,7 @@ func TestRunOnce_AgentError_ReturnsLog(t *testing.T) {
 // TestEventLog_RecordedEvents_FiltersByRun — two RunOnce calls
 // share a Deps.Bus; the union log filters cleanly by RunID.
 func TestEventLog_RecordedEvents_FiltersByRun(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 	cat := tools.NewCatalog()
 	registerHelloTool(t, cat, bus)
 

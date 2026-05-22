@@ -70,9 +70,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
-	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	memorydriverinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
 	memorydriversqlite "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
 	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
@@ -387,7 +385,7 @@ func TestE2E_Wave7a_RollingSummary_TriggersSummarizer(t *testing.T) {
 	}
 	quad := identity.Quadruple{Identity: id}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		turn := memory.ConversationTurn{
 			UserMessage:       fmt.Sprintf("u-%d %s", i, longLine(64)),
 			AssistantResponse: fmt.Sprintf("a-%d %s", i, longLine(64)),
@@ -590,9 +588,8 @@ func TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory(t *testing.T) {
 	)
 	wg.Add(tenantCount * sessionsPerTenant)
 
-	for ti := 0; ti < tenantCount; ti++ {
-		for sj := 0; sj < sessionsPerTenant; sj++ {
-			ti, sj := ti, sj
+	for ti := range tenantCount {
+		for sj := range sessionsPerTenant {
 			go func() {
 				defer wg.Done()
 				id := identity.Identity{

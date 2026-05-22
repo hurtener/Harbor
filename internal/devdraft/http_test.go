@@ -19,7 +19,7 @@ import (
 // every request's ctx (skipping the auth middleware entirely — the
 // production handler is mounted behind auth.Middleware by `harbor
 // dev`'s bootDevStack).
-func newTestHandler(t *testing.T) (*Handler, *httptest.Server) {
+func newTestHandler(t *testing.T) *httptest.Server {
 	t.Helper()
 	store := newTestStore(t)
 	h, err := NewHandler(store, nil)
@@ -34,13 +34,13 @@ func newTestHandler(t *testing.T) (*Handler, *httptest.Server) {
 		h.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	t.Cleanup(srv.Close)
-	return h, srv
+	return srv
 }
 
 // TestHandler_Create_HappyPath pins the POST round-trip.
 func TestHandler_Create_HappyPath(t *testing.T) {
 	t.Parallel()
-	_, srv := newTestHandler(t)
+	srv := newTestHandler(t)
 	body := bytes.NewBufferString(`{"name":"http-agent"}`)
 	resp, err := http.Post(srv.URL+RoutePrefix+"/", "application/json", body)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestHandler_MissingIdentity_Returns401(t *testing.T) {
 // TestHandler_Patch_RoundTrip pins the PATCH path.
 func TestHandler_Patch_RoundTrip(t *testing.T) {
 	t.Parallel()
-	_, srv := newTestHandler(t)
+	srv := newTestHandler(t)
 
 	// Create.
 	create := postJSON(t, srv, RoutePrefix+"/", map[string]any{"name": "patch-agent"})
@@ -131,7 +131,7 @@ func TestHandler_Patch_RoundTrip(t *testing.T) {
 // the wire — the handler MUST return 400 with CodeUnsafePath.
 func TestHandler_Patch_RejectsTraversal(t *testing.T) {
 	t.Parallel()
-	_, srv := newTestHandler(t)
+	srv := newTestHandler(t)
 
 	create := postJSON(t, srv, RoutePrefix+"/", map[string]any{"name": "trav-agent"})
 	var cr createResponse
@@ -165,7 +165,7 @@ func TestHandler_Patch_RejectsTraversal(t *testing.T) {
 // criterion at the handler layer.
 func TestHandler_FullRoundTrip(t *testing.T) {
 	t.Parallel()
-	_, srv := newTestHandler(t)
+	srv := newTestHandler(t)
 	// Create.
 	create := postJSON(t, srv, RoutePrefix+"/", map[string]any{"name": "rt-agent"})
 	var cr createResponse
@@ -244,7 +244,7 @@ func TestHandler_FullRoundTrip(t *testing.T) {
 // pins the wire mapping for the validation-failure path.
 func TestHandler_Save_InvalidYAML_Returns400_WithCodeValidationFailed(t *testing.T) {
 	t.Parallel()
-	_, srv := newTestHandler(t)
+	srv := newTestHandler(t)
 	create := postJSON(t, srv, RoutePrefix+"/", map[string]any{"name": "bad-agent"})
 	var cr createResponse
 	if err := json.Unmarshal(create, &cr); err != nil {

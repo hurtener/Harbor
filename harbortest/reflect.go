@@ -35,11 +35,14 @@ func reflectQuadruple(p events.EventPayload) (identity.Quadruple, bool) {
 		return identity.Quadruple{}, false
 	}
 	if f.Type() == reflect.TypeOf(identity.Quadruple{}) {
-		return f.Interface().(identity.Quadruple), true
+		if q, ok := f.Interface().(identity.Quadruple); ok {
+			return q, true
+		}
 	}
 	if f.Type() == reflect.TypeOf(identity.Identity{}) {
-		id := f.Interface().(identity.Identity)
-		return identity.Quadruple{Identity: id}, true
+		if id, ok := f.Interface().(identity.Identity); ok {
+			return identity.Quadruple{Identity: id}, true
+		}
 	}
 	return identity.Quadruple{}, false
 }

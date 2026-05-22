@@ -123,7 +123,7 @@ func newPhase73cDeps(t *testing.T) *phase73cDeps {
 		{"tenant-A", "u-A", 6},
 		{"tenant-B", "u-B", 6},
 	} {
-		for i := 0; i < spec.n; i++ {
+		for i := range spec.n {
 			sid := spec.tenant + "-sess-" + string(rune('0'+i))
 			id := identity.Identity{TenantID: spec.tenant, UserID: spec.user, SessionID: sid}
 			ctx, werr := identity.With(context.Background(), id)
@@ -347,7 +347,7 @@ func TestE2E_Phase73c_SessionsConcurrencyStress(t *testing.T) {
 	subCtx, subCancel := context.WithCancel(context.Background())
 	var subWG sync.WaitGroup
 	subWG.Add(subscribers)
-	for i := 0; i < subscribers; i++ {
+	for range subscribers {
 		go func() {
 			defer subWG.Done()
 			sub, err := deps.bus.Subscribe(subCtx, events.Filter{
@@ -375,7 +375,7 @@ func TestE2E_Phase73c_SessionsConcurrencyStress(t *testing.T) {
 	var listWG sync.WaitGroup
 	listWG.Add(listers)
 	errCh := make(chan error, listers)
-	for i := 0; i < listers; i++ {
+	for range listers {
 		go func() {
 			defer listWG.Done()
 			status, body := postSessions(t, srv.URL, "list", `{"filter":{}}`, tokA)

@@ -45,7 +45,7 @@ func TestRunOnce_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	// tearing down. The growth tolerance below absorbs the rest of the
 	// scheduler noise (Wave 11 §17.5 audit, finding W7: replaced bare
 	// time.Sleep with Gosched-style settle matching the wave11 pattern).
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 	}
 	baseline := runtime.NumGoroutine()
@@ -53,8 +53,8 @@ func TestRunOnce_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -142,7 +142,7 @@ func TestFaultInjector_ConcurrentReuse(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var failures, successes int64
-	for i := 0; i < n*2; i++ {
+	for range n * 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -393,7 +393,7 @@ func TestE2E_Wave13_ConcurrentSSESubscribers(t *testing.T) {
 	// Baseline before launching subscribers — settle via scheduler
 	// yield, never time.Sleep (§17.4).
 	runtime.GC()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		runtime.Gosched()
 	}
 	baseline := runtime.NumGoroutine()
@@ -401,7 +401,7 @@ func TestE2E_Wave13_ConcurrentSSESubscribers(t *testing.T) {
 	const N = 12
 	var wg sync.WaitGroup
 	var fail atomic.Int32
-	for i := 0; i < N; i++ {
+	for i := range N {
 		runID := fmt.Sprintf("run-w13-stress-%03d", i)
 		wg.Add(1)
 		go func(idx int, rid string) {
@@ -416,7 +416,7 @@ func TestE2E_Wave13_ConcurrentSSESubscribers(t *testing.T) {
 				fail.Add(1)
 				return
 			}
-			for j := 0; j < N; j++ {
+			for j := range N {
 				if j == idx {
 					continue
 				}
@@ -505,7 +505,7 @@ func waitForWave13Baseline(maxWait time.Duration, target int, finalCount *int) b
 			*finalCount = got
 			return true
 		}
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			runtime.Gosched()
 		}
 	}
