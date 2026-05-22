@@ -217,6 +217,14 @@ func renderInjectionMessages(rc planner.RunContext) ([]llm.ChatMessage, error) {
 // A value `json.Marshal` rejects (channels, functions, cyclic
 // structures) returns the raw `json.Marshal` error; callers wrap it
 // with [planner.ErrMemoryBlockUnserializable].
+//
+// **Distinct contract from `compactJSON` (prompt.go).**
+// `compactValueJSON` is fail-loud — a malformed memory tier raises
+// `planner.ErrMemoryBlockUnserializable` per D-146.
+// `compactJSON` is lenient — a malformed tool-schema omits its
+// `args_schema:` line per D-144 (the schema render must never block
+// a tool from being callable). Do not unify the two without changing
+// both decisions.
 func compactValueJSON(v any) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
