@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -355,5 +356,186 @@ func TestReactPlanner_SharedAcrossIsolatedSessions(t *testing.T) {
 		if got, _ := fin.Payload.(string); got != runID {
 			t.Errorf("session %d payload = %q, want %q (identity isolation breach)", i, got, runID)
 		}
+	}
+}
+
+// recordingPerRunClient is a per-RunID recording wrapper of
+// `sharedClient`. It serves the same per-RunID `_finish` envelope but
+// also captures every system-prompt this run saw, so the wave-state
+// D-025 stress can assert each goroutine's prompt carried only its
+// own per-run state markers.
+type recordingPerRunClient struct {
+	mu      sync.Mutex
+	systems map[string][]string // RunID → ordered system prompts
+}
+
+func newRecordingPerRunClient() *recordingPerRunClient {
+	return &recordingPerRunClient{systems: make(map[string][]string)}
+}
+
+func (c *recordingPerRunClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	id, _ := identity.QuadrupleFrom(ctx)
+	// Concatenate every system-role message — 83a's base prompt at
+	// index 0 carries PlanningHints; 83d's three injection wrappers
+	// at indices 1..3 carry memory + skills. Joining lets the
+	// per-run-marker assertions span the whole composed system surface.
+	var sb strings.Builder
+	for _, m := range req.Messages {
+		if m.Role == llm.RoleSystem && m.Content.Text != nil {
+			sb.WriteString(*m.Content.Text)
+			sb.WriteByte('\n')
+		}
+	}
+	c.mu.Lock()
+	c.systems[id.RunID] = append(c.systems[id.RunID], sb.String())
+	c.mu.Unlock()
+	content := fmt.Sprintf(`{"tool":"_finish","args":{"answer":%q}}`, id.RunID)
+	return llm.CompleteResponse{Content: content}, nil
+}
+
+func (c *recordingPerRunClient) Close(_ context.Context) error { return nil }
+
+func (c *recordingPerRunClient) systemsFor(runID string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	src := c.systems[runID]
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
+// TestReactPlanner_ConcurrentReuse_PromptBandPerRunState_D025 is the
+// D-025 stress for the Wave 15 prompt-band per-run state that
+// `TestReactPlanner_ConcurrentReuse_StructuredPromptBuilder_D025`
+// (the 83a baseline) does NOT exercise. Surfaced by the §17.5 Wave 15
+// checkpoint audit (W2): the new mutable state landed by 83c/83d
+// — `RepairCounters`, `PlanningHints`, `MemoryBlocks`,
+// `SkillsContext` — must satisfy the same N≥100 shared-planner
+// guarantees under -race.
+//
+// Each of N goroutines threads its own per-run state with a unique
+// marker into a single shared planner. Asserts:
+//
+//   - The captured system prompt for each RunID contains that run's
+//     own per-run markers (memory + skills + planning).
+//   - No other goroutine's marker leaks into this run's prompt.
+//   - No data races (-race is the CI gate).
+//   - No goroutine leak: NumGoroutine returns to baseline within slack.
+//
+// N=128 (above the D-025 floor of 100).
+func TestReactPlanner_ConcurrentReuse_PromptBandPerRunState_D025(t *testing.T) {
+	const N = 128
+
+	runtime.GC()
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	client := newRecordingPerRunClient()
+	// ONE shared planner. WithReasoningReplay is set to text so the
+	// per-run reasoning-trace replay path is also exercised under
+	// concurrency (alongside the 83c/83d state).
+	shared := react.New(client, react.WithReasoningReplay(planner.ReasoningReplayText))
+
+	var (
+		wg         sync.WaitGroup
+		ownFails   int64
+		bleedFails int64
+		errFails   int64
+	)
+
+	wg.Add(N)
+	for i := range N {
+		go func() {
+			defer wg.Done()
+			// 4-digit padding makes every marker substring-disjoint
+			// from every other (avoids r-001 being a prefix of r-0010).
+			runID := fmt.Sprintf("r-%04d", i)
+			q := identity.Quadruple{
+				Identity: identity.Identity{
+					TenantID:  fmt.Sprintf("tenant-%d", i%8),
+					UserID:    fmt.Sprintf("user-%d", i),
+					SessionID: fmt.Sprintf("session-%d", i),
+				},
+				RunID: runID,
+			}
+			ctx, err := identity.WithRun(context.Background(), q.Identity, runID)
+			if err != nil {
+				atomic.AddInt64(&errFails, 1)
+				return
+			}
+
+			marker := "marker-" + runID
+			rc := planner.RunContext{
+				Quadruple: q,
+				Goal:      "d025-prompt-band-state",
+				MemoryBlocks: &planner.MemoryBlocks{
+					External: map[string]any{"data": marker},
+				},
+				SkillsContext: []any{
+					map[string]any{"name": "skill-" + runID, "body": marker},
+				},
+				RepairCounters: &planner.RepairCounters{
+					// Each goroutine pins its OWN counter. The shared
+					// planner must read this pointer (not mutate any
+					// internal state) when rendering repair guidance.
+					FinishRepair: 0,
+				},
+				PlanningHints: &planner.PlanningHints{
+					Constraints:   "hint-" + runID,
+					DisallowTools: []string{"x-" + runID},
+				},
+			}
+
+			if _, err := shared.Next(ctx, rc); err != nil {
+				atomic.AddInt64(&errFails, 1)
+				return
+			}
+
+			systems := client.systemsFor(runID)
+			if len(systems) == 0 {
+				atomic.AddInt64(&errFails, 1)
+				return
+			}
+			// Own per-run markers must be present in this run's prompt.
+			own := systems[0]
+			if !strings.Contains(own, marker) || !strings.Contains(own, "skill-"+runID) || !strings.Contains(own, "hint-"+runID) {
+				atomic.AddInt64(&ownFails, 1)
+				return
+			}
+			// No OTHER goroutine's marker may bleed into this prompt.
+			for j := range N {
+				if j == i {
+					continue
+				}
+				otherMarker := fmt.Sprintf("marker-r-%04d", j)
+				if strings.Contains(own, otherMarker) {
+					atomic.AddInt64(&bleedFails, 1)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if errFails != 0 {
+		t.Errorf("D-025 prompt-band: %d concurrent calls returned unexpected errors", errFails)
+	}
+	if ownFails != 0 {
+		t.Errorf("D-025 prompt-band: %d concurrent calls did not see their own per-run markers", ownFails)
+	}
+	if bleedFails != 0 {
+		t.Errorf("D-025 prompt-band BLEED: %d calls saw another goroutine's marker (shared-planner contract violated)", bleedFails)
+	}
+
+	runtime.GC()
+	runtime.GC()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	final := runtime.NumGoroutine()
+	for final > baseline+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		final = runtime.NumGoroutine()
+	}
+	if final > baseline+2 {
+		t.Errorf("D-025 prompt-band goroutine leak: baseline=%d final=%d (delta=%d)", baseline, final, final-baseline)
 	}
 }

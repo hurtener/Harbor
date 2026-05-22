@@ -1,6 +1,7 @@
 package react
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -751,7 +752,19 @@ func rankedExamples(in []tools.ToolExample, limit int) []tools.ToolExample {
 // order via `encoding/json`). Returns the empty string when the input
 // is empty or not valid JSON — a tool with no schema simply omits the
 // `args_schema:` line. Brief 13 §5: compact JSON keeps the prompt
-// stable across turns for KV-cache hit rates.
+// stable across turns for KV-cache hit rates. HTML escaping is
+// disabled so `<`, `>`, `&` survive verbatim in tool-schema
+// descriptions like `"value < 100"`; the schema renders inside an
+// XML-ish wrapper the model reads as data and the un-escaped form is
+// both smaller and more readable.
+//
+// **Distinct contract from [compactValueJSON] (memory_wrappers.go).**
+// `compactJSON` is lossy on error (returns "" so a malformed
+// tool-schema simply omits the args_schema line); `compactValueJSON`
+// is fail-loud (returns an error so a malformed memory tier raises
+// `planner.ErrMemoryBlockUnserializable`). The split is deliberate
+// per D-144 (lenient schema renderer) and D-146 (loud memory render).
+// Do not unify the two without changing both decisions.
 func compactJSON(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -760,11 +773,13 @@ func compactJSON(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return ""
 	}
-	out, err := json.Marshal(v)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
 		return ""
 	}
-	return string(out)
+	return string(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
 // compactArgs marshals an example's `Args` map to single-line compact
