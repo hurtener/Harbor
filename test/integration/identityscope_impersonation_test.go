@@ -25,13 +25,13 @@
 // Five shapes per acceptance criterion row 10 of
 // `docs/plans/phase-72b-identityscope-impersonation.md`:
 //
-//   (1) admin token + impersonation triplet → 200 + audit event on bus.
-//   (2) non-admin token + impersonation triplet → 403 CodeScopeMismatch.
-//   (3) admin token + impersonation missing a triple component → 401
-//       CodeIdentityRequired.
-//   (4) admin token + no impersonation → 200 (backward-compat).
-//   (5) impersonation across `start` / `redirect` / `user_message` is
-//       gated identically.
+//	(1) admin token + impersonation triplet → 200 + audit event on bus.
+//	(2) non-admin token + impersonation triplet → 403 CodeScopeMismatch.
+//	(3) admin token + impersonation missing a triple component → 401
+//	    CodeIdentityRequired.
+//	(4) admin token + no impersonation → 200 (backward-compat).
+//	(5) impersonation across `start` / `redirect` / `user_message` is
+//	    gated identically.
 //
 // Identity-rejection regression (row 11): a non-impersonation body
 // whose top-level identity disagrees with the verified JWT still
@@ -228,10 +228,13 @@ func readPEMBlockPhase72b(t *testing.T, abs string) []byte {
 	return block.Bytes
 }
 
-func signES256Phase72b(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims, kid string) string {
+// phase72bKid is the key ID every signES256Phase72b token carries.
+const phase72bKid = "k1"
+
+func signES256Phase72b(t *testing.T, priv *ecdsa.PrivateKey, claims jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	tok.Header["kid"] = kid
+	tok.Header["kid"] = phase72bKid
 	signed, err := tok.SignedString(priv)
 	if err != nil {
 		t.Fatalf("sign ES256: %v", err)
@@ -312,7 +315,7 @@ func TestE2E_Phase72b_AdminImpersonation_AcceptedEmitsAuditEvent(t *testing.T) {
 	defer sub.Cancel()
 
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}), "k1")
+		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}))
 
 	body := impersonationBodyPhase72b(adminTenant, adminUser, adminSession, targetTenant, targetUser, targetSession)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))
@@ -392,7 +395,7 @@ func TestE2E_Phase72b_NonAdminImpersonation_Rejected(t *testing.T) {
 
 	// Token has NO scopes claimed.
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b(adminTenant, adminUser, adminSession, nil), "k1")
+		validClaimsPhase72b(adminTenant, adminUser, adminSession, nil))
 
 	body := impersonationBodyPhase72b(adminTenant, adminUser, adminSession, targetTenant, targetUser, targetSession)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))
@@ -425,7 +428,7 @@ func TestE2E_Phase72b_IncompleteImpersonatingTriple_Rejected(t *testing.T) {
 	const targetTenant, targetUser = "tenant-acme", "user-target"
 
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}), "k1")
+		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}))
 
 	// Missing session on Impersonating.
 	body := `{"identity":{` +
@@ -475,7 +478,7 @@ func TestE2E_Phase72b_AdminNoImpersonation_AcceptedAndNoAuditEvent(t *testing.T)
 	defer sub.Cancel()
 
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}), "k1")
+		validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}))
 
 	body := `{"identity":{"tenant":"` + adminTenant + `","user":"` + adminUser + `","session":"` + adminSession + `"},"query":"q"}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))
@@ -523,7 +526,7 @@ func TestE2E_Phase72b_ImpersonationAcrossControlMethods_GateRunsIdentically(t *t
 
 	// Non-admin token → CodeScopeMismatch regardless of method.
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b(adminTenant, adminUser, adminSession, nil), "k1")
+		validClaimsPhase72b(adminTenant, adminUser, adminSession, nil))
 
 	for _, method := range []methods.Method{methods.MethodRedirect, methods.MethodUserMessage} {
 		body := `{"identity":{` +
@@ -535,7 +538,7 @@ func TestE2E_Phase72b_ImpersonationAcrossControlMethods_GateRunsIdentically(t *t
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/"+string(method), strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+tok)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // body401or403Phase72b closes resp.Body via its deferred Close
 		if err != nil {
 			t.Fatalf("POST %s: %v", method, err)
 		}
@@ -556,7 +559,7 @@ func TestE2E_Phase72b_NonImpersonationBodyMismatch_StillRejected(t *testing.T) {
 	defer srv.Close()
 
 	tok := signES256Phase72b(t, deps.priv,
-		validClaimsPhase72b("tenant-acme", "admin-alice", "sess-admin", []string{"admin"}), "k1")
+		validClaimsPhase72b("tenant-acme", "admin-alice", "sess-admin", []string{"admin"}))
 
 	// No impersonation triplet — just a body claiming a different
 	// tenant. The Phase 61 gate STILL rejects this.
@@ -592,7 +595,7 @@ func TestE2E_Phase72b_ConcurrencyStress(t *testing.T) {
 	const N = 16
 	var wg sync.WaitGroup
 	errs := make([]error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -603,7 +606,7 @@ func TestE2E_Phase72b_ConcurrencyStress(t *testing.T) {
 			targetUser := fmt.Sprintf("user-target-%04d", idx)
 			targetSession := fmt.Sprintf("sess-target-%04d", idx)
 			tok := signES256Phase72b(t, deps.priv,
-				validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}), "k1")
+				validClaimsPhase72b(adminTenant, adminUser, adminSession, []string{"admin"}))
 
 			body := impersonationBodyPhase72b(adminTenant, adminUser, adminSession, targetTenant, targetUser, targetSession)
 			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/control/start", strings.NewReader(body))

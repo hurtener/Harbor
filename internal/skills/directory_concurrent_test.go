@@ -55,7 +55,7 @@ func TestDirectory_ConcurrentReuse_D025(t *testing.T) {
 	// is staggered so the unpinned remainder has a deterministic
 	// order under pinned_then_recent.
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("t-%d", i),
 			UserID:    fmt.Sprintf("u-%d", i),
@@ -101,7 +101,7 @@ func TestDirectory_ConcurrentReuse_D025(t *testing.T) {
 	)
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t-%d", i)
@@ -190,7 +190,7 @@ func TestDirectory_ConcurrentCancellationIsolation(t *testing.T) {
 
 	bus := directoryTestBus(t)
 	store := newMemStore(bus)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("c-t-%d", i),
 			UserID:    fmt.Sprintf("c-u-%d", i),
@@ -214,7 +214,7 @@ func TestDirectory_ConcurrentCancellationIsolation(t *testing.T) {
 	var liveOK atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			id := identity.Identity{
@@ -259,7 +259,7 @@ func TestDirectory_ConcurrentCancellationIsolation(t *testing.T) {
 
 	// Live goroutines (i % 5 != 0): all must have completed.
 	wantLive := int64(0)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		if i%5 != 0 {
 			wantLive++
 		}

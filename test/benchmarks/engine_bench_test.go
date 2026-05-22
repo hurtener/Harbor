@@ -63,7 +63,7 @@ func benchEnvelope(runID string) messages.Envelope {
 // throughput number alongside `ns/op`.
 func BenchmarkEngineThroughput(b *testing.B) {
 	for _, runs := range []int{1, 8, 32} {
-		runs := runs
+
 		b.Run(fmt.Sprintf("runs=%d", runs), func(b *testing.B) {
 			eng, err := engine.New(linearBenchGraph(), engine.WithQueueSize(256))
 			if err != nil {
@@ -75,10 +75,10 @@ func BenchmarkEngineThroughput(b *testing.B) {
 			b.Cleanup(func() { _ = eng.Stop(context.Background()) })
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				var wg sync.WaitGroup
 				wg.Add(runs)
-				for r := 0; r < runs; r++ {
+				for r := range runs {
 					go func(r int) {
 						defer wg.Done()
 						env := benchEnvelope(fmt.Sprintf("run-%d-%d", i, r))
@@ -90,7 +90,7 @@ func BenchmarkEngineThroughput(b *testing.B) {
 				// Drain exactly `runs` envelopes off egress while the
 				// producers run — keeps the dispatcher's any-run FIFO
 				// flowing so the engine never back-pressures.
-				for d := 0; d < runs; d++ {
+				for range runs {
 					if _, err := eng.Fetch(context.Background()); err != nil {
 						b.Fatalf("Fetch: %v", err)
 					}
@@ -126,7 +126,7 @@ func BenchmarkEngineStreamingThroughput(b *testing.B) {
 	const framesPerInvoke = 16
 
 	producer := func(ctx context.Context, in messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
-		for s := 0; s < framesPerInvoke; s++ {
+		for s := range framesPerInvoke {
 			frame := engine.StreamFrame{
 				StreamID: in.RunID,
 				Text:     "frame",
@@ -150,7 +150,7 @@ func BenchmarkEngineStreamingThroughput(b *testing.B) {
 	b.Cleanup(func() { _ = eng.Stop(context.Background()) })
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		env := benchEnvelope(fmt.Sprintf("stream-run-%d", i))
 		if err := eng.Emit(context.Background(), env, engine.WithRunCapacity(framesPerInvoke*2)); err != nil {
 			b.Fatalf("Emit: %v", err)
@@ -161,7 +161,7 @@ func BenchmarkEngineStreamingThroughput(b *testing.B) {
 		// outlet, so its return value is delivered to egress too).
 		// Draining all of it keeps the run fully consumed before the
 		// next Emit — no run is left mid-flight at Stop.
-		for f := 0; f < framesPerInvoke+1; f++ {
+		for range framesPerInvoke + 1 {
 			if _, err := eng.Fetch(context.Background()); err != nil {
 				b.Fatalf("Fetch: %v", err)
 			}

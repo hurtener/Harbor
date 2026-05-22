@@ -111,12 +111,11 @@ func TestAssertSequence_Empty_Want_Matches(t *testing.T) {
 // TestAssertNoLeaks_Happy — single-identity log; assertion passes.
 func TestAssertNoLeaks_Happy(t *testing.T) {
 	id := identity.Identity{TenantID: "t1", UserID: "u1", SessionID: "s1"}
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	agent := harbortest.AgentFunc(func(ctx context.Context, _ any) (any, error) {
 		bus := events.MustFrom(ctx)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			_ = bus.Publish(ctx, events.Event{
 				Type:     events.EventTypeRuntimeError,
 				Identity: identity.Quadruple{Identity: id, RunID: "run-1"},
@@ -148,8 +147,7 @@ func TestAssertNoLeaks_Happy(t *testing.T) {
 // brief 06 §3: "AssertNoLeaks(log) (cross-tenant/session leakage
 // detector)" lives or dies on this regression.
 func TestAssertNoLeaks_CatchesCrossSessionLeak(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	idA := identity.Identity{TenantID: "tenant-a", UserID: "u", SessionID: "session-a"}
 	idB := identity.Identity{TenantID: "tenant-b", UserID: "u", SessionID: "session-b"}
@@ -228,8 +226,7 @@ func TestAssertSequence_NilLog_ErrorPath(t *testing.T) {
 // hand-crafted log shape.
 func publishToyLog(t *testing.T, types ...events.EventType) *harbortest.EventLog {
 	t.Helper()
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 	id := identity.Identity{TenantID: "harbortest", UserID: "harbortest", SessionID: "harbortest"}
 
 	agent := harbortest.AgentFunc(func(ctx context.Context, _ any) (any, error) {

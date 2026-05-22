@@ -355,9 +355,7 @@ func readSSE(r *bufio.Reader) (*sseFrame, error) {
 		field := line[:idx]
 		value := line[idx+1:]
 		// Per spec, ONE leading space after the colon is stripped.
-		if strings.HasPrefix(value, " ") {
-			value = value[1:]
-		}
+		value = strings.TrimPrefix(value, " ")
 		switch field {
 		case "event":
 			frame.Event = value
@@ -404,6 +402,7 @@ func inspectSSE(
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		//nolint:errcheck // best-effort bounded read of an error body; a read failure just yields an empty quote
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		hint := ""
 		switch resp.StatusCode {

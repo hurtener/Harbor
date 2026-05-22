@@ -265,10 +265,10 @@ func TestE2E_Phase56_Metrics_ConcurrencyStress(t *testing.T) {
 	q := identity.MustQuadrupleFrom(ctx)
 	var wg sync.WaitGroup
 	wg.Add(producers)
-	for p := 0; p < producers; p++ {
+	for p := range producers {
 		go func(p int) {
 			defer wg.Done()
-			for i := 0; i < perProducer; i++ {
+			for i := range perProducer {
 				e := events.Event{
 					Type:     events.EventTypeRuntimeError,
 					Identity: q,

@@ -168,7 +168,7 @@ var chaosCases = []chaosCase{
 // runtime.NumGoroutine (matching Phase 77).
 func TestE2E_Phase78_ChaosFaultInjection(t *testing.T) {
 	for _, tc := range chaosCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			tc.inject(t)
 		})
@@ -191,7 +191,7 @@ func injectKillMidRun(t *testing.T) {
 	// Goroutine baseline BEFORE constructing the engine — settle the
 	// scheduler without time.Sleep (§17.4).
 	runtime.GC()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		runtime.Gosched()
 	}
 	baseline := runtime.NumGoroutine()
@@ -383,7 +383,7 @@ func injectDropMessages(t *testing.T) {
 	// WITHOUT draining. The bus drops the oldest under saturation and
 	// records the dropped range into the open drop window.
 	const burst = bufSize * 6
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		publish("burst", i)
 	}
 

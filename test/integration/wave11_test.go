@@ -124,6 +124,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+
 	// No `_ "github.com/hurtener/Harbor/internal/llm/mock"` blank import:
 	// the wave-end E2E exercises only the tool-catalog path; the config's
 	// `llm.driver` is validated structurally against a static allowlist,
@@ -174,7 +175,6 @@ const wave11Kid = "harbor-test"
 // real OAuth providers around the test tools.
 type wave11Stack struct {
 	handler  http.Handler
-	server   *http.Server // populated only for the graceful-drain test
 	token    string
 	priv     *ecdsa.PrivateKey
 	bus      events.EventBus
@@ -416,9 +416,12 @@ func wave11SubFor(t *testing.T, bus events.EventBus, id identity.Identity, types
 	}
 }
 
+// wave11WaitEvTimeout bounds every wave11WaitEv call.
+const wave11WaitEvTimeout = 3 * time.Second
+
 // wave11WaitEv blocks until the subscription yields an event or the
 // timeout fires.
-func wave11WaitEv(t *testing.T, sub events.Subscription, d time.Duration) events.Event {
+func wave11WaitEv(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -426,7 +429,7 @@ func wave11WaitEv(t *testing.T, sub events.Subscription, d time.Duration) events
 			t.Fatal("subscription channel closed")
 		}
 		return ev
-	case <-time.After(d):
+	case <-time.After(wave11WaitEvTimeout):
 		t.Fatal("timed out waiting for event")
 		return events.Event{}
 	}
@@ -618,7 +621,7 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 	}()
 
 	// Wait for `tool.approval_requested` and extract the PauseToken.
-	reqEv := wave11WaitEv(t, reqSub, 3*time.Second)
+	reqEv := wave11WaitEv(t, reqSub)
 	if reqEv.Identity.TenantID != wave11ID.TenantID {
 		t.Errorf("approval_requested identity = %+v, want %+v",
 			reqEv.Identity.Identity, wave11ID)
@@ -659,7 +662,7 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 
 	// Observe `tool.approved` on the bus — carries the Tool name +
 	// PauseToken, the per-tool channel.
-	appEv := wave11WaitEv(t, appSub, 3*time.Second)
+	appEv := wave11WaitEv(t, appSub)
 	appPayload, ok := appEv.Payload.(approval.ToolApprovedPayload)
 	if !ok {
 		t.Fatalf("approved payload type = %T, want ToolApprovedPayload", appEv.Payload)
@@ -672,7 +675,7 @@ func TestE2E_Wave11_ProtocolWire_ApproveRoundTrip(t *testing.T) {
 	// marker so wire consumers (the Console, third-party clients) can
 	// switch on the resolution kind WITHOUT parsing free-form Reason
 	// strings (the §13 anti-pattern issue #113 / D-096 closes).
-	resumedEv := wave11WaitEv(t, resumedSub, 3*time.Second)
+	resumedEv := wave11WaitEv(t, resumedSub)
 	resumedPayload, ok := resumedEv.Payload.(pauseresume.PauseResumedPayload)
 	if !ok {
 		t.Fatalf("pause.resumed payload type = %T, want PauseResumedPayload", resumedEv.Payload)
@@ -744,7 +747,7 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 		resCh <- outcome{err: err}
 	}()
 
-	reqEv := wave11WaitEv(t, reqSub, 3*time.Second)
+	reqEv := wave11WaitEv(t, reqSub)
 	reqPayload, _ := reqEv.Payload.(approval.ToolApprovalRequestedPayload)
 	pauseToken := reqPayload.PauseToken
 	if pauseToken == "" {
@@ -773,7 +776,7 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 	}
 	_ = rejResp.Body.Close()
 
-	rejEv := wave11WaitEv(t, rejSub, 3*time.Second)
+	rejEv := wave11WaitEv(t, rejSub)
 	rejPayload, ok := rejEv.Payload.(approval.ToolRejectedPayload)
 	if !ok {
 		t.Fatalf("rejected payload type = %T, want ToolRejectedPayload", rejEv.Payload)
@@ -783,7 +786,7 @@ func TestE2E_Wave11_ProtocolWire_RejectRoundTrip(t *testing.T) {
 	}
 
 	// D-096: assert the typed Decision marker on pause.resumed.
-	resumedEv := wave11WaitEv(t, resumedSub, 3*time.Second)
+	resumedEv := wave11WaitEv(t, resumedSub)
 	resumedPayload, ok := resumedEv.Payload.(pauseresume.PauseResumedPayload)
 	if !ok {
 		t.Fatalf("pause.resumed payload type = %T, want PauseResumedPayload", resumedEv.Payload)
@@ -1017,7 +1020,7 @@ func TestE2E_Wave11_Concurrency_NoCrossTalk(t *testing.T) {
 
 	const n = 16
 	// Settle + baseline.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -1035,7 +1038,7 @@ func TestE2E_Wave11_Concurrency_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	obs := make(chan observation, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -1075,7 +1078,7 @@ func TestE2E_Wave11_Concurrency_NoCrossTalk(t *testing.T) {
 	}
 
 	// Settle + leak check.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -1103,7 +1106,7 @@ func TestE2E_Wave11_GracefulDrain_OnCancel(t *testing.T) {
 	t.Cleanup(listenerSrv.Close)
 
 	// Settle + baseline.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -1137,7 +1140,7 @@ func TestE2E_Wave11_GracefulDrain_OnCancel(t *testing.T) {
 
 	// Settle + assert no goroutine leak. The dev stack's per-request
 	// goroutines should return after Close.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 	}
 	time.Sleep(150 * time.Millisecond)

@@ -175,17 +175,15 @@ func (s *searchStack) openSession(t *testing.T, ident identity.Identity) {
 	}
 }
 
-func (s *searchStack) spawnTask(t *testing.T, ident identity.Identity, desc string) tasksubsys.TaskID {
+func (s *searchStack) spawnTask(t *testing.T, ident identity.Identity, desc string) {
 	t.Helper()
-	h, err := s.tasks.Spawn(context.Background(), tasksubsys.SpawnRequest{
+	if _, err := s.tasks.Spawn(context.Background(), tasksubsys.SpawnRequest{
 		Identity:    identity.Quadruple{Identity: ident},
 		Kind:        tasksubsys.KindForeground,
 		Description: desc,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	return h.ID
 }
 
 func (s *searchStack) publishEvent(t *testing.T, q identity.Quadruple) {
@@ -238,7 +236,7 @@ func TestE2E_SearchCluster_RoundTripsEveryMethod(t *testing.T) {
 		methods.MethodSearchEvents,
 		methods.MethodSearchArtifacts,
 	} {
-		m := m
+
 		t.Run(string(m), func(t *testing.T) {
 			resp, err := st.surface.Dispatch(ctx, m, &types.SearchRequest{})
 			if err != nil {
@@ -266,7 +264,7 @@ func TestE2E_SearchCluster_MissingIdentityRejectedLoudly(t *testing.T) {
 		methods.MethodSearchEvents,
 		methods.MethodSearchArtifacts,
 	} {
-		m := m
+
 		t.Run(string(m), func(t *testing.T) {
 			_, err := st.surface.Dispatch(context.Background(), m, &types.SearchRequest{})
 			var pe *protoerrors.Error
@@ -299,7 +297,7 @@ func TestE2E_SearchCluster_CrossTenantWithoutAdminRejected(t *testing.T) {
 		methods.MethodSearchEvents,
 		methods.MethodSearchArtifacts,
 	} {
-		m := m
+
 		t.Run(string(m), func(t *testing.T) {
 			_, err := st.surface.Dispatch(ctx, m, req)
 			var pe *protoerrors.Error
@@ -399,7 +397,7 @@ func TestE2E_SearchCluster_CrossSessionIsolation_Concurrent(t *testing.T) {
 	defer st.close()
 
 	for _, tenant := range []string{"t1", "t2"} {
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			ident := identity.Identity{
 				TenantID:  tenant,
 				UserID:    "u",
@@ -419,8 +417,8 @@ func TestE2E_SearchCluster_CrossSessionIsolation_Concurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	failures := make(chan string, N*4)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

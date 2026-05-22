@@ -42,7 +42,7 @@ func resolveSafePath(allowedRoot, relPath string) (string, error) {
 
 	canonicalRoot, err := filepath.Abs(filepath.Clean(allowedRoot))
 	if err != nil {
-		return "", fmt.Errorf("%w: AllowedRoot abs: %v", ErrAttachmentOutsideRoot, err)
+		return "", fmt.Errorf("%w: AllowedRoot abs: %w", ErrAttachmentOutsideRoot, err)
 	}
 
 	joined := filepath.Clean(filepath.Join(canonicalRoot, relPath))
@@ -62,7 +62,7 @@ func resolveSafePath(allowedRoot, relPath string) (string, error) {
 			// Root must exist if any attachment was probed
 			// successfully under it; surface the root-eval error
 			// rather than silently falling back.
-			return "", fmt.Errorf("%w: AllowedRoot eval: %v",
+			return "", fmt.Errorf("%w: AllowedRoot eval: %w",
 				ErrAttachmentOutsideRoot, rootErr)
 		}
 		if !pathHasPrefix(evaluated, evaluatedRoot) {

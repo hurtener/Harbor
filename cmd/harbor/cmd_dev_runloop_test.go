@@ -653,8 +653,7 @@ func TestPerTaskRunLoopDriver_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 	// (§6 isolation under stress).
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		go func() {
 			defer wg.Done()
 			id := identity.Identity{

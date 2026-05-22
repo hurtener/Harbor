@@ -242,7 +242,7 @@ func TestE2E_Phase73d_TasksPage(t *testing.T) {
 
 	// Seed three Running tasks in tenant A and two in tenant B.
 	var aTasks []tasks.TaskID
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		aTasks = append(aTasks, seedRunningTask(t, deps.reg, idA, "tenant A task"))
 	}
 	bTask := seedRunningTask(t, deps.reg, idB, "tenant B task")
@@ -360,7 +360,7 @@ func TestE2E_Phase73d_TasksPage(t *testing.T) {
 		const n = 12
 		var wg sync.WaitGroup
 		errCh := make(chan string, n*2)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(useA bool) {
 				defer wg.Done()

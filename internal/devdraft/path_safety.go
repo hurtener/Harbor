@@ -41,7 +41,7 @@ func resolveSafe(allowedRoot, relPath string) (string, error) {
 
 	canonicalRoot, err := filepath.Abs(filepath.Clean(allowedRoot))
 	if err != nil {
-		return "", fmt.Errorf("%w: allowedRoot abs: %v", ErrUnsafePath, err)
+		return "", fmt.Errorf("%w: allowedRoot abs: %w", ErrUnsafePath, err)
 	}
 
 	joined := filepath.Clean(filepath.Join(canonicalRoot, relPath))
@@ -56,7 +56,7 @@ func resolveSafe(allowedRoot, relPath string) (string, error) {
 	if evalErr == nil {
 		evaluatedRoot, rootErr := filepath.EvalSymlinks(canonicalRoot)
 		if rootErr != nil {
-			return "", fmt.Errorf("%w: allowedRoot eval: %v", ErrUnsafePath, rootErr)
+			return "", fmt.Errorf("%w: allowedRoot eval: %w", ErrUnsafePath, rootErr)
 		}
 		if !pathHasPrefix(evaluated, evaluatedRoot) {
 			return "", fmt.Errorf("%w: %q escapes %q (symlink)", ErrUnsafePath, evaluated, evaluatedRoot)

@@ -42,8 +42,7 @@ func (p payloadWithIdentityHolder) IdentityQuadruple() identity.Quadruple {
 // embeds an identity.Quadruple that disagrees with the outer
 // event identity; AssertNoLeaks must flag it.
 func TestAssertNoLeaks_PayloadCrossTalk_QuadrupleField(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	idA := identity.Identity{TenantID: "ta", UserID: "u", SessionID: "sa"}
 	idB := identity.Identity{TenantID: "tb", UserID: "u", SessionID: "sb"}
@@ -81,8 +80,7 @@ func TestAssertNoLeaks_PayloadCrossTalk_QuadrupleField(t *testing.T) {
 // payloads that implement IdentityQuadruple() exercise the type
 // switch in payloadQuadruple before the reflection fallback.
 func TestAssertNoLeaks_PayloadIdentityHolder_TypeAssertionPath(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	idA := identity.Identity{TenantID: "ta", UserID: "u", SessionID: "sa"}
 	idB := identity.Identity{TenantID: "tb", UserID: "u", SessionID: "sb"}
@@ -115,8 +113,7 @@ func TestAssertNoLeaks_PayloadIdentityHolder_TypeAssertionPath(t *testing.T) {
 // TestAssertNoLeaks_PayloadIdentityTripleField — Identity field of
 // the bare identity.Identity type triggers the reflect widen path.
 func TestAssertNoLeaks_PayloadIdentityTripleField(t *testing.T) {
-	red := stubRedactor{}
-	bus := openInmemBus(t, red)
+	bus := openInmemBus(t)
 
 	idA := identity.Identity{TenantID: "ta", UserID: "u", SessionID: "sa"}
 	idB := identity.Identity{TenantID: "tb", UserID: "u", SessionID: "sb"}

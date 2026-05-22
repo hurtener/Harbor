@@ -62,9 +62,9 @@ func phase53aSampleConfig() registry.AgentConfig {
 }
 
 // openRegistry builds a registry over the given StateConfig with a
-// fresh real EventBus + patterns redactor. Returns the registry, the
-// store (so the caller can wire a "restart"), and the bus.
-func openRegistry(t *testing.T, stateCfg config.StateConfig) (*registry.Registry, state.StateStore, events.EventBus) {
+// fresh real EventBus + patterns redactor. Returns the registry and
+// the bus.
+func openRegistry(t *testing.T, stateCfg config.StateConfig) (*registry.Registry, events.EventBus) {
 	t.Helper()
 	store, err := state.Open(context.Background(), stateCfg)
 	if err != nil {
@@ -83,7 +83,7 @@ func openRegistry(t *testing.T, stateCfg config.StateConfig) (*registry.Registry
 		_ = bus.Close(context.Background())
 		_ = store.Close(context.Background())
 	})
-	return reg, store, bus
+	return reg, bus
 }
 
 // TestE2E_Phase53a_Rehydration_AcrossDrivers exercises the registry's
@@ -102,13 +102,13 @@ func TestE2E_Phase53a_Rehydration_AcrossDrivers(t *testing.T) {
 		// by the package unit tests; here we assert the cold-start
 		// posture the integration surface cares about.)
 		cfg := config.StateConfig{Driver: "inmem"}
-		reg1, _, _ := openRegistry(t, cfg)
+		reg1, _ := openRegistry(t, cfg)
 		ctx := mustIdentity(t, "T", "U", "S")
 		rec, err := reg1.Register(ctx, "agent-x", phase53aSampleConfig(), registry.RegisterOptions{})
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
-		reg2, _, _ := openRegistry(t, cfg) // fresh in-mem store
+		reg2, _ := openRegistry(t, cfg) // fresh in-mem store
 		if _, err := reg2.Get(ctx, rec.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
 			t.Fatalf("fresh in-mem store saw a prior agent (should be non-persistent): %v", err)
 		}
@@ -140,7 +140,7 @@ func assertDurableRehydration(t *testing.T, cfg config.StateConfig) {
 	ctx := mustIdentity(t, "T", "U", "S")
 
 	// --- process 1: register. ---
-	reg1, _, _ := openRegistry(t, cfg)
+	reg1, _ := openRegistry(t, cfg)
 	first, err := reg1.Register(ctx, "agent-x", phase53aSampleConfig(), registry.RegisterOptions{DisplayName: "Agent X"})
 	if err != nil {
 		t.Fatalf("Register #1: %v", err)
@@ -150,7 +150,7 @@ func assertDurableRehydration(t *testing.T, cfg config.StateConfig) {
 	}
 
 	// --- process 2 ("restart"): fresh registry, SAME DSN. ---
-	reg2, _, _ := openRegistry(t, cfg)
+	reg2, _ := openRegistry(t, cfg)
 	got, err := reg2.Get(ctx, first.AgentID)
 	if err != nil {
 		t.Fatalf("Get after restart: %v", err)
@@ -185,7 +185,7 @@ func assertDurableRehydration(t *testing.T, cfg config.StateConfig) {
 // identity propagation through every layer the test wires).
 func TestE2E_Phase53a_EventSeam_IdentityPropagation(t *testing.T) {
 	cfg := config.StateConfig{Driver: "inmem"}
-	reg, _, bus := openRegistry(t, cfg)
+	reg, bus := openRegistry(t, cfg)
 	ctx := mustIdentity(t, "tenant-a", "user-a", "session-a")
 
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
@@ -237,7 +237,7 @@ func TestE2E_Phase53a_EventSeam_IdentityPropagation(t *testing.T) {
 // List is empty.
 func TestE2E_Phase53a_FailureMode_MissingIdentityFailsClosed(t *testing.T) {
 	cfg := config.StateConfig{Driver: "inmem"}
-	reg, _, _ := openRegistry(t, cfg)
+	reg, _ := openRegistry(t, cfg)
 
 	// No identity in context — fail closed.
 	if _, err := reg.Register(context.Background(), "agent", phase53aSampleConfig(), registry.RegisterOptions{}); !errors.Is(err, registry.ErrIdentityRequired) {

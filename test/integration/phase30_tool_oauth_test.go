@@ -145,7 +145,7 @@ func phase30StoreCases() []phase30StoreCase {
 // same tool without collision" criterion).
 func TestE2E_Phase30_TokenStore_ConformanceAcrossDrivers(t *testing.T) {
 	for _, tc := range phase30StoreCases() {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			conformancetest.Run(t, func(tt *testing.T) (auth.TokenStore, state.StateStore, auth.Sealer) {
 				tt.Helper()
@@ -172,7 +172,7 @@ func TestE2E_Phase30_TokenStore_ConformanceAcrossDrivers(t *testing.T) {
 // PKCE + RFC 7591 dynamic registration + metadata discovery.
 func TestE2E_Phase30_FullPauseResumeCycle_BothBindingScopes(t *testing.T) {
 	for _, tc := range phase30StoreCases() {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			env := buildPhase30Env(t, tc)
 			t.Run("user_bound", func(t *testing.T) {
@@ -266,11 +266,9 @@ func runOAuthCycle(t *testing.T, env *phase30Env, ctx context.Context, source to
 		if tok.UserID != "" {
 			t.Fatalf("agent-bound tok.UserID must be empty; got %q", tok.UserID)
 		}
-	} else {
-		if tok.UserID != phase30ID.UserID {
-			t.Fatalf("user-bound tok.UserID: got %q want %q",
-				tok.UserID, phase30ID.UserID)
-		}
+	} else if tok.UserID != phase30ID.UserID {
+		t.Fatalf("user-bound tok.UserID: got %q want %q",
+			tok.UserID, phase30ID.UserID)
 	}
 
 	// 4. tool.auth_completed event arrived.
@@ -347,8 +345,22 @@ func TestE2E_Phase30_A2AAuthRequired_ConvergesOnSamePrimitive(t *testing.T) {
 	}
 	// Field set is identical — same struct, same field names. A
 	// Console rendering this payload does not branch on transport.
+	// Both payloads are the SAME type; the only differing values are
+	// the per-source fields. Assert every field is populated as built
+	// so the "same shape" claim is exercised, not just .State.
 	if a2aPayload.State != mcpPayload.State {
 		t.Fatalf("state cross-talk")
+	}
+	if a2aPayload.Source != "a2a-peer-compliance" || mcpPayload.Source != "mcp-server-github" {
+		t.Fatalf("source not carried through: a2a=%q mcp=%q", a2aPayload.Source, mcpPayload.Source)
+	}
+	if a2aPayload.BindingScope != string(auth.ScopeAgent) || mcpPayload.BindingScope != string(auth.ScopeUser) {
+		t.Fatalf("binding scope not carried through: a2a=%q mcp=%q", a2aPayload.BindingScope, mcpPayload.BindingScope)
+	}
+	if a2aPayload.SourceName == "" || mcpPayload.SourceName == "" ||
+		a2aPayload.AuthorizeURL == "" || mcpPayload.AuthorizeURL == "" ||
+		len(a2aPayload.Scopes) == 0 || len(mcpPayload.Scopes) == 0 {
+		t.Fatalf("payload shape lost a field: a2a=%+v mcp=%+v", a2aPayload, mcpPayload)
 	}
 }
 
@@ -359,7 +371,7 @@ func TestE2E_Phase30_A2AAuthRequired_ConvergesOnSamePrimitive(t *testing.T) {
 func TestE2E_Phase30_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
 	env := buildPhase30Env(t, phase30StoreCases()[0])
 	baseline := runtime.NumGoroutine()
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		ctx, cancel := context.WithCancel(phase30Ctx(t, phase30ID))
 		_, err := env.provider.Token(ctx, env.userCfg.Source)
 		var authErr *auth.ErrAuthRequired
@@ -417,8 +429,8 @@ func TestE2E_Phase30_Concurrency_NoCrossTalk(t *testing.T) {
 	const N = 16
 	var wg sync.WaitGroup
 	errCh := make(chan error, N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -431,17 +443,17 @@ func TestE2E_Phase30_Concurrency_NoCrossTalk(t *testing.T) {
 			_, err := env.provider.Token(ctx, env.userCfg.Source)
 			var authErr *auth.ErrAuthRequired
 			if !errors.As(err, &authErr) {
-				errCh <- fmt.Errorf("g%d Token: %v", i, err)
+				errCh <- fmt.Errorf("g%d Token: %w", i, err)
 				return
 			}
 			code, _, err := env.server.VisitAuthorizeURL(authErr.AuthorizeURL)
 			if err != nil {
-				errCh <- fmt.Errorf("g%d VisitAuthorizeURL: %v", i, err)
+				errCh <- fmt.Errorf("g%d VisitAuthorizeURL: %w", i, err)
 				return
 			}
 			tok, err := env.provider.CompleteFlow(ctx, authErr.State, code)
 			if err != nil {
-				errCh <- fmt.Errorf("g%d CompleteFlow: %v", i, err)
+				errCh <- fmt.Errorf("g%d CompleteFlow: %w", i, err)
 				return
 			}
 			if tok.TenantID != id.TenantID || tok.UserID != id.UserID {

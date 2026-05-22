@@ -122,7 +122,7 @@ func publishWarn(t *testing.T, bus events.EventBus, id identity.Quadruple, note 
 // across every StateStore driver.
 func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 	for _, sc := range durableStateDrivers() {
-		sc := sc
+
 		t.Run(sc.name, func(t *testing.T) {
 			t.Parallel()
 			store := sc.newFunc(t)
@@ -135,7 +135,7 @@ func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("durable.New (run 1): %v", err)
 			}
-			for i := 0; i < 12; i++ {
+			for i := range 12 {
 				publishWarn(t, bus1, id, fmt.Sprintf("run1-%d", i))
 			}
 			if err := bus1.Close(context.Background()); err != nil {
@@ -194,7 +194,7 @@ func TestE2E_Phase57_DurableReplay_AllStateDrivers(t *testing.T) {
 // every StateStore driver.
 func TestE2E_Phase57_DurableReplay_CrossTenantIsolation(t *testing.T) {
 	for _, sc := range durableStateDrivers() {
-		sc := sc
+
 		t.Run(sc.name, func(t *testing.T) {
 			t.Parallel()
 			store := sc.newFunc(t)
@@ -210,10 +210,10 @@ func TestE2E_Phase57_DurableReplay_CrossTenantIsolation(t *testing.T) {
 			idA := dq("tenant-1", "user-1", "session-1")
 			idB := dq("tenant-2", "user-2", "session-2")
 
-			for i := 0; i < 5; i++ {
+			for i := range 5 {
 				publishWarn(t, bus, idA, fmt.Sprintf("a-%d", i))
 			}
-			for i := 0; i < 7; i++ {
+			for i := range 7 {
 				publishWarn(t, bus, idB, fmt.Sprintf("b-%d", i))
 			}
 
@@ -302,7 +302,7 @@ func TestE2E_Phase57_DurableLog_ConcurrencyStress(t *testing.T) {
 	wg.Add(n)
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(idx int) {
 			defer wg.Done()
 			id := dq(
@@ -310,7 +310,7 @@ func TestE2E_Phase57_DurableLog_ConcurrencyStress(t *testing.T) {
 				fmt.Sprintf("user-%d", idx),
 				fmt.Sprintf("session-%d", idx),
 			)
-			for j := 0; j < perGoroutine; j++ {
+			for j := range perGoroutine {
 				if err := bus.Publish(context.Background(), events.Event{
 					Type:     events.EventTypeRuntimeWarning,
 					Identity: id,

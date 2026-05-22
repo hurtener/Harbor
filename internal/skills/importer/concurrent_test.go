@@ -46,7 +46,7 @@ func TestConcurrent_NEqual128_SharedImporter(t *testing.T) {
 		canceledRejects atomic.Int64
 	)
 
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -159,7 +159,7 @@ trigger: yes
 	}
 	imp, _ := newImporter(t)
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

@@ -167,16 +167,27 @@ func TestRender_TruncatesLongLabel(t *testing.T) {
 	if !strings.Contains(string(out), "…") {
 		t.Errorf("expected ellipsis in truncated output, got:\n%s", out)
 	}
-	// No body line exceeds MinRenderWidth.
+	// The node line carrying the clipped label (the one with the
+	// ellipsis) must not grossly overrun the width budget. The
+	// truncation contract is "label gets clipped" — width is the
+	// BUDGET, not a hard cap that drops the kind tag too, so we
+	// permit the tag+space overhead (~16 bytes) on top of
+	// MinRenderWidth. Header lines (identity tuple, run id) are not
+	// subject to the label-truncation contract and are skipped.
+	const tagOverhead = 16
+	sawTruncatedLine := false
 	for _, line := range strings.Split(string(out), "\n") {
-		if len(line) > MinRenderWidth+5 {
-			// +5 fudge for the kind tag — the indent is 0 here
-			// so the line is body-only, but the tag itself adds
-			// roughly 10 bytes; we permit the tag+space overhead.
-			// The truncation contract is "label gets clipped",
-			// not "line is exactly width" — width is the BUDGET,
-			// not a hard cap that drops the tag too.
+		if !strings.Contains(line, "…") {
+			continue
 		}
+		sawTruncatedLine = true
+		if len(line) > MinRenderWidth+tagOverhead {
+			t.Errorf("truncated node line exceeds width budget (%d): %q",
+				MinRenderWidth+tagOverhead, line)
+		}
+	}
+	if !sawTruncatedLine {
+		t.Errorf("no truncated node line found in output:\n%s", out)
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 type validateCase struct {
 	name       string
 	fixture    string // relative to cmd/harbor/, "" → no fixture (e.g. nonexistent)
-	args       []string
 	wantCode   string // CLIError.Code expected, empty for the valid case
 	wantExit   int    // 0 valid, 1 validation_failed, 2 validation_internal_error
 	wantInBody []string
@@ -77,7 +76,7 @@ var validateCases = []validateCase{
 // Run `go test -update ./cmd/harbor/...` to regenerate.
 func TestValidate_Human_PinnedByGolden(t *testing.T) {
 	for _, tc := range validateCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			args := []string{"validate"}
@@ -108,7 +107,7 @@ func TestValidate_Human_PinnedByGolden(t *testing.T) {
 // back to assert structural validity AND compare against the golden.
 func TestValidate_JSON_PinnedByGolden(t *testing.T) {
 	for _, tc := range validateCases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			args := []string{"validate", "--json"}

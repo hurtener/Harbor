@@ -139,9 +139,16 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 	// quickly under the test's 2s settle window. Production traffic
 	// still gets keep-alive within the 1s window, which is enough for
 	// burst latency wins on multi-call request paths.
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.IdleConnTimeout = 1 * time.Second
-	httpClient := &http.Client{Transport: transport}
+	// http.DefaultTransport is always a *http.Transport in the stdlib;
+	// the comma-ok guards against a future stdlib change rather than a
+	// real runtime case.
+	httpClient := &http.Client{}
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+		transport.IdleConnTimeout = 1 * time.Second
+		httpClient.Transport = transport
+	}
 
 	loadOpts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
@@ -204,9 +211,7 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 }
 
 func init() {
-	artifacts.Register("s3", func(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
-		return New(cfg)
-	})
+	artifacts.Register("s3", New)
 }
 
 type driver struct {
@@ -294,6 +299,7 @@ func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, da
 	}); err != nil {
 		// Best-effort cleanup of the orphan blob so the next Put with
 		// these bytes can succeed cleanly. Ignore cleanup errors.
+		//nolint:errcheck // best-effort orphan-blob cleanup; the caller already gets the meta-PUT error
 		_, _ = d.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
 			Bucket: awsmw.String(d.bucket),
 			Key:    awsmw.String(blobKey),
@@ -711,9 +717,9 @@ func isNotFound(err error) bool {
 	}
 	// Smithy's HTTP response error carries the HTTP status; check 404.
 	type httpStatuser interface{ HTTPStatusCode() int }
-	var statuser httpStatuser
-	if errors.As(err, &statuser) {
-		if statuser.HTTPStatusCode() == http.StatusNotFound {
+	var stature httpStatuser
+	if errors.As(err, &stature) {
+		if stature.HTTPStatusCode() == http.StatusNotFound {
 			return true
 		}
 	}

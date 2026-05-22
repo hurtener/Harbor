@@ -519,8 +519,7 @@ func Run(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errs atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
 			go func() {
 				defer wg.Done()
 				ctx := context.Background()
@@ -530,7 +529,7 @@ func Run(t *testing.T, factory Factory) {
 					SessionID: fmt.Sprintf("s-%d", i),
 					TaskID:    fmt.Sprintf("k-%d", i%7),
 				}
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					data := []byte(fmt.Sprintf("payload-%d-%d", i, j))
 					ref, err := s.PutBytes(ctx, scope, data, artifacts.PutOpts{
 						Namespace: fmt.Sprintf("ns-%d", j%3),
@@ -577,8 +576,7 @@ func Run(t *testing.T, factory Factory) {
 		var dupWg sync.WaitGroup
 		ids := make([]string, dupGoroutines)
 		dupWg.Add(dupGoroutines)
-		for i := 0; i < dupGoroutines; i++ {
-			i := i
+		for i := range dupGoroutines {
 			go func() {
 				defer dupWg.Done()
 				ref, err := s.PutBytes(context.Background(), dupScope, dupBytes,
@@ -631,10 +629,12 @@ func Run(t *testing.T, factory Factory) {
 		ctx := context.Background()
 		// A few writes to trigger any internal goroutines (none in V1
 		// drivers; future drivers may spin pumps).
-		for i := 0; i < 8; i++ {
-			_, _ = s.PutBytes(ctx, scopeA(),
+		for i := range 8 {
+			if _, err := s.PutBytes(ctx, scopeA(),
 				[]byte(fmt.Sprintf("leak-%02d", i)),
-				artifacts.PutOpts{Namespace: "ns"})
+				artifacts.PutOpts{Namespace: "ns"}); err != nil {
+				t.Fatalf("PutBytes: %v", err)
+			}
 		}
 		if err := s.Close(ctx); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -710,6 +710,9 @@ func Run(t *testing.T, factory Factory) {
 		// Mutate the returned copy — facade's internal scope must not
 		// change.
 		first.TenantID = "MUTATED"
+		if first.TenantID != "MUTATED" {
+			t.Fatalf("returned scope copy did not accept the mutation")
+		}
 		second := facade.Scope()
 		if !second.Equal(scopeA()) {
 			t.Errorf("facade Scope mutated through returned copy: %+v", second)

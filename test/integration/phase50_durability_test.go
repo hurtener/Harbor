@@ -102,7 +102,7 @@ func phase50StoreCases() []storeCase {
 // simulated Runtime restart, for every V1 StateStore driver.
 func TestE2E_PauseResume_DurabilityAcrossDrivers(t *testing.T) {
 	for _, tc := range phase50StoreCases() {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
 			ctx, err := identity.WithRun(context.Background(), phase50ID, "run-durability")
@@ -181,7 +181,7 @@ func TestE2E_PauseResume_DurabilityAcrossDrivers(t *testing.T) {
 // is the isolation boundary, enforced at the resume seam.
 func TestE2E_PauseResume_ScopeIsolationAcrossDrivers(t *testing.T) {
 	for _, tc := range phase50StoreCases() {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			store := tc.open(t)
 			pauseCtx, err := identity.WithRun(context.Background(), phase50ID, "run-1")

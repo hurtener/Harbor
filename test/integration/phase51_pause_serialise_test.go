@@ -95,7 +95,7 @@ func phase51Stores(t *testing.T) []struct {
 // error type is the observable proof the contract is one shape.
 func TestE2E_PauseSerialise_ConformsWithPhase43(t *testing.T) {
 	for _, sc := range phase51Stores(t) {
-		sc := sc
+
 		t.Run(sc.name, func(t *testing.T) {
 			ctx, err := identity.WithRun(context.Background(), phase51ID, "run-conformance")
 			if err != nil {
@@ -153,7 +153,7 @@ func TestE2E_PauseSerialise_ConformsWithPhase43(t *testing.T) {
 // silent-corruption shape the contract closes.
 func TestE2E_PauseSerialise_NoHalfPersistAcrossDrivers(t *testing.T) {
 	for _, sc := range phase51Stores(t) {
-		sc := sc
+
 		t.Run(sc.name, func(t *testing.T) {
 			ctx, err := identity.WithRun(context.Background(), phase51ID, "run-nohalfpersist")
 			if err != nil {
@@ -206,7 +206,7 @@ func TestE2E_PauseSerialise_NoHalfPersistAcrossDrivers(t *testing.T) {
 // this exercises the genuine rehydrate path.
 func TestE2E_PauseSerialise_FormatVersionGuardAcrossDrivers(t *testing.T) {
 	for _, sc := range phase51Stores(t) {
-		sc := sc
+
 		t.Run(sc.name, func(t *testing.T) {
 			ctx, err := identity.WithRun(context.Background(), phase51ID, "run-fmtguard")
 			if err != nil {

@@ -128,9 +128,11 @@ Examples:
 // until SIGINT / SIGTERM, then drains. Every failure path returns a
 // CLIError so the structured-error surface routes through the root.
 func runConsole(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Flags().GetString(flagConsoleConfig)
-	port, _ := cmd.Flags().GetInt(flagConsolePort)
-	bindFlag, _ := cmd.Flags().GetString(flagConsoleBind)
+	// Every flag below is statically registered on this command, so the
+	// GetX lookups cannot fail; the blank-error discards are intentional.
+	cfgPath, _ := cmd.Flags().GetString(flagConsoleConfig) //nolint:errcheck // flag statically registered; lookup cannot fail
+	port, _ := cmd.Flags().GetInt(flagConsolePort)         //nolint:errcheck // flag statically registered; lookup cannot fail
+	bindFlag, _ := cmd.Flags().GetString(flagConsoleBind)  //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	// `--bind` (or HARBOR_BIND) overrides `--port`. `127.0.0.1:0`
 	// requests an ephemeral port — the D-104 pattern the e2e harness

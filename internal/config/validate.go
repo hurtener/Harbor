@@ -1249,7 +1249,7 @@ func (c *Config) LiveReloadable() []string {
 
 func collectLiveReload(v reflect.Value, prefix []string, out *[]string) {
 	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
+	for i := range v.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
 			continue
@@ -1258,7 +1258,11 @@ func collectLiveReload(v reflect.Value, prefix []string, out *[]string) {
 		if name == "" || name == "-" {
 			continue
 		}
-		path := append(prefix, name)
+		// Build a child path without aliasing `prefix` — a bare
+		// append could share backing storage across sibling fields.
+		path := make([]string, 0, len(prefix)+1)
+		path = append(path, prefix...)
+		path = append(path, name)
 		fv := v.Field(i)
 		if fv.Kind() == reflect.Struct {
 			collectLiveReload(fv, path, out)

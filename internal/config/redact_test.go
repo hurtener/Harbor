@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/goccy/go-yaml"
+
 	"github.com/hurtener/Harbor/internal/config"
 )
 

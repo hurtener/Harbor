@@ -158,12 +158,12 @@ func newPhase72aDeps(t *testing.T) *phase72aDeps {
 	}
 }
 
-// publishPhase72aEvent backdates events into the bus so the
-// aggregator's bucket arithmetic is testable against known timestamps.
-func publishPhase72aEvent(t *testing.T, bus events.EventBus, typ events.EventType, tenant, user, session string, at time.Time) {
+// publishPhase72aEvent backdates a runtime.error event into the bus so
+// the aggregator's bucket arithmetic is testable against known timestamps.
+func publishPhase72aEvent(t *testing.T, bus events.EventBus, tenant, user, session string, at time.Time) {
 	t.Helper()
 	ev := events.Event{
-		Type: typ,
+		Type: events.EventTypeRuntimeError,
 		Identity: identity.Quadruple{
 			Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session},
 		},
@@ -173,7 +173,7 @@ func publishPhase72aEvent(t *testing.T, bus events.EventBus, typ events.EventTyp
 		},
 	}
 	if err := bus.Publish(context.Background(), ev); err != nil {
-		t.Fatalf("publish %s: %v", typ, err)
+		t.Fatalf("publish %s: %v", ev.Type, err)
 	}
 }
 
@@ -205,14 +205,14 @@ func TestE2E_Phase72a_AggregateHappyPath(t *testing.T) {
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
 
 	// Backdate events 5/15/25 minutes ago.
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		id.TenantID, id.UserID, id.SessionID, fixedNowPhase72a.Add(-5*time.Minute))
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		id.TenantID, id.UserID, id.SessionID, fixedNowPhase72a.Add(-15*time.Minute))
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		id.TenantID, id.UserID, id.SessionID, fixedNowPhase72a.Add(-25*time.Minute))
 	// An event for another tenant should NOT appear in the response.
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		"tenant-other", "u-x", "s-x", fixedNowPhase72a.Add(-10*time.Minute))
 
 	tok := signES256Wave10(t, deps.priv, phase72aClaims(id, nil), phase72aKid)
@@ -320,7 +320,7 @@ func TestE2E_Phase72a_AggregateAcceptsCrossTenantWithAdminScope(t *testing.T) {
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
 
 	// Publish an event for tenant-B (the cross-tenant target).
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		"tenant-B", "u-B", "s-B", fixedNowPhase72a.Add(-5*time.Minute))
 
 	tok := signES256Wave10(t, deps.priv,
@@ -328,8 +328,8 @@ func TestE2E_Phase72a_AggregateAcceptsCrossTenantWithAdminScope(t *testing.T) {
 
 	body, _ := json.Marshal(prototypes.EventAggregateRequest{
 		Filter: prototypes.EventFilter{
-			TenantIDs: []string{"tenant-B"},
-			UserIDs:   []string{"u-B"},
+			TenantIDs:  []string{"tenant-B"},
+			UserIDs:    []string{"u-B"},
 			SessionIDs: []string{"s-B"},
 		},
 		Window: 30 * time.Minute,
@@ -373,7 +373,7 @@ func TestE2E_Phase72a_AggregateAcceptsCrossTenantWithConsoleFleetScope(t *testin
 	defer srv.Close()
 
 	id := identity.Identity{TenantID: "tenant-A", UserID: "u-A", SessionID: "s-A"}
-	publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+	publishPhase72aEvent(t, deps.bus,
 		"tenant-B", "u-B", "s-B", fixedNowPhase72a.Add(-5*time.Minute))
 
 	tok := signES256Wave10(t, deps.priv,
@@ -486,15 +486,15 @@ func TestE2E_Phase72a_ConcurrentAggregateClients(t *testing.T) {
 	// Pre-publish: 4 distinct tenants, each with N events.
 	const tenantCount = 4
 	tenants := make([]identity.Identity, tenantCount)
-	for i := 0; i < tenantCount; i++ {
+	for i := range tenantCount {
 		tenants[i] = identity.Identity{
 			TenantID:  "tenant-" + string(rune('A'+i)),
 			UserID:    "u",
 			SessionID: "s",
 		}
 		// Each tenant gets (i+1) events.
-		for j := 0; j < i+1; j++ {
-			publishPhase72aEvent(t, deps.bus, events.EventTypeRuntimeError,
+		for j := range i + 1 {
+			publishPhase72aEvent(t, deps.bus,
 				tenants[i].TenantID, tenants[i].UserID, tenants[i].SessionID,
 				fixedNowPhase72a.Add(-time.Duration(j+1)*time.Minute))
 		}
@@ -509,8 +509,8 @@ func TestE2E_Phase72a_ConcurrentAggregateClients(t *testing.T) {
 		failures atomic.Int64
 	)
 	wg.Add(concurrency)
-	for i := 0; i < concurrency; i++ {
-		i := i
+	for i := range concurrency {
+
 		go func() {
 			defer wg.Done()
 			myID := tenants[i%tenantCount]
@@ -578,4 +578,3 @@ func TestE2E_Phase72a_ConcurrentAggregateClients(t *testing.T) {
 		t.Fatalf("goroutine leak: baseline=%d, after=%d", baseline, settled)
 	}
 }
-

@@ -398,7 +398,7 @@ func registeredNames() string {
 // mandatory contract.
 func ValidateIdentity(q identity.Quadruple) error {
 	if err := identity.Validate(q.Identity); err != nil {
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return nil
 }
@@ -416,14 +416,14 @@ func ValidateIdentity(q identity.Quadruple) error {
 func IdentityFromCtx(ctx context.Context) (identity.Quadruple, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return q, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}
 	if id, ok := identity.From(ctx); ok {
 		q := identity.Quadruple{Identity: id}
 		if err := identity.Validate(id); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return q, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}

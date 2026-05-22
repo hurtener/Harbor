@@ -301,7 +301,10 @@ func phase64aSubFor(t *testing.T, bus events.EventBus, id identity.Identity, typ
 	}
 }
 
-func phase64aWaitEv(t *testing.T, sub events.Subscription, d time.Duration) events.Event {
+// phase64aWaitEvTimeout bounds every phase64aWaitEv call.
+const phase64aWaitEvTimeout = 2 * time.Second
+
+func phase64aWaitEv(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -309,7 +312,7 @@ func phase64aWaitEv(t *testing.T, sub events.Subscription, d time.Duration) even
 			t.Fatal("subscription channel closed")
 		}
 		return ev
-	case <-time.After(d):
+	case <-time.After(phase64aWaitEvTimeout):
 		t.Fatal("timed out waiting for event")
 		return events.Event{}
 	}
@@ -345,7 +348,7 @@ func TestE2E_Phase64a_FullApproveCycle(t *testing.T) {
 		resCh <- outcome{res: r, err: err}
 	}()
 
-	requestedEv := phase64aWaitEv(t, requestedSub, 2*time.Second)
+	requestedEv := phase64aWaitEv(t, requestedSub)
 	if requestedEv.Identity.TenantID != phase64aID.TenantID {
 		t.Fatalf("event identity propagation: got %+v want %+v",
 			requestedEv.Identity.Identity, phase64aID)
@@ -362,7 +365,7 @@ func TestE2E_Phase64a_FullApproveCycle(t *testing.T) {
 		t.Fatalf("ResolveApproval: %v", err)
 	}
 
-	approvedEv := phase64aWaitEv(t, approvedSub, 2*time.Second)
+	approvedEv := phase64aWaitEv(t, approvedSub)
 	approvedPayload, _ := approvedEv.Payload.(approval.ToolApprovedPayload)
 	if approvedPayload.PauseToken != string(token) {
 		t.Fatalf("approved PauseToken mismatch")
@@ -408,7 +411,7 @@ func TestE2E_Phase64a_FullRejectCycle(t *testing.T) {
 		resCh <- outcome{err: err}
 	}()
 
-	requestedEv := phase64aWaitEv(t, requestedSub, 2*time.Second)
+	requestedEv := phase64aWaitEv(t, requestedSub)
 	p, _ := requestedEv.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(p.PauseToken)
 
@@ -418,7 +421,7 @@ func TestE2E_Phase64a_FullRejectCycle(t *testing.T) {
 		t.Fatalf("ResolveApproval(reject): %v", err)
 	}
 
-	rejectedEv := phase64aWaitEv(t, rejectedSub, 2*time.Second)
+	rejectedEv := phase64aWaitEv(t, rejectedSub)
 	if rejectedEv.Identity.TenantID != phase64aID.TenantID {
 		t.Fatalf("rejected event identity: got %+v want %+v",
 			rejectedEv.Identity.Identity, phase64aID)
@@ -531,7 +534,7 @@ func TestE2E_Phase64a_ConcurrencyStress(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -559,7 +562,7 @@ func TestE2E_Phase64a_ConcurrencyStress(t *testing.T) {
 		t.Error(err)
 	}
 	// Settle + leak check.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -595,14 +598,14 @@ func TestE2E_Phase64a_GoroutineLeak_InitiateThenCancel(t *testing.T) {
 	}()
 	// Wait for the gate to publish the approval-requested event
 	// (= the pause is registered and the goroutine is parked).
-	phase64aWaitEv(t, requestedSub, 2*time.Second)
+	phase64aWaitEv(t, requestedSub)
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Invoke goroutine did not unblock on ctx cancel")
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -644,7 +647,7 @@ func TestE2E_Phase64a_BothMiddleware_ApprovalIsOutermost(t *testing.T) {
 		resCh <- outcome{err: err}
 	}()
 
-	requestedEv := phase64aWaitEv(t, requestedSub, 2*time.Second)
+	requestedEv := phase64aWaitEv(t, requestedSub)
 	p, _ := requestedEv.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(p.PauseToken)
 	if token == "" {

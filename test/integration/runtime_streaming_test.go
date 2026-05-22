@@ -71,7 +71,7 @@ func TestE2E_Phase12_ParallelRuns_StreamFrames(t *testing.T) {
 
 	// Open one session per tenant so the session.opened events land
 	// on the bus and identity propagation is provable end-to-end.
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		id := identity.Identity{
 			TenantID:  fmt.Sprintf("t-%d", i),
 			UserID:    fmt.Sprintf("u-%d", i),
@@ -89,14 +89,14 @@ func TestE2E_Phase12_ParallelRuns_StreamFrames(t *testing.T) {
 		frames []engine.StreamFrame
 	}
 	deliveries := make(map[string]*seenRun)
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		deliveries[fmt.Sprintf("r-%d", i)] = &seenRun{}
 	}
 	var deliveriesMu sync.Mutex
 
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		runID := env.RunID
-		for i := 0; i < framesPerRun; i++ {
+		for i := range framesPerRun {
 			if err := nctx.EmitChunk(ctx, engine.StreamFrame{
 				StreamID: runID,
 				Text:     fmt.Sprintf("%s-%d", runID, i),
@@ -160,8 +160,8 @@ func TestE2E_Phase12_ParallelRuns_StreamFrames(t *testing.T) {
 	// Producers: each tenant emits one Emit (which triggers
 	// framesPerRun internal EmitChunks).
 	var prodWG sync.WaitGroup
-	for i := 0; i < tenants; i++ {
-		i := i
+	for i := range tenants {
+
 		prodWG.Add(1)
 		go func() {
 			defer prodWG.Done()
@@ -265,8 +265,8 @@ func TestE2E_Phase12_StopMidStream_ReleasesWaiters(t *testing.T) {
 
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		var wg sync.WaitGroup
-		for i := 0; i < burst; i++ {
-			i := i
+		for i := range burst {
+
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

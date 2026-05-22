@@ -231,20 +231,6 @@ func buildPlannerWithPauseStep(t *testing.T, gate *onceGate) planner.Planner {
 	return p
 }
 
-// buildFinishOnlyPlanner builds a deterministic planner that finishes
-// immediately — used by the matrix sub-tests that only need the run to
-// reach a step boundary so the drained control event is applied.
-func buildFinishOnlyPlanner(t *testing.T, reason planner.FinishReason) planner.Planner {
-	t.Helper()
-	p, err := deterministic.NewDeterministicPlanner(
-		deterministic.WithSteps(&deterministic.FinishStep{Reason: reason}),
-	)
-	if err != nil {
-		t.Fatalf("NewDeterministicPlanner: %v", err)
-	}
-	return p
-}
-
 // ---------------------------------------------------------------------------
 // TestE2E_Phase53_PauseRoundTrip_ThroughCoordinator — the §13 test.
 // ---------------------------------------------------------------------------
@@ -680,7 +666,7 @@ func TestE2E_Phase53_ConcurrencyMidStep(t *testing.T) {
 		mu       sync.Mutex
 		failures []string
 	)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()

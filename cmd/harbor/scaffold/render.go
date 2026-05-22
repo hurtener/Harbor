@@ -101,6 +101,7 @@ func renderTemplate(name, projectName, outDir string) ([]string, error) {
 		if err := t.Execute(&buf, vars); err != nil {
 			return fmt.Errorf("execute %s: %w", rel, err)
 		}
+		//nolint:gosec // scaffolded project source files are intended to be world-readable (0o644); they carry no secrets
 		if err := os.WriteFile(destAbs, buf.Bytes(), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", destAbs, err)
 		}

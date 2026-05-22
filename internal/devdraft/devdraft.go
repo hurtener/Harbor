@@ -241,7 +241,7 @@ func (s *Store) Create(ctx context.Context, opts CreateOptions) (*Draft, error) 
 	}
 	for _, f := range res.Files {
 		path := filepath.Join(draftRoot, f)
-		raw, readErr := os.ReadFile(path) //nolint:gosec // path constructed from scaffold output under draftRoot
+		raw, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return nil, fmt.Errorf("%w: read seeded file %q: %w", ErrIO, f, readErr)
 		}
@@ -342,6 +342,7 @@ func (s *Store) WriteFile(ctx context.Context, draftID, relPath string, content 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("%w: mkdir parent of %q: %w", ErrIO, relPath, err)
 	}
+	//nolint:gosec // draft project source files are intended to be world-readable (0o644); they carry no secrets
 	if err := os.WriteFile(dest, content, 0o644); err != nil {
 		return fmt.Errorf("%w: write %q: %w", ErrIO, relPath, err)
 	}
@@ -484,7 +485,7 @@ func (s *Store) Save(ctx context.Context, draftID string, opts SaveOptions) (*Sa
 
 	yamlPath := filepath.Join(draftRoot, "harbor.yaml")
 	if _, statErr := os.Stat(yamlPath); statErr != nil {
-		return nil, fmt.Errorf("%w: draft is missing harbor.yaml: %v", ErrValidationFailed, statErr)
+		return nil, fmt.Errorf("%w: draft is missing harbor.yaml: %w", ErrValidationFailed, statErr)
 	}
 	if _, loadErr := config.Load(ctx, yamlPath); loadErr != nil {
 		return nil, fmt.Errorf("%w: %w", ErrValidationFailed, loadErr)
@@ -720,7 +721,7 @@ func walkDraft(draftRoot string, maxFileLen int) ([]DraftFile, time.Time, error)
 		if mt := info.ModTime().UTC(); mt.After(latest) {
 			latest = mt
 		}
-		raw, err := os.ReadFile(path) //nolint:gosec // path produced by WalkDir under draftRoot
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
@@ -779,13 +780,14 @@ func copyTree(srcRoot, dstRoot string, maxFileLen int) ([]string, error) {
 		if int(info.Size()) > maxFileLen {
 			return fmt.Errorf("file %q exceeds per-file cap (%d bytes > %d)", path, info.Size(), maxFileLen)
 		}
-		raw, err := os.ReadFile(path) //nolint:gosec // path produced by WalkDir under srcRoot
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return fmt.Errorf("mkdir parent %s: %w", filepath.Dir(dest), err)
 		}
+		//nolint:gosec // promoted project source files are intended to be world-readable (0o644); they carry no secrets
 		if err := os.WriteFile(dest, raw, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", dest, err)
 		}

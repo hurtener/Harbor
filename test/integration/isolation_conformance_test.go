@@ -240,9 +240,9 @@ func openIsolationStores(t *testing.T) *isolationStores {
 // session) triples the harness fans workers across.
 func isolationIdentities() []identity.Identity {
 	ids := make([]identity.Identity, 0, isolationSessionCount)
-	for ti := 0; ti < isolationTenants; ti++ {
-		for ui := 0; ui < isolationUsersPerTenant; ui++ {
-			for si := 0; si < isolationSessionsPerUser; si++ {
+	for ti := range isolationTenants {
+		for ui := range isolationUsersPerTenant {
+			for si := range isolationSessionsPerUser {
 				ids = append(ids, identity.Identity{
 					TenantID:  fmt.Sprintf("tenant-%02d", ti),
 					UserID:    fmt.Sprintf("tenant-%02d-user-%02d", ti, ui),
@@ -740,7 +740,7 @@ func TestE2E_Isolation_ConformanceHarness(t *testing.T) {
 	// Goroutine baseline BEFORE the soak — settle the scheduler
 	// without time.Sleep (§17.4).
 	runtime.GC()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		runtime.Gosched()
 	}
 	baseline := runtime.NumGoroutine()
@@ -933,7 +933,7 @@ func waitForGoroutineFloor(maxWait time.Duration, target int) (int, bool) {
 		if got := runtime.NumGoroutine(); got <= target {
 			return got, true
 		}
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			runtime.Gosched()
 		}
 	}

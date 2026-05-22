@@ -46,11 +46,7 @@ func doExport(skill skills.Skill, attachments ImportArtifacts) ([]byte, error) {
 		// only. The synthesised form is deterministic so a
 		// caller-built Skill round-trips byte-stable through
 		// THIS exporter (Export->Import->Export idempotent).
-		synth, err := synthesiseFrontmatter(skill)
-		if err != nil {
-			return nil, err
-		}
-		rawFM = synth
+		rawFM = synthesiseFrontmatter(skill)
 	}
 	out.WriteString(frontmatterFence)
 	out.WriteByte('\n')
@@ -130,7 +126,7 @@ func skillFrontmatterRaw(s skills.Skill) ([]byte, bool) {
 // path is its own deterministic shape: Export of a synthetic Skill
 // followed by Import followed by Export reproduces the synthetic
 // shape (`Export -> Import -> Export` idempotent).
-func synthesiseFrontmatter(s skills.Skill) ([]byte, error) {
+func synthesiseFrontmatter(s skills.Skill) []byte {
 	var b bytes.Buffer
 	emitStr := func(k, v string) {
 		if v == "" {
@@ -160,7 +156,7 @@ func synthesiseFrontmatter(s skills.Skill) ([]byte, error) {
 		// default is implicit so omitting it in source is allowed.
 		emitStr("scope", string(s.Scope))
 	}
-	return b.Bytes(), nil
+	return b.Bytes()
 }
 
 // desubstituteArtifacts replaces every `artifact://<ID>` token in s

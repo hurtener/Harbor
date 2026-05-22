@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,17 +85,19 @@ Examples:
 // live-tail only") and exits when the stream idles for
 // snapshotIdleTimeout — there is no end-of-stream signal in SSE.
 func runInspectEvents(cmd *cobra.Command, _ []string) error {
-	bind, _ := cmd.Flags().GetString(flagBind)
+	// Every flag below is statically registered on this command, so the
+	// GetX lookups cannot fail; the blank-error discards are intentional.
+	bind, _ := cmd.Flags().GetString(flagBind) //nolint:errcheck // flag statically registered; lookup cannot fail
 	jsonMode := resolveJSONMode(cmd)
 
 	filter := inspectFilter{}
-	filter.Tenant, _ = cmd.Flags().GetString(flagTenant)
-	filter.User, _ = cmd.Flags().GetString(flagUser)
-	filter.Sess, _ = cmd.Flags().GetString(flagSession)
-	filter.Run, _ = cmd.Flags().GetString(flagRun)
-	filter.Types, _ = cmd.Flags().GetStringSlice(flagType)
-	filter.Since, _ = cmd.Flags().GetString(flagSince)
-	follow, _ := cmd.Flags().GetBool(flagFollow)
+	filter.Tenant, _ = cmd.Flags().GetString(flagTenant)   //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.User, _ = cmd.Flags().GetString(flagUser)       //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Sess, _ = cmd.Flags().GetString(flagSession)    //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Run, _ = cmd.Flags().GetString(flagRun)         //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Types, _ = cmd.Flags().GetStringSlice(flagType) //nolint:errcheck // flag statically registered; lookup cannot fail
+	filter.Since, _ = cmd.Flags().GetString(flagSince)     //nolint:errcheck // flag statically registered; lookup cannot fail
+	follow, _ := cmd.Flags().GetBool(flagFollow)           //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	if err := filter.validate(); err != nil {
 		return emitCLIError(cmd, asCLIErrorOr(err, "inspect-events"))
@@ -167,6 +170,7 @@ func runInspectEventsAgainst(
 				// alongside wireEvent.
 				rec := map[string]string{"comment": frame.Comment}
 				if buf, mErr := json.Marshal(rec); mErr == nil {
+					//nolint:errcheck // best-effort keepalive sentinel to CLI stdout; a write error is handled on the next real event
 					_, _ = out.Write(append(buf, '\n'))
 				}
 			}
@@ -190,22 +194,27 @@ func runInspectEventsAgainst(
 			// field order across Runtime versions).
 			buf, mErr := json.Marshal(ev)
 			if mErr != nil {
+				// Re-encoding a value we just decoded should not fail;
+				// surface it as an error line and continue rather than
+				// silently dropping the event.
+				fmt.Fprintf(out, "# encode error: %v\n", mErr)
 				return false, nil
 			}
 			if _, wErr := out.Write(append(buf, '\n')); wErr != nil {
-				return true, nil // client side hung up
+				return true, nil //nolint:nilerr // client hung up: stop the stream cleanly, write error is not a stream failure
 			}
 			return false, nil
 		}
 		// Human mode: ISO-8601 ts | tenant/user/session[/run] | type | payload sketch
 		line := humanEventLine(ev)
 		if _, wErr := fmt.Fprintln(out, line); wErr != nil {
-			return true, nil
+			return true, nil //nolint:nilerr // client hung up: stop the stream cleanly, write error is not a stream failure
 		}
 		return false, nil
 	})
 	if err != nil {
-		if cli, ok := err.(CLIError); ok {
+		var cli CLIError
+		if errors.As(err, &cli) {
 			cli.Subcommand = "inspect-events"
 			return emit(cli)
 		}
@@ -317,7 +326,8 @@ func abbreviate(s string, maxLen int) string {
 // between the testable core (which returns plain errors) and the
 // cobra glue (which needs structured CLIErrors).
 func asCLIErrorOr(err error, sub string) CLIError {
-	if cli, ok := err.(CLIError); ok {
+	var cli CLIError
+	if errors.As(err, &cli) {
 		if cli.Subcommand == "" {
 			cli.Subcommand = sub
 		}

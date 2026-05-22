@@ -88,7 +88,7 @@ func TestSkill_Validate_RejectsEachMissingMandatoryField(t *testing.T) {
 		{"bad scope", func(s *skills.Skill) { s.Scope = "made-up" }, "Scope="},
 	}
 	for _, tc := range tests {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := validSkill()

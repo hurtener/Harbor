@@ -741,7 +741,7 @@ func TestValidateTools_MCPServers(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := mustLoadValid(t)
 			tc.mutate(cfg)
@@ -916,7 +916,7 @@ func TestValidateTools_Entries(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := mustLoadValid(t)
 			tc.mutate(cfg)
@@ -1062,7 +1062,7 @@ func TestValidateTools_OAuthProviders(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := mustLoadValid(t)
 			tc.mutate(cfg)
@@ -1194,9 +1194,9 @@ func mustLoadValid(t *testing.T) *config.Config {
 // rejected, defaults pass.
 func TestValidateCLI_DevHotReload(t *testing.T) {
 	cases := []struct {
-		name      string
-		mutate    func(*config.Config)
-		wantErr   bool
+		name        string
+		mutate      func(*config.Config)
+		wantErr     bool
 		errFragment string
 	}{
 		{
@@ -1266,14 +1266,15 @@ func TestValidateCLI_DevHotReload(t *testing.T) {
 			cfg := mustLoadValid(t)
 			tc.mutate(cfg)
 			err := cfg.Validate()
-			if tc.wantErr {
+			switch {
+			case tc.wantErr:
 				if err == nil {
 					t.Fatalf("Validate() = nil, want non-nil")
 				}
 				if tc.errFragment != "" && !strings.Contains(err.Error(), tc.errFragment) {
 					t.Errorf("Validate() = %q, want fragment %q", err.Error(), tc.errFragment)
 				}
-			} else {
+			default:
 				if err != nil {
 					t.Fatalf("Validate() = %v, want nil", err)
 				}
