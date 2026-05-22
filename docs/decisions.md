@@ -3400,3 +3400,28 @@ Together these accounted for ~180 of the ~327 raw backlog issues — the low-val
 **Findings I'm departing from.** The naive reading of "burn the whole backlog down" would have hand-reordered 42+ structs for `fieldalignment` and rewritten ~90 `shadow` sites. That path destroys Protocol wire-type godoc and risks races; this decision rejects it in favour of disabling the two analyzers — the reasonable-deviation call (CLAUDE.md §4.3), recorded here because it is a permanent `.golangci.yml` policy change.
 
 **Protocol additions.** None — `.golangci.yml` + `.github/workflows/ci.yml` only; no Protocol method, error code, wire type, or runtime-behaviour change.
+
+---
+
+## D-142 — The v1.0.0 cut: a framework-quality root README, a de-jargoned CHANGELOG, and the release surfaces
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with the Phase 82 v1.0.0 cut)
+
+**Where it lives:** `README.md`; `CHANGELOG.md`; `docs/announcements/v1.0.0.md`; `docs/plans/phase-82-v1-cut.md`; the `v1.0.0` git tag.
+
+**Decision.** Phase 82 cuts `v1.0.0` — the line at which the V1 surface is complete and stable. Three calls are settled here.
+
+**1. The root README is rewritten as a framework front door, not a build log.** The organically-grown README had become a ~100-line phase-by-phase status table, each row a paragraph — a development artifact, not a product entry point. The v1.0.0 README leads with positioning and a three-command quickstart, then the four-layer architecture, the usage path, documentation pointers, and an honest V1 status; it carries the Harbor logo and a five-badge row (CI, release, Go Reference, Go version, license). The phase-status table is deleted — the master phase plan (`docs/plans/README.md`) is the canonical execution index, and the README links to it rather than mirroring it.
+
+**2. Public release surfaces carry no internal "phase" vocabulary.** "Phase NN" is Harbor's internal development jargon. It belongs in `docs/plans/`, `docs/decisions.md`, and the per-phase artifacts — never in the README, the CHANGELOG, release notes, or the launch announcement. The `CHANGELOG.md` `[1.0.0]` section is grouped by subsystem and describes the product in feature terms; its section headers dropped the `(Wave N, phases XX–YY)` parentheticals. A `scripts/smoke/phase-82.sh` check enforces that the CHANGELOG carries no `phase-N` token.
+
+**3. v1.0.0 is the initial release — no migration notes.** The master-plan Phase 82 goal lists "migration notes (if any)"; there is no prior released version to migrate from, so none apply. This is recorded rather than left as an open question.
+
+The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main` CI is green. The Phase 81 `release.yml` workflow then builds the version-stamped CGo-free static binary, attaches the SHA-256 checksum and SLSA build provenance, and publishes the GitHub Release.
+
+**Why.** Harbor is a real product; its front door has to look the part, and its public change record has to read for a user, not a maintainer. The README rewrite and the CHANGELOG de-jargoning are the difference between a repo that looks shipped and one that looks mid-build.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — Phase 82 is the release cut. No Protocol method, error code, wire type, runtime behaviour, or CLI subcommand changes.
