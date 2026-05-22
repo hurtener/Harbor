@@ -97,11 +97,15 @@ jobs:
       # worked-example tests must pass end-to-end. A drift in a public
       # surface (`harbortest`, the tool catalog) that breaks an example
       # fails this job.
+      # The build step pins CGO_ENABLED=0 (Harbor ships a CGo-free
+      # static binary — CLAUDE.md §5). The test step deliberately does
+      # NOT: `go test -race` requires cgo, so it must inherit the
+      # runner default (CGO_ENABLED=1). The asymmetry is intentional.
       - name: Build examples
         env:
           CGO_ENABLED: '0'
         run: go build ./examples/...
-      - name: Test examples
+      - name: Test examples (-race needs cgo — no CGO_ENABLED override)
         run: go test -race ./examples/...
 
   frontend-e2e:

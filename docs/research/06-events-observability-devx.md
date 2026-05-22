@@ -1,6 +1,6 @@
 # Research Brief 06 — Events, Observability, and Developer Experience
 
-> **Status:** research input for the RFC and phase plans. Harbor-native vocabulary throughout. Source-code citations point to the predecessor codebase (internal context only) so we can validate decisions later; the predecessor itself is intentionally unnamed in this document.
+> **Status:** research input for the RFC and phase plans. Harbor-native vocabulary throughout.
 
 ---
 
@@ -8,7 +8,7 @@
 
 Harbor treats **events as the canonical projection of runtime state**. Anything anyone outside the runtime — Console, CLI, third-party tools, audit log, observability vendor, IDE extension, TUI — needs to know about a running agent, they learn by subscribing to the event bus. The Runtime owns the bus; everything else is a client.
 
-This is the deliberate inversion of the predecessor's split. There, the runtime emits a typed observability record (`FlowEvent`) on one channel, and streams partial output (`StreamChunk` carried inside `Message` envelopes) on a second channel (`~/Repos/Penguiflow/penguiflow/penguiflow/metrics.py`, `~/Repos/Penguiflow/penguiflow/penguiflow/streaming.py`). That works, but it forces every consumer to fuse two streams to reconstruct what happened in a run, and it conflates "wire-level event the protocol exposes" with "telemetry record the metrics middleware consumes." Harbor unifies them: **one typed event bus, protocol-grade**, used both for live UI streaming and for telemetry — with logging and OpenTelemetry deriving from the same events rather than being parallel paths.
+This is a deliberate inversion of a common two-channel split, where a runtime emits a typed observability record on one channel and streams partial output on a second channel inside message envelopes. That works, but it forces every consumer to fuse two streams to reconstruct what happened in a run, and it conflates "wire-level event the protocol exposes" with "telemetry record the metrics middleware consumes." Harbor unifies them: **one typed event bus, protocol-grade**, used both for live UI streaming and for telemetry — with logging and OpenTelemetry deriving from the same events rather than being parallel paths.
 
 Why protocol-grade matters: it guarantees Console, third-party consoles, and `harbor dev` see exactly the same data shape that production observability sees. There is no privileged "internal" view. Combined with the Harbor Protocol decoupling rule (Console NEVER reads runtime internals), this makes the event bus the single contract that has to stay stable across versions — and unlocks remote attach, multi-runtime fleet view, IDE/TUI integrations, and observability-vendor adapters as natural extensions rather than custom features.
 
@@ -101,19 +101,19 @@ Companion shapes the same package owns:
 - Bus / queue health: `queue.saturated`, `bus.dropped` (with reason and dropped-event sequence range).
 - Errors: `runtime.error`, `runtime.panic_recovered`. Errors are first-class events; they are *not* "logs that look like events."
 
-(The predecessor's enumeration covers ~12 runtime events in `core.py` and ~20 planner events in `planner/react.py` — Harbor's larger taxonomy is the cost of unifying everything onto one bus, and the cost is paid once.)
+(A typical split enumeration covers roughly a dozen runtime events and a score of planner events on separate paths — Harbor's larger unified taxonomy is the cost of putting everything onto one bus, and the cost is paid once.)
 
 **What subscribers consume.** Clients call `Subscribe(ctx, Filter)` and receive a `Subscription`. Filters are server-enforced for isolation: a Console subscription always passes `(tenant, user, session)` from its authenticated identity, and the runtime rejects any subscribe call that omits them unless the caller has explicit `admin` scope. A late subscriber requesting replay from a cursor receives historical events from the durable log (when configured) interleaved with live events; the bus guarantees no duplicates and no gaps within a `RunID`.
 
 **What `harbor dev` exposes.** `harbor dev` boots the runtime headless, opens the protocol on `127.0.0.1:<port>`, starts the embedded Console, watches the project directory for changes, hot-reloads on Go-source changes (graceful-stop in-flight runs first; configurable), and exposes a draft-save scratchpad endpoint for the dynamic-agent-scaffolding flow described in `harbor_inherited_lessons.md`. All of this is implemented as protocol clients of the same runtime — no private hooks.
 
-**What the test kit gives authors.** A `harbortest` package: `RunOnce(ctx, agent, input) (Output, EventLog, error)`; `AssertSequence(log, []EventType{...})`; `AssertNoLeaks(log)` (cross-tenant/session leakage detector); `SimulateFailure(toolName, code, n)`; `RecordedEvents(runID) []Event`. The point is the same as the predecessor's `testkit.py` (`~/Repos/Penguiflow/penguiflow/penguiflow/testkit.py`): make a flow-level test ten lines or fewer.
+**What the test kit gives authors.** A `harbortest` package: `RunOnce(ctx, agent, input) (Output, EventLog, error)`; `AssertSequence(log, []EventType{...})`; `AssertNoLeaks(log)` (cross-tenant/session leakage detector); `SimulateFailure(toolName, code, n)`; `RecordedEvents(runID) []Event`. The goal is a flow-level test in ten lines or fewer.
 
 ---
 
 ## 4. Internal mechanics
 
-**Bounded channels with explicit drop policy.** Each subscription is backed by a bounded buffered channel. Drop policy is **drop-oldest** by default, and the moment the bus drops an event for a subscriber it emits a `bus.dropped` event on that subscriber's stream describing the dropped sequence range and reason. This converts silent loss into a visible, replayable signal — the predecessor logs queue depth in the `FlowEvent` (`queue_depth_in`, `queue_depth_out`, `trace_pending`, `trace_inflight`, see `metrics.py:11-72`) but does not have the "I dropped these specific sequences" guarantee, and that becomes hard to debug under saturation.
+**Bounded channels with explicit drop policy.** Each subscription is backed by a bounded buffered channel. Drop policy is **drop-oldest** by default, and the moment the bus drops an event for a subscriber it emits a `bus.dropped` event on that subscriber's stream describing the dropped sequence range and reason. This converts silent loss into a visible, replayable signal. Logging queue depth (`queue_depth_in`, `queue_depth_out`, `trace_pending`, `trace_inflight`) on each event is not enough — without the "I dropped these specific sequences" guarantee, saturation is hard to debug.
 
 **Filter expressions.** Filters are evaluated server-side before fan-out. Cardinality of subscribers is bounded per session (configurable; default ~16 simultaneous subscribers per session). A subscription with a filter that matches nothing for 60s is reaped (the protocol surfaces this with a `subscription.idle_closed` control message) so misbehaving clients do not pin runtime state forever.
 
@@ -125,16 +125,16 @@ Companion shapes the same package owns:
 
 ---
 
-## 5. Sharp edges from the source (don't repeat)
+## 5. Sharp edges to design out (don't repeat)
 
-- **Two-channel split.** `FlowEvent` (`metrics.py`) is a separate record from `StreamChunk` (`streaming.py`), and both flow through different paths: events go through the middleware chain; chunks go through the message bus inside `Message.payload`. Every dashboard, replay tool, and Console feature in the source has to fuse them. **Lesson:** unify on one bus from t=0.
-- **Middleware-as-event-sink.** The predecessor wires telemetry as middleware that fires per-node (`middlewares.py:20-84` — `log_flow_events`). It works, but it couples observability lifetime to node execution. Harbor's bus-first model lets observability subscribe at any granularity (planner step, tool, run, session) without inserting middleware everywhere.
-- **No OpenTelemetry in the runtime.** The runtime has no OTel instrumentation; OTel only appears in the playground UI's JS dependencies. **Lesson:** OTel traces and metrics should be a first-class derivation of the event bus, shipped from t=0, not retrofitted.
-- **Logging in two formats with a flag.** `configure_logging(structured: bool)` (`logging.py:102-152`) toggles between human and JSON. Harbor: pick one shape per environment via slog handler — JSON in production, text in dev — no toggle inside the library. The predecessor also notes "Avoid logging large payloads; prefer artifacts/resources and log references" (`docs/observability/logging.md`) — bake this into the Logger so it can't be forgotten.
-- **Tightly coupled Playground.** `cli/playground.py` is 2,478 lines and embeds session management, generation, steering, tasks, AGUI, and the SSE bus in one FastAPI process (`cli/playground.py:1346-2426` enumerates 30+ HTTP routes, several of them duplicating runtime APIs). The Playground both *consumes* and *re-implements* runtime concepts. Harbor avoids this by making `harbor dev` boot the runtime in-process and have the Console talk to it via the protocol — no Playground-private endpoints. `playground_state.py` shows the strain: a `PlaygroundStateStore` Protocol (`cli/playground_state.py:20-37`) that re-declares a subset of `StateStore` because the Playground was implemented before unification.
-- **Skill / spec generator can draft but not save.** `cli/generate.py` runs once and emits files; there is no "draft, iterate, save when ready" loop. Harbor's `harbor dev` ships this from the start (per `harbor_inherited_lessons.md`).
-- **Visualization couples to private state.** `viz.py:137` accesses `flow._floes` directly. Harbor's visualization derives from the canonical event/topology surface published over the protocol — no private fields.
-- **Metrics cardinality footgun.** The predecessor docs warn "Never tag metrics by `trace_id`" (`docs/observability/metrics-and-alerts.md`). In Harbor, `Event.TraceID` is for logs and OTel traces; `MetricsRegistry` derives metrics from `Event.Type`/`NodeName`/`Producer` only, and the metrics derivation layer enforces this — a developer cannot accidentally tag a metric by `RunID` or `TraceID`.
+- **Two-channel split.** When the observability record and the stream chunk are separate records flowing through different paths — events through a middleware chain, chunks through a message bus inside a payload — every dashboard, replay tool, and Console feature has to fuse them. **Lesson:** unify on one bus from t=0.
+- **Middleware-as-event-sink.** Wiring telemetry as middleware that fires per-node works, but it couples observability lifetime to node execution. Harbor's bus-first model lets observability subscribe at any granularity (planner step, tool, run, session) without inserting middleware everywhere.
+- **No OpenTelemetry in the runtime.** A runtime with no OTel instrumentation — where OTel appears only in a playground UI's JS dependencies — is incomplete. **Lesson:** OTel traces and metrics should be a first-class derivation of the event bus, shipped from t=0, not retrofitted.
+- **Logging in two formats with a flag.** A `structured: bool` toggle between human and JSON logging is the wrong shape. Harbor: pick one shape per environment via slog handler — JSON in production, text in dev — no toggle inside the library. Also bake "avoid logging large payloads; prefer artifacts/resources and log references" into the Logger so it can't be forgotten.
+- **Tightly coupled Playground.** A multi-thousand-line playground process that embeds session management, generation, steering, tasks, AGUI, and the SSE bus — enumerating 30+ HTTP routes, several duplicating runtime APIs — both *consumes* and *re-implements* runtime concepts. Harbor avoids this by making `harbor dev` boot the runtime in-process and have the Console talk to it via the protocol — no playground-private endpoints. A playground-private state-store protocol that re-declares a subset of `StateStore` is the symptom of a UI implemented before unification.
+- **Generator can draft but not save.** A generator that runs once and emits files, with no "draft, iterate, save when ready" loop, is a half-feature. Harbor's `harbor dev` ships the full loop from the start (per `harbor_inherited_lessons.md`).
+- **Visualization coupled to private state.** Visualization that reaches into private runtime fields breaks on every refactor. Harbor's visualization derives from the canonical event/topology surface published over the protocol — no private fields.
+- **Metrics cardinality footgun.** A common pitfall is tagging metrics by `trace_id`, which explodes cardinality. In Harbor, `Event.TraceID` is for logs and OTel traces; `MetricsRegistry` derives metrics from `Event.Type`/`NodeName`/`Producer` only, and the metrics derivation layer enforces this — a developer cannot accidentally tag a metric by `RunID` or `TraceID`.
 
 ---
 

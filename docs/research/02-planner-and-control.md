@@ -2,9 +2,7 @@
 
 > **Status:** Pre-RFC research, internal. This brief shapes the phase plan for
 > Harbor's planner subsystem, the control plane (steering), and the pause/resume
-> protocol. It is informed by an existing reference implementation that lives
-> outside this repo; technical findings are re-expressed in Harbor's vocabulary
-> below.
+> protocol. Technical findings are expressed in Harbor's vocabulary below.
 
 ---
 
@@ -16,17 +14,17 @@ pause/resume, artifacts, tool execution, memory injection, scheduling,
 provenance, guardrails. The planner owns *policy*: reasoning, decision-making,
 next-action selection.
 
-The reference implementation that informs Harbor ships **exactly one planner**
+A common anti-pattern in agent runtimes is to ship **exactly one planner**
 (a JSON-only ReAct loop) and **no `Planner` interface at all**. The planner
-class is concrete, stateful, and not thread-safe (it explicitly says "Create
-separate planner instances per task"). Every runtime concern that ought to be
+class becomes concrete, stateful, and not thread-safe ("create separate
+planner instances per task"). Every runtime concern that ought to be
 universal — memory injection, pause/resume serialisation, parallel-call
 fan-out, schema repair, steering integration, trajectory compression,
-reflection, error recovery — was bolted onto that single concrete class. The
-class accumulates ~70 internal fields and >1700 lines, plus a 2300-line
-"runtime" support module. New planning strategies (Plan-Execute, Workflow,
-Graph, Supervisor, MultiAgent, Deterministic, HumanApproval) cannot be added
-without forking the class.
+reflection, error recovery — gets bolted onto that single concrete class. The
+class accumulates dozens of internal fields and thousands of lines, plus a
+sprawling "runtime" support module. New planning strategies (Plan-Execute,
+Workflow, Graph, Supervisor, MultiAgent, Deterministic, HumanApproval) cannot
+be added without forking the class. Harbor designs against this from t=0.
 
 **Harbor's biggest architectural lift** is to define a small `Planner`
 interface from t=0 and push every runtime concern off the planner and into the
@@ -37,11 +35,10 @@ without runtime changes.
 A second commitment, equally load-bearing: the **control plane**
 (cancel / pause / resume / inject context / redirect / user-message / approve /
 reject / prioritize) is a **runtime** capability, surfaced over the Harbor
-Protocol, not a planner-level API. The reference implementation puts steering
-inside the planner loop, which couples every planner concrete to a specific
-control-plane shape; Harbor inverts that — the runtime intercepts control
-events between planner steps, and the planner observes them as advisory inputs
-on its `RunContext`.
+Protocol, not a planner-level API. Putting steering inside the planner loop
+couples every planner concrete to a specific control-plane shape; Harbor
+inverts that — the runtime intercepts control events between planner steps,
+and the planner observes them as advisory inputs on its `RunContext`.
 
 ---
 
@@ -81,8 +78,8 @@ type RunContext struct {
 
 // Decision is what a planner returns each step. Note that "tool call",
 // "background task", and "subagent" are runtime-level concepts here, NOT
-// planner-internal opcodes (the reference implementation overloaded a single
-// `next_node` field with magic strings — Harbor does not).
+// planner-internal opcodes — Harbor does not overload a single `next_node`
+// field with magic strings.
 type Decision interface { isDecision() }
 
 type CallTool       struct { Tool string; Args json.RawMessage; Reasoning string }
@@ -169,16 +166,15 @@ const (
 
 ### Pause-reason taxonomy
 
-The reference implementation defines four pause reasons. Harbor preserves the
-taxonomy (it is a clean abstraction): `approval_required`, `await_input`,
-`external_event`, `constraints_conflict`. Adding a new reason is an RFC-level
-change to keep client tooling consistent.
+Harbor defines four pause reasons (a clean, minimal abstraction):
+`approval_required`, `await_input`, `external_event`,
+`constraints_conflict`. Adding a new reason is an RFC-level change to keep
+client tooling consistent.
 
 ### Control-event taxonomy (nine types)
 
-The reference implementation ships nine event types. Harbor keeps the same
-nine, all surfaced over the Protocol, all carrying `(session_id, task_id,
-trace_id, event_id)`:
+Harbor ships nine control-event types, all surfaced over the Protocol, all
+carrying `(session_id, task_id, trace_id, event_id)`:
 
 `INJECT_CONTEXT`, `REDIRECT`, `CANCEL`, `PRIORITIZE`, `PAUSE`, `RESUME`,
 `APPROVE`, `REJECT`, `USER_MESSAGE`.
@@ -268,9 +264,8 @@ The runtime *implements* this loop. The planner only contributes
 
 ### Schema repair pipeline
 
-The reference implementation does this work inside the planner (~1300 lines of
-`validation_repair.py`). Harbor pulls it into a shared utility usable by any
-planner:
+Schema repair is substantial work that does not belong inside the planner.
+Harbor places it in a shared utility usable by any planner:
 
 1. **Salvage** — extract first valid JSON object from a malformed string;
    retry parse.
@@ -300,19 +295,19 @@ pause at the parent level (rather than partial completion). Validation
 failures in *any* branch's args fail the whole parallel call before execution
 starts (atomic setup, best-effort execution).
 
-A system-level cap (`absolute_max_parallel`, default 50 in the reference)
+A system-level cap (`absolute_max_parallel`, default 50)
 backstops planning hints regardless of what the planner requested.
 
 ### Pause-state serialisation (the contract that MUST FAIL LOUDLY)
 
-The reference implementation has a documented sharp edge: when a pause record
-is serialised, `tool_context` is wrapped in `try: json.loads(json.dumps(...))
-except (TypeError, ValueError): return None`. **It silently drops
-non-serialisable tool context on resume.** The trajectory file itself does the
-same thing on its `serialise()` method. The result: a planner can pause
-holding a callback, get serialised to a state store, get loaded back, and
-resume with `tool_context = None` — silently. Bugs that follow are extremely
-hard to diagnose because no error is logged.
+A well-known sharp edge in agent runtimes: when a pause record is serialised,
+`tool_context` gets wrapped in a "try to round-trip through JSON, return null
+on failure" pattern. **That silently drops non-serialisable tool context on
+resume.** The trajectory itself can do the same thing on its serialise path.
+The result: a planner can pause holding a callback, get serialised to a state
+store, get loaded back, and resume with `tool_context = nil` — silently. Bugs
+that follow are extremely hard to diagnose because no error is logged. Harbor
+forbids this pattern; the contract below makes serialisation fail loudly.
 
 **Harbor's contract:**
 
@@ -332,7 +327,7 @@ hard to diagnose because no error is logged.
 ### Trajectory compression
 
 When `token_budget` is exceeded, the runtime invokes a configurable summariser
-(a separate, cheaper LLM in the reference) to produce a `TrajectorySummary
+(typically a separate, cheaper LLM) to produce a `TrajectorySummary
 {Goals, Facts, Pending, LastOutputDigest, Note}`. The compressed digest
 replaces the raw step history in subsequent prompt builds. Compression is a
 runtime concern (it operates on the trajectory), not a planner concern; the
@@ -340,60 +335,55 @@ planner sees the compressed view via `RunContext.Trajectory.Summary`.
 
 ---
 
-## 5. Sharp edges in the reference implementation that Harbor must avoid
+## 5. Sharp edges Harbor must avoid
 
-Citing source paths inside `~/Repos/Penguiflow/penguiflow/penguiflow/`:
+These are design pitfalls common to agent-runtime planners. Harbor closes each:
 
-1. **Silent context loss on resume.** `planner/pause_management.py:128-138`
-   (`_serialise_pause_record`) and `planner/trajectory.py:223-228`
-   (`Trajectory.serialise`) both wrap JSON serialisation in a `try/except` that
-   sets `tool_context = None` on failure, with no log/raise. Harbor closes this
-   per §4 above.
+1. **Silent context loss on resume.** Pause-record serialisation and
+   trajectory serialisation must not wrap JSON encoding in a try/except that
+   sets `tool_context = nil` on failure with no log/raise. Harbor closes this
+   per §4 above — serialisation fails loudly with `ErrUnserializable`.
 
-2. **Steering at planner level.** `planner/react_runtime.py:716-794`
-   (`_apply_steering`) drains a `SteeringInbox` *inside* the planner loop and
-   mutates the trajectory directly. Every alternate planner would need to
-   replicate this. Harbor moves the inbox into the runtime; planners observe
-   only `RunContext.Control`.
+2. **Steering at planner level.** Draining a `SteeringInbox` *inside* the
+   planner loop and mutating the trajectory directly would force every
+   alternate planner to replicate it. Harbor moves the inbox into the runtime;
+   planners observe only `RunContext.Control`.
 
-3. **No `Planner` interface.** `planner/react.py:220` is a concrete class with
-   ~70 fields and constructor parameters. The "swappable planner" property
-   does not exist in the reference. Harbor's V1 RFC ships the interface even
-   if only one concrete is wired.
+3. **No `Planner` interface.** A concrete planner class with dozens of fields
+   and constructor parameters has no "swappable planner" property at all.
+   Harbor's V1 RFC ships the interface even if only one concrete is wired.
 
-4. **Magic strings as opcodes.** `planner/models.py:260-336` overloads the
-   `next_node` string with `final_response`, `parallel`, `task.subagent`,
-   `task.tool` as sentinels alongside real tool names. Harbor's `Decision` is
-   a sum type; tool calls and runtime opcodes are different shapes. Future
-   runtime-level actions (e.g. `delegate`, `wait_event`) extend the sum, not
-   the catalog of magic strings.
+4. **Magic strings as opcodes.** Overloading a `next_node` string with
+   `final_response`, `parallel`, `task.subagent`, `task.tool` as sentinels
+   alongside real tool names is brittle. Harbor's `Decision` is a sum type;
+   tool calls and runtime opcodes are different shapes. Future runtime-level
+   actions (e.g. `delegate`, `wait_event`) extend the sum, not the catalog of
+   magic strings.
 
-5. **Parallel pause partial-completion ambiguity.** `planner/parallel.py:31`+
-   gathers branches and only then collects the first `pause_result`; siblings
-   may have already emitted side effects. Harbor specifies: parallel pause is
+5. **Parallel pause partial-completion ambiguity.** Gathering branches and
+   only then collecting the first `pause_result` leaves siblings that may
+   already have emitted side effects. Harbor specifies: parallel pause is
    atomic (either no branch starts side-effecting tools, or all branches that
    started must reach a checkpointed observation before the pause record
    commits).
 
-6. **Thread-safety disclaimer.** `planner/react.py:228-231` says "NOT
-   thread-safe. Create separate planner instances per task." The runtime
-   compensates with a session lock around `run`/`resume`. Harbor's interface
-   requires planners to be safe to use concurrently across runs (the runtime
-   serialises *within* a run); statefulness keyed only by `RunID` is the
-   pattern.
+6. **Thread-safety disclaimers.** A planner marked "NOT thread-safe, create
+   separate instances per task" forces the runtime to compensate with a
+   session lock around run/resume. Harbor's interface requires planners to be
+   safe to use concurrently across runs (the runtime serialises *within* a
+   run); statefulness keyed only by `RunID` is the pattern.
 
-7. **70+ planner constructor parameters.** Harbor's `Planner` interface has
-   no constructor; concretes use functional options (`react.New(opts ...Opt)
-   Planner`) and most knobs (token budget, hop budget, deadline, max_iters,
-   cost cap, schema mode) move to runtime-level run options because they are
-   not reasoning-policy concerns.
+7. **Dozens of planner constructor parameters.** Harbor's `Planner` interface
+   has no constructor; concretes use functional options (`react.New(opts
+   ...Opt) Planner`) and most knobs (token budget, hop budget, deadline,
+   max_iters, cost cap, schema mode) move to runtime-level run options because
+   they are not reasoning-policy concerns.
 
-8. **Steering payload size limits as planner constants.**
-   `steering/steering.py:11-15` defines `MAX_STEERING_PAYLOAD_BYTES=16384`,
-   `MAX_STEERING_DEPTH=6`, `MAX_STEERING_KEYS=64`,
-   `MAX_STEERING_LIST_ITEMS=50`, `MAX_STEERING_STRING=4096`. Harbor keeps the
-   limits but at runtime/protocol level, configurable, and applied before the
-   event ever reaches a planner.
+8. **Steering payload size limits as planner constants.** Harbor keeps caps
+   (`MAX_STEERING_PAYLOAD_BYTES=16384`, `MAX_STEERING_DEPTH=6`,
+   `MAX_STEERING_KEYS=64`, `MAX_STEERING_LIST_ITEMS=50`,
+   `MAX_STEERING_STRING=4096`) but at runtime/protocol level, configurable, and
+   applied before the event ever reaches a planner.
 
 ---
 
@@ -534,30 +524,28 @@ which fits the "many phases is fine" stance.
 
 5. **`NoOp` decisions.** Does the planner need a `NoOp{Reason}` decision
    (e.g. "wait for steering," "summarising trajectory") to keep the loop
-   running without a tool call? The reference implementation handles these
-   cases by short-circuiting in the runtime. My lean: keep the runtime
-   short-circuits; the planner never returns `NoOp`, simplifying the
-   conformance pack.
+   running without a tool call? The runtime can handle these cases by
+   short-circuiting. My lean: keep the runtime short-circuits; the planner
+   never returns `NoOp`, simplifying the conformance pack.
 
 ---
 
-## Source map (internal only — never surfaced in Harbor artifacts)
+## Subsystem concept map
 
-| Harbor concept                | Source path (`~/Repos/Penguiflow/penguiflow/penguiflow/`)        |
+| Harbor concept                | Notes                                                            |
 | ---                           | ---                                                              |
-| `Planner` (interface)         | (does not exist in source — `planner/react.py:220` is concrete)  |
-| `Decision` sum                | `planner/models.py:260` (`PlannerAction` overloaded with magic)  |
-| `RunContext`                  | (synthesised; closest is `planner/context.py:69` `ToolContext`)  |
-| `Trajectory`                  | `planner/trajectory.py:182`                                      |
-| Pause record + serialisation  | `planner/pause.py:13`, `planner/pause_management.py:128`         |
-| Pause reasons                 | `planner/context.py:18` `PlannerPauseReason` (4 values)          |
-| Control event types           | `state/models.py:179` `SteeringEventType` (9 values)             |
-| Control inbox                 | `steering/steering.py:151` `SteeringInbox`                       |
-| Control validation/sanitise   | `steering/steering.py:25-148`                                    |
-| Run loop                      | `planner/react_runtime.py:1575` `run_loop`                       |
-| Step                          | `planner/react_step.py:37` `step`                                |
-| Schema repair                 | `planner/validation_repair.py` (1317 lines)                      |
-| Parallel exec + join          | `planner/parallel.py:31` `execute_parallel_plan`                 |
-| Trajectory compression        | `planner/llm.py` `summarise_trajectory`                          |
-| Steering integration in loop  | `planner/react_runtime.py:716` `_apply_steering`                 |
-| Constructor surface (sharp)   | `planner/react.py:220-336` (~70 fields, ~50 constructor params)  |
+| `Planner` (interface)         | the swappable-planner contract — one method, `Next`              |
+| `Decision` sum                | typed sum; no magic-string opcodes                               |
+| `RunContext`                  | read+narrow-write run view handed to the planner                 |
+| `Trajectory`                  | append-only planner execution log                                |
+| Pause record + serialisation  | durable pause state; fails loudly on non-serialisable context    |
+| Pause reasons                 | four-value taxonomy                                              |
+| Control event types           | nine-value taxonomy                                              |
+| Control inbox                 | per-run runtime-owned inbox                                      |
+| Control validation/sanitise   | depth/keys/list/string caps before planner observation           |
+| Run loop                      | runtime-owned per-run loop                                       |
+| Step                          | one planner step under the loop                                 |
+| Schema repair                 | shared utility — salvage, arg-fill, graceful failure             |
+| Parallel exec + join          | atomic-setup fan-out with deterministic merge keys                |
+| Trajectory compression        | runtime-driven summariser                                        |
+| Steering integration in loop  | runtime drains the inbox between steps                            |

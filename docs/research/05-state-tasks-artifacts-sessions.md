@@ -16,7 +16,7 @@ This subsystem is the **durability layer** of Harbor. Five contracts live here, 
 
 ### Why three persistence backends at V1
 
-The reference implementation we are inheriting from defines these contracts but ships **only an in-memory driver and an audit-log adapter** — no production persistence. Operators have to assemble queueing, worker management, and discovery themselves. Harbor breaks that pattern by shipping **three** drivers from day one:
+A common shortcut in agent runtimes is to define these contracts but ship **only an in-memory driver and an audit-log adapter** — no production persistence — leaving operators to assemble queueing, worker management, and discovery themselves. Harbor rejects that pattern and ships **three** drivers from day one:
 
 1. **InMemory** — zero dependencies; the default for embedded use, dev, and tests.
 2. **SQLite** — single-binary deployments via `modernc.org/sqlite` (CGo-free, matching the gateway's storage stance).
@@ -26,7 +26,7 @@ All three pass the same conformance suite. Designing the interface against three
 
 ### Mandatory artifacts policy
 
-The reference implementation ships a `NoOpArtifactStore` fallback that warns and truncates. **Harbor removes this fallback.** An ArtifactStore is always configured; the in-memory driver is the floor. A heavy output above the threshold (default: 32KB, configurable) routes through the ArtifactStore — never inline. This is a runtime-level invariant, not a per-tool opt-in flag.
+A `NoOpArtifactStore` fallback that silently warns and truncates is an anti-pattern. **Harbor ships no such fallback.** An ArtifactStore is always configured; the in-memory driver is the floor. A heavy output above the threshold (default: 32KB, configurable) routes through the ArtifactStore — never inline. This is a runtime-level invariant, not a per-tool opt-in flag.
 
 ---
 
@@ -106,7 +106,7 @@ type StateStore interface {
 }
 ```
 
-Note: the reference implementation breaks these into **eight optional `Supports*` protocols** and uses `hasattr` duck-typing. Harbor merges them into **one mandatory interface** because all three V1 drivers implement everything. Optionality breeds capability-detection ceremony in callers; we pay that cost up front.
+Note: breaking these into **eight optional `Supports*` protocols** with `hasattr`-style duck-typing is the wrong shape. Harbor merges them into **one mandatory interface** because all three V1 drivers implement everything. Optionality breeds capability-detection ceremony in callers; Harbor pays that cost up front by mandating the full surface.
 
 ```go
 // ---- ArtifactStore -----------------------------------------------------
@@ -294,15 +294,15 @@ Cancellation propagation honors `propagate_on_cancel` ("cascade" | "isolate"). G
 
 ---
 
-## 5. Sharp edges from the source (and how Harbor handles them)
+## 5. Sharp edges to design out (and how Harbor handles them)
 
-- **No production StateStore backend ships.** `~/Repos/Penguiflow/penguiflow/penguiflow/state/in_memory.py` is the only driver in the canonical package; durable persistence is left to operators. **Harbor ships three drivers.**
-- **Optional duck-typed capabilities.** `~/Repos/Penguiflow/penguiflow/penguiflow/state/protocol.py` defines eight `Supports*` protocols with `hasattr` detection in callers. **Harbor mandates the full surface in one interface.**
-- **Artifacts are opt-in.** `~/Repos/Penguiflow/penguiflow/penguiflow/artifacts.py` ships `NoOpArtifactStore` as the silent fallback (`logger.warning(...)` once). **Harbor removes the no-op; in-memory is the floor and routing is mandatory above the threshold.**
-- **Foreground/background identity is split.** Foreground runs are identified by `trace_id` while background tasks have a separate `task_id` namespace tracked by `~/Repos/Penguiflow/penguiflow/penguiflow/sessions/task_service.py`. The runtime needs to translate between them. **Harbor unifies under `TaskID` — runs are tasks of kind `foreground`.**
-- **Distributed contracts ship without backends.** `~/Repos/Penguiflow/penguiflow/penguiflow/bus.py` and `remote.py` define `MessageBus` and `RemoteTransport` as protocols only. **Harbor mirrors that for V1 (deliberate — the user accepted in-process at V1) but versions and freezes the contracts so a distributed driver can ship later without runtime churn.**
-- **TaskService's interface mixes orchestration and group governance.** A single `TaskService` protocol carries 14 methods covering spawn, list, get, cancel, prioritize, patches, groups, and tool-jobs. **Harbor keeps the surface but groups it into named method sets in the Go interface for navigability, and lifts groups into a sibling interface (`TaskGroupRegistry`) once the surface stabilizes.**
-- **`StateStoreSessionAdapter` writes session updates as audit events keyed by `f"session:{session_id}"`.** That's a string-trick for compatibility with a trace-keyed audit log. **Harbor's StateStore is task-keyed at the schema level; sessions are first-class with their own table; the adapter trick is unnecessary.**
+- **No production StateStore backend.** When only an in-memory driver ships, durable persistence is left to operators. **Harbor ships three drivers.**
+- **Optional duck-typed capabilities.** Eight `Supports*` protocols with `hasattr`-style detection in callers is ceremony. **Harbor mandates the full surface in one interface.**
+- **Artifacts are opt-in.** A `NoOpArtifactStore` silent fallback that warns once and truncates is unsafe. **Harbor removes the no-op; in-memory is the floor and routing is mandatory above the threshold.**
+- **Foreground/background identity is split.** When foreground runs are identified by `trace_id` while background tasks have a separate `task_id` namespace, the runtime must translate between them. **Harbor unifies under `TaskID` — runs are tasks of kind `foreground`.**
+- **Distributed contracts ship without backends.** `MessageBus` and `RemoteTransport` defined as contracts only is acceptable. **Harbor does this for V1 (deliberate — in-process is accepted at V1) but versions and freezes the contracts so a distributed driver can ship later without runtime churn.**
+- **A task interface that mixes orchestration and group governance.** A single `TaskService` protocol carrying 14 methods covering spawn, list, get, cancel, prioritize, patches, groups, and tool-jobs is hard to navigate. **Harbor keeps the surface but groups it into named method sets in the Go interface, and lifts groups into a sibling interface (`TaskGroupRegistry`) once the surface stabilizes.**
+- **Session updates written as audit events keyed by a `session:{id}` string.** That string-trick exists only for compatibility with a trace-keyed audit log. **Harbor's StateStore is task-keyed at the schema level; sessions are first-class with their own table; the adapter trick is unnecessary.**
 
 ---
 
@@ -360,4 +360,4 @@ A future post-V1 phase (`Tasks-Durable`) implements a queued backend (Postgres-a
 2. **Session GC policy.** Default proposed: idle TTL 24 h, hard cap 30 days, sweep every 15 min, refuse-to-GC any session with a RUNNING task. Confirm or revise.
 3. **Build-tag strategy for SQLite + Postgres.** Three options: (a) ship both in the default binary so operators choose at config time; (b) build tags so distros can drop one for size; (c) one binary per backend. The gateway ships SQLite-only by default — should Harbor match, or is the multi-backend story enough of a feature to warrant the size cost?
 4. **Distributed-1 scope at V1.** Confirm: V1 ships the `MessageBus` and `RemoteTransport` interfaces, an in-process `MessageBus` (loopback), and a `RemoteTransport` capable of speaking A2A to a remote agent; **no** durable bus driver (NATS, Redis Streams, Postgres-as-queue) at V1. Post-V1 phases add those.
-5. **TaskGroup retain-turn timeouts and continuation hops** — should these be defaults on the runtime, per-session config, or per-spawn override? The reference implementation makes them per-session-config; Harbor can simplify.
+5. **TaskGroup retain-turn timeouts and continuation hops** — should these be defaults on the runtime, per-session config, or per-spawn override? A per-session-config approach works; Harbor can simplify.
