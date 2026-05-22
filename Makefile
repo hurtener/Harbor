@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check bench bench-check
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit check-mirror install-hooks clean dev wave13-coverage-check bench bench-check
 
 help:
 	@echo "Harbor — make targets"
@@ -6,7 +6,8 @@ help:
 	@echo "  console-build   Build the SvelteKit Console + stage it into cmd/harbor/consoledist"
 	@echo "  test            go test -race ./..."
 	@echo "  vet             go vet ./..."
-	@echo "  lint            golangci-lint run"
+	@echo "  lint            golangci-lint run (all linters)"
+	@echo "  lint-revive     golangci-lint run --enable-only revive (Phase 80 doc-hygiene gate)"
 	@echo "  preflight       Build + boot + run smoke checks + drift-audit + tear down"
 	@echo "  drift-audit     Verify design coherence (RFC, plans, briefs, mirror)"
 	@echo "  wave13-coverage-check  Assert every Console page has a Playwright spec"
@@ -58,6 +59,25 @@ lint:
 			golangci-lint run; \
 		else \
 			echo "skip lint: no Go sources yet"; \
+		fi; \
+	else \
+		echo "golangci-lint not installed; skipping"; \
+	fi
+
+# lint-revive is the Phase 80 (D-138) documentation-hygiene gate. It
+# runs ONLY the `revive` linter via the dedicated `.golangci-revive.yml`
+# config — whose `exported` rule enforces a godoc comment on every
+# exported identifier and whose `package-comments` rule enforces a
+# package-level doc comment. This is the narrow, binding acceptance
+# check the master plan names for Phase 80; CI's `lint` job runs it.
+# The broader `make lint` (all linters) carries a pre-existing backlog
+# predating enforcement and is a separate release-hardening effort.
+lint-revive:
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		if [ -n "$$(find . -name '*.go' -not -path './vendor/*' 2>/dev/null | head -1)" ]; then \
+			golangci-lint run -c .golangci-revive.yml; \
+		else \
+			echo "skip lint-revive: no Go sources yet"; \
 		fi; \
 	else \
 		echo "golangci-lint not installed; skipping"; \

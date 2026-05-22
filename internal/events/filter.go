@@ -6,15 +6,15 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// FilterFromWire builds a runtime Filter from a wire EventFilter,
-// backfilling missing identity components from the caller's identity
-// quadruple. The wire shape (prototypes.EventFilter) is operator-facing
-// and lives in internal/protocol/types; the runtime shape
-// (events.Filter) is bus-facing and lives here. This conversion is the
-// one place the two namespaces meet — the wire transport calls it once
+// WireConversion is the result of converting a wire EventFilter into
+// a runtime Filter (see FilterFromWire). The wire shape
+// (prototypes.EventFilter) is operator-facing and lives in
+// internal/protocol/types; the runtime shape (events.Filter) is
+// bus-facing and lives here. This conversion is the one place the two
+// namespaces meet — the wire transport produces a WireConversion once
 // per request.
 //
-// Semantics:
+// Semantics of the conversion:
 //
 //   - Empty TenantIDs / UserIDs / SessionIDs / RunIDs on the wire are
 //     interpreted as "the caller's own component" — the caller's
@@ -22,13 +22,13 @@ import (
 //     compatibility with the pre-72a wire shape (no filter struct → full
 //     triple-scoped subscription).
 //   - A single non-caller TenantID OR len(TenantIDs) > 1 signals a
-//     cross-tenant request — the FilterFromWire result has
-//     RequiresAdminScope == true so the wire edge can gate on
-//     auth.HasScope before calling Subscribe.
+//     cross-tenant request — the result has RequiresAdminScope == true
+//     so the wire edge can gate on auth.HasScope before calling
+//     Subscribe.
 //   - EventTypes are converted 1:1.
 //   - Since / Until are passed through unchanged.
 //
-// FilterFromWire NEVER silently drops a missing identity component: it
+// The conversion NEVER silently drops a missing identity component: it
 // returns the (best-effort) Filter alongside RequiresAdminScope; the
 // caller is responsible for the actual rejection if RequiresAdminScope
 // is true but the scope claim is absent. (CLAUDE.md §5 "fail loudly.")

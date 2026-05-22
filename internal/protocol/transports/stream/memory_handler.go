@@ -24,7 +24,6 @@
 // All three methods are READ-ONLY. The memory mutation surface
 // (`memory.put` / `memory.delete`) is deferred to Phase 73 / post-V1
 // (page-memory.md §10); this handler ships no mutation path.
-
 package stream
 
 import (

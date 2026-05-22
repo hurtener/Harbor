@@ -24,7 +24,6 @@
 // unified pause/resume primitive is never bypassed: pause.list reads
 // the shipped Coordinator state, it does not reinvent pause
 // coordination (CLAUDE.md §7 rule 4, §13).
-
 package stream
 
 import (

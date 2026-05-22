@@ -429,9 +429,17 @@ func wrap(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{sentinel}, args...)...)
 }
 
+// Sentinel errors returned by the flow engine. Callers compare against
+// them with errors.Is.
 var (
-	ErrFlowBudgetExceeded    = errors.New("flow: budget exceeded")
+	// ErrFlowBudgetExceeded is returned when a run exceeds its
+	// configured step/hop budget.
+	ErrFlowBudgetExceeded = errors.New("flow: budget exceeded")
+	// ErrFlowInvalidDefinition is returned when a Definition fails
+	// structural validation.
 	ErrFlowInvalidDefinition = errors.New("flow: invalid definition")
+	// ErrFlowEntryExitMismatch is returned when a Definition's entry or
+	// exit node is not present in the graph.
 	ErrFlowEntryExitMismatch = errors.New("flow: entry/exit node not in graph")
 )
 
