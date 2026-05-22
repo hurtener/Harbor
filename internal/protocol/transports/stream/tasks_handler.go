@@ -27,7 +27,6 @@
 // (`cancel` / `pause` / `resume` / `prioritize` / `approve` / `reject`)
 // for mutation through the control transport — there is NO `tasks.*`
 // mutating method (CLAUDE.md §13 "no parallel implementations").
-
 package stream
 
 import (

@@ -137,7 +137,7 @@ func TestPlannerTools_ConcurrentReuse_D025(t *testing.T) {
 type spyStore struct {
 	mu      sync.Mutex
 	seen    map[string]identity.Identity
-	skills_ []skills.Skill
+	storedSkills []skills.Skill
 }
 
 // newSpyStore is intentionally bus-agnostic — the spy reproduces the
@@ -146,7 +146,7 @@ type spyStore struct {
 func newSpyStore(_ interface{}) *spyStore {
 	return &spyStore{
 		seen: make(map[string]identity.Identity),
-		skills_: []skills.Skill{
+		storedSkills: []skills.Skill{
 			{
 				Name:    "only",
 				Trigger: "trig",
@@ -187,7 +187,7 @@ func (s *spyStore) Get(ctx context.Context, id identity.Quadruple, name string) 
 		return skills.Skill{}, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
-	for _, sk := range s.skills_ {
+	for _, sk := range s.storedSkills {
 		if sk.Name == name {
 			return sk, nil
 		}
@@ -200,8 +200,8 @@ func (s *spyStore) List(ctx context.Context, id identity.Quadruple, filter skill
 		return nil, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
-	out := make([]skills.Skill, len(s.skills_))
-	copy(out, s.skills_)
+	out := make([]skills.Skill, len(s.storedSkills))
+	copy(out, s.storedSkills)
 	return out, nil
 }
 
@@ -210,8 +210,8 @@ func (s *spyStore) Search(ctx context.Context, id identity.Quadruple, query stri
 		return nil, fmt.Errorf("%w: %v", skills.ErrIdentityRequired, err)
 	}
 	s.recordIdentity(id)
-	out := make([]skills.RankedSkill, 0, len(s.skills_))
-	for _, sk := range s.skills_ {
+	out := make([]skills.RankedSkill, 0, len(s.storedSkills))
+	for _, sk := range s.storedSkills {
 		out = append(out, skills.RankedSkill{Skill: sk, Score: 0.9, Path: skills.PathFTS5})
 	}
 	return out, nil

@@ -53,7 +53,7 @@ jobs:
         run: make build
 
   lint:
-    name: golangci-lint
+    name: golangci-lint (revive doc-hygiene gate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,8 +61,45 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      - name: Run lint (skips when no Go sources yet)
-        run: make lint
+      # Phase 80 (D-138): install golangci-lint so the lint gate
+      # actually RUNS. Before Phase 80 the binary was never installed
+      # in CI, so `make lint`'s `command -v` guard silently skipped —
+      # the `revive` `exported` / `package-comments` documentation-
+      # hygiene gate was unenforced. The pinned version matches the
+      # Makefile's stated v1.61+ requirement.
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v1.64.8
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # `make lint-revive` runs ONLY the `revive` linter via
+      # .golangci-revive.yml — the narrow, binding Phase 80 acceptance
+      # gate (`exported` + `package-comments` clean). The full `make
+      # lint` (all linters) carries a pre-existing backlog predating
+      # enforcement; clearing it is a separate release-hardening
+      # effort, not this documentation phase.
+      - name: Run revive doc-hygiene gate
+        run: make lint-revive
+
+  examples:
+    name: examples build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      # Phase 80 (D-138): the `examples/` tree must build and its
+      # worked-example tests must pass end-to-end. A drift in a public
+      # surface (`harbortest`, the tool catalog) that breaks an example
+      # fails this job.
+      - name: Build examples
+        env:
+          CGO_ENABLED: '0'
+        run: go build ./examples/...
+      - name: Test examples
+        run: go test -race ./examples/...
 
   frontend-e2e:
     name: frontend-e2e (Console Playwright)

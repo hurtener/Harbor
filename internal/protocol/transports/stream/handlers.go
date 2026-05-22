@@ -14,7 +14,6 @@
 // auth.HasScope(ScopeConsoleFleet). The response body is the wire
 // EventAggregateResponse JSON; on failure, a JSON error body with the
 // canonical Protocol Code.
-
 package stream
 
 import (

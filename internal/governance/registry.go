@@ -16,7 +16,6 @@
 // when `llm.Open` runs, the governance hook is a no-op pass-through —
 // preserving the latent default for callers (especially test code) that
 // don't wire governance explicitly.
-
 package governance
 
 import (

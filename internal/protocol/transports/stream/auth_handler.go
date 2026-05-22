@@ -23,7 +23,6 @@
 // rotation emits a redacted `audit.admin_scope_used` event through the
 // shipped audit.Redactor (the emit lives in auth.RotateSurface — the
 // handler never bypasses the audit redactor; CLAUDE.md §7 rule 6, §13).
-
 package stream
 
 import (

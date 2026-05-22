@@ -27,7 +27,6 @@
 // `audit.admin_scope_used` event through the shipped audit.Redactor
 // (the emit lives in toolsprotocol.Service — the handler never bypasses
 // the audit redactor; CLAUDE.md §7 rule 6, §13).
-
 package stream
 
 import (
