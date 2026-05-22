@@ -55,16 +55,17 @@ vet:
 		echo "skip vet: no Go sources yet"; \
 	fi
 
+# lint runs the full golangci-lint gate (every linter in .golangci.yml).
+# It fails LOUDLY when golangci-lint is absent rather than skipping —
+# a silent skip is exactly the no-op bug the Wave 14 lint hardening
+# (D-141) closed. CI installs golangci-lint before invoking this.
 lint:
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		if [ -n "$$(find . -name '*.go' -not -path './vendor/*' 2>/dev/null | head -1)" ]; then \
-			golangci-lint run; \
-		else \
-			echo "skip lint: no Go sources yet"; \
-		fi; \
-	else \
-		echo "golangci-lint not installed; skipping"; \
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "ERROR: golangci-lint not installed — the lint gate cannot run." >&2; \
+		echo "  install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8" >&2; \
+		exit 1; \
 	fi
+	golangci-lint run
 
 # lint-revive is the Phase 80 (D-138) documentation-hygiene gate. It
 # runs ONLY the `revive` linter via the dedicated `.golangci-revive.yml`
