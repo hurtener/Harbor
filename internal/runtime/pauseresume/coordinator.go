@@ -150,7 +150,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		return Pause{}, fmt.Errorf("pauseresume: request cancelled: %w", err)
 	}
 	if err := identity.Validate(req.Identity); err != nil {
-		return Pause{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return Pause{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	if !IsValidReason(req.Reason) {
 		return Pause{}, fmt.Errorf("%w: %q", ErrInvalidReason, req.Reason)
@@ -414,7 +414,7 @@ func (c *coordinator) emit(ctx context.Context, evType events.EventType, entry *
 	if c.bus == nil {
 		return
 	}
-	_ = c.bus.Publish(ctx, events.Event{
+	_ = c.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; pause is already recorded (see doc above)
 		Type:     evType,
 		Identity: identity.Quadruple{Identity: entry.identity, RunID: entry.runID},
 		Payload:  payload,
@@ -468,7 +468,7 @@ func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 	if len(rec.TrajectoryBytes) > 0 {
 		tr, err := trajectory.Deserialize(rec.TrajectoryBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: token %q trajectory: %v", ErrCheckpointCorrupt, rec.Token, err)
+			return nil, fmt.Errorf("%w: token %q trajectory: %w", ErrCheckpointCorrupt, rec.Token, err)
 		}
 		entry.trajectory = tr
 	}

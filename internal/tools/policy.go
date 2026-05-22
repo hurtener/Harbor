@@ -391,7 +391,7 @@ func runWithPolicy(
 	var lastErr error
 	var lastClass ErrorClass
 
-	for attempt := 0; attempt < totalAttempts; attempt++ {
+	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ToolResult{}, ctxErr
@@ -493,7 +493,7 @@ func nextBackoff(attempt int, base, max time.Duration, mult float64, rand func()
 	}
 
 	growth := float64(base)
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		growth *= mult
 	}
 	if growth > float64(time.Duration(1<<62)) {

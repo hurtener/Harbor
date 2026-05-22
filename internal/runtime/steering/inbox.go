@@ -245,7 +245,7 @@ func (in *Inbox) close() {
 // the (tenant, user, session) triple.
 func validateQuadruple(q identity.Quadruple) error {
 	if err := identity.Validate(q.Identity); err != nil {
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	if q.RunID == "" {
 		return fmt.Errorf("%w: run_id empty", ErrIdentityRequired)

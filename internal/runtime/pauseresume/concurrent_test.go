@@ -42,7 +42,7 @@ func TestCoordinator_ConcurrentReuse_D025(t *testing.T) {
 	wg.Add(N)
 	errCh := make(chan error, N)
 
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 
@@ -160,7 +160,7 @@ func TestCoordinator_ConcurrentResumeSameToken(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(racers)
 	results := make(chan error, racers)
-	for i := 0; i < racers; i++ {
+	for range racers {
 		go func() {
 			defer wg.Done()
 			results <- c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)

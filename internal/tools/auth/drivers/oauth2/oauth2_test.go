@@ -31,7 +31,7 @@ const (
 	tDummyUser     = "user-alice"
 	tDummySession  = "session-001"
 	tDummyClientID = "dummy-client-id-not-a-secret"
-	tDummyClientSc = "dummy-client-secret-not-a-secret" //nolint:gosec // dummy fixture per §7 rule 2
+	tDummyClientSc = "dummy-client-secret-not-a-secret"
 )
 
 func fixedKEK(t *testing.T) []byte {
@@ -339,15 +339,15 @@ func TestConcurrentReuse_D025(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	var ok atomic.Int64
-	for i := 0; i < N; i++ {
-		go func(i int) {
+	for range N {
+		go func() {
 			defer wg.Done()
 			_, err := prov.Token(ctx, tools.ToolSourceID("concurrent-source"))
 			var arErr *auth.ErrAuthRequired
 			if errors.As(err, &arErr) {
 				ok.Add(1)
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 	if got := int(ok.Load()); got != N {

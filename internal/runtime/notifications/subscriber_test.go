@@ -24,21 +24,21 @@ import (
 //
 // Wire shape:
 //
-//   1. Boot a fresh in-mem EventBus + audit redactor.
-//   2. Register a separately-scoped subscriber on
-//      notification.task_failed (Admin scope so it sees the
-//      synthesised event regardless of which identity the trigger
-//      carried).
-//   3. Launch a notifications.Subscriber.Run goroutine. This is the
-//      §13 primitive-with-consumer wiring — the runtime-internal
-//      mapper + subscriber pair that proves the notification.* topic
-//      is alive without depending on the Stage-2 Console UI.
-//   4. Publish a deliberate task.failed event with a well-formed
-//      TaskFailedPayload + identity.
-//   5. Assert: the synthesised notification.task_failed arrives at the
-//      step-2 subscriber within a bounded wait, with the originating
-//      event's identity preserved, the correct class + severity, and a
-//      correlation back to the trigger (OriginEventType, OriginEventSequence).
+//  1. Boot a fresh in-mem EventBus + audit redactor.
+//  2. Register a separately-scoped subscriber on
+//     notification.task_failed (Admin scope so it sees the
+//     synthesised event regardless of which identity the trigger
+//     carried).
+//  3. Launch a notifications.Subscriber.Run goroutine. This is the
+//     §13 primitive-with-consumer wiring — the runtime-internal
+//     mapper + subscriber pair that proves the notification.* topic
+//     is alive without depending on the Stage-2 Console UI.
+//  4. Publish a deliberate task.failed event with a well-formed
+//     TaskFailedPayload + identity.
+//  5. Assert: the synthesised notification.task_failed arrives at the
+//     step-2 subscriber within a bounded wait, with the originating
+//     event's identity preserved, the correct class + severity, and a
+//     correlation back to the trigger (OriginEventType, OriginEventSequence).
 //
 // This test is NOT deferred to 73a Overview. It lands in this PR per
 // the operator amendment in §12 item 5 — a Stage-2 UI consumer cannot

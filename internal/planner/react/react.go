@@ -483,7 +483,7 @@ func (p *ReActPlanner) translateFinishCall(call planner.CallTool) planner.Finish
 	// missing/non-string answer surfaces as a nil Payload (the runtime
 	// executor's task.completed payload will carry the same nil).
 	if len(call.Args) > 0 {
-		_ = json.Unmarshal(call.Args, &args)
+		_ = json.Unmarshal(call.Args, &args) //nolint:errcheck // best-effort decode; a missing answer surfaces as nil Payload (see doc above)
 	}
 	metadata := map[string]any{
 		"reasoning":  call.Reasoning,
@@ -532,7 +532,7 @@ func (p *ReActPlanner) translateSpawnCall(call planner.CallTool) (planner.SpawnT
 	if len(call.Args) > 0 {
 		if err := json.Unmarshal(call.Args, &env); err != nil {
 			return planner.SpawnTask{}, fmt.Errorf(
-				"%w: react._spawn_task args malformed JSON: %v (raw=%q)",
+				"%w: react._spawn_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(call.Args),
 			)
 		}
@@ -581,7 +581,7 @@ func (p *ReActPlanner) translateAwaitCall(call planner.CallTool) (planner.AwaitT
 	if len(call.Args) > 0 {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return planner.AwaitTask{}, fmt.Errorf(
-				"%w: react._await_task args malformed JSON: %v (raw=%q)",
+				"%w: react._await_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(call.Args),
 			)
 		}

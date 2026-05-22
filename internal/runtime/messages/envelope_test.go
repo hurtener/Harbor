@@ -147,8 +147,8 @@ func TestEnvelope_JSONRoundTrip_Equal(t *testing.T) {
 
 func TestEnvelope_DeadlineAt_NilJSON_OmitEmpty(t *testing.T) {
 	src := messages.Envelope{
-		Headers:   messages.Headers{TenantID: "T", UserID: "U"},
-		RunID:     "R", SessionID: "S",
+		Headers: messages.Headers{TenantID: "T", UserID: "U"},
+		RunID:   "R", SessionID: "S",
 		Timestamp: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
 		// DeadlineAt left nil intentionally.
 	}

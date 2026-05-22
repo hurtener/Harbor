@@ -33,7 +33,7 @@ func TestList_ConcurrentReuse_D025(t *testing.T) {
 	statuses := []tasks.TaskStatus{
 		tasks.StatusPending, tasks.StatusRunning, tasks.StatusFailed, tasks.StatusComplete,
 	}
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		seedTask(t, reg, id, tasks.KindForeground, statuses[i%len(statuses)],
 			fmt.Sprintf("task-%d", i), "query")
 	}
@@ -48,7 +48,7 @@ func TestList_ConcurrentReuse_D025(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -118,7 +118,7 @@ func TestList_SharedServiceIsImmutable(t *testing.T) {
 	seedTask(t, reg, idFor("t2", "u2", "s2"), tasks.KindForeground, tasks.StatusRunning, "t2 task", "q")
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

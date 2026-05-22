@@ -292,12 +292,10 @@ func TestWakeMode_DeclaresPoll(t *testing.T) {
 }
 
 func TestWakeMode_PlannerInterfaceSatisfied(t *testing.T) {
-	// Compile-time check (already in deterministic.go); this is a
-	// runtime parity gate too — exercise the interfaces.
+	// The assignment to planner.Planner is itself the compile-time
+	// satisfaction check; this is a runtime parity gate too — exercise
+	// the WakeAware interface.
 	var p planner.Planner = mustBuildSimplePlanner(t)
-	if p == nil {
-		t.Fatal("DeterministicPlanner does not satisfy planner.Planner")
-	}
 	wa, ok := p.(planner.WakeAware)
 	if !ok {
 		t.Fatal("DeterministicPlanner does not satisfy planner.WakeAware")

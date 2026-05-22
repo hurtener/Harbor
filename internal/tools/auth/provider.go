@@ -765,21 +765,21 @@ func (p *Provider) fetchDiscovery(ctx context.Context, serverURL string) (discov
 	u := strings.TrimRight(serverURL, "/") + "/.well-known/oauth-authorization-server"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return discoveredMetadata{}, fmt.Errorf("%w: build request: %v", ErrDiscoveryFailed, err)
+		return discoveredMetadata{}, fmt.Errorf("%w: build request: %w", ErrDiscoveryFailed, err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return discoveredMetadata{}, fmt.Errorf("%w: GET %s: %v", ErrDiscoveryFailed, u, err)
+		return discoveredMetadata{}, fmt.Errorf("%w: GET %s: %w", ErrDiscoveryFailed, u, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
 		return discoveredMetadata{}, fmt.Errorf("%w: status %d body %q",
 			ErrDiscoveryFailed, resp.StatusCode, summary(body))
 	}
 	var disc discoveredMetadata
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&disc); err != nil {
-		return discoveredMetadata{}, fmt.Errorf("%w: decode: %v", ErrDiscoveryFailed, err)
+		return discoveredMetadata{}, fmt.Errorf("%w: decode: %w", ErrDiscoveryFailed, err)
 	}
 	return disc, nil
 }
@@ -842,20 +842,20 @@ func (p *Provider) dynamicRegister(ctx context.Context, regURL string, cfg OAuth
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return registrationResult{}, fmt.Errorf("%w: marshal: %v", ErrRegistrationFailed, err)
+		return registrationResult{}, fmt.Errorf("%w: marshal: %w", ErrRegistrationFailed, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, regURL, strings.NewReader(string(body)))
 	if err != nil {
-		return registrationResult{}, fmt.Errorf("%w: build request: %v", ErrRegistrationFailed, err)
+		return registrationResult{}, fmt.Errorf("%w: build request: %w", ErrRegistrationFailed, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return registrationResult{}, fmt.Errorf("%w: POST %s: %v", ErrRegistrationFailed, regURL, err)
+		return registrationResult{}, fmt.Errorf("%w: POST %s: %w", ErrRegistrationFailed, regURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
 		return registrationResult{}, fmt.Errorf("%w: status %d body %q",
 			ErrRegistrationFailed, resp.StatusCode, summary(raw))
 	}
@@ -864,7 +864,7 @@ func (p *Provider) dynamicRegister(ctx context.Context, regURL string, cfg OAuth
 		ClientSecret string `json:"client_secret"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
-		return registrationResult{}, fmt.Errorf("%w: decode: %v", ErrRegistrationFailed, err)
+		return registrationResult{}, fmt.Errorf("%w: decode: %w", ErrRegistrationFailed, err)
 	}
 	if out.ClientID == "" {
 		return registrationResult{}, wrap(ErrRegistrationFailed, "server returned empty client_id")
@@ -898,23 +898,23 @@ func (r tokenExchangeResponse) expiresAt(now time.Time) time.Time {
 func (p *Provider) postForm(ctx context.Context, tokenURL string, body url.Values) (tokenExchangeResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(body.Encode()))
 	if err != nil {
-		return tokenExchangeResponse{}, fmt.Errorf("%w: build request: %v", ErrExchangeFailed, err)
+		return tokenExchangeResponse{}, fmt.Errorf("%w: build request: %w", ErrExchangeFailed, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return tokenExchangeResponse{}, fmt.Errorf("%w: POST %s: %v", ErrExchangeFailed, tokenURL, err)
+		return tokenExchangeResponse{}, fmt.Errorf("%w: POST %s: %w", ErrExchangeFailed, tokenURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) //nolint:errcheck // body read is for the error message only; a partial/empty read is acceptable
 		return tokenExchangeResponse{}, fmt.Errorf("%w: status %d body %q",
 			ErrExchangeFailed, resp.StatusCode, summary(raw))
 	}
 	var out tokenExchangeResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
-		return tokenExchangeResponse{}, fmt.Errorf("%w: decode: %v", ErrExchangeFailed, err)
+		return tokenExchangeResponse{}, fmt.Errorf("%w: decode: %w", ErrExchangeFailed, err)
 	}
 	if out.AccessToken == "" {
 		return tokenExchangeResponse{}, wrap(ErrExchangeFailed, "empty access_token in response")

@@ -48,7 +48,7 @@ func (r *Registry) startSweeper() {
 				// (gc_reaped is emitted per-reaped session) but a
 				// transient probe error must not crash the sweeper.
 				ctx, cancel := context.WithTimeout(sweeperCtx, r.gcPolicy.SweepInterval)
-				_, _ = r.GC(ctx, r.gcPolicy)
+				_, _ = r.GC(ctx, r.gcPolicy) //nolint:errcheck // best-effort sweep; transient probe error must not crash the sweeper (see doc above)
 				cancel()
 			}
 		}
@@ -165,7 +165,7 @@ func (r *Registry) GC(ctx context.Context, policy GCPolicy) (int, error) {
 		reaped++
 
 		// Emit gc_reaped (best-effort; bus errors don't fail the sweep).
-		_ = r.bus.Publish(ctx, events.Event{
+		_ = r.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus errors don't fail the sweep (see comment above)
 			Type:     EventTypeSessionGCReaped,
 			Identity: q,
 			Payload: SessionGCReapedPayload{

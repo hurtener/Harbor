@@ -24,7 +24,7 @@ func mkEnv(i int) messages.Envelope {
 func TestJoinK_ReturnsKEnvelopes(t *testing.T) {
 	t.Parallel()
 	in := make(chan messages.Envelope, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		in <- mkEnv(i)
 	}
 
@@ -59,7 +59,7 @@ func TestJoinK_CancelsRemainingAfterK(t *testing.T) {
 	producerExited.Add(1)
 	go func() {
 		defer producerExited.Done()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			select {
 			case <-ctx.Done():
 				return
@@ -143,7 +143,7 @@ func TestJoinK_SlowProducer(t *testing.T) {
 	t.Parallel()
 	in := make(chan messages.Envelope, 1)
 	go func() {
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			time.Sleep(5 * time.Millisecond)
 			in <- mkEnv(i)
 		}

@@ -32,7 +32,7 @@ func TestService_ConcurrentReuse_NoRacesNoCrossTalk(t *testing.T) {
 	wg.Add(workers)
 	errCh := make(chan error, workers)
 
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		go func(n int) {
 			defer wg.Done()
 			id := prototypes.IdentityScope{
@@ -77,7 +77,7 @@ func TestService_ConcurrentReuse_NoRacesNoCrossTalk(t *testing.T) {
 
 	// Goroutine-leak guard — give the scheduler a beat to reap, then
 	// assert we are back at (or below) baseline.
-	for attempt := 0; attempt < 50; attempt++ {
+	for range 50 {
 		if runtime.NumGoroutine() <= baseline+2 {
 			return
 		}

@@ -95,7 +95,7 @@ func TestRegistry_RecordRun_RingIsBounded(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	const overshoot = 1100
-	for i := 0; i < overshoot; i++ {
+	for i := range overshoot {
 		if err := r.RecordRun(flow.RunRecord{
 			FlowName:  "flow-ring",
 			RunID:     fmt.Sprintf("run-%d", i),

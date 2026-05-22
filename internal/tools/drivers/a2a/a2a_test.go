@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	a2atypes "github.com/hurtener/Harbor/internal/distributed/a2a"
 	"github.com/hurtener/Harbor/internal/distributed"
+	a2atypes "github.com/hurtener/Harbor/internal/distributed/a2a"
 	a2adrv "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -83,8 +83,8 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 		switch req.Method {
 		case "agent/getAuthenticatedExtendedCard":
 			body, _ := json.Marshal(struct {
-				JSONRPC string             `json:"jsonrpc"`
-				ID      uint64             `json:"id"`
+				JSONRPC string              `json:"jsonrpc"`
+				ID      uint64              `json:"id"`
 				Result  *a2atypes.AgentCard `json:"result"`
 			}{JSONRPC: "2.0", ID: req.ID, Result: m.card})
 			w.Header().Set("Content-Type", "application/json")
@@ -99,8 +99,8 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 				Status: a2atypes.TaskStatus{State: a2atypes.TaskStateCompleted},
 			}
 			body, _ := json.Marshal(struct {
-				JSONRPC string                          `json:"jsonrpc"`
-				ID      uint64                          `json:"id"`
+				JSONRPC string                       `json:"jsonrpc"`
+				ID      uint64                       `json:"id"`
 				Result  a2atypes.SendMessageResponse `json:"result"`
 			}{JSONRPC: "2.0", ID: req.ID, Result: a2atypes.SendMessageResponse{Task: &task}})
 			w.Header().Set("Content-Type", "application/json")
@@ -350,7 +350,7 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 		fails   atomic.Int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t-%d", i)
@@ -375,4 +375,3 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 		t.Fatalf("invokes=%d fails=%d, want all %d to succeed", invokes.Load(), fails.Load(), N)
 	}
 }
-

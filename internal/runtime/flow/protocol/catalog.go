@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -479,8 +478,3 @@ func percentiles(d []time.Duration) (p50, p95 time.Duration) {
 
 // compile-time assertion that RegistryCatalog satisfies Catalog.
 var _ Catalog = (*RegistryCatalog)(nil)
-
-// errRunInvoke is returned by RegistryInvoker when an Invoke call
-// targets an unknown flow. It carries ErrNotFound so the Surface
-// classifies it correctly.
-var errRunInvoke = errors.New("flow/protocol: run invocation failed")

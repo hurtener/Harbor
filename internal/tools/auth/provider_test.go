@@ -366,7 +366,7 @@ func TestProvider_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
 	id := mkIdentity(t)
 
 	baseline := runtimeNumGoroutine()
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		ctx, cancel := context.WithCancel(mkCtx(t, id))
 		_, err := h.provider.Token(ctx, h.userCfg.Source)
 		var authErr *ErrAuthRequired

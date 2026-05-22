@@ -57,7 +57,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		acc, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
 		if err != nil {
 			t.Fatalf("NewCostAccumulator: %v", err)
@@ -76,7 +76,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		cfg := governance.Config{
 			DefaultTier: "free",
 			IdentityTiers: map[string]governance.TierConfig{
@@ -134,7 +134,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 
 		acc1, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
@@ -170,14 +170,14 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		rl, err := governance.NewRateLimiter(h.State, h.Bus, governance.Config{})
 		if err != nil {
 			t.Fatalf("NewRateLimiter: %v", err)
 		}
 		defer rl.Close(context.Background())
 		req := llm.CompleteRequest{Model: "m"}
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := rl.PreCall(ctx, req); err != nil {
 				t.Errorf("PreCall #%d under latent default returned: %v", i, err)
 			}
@@ -188,7 +188,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 		five := 5
 		cfg := governance.Config{
@@ -228,7 +228,7 @@ func Run(t *testing.T, mk Factory) {
 		h := mk()
 		defer h.Cleanup()
 		const N = 128
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 		ceiling := 1.0
 		perCall := 0.10
@@ -249,7 +249,7 @@ func Run(t *testing.T, mk Factory) {
 		var succeeded atomic.Int64
 
 		baseline := runtime.NumGoroutine()
-		for i := 0; i < N; i++ {
+		for range N {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -301,12 +301,12 @@ func Run(t *testing.T, mk Factory) {
 	})
 }
 
-// withIdentity attaches identity + run to ctx. Helper centralised so
-// every subtest uses the same shape.
-func withIdentity(t *testing.T, tenant, user, session, run string) context.Context {
+// withIdentity attaches the canonical conformance identity + run to a
+// fresh ctx. Helper centralised so every subtest uses the same shape.
+func withIdentity(t *testing.T) context.Context {
 	t.Helper()
-	id := identity.Identity{TenantID: tenant, UserID: user, SessionID: session}
-	ctx, err := identity.WithRun(context.Background(), id, run)
+	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
+	ctx, err := identity.WithRun(context.Background(), id, "R")
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}

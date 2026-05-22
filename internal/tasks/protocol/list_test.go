@@ -126,7 +126,7 @@ func TestList_FilterMatrix(t *testing.T) {
 func TestList_CursorPagination(t *testing.T) {
 	svc, reg, _ := newListService(t)
 	id := idFor("t1", "u1", "s1")
-	for i := 0; i < 7; i++ {
+	for range 7 {
 		seedTask(t, reg, id, tasks.KindForeground, tasks.StatusPending, "task", "q")
 	}
 	ctx := context.Background()

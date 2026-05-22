@@ -299,7 +299,7 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 		// (the Coordinator will accept the Resume), but the original
 		// RunGuarded caller has moved on.
 		g.removePending(pause.Token)
-		return nil, fmt.Errorf("%w: %v", ErrApprovalCancelled, ctx.Err())
+		return nil, fmt.Errorf("%w: %w", ErrApprovalCancelled, ctx.Err())
 	}
 }
 

@@ -150,7 +150,7 @@ func (r *RateLimiter) Snapshot(ctx context.Context, q identity.Quadruple) (map[s
 		return nil, ErrClosed
 	}
 	if err := state.ValidateIdentity(q); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return nil, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	ks, err := r.keyState(ctx, q)
 	if err != nil {
@@ -174,7 +174,7 @@ func (r *RateLimiter) Close(_ context.Context) error {
 func (r *RateLimiter) keyState(ctx context.Context, q identity.Quadruple) (*bucketIdentityState, error) {
 	k := quadKeyFor(q)
 	if v, ok := r.keys.Load(k); ok {
-		ks := v.(*bucketIdentityState)
+		ks, _ := v.(*bucketIdentityState) //nolint:errcheck // keys map values are always *bucketIdentityState by construction
 		if err := r.lazyLoad(ctx, q, ks); err != nil {
 			return nil, err
 		}
@@ -182,7 +182,7 @@ func (r *RateLimiter) keyState(ctx context.Context, q identity.Quadruple) (*buck
 	}
 	fresh := &bucketIdentityState{buckets: map[string]*tokenBucket{}}
 	actual, _ := r.keys.LoadOrStore(k, fresh)
-	ks := actual.(*bucketIdentityState)
+	ks, _ := actual.(*bucketIdentityState) //nolint:errcheck // keys map values are always *bucketIdentityState by construction
 	if err := r.lazyLoad(ctx, q, ks); err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (r *RateLimiter) lazyLoad(ctx context.Context, q identity.Quadruple, ks *bu
 			ks.loaded = true
 			return nil
 		}
-		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrStateUnavailable, err)
 	}
 	if len(rec.Bytes) == 0 {
 		ks.loaded = true
@@ -209,7 +209,7 @@ func (r *RateLimiter) lazyLoad(ctx context.Context, q identity.Quadruple, ks *bu
 	}
 	var br bucketRecord
 	if err := json.Unmarshal(rec.Bytes, &br); err != nil {
-		return fmt.Errorf("%w: unmarshal bucket record: %v", ErrStateUnavailable, err)
+		return fmt.Errorf("%w: unmarshal bucket record: %w", ErrStateUnavailable, err)
 	}
 	// Forward-compat guard: a future-schema record would be partially
 	// parsed silently; fail loud per AGENTS.md §13.
@@ -271,7 +271,7 @@ func (r *RateLimiter) persistLocked(ctx context.Context, q identity.Quadruple, k
 }
 
 func (r *RateLimiter) emitRateLimited(ctx context.Context, q identity.Quadruple, tier, model string, requested, available int, cfg RateLimitConfig, now time.Time) {
-	_ = r.bus.Publish(ctx, events.Event{
+	_ = r.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the rate-limit decision
 		Type:       EventTypeRateLimited,
 		Identity:   q,
 		OccurredAt: now,

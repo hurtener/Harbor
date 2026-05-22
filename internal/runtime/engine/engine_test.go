@@ -169,7 +169,7 @@ func TestEngine_Emit_RejectsEmptyIdentity(t *testing.T) {
 	cases := []messages.Envelope{
 		{}, // entirely empty
 		{Headers: messages.Headers{TenantID: "T"}, SessionID: "S"}, // missing user
-		{Headers: messages.Headers{TenantID: "T", UserID: "U"}},     // missing session
+		{Headers: messages.Headers{TenantID: "T", UserID: "U"}},    // missing session
 	}
 	for i, env := range cases {
 		err := e.Emit(context.Background(), env)
@@ -303,7 +303,7 @@ func TestEngine_NodeContext_EmitFanOut(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// Two egress envelopes (one per branch).
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		got, err := e.Fetch(ctx)
 		cancel()
@@ -336,7 +336,7 @@ func TestEngine_NodeContext_EmitNoWait(t *testing.T) {
 		// Three EmitNoWait calls; only the first slips into the
 		// 1-slot downstream queue (sink is blocked on `release`),
 		// the next two MUST return ErrChannelFull.
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			emitErr <- nctx.EmitNoWait(ctx, in)
 		}
 		// Return zero envelope so the worker doesn't ALSO emit;
@@ -378,14 +378,15 @@ func TestEngine_NodeContext_EmitNoWait(t *testing.T) {
 	// Wait for the source NodeFunc to run.
 	gotFull := 0
 	gotNil := 0
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		select {
 		case err := <-emitErr:
-			if errors.Is(err, engine.ErrChannelFull) {
+			switch {
+			case errors.Is(err, engine.ErrChannelFull):
 				gotFull++
-			} else if err == nil {
+			case err == nil:
 				gotNil++
-			} else {
+			default:
 				t.Errorf("unexpected EmitNoWait err: %v", err)
 			}
 		case <-time.After(2 * time.Second):
@@ -453,7 +454,7 @@ func TestEngine_Stop_JoinsWorkers(t *testing.T) {
 	}
 
 	id := ident("T", "U", "S")
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = e.Emit(context.Background(), envFor(id, "R"))
 	}
 
@@ -548,12 +549,12 @@ func TestEngine_NoGoroutineLeak_AfterStop(t *testing.T) {
 		{"idle", func(_ *testing.T, _ engine.Engine) {}},
 		{"mid-run", func(t *testing.T, e engine.Engine) {
 			id := ident("T", "U", "S")
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_ = e.Emit(context.Background(), envFor(id, "R"))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				_, _ = e.Fetch(ctx)
 			}
 		}},
@@ -610,7 +611,7 @@ func TestEngine_CrossTenant_NoBleed(t *testing.T) {
 	results := make(chan observed, tenants*perTenant)
 
 	var wg sync.WaitGroup
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		wg.Add(1)
 		go func(t int) {
 			defer wg.Done()
@@ -619,7 +620,7 @@ func TestEngine_CrossTenant_NoBleed(t *testing.T) {
 				fmt.Sprintf("u-%d", t),
 				fmt.Sprintf("s-%d", t),
 			)
-			for j := 0; j < perTenant; j++ {
+			for j := range perTenant {
 				env := envFor(id, fmt.Sprintf("r-%d-%d", t, j))
 				env.Payload = fmt.Sprintf("t=%d j=%d", t, j)
 				_ = e.Emit(context.Background(), env)
@@ -629,7 +630,7 @@ func TestEngine_CrossTenant_NoBleed(t *testing.T) {
 	wg.Wait()
 
 	// Drain.
-	for i := 0; i < tenants*perTenant; i++ {
+	for i := range tenants * perTenant {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		got, err := e.Fetch(ctx)
 		cancel()
@@ -663,11 +664,10 @@ func TestEngine_CrossTenant_NoBleed(t *testing.T) {
 		}
 		seen[r.fromTenant]++
 	}
-	for i := 0; i < tenants; i++ {
+	for i := range tenants {
 		key := fmt.Sprintf("t-%d", i)
 		if seen[key] != perTenant {
 			t.Errorf("tenant %s saw %d envelopes, want %d", key, seen[key], perTenant)
 		}
 	}
 }
-

@@ -97,30 +97,30 @@ func RegisterFunc[I any, O any](
 	var zeroOut O
 	inSchema, err := DeriveSchema(reflect.TypeOf(zeroIn))
 	if err != nil {
-		return fmt.Errorf("%w: input type for tool %q: %v", ErrUnsupportedType, name, err)
+		return fmt.Errorf("%w: input type for tool %q: %w", ErrUnsupportedType, name, err)
 	}
 	outSchema, err := DeriveSchema(reflect.TypeOf(zeroOut))
 	if err != nil {
-		return fmt.Errorf("%w: output type for tool %q: %v", ErrUnsupportedType, name, err)
+		return fmt.Errorf("%w: output type for tool %q: %w", ErrUnsupportedType, name, err)
 	}
 
 	inSchemaBytes, err := json.Marshal(inSchema)
 	if err != nil {
-		return fmt.Errorf("%w: marshal input schema: %v", ErrSchemaBuild, err)
+		return fmt.Errorf("%w: marshal input schema: %w", ErrSchemaBuild, err)
 	}
 	outSchemaBytes, err := json.Marshal(outSchema)
 	if err != nil {
-		return fmt.Errorf("%w: marshal output schema: %v", ErrSchemaBuild, err)
+		return fmt.Errorf("%w: marshal output schema: %w", ErrSchemaBuild, err)
 	}
 
 	// Compile the input validator once; cache it in the closure.
 	compiledIn, err := compileSchema(inSchemaBytes)
 	if err != nil {
-		return fmt.Errorf("%w: compile input schema: %v", ErrSchemaBuild, err)
+		return fmt.Errorf("%w: compile input schema: %w", ErrSchemaBuild, err)
 	}
 	compiledOut, err := compileSchema(outSchemaBytes)
 	if err != nil {
-		return fmt.Errorf("%w: compile output schema: %v", ErrSchemaBuild, err)
+		return fmt.Errorf("%w: compile output schema: %w", ErrSchemaBuild, err)
 	}
 
 	tool := tools.Tool{
@@ -177,7 +177,7 @@ func publishToolInvoked(ctx context.Context, bus events.EventBus, name string, s
 		return
 	}
 	q := identity.Quadruple{Identity: id}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; tool result is the source of truth
 		Type:       tools.EventTypeToolInvoked,
 		Identity:   q,
 		OccurredAt: started,
@@ -206,7 +206,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, s
 	q := identity.Quadruple{Identity: id}
 	dur := time.Since(started).Milliseconds()
 	if err == nil {
-		_ = bus.Publish(ctx, events.Event{
+		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; tool result is the source of truth
 			Type:       tools.EventTypeToolCompleted,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -230,7 +230,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, s
 	}
 	switch evType {
 	case tools.EventTypeToolInvalidArgs:
-		_ = bus.Publish(ctx, events.Event{
+		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; tool result is the source of truth
 			Type:       evType,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -242,7 +242,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, s
 			},
 		})
 	case tools.EventTypeToolPolicyExhausted:
-		_ = bus.Publish(ctx, events.Event{
+		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; tool result is the source of truth
 			Type:       evType,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -256,7 +256,7 @@ func publishToolOutcome(ctx context.Context, bus events.EventBus, name string, s
 			},
 		})
 	default:
-		_ = bus.Publish(ctx, events.Event{
+		_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort observability emit; tool result is the source of truth
 			Type:       evType,
 			Identity:   q,
 			OccurredAt: time.Now(),
@@ -293,7 +293,7 @@ func invokeReflective[I any, O any](
 				dec := json.NewDecoder(bytes.NewReader(args))
 				dec.DisallowUnknownFields()
 				if err := dec.Decode(&in); err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 				}
 			}
 			out, err := fn(ctx, in)
@@ -450,7 +450,7 @@ func deriveStruct(t reflect.Type, depth int, visiting map[reflect.Type]bool) (sc
 	props := make(schemaMap)
 	required := make([]string, 0, t.NumField())
 
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
 			continue

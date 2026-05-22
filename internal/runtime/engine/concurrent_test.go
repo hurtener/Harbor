@@ -53,8 +53,7 @@ func TestEngine_ConcurrentReuse_ReuseContract(t *testing.T) {
 	sent := make([]sentEnv, emitters)
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
 		sent[i] = sentEnv{
 			tenant: fmt.Sprintf("t-%d", i%8), // 8 tenants spread across emitters
 			runID:  fmt.Sprintf("r-%d", i),
@@ -83,7 +82,7 @@ func TestEngine_ConcurrentReuse_ReuseContract(t *testing.T) {
 	var wgFetch sync.WaitGroup
 	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFetch()
-	for f := 0; f < fetchers; f++ {
+	for range fetchers {
 		wgFetch.Add(1)
 		go func() {
 			defer wgFetch.Done()
@@ -268,8 +267,7 @@ func TestEngine_ConcurrentReuse_ReuseContract_WithPolicy(t *testing.T) {
 	sent := make([]sentEnv, emitters)
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
 		sent[i] = sentEnv{
 			tenant: fmt.Sprintf("t-%d", i%8),
 			runID:  fmt.Sprintf("r-%d", i),
@@ -297,7 +295,7 @@ func TestEngine_ConcurrentReuse_ReuseContract_WithPolicy(t *testing.T) {
 	var wgFetch sync.WaitGroup
 	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelFetch()
-	for f := 0; f < fetchers; f++ {
+	for range fetchers {
 		wgFetch.Add(1)
 		go func() {
 			defer wgFetch.Done()
@@ -392,8 +390,7 @@ func TestEngine_ConcurrentReuse_WithCancel(t *testing.T) {
 	var cancelledMu sync.Mutex
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
 		wgEmit.Add(1)
 		go func() {
 			defer wgEmit.Done()

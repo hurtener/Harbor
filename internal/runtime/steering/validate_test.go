@@ -42,7 +42,7 @@ func TestValidatePayload_DepthBound(t *testing.T) {
 
 func TestValidatePayload_KeysBound(t *testing.T) {
 	atCap := make(map[string]any, MaxPayloadKeys)
-	for i := 0; i < MaxPayloadKeys; i++ {
+	for i := range MaxPayloadKeys {
 		atCap[string(rune('a'+i%26))+string(rune('0'+i/26))] = i
 	}
 	if err := ValidatePayload(atCap); err != nil {
@@ -50,7 +50,7 @@ func TestValidatePayload_KeysBound(t *testing.T) {
 	}
 
 	overCap := make(map[string]any, MaxPayloadKeys+1)
-	for i := 0; i < MaxPayloadKeys+1; i++ {
+	for i := range MaxPayloadKeys + 1 {
 		overCap[strings.Repeat("k", 1)+string(rune(i))] = i
 	}
 	err := ValidatePayload(overCap)
@@ -67,7 +67,7 @@ func TestValidatePayload_KeysBoundIsPerMap(t *testing.T) {
 	// not cumulative).
 	mkMap := func() map[string]any {
 		m := make(map[string]any, MaxPayloadKeys)
-		for i := 0; i < MaxPayloadKeys; i++ {
+		for i := range MaxPayloadKeys {
 			m[string(rune(i))] = i
 		}
 		return m

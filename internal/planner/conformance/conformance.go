@@ -1137,7 +1137,7 @@ func runConcurrentReuseScenario(t *testing.T, factoryFunc func() Harness) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	var errs atomic.Int32
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()

@@ -49,7 +49,7 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 	// Identity-mandatory — fail closed on an incomplete triple
 	// (CLAUDE.md §6 rule 9 + D-001). No identity-downgrading knob.
 	if err := identity.Validate(req.Identity); err != nil {
-		return ListResponse{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return ListResponse{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 
 	// Pagination bounds — fail closed, never silently clamp.

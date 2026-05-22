@@ -41,7 +41,7 @@ func TestConcurrentReuse_Registry(t *testing.T) {
 	wg.Add(n)
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 
@@ -65,7 +65,7 @@ func TestConcurrentReuse_Registry(t *testing.T) {
 			// Enqueue a handful of events; each carries this
 			// goroutine's own run identity.
 			const perRun = 4
-			for j := 0; j < perRun; j++ {
+			for j := range perRun {
 				ev := ControlEvent{
 					Type:         ControlCancel,
 					Identity:     q,
@@ -149,10 +149,10 @@ func TestConcurrentReuse_SingleInbox(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(producers)
-	for p := 0; p < producers; p++ {
+	for range producers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < perProducer; j++ {
+			for range perProducer {
 				if err := in.Enqueue(validEvent(runA)); err != nil {
 					t.Errorf("Enqueue: %v", err)
 					return
@@ -249,7 +249,7 @@ func TestConcurrentReuse_RunLoop(t *testing.T) {
 		cancelled int
 		finished  int
 	)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()
@@ -313,7 +313,7 @@ func TestConcurrentReuse_RunLoop(t *testing.T) {
 
 	// Bounded wait for goroutines to drain (no time.Sleep-as-sync; a
 	// bounded §11 goroutine-leak assertion).
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if runtime.NumGoroutine() <= baseline+2 {
 			return
 		}

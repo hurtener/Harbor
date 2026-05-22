@@ -21,7 +21,7 @@ const (
 	// tokenKindPrefix is the "tools.auth.token." namespace for the
 	// underlying StateStore record. The full Kind is
 	// "tools.auth.token.<scope>.<subject_id>.<source>".
-	tokenKindPrefix = "tools.auth.token."
+	tokenKindPrefix = "tools.auth.token." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 
 	// accessTokenKindPrefix is the "tools.auth.access." namespace for
 	// the access-token-only record. Access and refresh tokens are
@@ -30,10 +30,10 @@ const (
 	// refresh-token half can — and so a compromise of the
 	// access-token cache does not yield refresh capability (brief 09
 	// §"Encryption at rest").
-	accessTokenKindPrefix = "tools.auth.access."
+	accessTokenKindPrefix = "tools.auth.access." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 
 	// refreshTokenKindPrefix mirrors accessTokenKindPrefix.
-	refreshTokenKindPrefix = "tools.auth.refresh."
+	refreshTokenKindPrefix = "tools.auth.refresh." //nolint:gosec // G101 false positive: this is a StateStore Kind namespace prefix, not a credential
 )
 
 // tokenKind builds the StateStore Kind for the access-token half of a
@@ -130,7 +130,7 @@ func (s *stateStoreTokenStore) Get(ctx context.Context, scope BindingScope, subj
 
 	var env tokenEnvelope
 	if err := json.Unmarshal(rec.Bytes, &env); err != nil {
-		return Token{}, false, fmt.Errorf("%w: envelope decode: %v",
+		return Token{}, false, fmt.Errorf("%w: envelope decode: %w",
 			ErrTokenCipherCorrupt, err)
 	}
 
@@ -301,7 +301,7 @@ func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 		return identity.Identity{}, ErrIdentityRequired
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return id, nil
 }

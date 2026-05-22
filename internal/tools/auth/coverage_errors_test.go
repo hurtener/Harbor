@@ -196,7 +196,7 @@ func TestProvider_Token_StoreCipherCorruption_PropagatesLoud(t *testing.T) {
 // mkProviderDeps assembles the deps a one-off NewProvider call needs.
 func mkProviderDeps(t *testing.T) ProviderDeps {
 	t.Helper()
-	store, _ := mkTokenStore(t)
+	store := mkTokenStore(t)
 	red := mkRedactor(t)
 	bus := mkBus(t, red)
 	coord := mkCoordinator(t)
@@ -221,7 +221,7 @@ func TestRefreshTokenOrCurrent(t *testing.T) {
 
 func TestTokenStore_Delete_MissingIdentity_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	err := ts.Delete(context.Background(), ScopeUser, "u", "s")
 	if !errors.Is(err, ErrIdentityRequired) {
 		t.Fatalf("Delete no-identity: want ErrIdentityRequired, got %v", err)
@@ -230,7 +230,7 @@ func TestTokenStore_Delete_MissingIdentity_FailLoud(t *testing.T) {
 
 func TestTokenStore_Delete_InvalidScope_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	err := ts.Delete(ctx, "weird", "u", "s")
 	if !errors.Is(err, ErrInvalidBindingScope) {
@@ -240,7 +240,7 @@ func TestTokenStore_Delete_InvalidScope_FailLoud(t *testing.T) {
 
 func TestTokenStore_Delete_EmptySubject_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	err := ts.Delete(ctx, ScopeUser, "", "s")
 	if !errors.Is(err, ErrConfigInvalid) {
@@ -254,7 +254,7 @@ func TestTokenStore_Delete_EmptySubject_FailLoud(t *testing.T) {
 
 func TestTokenStore_Put_TenantMismatch_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	id := identity.Identity{TenantID: "tA", UserID: "u", SessionID: "s"}
 	ctx := mkCtx(t, id)
 	tok := Token{
@@ -269,7 +269,7 @@ func TestTokenStore_Put_TenantMismatch_FailLoud(t *testing.T) {
 
 func TestTokenStore_Put_EmptyTokenFields_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	cases := []struct {
 		name string
@@ -280,7 +280,7 @@ func TestTokenStore_Put_EmptyTokenFields_FailLoud(t *testing.T) {
 		{"empty access", Token{Source: "src", BindingScope: ScopeUser, TenantID: "tenant-A", UserID: "u"}},
 	}
 	for _, c := range cases {
-		c := c
+
 		t.Run(c.name, func(t *testing.T) {
 			err := ts.Put(ctx, c.tok)
 			if err == nil {
@@ -292,7 +292,7 @@ func TestTokenStore_Put_EmptyTokenFields_FailLoud(t *testing.T) {
 
 func TestTokenStore_Get_EmptySubject_FailLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	_, _, err := ts.Get(ctx, ScopeUser, "", "src")
 	if !errors.Is(err, ErrConfigInvalid) {
@@ -306,7 +306,7 @@ func TestTokenStore_Get_EmptySubject_FailLoud(t *testing.T) {
 
 func TestProvider_NewProvider_OptionalDeps_Defaults(t *testing.T) {
 	t.Parallel()
-	store, _ := mkTokenStore(t)
+	store := mkTokenStore(t)
 	red := mkRedactor(t)
 	bus := mkBus(t, red)
 	coord := mkCoordinator(t)

@@ -479,7 +479,7 @@ func (e *engine) sendBlocking(ctx context.Context, ch chan messages.Envelope, en
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	defer func() { _ = recover() }() // ch may close mid-send during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // ch may close mid-send during Stop; recovered value not needed
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -525,7 +525,7 @@ func (e *engine) emitFromNode(ctx context.Context, node string, env messages.Env
 // with a non-full channel could otherwise pick the send and return
 // nil. The pre-check guarantees a cancelled ctx loses to the send.
 func (e *engine) deliverEnvelope(ctx context.Context, ch chan messages.Envelope, env messages.Envelope, nonblocking bool) error {
-	defer func() { _ = recover() }() // channel may close during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // channel may close during Stop; recovered value not needed
 	if e.stopped.Load() {
 		return ErrEngineStopped
 	}
@@ -601,7 +601,9 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		}
 		if node.Func == nil {
 			// Outlet-only node with no Func: pass-through.
-			_ = e.emitFromNode(ctx, node.Name, env, false)
+			if err := e.emitFromNode(ctx, node.Name, env, false); err != nil {
+				e.logWorkerError(env, err)
+			}
 			continue
 		}
 		nctx := &NodeContext{engine: e, node: node.Name, lastEnv: env}
@@ -614,7 +616,7 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		// Phase 13: pass the per-run cancel-flag pointer so the shell
 		// can observe cancellation between retries.
 		rcCancel, _ := e.runIsCancelled(env.RunID)
-		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, nil, rcCancel)
+		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, rcCancel)
 		e.markRunDone(env.RunID)
 		if err != nil {
 			e.logWorkerError(env, err)
@@ -804,7 +806,7 @@ func (e *engine) emitErrorEnvelope(ctx context.Context, env messages.Envelope, e
 		DeadlineAt: env.DeadlineAt,
 		Payload:    re,
 	}
-	defer func() { _ = recover() }() // outletChan may be closed during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // outletChan may be closed during Stop; recovered value not needed
 	// Honour caller cancellation: if the run is being torn down, drop
 	// the error envelope rather than racing the close of outletChan.
 	// The bus + logger paths still observed the error; egress is the

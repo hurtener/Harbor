@@ -242,7 +242,7 @@ func (p *Provider) Connect(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	transport, mode, err := selectTransport(ctx, p.cfg)
+	transport, mode, err := selectTransport(p.cfg)
 	if err != nil {
 		return err
 	}
@@ -263,13 +263,13 @@ func (p *Provider) Connect(ctx context.Context) error {
 		p.cfg.URL != "" &&
 		classifyConnectError(firstErr)
 	if !autoFallback {
-		return fmt.Errorf("%w: %v", ErrTransportFailed, firstErr)
+		return fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
 	}
 
 	sseTransport := newSSETransport(p.cfg)
 	session, sseErr := p.client.Connect(ctx, sseTransport, nil)
 	if sseErr != nil {
-		return fmt.Errorf("%w: streamable-http failed (%v); sse failed (%v)",
+		return fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
 			ErrTransportFailed, firstErr, sseErr)
 	}
 	p.logger.Info("mcp: auto-fallback streamable-http -> sse",
@@ -307,13 +307,15 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, err
 	}
 
-	var out []tools.ToolDescriptor
-
 	// Tools.
 	toolsRes, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: list tools: %v", ErrTransportFailed, err)
+		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, err)
 	}
+
+	// Capacity is seeded from the tool count; resources/prompts append
+	// further and may grow the slice.
+	out := make([]tools.ToolDescriptor, 0, len(toolsRes.Tools))
 	for _, t := range toolsRes.Tools {
 		if t == nil {
 			continue
@@ -371,9 +373,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, error) {
 	schemaBytes, err := marshalSchema(t.InputSchema)
 	if err != nil {
-		return tools.ToolDescriptor{}, fmt.Errorf("%w: %v", ErrSchemaInvalid, err)
+		return tools.ToolDescriptor{}, fmt.Errorf("%w: %w", ErrSchemaInvalid, err)
 	}
-	outSchemaBytes, _ := marshalSchema(t.OutputSchema) // optional; nil-tolerant.
+	outSchemaBytes, _ := marshalSchema(t.OutputSchema) //nolint:errcheck // OutputSchema is optional; a marshal failure yields no out-schema
 
 	tool := tools.Tool{
 		Name:        fmt.Sprintf("%s.%s", string(p.source), t.Name),
@@ -449,7 +451,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	var argMap map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argMap); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	meta, err := buildIdentityMeta(ctx)
@@ -463,7 +465,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	params.Meta = meta
 	res, err := session.CallTool(ctx, params)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %v", ErrTransportFailed, name, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
 	if lowerErr != nil {
@@ -505,7 +507,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				params.Meta = meta
 				res, err := session.ReadResource(ctx, params)
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %v", ErrTransportFailed, uri, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
 				}
 				return tools.ToolResult{Value: lowerReadResourceResult(res)}, nil
 			},
@@ -542,7 +544,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				var argMap map[string]string
 				if len(args) > 0 {
 					if err := json.Unmarshal(args, &argMap); err != nil {
-						return tools.ToolResult{}, fmt.Errorf("%w: decode prompt args: %v", tools.ErrToolInvalidArgs, err)
+						return tools.ToolResult{}, fmt.Errorf("%w: decode prompt args: %w", tools.ErrToolInvalidArgs, err)
 					}
 				}
 				params := &mcpsdk.GetPromptParams{Name: name, Arguments: argMap}
@@ -553,7 +555,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				params.Meta = meta
 				res, err := session.GetPrompt(ctx, params)
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %v", ErrTransportFailed, name, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, err)
 				}
 				return tools.ToolResult{Value: lowerGetPromptResult(res)}, nil
 			},
@@ -579,7 +581,7 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 	}
 	params.Meta = meta
 	if err := session.Subscribe(ctx, params); err != nil {
-		return fmt.Errorf("%w: subscribe %q: %v", ErrTransportFailed, uri, err)
+		return fmt.Errorf("%w: subscribe %q: %w", ErrTransportFailed, uri, err)
 	}
 	return nil
 }
@@ -717,6 +719,12 @@ func promptArgsSchema(pr *mcpsdk.Prompt) json.RawMessage {
 	if len(required) > 0 {
 		schema["required"] = required
 	}
-	bytes, _ := json.Marshal(schema)
-	return bytes
+	b, err := json.Marshal(schema)
+	if err != nil {
+		// schema is built from string/bool/map values only, so Marshal
+		// cannot fail in practice; fall back to the empty schema rather
+		// than returning a nil RawMessage.
+		return emptyArgsSchema()
+	}
+	return b
 }

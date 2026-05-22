@@ -61,7 +61,7 @@ func (e *MaxTokensEnforcer) PreCall(ctx context.Context, req llm.CompleteRequest
 	}
 	tierName := e.cfg.resolveTier(id)
 	now := e.clock.Now()
-	_ = e.bus.Publish(ctx, events.Event{
+	_ = e.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort emit; bus failure doesn't change the rejection
 		Type:       EventTypeMaxTokensExceeded,
 		Identity:   quad,
 		OccurredAt: now,

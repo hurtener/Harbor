@@ -101,10 +101,10 @@ type ToolInvalidArgsPayload struct {
 // EventTypeToolPolicyExhausted. SafePayload.
 type ToolPolicyExhaustedPayload struct {
 	events.SafeSealed
-	Identity   identity.Quadruple
-	ToolName   string
-	Transport  TransportKind
-	Attempts   int
-	LastClass  ErrorClass
-	LastError  string
+	Identity  identity.Quadruple
+	ToolName  string
+	Transport TransportKind
+	Attempts  int
+	LastClass ErrorClass
+	LastError string
 }

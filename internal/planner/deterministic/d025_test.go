@@ -62,8 +62,7 @@ func TestDeterministicPlanner_ConcurrentReuse_D025(t *testing.T) {
 	)
 
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 
@@ -206,7 +205,7 @@ func TestSpawnAndAwaitStep_ConcurrentSameSession_D025(t *testing.T) {
 		shapeFails int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			rc := planner.RunContext{Quadruple: q, Goal: "d025-shared"}
@@ -260,8 +259,7 @@ func TestDeterministicPlanner_CancellationDoesNotCrossTalk(t *testing.T) {
 		siblingErrs int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 			runID := fmt.Sprintf("r-%d", i)
@@ -304,7 +302,7 @@ func TestDeterministicPlanner_SharedAcrossIsolatedSessions(t *testing.T) {
 		t.Fatalf("unexpected construction error: %v", err)
 	}
 	const M = 16
-	for i := 0; i < M; i++ {
+	for i := range M {
 		runID := fmt.Sprintf("seq-%d", i)
 		q := identity.Quadruple{
 			Identity: identity.Identity{

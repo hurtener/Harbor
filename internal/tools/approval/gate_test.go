@@ -71,7 +71,7 @@ func mkPlainCtx(t *testing.T, id identity.Identity) context.Context {
 	return ctx
 }
 
-func mkGate(t *testing.T, policy ApprovalPolicy) (*ApprovalGate, events.EventBus, pauseresume.Coordinator) {
+func mkGate(t *testing.T, policy ApprovalPolicy) (*ApprovalGate, events.EventBus) {
 	t.Helper()
 	red := patternsAudit.New()
 	bus := mkTestBus(t, red)
@@ -86,7 +86,7 @@ func mkGate(t *testing.T, policy ApprovalPolicy) (*ApprovalGate, events.EventBus
 		t.Fatalf("NewApprovalGate: %v", err)
 	}
 	t.Cleanup(func() { _ = g.Close(context.Background()) })
-	return g, bus, coord
+	return g, bus
 }
 
 func subscribeTo(t *testing.T, bus events.EventBus, id identity.Identity, types ...events.EventType) (events.Subscription, func()) {
@@ -108,7 +108,11 @@ func subscribeTo(t *testing.T, bus events.EventBus, id identity.Identity, types 
 	}
 }
 
-func waitEvent(t *testing.T, sub events.Subscription, d time.Duration) events.Event {
+// waitEventTimeout is the bounded real-time deadline for waitEvent's
+// channel receive — not a synchronisation sleep (CLAUDE.md §17.4).
+const waitEventTimeout = 2 * time.Second
+
+func waitEvent(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -116,7 +120,7 @@ func waitEvent(t *testing.T, sub events.Subscription, d time.Duration) events.Ev
 			t.Fatal("subscription channel closed")
 		}
 		return ev
-	case <-time.After(d):
+	case <-time.After(waitEventTimeout):
 		t.Fatal("timed out waiting for event")
 		return events.Event{}
 	}
@@ -163,7 +167,7 @@ func TestNewApprovalGate_RejectsNilRedactor(t *testing.T) {
 }
 
 func TestNewApprovalGate_HappyPath(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	if g == nil {
 		t.Fatal("NewApprovalGate returned nil")
 	}
@@ -172,7 +176,7 @@ func TestNewApprovalGate_HappyPath(t *testing.T) {
 // --- RunGuarded short-circuit (policy says no approval needed) ----------
 
 func TestRunGuarded_ShortCircuitsWhenPolicyApproves(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysApprovePolicy{})
+	g, bus := mkGate(t, AlwaysApprovePolicy{})
 
 	// Subscribe to all three event types — none should fire when the
 	// policy short-circuits.
@@ -208,7 +212,7 @@ func TestRunGuarded_ShortCircuitsWhenPolicyApproves(t *testing.T) {
 // --- RunGuarded validation -------------------------------------------------
 
 func TestRunGuarded_RejectsNilRequest(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_, err := g.RunGuarded(mkPlainCtx(t, testID), nil)
 	if err == nil {
 		t.Fatal("RunGuarded(nil): want err, got nil")
@@ -216,7 +220,7 @@ func TestRunGuarded_RejectsNilRequest(t *testing.T) {
 }
 
 func TestRunGuarded_RejectsEmptyToolName(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_, err := g.RunGuarded(mkPlainCtx(t, testID), &ApprovalRequest{
 		Identity: testID,
 	})
@@ -226,7 +230,7 @@ func TestRunGuarded_RejectsEmptyToolName(t *testing.T) {
 }
 
 func TestRunGuarded_FailsClosedOnMissingIdentity(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_, err := g.RunGuarded(mkPlainCtx(t, testID), &ApprovalRequest{
 		Tool: tools.Tool{Name: "x"},
 	})
@@ -236,7 +240,7 @@ func TestRunGuarded_FailsClosedOnMissingIdentity(t *testing.T) {
 }
 
 func TestRunGuarded_FailsClosedOnCancelledCtx(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	ctx, cancel := context.WithCancel(mkPlainCtx(t, testID))
 	cancel()
 	_, err := g.RunGuarded(ctx, &ApprovalRequest{
@@ -258,7 +262,7 @@ func (p failingPolicy) ShouldApprove(_ context.Context, _ *ApprovalRequest) (boo
 
 func TestRunGuarded_PolicyError_FailsLoud(t *testing.T) {
 	boom := errors.New("policy: config corrupt")
-	g, _, _ := mkGate(t, failingPolicy{err: boom})
+	g, _ := mkGate(t, failingPolicy{err: boom})
 	_, err := g.RunGuarded(mkPlainCtx(t, testID), &ApprovalRequest{
 		Tool:     tools.Tool{Name: "x"},
 		Identity: testID,
@@ -312,8 +316,7 @@ func TestRunGuarded_RedactorError_FailsLoud(t *testing.T) {
 // --- RunGuarded + ResolveApproval round-trip: APPROVE ---------------------
 
 func TestRunGuarded_ApproveRoundTrip(t *testing.T) {
-	g, bus, coord := mkGate(t, AlwaysDenyPolicy{})
-	_ = coord
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
@@ -341,7 +344,7 @@ func TestRunGuarded_ApproveRoundTrip(t *testing.T) {
 
 	// Wait for the tool.approval_requested event so we know the gate
 	// has registered the pending entry.
-	ev := waitEvent(t, requestedSub, 2*time.Second)
+	ev := waitEvent(t, requestedSub)
 	payload, ok := ev.Payload.(ToolApprovalRequestedPayload)
 	if !ok {
 		t.Fatalf("payload type: got %T", ev.Payload)
@@ -360,7 +363,7 @@ func TestRunGuarded_ApproveRoundTrip(t *testing.T) {
 	}
 
 	// Wait for tool.approved event.
-	approvedEv := waitEvent(t, approvedSub, 2*time.Second)
+	approvedEv := waitEvent(t, approvedSub)
 	approvedPayload, ok := approvedEv.Payload.(ToolApprovedPayload)
 	if !ok {
 		t.Fatalf("approved payload type: got %T", approvedEv.Payload)
@@ -393,7 +396,7 @@ func TestRunGuarded_ApproveRoundTrip(t *testing.T) {
 // --- RunGuarded + ResolveApproval round-trip: REJECT ----------------------
 
 func TestRunGuarded_RejectRoundTrip(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
@@ -419,7 +422,7 @@ func TestRunGuarded_RejectRoundTrip(t *testing.T) {
 		resCh <- outcome{out: out, err: err}
 	}()
 
-	ev := waitEvent(t, requestedSub, 2*time.Second)
+	ev := waitEvent(t, requestedSub)
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -427,7 +430,7 @@ func TestRunGuarded_RejectRoundTrip(t *testing.T) {
 		t.Fatalf("ResolveApproval: %v", err)
 	}
 
-	rejectedEv := waitEvent(t, rejectedSub, 2*time.Second)
+	rejectedEv := waitEvent(t, rejectedSub)
 	rejectedPayload, ok := rejectedEv.Payload.(ToolRejectedPayload)
 	if !ok {
 		t.Fatalf("rejected payload type: got %T", rejectedEv.Payload)
@@ -465,7 +468,7 @@ func TestRunGuarded_RejectRoundTrip(t *testing.T) {
 // --- RunGuarded ctx-cancel before resolution ------------------------------
 
 func TestRunGuarded_CtxCancel_BeforeResolution(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
 
@@ -481,7 +484,7 @@ func TestRunGuarded_CtxCancel_BeforeResolution(t *testing.T) {
 		resCh <- outcome{err: err}
 	}()
 	// Wait for the pause to register, then cancel.
-	_ = waitEvent(t, requestedSub, 2*time.Second)
+	_ = waitEvent(t, requestedSub)
 	cancel()
 	select {
 	case o := <-resCh:
@@ -499,7 +502,7 @@ func TestRunGuarded_CtxCancel_BeforeResolution(t *testing.T) {
 // --- ResolveApproval scope gating -----------------------------------------
 
 func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
 
@@ -511,7 +514,7 @@ func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
 			Identity: testID,
 		})
 	}()
-	ev := waitEvent(t, requestedSub, 2*time.Second)
+	ev := waitEvent(t, requestedSub)
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -532,7 +535,7 @@ func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
 // --- ResolveApproval invalid decision -------------------------------------
 
 func TestResolveApproval_RejectsPendingDecision(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("x"), DecisionPending, "")
 	if !errors.Is(err, ErrInvalidDecision) {
 		t.Fatalf("Pending decision: got %v want ErrInvalidDecision", err)
@@ -576,7 +579,7 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 			Identity: idA,
 		})
 	}()
-	ev := waitEvent(t, sub, 2*time.Second)
+	ev := waitEvent(t, sub)
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -596,7 +599,7 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 // --- ResolveApproval unknown / already-resolved token --------------------
 
 func TestResolveApproval_UnknownToken(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("not-real"), DecisionApprove, "")
 	if !errors.Is(err, ErrApprovalNotFound) {
 		t.Fatalf("unknown token: got %v want ErrApprovalNotFound", err)
@@ -604,7 +607,7 @@ func TestResolveApproval_UnknownToken(t *testing.T) {
 }
 
 func TestResolveApproval_DoubleResolve_NotFoundOnSecondCall(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
 
@@ -616,7 +619,7 @@ func TestResolveApproval_DoubleResolve_NotFoundOnSecondCall(t *testing.T) {
 			Identity: testID,
 		})
 	}()
-	ev := waitEvent(t, requestedSub, 2*time.Second)
+	ev := waitEvent(t, requestedSub)
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
@@ -633,7 +636,7 @@ func TestResolveApproval_DoubleResolve_NotFoundOnSecondCall(t *testing.T) {
 // --- Gate Close idempotency + post-close calls ---------------------------
 
 func TestGate_Close_Idempotent(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	if err := g.Close(context.Background()); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -643,7 +646,7 @@ func TestGate_Close_Idempotent(t *testing.T) {
 }
 
 func TestRunGuarded_AfterClose_ReturnsClosed(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_ = g.Close(context.Background())
 	_, err := g.RunGuarded(mkPlainCtx(t, testID), &ApprovalRequest{
 		Tool: tools.Tool{Name: "x"}, Identity: testID,
@@ -654,7 +657,7 @@ func TestRunGuarded_AfterClose_ReturnsClosed(t *testing.T) {
 }
 
 func TestResolveApproval_AfterClose_ReturnsClosed(t *testing.T) {
-	g, _, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_ = g.Close(context.Background())
 	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("x"), DecisionApprove, "")
 	if !errors.Is(err, ErrGateClosed) {
@@ -665,7 +668,7 @@ func TestResolveApproval_AfterClose_ReturnsClosed(t *testing.T) {
 // --- TaggedPolicy end-to-end: tag triggers approval -----------------------
 
 func TestRunGuarded_TaggedPolicy_TriggersOnTag(t *testing.T) {
-	g, bus, _ := mkGate(t, TaggedPolicy{RequireTags: []string{"sensitive"}})
+	g, bus := mkGate(t, TaggedPolicy{RequireTags: []string{"sensitive"}})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
 
@@ -680,7 +683,7 @@ func TestRunGuarded_TaggedPolicy_TriggersOnTag(t *testing.T) {
 		})
 		resCh <- out{err}
 	}()
-	ev := waitEvent(t, requestedSub, 2*time.Second)
+	ev := waitEvent(t, requestedSub)
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	if payload.Reason != "policy: tagged" {
 		t.Fatalf("Reason: got %q want %q", payload.Reason, "policy: tagged")
@@ -694,12 +697,12 @@ func TestRunGuarded_TaggedPolicy_TriggersOnTag(t *testing.T) {
 // --- goroutine-leak: initiate-then-cancel ---------------------------------
 
 func TestRunGuarded_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
-	g, bus, _ := mkGate(t, AlwaysDenyPolicy{})
+	g, bus := mkGate(t, AlwaysDenyPolicy{})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
 
 	baseline := runtime.NumGoroutine()
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		ctx, cancel := context.WithCancel(mkPlainCtx(t, testID))
 		done := make(chan struct{})
 		go func() {
@@ -709,7 +712,7 @@ func TestRunGuarded_InitiateThenCancel_NoGoroutineLeak(t *testing.T) {
 				Identity: testID,
 			})
 		}()
-		_ = waitEvent(t, requestedSub, 2*time.Second)
+		_ = waitEvent(t, requestedSub)
 		cancel()
 		<-done
 	}

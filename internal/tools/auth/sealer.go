@@ -95,7 +95,7 @@ func (s *aesgcmSealer) Open(ciphertext []byte) ([]byte, error) {
 	payload := ciphertext[4+nonceSize:]
 	plaintext, err := s.aead.Open(nil, nonce, payload, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: AEAD Open: %v", ErrTokenCipherCorrupt, err)
+		return nil, fmt.Errorf("%w: AEAD Open: %w", ErrTokenCipherCorrupt, err)
 	}
 	return plaintext, nil
 }

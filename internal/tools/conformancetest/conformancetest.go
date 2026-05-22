@@ -187,7 +187,7 @@ func testFilterNameRegex(t *testing.T, newCatalog CatalogFactory) {
 	registerEcho(t, cat, "weather.forecast")
 	registerEcho(t, cat, "ticker.quote")
 
-	rgx := regexp.MustCompile("^weather\\.")
+	rgx := regexp.MustCompile(`^weather\.`)
 	list := cat.List(tools.CatalogFilter{NameRegex: rgx})
 	if len(list) != 2 {
 		t.Fatalf("expected 2 tools matching ^weather\\., got %v", names(list))
@@ -365,8 +365,7 @@ func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 	}
 	results := make([]result, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -377,13 +376,17 @@ func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 				results[i] = result{err: err}
 				return
 			}
-			args, _ := json.Marshal(flakyArgs{N: i})
+			args, err := json.Marshal(flakyArgs{N: i})
+			if err != nil {
+				results[i] = result{err: err}
+				return
+			}
 			res, err := d.Invoke(ctx, args)
 			if err != nil {
 				results[i] = result{err: err}
 				return
 			}
-			out, _ := res.Value.(flakyOut)
+			out, _ := res.Value.(flakyOut) //nolint:errcheck // flaky tool always returns flakyOut; zero value is a valid fallback
 			results[i] = result{out: out.Attempts}
 		}()
 	}
@@ -457,7 +460,7 @@ func testIdentityPropagates(t *testing.T, newCatalog CatalogFactory) {
 		if err != nil {
 			t.Fatalf("invoke for tenant %q: %v", tenant, err)
 		}
-		out, _ := res.Value.(identityProbeOut)
+		out, _ := res.Value.(identityProbeOut) //nolint:errcheck // identity-probe tool always returns identityProbeOut
 		if out.Tenant != tenant {
 			t.Errorf("expected tenant %q, got %q", tenant, out.Tenant)
 		}

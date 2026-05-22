@@ -42,7 +42,7 @@ func TestConcurrent_OAuthWrapper_Reuse(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -149,7 +149,7 @@ func TestConcurrent_ApprovalWrapper_Reuse(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -210,7 +210,7 @@ func TestConcurrent_OAuthWrapper_ErrAuthRequiredUnderRace(t *testing.T) {
 	const n = 64
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -219,7 +219,7 @@ func TestConcurrent_OAuthWrapper_ErrAuthRequiredUnderRace(t *testing.T) {
 			_, err := d.Invoke(ctx, json.RawMessage(`{}`))
 			var authReq *auth.ErrAuthRequired
 			if !errors.As(err, &authReq) {
-				errs <- fmt.Errorf("goroutine %d: err=%v want *ErrAuthRequired", i, err)
+				errs <- fmt.Errorf("goroutine %d: err=%w want *ErrAuthRequired", i, err)
 			}
 		}(i)
 	}
@@ -233,7 +233,7 @@ func TestConcurrent_OAuthWrapper_ErrAuthRequiredUnderRace(t *testing.T) {
 // settleGoroutines yields a few times so background cleanup (event
 // bus drain, etc.) has a chance to run before the leak assertion.
 func settleGoroutines() {
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		runtime.Gosched()
 		time.Sleep(10 * time.Millisecond)
 	}

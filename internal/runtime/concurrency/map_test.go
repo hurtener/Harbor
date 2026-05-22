@@ -15,7 +15,7 @@ import (
 
 func mkInput(n int) []messages.Envelope {
 	out := make([]messages.Envelope, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = messages.Envelope{
 			Payload:   i,
 			Headers:   messages.Headers{TenantID: "T", UserID: "U"},
@@ -73,8 +73,7 @@ func TestMapConcurrent_PreservesOrder(t *testing.T) {
 	fn := func(_ context.Context, env messages.Envelope) (messages.Envelope, error) {
 		// Random-ish stagger — the goroutine scheduler may interleave
 		// completion order, but output must still be in input order.
-		switch v := env.Payload.(type) {
-		case int:
+		if v, ok := env.Payload.(int); ok {
 			time.Sleep(time.Duration(v%5) * time.Millisecond)
 		}
 		return env, nil

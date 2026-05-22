@@ -284,7 +284,7 @@ func TestApply_ApprovalWrapper_ApproveCycle(t *testing.T) {
 		resCh <- out{res: r, err: err}
 	}()
 	var token pauseresume.Token
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		select {
 		case ev := <-sub.Events():
 			p, ok := ev.Payload.(approval.ToolApprovalRequestedPayload)
@@ -354,7 +354,7 @@ func TestApply_ApprovalWrapper_RejectCycle(t *testing.T) {
 		resCh <- out{err: err}
 	}()
 	var token pauseresume.Token
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		select {
 		case ev := <-sub.Events():
 			p, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
@@ -549,7 +549,7 @@ func TestApply_BothMiddleware_ApprovalIsOutermost(t *testing.T) {
 		resCh <- out{err: err}
 	}()
 	var token pauseresume.Token
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		select {
 		case ev := <-sub.Events():
 			p, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)

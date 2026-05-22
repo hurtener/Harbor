@@ -179,8 +179,10 @@ func TestCallSubflow_ParentCtxCancel_PropagatesToChild(t *testing.T) {
 // nesting CallSubflow calls.
 func TestCallSubflow_NestedSubflows(t *testing.T) {
 	t.Parallel()
-	// inner factory: identity passthrough.
-	innerFactory := func() (engine.Engine, error) {
+	// inner factory: identity passthrough. The (Engine, error) shape is
+	// dictated by the subflow factory API; this test's factory never
+	// fails, hence the always-nil error.
+	innerFactory := func() (engine.Engine, error) { //nolint:unparam // factory signature is fixed by the subflow API
 		return passthroughGraph(t), nil
 	}
 	// outer factory: a 2-node graph whose `in` node calls the inner
@@ -291,7 +293,7 @@ func TestCallSubflow_ParentCancel_PropagatesToChild(t *testing.T) {
 func TestCallSubflow_NoGoroutineLeak(t *testing.T) {
 	t.Parallel()
 	baseline := runtime.NumGoroutine()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		factory := func() (engine.Engine, error) { return passthroughGraph(t), nil }
 		out, err := zeroNodeContext().CallSubflow(context.Background(), factory, mkParentEnvelope(fmt.Sprintf("R-leak-%d", i)))
 		if err != nil {

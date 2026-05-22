@@ -59,7 +59,7 @@ func ValidatePayload(p map[string]any) error {
 	// payload through.
 	encoded, err := json.Marshal(p)
 	if err != nil {
-		return fmt.Errorf("%w: payload is not JSON-encodable: %v", ErrUnsupportedPayloadValue, err)
+		return fmt.Errorf("%w: payload is not JSON-encodable: %w", ErrUnsupportedPayloadValue, err)
 	}
 	if len(encoded) > MaxPayloadTotalBytes {
 		return fmt.Errorf("%w: total size %d bytes exceeds %d-byte cap",

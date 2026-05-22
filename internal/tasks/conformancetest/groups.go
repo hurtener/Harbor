@@ -126,7 +126,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 
 		// Spawn 3 members; mark each running; mark each complete.
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -139,7 +139,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatalf("SealGroup: %v", err)
 		}
 		// Mark first 2 running + complete; waiter MUST NOT have fired.
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			if err := r.MarkRunning(ctx, members[i]); err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +185,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -246,7 +246,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -283,7 +283,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -321,7 +321,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -768,7 +768,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		const subscribers = 4
 		channels := make([]<-chan tasks.GroupCompletion, subscribers)
 		cancels := make([]func(), subscribers)
-		for i := 0; i < subscribers; i++ {
+		for i := range subscribers {
 			ch, cancel, err := r.WatchGroup(tripleA().Identity, g.ID)
 			if err != nil {
 				t.Fatalf("subscriber %d: %v", i, err)
@@ -870,7 +870,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		defer cleanup()
 		ctx := ctxA()
 		var ids []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.Kind = tasks.KindBackground
 			h, err := r.Spawn(ctx, req)
@@ -907,8 +907,8 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		defer cleanup()
 		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-A"}
 		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-B"}
-		ctxAA, _ := identity.With(context.Background(), idA)
-		ctxBB, _ := identity.With(context.Background(), idB)
+		ctxAA := mustWithIdentity(idA)
+		ctxBB := mustWithIdentity(idB)
 		g, err := r.ResolveOrCreateGroup(ctxAA, tasks.GroupRequest{
 			SessionID: idA,
 		})
@@ -953,8 +953,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errs atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
 			go func() {
 				defer wg.Done()
 				ident := identity.Identity{
@@ -967,7 +966,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 					errs.Add(1)
 					return
 				}
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					g, err := r.ResolveOrCreateGroup(ctx, tasks.GroupRequest{
 						SessionID: ident,
 					})

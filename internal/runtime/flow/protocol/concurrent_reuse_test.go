@@ -24,15 +24,15 @@ func TestSurface_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	registry := flow.NewRegistry()
 	// Register a handful of flows + per-tenant run history.
 	const tenants = 8
-	for f := 0; f < 4; f++ {
+	for f := range 4 {
 		name := fmt.Sprintf("flow-%d", f)
 		if err := registry.Register(catFixtureDef(name), flow.Metadata{
 			Owner: "team", PlannerFamily: "graph", Source: "internal/flows/" + name + ".go",
 		}); err != nil {
 			t.Fatalf("Register(%s): %v", name, err)
 		}
-		for ti := 0; ti < tenants; ti++ {
-			for i := 0; i < 3; i++ {
+		for ti := range tenants {
+			for i := range 3 {
 				if err := registry.RecordRun(flow.RunRecord{
 					FlowName:  name,
 					RunID:     fmt.Sprintf("%s-t%d-r%d", name, ti, i),
@@ -71,8 +71,8 @@ func TestSurface_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	wg.Add(goroutines)
 	errCh := make(chan error, goroutines)
 
-	for g := 0; g < goroutines; g++ {
-		g := g
+	for g := range goroutines {
+
 		go func() {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t%d", g%tenants)

@@ -17,17 +17,17 @@
 //
 // Four lifetime invariants are load-bearing and pinned by tests:
 //
-//   1. Identity captured immutably on Open — Touch / Close re-save
-//      the same identity from the existing record; mismatched ctx
-//      identity is rejected with ErrIdentityMismatch.
-//   2. Reopen-after-close forbidden — clients open a new SessionID.
-//   3. Cross-tenant SessionID reuse rejected — `SessionID=S` opened
-//      under Tenant A then attempted under Tenant B returns
-//      ErrSessionIDReuse, even though the StateStore key (which
-//      contains the full Quadruple) would not naturally collide.
-//   4. GC never reaps a session with a RUNNING task — Phase 20
-//      (TaskRegistry) wires the real RunningProbe; Phase 08 ships a
-//      no-op default that returns (false, nil).
+//  1. Identity captured immutably on Open — Touch / Close re-save
+//     the same identity from the existing record; mismatched ctx
+//     identity is rejected with ErrIdentityMismatch.
+//  2. Reopen-after-close forbidden — clients open a new SessionID.
+//  3. Cross-tenant SessionID reuse rejected — `SessionID=S` opened
+//     under Tenant A then attempted under Tenant B returns
+//     ErrSessionIDReuse, even though the StateStore key (which
+//     contains the full Quadruple) would not naturally collide.
+//  4. GC never reaps a session with a RUNNING task — Phase 20
+//     (TaskRegistry) wires the real RunningProbe; Phase 08 ships a
+//     no-op default that returns (false, nil).
 //
 // Lifecycle events (`session.opened / .touched / .closed / .gc_reaped`)
 // land on the EventBus as `SafePayload` types — they're Harbor-internal
@@ -161,12 +161,12 @@ type SessionLister interface {
 // wildcards when empty. SinceLastSeen / UntilLastSeen filter by the
 // LastSeen timestamp; zero means "no bound."
 type SessionListFilter struct {
-	TenantIDs      []string
-	UserIDs        []string
-	SessionIDs     []string
-	SinceLastSeen  time.Time
-	UntilLastSeen  time.Time
-	IncludeClosed  bool
+	TenantIDs     []string
+	UserIDs       []string
+	SessionIDs    []string
+	SinceLastSeen time.Time
+	UntilLastSeen time.Time
+	IncludeClosed bool
 }
 
 // Sentinel errors. Callers compare via errors.Is.
