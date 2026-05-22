@@ -203,6 +203,54 @@ type RunContext struct {
 	// operator disabling replay for a cost-sensitive run). The Runtime
 	// populates it from the per-run options; the planner reads only.
 	ReasoningReplay *ReasoningReplayMode
+
+	// MemoryBlocks carries the pre-fetched, identity-scoped memory
+	// blobs the planner injects into the system prompt as UNTRUSTED-
+	// framed `<read_only_*_memory>` sections (Phase 83d — D-146). The
+	// Runtime populates this from the MemoryStore per its declared
+	// scoping policy; the planner only renders. Nil means "no memory
+	// to inject" — the wrappers are omitted entirely. The Runtime is
+	// responsible for filtering the blob to the run's identity BEFORE
+	// it reaches this field; the prompt builder never re-applies
+	// identity filtering (RFC §6.6).
+	MemoryBlocks *MemoryBlocks
+
+	// SkillsContext carries pre-retrieved skill bodies the runtime
+	// resolved for this run (Phase 83d — D-146). The planner renders
+	// them into a single UNTRUSTED-framed `<skills_context>` section.
+	// Nil/empty means "no skills to inject" — the section is omitted.
+	// The element type is `any` for V1: callers may supply
+	// `planner.Skill` values, maps, or operator-defined structs; the
+	// renderer compact-JSON-encodes whatever is passed. The runtime,
+	// not the planner, decides which skills land here (RFC §6.7).
+	SkillsContext []any
+}
+
+// MemoryBlocks carries the two memory tiers the ReAct planner injects
+// into its system prompt with UNTRUSTED anti-prompt-injection framing
+// (Phase 83d — D-146). Both fields are optional: a nil tier is omitted
+// from the prompt entirely (no empty wrapper is rendered).
+//
+// The fields are typed `any` deliberately. The Runtime's MemoryStore
+// (Phase 23) and memory strategies (Phase 24) produce free-form
+// structured blobs whose shape is policy-dependent — a struct, a map,
+// a slice of entries. The prompt builder compact-JSON-encodes whatever
+// is supplied; a value `json.Marshal` rejects fails loudly with
+// [ErrMemoryBlockUnserializable] rather than degrading to an empty
+// wrapper.
+//
+// Identity contract: the Runtime MUST have already filtered each blob
+// to the run's `(tenant, user, session)` scope before populating this
+// struct. The prompt builder never re-applies identity filtering — it
+// renders exactly what it is handed (RFC §6.6, CLAUDE.md §6).
+type MemoryBlocks struct {
+	// External is the long-term / retrieved memory tier. Rendered into
+	// the `<read_only_external_memory>` prompt section. Nil to omit.
+	External any
+	// Conversation is the short-term / session memory tier. Rendered
+	// into the `<read_only_conversation_memory>` prompt section. Nil
+	// to omit.
+	Conversation any
 }
 
 // ReasoningReplayMode controls whether the ReAct planner re-injects a

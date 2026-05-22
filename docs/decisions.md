@@ -3518,3 +3518,22 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 **Findings I'm departing from.** None — this matches brief 13 §2.4 exactly. The `Tool.Examples` field and `ToolExample` type pre-existed (added speculatively with Phase 26's catalog); Phase 83b gives them their first consumer (the renderer) and their first guard (the validator), satisfying the §13 primitive-with-consumer rule.
 
 **Protocol additions.** None — Phase 83b is a planner-internal prompt-content change plus one operator-facing config key (`planner.max_tool_examples_per_tool`) and one constructor Option (`WithMaxToolExamplesPerTool`). No Protocol method, error code, wire type, or CLI subcommand change.
+
+---
+
+## D-146 — ReAct memory + skills inject as separate UNTRUSTED-framed system messages; serialisation fails loudly
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83d)
+
+**Where it lives:** `internal/planner/planner.go` (`MemoryBlocks` type, `RunContext.MemoryBlocks`, `RunContext.SkillsContext`); `internal/planner/errors.go` (`ErrMemoryBlockUnserializable`); `internal/planner/react/memory_wrappers.go` (wrapper copy + render helpers); `internal/planner/react/prompt.go` (`buildRequest` / `baseRequest`); `internal/planner/react/react.go` (`Next` drives the error-returning build path).
+
+**Decision.** Pre-fetched memory blobs and pre-retrieved skill bodies are injected into the ReAct planner's system prompt as **separate `llm.ChatMessage` system-role entries** — never concatenated into the twelve-section base system message. The Runtime populates `RunContext.MemoryBlocks` (`{External any, Conversation any}`) and `RunContext.SkillsContext []any`; the planner renders. Three wrappers, in a fixed order — `<read_only_external_memory>` → `<read_only_conversation_memory>` → `<skills_context>` (most-stable → least-stable → operator-curated, so the message-slice prefix stays KV-cache-stable across turns). Each memory wrapper carries the verbatim five-line anti-prompt-injection rule list from brief 13 §2.3; the skills wrapper carries an analogous shorter operator-curated framing. Payloads are compact JSON (sorted keys, no whitespace, HTML-escaping off). A nil tier / nil `MemoryBlocks` / empty `SkillsContext` is omitted entirely — no empty wrapper is rendered.
+
+A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails the planner step **loudly** with a typed `planner.ErrMemoryBlockUnserializable` naming the offending tier / index — never a silently dropped tier or an empty wrapper. The `PromptBuilder.Build` interface signature is unchanged (it cannot return an error); the planner instead drives the in-package `defaultBuilder` via the error-returning `buildRequest` and surfaces the sentinel from `Next`.
+
+**Why.** Memory feeds (Phase 23 / 24) can carry user-contributed conversational content susceptible to prompt-injection; the UNTRUSTED framing is the prompt-time mitigation that makes memory safe to inject. Distinct tag names per tier let the model use tier semantics and let Console traces / debugging tools grep one tier. Separate messages (not one mega system prompt) keep each tier independently isolatable. Fail-loud serialisation closes the silent-context-loss failure mode the project explicitly closes (CLAUDE.md §5 + §13): a dropped memory tier is invisible context loss.
+
+**Findings I'm departing from.** None — brief 13 §2.3 + brief 04 are followed as written. Render-only is deliberate: runtime-side retrieval policy (when to fetch, what query, cardinality) stays on the runtime where it has identity + cost context.
+
+**Protocol additions.** None — `RunContext.MemoryBlocks` / `SkillsContext` and `ErrMemoryBlockUnserializable` are internal Go types, not Protocol wire types. No new method, error code, config key, or CLI subcommand.

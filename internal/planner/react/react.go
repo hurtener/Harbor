@@ -455,7 +455,26 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
-	req := p.builder.Build(rc, p.systemPrompt)
+	//
+	// Phase 83d (D-146): the in-package [defaultBuilder] can fail
+	// loudly when a `RunContext.MemoryBlocks` tier or a `SkillsContext`
+	// entry is not JSON-serialisable. The [PromptBuilder] interface
+	// signature is fixed, so the planner drives the default builder via
+	// the error-returning [defaultBuilder.buildRequest] and surfaces
+	// [planner.ErrMemoryBlockUnserializable] from `Next` — never a
+	// silently dropped memory tier. An operator-supplied builder owns
+	// its own assembly and uses the interface `Build` (custom builders
+	// do not render the Phase 83d wrappers).
+	var req llm.CompleteRequest
+	if db, ok := p.builder.(defaultBuilder); ok {
+		var buildErr error
+		req, buildErr = db.buildRequest(rc, p.systemPrompt)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+	} else {
+		req = p.builder.Build(rc, p.systemPrompt)
+	}
 
 	// Phase 44's loop owns the salvage / repair / graceful-failure /
 	// multi-action-salvage ladder. The loop calls

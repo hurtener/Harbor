@@ -89,6 +89,17 @@ var (
 	// upgrades this path to a checkpointed atomic pause.
 	ErrParallelPauseUnsupported = errors.New("planner: CallParallel pause-mid-execution not supported until Phase 50 unified pause primitive")
 
+	// ErrMemoryBlockUnserializable (Phase 83d, D-146) — a value in
+	// `RunContext.MemoryBlocks` (External / Conversation) or in
+	// `RunContext.SkillsContext` could not be encoded to compact JSON
+	// for injection into the ReAct system prompt. The prompt builder
+	// fails loudly with this sentinel — it NEVER degrades to an empty
+	// `<read_only_*_memory>` wrapper or silently drops the tier. This
+	// closes the silent-context-loss failure mode (CLAUDE.md §5 +
+	// §13). The wrapped error names the offending tier / index and the
+	// upstream `json.Marshal` error. Compare via `errors.Is`.
+	ErrMemoryBlockUnserializable = errors.New("planner: memory block is not JSON-serialisable")
+
 	// ErrParallelThresholdUnmet (Phase 47, D-056) — a JoinN parallel
 	// call completed but fewer than N branches succeeded. This is a
 	// runtime-execution outcome, NOT an invalid decision: the
