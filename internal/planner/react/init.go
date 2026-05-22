@@ -47,5 +47,11 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.ReasoningReplay != "" {
 		opts = append(opts, WithReasoningReplay(cfg.ReasoningReplay))
 	}
+	// Phase 83b (D-144): propagate the per-tool curated-example cap. A
+	// value ≤ 0 resolves to defaultMaxToolExamples (3) inside the
+	// prompt renderer; config validation already rejected negatives.
+	if cfg.MaxToolExamplesPerTool > 0 {
+		opts = append(opts, WithMaxToolExamplesPerTool(cfg.MaxToolExamplesPerTool))
+	}
 	return New(deps.LLM, opts...), nil
 }

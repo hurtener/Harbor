@@ -3501,3 +3501,20 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 **Findings I'm departing from.** Brief 13 §2.2's "planner-instance counters, no orchestrator wiring" — departed for the D-025 reason above. The departure is the whole point of this decision; the per-run scope is the chosen contract.
 
 **Protocol additions.** None — `RepairCounters` / `PlanningHints` / `RepairOutcome` are internal Go types, not Protocol wire types. `planner.repair_guidance_injected` is an internal event-bus type (registered in `internal/planner/events.go`), surfaced to operators via the Console / `harbor inspect-runs` event replay — not a new Protocol method, error code, or CLI subcommand.
+
+---
+
+## D-144 — ReAct tool catalog renders `args_schema` + `side_effects` + tag-ranked examples
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83b)
+
+**Where it lives:** `internal/tools/tools.go` (`Tool.Examples`, `ToolExample`); `internal/tools/example_validation.go` (`validateExamples`, `ErrToolExampleInvalid`) + `internal/tools/catalog.go` (`Register` calls it); `internal/planner/react/prompt.go` (`renderTool`, `renderAvailableToolsSection`, `toolRenderConfig`, `rankedExamples`, `compactJSON`); `internal/planner/react/react.go` (`WithMaxToolExamplesPerTool`); `internal/planner/react/init.go`; `internal/config/config.go` + `internal/config/validate.go` (`PlannerConfig.MaxToolExamplesPerTool`); `internal/planner/registry.go`; `cmd/harbor/cmd_dev.go`.
+
+**Decision.** The ReAct system prompt's `<available_tools>` section renders each tool with its full `args_schema` (compact single-line JSON), declared `side_effects` class, and up to N curated examples — not the Phase 45 / 83a `name + description` shape. Examples are a new opt-in field `Tool.Examples []ToolExample` (`{Args, Description, Tags}`); they are tag-ranked `minimal` (rank 0) > `common` (1) > `edge-case` (2) > untagged (3), stable-sorted by `(rank, originalIndex)`, and the renderer keeps the top `MaxToolExamplesPerTool` (operator knob, default 3). A tool that ships no examples renders through its `side_effects` line and omits the `examples:` line entirely — no registration-site code change is needed for existing tools. Curated examples are validated at catalog registration: an example whose `Args` names a key not declared in the tool's `args_schema.properties` fails `Register` loudly with `ErrToolExampleInvalid` (a passing example is a working example). `args_schema` is re-marshalled to compact JSON via `encoding/json` (deterministic map-key order) so the section stays KV-cache-stable across turns.
+
+**Why.** The dominant ReAct failure mode the prompt-quality band closes is the args-validation-failure cascade: with only `name + description` exposed, the LLM guesses argument shapes, the catalog edge rejects the guess, and the planner burns steps recovering. Brief 13 §2.4 pins examples as the most token-efficient way to constrain `args` — "a single concrete example is worth several lines of schema prose." Surfacing the schema + examples gives the LLM the information to *decide* correctly the first time (brief 07 §3: runtime owns dispatch, the LLM is the decision-maker). Registration-time example validation closes the secondary risk that examples become performative — an example that contradicts the schema would teach a shape the runtime then rejects.
+
+**Findings I'm departing from.** None — this matches brief 13 §2.4 exactly. The `Tool.Examples` field and `ToolExample` type pre-existed (added speculatively with Phase 26's catalog); Phase 83b gives them their first consumer (the renderer) and their first guard (the validator), satisfying the §13 primitive-with-consumer rule.
+
+**Protocol additions.** None — Phase 83b is a planner-internal prompt-content change plus one operator-facing config key (`planner.max_tool_examples_per_tool`) and one constructor Option (`WithMaxToolExamplesPerTool`). No Protocol method, error code, wire type, or CLI subcommand change.

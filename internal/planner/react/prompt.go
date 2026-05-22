@@ -3,6 +3,7 @@ package react
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,6 +96,24 @@ type defaultBuilder struct {
 	// RunContext.ReasoningReplay override wins over it at render time.
 	// Zero value ("" → resolves to never) is the safe default.
 	configuredReplay planner.ReasoningReplayMode
+	// maxToolExamples caps how many curated examples each tool renders
+	// in the <available_tools> section (Phase 83b — D-144). Zero
+	// resolves to defaultMaxToolExamples (3) at render time. Set once
+	// at construction by [New]; read-only thereafter (D-025).
+	maxToolExamples int
+}
+
+// defaultMaxToolExamples is the per-tool example cap applied when the
+// operator leaves `PlannerConfig.MaxToolExamplesPerTool` at its zero
+// value (Phase 83b — D-144, brief 13 §2.4).
+const defaultMaxToolExamples = 3
+
+// toolRenderConfig carries the per-render knobs [renderTool] consults.
+// It is a value type — [renderTool] is pure with respect to it, which
+// keeps the helper trivially safe for concurrent reuse (D-025).
+type toolRenderConfig struct {
+	// maxExamples is the resolved (non-zero) per-tool example cap.
+	maxExamples int
 }
 
 // Build implements [PromptBuilder].
@@ -106,7 +125,7 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 	var messages []llm.ChatMessage
 
 	// 1. System block: the twelve XML-tagged sections.
-	sysContent := buildSystemContent(systemPrompt, b.extraGuidance, rc)
+	sysContent := buildSystemContent(systemPrompt, b.extraGuidance, b.maxToolExamples, rc)
 	messages = append(messages, llm.ChatMessage{
 		Role:    llm.RoleSystem,
 		Content: textContent(sysContent),
@@ -437,8 +456,11 @@ If you cannot complete the task after reasonable attempts:
 // 11. Sections 11 and 12 are omitted entirely — not emitted as empty
 // tag pairs — when their content is absent.
 //
+// `maxToolExamples` is the per-tool curated-example cap (Phase 83b —
+// D-144); zero resolves to [defaultMaxToolExamples].
+//
 // Phase 83a establishes the section anchors; 83b/c/d build on them.
-func buildSystemContent(systemPrompt, extraGuidance string, rc planner.RunContext) string {
+func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
 	// content — the structured sections ARE the default; an explicit
@@ -464,8 +486,10 @@ func buildSystemContent(systemPrompt, extraGuidance string, rc planner.RunContex
 	}
 
 	// Section 10: <available_tools> — always present (renders a
-	// "no tools" marker when the catalog is empty).
-	sections = append(sections, renderAvailableToolsSection(rc))
+	// "no tools" marker when the catalog is empty). Phase 83b: the cap
+	// is threaded from the builder so each tool's curated examples are
+	// bounded; the builder value carries the resolved knob.
+	sections = append(sections, renderAvailableToolsSection(rc, maxToolExamples))
 
 	// Section 11: <additional_guidance> — operator-supplied guidance
 	// PLUS the Phase 83c per-turn repair guidance (D-145). The repair
@@ -499,10 +523,19 @@ func renderIdentitySection() string {
 }
 
 // renderAvailableToolsSection renders the <available_tools> section
-// (brief 13 §2.1 section 10). Phase 83a renders `name + description`
-// per tool — the Phase 45 catalog shape. Phase 83b upgrades this to
-// emit `args_schema` + curated examples per tool.
-func renderAvailableToolsSection(rc planner.RunContext) string {
+// (brief 13 §2.1 section 10). Phase 83b upgrades the Phase 45
+// name+description-only shape: each tool now renders `name`,
+// `description`, `args_schema` (compact one-line JSON), `side_effects`,
+// and up to `maxToolExamples` curated examples — closing the
+// args-validation-failure cascade caused by the LLM guessing argument
+// shapes (brief 13 §2.4 + §3, D-144). `maxToolExamples` ≤ 0 resolves
+// to [defaultMaxToolExamples].
+func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
+	cfg := toolRenderConfig{maxExamples: maxToolExamples}
+	if cfg.maxExamples <= 0 {
+		cfg.maxExamples = defaultMaxToolExamples
+	}
+
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
 
@@ -510,14 +543,11 @@ func renderAvailableToolsSection(rc planner.RunContext) string {
 	if len(catalog) == 0 {
 		b.WriteString("(no tools registered for this run)\n")
 	} else {
-		for _, t := range catalog {
-			b.WriteString("- ")
-			b.WriteString(t.Name)
-			if t.Description != "" {
-				b.WriteString(": ")
-				b.WriteString(oneLine(t.Description))
+		for i, t := range catalog {
+			if i > 0 {
+				b.WriteString("\n")
 			}
-			b.WriteString("\n")
+			b.WriteString(renderTool(t, cfg))
 		}
 	}
 	b.WriteString("</available_tools>")
@@ -543,6 +573,154 @@ func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string
 	default:
 		return repair
 	}
+}
+
+// renderTool emits the per-tool block for the <available_tools>
+// section (Phase 83b — D-144). The block is:
+//
+//   - <name>: <description>
+//     args_schema: <compact one-line JSON>
+//     side_effects: <class>
+//     examples:
+//   - <description> → <compact args JSON>
+//
+// The `args_schema` and `examples:` lines are omitted entirely when
+// the tool declares no schema / no examples — a no-examples tool
+// renders exactly through the `side_effects` line, so existing tool
+// registrations need no code change (the new fields are opt-in on
+// `tools.Tool`). `side_effects` always renders, defaulting to `pure`
+// when the tool leaves the field unset.
+//
+// renderTool is a pure function: it reads only its arguments, holds no
+// shared state, and is therefore trivially safe for concurrent reuse
+// (D-025). The compact-JSON discipline (one line, deterministic key
+// order via `encoding/json`'s sorted map marshalling) maximises the
+// KV-cache hit rate across turns (brief 13 §5).
+func renderTool(t tools.Tool, cfg toolRenderConfig) string {
+	var b strings.Builder
+	b.WriteString("- ")
+	b.WriteString(t.Name)
+	if t.Description != "" {
+		b.WriteString(": ")
+		b.WriteString(oneLine(t.Description))
+	}
+	b.WriteString("\n")
+
+	if schema := compactJSON(t.ArgsSchema); schema != "" {
+		b.WriteString("  args_schema: ")
+		b.WriteString(schema)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("  side_effects: ")
+	b.WriteString(sideEffectOf(t))
+	b.WriteString("\n")
+
+	examples := rankedExamples(t.Examples, cfg.maxExamples)
+	if len(examples) > 0 {
+		b.WriteString("  examples:\n")
+		for _, ex := range examples {
+			b.WriteString("    - ")
+			if d := oneLine(ex.Description); d != "" {
+				b.WriteString(d)
+				b.WriteString(" → ")
+			}
+			b.WriteString(compactArgs(ex.Args))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// sideEffectOf returns the tool's declared side-effect class, defaulting
+// to "pure" when the field is unset — a tool that makes no claim is
+// treated as the safest class so the planner's <tool_usage> guidance
+// reads consistently.
+func sideEffectOf(t tools.Tool) string {
+	if t.SideEffects == "" {
+		return string(tools.SideEffectPure)
+	}
+	return string(t.SideEffects)
+}
+
+// exampleTagRank maps a [tools.ToolExample]'s tag set to a sort rank:
+// `minimal` (0) > `common` (1) > `edge-case` (2) > untagged (3). The
+// lowest-numbered (highest-priority) tag on the example wins — an
+// example tagged both `common` and `edge-case` ranks as `common`.
+func exampleTagRank(tags []string) int {
+	rank := 3 // untagged
+	for _, tag := range tags {
+		switch tag {
+		case "minimal":
+			return 0 // highest priority — short-circuit
+		case "common":
+			if rank > 1 {
+				rank = 1
+			}
+		case "edge-case":
+			if rank > 2 {
+				rank = 2
+			}
+		}
+	}
+	return rank
+}
+
+// rankedExamples returns up to `limit` examples from `in`, ordered by
+// tag priority (`minimal` > `common` > `edge-case` > untagged). The
+// sort is stable on `(rank, originalIndex)` so equal-rank examples
+// keep their registration order. A non-positive `limit` yields no
+// examples; the input slice is never mutated (the helper copies).
+func rankedExamples(in []tools.ToolExample, limit int) []tools.ToolExample {
+	if limit <= 0 || len(in) == 0 {
+		return nil
+	}
+	ranked := make([]tools.ToolExample, len(in))
+	copy(ranked, in)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return exampleTagRank(ranked[i].Tags) < exampleTagRank(ranked[j].Tags)
+	})
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked
+}
+
+// compactJSON re-marshals a JSON-Schema document to a single-line
+// compact form (no insignificant whitespace, deterministic map-key
+// order via `encoding/json`). Returns the empty string when the input
+// is empty or not valid JSON — a tool with no schema simply omits the
+// `args_schema:` line. Brief 13 §5: compact JSON keeps the prompt
+// stable across turns for KV-cache hit rates.
+func compactJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// compactArgs marshals an example's `Args` map to single-line compact
+// JSON. A nil / empty map renders as `{}` — matching the parser's
+// normalisation for an argument-free call. Marshalling failure (an
+// unserialisable value the example author placed in the map) yields
+// `{}` rather than leaking a Go `%v` rendering into the prompt.
+func compactArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	out, err := json.Marshal(args)
+	if err != nil {
+		return "{}"
+	}
+	return string(out)
 }
 
 // renderPlanningConstraints renders the <planning_constraints> section

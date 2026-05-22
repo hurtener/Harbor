@@ -5,6 +5,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -733,6 +735,197 @@ func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
 		t.Errorf("rendered default prompt diverged from %s.\n"+
 			"If this change is intentional, regenerate the fixture.\n"+
 			"--- got ---\n%s\n--- want ---\n%s", goldenPath, gotNorm, string(want))
+	}
+}
+
+// --- Phase 83b — tool schema injection (D-144) ----------------------
+
+// fixtureCatalog returns the canonical two-tool catalog the Phase 83b
+// golden fixture documents: one tool with a non-trivial args_schema
+// plus curated examples, one bare tool with neither. The bare tool
+// proves the no-examples / no-schema path renders without an
+// `examples:` or `args_schema:` line — backward-compatible with
+// pre-83b registrations.
+func fixtureCatalog() *stubCatalog {
+	return &stubCatalog{tools: []tools.Tool{
+		{
+			Name:        "search",
+			Description: "Search the knowledge base for documents matching a query.",
+			ArgsSchema: json.RawMessage(
+				`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}`),
+			SideEffects: tools.SideEffectRead,
+			Examples: []tools.ToolExample{
+				{
+					Description: "broadest search",
+					Args:        map[string]any{"query": "quarterly revenue"},
+					Tags:        []string{"minimal"},
+				},
+				{
+					Description: "bounded result set",
+					Args:        map[string]any{"query": "revenue", "limit": 5},
+					Tags:        []string{"common"},
+				},
+			},
+		},
+		{
+			Name:        "ping",
+			Description: "Health-check the upstream service.",
+			// No ArgsSchema, no Examples — the pre-83b bare shape.
+		},
+	}}
+}
+
+// TestRenderTool_TagRankingOrdersExamples asserts examples render in
+// `minimal > common > edge-case` order regardless of registration
+// order (acceptance criterion).
+func TestRenderTool_TagRankingOrdersExamples(t *testing.T) {
+	t.Parallel()
+	tool := tools.Tool{
+		Name:        "t",
+		ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+		SideEffects: tools.SideEffectPure,
+		Examples: []tools.ToolExample{
+			{Description: "edge", Args: map[string]any{"x": "e"}, Tags: []string{"edge-case"}},
+			{Description: "common", Args: map[string]any{"x": "c"}, Tags: []string{"common"}},
+			{Description: "minimal", Args: map[string]any{"x": "m"}, Tags: []string{"minimal"}},
+		},
+	}
+	out := renderTool(tool, toolRenderConfig{maxExamples: 3})
+	mi := strings.Index(out, "minimal")
+	ci := strings.Index(out, "common")
+	ei := strings.Index(out, "edge")
+	if !(mi < ci && ci < ei) || mi < 0 {
+		t.Errorf("examples not in minimal<common<edge order. Output:\n%s", out)
+	}
+}
+
+// TestRenderTool_LimitKeepsTopRanked asserts that with maxExamples=1
+// only the highest-priority (minimal) example renders.
+func TestRenderTool_LimitKeepsTopRanked(t *testing.T) {
+	t.Parallel()
+	tool := tools.Tool{
+		Name:        "t",
+		ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+		SideEffects: tools.SideEffectPure,
+		Examples: []tools.ToolExample{
+			{Description: "common", Args: map[string]any{"x": "c"}, Tags: []string{"common"}},
+			{Description: "minimal", Args: map[string]any{"x": "m"}, Tags: []string{"minimal"}},
+		},
+	}
+	out := renderTool(tool, toolRenderConfig{maxExamples: 1})
+	if !strings.Contains(out, "minimal") || strings.Contains(out, "common") {
+		t.Errorf("maxExamples=1 should keep only the minimal example. Output:\n%s", out)
+	}
+	if strings.Count(out, "    - ") != 1 {
+		t.Errorf("expected exactly 1 rendered example line. Output:\n%s", out)
+	}
+}
+
+// TestRenderTool_NoExamplesOmitsExamplesLine asserts a tool without
+// examples renders no `examples:` line at all — not `examples: []`
+// (acceptance criterion).
+func TestRenderTool_NoExamplesOmitsExamplesLine(t *testing.T) {
+	t.Parallel()
+	out := renderTool(tools.Tool{Name: "ping", Description: "health check"},
+		toolRenderConfig{maxExamples: 3})
+	if strings.Contains(out, "examples:") {
+		t.Errorf("no-examples tool rendered an examples: line. Output:\n%s", out)
+	}
+	if strings.Contains(out, "args_schema:") {
+		t.Errorf("no-schema tool rendered an args_schema: line. Output:\n%s", out)
+	}
+	// side_effects always renders, defaulting to pure.
+	if !strings.Contains(out, "side_effects: pure") {
+		t.Errorf("no-side-effects tool should default to pure. Output:\n%s", out)
+	}
+}
+
+// TestRenderTool_SchemaRendersCompactSingleLine asserts the args_schema
+// renders as compact (whitespace-free) JSON on one line.
+func TestRenderTool_SchemaRendersCompactSingleLine(t *testing.T) {
+	t.Parallel()
+	tool := tools.Tool{
+		Name: "t",
+		ArgsSchema: json.RawMessage(
+			"{\n  \"type\": \"object\",\n  \"properties\": { \"a\": { \"type\": \"string\" } }\n}"),
+		SideEffects: tools.SideEffectPure,
+	}
+	out := renderTool(tool, toolRenderConfig{maxExamples: 3})
+	var schemaLine string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "args_schema:") {
+			schemaLine = ln
+		}
+	}
+	if schemaLine == "" {
+		t.Fatalf("no args_schema line rendered. Output:\n%s", out)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(schemaLine), "args_schema:"))
+	if strings.ContainsAny(payload, "\n") {
+		t.Errorf("args_schema JSON spans multiple lines: %q", payload)
+	}
+	if strings.Contains(payload, ": ") || strings.Contains(payload, ", ") {
+		t.Errorf("args_schema JSON is not compact (has insignificant whitespace): %q", payload)
+	}
+}
+
+// TestRenderAvailableTools_DefaultExampleCap asserts a zero maxExamples
+// resolves to defaultMaxToolExamples rather than rendering no examples.
+func TestRenderAvailableTools_DefaultExampleCap(t *testing.T) {
+	t.Parallel()
+	body := renderAvailableToolsSection(planner.RunContext{Catalog: fixtureCatalog()}, 0)
+	if !strings.Contains(body, "examples:") {
+		t.Errorf("zero cap should resolve to default (3), not suppress examples. Body:\n%s", body)
+	}
+}
+
+// TestDefaultBuilder_GoldenToolsPrompt is the fixture-driven golden for
+// the enriched <available_tools> rendering (acceptance criterion). The
+// fixture is the normative spec for the per-tool block shape.
+func TestDefaultBuilder_GoldenToolsPrompt(t *testing.T) {
+	t.Parallel()
+	const goldenPath = "testdata/golden_tools_prompt.txt"
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got := renderAvailableToolsSection(planner.RunContext{Catalog: fixtureCatalog()}, 3)
+	if got != string(want) {
+		t.Errorf("rendered <available_tools> diverged from %s.\n"+
+			"If this change is intentional, regenerate the fixture.\n"+
+			"--- got ---\n%s\n--- want ---\n%s", goldenPath, got, string(want))
+	}
+}
+
+// TestRenderTool_ConcurrentReuse_D025 is the Phase 83b (D-144)
+// concurrent-reuse gate for the tool-catalog renderer. renderTool and
+// renderAvailableToolsSection are pure functions — no shared state, no
+// receiver — so N≥100 concurrent invocations against the SAME fixture
+// catalog produce byte-identical output under -race: no data races,
+// no cross-call bleed. N=128 (above the D-025 floor of 100).
+func TestRenderTool_ConcurrentReuse_D025(t *testing.T) {
+	t.Parallel()
+	const N = 128
+	cat := fixtureCatalog()
+	want := renderAvailableToolsSection(planner.RunContext{Catalog: cat}, 3)
+
+	var (
+		wg       sync.WaitGroup
+		mismatch int64
+	)
+	wg.Add(N)
+	for range N {
+		go func() {
+			defer wg.Done()
+			got := renderAvailableToolsSection(planner.RunContext{Catalog: cat}, 3)
+			if got != want {
+				atomic.AddInt64(&mismatch, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if mismatch != 0 {
+		t.Errorf("D-025: %d concurrent catalog renders diverged from the reference", mismatch)
 	}
 }
 
