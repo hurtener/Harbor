@@ -2,6 +2,8 @@ package react
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +55,11 @@ func TestDefaultBuilder_EmitsSystemPromptAndCatalog(t *testing.T) {
 		t.Fatal("system content text is nil")
 	}
 	body := *sys.Content.Text
-	for _, want := range []string{"SYS_PROMPT", "search", "find things", "answer", "respond to user", "_finish"} {
+	// An operator-supplied non-default prompt is honoured verbatim;
+	// the <available_tools> section still appends so tool rendering
+	// survives a custom base prompt (Phase 83a buildSystemContent
+	// contract).
+	for _, want := range []string{"SYS_PROMPT", "search", "find things", "answer", "respond to user", "<available_tools>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system content missing %q. Body: %s", want, body)
 		}
@@ -61,7 +67,8 @@ func TestDefaultBuilder_EmitsSystemPromptAndCatalog(t *testing.T) {
 }
 
 // TestDefaultBuilder_FallsBackToDefaultSystemPrompt asserts that an
-// empty system prompt argument substitutes the canonical default.
+// empty system prompt argument substitutes the canonical default —
+// i.e. the rendered twelve-section structured prompt (Phase 83a).
 func TestDefaultBuilder_FallsBackToDefaultSystemPrompt(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{Goal: "g"}
@@ -70,8 +77,9 @@ func TestDefaultBuilder_FallsBackToDefaultSystemPrompt(t *testing.T) {
 		t.Fatal("Build returned zero messages")
 	}
 	body := *req.Messages[0].Content.Text
-	if !strings.Contains(body, "ReAct planner") {
-		t.Errorf("default system prompt not used. Body: %s", body)
+	// The structured default opens with the <identity> section.
+	if !strings.Contains(body, "<identity>") || !strings.Contains(body, "<action_schema>") {
+		t.Errorf("structured default system prompt not used. Body: %s", body)
 	}
 }
 
@@ -440,5 +448,303 @@ func TestRenderAny_HandlesShapesSafely(t *testing.T) {
 	}
 	if got := renderAny(map[string]any{"k": "v"}); got != `{"k":"v"}` {
 		t.Errorf("map: %s", got)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Phase 83a — twelve-section structured prompt (brief 13 §2.1).
+// ----------------------------------------------------------------------------
+
+// the twelve XML section tags in their fixed brief-13 §2.1 order.
+var section83aTags = []string{
+	"identity",
+	"output_format",
+	"action_schema",
+	"finishing",
+	"tool_usage",
+	"parallel_execution",
+	"reasoning",
+	"tone",
+	"error_handling",
+	"available_tools",
+	"additional_guidance",
+	"planning_constraints",
+}
+
+// renderDefaultSystem renders the default (structured) system prompt
+// for a given builder + RunContext. Helper for the section tests.
+func renderDefaultSystem(t *testing.T, b defaultBuilder, rc planner.RunContext) string {
+	t.Helper()
+	req := b.Build(rc, "")
+	if len(req.Messages) == 0 || req.Messages[0].Content.Text == nil {
+		t.Fatal("Build produced no system message")
+	}
+	return *req.Messages[0].Content.Text
+}
+
+// TestBuildSystemContent_TenSectionsAlwaysPresentInOrder asserts the
+// ten always-on sections render exactly once each, in the brief 13
+// §2.1 fixed order, separated by a blank line.
+func TestBuildSystemContent_TenSectionsAlwaysPresentInOrder(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+
+	// The ten always-on sections (11 + 12 are conditional).
+	alwaysOn := section83aTags[:10]
+	lastIdx := -1
+	for _, tag := range alwaysOn {
+		opener := "<" + tag + ">"
+		if got := strings.Count(body, opener); got != 1 {
+			t.Errorf("section %s opener count = %d, want 1", opener, got)
+		}
+		idx := strings.Index(body, opener)
+		if idx <= lastIdx {
+			t.Errorf("section %s out of order (idx=%d, prev=%d)", opener, idx, lastIdx)
+		}
+		lastIdx = idx
+		if !strings.Contains(body, "</"+tag+">") {
+			t.Errorf("section %s missing closer", tag)
+		}
+	}
+}
+
+// TestBuildSystemContent_SectionsSeparatedByBlankLine asserts the
+// sections are joined by `\n\n` (acceptance criterion).
+func TestBuildSystemContent_SectionsSeparatedByBlankLine(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	if !strings.Contains(body, "</identity>\n\n<output_format>") {
+		t.Errorf("sections not separated by a blank line. Body:\n%s", body)
+	}
+}
+
+// TestBuildSystemContent_OmitsEmptyOptionalSections asserts that with
+// no extra_guidance and no planning hints, the <additional_guidance>
+// and <planning_constraints> sections are omitted ENTIRELY — not
+// emitted as empty tag pairs.
+func TestBuildSystemContent_OmitsEmptyOptionalSections(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	for _, tag := range []string{"additional_guidance", "planning_constraints"} {
+		if strings.Contains(body, "<"+tag+">") {
+			t.Errorf("empty optional section <%s> should be omitted, but it is present", tag)
+		}
+	}
+}
+
+// TestBuildSystemContent_RendersAdditionalGuidanceWhenSet asserts the
+// <additional_guidance> section appears, wrapping the operator string
+// verbatim, when extraGuidance is non-empty.
+func TestBuildSystemContent_RendersAdditionalGuidanceWhenSet(t *testing.T) {
+	t.Parallel()
+	b := defaultBuilder{extraGuidance: "Speak like a pirate."}
+	body := renderDefaultSystem(t, b, planner.RunContext{Goal: "g"})
+	want := "<additional_guidance>\nSpeak like a pirate.\n</additional_guidance>"
+	if !strings.Contains(body, want) {
+		t.Errorf("expected verbatim additional_guidance block. Body:\n%s", body)
+	}
+}
+
+// TestBuildSystemContent_WhitespaceOnlyExtraGuidanceOmitsSection
+// asserts a whitespace-only extra guidance string omits the section
+// (it is treated as empty).
+func TestBuildSystemContent_WhitespaceOnlyExtraGuidanceOmitsSection(t *testing.T) {
+	t.Parallel()
+	b := defaultBuilder{extraGuidance: "   \n\t  "}
+	body := renderDefaultSystem(t, b, planner.RunContext{Goal: "g"})
+	if strings.Contains(body, "<additional_guidance>") {
+		t.Errorf("whitespace-only extra guidance should omit the section")
+	}
+}
+
+// TestBuildSystemContent_CurrentDateIsDateOnly asserts the <identity>
+// section's `Current date:` line is YYYY-MM-DD with no time-of-day
+// component (brief 13 §4 — date-only for KV-cache stability).
+func TestBuildSystemContent_CurrentDateIsDateOnly(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	re := regexp.MustCompile(`Current date: (\S+)`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no `Current date:` line found. Body:\n%s", body)
+	}
+	date := m[1]
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(date) {
+		t.Errorf("current date %q is not YYYY-MM-DD", date)
+	}
+	for _, bad := range []string{"T", ":", " "} {
+		if strings.Contains(date, bad) {
+			t.Errorf("current date %q contains time-of-day marker %q", date, bad)
+		}
+	}
+	// It must equal today's UTC date.
+	if want := time.Now().UTC().Format("2006-01-02"); date != want {
+		t.Errorf("current date = %q, want %q (UTC today)", date, want)
+	}
+}
+
+// TestBuildSystemContent_NoReasoningFieldInActionSchema asserts the
+// rendered prompt contains NO `"reasoning":` substring (acceptance
+// criterion: the action JSON drops the reasoning field; brief 13
+// §2.6).
+func TestBuildSystemContent_NoReasoningFieldInActionSchema(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	if strings.Contains(body, `"reasoning":`) {
+		t.Errorf("rendered prompt contains a `\"reasoning\":` JSON field — must be dropped (brief 13 §2.6)")
+	}
+	if strings.Contains(body, `"thought":`) {
+		t.Errorf("rendered prompt contains a `\"thought\":` JSON field — must be dropped")
+	}
+}
+
+// TestBuildSystemContent_ToneCarriesCriticalClamp asserts the <tone>
+// section ports the predecessor's CRITICAL clamp verbatim (brief 13
+// §2.6 — both lines, case-sensitive).
+func TestBuildSystemContent_ToneCarriesCriticalClamp(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	clampA := "During intermediate steps, produce ONLY the JSON action object. Do not add commentary."
+	clampB := "Do not include a 'thought' or 'reasoning' field in the JSON."
+	if !strings.Contains(body, clampA) {
+		t.Errorf("<tone> missing CRITICAL clamp line A: %q", clampA)
+	}
+	if !strings.Contains(body, clampB) {
+		t.Errorf("<tone> missing CRITICAL clamp line B: %q", clampB)
+	}
+}
+
+// TestBuildSystemContent_FinishingCarriesOnlyAnswer asserts the
+// <finishing> block reserves no rich-output JSON fields — no
+// `"confidence"`, `"route"`, `"requires_followup"`, `"warnings"` keys
+// (brief 13 §5 — rich output dropped from Harbor entirely).
+func TestBuildSystemContent_FinishingCarriesOnlyAnswer(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	for _, field := range []string{`"confidence"`, `"route"`, `"requires_followup"`, `"warnings"`} {
+		if strings.Contains(body, field) {
+			t.Errorf("rendered prompt contains rich-output finish field %s — dropped per brief 13 §5", field)
+		}
+	}
+	if strings.Contains(body, "optional fields you may include") {
+		t.Errorf("rendered prompt describes optional finish fields — dropped per brief 13 §5")
+	}
+}
+
+// TestBuildSystemContent_ErrorHandlingNoRequiresFollowup asserts the
+// <error_handling> block guides clarification via args.answer, not a
+// `requires_followup` flag (acceptance criterion).
+func TestBuildSystemContent_ErrorHandlingNoRequiresFollowup(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+	// Isolate the <error_handling> section body.
+	start := strings.Index(body, "<error_handling>")
+	end := strings.Index(body, "</error_handling>")
+	if start < 0 || end < 0 {
+		t.Fatal("no <error_handling> section")
+	}
+	section := body[start:end]
+	if strings.Contains(section, "requires_followup") {
+		t.Errorf("<error_handling> references requires_followup — must guide via args.answer instead")
+	}
+	if !strings.Contains(section, "args.answer") {
+		t.Errorf("<error_handling> should guide clarification via args.answer")
+	}
+}
+
+// TestBuildSystemContent_AvailableToolsRendersCatalog asserts the
+// <available_tools> section renders the catalog (name + description).
+func TestBuildSystemContent_AvailableToolsRendersCatalog(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "g",
+		Catalog: &stubCatalog{tools: []tools.Tool{
+			{Name: "search", Description: "find things"},
+		}},
+	}
+	body := renderDefaultSystem(t, defaultBuilder{}, rc)
+	start := strings.Index(body, "<available_tools>")
+	end := strings.Index(body, "</available_tools>")
+	section := body[start:end]
+	for _, want := range []string{"search", "find things"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("<available_tools> missing %q. Section:\n%s", want, section)
+		}
+	}
+}
+
+// TestBuildSystemContent_OverrideHonouredVerbatim asserts a non-default
+// WithSystemPrompt override REPLACES the structured sections, but the
+// <available_tools> + <additional_guidance> injection sections still
+// append.
+func TestBuildSystemContent_OverrideHonouredVerbatim(t *testing.T) {
+	t.Parallel()
+	b := defaultBuilder{extraGuidance: "extra rules"}
+	req := b.Build(planner.RunContext{Goal: "g"}, "MY CUSTOM PROMPT")
+	body := *req.Messages[0].Content.Text
+	if !strings.Contains(body, "MY CUSTOM PROMPT") {
+		t.Errorf("override not honoured. Body:\n%s", body)
+	}
+	if strings.Contains(body, "<identity>") {
+		t.Errorf("structured <identity> section leaked into an overridden prompt")
+	}
+	if !strings.Contains(body, "<available_tools>") {
+		t.Errorf("<available_tools> should still append under an override")
+	}
+	if !strings.Contains(body, "<additional_guidance>\nextra rules\n</additional_guidance>") {
+		t.Errorf("<additional_guidance> should still append under an override")
+	}
+}
+
+// TestBuildSystemContent_NoUnresolvedTemplateMarkers asserts no `{{`
+// template markers survive into the rendered prompt (catches an
+// un-rendered placeholder regression).
+func TestBuildSystemContent_NoUnresolvedTemplateMarkers(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{extraGuidance: "x"}, planner.RunContext{
+		Goal: "g",
+		Catalog: &stubCatalog{tools: []tools.Tool{
+			{Name: "t", Description: "d"},
+		}},
+	})
+	if strings.Contains(body, "{{") {
+		t.Errorf("rendered prompt contains unresolved `{{` template marker. Body:\n%s", body)
+	}
+}
+
+// TestDefaultBuilder_GoldenDefaultPrompt is the fixture-driven golden
+// test (acceptance criterion): the rendered default prompt with no
+// tools and no extra_guidance must match the checked-in fixture. The
+// fixture *is* the normative spec. The volatile `Current date:` line
+// is normalised to a sentinel before the compare so the test is
+// date-independent.
+func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
+	t.Parallel()
+	const goldenPath = "testdata/golden_default_prompt.txt"
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
+	// Normalise the volatile date line to the fixture's sentinel.
+	dateRE := regexp.MustCompile(`Current date: \d{4}-\d{2}-\d{2}`)
+	gotNorm := dateRE.ReplaceAllString(got, "Current date: 2025-01-01")
+	if gotNorm != string(want) {
+		t.Errorf("rendered default prompt diverged from %s.\n"+
+			"If this change is intentional, regenerate the fixture.\n"+
+			"--- got ---\n%s\n--- want ---\n%s", goldenPath, gotNorm, string(want))
+	}
+}
+
+// TestWithSystemPromptExtra_FlowsToAdditionalGuidance asserts the
+// react.New + WithSystemPromptExtra Option injects content into the
+// <additional_guidance> section of the rendered prompt.
+func TestWithSystemPromptExtra_FlowsToAdditionalGuidance(t *testing.T) {
+	t.Parallel()
+	// The Option finalises the in-package builder; render through it.
+	b := defaultBuilder{extraGuidance: "domain rule: always cite sources"}
+	body := renderDefaultSystem(t, b, planner.RunContext{Goal: "g"})
+	if !strings.Contains(body, "<additional_guidance>\ndomain rule: always cite sources\n</additional_guidance>") {
+		t.Errorf("WithSystemPromptExtra content not in <additional_guidance>. Body:\n%s", body)
 	}
 }

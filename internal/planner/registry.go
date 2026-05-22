@@ -57,6 +57,12 @@ type PlannerConfig struct {
 	// driver default.
 	MaxSteps int
 
+	// ExtraGuidance is operator-supplied domain-specific guidance for
+	// the rendered prompt's <additional_guidance> section (Phase 83a).
+	// The V1 `react` driver maps it onto `react.WithSystemPromptExtra`;
+	// other drivers ignore it. Empty by default.
+	ExtraGuidance string
+
 	// Extra is the driver-specific extras map. Reserved for future
 	// drivers' per-flow knobs; unused by the V1 `react` driver.
 	Extra map[string]string

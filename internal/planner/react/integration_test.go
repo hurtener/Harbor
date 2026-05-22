@@ -3,6 +3,7 @@ package react_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,92 @@ func TestE2E_React_FullThreeStepLoopOnRealBus(t *testing.T) {
 	case ev := <-sub.Events():
 		t.Errorf("unexpected event on happy three-step path: %+v", ev)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// promptRecordingClient records the system-message text of each
+// CompleteRequest so an integration test can assert on the rendered
+// structured prompt. It always answers with a terminal `_finish`.
+type promptRecordingClient struct {
+	systemText string
+}
+
+func (c *promptRecordingClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	if len(req.Messages) > 0 && req.Messages[0].Content.Text != nil {
+		c.systemText = *req.Messages[0].Content.Text
+	}
+	return llm.CompleteResponse{Content: `{"tool":"_finish","args":{"answer":"done"}}`}, nil
+}
+
+func (c *promptRecordingClient) Close(_ context.Context) error { return nil }
+
+// TestE2E_React_StructuredPromptAssemblesThroughRegistry is the Phase
+// 83a integration test (§17.1 — this phase consumes the Phase 45
+// planner surface AND the D-103 planner registry). It proves the
+// structured twelve-section prompt + the `planner.extra_guidance`
+// config key assemble end-to-end: a `planner.PlannerConfig` carrying
+// `ExtraGuidance` flows through `planner.Resolve` → the react driver's
+// factory → `react.New` with `WithSystemPromptExtra` → a real `Next`
+// call whose rendered system prompt carries every structured section
+// AND the operator's `<additional_guidance>` block.
+func TestE2E_React_StructuredPromptAssemblesThroughRegistry(t *testing.T) {
+	q := identity.Quadruple{
+		Identity: identity.Identity{TenantID: "t-83a", UserID: "u", SessionID: "s"},
+		RunID:    "r-83a",
+	}
+	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
+	}
+
+	client := &promptRecordingClient{}
+	// Resolve the planner through the D-103 registry — the real seam
+	// the dev stack uses at boot. The `react` driver self-registers
+	// via its init(); the package blank-import is implicit here (the
+	// test is in package react_test, so the driver's init has run).
+	p, err := planner.Resolve(ctx, planner.PlannerConfig{
+		Driver:        "react",
+		ExtraGuidance: "domain rule: cite every source",
+	}, planner.FactoryDeps{LLM: client})
+	if err != nil {
+		t.Fatalf("planner.Resolve: %v", err)
+	}
+
+	dec, err := p.Next(ctx, planner.RunContext{
+		Quadruple: q,
+		Goal:      "answer the user",
+	})
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if fin, ok := dec.(planner.Finish); !ok || fin.Reason != planner.FinishGoal {
+		t.Fatalf("Next = %+v, want Finish{FinishGoal}", dec)
+	}
+
+	body := client.systemText
+	if body == "" {
+		t.Fatal("no system prompt was rendered")
+	}
+	// Every always-on structured section is present.
+	for _, tag := range []string{
+		"<identity>", "<output_format>", "<action_schema>", "<finishing>",
+		"<tool_usage>", "<parallel_execution>", "<reasoning>", "<tone>",
+		"<error_handling>", "<available_tools>",
+	} {
+		if !strings.Contains(body, tag) {
+			t.Errorf("rendered prompt missing structured section %s", tag)
+		}
+	}
+	// The config key flowed through to <additional_guidance>.
+	if !strings.Contains(body, "<additional_guidance>\ndomain rule: cite every source\n</additional_guidance>") {
+		t.Errorf("planner.extra_guidance did not flow to <additional_guidance>. Body:\n%s", body)
+	}
+	// The CRITICAL clamp and the no-reasoning-field discipline hold.
+	if strings.Contains(body, `"reasoning":`) {
+		t.Errorf("rendered prompt leaked a `\"reasoning\":` field")
+	}
+	if !strings.Contains(body, "Do not include a 'thought' or 'reasoning' field in the JSON.") {
+		t.Errorf("rendered prompt missing the <tone> CRITICAL clamp")
 	}
 }
 

@@ -896,6 +896,15 @@ const (
 // react driver's `react.DefaultMaxSteps` (12). The validator rejects
 // negative values pre-boot.
 //
+// `ExtraGuidance` is operator-supplied domain-specific guidance
+// injected into the rendered ReAct system prompt's
+// `<additional_guidance>` section (Phase 83a, RFC §6.2). Empty (the
+// default) omits the section entirely. The string is rendered
+// verbatim — the operator owns its content hygiene. It flows to the
+// react driver's `WithSystemPromptExtra` Option at construction;
+// other drivers ignore it. The validator imposes no rule beyond
+// "string" — operator copy is operator copy.
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -905,7 +914,8 @@ const (
 // runtime would race with in-flight RunLoop goroutines holding the old
 // concrete.
 type PlannerConfig struct {
-	Driver   string            `yaml:"driver,omitempty"`
-	MaxSteps int               `yaml:"max_steps,omitempty"`
-	Extra    map[string]string `yaml:"extra,omitempty"`
+	Driver        string            `yaml:"driver,omitempty"`
+	MaxSteps      int               `yaml:"max_steps,omitempty"`
+	ExtraGuidance string            `yaml:"extra_guidance,omitempty"`
+	Extra         map[string]string `yaml:"extra,omitempty"`
 }
