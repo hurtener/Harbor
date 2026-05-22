@@ -97,8 +97,7 @@ func TestRepairLoop_ConcurrentReuse_D025(t *testing.T) {
 	)
 
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		go func() {
 			defer wg.Done()
 

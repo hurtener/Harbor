@@ -514,7 +514,7 @@ func (r *Registry) ListResources(ctx context.Context, name string) ([]ResourceVi
 	}
 	out := []ResourceView{}
 	for _, d := range descs {
-		uri, ok := resourceURIFromToolName(string(d.Tool.Name), name)
+		uri, ok := resourceURIFromToolName(d.Tool.Name, name)
 		if !ok {
 			continue
 		}
@@ -545,7 +545,7 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 	}
 	out := []PromptView{}
 	for _, d := range descs {
-		pname, ok := promptNameFromToolName(string(d.Tool.Name), name)
+		pname, ok := promptNameFromToolName(d.Tool.Name, name)
 		if !ok {
 			continue
 		}
@@ -616,7 +616,10 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 	latency := r.clock().Sub(start).Milliseconds()
 	if derr != nil {
 		r.recordError(name)
-		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil
+		// A probe failure is a successful probe with a failed result:
+		// derr is surfaced inside ProbeResult.Error, not as a top-level
+		// error, so callers always get a populated ProbeResult.
+		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil //nolint:nilerr // probe failure is reported in ProbeResult.Error, not as a return error
 	}
 	r.mu.Lock()
 	e.stats.recentLatencyMs = latency
@@ -737,7 +740,7 @@ func appendBucket(buckets []HealthBucket, b HealthBucket) []HealthBucket {
 // slice, using the Phase 28 synthetic-name markers.
 func classifyDescriptors(descs []tools.ToolDescriptor, server string) (toolCount, resourceCount, promptCount int) {
 	for _, d := range descs {
-		name := string(d.Tool.Name)
+		name := d.Tool.Name
 		if _, ok := resourceURIFromToolName(name, server); ok {
 			resourceCount++
 			continue

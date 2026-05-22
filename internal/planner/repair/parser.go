@@ -269,7 +269,7 @@ func tryScan(text string) []planner.CallTool {
 // a JSON value start — whitespace, commas, prose. Stops at the first
 // `{` / `[` / digit / `"` / `t` / `f` / `n` / `-`.
 func trimLeftJunk(s string) string {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		c := s[i]
 		switch {
 		case c == '{' || c == '[' || c == '"' || c == '-':

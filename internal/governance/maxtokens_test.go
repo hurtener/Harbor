@@ -170,8 +170,8 @@ func TestMaxTokens_ConcurrentReuse_D025(t *testing.T) {
 	var errs atomic.Int64
 
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		go func() {
 			defer wg.Done()
 			// Per-call identity so the per-key state map is exercised.

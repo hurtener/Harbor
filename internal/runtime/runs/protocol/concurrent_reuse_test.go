@@ -32,8 +32,7 @@ func TestService_ConcurrentReuse_NoCrossSessionBleed(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		go func() {
 			defer wg.Done()
 			session := fmt.Sprintf("session-%04d", i)
@@ -56,7 +55,7 @@ func TestService_ConcurrentReuse_NoCrossSessionBleed(t *testing.T) {
 	wg.Wait()
 
 	// Every session recorded EXACTLY its own override — no bleed.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		session := fmt.Sprintf("session-%04d", i)
 		wantEffort := []string{"low", "medium", "high"}[i%3]
 		id := identity.Identity{TenantID: testTenant, UserID: testUser, SessionID: session}
@@ -88,7 +87,7 @@ func TestStore_ConcurrentSetConsume_NoRace(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(n * 3)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := identity.Identity{
 			TenantID: testTenant, UserID: testUser,
 			SessionID: fmt.Sprintf("sess-%d", i),

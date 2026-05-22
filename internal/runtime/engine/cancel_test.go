@@ -263,7 +263,7 @@ func TestCancel_CrossTenant_NoBleed(t *testing.T) {
 
 	// Emit one envelope per tenant. Passthrough → each lands in the
 	// dispatcher's per-run subqueue + anyRun.
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idTri := ident(fmt.Sprintf("T%d", i), "U", "S")
 		if err := e.Emit(context.Background(), envFor(idTri, fmt.Sprintf("R-%d", i))); err != nil {
 			t.Fatalf("Emit %d: %v", i, err)
@@ -321,7 +321,7 @@ func TestCancel_DuringStreaming_NoDeadlock(t *testing.T) {
 		}
 		emittedFirst <- struct{}{}
 		// Burst more frames — RunCapacity=2 so we'll block.
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if err := nctx.EmitChunk(ctx, engine.StreamFrame{Text: fmt.Sprintf("f%d", i)}); err != nil {
 				gotErr <- err
 				return messages.Envelope{}, err
@@ -381,7 +381,7 @@ func TestCancel_Idempotent_Property(t *testing.T) {
 	var trueCount atomic.Int32
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			ok, err := e.Cancel(context.Background(), "R-prop")

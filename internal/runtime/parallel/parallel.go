@@ -214,7 +214,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel) ([]Re
 		if desc.Validate != nil {
 			if err := desc.Validate(b.Args); err != nil {
 				return nil, fmt.Errorf(
-					"%w: branch[%d] tool=%q: %v",
+					"%w: branch[%d] tool=%q: %w",
 					planner.ErrParallelBranchInvalidArgs, i, b.Tool, err,
 				)
 			}
@@ -356,7 +356,7 @@ func (e *Executor) dispatchFirstSuccess(
 			// Drain remaining without blocking on them (the goroutine
 			// above will close sigCh when all wg.Done() fire).
 			go func() {
-				for range sigCh { //nolint:revive // drain
+				for range sigCh {
 				}
 			}()
 			return []Result{s.res}, nil
@@ -418,7 +418,7 @@ func (e *Executor) dispatchN(
 				cancel()
 				// Drain the rest async.
 				go func() {
-					for range sigCh { //nolint:revive // drain
+					for range sigCh {
 					}
 				}()
 				return successes, nil
@@ -437,7 +437,7 @@ func (e *Executor) dispatchN(
 	}
 	joined := errors.Join(errs...)
 	return successes, fmt.Errorf(
-		"%w: JoinN N=%d reached %d successes only: %v",
+		"%w: JoinN N=%d reached %d successes only: %w",
 		planner.ErrParallelThresholdUnmet, n, len(successes), joined,
 	)
 }

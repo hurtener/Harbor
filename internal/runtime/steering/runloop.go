@@ -269,7 +269,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// tracked in issue #79; each ring is capped so the per-session entry
 	// is bounded, only the session-keyed map grows. Accepted V1 limit — D-071.
 	defer func() {
-		_ = rl.registry.Retire(q)
+		_ = rl.registry.Retire(q) //nolint:errcheck // best-effort cleanup on run-end; a Retire error must not mask the run result
 	}()
 
 	maxSteps := spec.MaxSteps
@@ -287,7 +287,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// goroutine's stack, never on the RunLoop struct (D-025).
 	var outstandingToken pauseresume.Token
 
-	for step := 0; step < maxSteps; step++ {
+	for step := range maxSteps {
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, fmt.Errorf("steering: run cancelled at step boundary: %w", err)
 		}
@@ -351,7 +351,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// HITL gate is a constraint conflict the planner cannot resolve
 		// (D-071). The Coordinator.Resume already happened in applyEvent.
 		if sc.resumeRequested && sc.resumeKind == ControlReject {
-			outstandingToken = ""
 			return planner.Finish{
 				Reason: planner.FinishConstraintsConflict,
 				Metadata: map[string]any{
@@ -507,7 +506,7 @@ func (rl *RunLoop) emitLifecycle(ctx context.Context, q identity.Quadruple, t Co
 			outcome = outcomeFailed
 		}
 	}
-	_ = rl.bus.Publish(ctx, events.Event{
+	_ = rl.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort control-lifecycle emit; observability only
 		Type:     evType,
 		Identity: q,
 		Payload: ControlLifecyclePayload{

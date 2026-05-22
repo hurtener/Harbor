@@ -51,22 +51,13 @@ func IsValidTransportMode(s string) bool {
 	return isValidMode(MCPTransportMode(s))
 }
 
-// transportFactory builds an MCP SDK Transport for cfg. The
-// factory pattern hides which concrete transport is selected — the
-// driver's Connect path is one call to factory(cfg).Connect().
-//
-// Returned errors are wrapped against ErrInvalidConfig (selection-
-// time errors from a malformed Config) or ErrTransportFailed
-// (connection-time failures).
-type transportFactory func(ctx context.Context, cfg Config) (mcpsdk.Transport, MCPTransportMode, error)
-
 // selectTransport resolves Config into a single concrete Transport.
 // Auto-mode tries streamable-HTTP first, then SSE, then stdio per
 // Config.Command. Explicit modes select directly.
 //
 // The selector is stateless; concurrent calls produce independent
 // Transport values.
-func selectTransport(ctx context.Context, cfg Config) (mcpsdk.Transport, MCPTransportMode, error) {
+func selectTransport(cfg Config) (mcpsdk.Transport, MCPTransportMode, error) {
 	switch cfg.TransportMode {
 	case TransportSSE:
 		if cfg.URL == "" {
@@ -84,7 +75,7 @@ func selectTransport(ctx context.Context, cfg Config) (mcpsdk.Transport, MCPTran
 		}
 		return newStdioTransport(cfg)
 	case "", TransportAuto:
-		return autoSelect(ctx, cfg)
+		return autoSelect(cfg)
 	default:
 		return nil, "", fmt.Errorf("%w: unknown transport mode %q", ErrInvalidConfig, cfg.TransportMode)
 	}
@@ -107,7 +98,7 @@ func selectTransport(ctx context.Context, cfg Config) (mcpsdk.Transport, MCPTran
 // streamable" produces.
 //
 // Returns the chosen Transport, the chosen mode, and an error.
-func autoSelect(ctx context.Context, cfg Config) (mcpsdk.Transport, MCPTransportMode, error) {
+func autoSelect(cfg Config) (mcpsdk.Transport, MCPTransportMode, error) {
 	if cfg.URL != "" {
 		// In auto-mode with a URL, the streamable-HTTP transport is
 		// the preferred first try; Provider.Connect handles fallback

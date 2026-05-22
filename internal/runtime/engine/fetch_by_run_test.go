@@ -61,7 +61,7 @@ func TestFetchByRun_ConcurrentSameRun_ReturnsErrConcurrentFetchByRun(t *testing.
 	var wg sync.WaitGroup
 	var concurrentCount atomic.Int32
 	var blockedCount atomic.Int32
-	for i := 0; i < N; i++ {
+	for range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -234,7 +234,7 @@ func TestFetchByRun_SerialReuseAfterCompletion(t *testing.T) {
 	defer func() { _ = e.Stop(context.Background()) }()
 
 	id := ident("T", "U", "S")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		env := envFor(id, "R-reuse")
 		env.Payload = i
 		if err := e.Emit(context.Background(), env); err != nil {
@@ -243,7 +243,7 @@ func TestFetchByRun_SerialReuseAfterCompletion(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		got, err := e.FetchByRun(ctx, "R-reuse")
 		if err != nil {
 			t.Fatalf("FetchByRun %d: %v", i, err)

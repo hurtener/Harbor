@@ -109,8 +109,7 @@ func TestApprovalGate_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, N)
 
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -155,7 +154,7 @@ func TestApprovalGate_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 				// the goroutine-leak / cancel half of the alternating
 				// pattern.
 			default:
-				errCh <- fmt.Errorf("g%d unexpected err: %v", i, err)
+				errCh <- fmt.Errorf("g%d unexpected err: %w", i, err)
 			}
 		}()
 	}

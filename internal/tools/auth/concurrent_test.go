@@ -38,8 +38,7 @@ func TestProvider_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	var failed atomic.Bool
 	errCh := make(chan error, N)
 
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -58,7 +57,7 @@ func TestProvider_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 			_, err = h.provider.Token(ctx, h.userCfg.Source)
 			var authErr *ErrAuthRequired
 			if !errors.As(err, &authErr) {
-				errCh <- fmt.Errorf("g%d Token: want *ErrAuthRequired, got %v", i, err)
+				errCh <- fmt.Errorf("g%d Token: want *ErrAuthRequired, got %w", i, err)
 				failed.Store(true)
 				return
 			}
@@ -165,7 +164,7 @@ func TestProvider_ConcurrentReuse_RefreshSingleFlight(t *testing.T) {
 	const N = 32
 	var wg sync.WaitGroup
 	var seenFresh atomic.Int32
-	for i := 0; i < N; i++ {
+	for range N {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

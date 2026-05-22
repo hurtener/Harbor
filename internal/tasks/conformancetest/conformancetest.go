@@ -142,8 +142,8 @@ func Run(t *testing.T, factory Factory) {
 		// Same key, different session IDs → two distinct tasks.
 		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "session-X"}
 		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "session-Y"}
-		ctxXA, _ := identity.With(context.Background(), idA)
-		ctxXB, _ := identity.With(context.Background(), idB)
+		ctxXA := mustWithIdentity(idA)
+		ctxXB := mustWithIdentity(idB)
 
 		reqA := freshSpawnReq(identity.Quadruple{Identity: idA})
 		reqA.IdempotencyKey = "shared-key"
@@ -328,7 +328,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 		// Spawn 3 children, each cascade.
 		var childIDs []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			req := freshSpawnReq(tripleA())
 			parentID := parent.ID
 			req.ParentTaskID = &parentID
@@ -385,7 +385,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 		// 3 children, each cascade. Isolate is on the parent's policy.
 		var childIDs []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			cReq := freshSpawnReq(tripleA())
 			pid := parent.ID
 			cReq.ParentTaskID = &pid
@@ -571,8 +571,8 @@ func Run(t *testing.T, factory Factory) {
 		// Spawn under tenant A.
 		idA := identity.Identity{TenantID: "tenant-A", UserID: "U", SessionID: "S"}
 		idB := identity.Identity{TenantID: "tenant-B", UserID: "U", SessionID: "S"}
-		ctxA, _ := identity.With(context.Background(), idA)
-		ctxB, _ := identity.With(context.Background(), idB)
+		ctxA := mustWithIdentity(idA)
+		ctxB := mustWithIdentity(idB)
 		h, err := r.Spawn(ctxA, freshSpawnReq(identity.Quadruple{Identity: idA}))
 		if err != nil {
 			t.Fatal(err)
@@ -600,8 +600,8 @@ func Run(t *testing.T, factory Factory) {
 		defer cleanup()
 		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "session-1"}
 		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "session-2"}
-		ctxAA, _ := identity.With(context.Background(), idA)
-		ctxBB, _ := identity.With(context.Background(), idB)
+		ctxAA := mustWithIdentity(idA)
+		ctxBB := mustWithIdentity(idB)
 		hA, err := r.Spawn(ctxAA, freshSpawnReq(identity.Quadruple{Identity: idA}))
 		if err != nil {
 			t.Fatal(err)
@@ -637,14 +637,14 @@ func Run(t *testing.T, factory Factory) {
 		// Multiple tasks across two sessions; List filters by session.
 		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-A"}
 		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-B"}
-		ctxAA, _ := identity.With(context.Background(), idA)
-		ctxBB, _ := identity.With(context.Background(), idB)
-		for i := 0; i < 3; i++ {
+		ctxAA := mustWithIdentity(idA)
+		ctxBB := mustWithIdentity(idB)
+		for range 3 {
 			if _, err := r.Spawn(ctxAA, freshSpawnReq(identity.Quadruple{Identity: idA})); err != nil {
 				t.Fatal(err)
 			}
 		}
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			if _, err := r.Spawn(ctxBB, freshSpawnReq(identity.Quadruple{Identity: idB})); err != nil {
 				t.Fatal(err)
 			}
@@ -728,7 +728,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var childIDs []tasks.TaskID
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req := freshSpawnReq(tripleA())
 			pid := parent.ID
 			req.ParentTaskID = &pid
@@ -771,8 +771,7 @@ func Run(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errs atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
 			go func() {
 				defer wg.Done()
 				ident := identity.Identity{
@@ -785,7 +784,7 @@ func Run(t *testing.T, factory Factory) {
 					errs.Add(1)
 					return
 				}
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					req := freshSpawnReq(identity.Quadruple{Identity: ident})
 					h, err := r.Spawn(ctx, req)
 					if err != nil {
@@ -860,7 +859,7 @@ func Run(t *testing.T, factory Factory) {
 		ctx := ctxA()
 		// Spawn a few tasks so any internal goroutines have kicked in
 		// (there are none for inprocess; future drivers may spin pumps).
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			if _, err := r.Spawn(ctx, freshSpawnReq(tripleA())); err != nil {
 				t.Fatal(err)
 			}
@@ -900,6 +899,17 @@ func ctxA() context.Context {
 	ctx, err := identity.With(context.Background(), tripleA().Identity)
 	if err != nil {
 		panic(fmt.Sprintf("ctxA: %v", err))
+	}
+	return ctx
+}
+
+// mustWithIdentity attaches id to a fresh context, panicking if the
+// identity is invalid. Conformance helpers always pass a complete
+// triple, so a failure here is a test-construction bug.
+func mustWithIdentity(id identity.Identity) context.Context {
+	ctx, err := identity.With(context.Background(), id)
+	if err != nil {
+		panic(fmt.Sprintf("mustWithIdentity: %v", err))
 	}
 	return ctx
 }

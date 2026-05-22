@@ -98,7 +98,7 @@ func TestSubsystem_HappyPath_InnerCalledAndPostCalled(t *testing.T) {
 	t.Parallel()
 	var preCount, postCount, postCallErrCount int
 	sub := &fakeSub{
-		preFn:  func(_ context.Context, _ llm.CompleteRequest) error { preCount++; return nil },
+		preFn: func(_ context.Context, _ llm.CompleteRequest) error { preCount++; return nil },
 		postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, err error) error {
 			postCount++
 			if err != nil {
@@ -171,9 +171,18 @@ func TestCompound_ShortCircuitsOnFirstFailure(t *testing.T) {
 func TestCompound_PostCallFansEveryMember(t *testing.T) {
 	t.Parallel()
 	var aPost, bPost, cPost int
-	a := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error { aPost++; return nil }}
-	b := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error { bPost++; return errors.New("b") }}
-	c := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error { cPost++; return nil }}
+	a := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error {
+		aPost++
+		return nil
+	}}
+	b := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error {
+		bPost++
+		return errors.New("b")
+	}}
+	c := &fakeSub{postFn: func(_ context.Context, _ llm.CompleteRequest, _ llm.CompleteResponse, _ error) error {
+		cPost++
+		return nil
+	}}
 	comp := governance.NewCompound(a, b, c)
 	err := comp.PostCall(context.Background(), llm.CompleteRequest{}, llm.CompleteResponse{}, nil)
 	if err == nil {
@@ -260,7 +269,7 @@ func TestWrap_ConcurrentReuse_D025(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t%d", i)
@@ -342,7 +351,7 @@ func TestCompound_ConcurrentReuse_D025(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t%d", i)

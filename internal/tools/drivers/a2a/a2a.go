@@ -159,11 +159,7 @@ func (p *Provider) Discover(_ context.Context) ([]tools.ToolDescriptor, error) {
 	out := make([]tools.ToolDescriptor, 0, len(card.Skills))
 	for i := range card.Skills {
 		skill := card.Skills[i] // copy so the Invoke closure captures stable
-		desc, err := p.buildDescriptor(skill)
-		if err != nil {
-			return nil, fmt.Errorf("tools/a2a.Discover: skill %q: %w", skill.ID, err)
-		}
-		out = append(out, desc)
+		out = append(out, p.buildDescriptor(skill))
 	}
 	return out, nil
 }
@@ -179,7 +175,7 @@ func (p *Provider) Close(_ context.Context) error {
 }
 
 // buildDescriptor materialises one AgentSkill into a Tool/Descriptor.
-func (p *Provider) buildDescriptor(skill a2atypes.AgentSkill) (tools.ToolDescriptor, error) {
+func (p *Provider) buildDescriptor(skill a2atypes.AgentSkill) tools.ToolDescriptor {
 	cfg := tools.ResolveOptions(p.cfg.descOpts...)
 
 	// The catalog edge validates against ArgsSchema; an A2A skill's
@@ -220,7 +216,7 @@ func (p *Provider) buildDescriptor(skill a2atypes.AgentSkill) (tools.ToolDescrip
 		}
 		var probe map[string]any
 		if err := json.Unmarshal(args, &probe); err != nil {
-			return fmt.Errorf("%w: not a JSON object: %v", tools.ErrToolInvalidArgs, err)
+			return fmt.Errorf("%w: not a JSON object: %w", tools.ErrToolInvalidArgs, err)
 		}
 		return nil
 	}
@@ -240,7 +236,7 @@ func (p *Provider) buildDescriptor(skill a2atypes.AgentSkill) (tools.ToolDescrip
 			)
 		},
 	}
-	return descriptor, nil
+	return descriptor
 }
 
 // invoke is the inner-most call: build the A2A Message, dispatch via
@@ -255,7 +251,7 @@ func (p *Provider) invoke(ctx context.Context, skillID string, args json.RawMess
 	var argVal any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argVal); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: %v", tools.ErrToolInvalidArgs, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	msg := a2atypes.Message{
@@ -269,7 +265,7 @@ func (p *Provider) invoke(ctx context.Context, skillID string, args json.RawMess
 		Metadata: map[string]any{
 			"skill_id": skillID,
 			"tenant":   id.TenantID,
-			"user":    id.UserID,
+			"user":     id.UserID,
 		},
 	}
 	req := distributed.RemoteCallRequest{

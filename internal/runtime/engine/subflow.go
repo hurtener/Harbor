@@ -73,7 +73,7 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 		deregister = nctx.engine.onRunCancelled(parentEnv.RunID, func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer ccancel()
-			_, _ = child.Cancel(cctx, parentEnv.RunID)
+			_, _ = child.Cancel(cctx, parentEnv.RunID) //nolint:errcheck // best-effort cancel mirror; parent Cancel must not stall
 			cancelChild()
 		})
 	}
@@ -105,5 +105,5 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 func stopChildBestEffort(child Engine) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = child.Stop(stopCtx)
+	_ = child.Stop(stopCtx) //nolint:errcheck // best-effort Stop; child goroutines GC at process exit (see doc above)
 }

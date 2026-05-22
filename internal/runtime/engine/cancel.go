@@ -182,7 +182,7 @@ func (e *engine) Cancel(ctx context.Context, runID string) (bool, error) {
 	// the lock; fire outside so a slow child.Cancel can't stall us.
 	for _, obs := range e.snapshotCancelObservers(runID) {
 		func() {
-			defer func() { _ = recover() }()
+			defer func() { _ = recover() }() //nolint:errcheck // swallow observer panic; recovered value not needed
 			obs.fn()
 		}()
 		wasActive = true
@@ -219,7 +219,7 @@ func (e *engine) onRunCancelled(runID string, fn func()) (deregister func()) {
 	e.cancelMu.Unlock()
 	if alreadyCancelled {
 		func() {
-			defer func() { _ = recover() }()
+			defer func() { _ = recover() }() //nolint:errcheck // swallow observer panic; recovered value not needed
 			obs.fn()
 		}()
 	}
@@ -390,7 +390,7 @@ func (e *engine) publishRunCancelled(ctx context.Context, runID string, rc *runC
 	if e.cfg.runCancelledHandler == nil {
 		return
 	}
-	defer func() { _ = recover() }() // bus errors must not block Cancel
+	defer func() { _ = recover() }() //nolint:errcheck // bus errors must not block Cancel; recovered value not needed
 	e.cfg.runCancelledHandler(ctx, RunCancelledNotice{
 		RunID:                runID,
 		CancelledAt:          rc.cancelledAt,

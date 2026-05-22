@@ -127,15 +127,10 @@ func TestRoutePolicy_Overrides_Predicate(t *testing.T) {
 	// MetaKey constant so future engine-level RoutePolicy honoring is
 	// a one-line consumer add.
 	override := engine.NodeRef{Name: "override"}
-	env := messages.Envelope{
-		Payload:   tagA{},
-		Headers:   messages.Headers{TenantID: "T", UserID: "U"},
-		SessionID: "S", RunID: "R",
-		Meta: map[string]any{
-			routers.MetaKeyRoutePolicy: routers.RoutePolicy{ExplicitTarget: &override},
-		},
+	meta := map[string]any{
+		routers.MetaKeyRoutePolicy: routers.RoutePolicy{ExplicitTarget: &override},
 	}
-	rp, ok := routers.FromMeta(env.Meta)
+	rp, ok := routers.FromMeta(meta)
 	if !ok {
 		t.Fatalf("RoutePolicy missing on input")
 	}
