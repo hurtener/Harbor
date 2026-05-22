@@ -121,7 +121,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Shipped  |
 | 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Shipped  |
 | 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Shipped  |
-| 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Pending  |
+| 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Shipped  |
 | 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Pending  |
 | 83 | Auto-sequence detection (planner opt.)        | planner              | §12         | 45                    | n/a  | Post-V1  |
 | 83a| ReAct prompt structured sections              | planner/react        | §6.2        | 45                    | 85%  | Pending  |
@@ -982,6 +982,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** `git tag v1.0.0-rc.1` produces a release artifact; CHANGELOG covers all V1 phases.
 **Tests.** Release dry-run.
 **Deps.** All V1 phases.
+**Status.** Shipped (D-139 — the product release version is stamped into the `harbor` binary at link time: `cmd/harbor.HarborVersion` becomes a `var` (a `const` cannot be `-ldflags -X` overridden), and `scripts/release-build.sh` — the single home of the build incantation — stamps it via `go build -ldflags="-s -w -X 'main.HarborVersion=…'"` from a `git describe --tags`-derived version, falling back to the `v0.0.0-dev` sentinel for an un-tagged build. The product release version is kept STRICTLY distinct from the Harbor Protocol version (`internal/protocol/types.ProtocolVersion`, RFC §5.3) — `harbor version` already prints both as separate fields; the two are versioned independently. `CHANGELOG.md` lands at the repo root in Keep-a-Changelog format, grouped by delivery wave / subsystem, covering every V1 phase (01–81 + the lettered phases). `.github/workflows/release.yml` triggers on a `v*` tag push — builds the CGo-free static binary, emits a SHA-256 checksum, attaches SLSA-style build provenance via GitHub's native `actions/attest-build-provenance` (the master-plan stretch — landed, not deferred, because the first-party action adds no framework dependency), and publishes a GitHub Release; a `workflow_dispatch` path runs the dry-run. `scripts/release-dryrun.sh` (the `make release-dryrun` target) is the master-plan "release dry-run" test — it exercises the exact release-build path with a synthetic version and asserts the artifact + checksum + version stamp, all without pushing a tag. Phase 81 creates NO `v*` tag — tagging is the operator's job in Phase 82. Phase plan `phase-81-release-engineering.md`.)
 
 ### 82 — V1 cut (RFC §1, §12)
 

@@ -21,11 +21,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// HarborVersion is the binary's own semver. Pinned at "v0.0.0-dev" at
-// Phase 63; a later release-engineering phase (likely Phase 78) injects
-// a real semver via `-ldflags`. The CLI surface is forward-compatible —
-// `harbor version` always prints the value of this constant.
-const HarborVersion = "v0.0.0-dev"
+// HarborVersion is the harbor binary's product release version — its
+// own semver, distinct from the Harbor Protocol version
+// (`internal/protocol/types.ProtocolVersion`, RFC §5.3): the release
+// version tracks the shipped binary, the Protocol version tracks the
+// Runtime↔Console wire contract, and the two move independently.
+//
+// It is a `var`, not a `const`, so the Phase 81 release build can
+// stamp the real git-derived semver into it at link time via
+//
+//	go build -ldflags="-X 'main.HarborVersion=v1.0.0-rc.1'"
+//
+// An un-stamped build (`go build`, `go run`, `go test`, a plain
+// `make build` on a working tree) keeps the "v0.0.0-dev" default — the
+// load-bearing operator signal that "this is not a release artifact",
+// the same sentinel discipline `buildHash()` follows (CLAUDE.md §5
+// "fail loudly"). The release workflow's version stamp comes from
+// `git describe --tags`; `scripts/release-build.sh` is the single
+// home of the stamping logic (Phase 81 / D-139). The CLI surface is
+// forward-compatible — `harbor version` always prints whatever value
+// this variable carries.
+var HarborVersion = "v0.0.0-dev"
 
 // flagJSON is the global `--json` flag name; declared as a constant so
 // subcommands and tests reference one canonical spelling.
