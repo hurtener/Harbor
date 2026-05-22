@@ -873,21 +873,62 @@ func TestNext_AwaitTaskMalformedJSONFailsLoudly(t *testing.T) {
 	}
 }
 
+// promptCapturingClient records the most recent CompleteRequest the
+// planner built so a test can assert on the rendered system prompt.
+// The scripted `_finish` response keeps the planner's Next call on a
+// terminal path.
+type promptCapturingClient struct {
+	lastReq atomic.Pointer[llm.CompleteRequest]
+}
+
+func (c *promptCapturingClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	r := req
+	c.lastReq.Store(&r)
+	return llm.CompleteResponse{Content: `{"tool":"_finish","args":{"answer":"done"}}`}, nil
+}
+
+func (c *promptCapturingClient) Close(_ context.Context) error { return nil }
+
+// systemPromptText returns the rendered system message of the last
+// captured request, or "" when no request was captured.
+func (c *promptCapturingClient) systemPromptText() string {
+	req := c.lastReq.Load()
+	if req == nil || len(req.Messages) == 0 {
+		return ""
+	}
+	if req.Messages[0].Content.Text == nil {
+		return ""
+	}
+	return *req.Messages[0].Content.Text
+}
+
 // TestDefaultSystemPrompt_DocumentsAllThreeReservedNames asserts the
-// system prompt documents `_finish`, `_spawn_task`, `_await_task` so
-// the LLM can emit them without prompt-engineering at the call site.
-// The string-grep is intentionally brittle — drift in the prompt
-// surfaces here at test time.
+// rendered default system prompt documents `_finish`, `_spawn_task`,
+// `_await_task` so the LLM can emit them without prompt-engineering at
+// the call site. Phase 83a (brief 13 §2.1) made the default prompt a
+// rendered twelve-section structure; the reserved names live in the
+// `<action_schema>` section. The string-grep is intentionally brittle
+// — drift in the prompt surfaces here at test time.
 func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
 	t.Parallel()
-	if !strings.Contains(react.DefaultSystemPrompt, "_finish") {
-		t.Errorf("DefaultSystemPrompt missing _finish (D-056 reserved names)")
+	client := &promptCapturingClient{}
+	p := react.New(client)
+	ctx, err := identity.WithRun(context.Background(),
+		identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}, "run-1")
+	if err != nil {
+		t.Fatalf("identity.WithRun: %v", err)
 	}
-	if !strings.Contains(react.DefaultSystemPrompt, "_spawn_task") {
-		t.Errorf("DefaultSystemPrompt missing _spawn_task (D-056 reserved names)")
+	if _, err := p.Next(ctx, planner.RunContext{
+		Quadruple: fixedQuadruple(t, "run-1"),
+		Goal:      "g",
+	}); err != nil {
+		t.Fatalf("Next: %v", err)
 	}
-	if !strings.Contains(react.DefaultSystemPrompt, "_await_task") {
-		t.Errorf("DefaultSystemPrompt missing _await_task (D-056 reserved names)")
+	body := client.systemPromptText()
+	for _, name := range []string{"_finish", "_spawn_task", "_await_task"} {
+		if !strings.Contains(body, name) {
+			t.Errorf("rendered default prompt missing %s (D-056 reserved names)", name)
+		}
 	}
 }
 

@@ -37,5 +37,8 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.MaxSteps > 0 {
 		opts = append(opts, WithMaxSteps(cfg.MaxSteps))
 	}
+	if cfg.ExtraGuidance != "" {
+		opts = append(opts, WithSystemPromptExtra(cfg.ExtraGuidance))
+	}
 	return New(deps.LLM, opts...), nil
 }

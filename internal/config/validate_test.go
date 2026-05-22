@@ -1177,6 +1177,22 @@ func TestValidate_Planner_AcceptsPositiveMaxSteps(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_AcceptsExtraGuidance pins the Phase 83a
+// `planner.extra_guidance` key (RFC §6.2). The validator imposes no
+// rule beyond "string" — operator copy is operator copy — so an
+// arbitrary non-empty value must validate.
+func TestValidate_Planner_AcceptsExtraGuidance(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{
+		Driver:        "react",
+		ExtraGuidance: "Always answer in formal English; cite sources.",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.extra_guidance set): %v", err)
+	}
+}
+
 // mustLoadValid loads the canonical valid fixture and returns a
 // mutable copy callers can break in subtests.
 func mustLoadValid(t *testing.T) *config.Config {

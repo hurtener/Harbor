@@ -1518,9 +1518,10 @@ func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
 		}
 	}
 	return planner.PlannerConfig{
-		Driver:   driver,
-		MaxSteps: cfg.MaxSteps,
-		Extra:    extra,
+		Driver:        driver,
+		MaxSteps:      cfg.MaxSteps,
+		ExtraGuidance: cfg.ExtraGuidance,
+		Extra:         extra,
 	}
 }
 

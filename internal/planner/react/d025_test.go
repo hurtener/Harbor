@@ -229,6 +229,97 @@ func TestReactPlanner_CancellationDoesNotCrossTalk(t *testing.T) {
 	}
 }
 
+// TestReactPlanner_ConcurrentReuse_StructuredPromptBuilder_D025 is the
+// Phase 83a concurrent-reuse gate for the structured twelve-section
+// prompt builder. The builder is a compiled artifact (no mutable
+// state; `extraGuidance` is set once at construction). N≥100
+// concurrent Next calls against ONE shared *ReActPlanner constructed
+// with WithSystemPromptExtra must pass under -race: no data races, no
+// context bleed, no goroutine leak.
+//
+// N=128 (above the D-025 floor of 100).
+func TestReactPlanner_ConcurrentReuse_StructuredPromptBuilder_D025(t *testing.T) {
+	const N = 128
+
+	runtime.GC()
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	// ONE shared planner with operator-supplied <additional_guidance>.
+	shared := react.New(&sharedClient{},
+		react.WithSystemPromptExtra("domain rule: always cite sources"))
+
+	var (
+		wg         sync.WaitGroup
+		bleedFails int64
+		shapeFails int64
+		errFails   int64
+	)
+
+	wg.Add(N)
+	for i := range N {
+		go func() {
+			defer wg.Done()
+
+			runID := fmt.Sprintf("run-%04d", i)
+			q := identity.Quadruple{
+				Identity: identity.Identity{
+					TenantID:  fmt.Sprintf("tenant-%d", i%8),
+					UserID:    fmt.Sprintf("user-%d", i),
+					SessionID: fmt.Sprintf("session-%d", i),
+				},
+				RunID: runID,
+			}
+			ctx, err := identity.WithRun(context.Background(), q.Identity, runID)
+			if err != nil {
+				atomic.AddInt64(&errFails, 1)
+				return
+			}
+
+			rc := planner.RunContext{
+				Quadruple: q,
+				Goal:      "d025-structured-prompt",
+			}
+			dec, callErr := shared.Next(ctx, rc)
+			if callErr != nil {
+				atomic.AddInt64(&errFails, 1)
+				return
+			}
+			fin, ok := dec.(planner.Finish)
+			if !ok || fin.Reason != planner.FinishGoal {
+				atomic.AddInt64(&shapeFails, 1)
+				return
+			}
+			if answer, _ := fin.Payload.(string); answer != runID {
+				atomic.AddInt64(&bleedFails, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if errFails != 0 {
+		t.Errorf("D-025: %d concurrent Next calls returned unexpected errors", errFails)
+	}
+	if shapeFails != 0 {
+		t.Errorf("D-025: %d concurrent Next calls returned non-Finish-FinishGoal decisions", shapeFails)
+	}
+	if bleedFails != 0 {
+		t.Errorf("D-025 identity bleed: %d calls saw another goroutine's RunID", bleedFails)
+	}
+
+	runtime.GC()
+	runtime.GC()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	final := runtime.NumGoroutine()
+	for final > baseline+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		final = runtime.NumGoroutine()
+	}
+	if final > baseline+2 {
+		t.Errorf("D-025 goroutine leak: baseline=%d final=%d (delta=%d)", baseline, final, final-baseline)
+	}
+}
+
 // TestReactPlanner_SharedAcrossIsolatedSessions asserts that one
 // planner instance produces decisions whose terminal payloads track
 // per-call identity exactly (D-025 isolation guarantee). The test

@@ -340,9 +340,21 @@ memory:
 # (the default) means "use the driver's internal default" —
 # `react.DefaultMaxSteps` (12) for the V1 reference driver. Raise for
 # longer trajectories; lower to fail fast in tests.
+#
+# `extra_guidance` (Phase 83a, RFC §6.2) is operator-supplied
+# domain-specific guidance injected verbatim into the rendered ReAct
+# system prompt's `<additional_guidance>` section — voice/tone rules,
+# domain interpretation hints, when-to-use-which-tool steering. Omit
+# the key (the default) and the section is left out of the prompt
+# entirely. The validator imposes no rule beyond "string"; the
+# operator owns the content. Only the `react` driver consumes it.
 planner:
   driver: react
   # max_steps: 12
+  # extra_guidance: |
+  #   Answer in formal English. When the answer is tabular data,
+  #   call render_table before finishing and reference the artifact
+  #   in your final answer.
 
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`
