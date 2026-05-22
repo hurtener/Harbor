@@ -53,7 +53,7 @@ jobs:
         run: make build
 
   lint:
-    name: golangci-lint (revive doc-hygiene gate)
+    name: golangci-lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,28 +61,25 @@ jobs:
         with:
           go-version: '1.26'
           check-latest: true
-      # Phase 80 (D-138): install golangci-lint so the lint gate
-      # actually RUNS. Before Phase 80 the binary was never installed
-      # in CI, so `make lint`'s `command -v` guard silently skipped —
-      # the `revive` `exported` / `package-comments` documentation-
-      # hygiene gate was unenforced. golangci-lint is installed via
-      # `go install` (NOT a prebuilt release download): the prebuilt
-      # v1.64.8 release binary is built with go1.24, and golangci-lint
-      # refuses to load a config whose target Go (1.26) is newer than
-      # its own build-Go. `go install` compiles it here with the
-      # runner's go1.26 toolchain, so build-Go == target-Go.
+      # Install golangci-lint so the lint gate actually RUNS — before
+      # Phase 80 the binary was never installed in CI, so `make lint`'s
+      # `command -v` guard silently skipped and the gate was a no-op.
+      # Installed via `go install` (NOT a prebuilt release download):
+      # the prebuilt v1.64.8 release binary is built with go1.24, and
+      # golangci-lint refuses to load a config whose target Go (1.26)
+      # is newer than its own build-Go. `go install` compiles it here
+      # with the runner's go1.26 toolchain, so build-Go == target-Go.
       - name: Install golangci-lint
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # `make lint-revive` runs ONLY the `revive` linter via
-      # .golangci-revive.yml — the narrow, binding Phase 80 acceptance
-      # gate (`exported` + `package-comments` clean). The full `make
-      # lint` (all linters) carries a pre-existing backlog predating
-      # enforcement; clearing it is a separate release-hardening
-      # effort, not this documentation phase.
-      - name: Run revive doc-hygiene gate
-        run: make lint-revive
+      # The full golangci-lint gate (every linter in .golangci.yml,
+      # including the `revive` doc-hygiene rules). The Wave 14 lint
+      # hardening (D-141) cleared the backlog to zero and flipped this
+      # job from the interim `make lint-revive` (revive-only) to the
+      # full `make lint`, closing issue #190.
+      - name: Run golangci-lint
+        run: make lint
 
   examples:
     name: examples build + test
