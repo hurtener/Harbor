@@ -117,7 +117,67 @@ type toolRenderConfig struct {
 }
 
 // Build implements [PromptBuilder].
+//
+// Build cannot return an error (the [PromptBuilder] interface is fixed
+// — D-146 keeps the signature). Memory / skills injection
+// (Phase 83d) CAN fail loudly when a `RunContext.MemoryBlocks` tier or
+// a `SkillsContext` entry is not JSON-serialisable. The ReAct planner
+// therefore drives the default builder via [defaultBuilder.buildRequest]
+// — the error-returning worker — and surfaces
+// [planner.ErrMemoryBlockUnserializable] from `Next`. This `Build`
+// method exists for the [PromptBuilder] contract and for operator-
+// supplied builders that wrap the default; when a memory tier is
+// unserialisable it returns a request WITHOUT the offending injection
+// rather than silently corrupting the prompt — but the planner never
+// reaches this path because it calls `buildRequest` directly and
+// aborts on the error first.
 func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
+	req, err := b.buildRequest(rc, systemPrompt)
+	if err != nil {
+		// Unreachable via ReActPlanner.Next (it calls buildRequest and
+		// aborts on error). Reachable only if an operator calls Build
+		// directly with an unserialisable MemoryBlocks. Render the
+		// base prompt minus the broken injection — the planner-side
+		// path is the fail-loud one; this is the interface-contract
+		// fallback for the rare direct caller.
+		return b.baseRequest(rc, systemPrompt)
+	}
+	return req
+}
+
+// buildRequest is the error-returning worker behind [Build]. The ReAct
+// planner calls it directly so memory / skills serialisation failures
+// surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
+// (D-146 — fail-loud, never a silently dropped memory tier).
+func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
+	req := b.baseRequest(rc, systemPrompt)
+
+	// Phase 83d (D-146): memory + skills injection. The wrappers are
+	// emitted as SEPARATE system-role messages immediately after the
+	// base twelve-section system message — NOT concatenated into it —
+	// so Console traces and debugging tools can isolate each tier.
+	// Order: external memory → conversation memory → skills_context.
+	injection, err := renderInjectionMessages(rc)
+	if err != nil {
+		return llm.CompleteRequest{}, err
+	}
+	if len(injection) > 0 {
+		// Splice the injection messages between the base system
+		// message (index 0) and the user / trajectory messages.
+		spliced := make([]llm.ChatMessage, 0, len(req.Messages)+len(injection))
+		spliced = append(spliced, req.Messages[0])
+		spliced = append(spliced, injection...)
+		spliced = append(spliced, req.Messages[1:]...)
+		req.Messages = spliced
+	}
+	return req, nil
+}
+
+// baseRequest builds the request WITHOUT the Phase 83d memory / skills
+// injection — the twelve-section system message, the user block, and
+// the trajectory replay. [buildRequest] splices the injection messages
+// in afterwards.
+func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {
 	if systemPrompt == "" {
 		systemPrompt = DefaultSystemPrompt
 	}
