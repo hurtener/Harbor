@@ -46,7 +46,18 @@ linters-settings:
   revive:
     severity: warning
     rules:
+      # Phase 80 (D-138): `exported` enforces a godoc comment on every
+      # exported identifier — the binding documentation-hygiene gate.
+      # `disableStutteringCheck` switches OFF revive's secondary
+      # naming-opinion sub-check ("type name X stutters as pkg.X").
+      # Acting on the stutter sub-check would require renaming ~20
+      # exported types across package boundaries — explicitly out of
+      # scope for a documentation phase and a wide API-churn risk.
+      # The godoc-presence enforcement (the actual Phase 80 mandate)
+      # stays fully on.
       - name: exported
+        arguments:
+          - disableStutteringCheck
       - name: package-comments
       - name: var-naming
       - name: unused-parameter
@@ -62,3 +73,14 @@ issues:
         - errcheck
         - gosec
         - prealloc
+    # Phase 80 (D-138): the A2A wire types are hand-transcribed
+    # verbatim from the A2A v1 protobuf (CLAUDE.md §3 — "A2A v1 Go
+    # shapes, hand-transcribed from proto"). The proto message names
+    # `OpenIdConnectSecurityScheme` / `MutualTlsSecurityScheme` keep
+    # the proto's non-Go initialism casing on purpose so the Go shapes
+    # stay a 1:1 transcription of the wire spec; `var-naming` would
+    # have us rename them and break that correspondence.
+    - path: internal/distributed/a2a/types\.go
+      linters:
+        - revive
+      text: var-naming

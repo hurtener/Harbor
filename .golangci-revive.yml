@@ -1,0 +1,57 @@
+# .golangci-revive.yml — the Phase 80 (D-138) documentation-hygiene
+# lint gate. It runs ONLY the `revive` linter:
+#
+#   - `exported`        — every exported identifier carries a godoc
+#                         comment. `disableStutteringCheck` switches
+#                         OFF revive's secondary naming-opinion
+#                         sub-check ("type name X stutters as pkg.X");
+#                         acting on it would mean renaming ~20
+#                         exported types across package boundaries,
+#                         out of scope for a documentation phase.
+#   - `package-comments`— every package carries a package-level doc
+#                         comment, correctly attached.
+#   - `var-naming`      — Go initialism casing on identifiers.
+#
+# This is the narrow, binding acceptance gate the master plan names
+# for Phase 80 ("`golangci-lint`'s `revive exported` and
+# `package-comments` clean"). The repo-wide `.golangci.yml` (all
+# linters) carries a pre-existing backlog that predates lint
+# enforcement; clearing it is a separate release-hardening effort.
+#
+# `make lint-revive` runs this; the CI `lint` job runs `make
+# lint-revive`. Keeping the `revive` block here in sync with the
+# `linters-settings.revive` block in `.golangci.yml` is intentional —
+# both files must agree on the rule arguments.
+run:
+  timeout: 5m
+  go: "1.26"
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - revive
+
+linters-settings:
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        arguments:
+          - disableStutteringCheck
+      - name: package-comments
+      - name: var-naming
+      - name: unused-parameter
+        disabled: true
+
+issues:
+  exclude-rules:
+    # The A2A wire types are hand-transcribed verbatim from the A2A v1
+    # protobuf (CLAUDE.md §3 — "A2A v1 Go shapes, hand-transcribed
+    # from proto"). The proto message names keep their non-Go
+    # initialism casing on purpose so the Go shapes stay a 1:1
+    # transcription of the wire spec.
+    - path: internal/distributed/a2a/types\.go
+      linters:
+        - revive
+      text: var-naming

@@ -1,5 +1,6 @@
-// Package telemetry's tracing surface (Phase 55) adds OpenTelemetry
-// spans on top of the Phase 04 Logger.
+// tracing.go — the telemetry package's tracing surface (Phase 55).
+// It adds OpenTelemetry spans on top of the Phase 04 Logger. The
+// canonical package doc comment is in logger.go.
 //
 // The load-bearing decision: spans are a DERIVATION of the event bus,
 // not a parallel instrumentation path. Subsystems emit events.Event
@@ -18,6 +19,7 @@
 // (default — no collector configured) and the otlp driver (OTLP/gRPC,
 // opt-in via TelemetryConfig.OTelEndpoint) self-register from their
 // init(); the factory below dispatches by name.
+
 package telemetry
 
 import (

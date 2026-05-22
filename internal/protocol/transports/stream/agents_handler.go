@@ -31,7 +31,6 @@
 // triple fails closed with CodeIdentityRequired (401). `agent_id` is a
 // registration identity, not an isolation filter — the runtime scopes
 // by the tuple, never by `agent_id` (D-059, CLAUDE.md §6).
-
 package stream
 
 import (

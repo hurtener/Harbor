@@ -1,5 +1,6 @@
-// Package telemetry's metrics surface (Phase 56) adds OpenTelemetry
-// metrics on top of the Phase 04 Logger and the Phase 55 Tracer.
+// metrics.go — the telemetry package's metrics surface (Phase 56).
+// It adds OpenTelemetry metrics on top of the Phase 04 Logger and the
+// Phase 55 Tracer. The canonical package doc comment is in logger.go.
 //
 // The load-bearing decision — the same one Phase 55 applied to spans —
 // is that metrics are a DERIVATION of the event bus, not a parallel
@@ -40,6 +41,7 @@
 // the factory below dispatches by name. NewMetricsRegistry does NOT
 // touch any OTel global — it builds a private MeterProvider and the
 // registry is passed explicitly, never via otel.SetMeterProvider.
+
 package telemetry
 
 import (

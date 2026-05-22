@@ -74,8 +74,6 @@ type LLMClient interface {
 // `safetyClient` so the safety pass is mandatory by construction.
 //
 // Driver authors implement this; callers consume `LLMClient`.
-//
-//nolint:revive // intentional naming — "Driver" parallels memory/state/artifact drivers.
 type Driver interface {
 	// Complete receives a `CompleteRequest` whose messages have
 	// ALREADY passed the safety net (`enforceContextSafety`): no raw
@@ -171,6 +169,7 @@ type CompleteResponse struct {
 // tool result can label it for clarity).
 type Role string
 
+// The Role values for a chat message.
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
@@ -203,6 +202,7 @@ type Content struct {
 // PartType discriminates a `ContentPart`.
 type PartType string
 
+// The PartType values, one per multimodal content shape.
 const (
 	PartText  PartType = "text"
 	PartImage PartType = "image"
@@ -291,6 +291,8 @@ type ResponseFormat struct {
 // string means "use provider default" (DO NOT touch the request).
 type ReasoningEffort string
 
+// The ReasoningEffort levels, ascending. The empty string (not listed
+// here) means "use the provider default".
 const (
 	ReasoningOff    ReasoningEffort = "off"
 	ReasoningLow    ReasoningEffort = "low"

@@ -120,7 +120,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 77 | Goroutine leak conformance harness            | testing              | §5(Go)      | 10, 13, 50            | n/a  | Shipped  |
 | 78 | Chaos / fault injection harness               | testing              | n/a         | 76, 77                | n/a  | Shipped  |
 | 79 | Performance benchmarks                        | testing              | n/a         | 10, 12, 05            | n/a  | Shipped  |
-| 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Pending  |
+| 80 | Documentation hygiene polish (godoc, recipes) | docs                 | §2          | all V1                | n/a  | Shipped  |
 | 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Pending  |
 | 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Pending  |
 | 83 | Auto-sequence detection (planner opt.)        | planner              | §12         | 45                    | n/a  | Post-V1  |
@@ -974,6 +974,7 @@ The §13 entry **"Test stubs as production defaults on operator-facing seams"** 
 **Acceptance.** `golangci-lint`'s `revive exported` and `package-comments` clean; `examples/` builds end-to-end.
 **Tests.** Lint + example builds in CI.
 **Deps.** All V1 phases.
+**Status.** Shipped (D-138 — the `revive` `exported` / `package-comments` documentation lint gate is now ENFORCED in CI: the `lint` job installs `golangci-lint v1.64.8` and runs `make lint-revive`, which uses the dedicated `.golangci-revive.yml` config — previously `make lint` silently skipped because the binary was never installed. The `exported` rule keeps godoc-presence enforcement but gains `disableStutteringCheck` so the ~20 cross-package type renames the stutter sub-check would force stay out of a docs phase; the genuine doc gaps the rule surfaced — eight detached package comments, two malformed package comments, a handful of un-commented `const`/`var` blocks — are all fixed. `examples/` gains worked, buildable code — `examples/agents/echo/` (a `harbortest.Agent` + test) and `examples/tools/weather/` (an `inproc.RegisterFunc` tool + register→resolve→invoke test) — exercised by a new CI `examples` job. `docs/recipes/` ships five real-API-grounded how-to guides. The broader `make lint` backlog (~1000 issues across ~20 linters, accumulated while the gate silently skipped) is deliberately left to a separate release-hardening effort. Phase plan `phase-80-documentation-hygiene-polish.md`).
 
 ### 81 — Release engineering (versioning, changelog) (RFC §12)
 

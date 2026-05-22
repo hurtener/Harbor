@@ -64,6 +64,7 @@ const (
 // caller knows the write is idempotent).
 type SideEffect string
 
+// The SideEffect classes, ordered from safest to most consequential.
 const (
 	SideEffectPure     SideEffect = "pure"
 	SideEffectRead     SideEffect = "read"
@@ -77,6 +78,7 @@ const (
 // Deferred tools are loaded on demand (lazy resolution).
 type LoadingMode string
 
+// The LoadingMode values.
 const (
 	LoadingAlways   LoadingMode = "always"
 	LoadingDeferred LoadingMode = "deferred"

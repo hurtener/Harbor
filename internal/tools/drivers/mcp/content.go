@@ -79,6 +79,7 @@ type ContentPart struct {
 // ContentKind discriminates a ContentPart.
 type ContentKind string
 
+// The ContentKind values, one per MCP content-part shape.
 const (
 	ContentKindImage    ContentKind = "image"
 	ContentKindAudio    ContentKind = "audio"
