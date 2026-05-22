@@ -395,3 +395,25 @@ jobs:
           check-latest: true
       - name: Run the goroutine-leak conformance harness (-race)
         run: go test -race -count=1 -timeout 300s -run TestE2E_Phase77_GoroutineLeakConformance ./test/integration/...
+
+  # Phase 78 (RFC §6.1, §6.5, §6.11, §6.13, §3.4) — the chaos /
+  # fault-injection harness. Runs the table-driven
+  # `TestE2E_Phase78_ChaosFaultInjection` suite under `-race` on every
+  # PR: each of the five master-plan failure modes (kill mid-run, drop
+  # messages, provider quirks, StateStore disconnect, pause-deserialize
+  # failure) is injected against the real Runtime component and the
+  # documented loud error/event + recovery path is asserted. A fault
+  # that is silently swallowed is a real bug. The suite also runs
+  # inside the `go` job's `make test`; this dedicated job isolates the
+  # chaos gate so a failure names the harness directly.
+  chaos:
+    name: chaos / fault-injection harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - name: Run the chaos / fault-injection harness (-race)
+        run: go test -race -count=1 -timeout 300s -run TestE2E_Phase78_ChaosFaultInjection ./test/integration/...
