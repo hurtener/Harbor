@@ -124,7 +124,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 81 | Release engineering (versioning, changelog)   | release              | §12         | all V1                | n/a  | Shipped  |
 | 82 | V1 cut                                        | release              | §1, §12     | 81                    | n/a  | Shipped  |
 | 83 | Auto-sequence detection (planner opt.)        | planner              | §12         | 45                    | n/a  | Post-V1  |
-| 83a| ReAct prompt structured sections              | planner/react        | §6.2        | 45                    | 85%  | Pending  |
+| 83a| ReAct prompt structured sections              | planner/react        | §6.2        | 45                    | 85%  | Shipped  |
 | 83b| ReAct tool schema injection (catalog rendering)| planner/react       | §6.2, §6.4  | 83a, 26               | 85%  | Pending  |
 | 83c| ReAct dynamic repair guidance + planning hints | planner/react       | §6.2        | 83a, 44, 05           | 85%  | Pending  |
 | 83d| ReAct skills + memory injection (UNTRUSTED)   | planner/react        | §6.2, §6.6  | 83a, 23, 37           | 85%  | Pending  |

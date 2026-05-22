@@ -3425,3 +3425,28 @@ The `v1.0.0` git tag is operator-run from `main` after this PR merges and `main`
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — Phase 82 is the release cut. No Protocol method, error code, wire type, runtime behaviour, or CLI subcommand changes.
+
+---
+
+## D-143 — The ReAct system prompt is twelve XML-tagged structured sections; no `reasoning` field, no rich-output fields
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83a — the foundation phase of the 83-band)
+
+**Where it lives:** `internal/planner/react/prompt.go` (`defaultBuilder.buildSystemContent` + the twelve section constants); `internal/planner/react/react.go` (`DefaultSystemPrompt` sentinel + `WithSystemPromptExtra` Option); `internal/planner/react/testdata/golden_default_prompt.txt` (the normative fixture); `internal/config/config.go` (`PlannerConfig.ExtraGuidance`).
+
+**Decision.** Phase 83a replaces the ReAct planner's flat one-string `DefaultSystemPrompt` (Phase 45/47) with the twelve XML-tagged sections inventoried in brief 13 §2.1 — `<identity>`, `<output_format>`, `<action_schema>`, `<finishing>`, `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`, `<error_handling>`, `<available_tools>`, `<additional_guidance>`, `<planning_constraints>` — assembled in that fixed order, separated by `\n\n`. Four calls are settled here.
+
+**1. The twelve sections are the section anchors the rest of the 83-band builds on.** XML tags make each section individually editable (brief 13 §2.1). Phase 83b replaces the `<available_tools>` body with per-tool `args_schema` + curated examples; 83c populates `<planning_constraints>` from `RunContext.PlanningHints` and merges per-turn repair guidance; 83d injects `<read_only_*_memory>` UNTRUSTED-framed blocks. Each is a localised edit against an established anchor, not a structural rewrite. The two optional sections (`<additional_guidance>`, `<planning_constraints>`) are omitted entirely — never emitted as empty tag pairs — when their content is absent.
+
+**2. The action JSON drops the `reasoning` field; the `<tone>` CRITICAL clamp is ported verbatim.** Per brief 13 §2.6 (2026-05-19 revision), reasoning is captured from the provider's reasoning channel (Phase 83e) and persisted on the trajectory step — never required in the model's structured output. The rendered `<action_schema>` example is `{tool, args}` only; the trajectory replay renderer echoes `{tool, args}` only; `<tone>` carries the two CRITICAL lines instructing the model not to emit a `thought` / `reasoning` field. Phase 83a is the prompt-side alignment; Phase 83e narrows the runtime-side Decision sum.
+
+**3. Rich output is dropped from Harbor entirely — not reserved, not deferred.** The `<finishing>` block carries only `args.answer` (plain text). No `confidence` / `route` / `requires_followup` / `warnings` finish-args fields; `<error_handling>` guides clarification via `args.answer`, not a `requires_followup` flag. Rich UI is delivered through MCP-Apps tools the planner invokes (brief 13 §5), never through a typed finish-payload.
+
+**4. `DefaultSystemPrompt` becomes a routing sentinel; operators inject guidance without forking the builder.** The old single-string constant is removed (not renamed to a dangling `legacyDefaultSystemPrompt` — the golden fixture is the normative spec, a legacy constant would be dead code per CLAUDE.md §13). `DefaultSystemPrompt` is now a stable non-empty sentinel string the builder compares against to choose the structured layout vs. honouring a verbatim `WithSystemPrompt` override. The new `WithSystemPromptExtra(s string)` Option and the new `planner.extra_guidance` config key flow operator-supplied domain guidance into `<additional_guidance>` without writing Go.
+
+**Why.** The Phase 45 flat prompt gave the LLM no schema discipline, no failure-recovery framing, and no explicit injection points. The twelve-section layout is the load-bearing structure the dynamic-augmentation, tool-schema, and memory-framing phases (83b/c/d) all depend on; landing it first as a content-only refactor de-risks the band.
+
+**Findings I'm departing from.** None — this phase matches brief 13's 2026-05-19 revised design exactly. The brief's own §9 records the departure from the superseded "rich-output deferred to V2" note; Phase 83a inherits that closed departure rather than re-opening it.
+
+**Protocol additions.** None — Phase 83a is a planner-internal prompt-content refactor plus one operator-facing config key (`planner.extra_guidance`) and one constructor Option (`WithSystemPromptExtra`). No Protocol method, error code, wire type, or CLI subcommand changes.

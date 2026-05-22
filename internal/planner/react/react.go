@@ -16,10 +16,13 @@
 //     [planner.Finish]{Reason: [planner.FinishCancelled]} on a CANCEL
 //     observation (the planner's step-boundary contract per RFC §6.3).
 //  4. Builds the [llm.CompleteRequest] via the configured
-//     [PromptBuilder]. The default builder asks the LLM for a JSON
-//     envelope `{"tool":"<name>","args":{...},"reasoning":"..."}` per
-//     step OR `{"tool":"_finish","args":{"answer":"..."}}` to signal
-//     completion.
+//     [PromptBuilder]. The default builder (Phase 83a — brief 13
+//     §2.1) assembles the twelve XML-tagged structured sections and
+//     asks the LLM for a JSON envelope `{"tool":"<name>","args":{...}}`
+//     per step OR `{"tool":"_finish","args":{"answer":"..."}}` to
+//     signal completion. The envelope carries NO `reasoning` field —
+//     reasoning is captured from the provider channel, never required
+//     in the structured output (brief 13 §2.6).
 //  5. Delegates the response → [planner.Decision] mapping to Phase
 //     44's [repair.RepairLoop.Run] (salvage → schema repair →
 //     graceful failure → multi-action salvage). The repair loop is
@@ -118,39 +121,27 @@ const AwaitTaskToolName = "_await_task"
 // the planner-side cap is defence in depth (§13 + D-051).
 const DefaultMaxSteps = 12
 
-// DefaultSystemPrompt is the prompt the planner sends as the leading
-// system message when [WithSystemPrompt] is not set. The prompt
-// instructs the LLM on the JSON action envelope, names the four
-// reserved tools (`_finish`, `_spawn_task`, `_await_task`), and asks
-// for one action per step OR a JSON array of actions for parallel
-// fan-out. Phase 47 (D-056) added the spawn/await emission shapes and
-// removed the V1 single-tool-call ceiling; multi-action arrays now
-// flow through the runtime parallel executor.
-const DefaultSystemPrompt = `You are Harbor's ReAct planner. Each step, choose ONE action and respond with a JSON object of the form:
-
-  {"tool": "<tool name>", "args": {...}, "reasoning": "<why>"}
-
-When you have enough information to satisfy the user's goal, emit:
-
-  {"tool": "_finish", "args": {"answer": "<final answer>"}, "reasoning": "<why>"}
-
-To run several independent tool calls concurrently, emit a JSON array of action objects; the runtime executes the branches in parallel and surfaces all observations in the next step:
-
-  [{"tool":"alpha","args":{...}}, {"tool":"beta","args":{...}}]
-
-To spawn a background task that does NOT block this turn (the planner re-enters when the task resolves; results land in the next observation as resolved background entries):
-
-  {"tool": "_spawn_task", "args": {"kind": "background", "spec": {"description": "<one-line summary>", "query": "<goal for the task>", "priority": 0, "retain_turn": false, "fail_fast": false}}, "reasoning": "<why>"}
-
-To block this turn on a previously-spawned task:
-
-  {"tool": "_await_task", "args": {"task_id": "<id>"}, "reasoning": "<why>"}
-
-Constraints:
-- Always respond with valid JSON (no prose around it).
-- Use only the tools listed below or one of the reserved names (_finish, _spawn_task, _await_task).
-- Keep "reasoning" short — one or two sentences.
-- The system cap on parallel branches is 50; emitting more fails the call.`
+// DefaultSystemPrompt is the sentinel value the planner sends as the
+// leading system-prompt argument when [WithSystemPrompt] is not set.
+//
+// Phase 83a (RFC §6.2, brief 13 §2.1) replaced the former flat-string
+// prompt with the twelve XML-tagged structured sections assembled by
+// `defaultBuilder.buildSystemContent`. The structured sections ARE the
+// default prompt content; this constant is the routing sentinel the
+// builder compares against to decide whether to emit the structured
+// twelve-section layout (sentinel matched → structured) or to honour
+// an operator's verbatim [WithSystemPrompt] override (any other value
+// → verbatim). The constant value is intentionally a stable
+// non-empty string, never empty: `New` seeds `systemPrompt` with it,
+// `WithSystemPrompt("")` falls back to it, and `buildSystemContent`
+// branches on identity-equality with it.
+//
+// The old single-string Phase 45/47 prompt constant is intentionally
+// removed (not renamed to `legacyDefaultSystemPrompt`) — the golden
+// fixture `testdata/golden_default_prompt.txt` is the normative spec
+// for the rendered default prompt going forward, and a dangling
+// legacy constant would be dead code (CLAUDE.md §13).
+const DefaultSystemPrompt = "harbor.react.default-system-prompt"
 
 // PromptBuilder constructs the [llm.CompleteRequest] from a
 // [planner.RunContext]. Default implementation ships in-package as
@@ -228,11 +219,38 @@ func WithPromptBuilder(b PromptBuilder) Option {
 
 // WithSystemPrompt overrides the [DefaultSystemPrompt]. An empty
 // string falls back to [DefaultSystemPrompt].
+//
+// A non-default, non-empty string is honoured verbatim by the default
+// prompt builder: it REPLACES the twelve-section structured layout
+// (the structured sections ARE the default prompt content). The
+// optional injection sections (`<available_tools>`,
+// `<additional_guidance>`, `<planning_constraints>`) still append, so
+// tool rendering and [WithSystemPromptExtra] guidance survive a custom
+// base prompt.
 func WithSystemPrompt(s string) Option {
 	return func(p *ReActPlanner) {
 		if s != "" {
 			p.systemPrompt = s
 		}
+	}
+}
+
+// WithSystemPromptExtra injects operator-supplied guidance into the
+// `<additional_guidance>` section of the rendered system prompt
+// (Phase 83a, RFC §6.2, brief 13 §2.1 section 11). The string is
+// rendered verbatim; the operator is responsible for content hygiene.
+// An empty (or whitespace-only) string is a no-op — the
+// `<additional_guidance>` section is then omitted from the prompt
+// entirely rather than emitted as an empty tag pair.
+//
+// The guidance applies only when the default prompt builder is in
+// use; an operator-supplied [WithPromptBuilder] owns its own prompt
+// assembly and ignores this option. `internal/config`'s
+// `PlannerConfig.ExtraGuidance` key flows to this option at
+// construction (see `internal/planner/react/init.go`).
+func WithSystemPromptExtra(s string) Option {
+	return func(p *ReActPlanner) {
+		p.extraGuidance = s
 	}
 }
 
@@ -267,6 +285,14 @@ type ReActPlanner struct {
 	// build starts with. Set via [WithSystemPrompt]; defaults to
 	// [DefaultSystemPrompt].
 	systemPrompt string
+
+	// extraGuidance is operator-supplied content for the rendered
+	// prompt's <additional_guidance> section. Set via
+	// [WithSystemPromptExtra]; empty by default. Applied to the
+	// in-package [defaultBuilder] at construction (`New`); an operator-
+	// supplied [WithPromptBuilder] owns its own assembly and ignores
+	// this field. Read-only after construction (D-025).
+	extraGuidance string
 
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
@@ -304,6 +330,16 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 	}
 	for _, opt := range opts {
 		opt(p)
+	}
+	// Finalise the in-package builder with operator-supplied
+	// <additional_guidance> content. Skipped when an operator injected
+	// their own builder via WithPromptBuilder — a custom builder owns
+	// its own prompt assembly (the option order is "later overrides
+	// earlier", so a WithPromptBuilder after a WithSystemPromptExtra is
+	// the operator's deliberate choice). The builder is rebuilt as a
+	// fresh value so it stays an immutable compiled artifact (D-025).
+	if _, ok := p.builder.(defaultBuilder); ok {
+		p.builder = defaultBuilder{extraGuidance: p.extraGuidance}
 	}
 	return p
 }
