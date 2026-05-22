@@ -1,6 +1,20 @@
-# Harbor
+<p align="center">
+  <img src="docs/rfc/assets/harbor_logo.svg" alt="Harbor" width="320">
+</p>
 
-**A Go-native runtime for durable, steerable, event-driven AI agents.**
+<p align="center">
+  <strong>A Go-native runtime for durable, steerable, event-driven AI agents.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/hurtener/Harbor/actions/workflows/ci.yml"><img src="https://github.com/hurtener/Harbor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/hurtener/Harbor/releases"><img src="https://img.shields.io/github/v/release/hurtener/Harbor?sort=semver" alt="Release"></a>
+  <a href="https://pkg.go.dev/github.com/hurtener/Harbor"><img src="https://pkg.go.dev/badge/github.com/hurtener/Harbor.svg" alt="Go Reference"></a>
+  <img src="https://img.shields.io/badge/go-1.26%2B-00ADD8" alt="Go 1.26+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
+</p>
+
+---
 
 Harbor runs agents the way a server runs requests: as long-lived, observable,
 interruptible work — not as a script that blocks until an LLM replies. An agent
