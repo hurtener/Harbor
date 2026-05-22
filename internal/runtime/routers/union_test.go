@@ -128,9 +128,6 @@ func TestRoutePolicy_Overrides_Predicate(t *testing.T) {
 	// a one-line consumer add.
 	override := engine.NodeRef{Name: "override"}
 	env := messages.Envelope{
-		Payload:   tagA{},
-		Headers:   messages.Headers{TenantID: "T", UserID: "U"},
-		SessionID: "S", RunID: "R",
 		Meta: map[string]any{
 			routers.MetaKeyRoutePolicy: routers.RoutePolicy{ExplicitTarget: &override},
 		},

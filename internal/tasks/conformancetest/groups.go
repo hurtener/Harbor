@@ -95,10 +95,10 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		// Spawn one member while Open.
 		req := freshSpawnReq(tripleA())
 		req.GroupID = g.ID
-		if _, err := r.Spawn(ctx, req); err != nil {
+		if _, err = r.Spawn(ctx, req); err != nil {
 			t.Fatalf("Spawn member (open): %v", err)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatalf("SealGroup: %v", err)
 		}
 		// Spawn after seal → ErrGroupSealed.
@@ -126,7 +126,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 
 		// Spawn 3 members; mark each running; mark each complete.
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -139,7 +139,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatalf("SealGroup: %v", err)
 		}
 		// Mark first 2 running + complete; waiter MUST NOT have fired.
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			if err := r.MarkRunning(ctx, members[i]); err != nil {
 				t.Fatal(err)
 			}
@@ -185,10 +185,10 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
-			h, err := r.Spawn(ctx, req)
+			h, err := r.Spawn(ctx, req) //nolint:govet // loop/multi-var; err shadow is benign
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -197,16 +197,16 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			}
 			members = append(members, h.ID)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
 		// Fail the first member → fail-fast cascades cancel to siblings.
-		if err := r.MarkFailed(ctx, members[0], tasks.TaskError{Code: "boom"}); err != nil {
+		if err = r.MarkFailed(ctx, members[0], tasks.TaskError{Code: "boom"}); err != nil {
 			t.Fatalf("MarkFailed: %v", err)
 		}
 		// Other members must be Cancelled.
 		for i := 1; i < 3; i++ {
-			got, err := r.Get(ctx, members[i])
+			got, err := r.Get(ctx, members[i]) //nolint:govet // loop/multi-var; err shadow is benign
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -246,7 +246,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -283,7 +283,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
 			h, err := r.Spawn(ctx, req)
@@ -321,16 +321,16 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		var members []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
-			h, err := r.Spawn(ctx, req)
+			h, err := r.Spawn(ctx, req) //nolint:govet // loop/multi-var; err shadow is benign
 			if err != nil {
 				t.Fatal(err)
 			}
 			members = append(members, h.ID)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
 		watch, cancel, err := r.WatchGroup(tripleA().Identity, g.ID)
@@ -409,7 +409,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
 		watch, cancel, err := r.WatchGroup(tripleA().Identity, g.ID)
@@ -475,7 +475,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.MarkRunning(ctx, h.ID); err != nil {
+		if err = r.MarkRunning(ctx, h.ID); err != nil {
 			t.Fatal(err)
 		}
 		watch, cancel, err := r.WatchGroup(tripleA().Identity, g.ID)
@@ -571,7 +571,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
 		watch, cancelWatch, err := r.WatchGroup(tripleA().Identity, g.ID)
@@ -654,7 +654,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
 		watch, cancelWatch, err := r.WatchGroup(tripleA().Identity, g.ID)
@@ -707,13 +707,13 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.SealGroup(ctx, g.ID); err != nil {
+		if err = r.SealGroup(ctx, g.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.MarkRunning(ctx, h.ID); err != nil {
+		if err = r.MarkRunning(ctx, h.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
+		if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
 			t.Fatal(err)
 		}
 		// (a) Resolved-but-still-tracked: WatchGroup returns the
@@ -768,7 +768,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		const subscribers = 4
 		channels := make([]<-chan tasks.GroupCompletion, subscribers)
 		cancels := make([]func(), subscribers)
-		for i := 0; i < subscribers; i++ {
+		for i := range subscribers {
 			ch, cancel, err := r.WatchGroup(tripleA().Identity, g.ID)
 			if err != nil {
 				t.Fatalf("subscriber %d: %v", i, err)
@@ -870,7 +870,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		defer cleanup()
 		ctx := ctxA()
 		var ids []tasks.TaskID
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.Kind = tasks.KindBackground
 			h, err := r.Spawn(ctx, req)
@@ -907,8 +907,8 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		defer cleanup()
 		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-A"}
 		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-B"}
-		ctxAA, _ := identity.With(context.Background(), idA)
-		ctxBB, _ := identity.With(context.Background(), idB)
+		ctxAA, _ := identity.With(context.Background(), idA) //nolint:errcheck // identity.With on a fully-populated Identity cannot fail
+		ctxBB, _ := identity.With(context.Background(), idB) //nolint:errcheck // identity.With on a fully-populated Identity cannot fail
 		g, err := r.ResolveOrCreateGroup(ctxAA, tasks.GroupRequest{
 			SessionID: idA,
 		})
@@ -916,11 +916,11 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		// Session B cannot seal A's group.
-		if err := r.SealGroup(ctxBB, g.ID); !errors.Is(err, tasks.ErrGroupNotFound) {
+		if err = r.SealGroup(ctxBB, g.ID); !errors.Is(err, tasks.ErrGroupNotFound) {
 			t.Errorf("cross-session SealGroup: err=%v, want ErrGroupNotFound", err)
 		}
 		// Session B cannot cancel A's group.
-		if err := r.CancelGroup(ctxBB, g.ID, "x", true); !errors.Is(err, tasks.ErrGroupNotFound) {
+		if err = r.CancelGroup(ctxBB, g.ID, "x", true); !errors.Is(err, tasks.ErrGroupNotFound) {
 			t.Errorf("cross-session CancelGroup: err=%v, want ErrGroupNotFound", err)
 		}
 		// Session B cannot watch A's group.
@@ -953,8 +953,8 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		var wg sync.WaitGroup
 		var errs atomic.Int64
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
-			i := i
+		for i := range goroutines {
+
 			go func() {
 				defer wg.Done()
 				ident := identity.Identity{
@@ -967,7 +967,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 					errs.Add(1)
 					return
 				}
-				for j := 0; j < opsPerGo; j++ {
+				for j := range opsPerGo {
 					g, err := r.ResolveOrCreateGroup(ctx, tasks.GroupRequest{
 						SessionID: ident,
 					})

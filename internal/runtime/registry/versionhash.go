@@ -36,7 +36,7 @@ func VersionHash(cfg AgentConfig) (string, error) {
 	}
 	sort.Strings(canonical.Prompts)
 	for _, t := range cfg.Tools {
-		canonical.Tools = append(canonical.Tools, canonicalTool{Name: t.Name, SchemaDigest: t.SchemaDigest})
+		canonical.Tools = append(canonical.Tools, canonicalTool(t))
 	}
 	sort.Slice(canonical.Tools, func(i, j int) bool {
 		if canonical.Tools[i].Name != canonical.Tools[j].Name {

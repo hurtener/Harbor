@@ -126,7 +126,7 @@ func TestExtra_RoundTripsThroughUpsertGet(t *testing.T) {
 		Origin: skills.OriginGenerated, Scope: skills.ScopeProject,
 	}
 	bare.ContentHash = skills.CanonicalContentHash(bare)
-	if err := d.Upsert(ctx, covID, bare); err != nil {
+	if err = d.Upsert(ctx, covID, bare); err != nil {
 		t.Fatalf("Upsert(bare): %v", err)
 	}
 	gotBare, err := d.Get(ctx, covID, "no-extra")

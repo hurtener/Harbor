@@ -14,35 +14,16 @@ import (
 // (TenantID, UserID, SessionID, RunID) so audit logs and bus
 // subscribers can scope by the multi-isolation triple.
 type RunError struct {
-	// RunID identifies the run the failed envelope belonged to.
-	// Empty when the envelope had no RunID (Phase 10 allows that;
-	// Phase 13 will tighten when FetchByRun arrives).
-	RunID string
-	// TenantID, UserID, SessionID complete the identity triple from
-	// the failing envelope. Used by audit subscribers + slog
-	// attribute set.
+	Cause     error
+	Metadata  map[string]any
+	RunID     string
 	TenantID  string
 	UserID    string
 	SessionID string
-	// NodeName is the unique node identifier within the engine.
-	NodeName string
-	// NodeID is reserved for future stable runtime identifiers; for
-	// Phase 11 it mirrors NodeName (engines are single-process and
-	// the Name is the stable id).
-	NodeID string
-	// Code categorises the failure. See RunErrorCode constants.
-	Code RunErrorCode
-	// Message is a short human-readable summary. The redactor sees
-	// it via the bus emit path; do NOT include raw tool args or
-	// secrets.
-	Message string
-	// Cause is the wrapped underlying error (if any). errors.Unwrap
-	// follows this; deeper chains compose via the underlying error's
-	// Unwrap method.
-	Cause error
-	// Metadata carries policy-relevant context (e.g. attempt count,
-	// timeout in ms, validate side). Bounded; free-form.
-	Metadata map[string]any
+	NodeName  string
+	NodeID    string
+	Code      RunErrorCode
+	Message   string
 }
 
 // Error implements the error interface. Format includes the code +

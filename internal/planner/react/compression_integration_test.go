@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
@@ -140,7 +139,7 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 	summ := &staticSummariserIT{summary: summary}
 	runner := planner.NewCompressionRunner(summ)
 
-	if err := runner.MaybeCompress(ctx, rc, tr); err != nil {
+	if err = runner.MaybeCompress(ctx, rc, tr); err != nil {
 		t.Fatalf("MaybeCompress: %v", err)
 	}
 	if tr.Summary == nil {
@@ -151,7 +150,7 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 	}
 
 	// Drain the success event.
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypeTrajectoryCompressed {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypeTrajectoryCompressed)
 	}
@@ -272,7 +271,7 @@ func TestE2E_ReactCompression_SummariserFailure_SurfacesOnBus(t *testing.T) {
 		t.Errorf("tr.Summary stamped on failure path — want nil (no silent fall-through)")
 	}
 
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypeTrajectoryCompressionFailed {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypeTrajectoryCompressionFailed)
 	}
@@ -332,7 +331,7 @@ func TestE2E_ReactCompression_UnderBudget_NoCompaction_PlannerSeesRawHistory(t *
 		Emit:       emitClosure,
 	}
 
-	if err := runner.MaybeCompress(ctx, rc, tr); err != nil {
+	if err = runner.MaybeCompress(ctx, rc, tr); err != nil {
 		t.Fatalf("MaybeCompress: %v", err)
 	}
 	if tr.Summary != nil {
@@ -376,10 +375,10 @@ func TestE2E_ReactCompression_UnderBudget_NoCompaction_PlannerSeesRawHistory(t *
 // test can assert prompt shape. Concurrent-safe via atomic.Int64 +
 // mutex around the request snapshot.
 type capturingClient struct {
+	lastReq  llm.CompleteRequest
 	response llm.CompleteResponse
 	calls    atomic.Int64
 	mu       sync.Mutex
-	lastReq  llm.CompleteRequest
 	captured bool
 }
 

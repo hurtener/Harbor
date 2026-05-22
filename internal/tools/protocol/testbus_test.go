@@ -11,8 +11,8 @@ import (
 // tests to count published events. It is concurrency-safe so the
 // concurrent-reuse test can share one instance.
 type capturingBus struct {
-	mu     sync.Mutex
 	events []events.Event
+	mu     sync.Mutex
 }
 
 func newCapturingBus() *capturingBus { return &capturingBus{} }

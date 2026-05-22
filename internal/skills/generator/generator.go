@@ -66,21 +66,21 @@ const (
 // is a string). Drafts that need typed extra values can encode them
 // as JSON strings.
 type SkillDraft struct {
-	Name           string            `json:"name"`
+	Extra          map[string]string `json:"extra,omitempty"`
+	Scope          skills.Scope      `json:"scope,omitempty"`
 	Title          string            `json:"title,omitempty"`
 	Description    string            `json:"description,omitempty"`
 	Trigger        string            `json:"trigger"`
 	TaskType       string            `json:"task_type,omitempty"`
-	Tags           []string          `json:"tags,omitempty"`
+	Name           string            `json:"name"`
+	ScopeProjectID string            `json:"scope_project_id,omitempty"`
 	Steps          []string          `json:"steps"`
-	Preconditions  []string          `json:"preconditions,omitempty"`
-	FailureModes   []string          `json:"failure_modes,omitempty"`
 	RequiredTools  []string          `json:"required_tools,omitempty"`
 	RequiredNS     []string          `json:"required_ns,omitempty"`
 	RequiredTags   []string          `json:"required_tags,omitempty"`
-	Scope          skills.Scope      `json:"scope,omitempty"` // empty -> ScopeProject
-	ScopeProjectID string            `json:"scope_project_id,omitempty"`
-	Extra          map[string]string `json:"extra,omitempty"`
+	FailureModes   []string          `json:"failure_modes,omitempty"`
+	Preconditions  []string          `json:"preconditions,omitempty"`
+	Tags           []string          `json:"tags,omitempty"`
 }
 
 // ProposeArgs is the planner-tool input shape. Wraps a `SkillDraft`
@@ -95,31 +95,14 @@ type ProposeArgs struct {
 // `rejected`) plus the stamped provenance fields the planner needs
 // to correlate with subsequent searches.
 type SkillReceipt struct {
-	// Validated is true when the draft passed `skills.Skill.Validate`.
-	// True for every non-error path (including `Rejected`).
-	Validated bool `json:"validated"`
-	// Persisted is true when the row exists in the store after the
-	// call (covers `persisted` AND `idempotent`). False for
-	// `validated` (persist=false) and `rejected` (conflict).
-	Persisted bool `json:"persisted"`
-	// Result names the branch the generator took. See ProposeResult.
-	Result ProposeResult `json:"result"`
-	// Name is the skill's primary key. Echoed from the draft.
-	Name string `json:"name"`
-	// Hash is the canonical sha256 of the skill body
-	// (`skills.CanonicalContentHash`). Same for `validated` and
-	// `persisted` — the hash is computed from the draft, not from
-	// the post-stamp row.
-	Hash string `json:"hash"`
-	// Origin is `skills.OriginGenerated` on every persist branch;
-	// empty on `persist=false` (no provenance is stamped without a
-	// write).
-	Origin skills.Origin `json:"origin,omitempty"`
-	// OriginRef is `"gen:{session_id}:{run_id}"` on every persist
-	// branch; empty on `persist=false`.
-	OriginRef string `json:"origin_ref,omitempty"`
-	// Scope is the final stamped scope (default `project`).
-	Scope skills.Scope `json:"scope,omitempty"`
+	Result    ProposeResult `json:"result"`
+	Name      string        `json:"name"`
+	Hash      string        `json:"hash"`
+	Origin    skills.Origin `json:"origin,omitempty"`
+	OriginRef string        `json:"origin_ref,omitempty"`
+	Scope     skills.Scope  `json:"scope,omitempty"`
+	Validated bool          `json:"validated"`
+	Persisted bool          `json:"persisted"`
 }
 
 // ErrSkillConflict is returned when the conflict policy refused a
@@ -363,7 +346,7 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 		// the surfaced error so the caller sees both.
 		delErr := store.Delete(ctx, q, skill.Name)
 		if delErr != nil {
-			return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed AND rollback delete failed: emit=%w deleteErr=%v", emitErr, delErr)
+			return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed AND rollback delete failed: emit=%w deleteErr=%w", emitErr, delErr)
 		}
 		return SkillReceipt{}, fmt.Errorf("skills/generator: audit emit failed (persist rolled back): %w", emitErr)
 	}
@@ -470,7 +453,7 @@ func Promote(ctx context.Context, store skills.SkillStore, deps Deps, src identi
 			// first failure and don't continue).
 			delErr := store.Delete(ctx, target, copyForTarget.Name)
 			if delErr != nil {
-				return fmt.Errorf("skills/generator: Promote audit emit failed AND rollback delete failed for target=%s/%s/%s: emit=%w delete=%v",
+				return fmt.Errorf("skills/generator: Promote audit emit failed AND rollback delete failed for target=%s/%s/%s: emit=%w delete=%w",
 					target.TenantID, target.UserID, target.SessionID, err, delErr)
 			}
 			return fmt.Errorf("skills/generator: Promote audit emit failed for target=%s/%s/%s (rolled back): %w",

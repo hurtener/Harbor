@@ -63,7 +63,7 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, n*8)
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(fx fixture) {
 			defer wg.Done()
 
@@ -135,8 +135,9 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 // countErr is a typed error so the concurrent test reports a precise
 // cross-talk diagnosis rather than a bare string.
 type countErr struct {
-	got, want int64
-	op        string
+	op   string
+	got  int64
+	want int64
 }
 
 func (e *countErr) Error() string {

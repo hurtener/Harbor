@@ -11,8 +11,8 @@ import (
 // immutable after Register so List can return Tool *values*
 // (copies) without locking the underlying descriptor.
 type catalog struct {
-	mu     sync.RWMutex
 	byName map[string]ToolDescriptor
+	mu     sync.RWMutex
 }
 
 // CatalogOption configures a catalog at construction.

@@ -29,7 +29,7 @@ func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quad
 		return
 	}
 	now := time.Now()
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail cost reporting
 		Type:       llm.EventTypeCostRecorded,
 		Identity:   id,
 		OccurredAt: now,

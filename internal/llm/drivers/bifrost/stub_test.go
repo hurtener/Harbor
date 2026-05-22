@@ -13,14 +13,11 @@ import (
 // the recorder uses a mutex; per-call response selection is
 // stateless.
 type stubClient struct {
-	mu       sync.Mutex
-	requests []*bfschemas.BifrostChatRequest
-
-	// hook overrides — set by tests for specific scenarios.
 	chatHandler   func(req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
 	streamHandler func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError)
-
-	calls atomic.Int64
+	requests      []*bfschemas.BifrostChatRequest
+	calls         atomic.Int64
+	mu            sync.Mutex
 }
 
 func newStubClient() *stubClient {

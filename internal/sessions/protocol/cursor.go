@@ -19,15 +19,9 @@ const cursorVersion = "1"
 // pagination cursor. It records the sort-key value + the SessionID of
 // the last row of the previous page so the next page resumes after it.
 type pageCursor struct {
-	// sortKeyNanos is the StartedAt / LastActivityAt of the boundary row
-	// in Unix nanoseconds; unused for the cost sort.
+	sessionID    string
 	sortKeyNanos int64
-	// costCents is the TotalCostCents of the boundary row; used only for
-	// SessionSortCostDesc.
-	costCents int64
-	// sessionID is the boundary row's SessionID — the tie-breaker that
-	// makes the order (and the cursor) total.
-	sessionID string
+	costCents    int64
 }
 
 // encodeCursor builds the opaque base64 cursor for the boundary row

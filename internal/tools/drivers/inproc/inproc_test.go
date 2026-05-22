@@ -24,12 +24,12 @@ func TestInProc_Conformance(t *testing.T) {
 // reflection-based schema derivation for the common shapes.
 func TestRegisterFunc_DerivesSchema_FromInputType(t *testing.T) {
 	type Args struct {
-		Name      string            `json:"name"`
-		Age       int               `json:"age,omitempty"`
-		Tags      []string          `json:"tags"`
+		Timestamp time.Time         `json:"timestamp"`
 		Metadata  map[string]string `json:"metadata"`
 		Nullable  *bool             `json:"nullable,omitempty"`
-		Timestamp time.Time         `json:"timestamp"`
+		Name      string            `json:"name"`
+		Tags      []string          `json:"tags"`
+		Age       int               `json:"age,omitempty"`
 	}
 	type Out struct {
 		OK bool `json:"ok"`

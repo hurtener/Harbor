@@ -48,23 +48,11 @@ import (
 // response. Construct via `New(opts)` for tests that need the
 // hooks; registry-path construction passes a zero-value Options.
 type Options struct {
-	// SyntheticContent overrides the generated response. Empty
-	// means "use the default synthesis (echo of the last user
-	// message)."
+	ForcedError      error
+	SeenIdentity     chan<- identity.Quadruple
 	SyntheticContent string
-	// ForcedError makes every Complete fail with this error.
-	ForcedError error
-	// StreamChunks is the number of chunks the streaming path
-	// produces. Zero defaults to 4 (small enough for fast tests).
-	StreamChunks int
-	// SeenIdentity is an optional sink for the identity each
-	// Complete observes. Buffered N=1 by callers that race on it.
-	SeenIdentity chan<- identity.Quadruple
-	// PreStreamDelay is a hook for the cancellation test —
-	// when > 0, the streaming path waits this duration BETWEEN
-	// chunks (honouring ctx.Done()). Lets the test cancel
-	// mid-stream and observe clean abort.
-	PreStreamDelay time.Duration
+	StreamChunks     int
+	PreStreamDelay   time.Duration
 }
 
 // Driver is the exported mock driver type so test code can build

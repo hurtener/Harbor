@@ -15,29 +15,6 @@ import (
 	"github.com/hurtener/Harbor/internal/planner/react"
 )
 
-// perGoroutineClient is a per-goroutine llm.LLMClient. Each goroutine
-// gets its own instance keyed by its RunID; the shared planner reads
-// it for the duration of the goroutine's Next call. The only shared
-// state is the planner itself — which is the D-025 contract.
-//
-// The client records every observed identity quadruple so the test
-// can assert no per-call identity bleed.
-type perGoroutineClient struct {
-	mu      sync.Mutex
-	seenIDs []identity.Quadruple
-	content string
-}
-
-func (c *perGoroutineClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	id, _ := identity.QuadrupleFrom(ctx)
-	c.seenIDs = append(c.seenIDs, id)
-	return llm.CompleteResponse{Content: c.content}, nil
-}
-
-func (c *perGoroutineClient) Close(_ context.Context) error { return nil }
-
 // sharedClient is the shared inner LLM client for the D-025 stress.
 // It produces a deterministic per-goroutine answer by reading the
 // run's identity from ctx (the planner contract: per-call state lives
@@ -94,8 +71,8 @@ func TestReactPlanner_ConcurrentReuse_D025(t *testing.T) {
 	)
 
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 
@@ -174,13 +151,9 @@ func TestReactPlanner_ConcurrentReuse_D025(t *testing.T) {
 
 	// Counter: shared.StepsTaken() == N - pre-cancelled count (the
 	// breaker / pre-cancel paths short-circuit BEFORE the increment).
-	preCancelled := N / 5
-	if preCancelled*5 < N {
-		preCancelled++
-	}
-	// Recompute exactly the same way the loop did (i%5 == 0).
-	preCancelled = 0
-	for i := 0; i < N; i++ {
+	// Computed exactly the way the loop did (i%5 == 0).
+	preCancelled := 0
+	for i := range N {
 		if i%5 == 0 {
 			preCancelled++
 		}
@@ -220,8 +193,8 @@ func TestReactPlanner_CancellationDoesNotCrossTalk(t *testing.T) {
 		siblingErrs int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			runID := fmt.Sprintf("r-%d", i)
@@ -265,7 +238,7 @@ func TestReactPlanner_SharedAcrossIsolatedSessions(t *testing.T) {
 	t.Parallel()
 	shared := react.New(&sharedClient{})
 	const M = 16
-	for i := 0; i < M; i++ {
+	for i := range M {
 		runID := fmt.Sprintf("seq-%d", i)
 		q := identity.Quadruple{
 			Identity: identity.Identity{

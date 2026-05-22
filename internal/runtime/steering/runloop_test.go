@@ -23,11 +23,11 @@ import (
 // Next call. It records every RunContext it was handed so a test can
 // assert what RunContext.Control the planner observed.
 type scriptedPlanner struct {
-	mu         sync.Mutex
+	defaultDec planner.Decision
 	script     []scriptStep
-	idx        int
 	seenRC     []planner.RunContext
-	defaultDec planner.Decision // returned once the script is exhausted
+	idx        int
+	mu         sync.Mutex
 }
 
 type scriptStep struct {
@@ -69,15 +69,15 @@ func (p *scriptedPlanner) stepCount() int {
 // results. It is NOT a re-implementation of pause coordination — it just
 // records that the RunLoop reached the ONE Coordinator.
 type stubCoordinator struct {
-	mu                 sync.Mutex
-	requestCalls       int
-	resumeCalls        int
+	requestErr         error
+	resumeErr          error
 	lastResumePay      map[string]any
 	lastResumeDecision pauseresume.Decision
 	issueToken         pauseresume.Token
-	requestErr         error
-	resumeErr          error
 	resumedTokens      []pauseresume.Token
+	requestCalls       int
+	resumeCalls        int
+	mu                 sync.Mutex
 }
 
 func (c *stubCoordinator) Request(_ context.Context, req pauseresume.PauseRequest) (pauseresume.Pause, error) {

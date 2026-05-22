@@ -19,11 +19,11 @@ import (
 // interleave (the engine has no per-StreamID lock); operators who
 // need cross-goroutine ordering must serialize the emit themselves.
 type StreamFrame struct {
-	StreamID string
-	Seq      int
-	Text     string
-	Done     bool
 	Meta     map[string]any
+	StreamID string
+	Text     string
+	Seq      int
+	Done     bool
 }
 
 // Sentinel errors specific to streaming. Phase 10 sentinels (e.g.
@@ -55,14 +55,14 @@ var (
 // after wakeup observes a consistent counter. cond.Broadcast() in
 // Stop ensures every waiter observes stopped=true.
 type runCapacity struct {
-	mu        sync.Mutex
 	cond      *sync.Cond
+	seqs      map[string]int
+	closed    map[string]bool
 	pending   int
 	capacity  int
-	seqs      map[string]int  // StreamID -> next Seq to assign (monotonic)
-	closed    map[string]bool // StreamID -> Done frame drained
-	stopped   bool            // engine Stop signalled; release waiters with ErrEngineStopped
-	cancelled bool            // Cancel(runID) signalled; release waiters with ErrRunCancelled
+	mu        sync.Mutex
+	stopped   bool
+	cancelled bool
 }
 
 func newRunCapacity(capacity int) *runCapacity {

@@ -15,7 +15,7 @@ import (
 // _test.go file per CLAUDE.md §13). The real production projector is
 // RegistryProjector, exercised in registry_projector_test.go against a
 // real Agent Registry.
-type fakeProjector struct {
+type fakeProjector struct { //nolint:govet // fieldalignment on a test-only fake; field order kept for readability
 	agents   []prototypes.Agent
 	getResp  prototypes.AgentGetResponse
 	tools    []prototypes.AgentToolBinding
@@ -96,7 +96,7 @@ func TestService_List_IdentityMandatory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a table-test struct; positional literals kept for readability
 		name  string
 		scope prototypes.IdentityScope
 	}{

@@ -46,7 +46,7 @@ func TestRequest_MintsUniqueOpaqueToken(t *testing.T) {
 	ctx := runCtx(t, testID, "run-1")
 
 	seen := make(map[pauseresume.Token]struct{})
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		p, err := c.Request(ctx, pauseresume.PauseRequest{
 			Identity: testID,
 			Reason:   pauseresume.ReasonApprovalRequired,
@@ -121,7 +121,7 @@ func TestStatus_ReportsPausedThenResumed(t *testing.T) {
 	}
 
 	clk.advance(5 * time.Second)
-	if err := c.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
+	if err = c.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 
@@ -152,7 +152,7 @@ func TestResume_SecondResumeReturnsAlreadyResumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
-	if err := c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
+	if err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil); err != nil {
 		t.Fatalf("Resume #1: %v", err)
 	}
 	err = c.Resume(ctx, p.Token, pauseresume.DecisionResume, nil)
@@ -300,7 +300,7 @@ func TestRestartSurvival_WithStore_PauseSurvives(t *testing.T) {
 	}
 
 	// And it can be resumed on the restarted coordinator.
-	if err := c2.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
+	if err = c2.Resume(ctx, p.Token, pauseresume.DecisionApprove, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("Resume on restarted coordinator: %v", err)
 	}
 	st, err = c2.Status(ctx, p.Token)

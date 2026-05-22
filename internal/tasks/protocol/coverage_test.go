@@ -53,7 +53,7 @@ func TestList_ValidateFilter_RejectsBadInput(t *testing.T) {
 	ctx := context.Background()
 	scope := scopeOf("t1", "u1", "s1")
 
-	for _, tc := range []struct {
+	for _, tc := range []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name   string
 		filter prototypes.TaskFilter
 	}{

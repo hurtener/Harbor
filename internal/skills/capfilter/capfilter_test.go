@@ -33,7 +33,7 @@ func TestBuildSet_MembershipLookup(t *testing.T) {
 func TestSubset(t *testing.T) {
 	t.Parallel()
 	allowed := capfilter.BuildSet([]string{"x", "y", "z"})
-	tests := []struct {
+	tests := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name     string
 		required []string
 		allowed  map[string]struct{}
@@ -47,7 +47,7 @@ func TestSubset(t *testing.T) {
 		{"exact match passes", []string{"x", "y", "z"}, allowed, true},
 	}
 	for _, tc := range tests {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := capfilter.Subset(tc.required, tc.allowed); got != tc.want {
@@ -105,10 +105,10 @@ func TestScrub(t *testing.T) {
 	}
 
 	// Empty text / empty disallowed are no-ops.
-	if got := capfilter.Scrub("", []string{"x"}, repl); got != "" {
+	if got = capfilter.Scrub("", []string{"x"}, repl); got != "" {
 		t.Errorf("Scrub(empty text) = %q, want \"\"", got)
 	}
-	if got := capfilter.Scrub("untouched", nil, repl); got != "untouched" {
+	if got = capfilter.Scrub("untouched", nil, repl); got != "untouched" {
 		t.Errorf("Scrub(no disallowed) = %q, want \"untouched\"", got)
 	}
 

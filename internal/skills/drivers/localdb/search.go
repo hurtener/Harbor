@@ -139,7 +139,7 @@ func (d *driver) materializeFTSHits(ctx context.Context, hits []ftsHit) ([]skill
 		placeholders[i] = "?"
 		rawByRowID[h.rowID] = h.rawScore
 	}
-	sel := `SELECT ` + skillCols + `, rowid FROM skills WHERE rowid IN (` + strings.Join(placeholders, ",") + `)`
+	sel := `SELECT ` + skillCols + `, rowid FROM skills WHERE rowid IN (` + strings.Join(placeholders, ",") + `)` //nolint:gosec // G202 false positive — only '?' placeholders are concatenated, no user data in SQL
 	rows, err := d.db.QueryContext(ctx, sel, ids...)
 	if err != nil {
 		return nil, fmt.Errorf("skills/localdb: fts5 materialize: %w", err)
@@ -147,10 +147,10 @@ func (d *driver) materializeFTSHits(ctx context.Context, hits []ftsHit) ([]skill
 	defer func() { _ = rows.Close() }()
 
 	type rowWithRaw struct {
+		name string
 		s    skills.Skill
 		raw  float64
 		inv  float64
-		name string
 	}
 	var rowsOut []rowWithRaw
 	for rows.Next() {

@@ -194,10 +194,10 @@ func TestE2E_Deterministic_SpawnAwaitResolveFinish(t *testing.T) {
 	// Drive the spawned member through its FSM. The group is sealed
 	// (the spawn step sealed it after Spawn), so the member
 	// reaching `complete` resolves the group automatically.
-	if err := deps.registry.MarkRunning(ctxIdent, memberID); err != nil {
+	if err = deps.registry.MarkRunning(ctxIdent, memberID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := deps.registry.MarkComplete(ctxIdent, memberID, tasks.TaskResult{
+	if err = deps.registry.MarkComplete(ctxIdent, memberID, tasks.TaskResult{
 		Value: json.RawMessage(`{"answer":42}`),
 	}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
@@ -218,7 +218,7 @@ func TestE2E_Deterministic_SpawnAwaitResolveFinish(t *testing.T) {
 	// Args contain the resolved task id + status — proof the
 	// MemberOutcome made it through OnResolved.
 	var parsed map[string]string
-	if err := json.Unmarshal(call.Args, &parsed); err != nil {
+	if err = json.Unmarshal(call.Args, &parsed); err != nil {
 		t.Fatalf("decode call args: %v", err)
 	}
 	if parsed["task_id"] != string(memberID) {

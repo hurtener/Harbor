@@ -33,9 +33,9 @@ import (
 // calls. The `closed` flag is `atomic.Bool` for the idempotent Close
 // path; `cfg` is read-only after construction.
 type safetyClient struct {
+	deps   Deps
 	driver Driver
 	cfg    ConfigSnapshot
-	deps   Deps
 	closed atomic.Bool
 }
 
@@ -134,7 +134,7 @@ func validateRequest(req CompleteRequest) error {
 	}
 	for mi, m := range req.Messages {
 		if err := validateContent(m.Content); err != nil {
-			return fmt.Errorf("Messages[%d]: %w", mi, err)
+			return fmt.Errorf("messages[%d]: %w", mi, err)
 		}
 	}
 	return nil
@@ -234,7 +234,7 @@ func emitContextLeak(ctx context.Context, bus events.EventBus, id identity.Quadr
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail the safety pass
 		Type:       EventTypeContextLeak,
 		Identity:   id,
 		OccurredAt: time.Now(),
@@ -255,7 +255,7 @@ func emitContextWindowExceeded(ctx context.Context, bus events.EventBus, id iden
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail the safety pass
 		Type:       EventTypeContextWindowExceeded,
 		Identity:   id,
 		OccurredAt: time.Now(),

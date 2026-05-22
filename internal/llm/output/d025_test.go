@@ -58,7 +58,7 @@ func TestWrap_ConcurrentReuse_D025(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenantID := fmt.Sprintf("t-%d", i)

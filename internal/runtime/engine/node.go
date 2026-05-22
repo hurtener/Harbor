@@ -63,7 +63,7 @@ func (n Node) Ref() NodeRef { return NodeRef{Name: n.Name} }
 // one directly. The struct's internal fields are unexported.
 type NodeContext struct {
 	engine  *engine
-	node    string // node Name; identifies which adjacency to emit on
+	node    string
 	lastEnv messages.Envelope
 }
 

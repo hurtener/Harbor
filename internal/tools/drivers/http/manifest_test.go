@@ -228,7 +228,7 @@ tools:
     method: POST
     url_template: '` + srv.URL + `/echo'
 `)
-	if err := write(path, body); err != nil {
+	if err = write(path, body); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	m, err := hdriver.LoadManifest(path)
@@ -236,7 +236,7 @@ tools:
 		t.Fatalf("LoadManifest: %v", err)
 	}
 	catManifest := tools.NewCatalog()
-	if err := hdriver.RegisterManifest(catManifest, m); err != nil {
+	if err = hdriver.RegisterManifest(catManifest, m); err != nil {
 		t.Fatalf("RegisterManifest: %v", err)
 	}
 

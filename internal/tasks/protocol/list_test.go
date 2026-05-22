@@ -126,7 +126,7 @@ func TestList_FilterMatrix(t *testing.T) {
 func TestList_CursorPagination(t *testing.T) {
 	svc, reg, _ := newListService(t)
 	id := idFor("t1", "u1", "s1")
-	for i := 0; i < 7; i++ {
+	for range 7 {
 		seedTask(t, reg, id, tasks.KindForeground, tasks.StatusPending, "task", "q")
 	}
 	ctx := context.Background()
@@ -162,12 +162,12 @@ func TestList_IdentityMandatory(t *testing.T) {
 	svc, _, _ := newListService(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
-		name  string
 		scope prototypes.IdentityScope
+		name  string
 	}{
-		{"missing tenant", scopeOf("", "u1", "s1")},
-		{"missing user", scopeOf("t1", "", "s1")},
-		{"missing session", scopeOf("t1", "u1", "")},
+		{name: "missing tenant", scope: scopeOf("", "u1", "s1")},
+		{name: "missing user", scope: scopeOf("t1", "", "s1")},
+		{name: "missing session", scope: scopeOf("t1", "u1", "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := svc.List(ctx, prototypes.TaskListRequest{Identity: tc.scope}, false)

@@ -371,13 +371,12 @@ func (s *spawnFinishStub) Next(ctx context.Context, rc planner.RunContext) (plan
 // non-blocking receive on WatchGroup. While the group is open the
 // stub returns AwaitTask; once it resolves the stub returns Finish.
 type pollWakeStub struct {
-	mu             sync.Mutex
-	deps           *conformance.WakeRoundTripDeps
-	spawned        bool
-	resolved       bool
-	markedComplete bool
-	groupID        tasks.TaskGroupID
-	ownerTaskID    tasks.TaskID
+	deps        *conformance.WakeRoundTripDeps
+	groupID     tasks.TaskGroupID
+	ownerTaskID tasks.TaskID
+	mu          sync.Mutex
+	spawned     bool
+	resolved    bool
 }
 
 func (s *pollWakeStub) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {

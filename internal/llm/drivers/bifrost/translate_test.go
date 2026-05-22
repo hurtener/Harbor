@@ -277,7 +277,7 @@ func TestTranslateRequest_Multimodal_FileVariants(t *testing.T) {
 func TestTranslateRequest_ResponseFormat(t *testing.T) {
 	schemaBytes := json.RawMessage(`{"name":"reply","schema":{"type":"object"}}`)
 	txt := "hello"
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name      string
 		rf        *llm.ResponseFormat
 		wantParam bool
@@ -309,7 +309,7 @@ func TestTranslateRequest_ResponseFormat(t *testing.T) {
 // TestTranslateRequest_ReasoningEffort — maps levels + handles "off".
 func TestTranslateRequest_ReasoningEffort(t *testing.T) {
 	txt := "x"
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		eff           llm.ReasoningEffort
 		wantParam     bool
 		wantEffort    string

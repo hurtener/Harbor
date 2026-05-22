@@ -50,8 +50,8 @@ type PredicateBranch struct {
 // Phase 14 stays out of engine.go to avoid colliding with the
 // parallel Phase 11 fork.
 type PredicateRouter struct {
-	Branches []PredicateBranch
 	Default  *engine.NodeRef
+	Branches []PredicateBranch
 }
 
 // AsNode wraps the router as an engine.Node. The wrapped NodeFunc

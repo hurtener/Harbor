@@ -68,9 +68,9 @@ func TestValidateRequest_Cases(t *testing.T) {
 		Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"},
 	}
 	cases := []struct {
+		wantErr error
 		name    string
 		req     tasks.SpawnRequest
-		wantErr error
 	}{
 		{
 			name: "ok foreground",

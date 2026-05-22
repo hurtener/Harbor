@@ -15,7 +15,7 @@ import (
 // pausingPlanner emits RequestPause exactly once (step 0), then Finish
 // on every later step. It is the unit-test analogue of the
 // deterministic PauseStep — the §13 emitting consumer shape.
-type pausingPlanner struct {
+type pausingPlanner struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 	scriptedPlanner
 	reason planner.PauseReason
 }
@@ -100,13 +100,13 @@ func TestRun_RequestPause_RejectTerminatesRun(t *testing.T) {
 	rl, reg, coord := newTestRunLoop(t)
 	p := &pausingPlanner{reason: planner.PauseApprovalRequired}
 
-	done := make(chan struct {
+	done := make(chan struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		fin planner.Finish
 		err error
 	}, 1)
 	go func() {
 		fin, err := rl.Run(context.Background(), runSpecFor(runA, p))
-		done <- struct {
+		done <- struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 			fin planner.Finish
 			err error
 		}{fin, err}
@@ -179,13 +179,13 @@ func TestRun_CancelWhilePaused_TerminatesRun(t *testing.T) {
 	rl, reg, coord := newTestRunLoop(t)
 	p := &pausingPlanner{reason: planner.PauseApprovalRequired}
 
-	done := make(chan struct {
+	done := make(chan struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		fin planner.Finish
 		err error
 	}, 1)
 	go func() {
 		fin, err := rl.Run(context.Background(), runSpecFor(runA, p))
-		done <- struct {
+		done <- struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 			fin planner.Finish
 			err error
 		}{fin, err}
@@ -282,7 +282,7 @@ func TestRun_InjectContextWhilePaused_SurvivesToNextStep(t *testing.T) {
 	}
 }
 
-type pauseThenObservePlanner struct {
+type pauseThenObservePlanner struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 	scriptedPlanner
 	observed planner.ControlSignals
 	step     int
@@ -349,7 +349,7 @@ func TestRunLoopOptions_AreApplied(t *testing.T) {
 }
 
 // recordingBus is a minimal EventBus that records published events.
-type recordingBus struct {
+type recordingBus struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 	mu        sync.Mutex
 	published []events.Event
 }

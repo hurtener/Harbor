@@ -39,13 +39,8 @@ import (
 type CatalogProjector struct {
 	catalog   tools.ToolCatalog
 	annotator Annotator
-	// adminMu guards the in-memory approval-policy overrides the
-	// default (annotator-less) admin path records. Production wiring
-	// supplies an Annotator whose SetApprovalPolicy persists; the
-	// in-memory map is the conservative fallback so the admin method is
-	// never a silent no-op.
-	adminMu   sync.RWMutex
 	overrides map[string]prototypes.ToolApprovalPolicy
+	adminMu   sync.RWMutex
 }
 
 // Annotator is the optional per-tool annotation backend

@@ -110,16 +110,10 @@ func New(resolver Resolver) *Executor {
 // Either Result is populated (success) or Err is populated (failure)
 // — never both. Cancelled branches surface Err = context.Canceled.
 type Result struct {
-	// Index is the branch's position in the input [planner.CallParallel.Branches]
-	// slice. Stable for the lifetime of the call.
-	Index int
-	// Tool is the branch's tool name. Same as Branches[Index].Tool.
-	Tool string
-	// Result is the [tools.ToolResult] on success. Nil on failure /
-	// cancellation.
+	Err    error
 	Result *tools.ToolResult
-	// Err is the upstream error on failure. Nil on success.
-	Err error
+	Tool   string
+	Index  int
 }
 
 // Execute dispatches the [planner.CallParallel] Decision per the
@@ -214,7 +208,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel) ([]Re
 		if desc.Validate != nil {
 			if err := desc.Validate(b.Args); err != nil {
 				return nil, fmt.Errorf(
-					"%w: branch[%d] tool=%q: %v",
+					"%w: branch[%d] tool=%q: %w",
 					planner.ErrParallelBranchInvalidArgs, i, b.Tool, err,
 				)
 			}
@@ -356,7 +350,7 @@ func (e *Executor) dispatchFirstSuccess(
 			// Drain remaining without blocking on them (the goroutine
 			// above will close sigCh when all wg.Done() fire).
 			go func() {
-				for range sigCh { //nolint:revive // drain
+				for range sigCh {
 				}
 			}()
 			return []Result{s.res}, nil
@@ -418,7 +412,7 @@ func (e *Executor) dispatchN(
 				cancel()
 				// Drain the rest async.
 				go func() {
-					for range sigCh { //nolint:revive // drain
+					for range sigCh {
 					}
 				}()
 				return successes, nil
@@ -437,7 +431,7 @@ func (e *Executor) dispatchN(
 	}
 	joined := errors.Join(errs...)
 	return successes, fmt.Errorf(
-		"%w: JoinN N=%d reached %d successes only: %v",
+		"%w: JoinN N=%d reached %d successes only: %w",
 		planner.ErrParallelThresholdUnmet, n, len(successes), joined,
 	)
 }

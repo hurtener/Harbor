@@ -54,10 +54,10 @@ func init() {
 // transport are operator-supplied identifiers, not user input).
 type ToolInvokedPayload struct {
 	events.SafeSealed
+	StartedAt time.Time
 	Identity  identity.Quadruple
 	ToolName  string
 	Transport TransportKind
-	StartedAt time.Time
 }
 
 // ToolCompletedPayload is the typed payload for
@@ -79,9 +79,9 @@ type ToolFailedPayload struct {
 	Identity     identity.Quadruple
 	ToolName     string
 	Transport    TransportKind
-	Attempts     int
 	ErrorClass   ErrorClass
 	ErrorMessage string
+	Attempts     int
 }
 
 // ToolInvalidArgsPayload is the typed payload for
@@ -101,10 +101,10 @@ type ToolInvalidArgsPayload struct {
 // EventTypeToolPolicyExhausted. SafePayload.
 type ToolPolicyExhaustedPayload struct {
 	events.SafeSealed
-	Identity   identity.Quadruple
-	ToolName   string
-	Transport  TransportKind
-	Attempts   int
-	LastClass  ErrorClass
-	LastError  string
+	Identity  identity.Quadruple
+	ToolName  string
+	Transport TransportKind
+	LastClass ErrorClass
+	LastError string
+	Attempts  int
 }

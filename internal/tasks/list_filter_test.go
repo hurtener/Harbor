@@ -201,7 +201,7 @@ func TestListFilterFromWire_PureFunction_ConcurrentReuse(t *testing.T) {
 	errs := make([]error, n)
 	results := make([]TaskFilter, n)
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(idx int) {
 			defer wg.Done()
 			rf, err := ListFilterFromWire(wire)
@@ -210,7 +210,7 @@ func TestListFilterFromWire_PureFunction_ConcurrentReuse(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if errs[i] != nil {
 			t.Fatalf("concurrent call %d error = %v", i, errs[i])
 		}

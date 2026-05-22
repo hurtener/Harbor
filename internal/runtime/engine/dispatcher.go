@@ -29,58 +29,17 @@ import (
 //   - Subqueues are created lazily on first envelope for a RunID and
 //     closed on Cancel(runID) or engine Stop.
 type dispatcher struct {
-	outlet chan messages.Envelope
-	// anyRun receives envelopes that any Fetch (no run filter) can
-	// consume. Phase 10's Fetch reads exclusively from anyRun;
-	// FetchByRun(runID) reads from runQueues[runID]. Both modes coexist
-	// because the dispatcher writes to BOTH targets: the per-run
-	// subqueue AND anyRun (the latter so FetchAny doesn't have to scan
-	// every subqueue).
-	anyRun chan messages.Envelope
-
-	mu        sync.Mutex
-	runQueues map[string]*runQueue
-	// fetcherActive[runID] tracks whether a FetchByRun is currently in
-	// flight for that run. Used to enforce the
-	// "concurrent FetchByRun forbidden" contract (brief 01 §5). The
-	// flag is set on entry and cleared on exit; only one goroutine
-	// holds it at a time per run.
+	outlet        chan messages.Envelope
+	anyRun        chan messages.Envelope
+	runQueues     map[string]*runQueue
 	fetcherActive map[string]*atomic.Bool
-	// subscribed records runIDs that have had at least one FetchByRun
-	// call. Once a run is subscribed, the dispatcher's per-run
-	// subqueue write becomes BLOCKING (backpressure-bound delivery).
-	// Until then, the write is non-blocking with drop-on-full so a
-	// Fetch-only consumer doesn't backpressure-cascade the dispatcher
-	// (the Phase 12 cross-run no-deadlock guarantee). Set on first
-	// FetchByRun for a run; never cleared (subscription is permanent
-	// for the run's lifetime).
-	subscribed map[string]struct{}
-	// cancelled tracks runIDs whose subqueues have been closed by
-	// Cancel(runID). FetchByRun checks this before opening a new
-	// subscription so a race between Cancel and FetchByRun returns
-	// ErrRunCancelled deterministically.
-	cancelled map[string]struct{}
-	// subqueueSize is the bounded capacity of each per-run subqueue
-	// AND of anyRun. Defaults to the engine's queueSize so the
-	// backpressure shape is symmetric across the demux.
-	subqueueSize int
-
-	// onFetched is invoked after the consumer has drained an envelope
-	// via fetchAny or fetchByRun. Used by Phase 12 to release the
-	// run's streaming capacity counter so EmitChunk waiters can wake.
-	// nil = no-op (Phase 10 behavior). The callback runs synchronously
-	// on the calling goroutine; keep it short.
-	//
-	// Why fetch-time and not route-time: the producer must block
-	// until the CONSUMER catches up, not until the dispatcher has
-	// queued the frame. Releasing on dispatcher-route would let a
-	// fast dispatcher unblock the producer ahead of an unresponsive
-	// consumer, defeating the backpressure semantic the test
-	// `TestEmitChunk_BlocksAtCapacity_ReleasedOnDrain` pins.
-	onFetched func(messages.Envelope)
-
-	done chan struct{}
-	wg   sync.WaitGroup
+	subscribed    map[string]struct{}
+	cancelled     map[string]struct{}
+	onFetched     func(messages.Envelope)
+	done          chan struct{}
+	wg            sync.WaitGroup
+	subqueueSize  int
+	mu            sync.Mutex
 }
 
 // runQueue carries the per-run subqueue state. The `data` channel is

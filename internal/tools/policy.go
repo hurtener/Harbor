@@ -63,34 +63,13 @@ const (
 // per-node NodePolicy wraps each step inside the flow's engine.
 // No double-wrapping at any single layer.
 type ToolPolicy struct {
-	// TimeoutMS is the per-attempt deadline in milliseconds. 0
-	// means "use DefaultPolicy.TimeoutMS (30000)". When the policy
-	// is overridden via WithPolicy, 0 means "no per-attempt
-	// timeout" (the ctx's deadline still applies).
-	TimeoutMS int
-	// MaxRetries is the count of retry attempts AFTER the initial
-	// invocation. Total invocations = MaxRetries + 1. 0 (zero
-	// value) means "use DefaultPolicy.MaxRetries (3)".
-	MaxRetries int
-	// BackoffBase is the first-retry sleep before retry attempt 1.
-	// Subsequent retries multiply by BackoffMult, capped at
-	// BackoffMax. 0 means "use DefaultPolicy.BackoffBase (100ms)".
+	Validate    ValidateMode
+	RetryOn     []ErrorClass
+	TimeoutMS   int
+	MaxRetries  int
 	BackoffBase time.Duration
-	// BackoffMult is the multiplier between successive retry
-	// sleeps. 0 means "use DefaultPolicy.BackoffMult (2)".
 	BackoffMult float64
-	// BackoffMax caps the per-retry sleep regardless of mult. 0
-	// means "use DefaultPolicy.BackoffMax (30s)".
-	BackoffMax time.Duration
-	// RetryOn lists which ErrorClasses are retryable. Empty (zero
-	// value) means "use DefaultPolicy.RetryOn ([transient, timeout,
-	// 5xx])". An empty non-nil slice (explicitly set to []) means
-	// "retry on nothing" (one attempt only).
-	RetryOn []ErrorClass
-	// Validate selects which side(s) of the invocation the shell
-	// validates. Zero value means "use DefaultPolicy.Validate
-	// (ValidateBoth)".
-	Validate ValidateMode
+	BackoffMax  time.Duration
 }
 
 // DefaultPolicy returns the policy applied when ToolPolicy is
@@ -193,18 +172,18 @@ type DescriptorOption func(*descriptorConfig)
 // descriptorConfig accumulates option settings; drivers consume the
 // resolved config when building their ToolDescriptor.
 type descriptorConfig struct {
-	policy      ToolPolicy
+	bus         events.EventBus
 	description string
-	tags        []string
-	authScopes  []string
-	examples    []ToolExample
 	sideEffect  SideEffect
 	loading     LoadingMode
 	costHint    string
-	latencyHint time.Duration
 	safetyNotes string
 	source      ToolSourceID
-	bus         events.EventBus
+	tags        []string
+	authScopes  []string
+	examples    []ToolExample
+	policy      ToolPolicy
+	latencyHint time.Duration
 }
 
 // WithPolicy overrides the ToolPolicy applied to the registered
@@ -294,18 +273,18 @@ func WithBus(bus events.EventBus) DescriptorOption {
 // re-implementing it. The fields mirror the unexported
 // descriptorConfig in this file.
 type ResolvedDescriptorConfig struct {
-	Policy      ToolPolicy
+	Bus         events.EventBus
 	Description string
-	Tags        []string
-	AuthScopes  []string
-	Examples    []ToolExample
 	SideEffect  SideEffect
 	Loading     LoadingMode
 	CostHint    string
-	LatencyHint time.Duration
 	SafetyNotes string
 	Source      ToolSourceID
-	Bus         events.EventBus
+	Tags        []string
+	AuthScopes  []string
+	Examples    []ToolExample
+	Policy      ToolPolicy
+	LatencyHint time.Duration
 }
 
 // ResolveOptions applies opts to a fresh ResolvedDescriptorConfig
@@ -391,7 +370,7 @@ func runWithPolicy(
 	var lastErr error
 	var lastClass ErrorClass
 
-	for attempt := 0; attempt < totalAttempts; attempt++ {
+	for attempt := range totalAttempts {
 		// Honor ctx cancellation between attempts.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ToolResult{}, ctxErr
@@ -493,7 +472,7 @@ func nextBackoff(attempt int, base, max time.Duration, mult float64, rand func()
 	}
 
 	growth := float64(base)
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		growth *= mult
 	}
 	if growth > float64(time.Duration(1<<62)) {

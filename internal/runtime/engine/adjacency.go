@@ -15,8 +15,8 @@ import (
 //   - the graph contains no cycle unless the cycle's nodes have
 //     AllowCycle: true.
 type Adjacency struct {
-	From Node
 	To   []Node
+	From Node
 }
 
 // nodeIndex is a name -> Node map built from the adjacency set during

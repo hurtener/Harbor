@@ -36,7 +36,7 @@ func TestErrAuthRequired_Error_DefaultMessage(t *testing.T) {
 
 func TestOAuthConfig_Validate_AllFailureModes(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a table-test struct; positional literals kept for readability
 		name string
 		cfg  OAuthConfig
 		want error
@@ -48,7 +48,7 @@ func TestOAuthConfig_Validate_AllFailureModes(t *testing.T) {
 		{"no server url no token url", OAuthConfig{Source: "s", BindingScope: ScopeUser, RedirectURI: "x"}, ErrConfigInvalid},
 	}
 	for _, c := range cases {
-		c := c
+
 		t.Run(c.name, func(t *testing.T) {
 			err := c.cfg.Validate()
 			if !errors.Is(err, c.want) {

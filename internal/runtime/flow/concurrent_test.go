@@ -52,7 +52,7 @@ func TestFlow_ConcurrentReuse_NoBudgetBleed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -71,14 +71,14 @@ func TestFlow_ConcurrentReuse_NoBudgetBleed(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	type record struct {
+		err     error
 		i       int
 		counter int
-		err     error
 	}
 	results := make([]record, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -174,7 +174,7 @@ func TestFlow_Concurrent_DeadlineFiresIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -193,8 +193,8 @@ func TestFlow_Concurrent_DeadlineFiresIndependently(t *testing.T) {
 	const concurrent = 20
 	var wg sync.WaitGroup
 	errs := make([]error, concurrent)
-	for i := 0; i < concurrent; i++ {
-		i := i
+	for i := range concurrent {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -29,8 +29,8 @@ func validQuadruple() identity.Quadruple {
 // fast walker tests.
 type staticStep struct {
 	decision planner.Decision
-	claim    bool
 	err      error
+	claim    bool
 }
 
 func (s *staticStep) Decide(_ context.Context, _ planner.RunContext) (planner.Decision, bool, error) {
@@ -294,10 +294,8 @@ func TestWakeMode_DeclaresPoll(t *testing.T) {
 func TestWakeMode_PlannerInterfaceSatisfied(t *testing.T) {
 	// Compile-time check (already in deterministic.go); this is a
 	// runtime parity gate too — exercise the interfaces.
+	// The typed assignment is the compile-time planner.Planner check.
 	var p planner.Planner = mustBuildSimplePlanner(t)
-	if p == nil {
-		t.Fatal("DeterministicPlanner does not satisfy planner.Planner")
-	}
 	wa, ok := p.(planner.WakeAware)
 	if !ok {
 		t.Fatal("DeterministicPlanner does not satisfy planner.WakeAware")

@@ -21,13 +21,12 @@ import (
 // returns the next scripted response in `responses` (with errors).
 // Concurrent-safe: a mutex serialises the cursor.
 type stubClient struct {
-	mu        sync.Mutex
 	responses []llm.CompleteResponse
 	errs      []error
+	seen      []seenCall
 	cursor    int
 	calls     atomic.Int64
-	// per-call recorder for ctx + request inspection
-	seen []seenCall
+	mu        sync.Mutex
 }
 
 type seenCall struct {
@@ -89,8 +88,8 @@ func rcWithIdentity(emit func(events.Event)) planner.RunContext {
 
 // recordingEmit collects events into a slice (mutex-guarded).
 type recordingEmit struct {
-	mu     sync.Mutex
 	events []events.Event
+	mu     sync.Mutex
 }
 
 func (r *recordingEmit) emit(ev events.Event) {

@@ -119,19 +119,9 @@ type SkillView struct {
 
 // DirectoryConfig configures one Directory instance.
 type DirectoryConfig struct {
-	// Pinned is the operator-declared list of skill names to anchor
-	// at the top of every View. Order is preserved across calls.
-	// Names that don't exist under the calling identity are dropped
-	// silently (config + storage may legitimately disagree; storage
-	// wins).
-	Pinned []string
-	// MaxEntries caps the View length. 0 → DefaultMaxEntries (30).
-	// Outside [1, 200] → NewDirectory returns wrapped
-	// ErrInvalidConfig.
+	Selection  Selection
+	Pinned     []string
 	MaxEntries int
-	// Selection picks the unpinned-partition ordering. Empty →
-	// SelectionPinnedThenRecent.
-	Selection Selection
 }
 
 // Directory exposes the virtual-directory snapshot. Built once at
@@ -140,15 +130,12 @@ type DirectoryConfig struct {
 // args; no mutable field on Directory itself changes after
 // construction.
 type Directory struct {
-	store     SkillStore
-	bus       events.EventBus
-	maxEntry  int
-	selection Selection
-	// pinSet is the operator-declared set of pinned names; presence-
-	// only for O(1) membership checks. The ordered slice
-	// (pinnedOrder) preserves the declaration order at View time.
+	store       SkillStore
+	bus         events.EventBus
 	pinSet      map[string]struct{}
+	selection   Selection
 	pinnedOrder []string
+	maxEntry    int
 }
 
 // ErrInvalidConfig — NewDirectory rejected the DirectoryConfig.

@@ -26,12 +26,12 @@ func TestCatalog_ConcurrentReuse_D025(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	var wgWrite sync.WaitGroup
-	for w := 0; w < concurrentWriters; w++ {
-		w := w
+	for w := range concurrentWriters {
+
 		wgWrite.Add(1)
 		go func() {
 			defer wgWrite.Done()
-			for i := 0; i < namesPerWriter; i++ {
+			for i := range namesPerWriter {
 				name := fmt.Sprintf("tool-w%d-n%d", w, i)
 				err := cat.Register(tools.ToolDescriptor{
 					Tool: tools.Tool{Name: name, Loading: tools.LoadingAlways},
@@ -48,7 +48,7 @@ func TestCatalog_ConcurrentReuse_D025(t *testing.T) {
 
 	var wgRead sync.WaitGroup
 	stop := make(chan struct{})
-	for r := 0; r < concurrentReaders; r++ {
+	for range concurrentReaders {
 		wgRead.Add(1)
 		go func() {
 			defer wgRead.Done()
@@ -70,8 +70,8 @@ func TestCatalog_ConcurrentReuse_D025(t *testing.T) {
 	close(stop)
 	wgRead.Wait()
 
-	for w := 0; w < concurrentWriters; w++ {
-		for i := 0; i < namesPerWriter; i++ {
+	for w := range concurrentWriters {
+		for i := range namesPerWriter {
 			name := fmt.Sprintf("tool-w%d-n%d", w, i)
 			d, ok := cat.Resolve(name)
 			if !ok {
@@ -113,7 +113,7 @@ func TestRunWithPolicy_ConcurrentReuse_D025(t *testing.T) {
 	const n = 100
 
 	var counter atomic.Int64
-	invoke := func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
+	invoke := func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
 		c := counter.Add(1)
 		if c%5 == 0 {
 			return tools.ToolResult{}, fmt.Errorf("transient: counter=%d", c)
@@ -137,8 +137,8 @@ func TestRunWithPolicy_ConcurrentReuse_D025(t *testing.T) {
 	errs := make([]error, n)
 
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

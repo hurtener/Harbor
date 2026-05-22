@@ -176,10 +176,10 @@ func testConflictPolicy(t *testing.T, h Harness) {
 
 	// Generated → Generated same content → idempotent.
 	g1 := newSkill("gen-only")
-	if err := h.Store.Upsert(ctx, fixtureID, g1); err != nil {
+	if err = h.Store.Upsert(ctx, fixtureID, g1); err != nil {
 		t.Fatalf("seed generated: %v", err)
 	}
-	if err := h.Store.Upsert(ctx, fixtureID, g1); err != nil {
+	if err = h.Store.Upsert(ctx, fixtureID, g1); err != nil {
 		t.Fatalf("idempotent generated upsert: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func testConflictPolicy(t *testing.T, h Harness) {
 	g2 := g1
 	g2.Description = "evolved"
 	g2.ContentHash = skills.CanonicalContentHash(g2)
-	if err := h.Store.Upsert(ctx, fixtureID, g2); err != nil {
+	if err = h.Store.Upsert(ctx, fixtureID, g2); err != nil {
 		t.Fatalf("LWW generated upsert: %v", err)
 	}
 	got, err = h.Store.Get(ctx, fixtureID, "gen-only")
@@ -233,14 +233,14 @@ func testIdentityRejection(t *testing.T, h Harness) {
 	ctx := context.Background()
 	bad := identity.Quadruple{Identity: identity.Identity{TenantID: "t", UserID: "u"}} // missing session
 	cases := []struct {
-		name string
 		fn   func() error
+		name string
 	}{
-		{"Upsert", func() error { return h.Store.Upsert(ctx, bad, newSkill("x")) }},
-		{"Get", func() error { _, err := h.Store.Get(ctx, bad, "x"); return err }},
-		{"List", func() error { _, err := h.Store.List(ctx, bad, skills.ListFilter{}); return err }},
-		{"Search", func() error { _, err := h.Store.Search(ctx, bad, "x", 5); return err }},
-		{"Delete", func() error { return h.Store.Delete(ctx, bad, "x") }},
+		{name: "Upsert", fn: func() error { return h.Store.Upsert(ctx, bad, newSkill("x")) }},
+		{name: "Get", fn: func() error { _, err := h.Store.Get(ctx, bad, "x"); return err }},
+		{name: "List", fn: func() error { _, err := h.Store.List(ctx, bad, skills.ListFilter{}); return err }},
+		{name: "Search", fn: func() error { _, err := h.Store.Search(ctx, bad, "x", 5); return err }},
+		{name: "Delete", fn: func() error { return h.Store.Delete(ctx, bad, "x") }},
 	}
 	for _, c := range cases {
 		err := c.fn()

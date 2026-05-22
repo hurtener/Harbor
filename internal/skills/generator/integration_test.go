@@ -34,10 +34,10 @@ func TestIntegration_GeneratorEndToEnd_AgainstLocalDB(t *testing.T) {
 
 	deps := newTestDeps(t, bus)
 	catalog := tcat.NewCatalog()
-	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+	if err = skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
 		t.Fatalf("Phase 38 Register: %v", err)
 	}
-	if err := generator.Register(catalog, store, deps); err != nil {
+	if err = generator.Register(catalog, store, deps); err != nil {
 		t.Fatalf("Phase 41 Register: %v", err)
 	}
 
@@ -125,10 +125,10 @@ func TestIntegration_CrossSessionPromotion_AgainstLocalDB(t *testing.T) {
 
 	deps := newTestDeps(t, bus)
 	catalog := tcat.NewCatalog()
-	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+	if err = skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
 		t.Fatalf("Phase 38 Register: %v", err)
 	}
-	if err := generator.Register(catalog, store, deps); err != nil {
+	if err = generator.Register(catalog, store, deps); err != nil {
 		t.Fatalf("Phase 41 Register: %v", err)
 	}
 
@@ -178,12 +178,12 @@ func TestIntegration_CrossSessionPromotion_AgainstLocalDB(t *testing.T) {
 		}
 	}
 	// Also assert via direct Get under idB.
-	if _, err := store.Get(ctxB, idB, "cross-session"); !errors.Is(err, skills.ErrSkillNotFound) {
+	if _, err = store.Get(ctxB, idB, "cross-session"); !errors.Is(err, skills.ErrSkillNotFound) {
 		t.Fatalf("pre-promote Get under B: got %v, want ErrSkillNotFound", err)
 	}
 
 	// Identity A promotes to identity B's session at Scope=project.
-	if err := generator.Promote(ctxA, store, deps, idA, "cross-session",
+	if err = generator.Promote(ctxA, store, deps, idA, "cross-session",
 		[]identity.Quadruple{idB}, skills.ScopeProject); err != nil {
 		t.Fatalf("Promote: %v", err)
 	}

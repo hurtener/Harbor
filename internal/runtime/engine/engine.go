@@ -62,61 +62,31 @@ type Engine interface {
 // engine is the in-memory Engine implementation. All exported
 // methods are concurrent-safe.
 type engine struct {
-	cfg     engineConfig
-	nodes   map[string]Node
-	adjs    []Adjacency
-	inlets  []string // sorted node names with no parent
-	outlets []string // sorted node names with no child
-
-	// engineID is a process-unique identifier minted once at New. It
-	// is immutable for the engine's lifetime and appears on every
-	// TopologyProjection (Phase 74 / D-114). A compiled artifact's
-	// id is set-once at construction — never mutated — so it is
-	// concurrent-reuse-safe (D-025) without synchronisation.
-	engineID string
-
-	// channels[from][to] is the bounded buffer between two adjacent
-	// nodes. inletChans[name] is the ingress channel for an inlet
-	// (where Emit lands). The engine writes to outlet from the
-	// outlet nodes' workers.
-	channels   map[string]map[string]chan messages.Envelope
-	inletChans map[string]chan messages.Envelope
-	outletChan chan messages.Envelope // dispatcher reads here
-
-	dispatcher *dispatcher
-	logger     *slog.Logger // optional; nil-safe via slog.New(slog.DiscardHandler) when unset
-
-	// Lifecycle state. Run sets ctx; Stop cancels it. cancelFn is
-	// the engine's internal context cancel function. running guards
-	// double-Run.
-	mu       sync.Mutex
-	ctx      context.Context
-	cancelFn context.CancelFunc
-	running  bool
-	stopped  atomic.Bool
-	wg       sync.WaitGroup // worker join group
-
-	// Phase 12: per-run streaming capacity bookkeeping.
-	//
-	// capMu guards capacities + runCapacityOverrides. Trackers are
-	// created lazily on first EmitChunk for a run; overrides are
-	// recorded on Engine.Emit when WithRunCapacity is passed. Both
-	// maps grow over time (one entry per run); a run's entry is NOT
-	// reaped on completion in V1 (Phase 13's Cancel and a future
-	// run-end signal will manage cleanup).
-	capMu                sync.Mutex
+	ctx                  context.Context
+	dispatcher           *dispatcher
+	nodes                map[string]Node
+	logger               *slog.Logger
+	activeRuns           map[string]int
+	cancelObservers      map[string][]*cancelObserver
+	cancellations        map[string]*runCancellation
 	capacities           map[string]*runCapacity
+	outletChan           chan messages.Envelope
 	runCapacityOverrides map[string]int
-
-	// Phase 13: per-run cancellation bookkeeping. cancelMu guards
-	// cancellations + cancelObservers; activeRunsMu guards
-	// activeRuns. Both maps grow over time bounded by the cancellation
-	// TTL sweeper.
-	cancelMu        sync.Mutex
-	cancellations   map[string]*runCancellation
-	cancelObservers map[string][]*cancelObserver
-	activeRunsMu    sync.Mutex
-	activeRuns      map[string]int
+	cancelFn             context.CancelFunc
+	channels             map[string]map[string]chan messages.Envelope
+	inletChans           map[string]chan messages.Envelope
+	engineID             string
+	outlets              []string
+	inlets               []string
+	adjs                 []Adjacency
+	cfg                  engineConfig
+	wg                   sync.WaitGroup
+	capMu                sync.Mutex
+	mu                   sync.Mutex
+	cancelMu             sync.Mutex
+	activeRunsMu         sync.Mutex
+	stopped              atomic.Bool
+	running              bool
 }
 
 // New constructs an Engine from a list of adjacencies + options.
@@ -479,7 +449,7 @@ func (e *engine) sendBlocking(ctx context.Context, ch chan messages.Envelope, en
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	defer func() { _ = recover() }() // ch may close mid-send during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // ch may close mid-send during Stop; recover() return intentionally discarded
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -525,7 +495,7 @@ func (e *engine) emitFromNode(ctx context.Context, node string, env messages.Env
 // with a non-full channel could otherwise pick the send and return
 // nil. The pre-check guarantees a cancelled ctx loses to the send.
 func (e *engine) deliverEnvelope(ctx context.Context, ch chan messages.Envelope, env messages.Envelope, nonblocking bool) error {
-	defer func() { _ = recover() }() // channel may close during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // channel may close during Stop; recover() return intentionally discarded
 	if e.stopped.Load() {
 		return ErrEngineStopped
 	}
@@ -601,7 +571,7 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		}
 		if node.Func == nil {
 			// Outlet-only node with no Func: pass-through.
-			_ = e.emitFromNode(ctx, node.Name, env, false)
+			_ = e.emitFromNode(ctx, node.Name, env, false) //nolint:errcheck // best-effort node-event emit on an already-failing path
 			continue
 		}
 		nctx := &NodeContext{engine: e, node: node.Name, lastEnv: env}
@@ -614,7 +584,7 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		// Phase 13: pass the per-run cancel-flag pointer so the shell
 		// can observe cancellation between retries.
 		rcCancel, _ := e.runIsCancelled(env.RunID)
-		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, nil, rcCancel)
+		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, rcCancel)
 		e.markRunDone(env.RunID)
 		if err != nil {
 			e.logWorkerError(env, err)
@@ -804,7 +774,7 @@ func (e *engine) emitErrorEnvelope(ctx context.Context, env messages.Envelope, e
 		DeadlineAt: env.DeadlineAt,
 		Payload:    re,
 	}
-	defer func() { _ = recover() }() // outletChan may be closed during Stop
+	defer func() { _ = recover() }() //nolint:errcheck // outletChan may be closed during Stop; recover() return intentionally discarded
 	// Honour caller cancellation: if the run is being torn down, drop
 	// the error envelope rather than racing the close of outletChan.
 	// The bus + logger paths still observed the error; egress is the

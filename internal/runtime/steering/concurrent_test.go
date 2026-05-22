@@ -41,7 +41,7 @@ func TestConcurrentReuse_Registry(t *testing.T) {
 	wg.Add(n)
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 
@@ -65,7 +65,7 @@ func TestConcurrentReuse_Registry(t *testing.T) {
 			// Enqueue a handful of events; each carries this
 			// goroutine's own run identity.
 			const perRun = 4
-			for j := 0; j < perRun; j++ {
+			for j := range perRun {
 				ev := ControlEvent{
 					Type:         ControlCancel,
 					Identity:     q,
@@ -73,7 +73,7 @@ func TestConcurrentReuse_Registry(t *testing.T) {
 					CallerTenant: q.TenantID,
 					Payload:      map[string]any{"i": i, "j": j},
 				}
-				if err := in.Enqueue(ev); err != nil {
+				if err := in.Enqueue(ev); err != nil { //nolint:govet // per-goroutine err; shadow is required for concurrency safety
 					errCh <- fmt.Errorf("goroutine %d: Enqueue: %w", i, err)
 					return
 				}
@@ -149,11 +149,11 @@ func TestConcurrentReuse_SingleInbox(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(producers)
-	for p := 0; p < producers; p++ {
+	for range producers {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < perProducer; j++ {
-				if err := in.Enqueue(validEvent(runA)); err != nil {
+			for range perProducer {
+				if err := in.Enqueue(validEvent(runA)); err != nil { //nolint:govet // per-goroutine err; shadow is required for concurrency safety
 					t.Errorf("Enqueue: %v", err)
 					return
 				}
@@ -169,7 +169,7 @@ func TestConcurrentReuse_SingleInbox(t *testing.T) {
 		defer close(done)
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			batch, err := in.Drain()
+			batch, err := in.Drain() //nolint:govet // loop-local; err shadow is benign
 			if err != nil {
 				t.Errorf("Drain: %v", err)
 				return
@@ -249,7 +249,7 @@ func TestConcurrentReuse_RunLoop(t *testing.T) {
 		cancelled int
 		finished  int
 	)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()
@@ -313,7 +313,7 @@ func TestConcurrentReuse_RunLoop(t *testing.T) {
 
 	// Bounded wait for goroutines to drain (no time.Sleep-as-sync; a
 	// bounded §11 goroutine-leak assertion).
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if runtime.NumGoroutine() <= baseline+2 {
 			return
 		}

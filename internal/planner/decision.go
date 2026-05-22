@@ -36,14 +36,9 @@ type Decision interface {
 // observability + audit; capped by the Runtime's payload bounds before
 // emit.
 type CallTool struct {
-	// Tool is the name registered in the ToolCatalogView.
-	Tool string
-	// Args is the JSON-encoded argument payload matching the tool's
-	// ArgsSchema. Validation happens at the catalog edge; an invalid
-	// payload produces `tools.ErrToolInvalidArgs` from dispatch.
-	Args json.RawMessage
-	// Reasoning is the planner's free-text justification.
+	Tool      string
 	Reasoning string
+	Args      json.RawMessage
 }
 
 func (CallTool) isDecision() {}
@@ -56,8 +51,8 @@ func (CallTool) isDecision() {}
 // Branches share the same step-level pause/cancel atomicity contract
 // — see Phase 47's plan.
 type CallParallel struct {
-	Branches []CallTool
 	Join     *JoinSpec
+	Branches []CallTool
 }
 
 func (CallParallel) isDecision() {}
@@ -117,8 +112,8 @@ const (
 // existing group (cross-task fan-in pattern).
 type SpawnTask struct {
 	Kind    tasks.TaskKind
-	Spec    SpawnSpec
 	GroupID tasks.TaskGroupID
+	Spec    SpawnSpec
 }
 
 func (SpawnTask) isDecision() {}
@@ -175,8 +170,8 @@ func (AwaitTask) isDecision() {}
 // pauseresume coordinator (RFC §6.3 — depth ≤ 6, ≤ 64 keys, etc.)
 // before serialisation.
 type RequestPause struct {
-	Reason  PauseReason
 	Payload map[string]any
+	Reason  PauseReason
 }
 
 func (RequestPause) isDecision() {}
@@ -191,9 +186,9 @@ func (RequestPause) isDecision() {}
 // IsValidFinishReason). The Runtime rejects an invalid reason with
 // ErrInvalidDecision.
 type Finish struct {
-	Reason   FinishReason
 	Payload  any
 	Metadata map[string]any
+	Reason   FinishReason
 }
 
 func (Finish) isDecision() {}

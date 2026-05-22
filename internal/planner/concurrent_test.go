@@ -52,8 +52,8 @@ func TestFinishPlanner_ConcurrentReuse_D025(t *testing.T) {
 		wrongReason int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			runID := fmt.Sprintf("run-%04d", i)
@@ -136,8 +136,8 @@ func TestFinishPlanner_CancellationDoesNotCrossTalk(t *testing.T) {
 	// every odd-indexed one BEFORE the call; even-indexed ones must
 	// complete cleanly.
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			ctx, cancel := context.WithCancel(context.Background())

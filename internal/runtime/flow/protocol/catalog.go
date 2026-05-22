@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -34,16 +33,10 @@ const flowOutputArtifactNamespace = "flow_run_output"
 // method reads through the registry's own RWMutex; the catalog holds no
 // per-call state.
 type RegistryCatalog struct {
-	registry  *flow.Registry
 	artifacts artifacts.ArtifactStore
+	registry  *flow.Registry
+	clock     func() time.Time
 	threshold int
-	// clock is the wall-clock seam the trailing-24h-window aggregates
-	// read. Production wires `time.Now`; tests inject a deterministic
-	// clock so a time-sensitive run-count assertion is not a
-	// wall-clock-rollover time bomb (CLAUDE.md §11 "time-sensitive
-	// tests use a controllable clock"). Set once at construction; never
-	// mutated (D-025).
-	clock func() time.Time
 }
 
 // CatalogOption configures a RegistryCatalog at construction.
@@ -414,9 +407,9 @@ func bucketMetrics(runs []flow.RunRecord, start, end time.Time, bucket time.Dura
 		n = 1
 	}
 	type acc struct {
+		latencies []time.Duration
 		count     int64
 		successes int64
-		latencies []time.Duration
 		cost      float64
 	}
 	accs := make([]acc, n)
@@ -479,8 +472,3 @@ func percentiles(d []time.Duration) (p50, p95 time.Duration) {
 
 // compile-time assertion that RegistryCatalog satisfies Catalog.
 var _ Catalog = (*RegistryCatalog)(nil)
-
-// errRunInvoke is returned by RegistryInvoker when an Invoke call
-// targets an unknown flow. It carries ErrNotFound so the Surface
-// classifies it correctly.
-var errRunInvoke = errors.New("flow/protocol: run invocation failed")

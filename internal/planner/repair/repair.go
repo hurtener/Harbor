@@ -156,8 +156,8 @@ var ErrToolUnknown = errors.New("repair: tool unknown to catalog")
 // Construct via [New]; call [RepairLoop.Run] to execute one planner
 // step's worth of repair work.
 type RepairLoop struct {
-	cfg    Config
 	parser *ActionParser
+	cfg    Config
 }
 
 // New constructs a [RepairLoop] from the supplied [Config]. A zero-
@@ -251,7 +251,7 @@ func (l *RepairLoop) Run(
 		actions, parseErr := l.parser.Parse(resp.Content)
 		if parseErr != nil || len(actions) == 0 {
 			reason := "parser failed: " + parserErrorReason(parseErr)
-			reasons = append(reasons, truncate(reason, reasonTruncateBytes))
+			reasons = append(reasons, truncate(reason))
 			consecutiveArgFails++
 			if l.tripped(consecutiveArgFails) {
 				return l.gracefulFailure(ctx, rc, attempts, consecutiveArgFails, reasons), nil
@@ -288,7 +288,7 @@ func (l *RepairLoop) Run(
 		bad := actions[firstBadIdx]
 		reason := fmt.Sprintf("tool=%s arg-validation: %s",
 			safeName(bad.Tool), firstBadErr.Error())
-		reasons = append(reasons, truncate(reason, reasonTruncateBytes))
+		reasons = append(reasons, truncate(reason))
 		consecutiveArgFails++
 
 		if l.tripped(consecutiveArgFails) {
@@ -465,12 +465,13 @@ func safeName(s string) string {
 	return b.String()
 }
 
-// truncate caps a string at n bytes (rune-aware) appending an ellipsis.
-func truncate(s string, n int) string {
-	if len(s) <= n {
+// truncate caps a string at reasonTruncateBytes (rune-aware), appending
+// an ellipsis when it overflows.
+func truncate(s string) string {
+	if len(s) <= reasonTruncateBytes {
 		return s
 	}
-	return s[:n] + "…"
+	return s[:reasonTruncateBytes] + "…"
 }
 
 // parserErrorReason extracts a one-line reason from a parser error

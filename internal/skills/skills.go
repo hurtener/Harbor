@@ -92,29 +92,29 @@ const (
 //   - `Origin` ∈ {OriginPack, OriginGenerated}
 //   - `Scope` ∈ {ScopeSession, ScopeProject, ScopeTenant, ScopeGlobal}
 type Skill struct {
-	Name           string
-	Title          string
-	Description    string
-	Trigger        string
+	LastUsed       time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Extra          map[string]any
 	TaskType       string
-	Tags           []string
-	Steps          []string
-	Preconditions  []string
-	FailureModes   []string
-	RequiredTools  []string
-	RequiredNS     []string
-	RequiredTags   []string
+	Name           string
+	ScopeTenantID  string
+	Trigger        string
+	Description    string
+	Title          string
+	ContentHash    string
+	ScopeProjectID string
 	Origin         Origin
 	OriginRef      string
 	Scope          Scope
-	ScopeTenantID  string
-	ScopeProjectID string
-	ContentHash    string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastUsed       time.Time
+	Tags           []string
+	RequiredTags   []string
+	RequiredNS     []string
+	RequiredTools  []string
+	FailureModes   []string
+	Preconditions  []string
+	Steps          []string
 	UseCount       int
-	Extra          map[string]any
 }
 
 // Validate returns `ErrInvalidSkill` when any mandatory field is
@@ -168,9 +168,9 @@ type ListFilter struct {
 //   - Exact path: 1.0 (lowercase equality on
 //     `name | title | trigger | tags`).
 type RankedSkill struct {
+	Path  string
 	Skill Skill
 	Score float64
-	Path  string
 }
 
 // Search-result paths.
@@ -398,7 +398,7 @@ func registeredNames() string {
 // mandatory contract.
 func ValidateIdentity(q identity.Quadruple) error {
 	if err := identity.Validate(q.Identity); err != nil {
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return nil
 }
@@ -416,14 +416,14 @@ func ValidateIdentity(q identity.Quadruple) error {
 func IdentityFromCtx(ctx context.Context) (identity.Quadruple, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return q, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}
 	if id, ok := identity.From(ctx); ok {
 		q := identity.Quadruple{Identity: id}
 		if err := identity.Validate(id); err != nil {
-			return q, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return q, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}

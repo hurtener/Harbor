@@ -73,13 +73,13 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 		deregister = nctx.engine.onRunCancelled(parentEnv.RunID, func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer ccancel()
-			_, _ = child.Cancel(cctx, parentEnv.RunID)
+			_, _ = child.Cancel(cctx, parentEnv.RunID) //nolint:errcheck // best-effort child cancel during cleanup; error cannot be acted on
 			cancelChild()
 		})
 	}
 	defer deregister()
 
-	if err := child.Run(childCtx); err != nil {
+	if err = child.Run(childCtx); err != nil {
 		stopChildBestEffort(child)
 		return messages.Envelope{}, fmt.Errorf("engine: subflow Run: %w", err)
 	}
@@ -88,7 +88,7 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 	// the multiple return points stay readable.
 	defer stopChildBestEffort(child)
 
-	if err := child.Emit(childCtx, parentEnv); err != nil {
+	if err = child.Emit(childCtx, parentEnv); err != nil {
 		return messages.Envelope{}, fmt.Errorf("engine: subflow Emit: %w", err)
 	}
 
@@ -105,5 +105,5 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 func stopChildBestEffort(child Engine) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = child.Stop(stopCtx)
+	_ = child.Stop(stopCtx) //nolint:errcheck // best-effort child stop during cleanup; error cannot be acted on
 }

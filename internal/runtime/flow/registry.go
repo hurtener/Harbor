@@ -35,54 +35,34 @@ type Metadata struct {
 // non-admin Console caller sees only their own tenant's runs), so the
 // record carries the full triple it executed under.
 type RunRecord struct {
-	// RunID is the run's stable identifier.
-	RunID string
-	// FlowName is the registered flow this run executed.
-	FlowName string
-	// Identity is the (tenant, user, session) the run executed under.
-	Identity identity.Identity
-	// Trigger is what initiated the run — "user" / "planner" / "system".
-	Trigger string
-	// Status is the run's outcome — "running" / "succeeded" / "failed"
-	// / "cancelled".
-	Status string
-	// StartedAt is the wall-clock time the run started.
-	StartedAt time.Time
-	// Duration is the run's wall-clock duration. Zero for an in-flight
-	// run.
-	Duration time.Duration
-	// CostUSD is the run's recorded cost.
-	CostUSD float64
-	// ErrorClass is a short classification of a failure. Empty for a
-	// non-failed run.
+	StartedAt  time.Time
+	Identity   identity.Identity
+	RunID      string
+	FlowName   string
+	Trigger    string
+	Status     string
 	ErrorClass string
-	// NodeStates is the run's per-node execution timeline.
+	Output     string
 	NodeStates []NodeRunRecord
-	// Output is the run's final output preview (post-redaction). The
-	// Catalog applies the D-026 heavy-content bypass before shipping it.
-	Output string
+	Duration   time.Duration
+	CostUSD    float64
 }
 
 // NodeRunRecord is one node's slice of a run's per-node timeline.
 type NodeRunRecord struct {
-	// NodeID is the node's identifier within the flow.
-	NodeID string
-	// Status is the node's outcome within the run.
-	Status string
-	// Duration is the node's wall-clock duration.
-	Duration time.Duration
-	// Retries is the number of times the node was retried.
-	Retries int
-	// ErrorClass is a short classification of a node failure.
+	NodeID     string
+	Status     string
 	ErrorClass string
+	Duration   time.Duration
+	Retries    int
 }
 
 // registeredFlow bundles a flow's runnable Definition with its catalog
 // Metadata and its bounded run-history ring.
 type registeredFlow struct {
-	def  Definition
 	meta Metadata
 	runs []RunRecord
+	def  Definition
 }
 
 // maxRunHistoryPerFlow bounds the per-flow run-history ring. A flow
@@ -104,8 +84,8 @@ const maxRunHistoryPerFlow = 1000
 // and run recording take the write lock; catalog reads take the read
 // lock. The Registry holds no per-call state.
 type Registry struct {
-	mu    sync.RWMutex
 	flows map[string]*registeredFlow
+	mu    sync.RWMutex
 }
 
 // NewRegistry builds an empty flow Registry.

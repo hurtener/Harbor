@@ -22,7 +22,7 @@ import (
 // via `nctx.EmitChunk`. The synthetic input envelope drives one
 // invocation; the test fetches the resulting frames from the
 // engine's egress.
-func streamingTestEngine(t *testing.T, policy engine.NodePolicy, nodeFunc engine.NodeFunc, opts ...engine.Option) engine.Engine {
+func streamingTestEngine(t *testing.T, policy engine.NodePolicy, nodeFunc engine.NodeFunc) engine.Engine {
 	t.Helper()
 	node := engine.Node{
 		Name:   "producer",
@@ -31,15 +31,11 @@ func streamingTestEngine(t *testing.T, policy engine.NodePolicy, nodeFunc engine
 	}
 	eng, err := engine.New([]engine.Adjacency{
 		{From: node},
-	}, opts...)
+	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
 	return eng
-}
-
-func streamCtx(runID string) (context.Context, context.CancelFunc) {
-	return context.WithCancel(context.Background())
 }
 
 func streamEnv(runID string) messages.Envelope {
@@ -51,23 +47,6 @@ func streamEnv(runID string) messages.Envelope {
 		},
 		SessionID: "sess",
 		RunID:     runID,
-	}
-}
-
-// readyChannel signals via a buffered channel of size 1; the producer
-// can be paused / resumed from the test goroutine without time.Sleep.
-type readyChannel struct {
-	c chan struct{}
-}
-
-func newReadyChannel() *readyChannel {
-	return &readyChannel{c: make(chan struct{}, 1)}
-}
-
-func (r *readyChannel) signal() {
-	select {
-	case r.c <- struct{}{}:
-	default:
 	}
 }
 
@@ -105,7 +84,7 @@ func TestEmitChunk_SeqMonotonicPerStream(t *testing.T) {
 	t.Parallel()
 	const k = 5
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
-		for i := 0; i < k; i++ {
+		for i := range k {
 			if err := nctx.EmitChunk(ctx, engine.StreamFrame{Text: fmt.Sprintf("f%d", i)}); err != nil {
 				return messages.Envelope{}, err
 			}
@@ -122,7 +101,7 @@ func TestEmitChunk_SeqMonotonicPerStream(t *testing.T) {
 	if err := eng.Emit(ctx, streamEnv("run-2")); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	for i := 0; i < k; i++ {
+	for i := range k {
 		out, err := eng.Fetch(ctx)
 		if err != nil {
 			t.Fatalf("Fetch[%d]: %v", i, err)
@@ -162,7 +141,7 @@ func TestEmitChunk_DoneFrame_TerminatesStream(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	// Drain the two emitted frames so capacity unwinds.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := eng.Fetch(ctx); err != nil {
 			t.Fatalf("Fetch[%d]: %v", i, err)
 		}
@@ -261,7 +240,8 @@ func TestEmitChunk_RejectsEmptyRunID(t *testing.T) {
 	// envelope that has empty RunID. The simplest path: use a node
 	// that strips RunID before EmitChunk.
 	emitted := make(chan error, 1)
-	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
+	//nolint:unparam // signature must match engine.NodeFunc.
+	nodeFunc := func(_ context.Context, _ messages.Envelope, _ *engine.NodeContext) (messages.Envelope, error) {
 		// Bypass: construct a sibling NodeContext-like situation by
 		// stripping the RunID from the worker's lastEnv. Phase 12
 		// looks at nctx.lastEnv for the RunID; we can't mutate
@@ -301,8 +281,8 @@ func TestWithRunCapacity_OverridesDefault(t *testing.T) {
 		// waiting (cap=2), then frame 3+ should block until the
 		// consumer drains. Track in-flight via pendingObs.
 		var wg sync.WaitGroup
-		for i := 0; i < wave; i++ {
-			i := i
+		for i := range wave {
+
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -338,7 +318,7 @@ func TestWithRunCapacity_OverridesDefault(t *testing.T) {
 
 	// Slow consumer: Fetch one at a time, verify maxPending never
 	// exceeded `want` + slack for race interleavings.
-	for i := 0; i < wave; i++ {
+	for i := range wave {
 		if _, err := eng.Fetch(ctx); err != nil {
 			t.Fatalf("Fetch[%d]: %v", i, err)
 		}
@@ -346,7 +326,7 @@ func TestWithRunCapacity_OverridesDefault(t *testing.T) {
 		pendingObs.Add(-1)
 	}
 	// Drain emitOrder so the goroutine doesn't leak.
-	for i := 0; i < wave; i++ {
+	for range wave {
 		<-emitOrder
 	}
 	if mp := maxPending.Load(); mp > int32(want)+1 {
@@ -363,8 +343,8 @@ func TestEmitChunk_BlocksAtCapacity_ReleasedOnDrain(t *testing.T) {
 	allEmitted := make(chan struct{})
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		var wg sync.WaitGroup
-		for i := 0; i < burst; i++ {
-			i := i
+		for i := range burst {
+
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -397,9 +377,7 @@ func TestEmitChunk_BlocksAtCapacity_ReleasedOnDrain(t *testing.T) {
 	for startedCount.Load() < int32(burst) && time.Now().Before(deadline) {
 		// brief yield; this is a busy-wait on counter, not a sleep
 		// for synchronization.
-		select {
-		case <-time.After(time.Millisecond):
-		}
+		time.Sleep(time.Millisecond)
 	}
 	// Released should be at most cap (the rest are blocked).
 	if r := releasedCount.Load(); r > int32(cap)+1 {
@@ -408,7 +386,7 @@ func TestEmitChunk_BlocksAtCapacity_ReleasedOnDrain(t *testing.T) {
 
 	// Drain via consumer; each Fetch frees one capacity slot, which
 	// unblocks one producer.
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		if _, err := eng.Fetch(ctx); err != nil {
 			t.Fatalf("Fetch[%d]: %v", i, err)
 		}
@@ -429,8 +407,8 @@ func TestEmitChunk_Stop_ReleasesWaiters(t *testing.T) {
 	allDone := make(chan struct{})
 	nodeFunc := func(ctx context.Context, env messages.Envelope, nctx *engine.NodeContext) (messages.Envelope, error) {
 		var wg sync.WaitGroup
-		for i := 0; i < burst; i++ {
-			i := i
+		for i := range burst {
+
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

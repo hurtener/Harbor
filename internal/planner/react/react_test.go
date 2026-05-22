@@ -26,12 +26,12 @@ import (
 // a different per-goroutine stub to isolate per-call streams; this
 // shared client is the single-run / unit-test fixture.
 type scriptedClient struct {
-	mu        sync.Mutex
 	responses []llm.CompleteResponse
 	errs      []error
+	seenIDs   []identity.Quadruple
 	cursor    int
 	calls     atomic.Int64
-	seenIDs   []identity.Quadruple
+	mu        sync.Mutex
 }
 
 func (s *scriptedClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -88,8 +88,8 @@ func ctxWith(t *testing.T, q identity.Quadruple) context.Context {
 
 // recordingEmit collects events into a slice (mutex-guarded).
 type recordingEmit struct {
-	mu     sync.Mutex
 	events []events.Event
+	mu     sync.Mutex
 }
 
 func (r *recordingEmit) emit(ev events.Event) {
@@ -682,7 +682,7 @@ func TestStepsTaken_TracksSuccessfulNextCalls(t *testing.T) {
 	}
 	p := react.New(client)
 	q := fixedQuadruple(t, "r-counter")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil)); err != nil {
 			t.Fatalf("Next #%d: %v", i+1, err)
 		}
@@ -894,8 +894,8 @@ func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
 // capturingBuilder is a PromptBuilder used to verify
 // WithPromptBuilder / WithSystemPrompt routing.
 type capturingBuilder struct {
-	calls      atomic.Int64
 	lastSystem atomic.Pointer[string]
+	calls      atomic.Int64
 }
 
 func (c *capturingBuilder) Build(rc planner.RunContext, systemPrompt string) llm.CompleteRequest {

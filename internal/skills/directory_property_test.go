@@ -42,11 +42,11 @@ const (
 // propertyTestCase is the input shape every property runs over.
 // quick.Check populates it via the Generate method below.
 type propertyTestCase struct {
-	corpus     []skills.Skill
-	pinned     []string // declaration order
-	maxEntries int      // bounded to [1, 200] in Generate
 	selection  skills.Selection
 	allowed    skills.DirectoryCapability
+	corpus     []skills.Skill
+	pinned     []string
+	maxEntries int
 }
 
 // Generate implements quick.Generator. Produces a bounded,
@@ -65,7 +65,7 @@ func (propertyTestCase) Generate(rnd *rand.Rand, _ int) reflect.Value {
 	pinned := make([]string, 0, n)
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	seen := make(map[string]struct{}, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		name := uniqueName(rnd, seen)
 		s := skills.Skill{
 			Name:          name,

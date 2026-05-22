@@ -15,13 +15,12 @@ import (
 // steering apply path reaches. Every other method panics if called,
 // which is the loud failure a test wants if the apply path drifts.
 type stubTaskRegistry struct {
-	tasks.TaskRegistry // nil embed — calling any other method panics
-
-	mu          sync.Mutex
-	prioCalls   int
-	lastTaskID  tasks.TaskID
-	lastPrio    int
+	tasks.TaskRegistry
 	prioritizeE error
+	lastTaskID  tasks.TaskID
+	prioCalls   int
+	lastPrio    int
+	mu          sync.Mutex
 }
 
 func (s *stubTaskRegistry) Prioritize(_ context.Context, id tasks.TaskID, priority int) (bool, error) {

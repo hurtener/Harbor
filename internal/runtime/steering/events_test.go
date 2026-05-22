@@ -70,8 +70,8 @@ func TestClassifyRejection(t *testing.T) {
 // publish-failure unit cases below. The auth-scope-per-event
 // integration test uses the REAL inmem bus (test/integration).
 type fakeBus struct {
-	published []events.Event
 	failWith  error
+	published []events.Event
 }
 
 func (b *fakeBus) Publish(_ context.Context, ev events.Event) error {

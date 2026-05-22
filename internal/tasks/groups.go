@@ -115,17 +115,17 @@ const (
 // `FailFast` cancels remaining members when the first member fails.
 // `ResolvedAt` is non-nil only on terminal status.
 type TaskGroup struct {
-	ID          TaskGroupID
-	SessionID   identity.Identity
-	OwnerTaskID TaskID
-	Status      TaskGroupStatus
-	RetainTurn  bool
-	FailFast    bool
-	Members     []TaskID
-	Description string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	ResolvedAt  *time.Time
+	SessionID   identity.Identity
+	ID          TaskGroupID
+	OwnerTaskID TaskID
+	Status      TaskGroupStatus
+	Description string
+	Members     []TaskID
+	RetainTurn  bool
+	FailFast    bool
 }
 
 // GroupRequest is the input shape for `ResolveOrCreateGroup`.
@@ -135,12 +135,12 @@ type TaskGroup struct {
 //
 // Identity is mandatory.
 type GroupRequest struct {
-	ID          TaskGroupID
 	SessionID   identity.Identity
+	ID          TaskGroupID
 	OwnerTaskID TaskID
+	Description string
 	RetainTurn  bool
 	FailFast    bool
-	Description string
 }
 
 // GroupAction is the verb a caller passes to `ApplyGroup`.
@@ -184,12 +184,12 @@ const (
 // caller-shaped patch payload; the registry does not interpret it.
 // Identity is mandatory.
 type Patch struct {
-	ID        string
-	SessionID identity.Identity
-	Status    string // "pending" | "applied" | "rejected"
-	Bytes     []byte
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	SessionID identity.Identity
+	ID        string
+	Status    string
+	Bytes     []byte
 }
 
 // GroupCompletion is the typed wake-up payload delivered by
@@ -214,13 +214,13 @@ type Patch struct {
 // the payload to each subscriber's buffered-size-1 channel without
 // blocking.
 type GroupCompletion struct {
-	GroupID     TaskGroupID
-	SessionID   identity.Identity
-	OwnerTaskID TaskID
-	FinalStatus TaskGroupStatus // GroupCompleted | GroupCancelled
 	ResolvedAt  time.Time
+	SessionID   identity.Identity
+	GroupID     TaskGroupID
+	OwnerTaskID TaskID
+	FinalStatus TaskGroupStatus
+	Reason      string
 	Members     []MemberOutcome
-	Reason      string // populated for GroupCancelled (cancel reason); empty otherwise
 }
 
 // MemberOutcome is the per-task terminal record carried inside
@@ -229,10 +229,10 @@ type GroupCompletion struct {
 // `Status == StatusFailed`); neither is populated when
 // `Status == StatusCancelled`.
 type MemberOutcome struct {
-	TaskID TaskID
-	Status TaskStatus
 	Result *TaskResult
 	Error  *TaskError
+	TaskID TaskID
+	Status TaskStatus
 }
 
 // Sentinel errors for the group + patch surface. Callers compare via

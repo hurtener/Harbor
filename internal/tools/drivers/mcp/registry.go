@@ -72,46 +72,30 @@ const (
 // ServerView is the per-server projection the Registry returns. It is a
 // flat shape — no MCP-SDK type crosses the package boundary.
 type ServerView struct {
-	// Name is the unique server / source id.
-	Name string
-	// Transport is the wire transport string.
-	Transport string
-	// URLOrCommand is the transport-prefixed endpoint or argv command.
-	URLOrCommand string
-	// State is the canonical state chip.
-	State ServerState
-	// LastDiscoveryAt is the last successful discovery instant (zero
-	// when discovery has never run).
-	LastDiscoveryAt time.Time
-	// ToolCount / ResourceCount / PromptCount are the advertised counts.
-	ToolCount     int
-	ResourceCount int
-	PromptCount   int
-	// RecentLatencyMs is the most recent observed handshake / probe
-	// latency.
-	RecentLatencyMs int64
-	// ErrorRatePerMin is the transport-error rate over the window.
-	ErrorRatePerMin float64
-	// OAuthBindingCount is the number of OAuth bindings configured.
+	LastDiscoveryAt   time.Time
+	Name              string
+	Transport         string
+	URLOrCommand      string
+	State             ServerState
+	DisplayModes      []string
+	ContentShapes     []string
+	Policy            tools.ToolPolicy
+	ResourceCount     int
+	ErrorRatePerMin   float64
 	OAuthBindingCount int
-	// RawHTMLTrusted reports the per-server raw-HTML trust flag.
-	RawHTMLTrusted bool
-	// DisplayModes lists the advertised MCP-Apps DisplayMode values.
-	DisplayModes []string
-	// ContentShapes lists the canonical content shapes the server's
-	// tools return.
-	ContentShapes []string
-	// Policy is the read-only ToolPolicy projection.
-	Policy tools.ToolPolicy
+	RecentLatencyMs   int64
+	PromptCount       int
+	ToolCount         int
+	RawHTMLTrusted    bool
 }
 
 // ResourceView is one advertised resource.
 type ResourceView struct {
 	URI       string
 	MimeType  string
-	SizeBytes int64
 	Name      string
 	Title     string
+	SizeBytes int64
 }
 
 // PromptView is one advertised prompt.
@@ -138,9 +122,9 @@ type DiscoveryResult struct {
 
 // ProbeResult is the outcome of a Probe call.
 type ProbeResult struct {
-	OK        bool
-	LatencyMs int64
 	Error     string
+	LatencyMs int64
+	OK        bool
 }
 
 // HealthBucket is one handshake-latency sparkline bucket.
@@ -164,20 +148,13 @@ type HealthSnapshot struct {
 
 // ListFilter is the filter shape ListServers applies.
 type ListFilter struct {
-	// State filters to servers in any of the given states. Empty = all.
-	State []ServerState
-	// Transport filters to servers on any of the given transports.
-	Transport []string
-	// HasOAuth, when set, filters on OAuth-binding presence.
-	HasOAuth *bool
-	// HasRecentError, when set, filters on recent-error presence.
+	HasOAuth       *bool
 	HasRecentError *bool
-	// NamePrefix filters to servers whose name has the prefix.
-	NamePrefix string
-	// PageToken is the opaque cursor from a prior page.
-	PageToken string
-	// PageSize is the requested max row count (clamped by the Registry).
-	PageSize int
+	NamePrefix     string
+	PageToken      string
+	State          []ServerState
+	Transport      []string
+	PageSize       int
 }
 
 // Cursor is the opaque pagination cursor a paged read returns.
@@ -222,27 +199,27 @@ type serverEntry struct {
 // serverStats is the mutable runtime state for one server. Guarded by
 // Registry.mu.
 type serverStats struct {
-	state             ServerState
 	lastDiscoveryAt   time.Time
+	state             ServerState
+	latencyBuckets    []HealthBucket
+	reconnects        []ReconnectEntry
 	toolCount         int
 	resourceCount     int
 	promptCount       int
 	recentLatencyMs   int64
 	errorRatePerMin   float64
 	oauthBindingCount int
-	rawHTMLTrusted    bool
-	latencyBuckets    []HealthBucket
-	reconnects        []ReconnectEntry
 	discoveryCounter  int
+	rawHTMLTrusted    bool
 }
 
 // Registry is the process-local MCP-server read API. It is a compiled
 // artifact (D-025) — built once at construction; the provider set is
 // write-once after Register; per-server stats are guarded by mu.
 type Registry struct {
-	mu      sync.RWMutex
 	servers map[string]*serverEntry
 	clock   func() time.Time
+	mu      sync.RWMutex
 }
 
 // RegistryOption configures a Registry at construction.
@@ -273,24 +250,14 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 // ServerRegistration is the operator-supplied static descriptor for one
 // MCP server attachment the Registry tracks.
 type ServerRegistration struct {
-	// Provider is the live MCP provider. Required.
-	Provider serverProvider
-	// Transport is the wire transport string ("stdio" / "http+sse" /
-	// "streamable-http" / "websocket"). Required.
-	Transport string
-	// URLOrCommand is the transport-prefixed endpoint or argv command.
-	URLOrCommand string
-	// Policy is the server's ToolPolicy. Zero-valued → DefaultPolicy.
-	Policy tools.ToolPolicy
-	// DisplayModes lists the advertised MCP-Apps DisplayMode values.
-	DisplayModes []string
-	// ContentShapes lists the canonical content shapes the tools return.
-	ContentShapes []string
-	// OAuthBindingCount is the configured OAuth binding count.
+	Provider          serverProvider
+	Transport         string
+	URLOrCommand      string
+	InitialState      ServerState
+	DisplayModes      []string
+	ContentShapes     []string
+	Policy            tools.ToolPolicy
 	OAuthBindingCount int
-	// InitialState is the server's starting state. Zero-valued →
-	// ServerStateOffline.
-	InitialState ServerState
 }
 
 // Register adds a server to the Registry. Re-registering the same name
@@ -514,7 +481,7 @@ func (r *Registry) ListResources(ctx context.Context, name string) ([]ResourceVi
 	}
 	out := []ResourceView{}
 	for _, d := range descs {
-		uri, ok := resourceURIFromToolName(string(d.Tool.Name), name)
+		uri, ok := resourceURIFromToolName(d.Tool.Name, name)
 		if !ok {
 			continue
 		}
@@ -545,7 +512,7 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptView, 
 	}
 	out := []PromptView{}
 	for _, d := range descs {
-		pname, ok := promptNameFromToolName(string(d.Tool.Name), name)
+		pname, ok := promptNameFromToolName(d.Tool.Name, name)
 		if !ok {
 			continue
 		}
@@ -616,6 +583,7 @@ func (r *Registry) Probe(ctx context.Context, name string) (*ProbeResult, error)
 	latency := r.clock().Sub(start).Milliseconds()
 	if derr != nil {
 		r.recordError(name)
+		//nolint:nilerr // a failed Discover is a successful probe — the error is reported in ProbeResult.Error.
 		return &ProbeResult{OK: false, LatencyMs: latency, Error: derr.Error()}, nil
 	}
 	r.mu.Lock()
@@ -737,7 +705,7 @@ func appendBucket(buckets []HealthBucket, b HealthBucket) []HealthBucket {
 // slice, using the Phase 28 synthetic-name markers.
 func classifyDescriptors(descs []tools.ToolDescriptor, server string) (toolCount, resourceCount, promptCount int) {
 	for _, d := range descs {
-		name := string(d.Tool.Name)
+		name := d.Tool.Name
 		if _, ok := resourceURIFromToolName(name, server); ok {
 			resourceCount++
 			continue

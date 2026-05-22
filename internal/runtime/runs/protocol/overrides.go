@@ -132,8 +132,8 @@ type PendingOverride struct {
 // override is invisible to every other `(tenant, user, session)` —
 // multi-isolation is enforced by the key, not by a post-fetch filter.
 type Store struct {
-	mu    sync.Mutex
 	slots map[identity.Identity]PendingOverride
+	mu    sync.Mutex
 }
 
 // NewStore builds an empty override Store. The returned *Store is safe

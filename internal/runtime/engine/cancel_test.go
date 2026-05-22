@@ -17,8 +17,8 @@ import (
 // fires. Goroutine-safe so tests can install one shared handler across
 // multiple Cancel calls.
 type recordingCancelHandler struct {
-	mu      sync.Mutex
 	notices []engine.RunCancelledNotice
+	mu      sync.Mutex
 }
 
 func (r *recordingCancelHandler) handle(_ context.Context, n engine.RunCancelledNotice) {
@@ -66,13 +66,13 @@ func TestCancel_HappyPath_ReturnsTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := e.Run(context.Background()); err != nil {
+	if err = e.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	defer func() { _ = e.Stop(context.Background()) }()
 
 	id := ident("T", "U", "S")
-	if err := e.Emit(context.Background(), envFor(id, "R-active")); err != nil {
+	if err = e.Emit(context.Background(), envFor(id, "R-active")); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	select {
@@ -213,22 +213,22 @@ func TestCancel_OneRun_LeavesOtherCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := e.Run(context.Background()); err != nil {
+	if err = e.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	defer func() { _ = e.Stop(context.Background()) }()
 
 	id := ident("T", "U", "S")
-	if err := e.EmitTo(context.Background(), envFor(id, "R-A"), engine.NodeRef{Name: "A"}); err != nil {
+	if err = e.EmitTo(context.Background(), envFor(id, "R-A"), engine.NodeRef{Name: "A"}); err != nil {
 		t.Fatalf("EmitTo A: %v", err)
 	}
-	if err := e.EmitTo(context.Background(), envFor(id, "R-B"), engine.NodeRef{Name: "B"}); err != nil {
+	if err = e.EmitTo(context.Background(), envFor(id, "R-B"), engine.NodeRef{Name: "B"}); err != nil {
 		t.Fatalf("EmitTo B: %v", err)
 	}
 	<-startedA
 	<-startedB
 
-	if _, err := e.Cancel(context.Background(), "R-A"); err != nil {
+	if _, err := e.Cancel(context.Background(), "R-A"); err != nil { //nolint:govet // loop/multi-var; err shadow is benign
 		t.Fatalf("Cancel A: %v", err)
 	}
 	// Release B; verify it reaches egress unaffected by Cancel(R-A).
@@ -263,7 +263,7 @@ func TestCancel_CrossTenant_NoBleed(t *testing.T) {
 
 	// Emit one envelope per tenant. Passthrough → each lands in the
 	// dispatcher's per-run subqueue + anyRun.
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idTri := ident(fmt.Sprintf("T%d", i), "U", "S")
 		if err := e.Emit(context.Background(), envFor(idTri, fmt.Sprintf("R-%d", i))); err != nil {
 			t.Fatalf("Emit %d: %v", i, err)
@@ -321,7 +321,7 @@ func TestCancel_DuringStreaming_NoDeadlock(t *testing.T) {
 		}
 		emittedFirst <- struct{}{}
 		// Burst more frames — RunCapacity=2 so we'll block.
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if err := nctx.EmitChunk(ctx, engine.StreamFrame{Text: fmt.Sprintf("f%d", i)}); err != nil {
 				gotErr <- err
 				return messages.Envelope{}, err
@@ -381,7 +381,7 @@ func TestCancel_Idempotent_Property(t *testing.T) {
 	var trueCount atomic.Int32
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			ok, err := e.Cancel(context.Background(), "R-prop")

@@ -196,11 +196,11 @@ func TestRunWithPolicy_CtxCancellation_ImmediateExit(t *testing.T) {
 }
 
 func TestClassifyError_Heuristics(t *testing.T) {
-	cases := []struct {
-		name         string
-		err          error
-		perAttempt   bool
-		expectedCls  tools.ErrorClass
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
+		name        string
+		err         error
+		perAttempt  bool
+		expectedCls tools.ErrorClass
 	}{
 		{"DeadlineExceeded+perAttempt", context.DeadlineExceeded, true, tools.ErrClassTimeout},
 		{"DeadlineExceeded+parent", context.DeadlineExceeded, false, tools.ErrClassPermanent},

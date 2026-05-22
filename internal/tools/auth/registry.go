@@ -41,30 +41,14 @@ import (
 // dev-stack reads `os.Getenv(cfg.ClientIDEnv)` etc. before calling
 // the factory). A driver that finds them empty fails closed.
 type ProviderConfig struct {
-	// Name is the operator-facing provider name. Surfaced in error
-	// messages.
-	Name string
-	// ClientID is the resolved OAuth client_id (read from the env
-	// var named in `config.ToolOAuthProviderConfig.ClientIDEnv`).
-	// Required — drivers fail closed when empty.
-	ClientID string
-	// ClientSecret is the resolved OAuth client_secret (read from
-	// the env var named in
-	// `config.ToolOAuthProviderConfig.ClientSecretEnv`). Required —
-	// drivers fail closed when empty. NEVER logged.
+	Extra        map[string]string
+	Name         string
+	ClientID     string
 	ClientSecret string
-	// Scopes is the requested OAuth scope list.
-	Scopes []string
-	// AuthURL is the authorization endpoint.
-	AuthURL string
-	// TokenURL is the token endpoint.
-	TokenURL string
-	// RedirectURL is the redirect_uri the Harbor Protocol callback
-	// handler exposes.
-	RedirectURL string
-	// Extra is the driver-specific extras map. Reserved for future
-	// drivers' per-flow knobs; unused by the V1 `oauth2` driver.
-	Extra map[string]string
+	AuthURL      string
+	TokenURL     string
+	RedirectURL  string
+	Scopes       []string
 }
 
 // FactoryDeps bundles the shared collaborators every OAuth provider

@@ -25,8 +25,8 @@ import (
 // fakeClock is a controllable clock used by GC hard-cap / idle tests
 // so they don't time.Sleep (forbidden by AGENTS.md §11).
 type fakeClock struct {
-	mu  sync.Mutex
 	now time.Time
+	mu  sync.Mutex
 }
 
 func newFakeClock(t time.Time) *fakeClock { return &fakeClock{now: t} }
@@ -47,7 +47,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 // drivers. The sweeper's tick interval is overridden to a value that
 // won't fire during the test; tests that need GC drive it explicitly
 // via Registry.GC.
-func testWiring(t *testing.T, opts ...sessions.Option) (*sessions.Registry, events.EventBus, state.StateStore) {
+func testWiring(t *testing.T, opts ...sessions.Option) (*sessions.Registry, events.EventBus) {
 	t.Helper()
 	cfg := &config.Config{
 		Events: config.EventsConfig{
@@ -78,7 +78,7 @@ func testWiring(t *testing.T, opts ...sessions.Option) (*sessions.Registry, even
 		t.Fatalf("sessions.New: %v", err)
 	}
 	t.Cleanup(func() { _ = reg.CloseRegistry(context.Background()) })
-	return reg, bus, store
+	return reg, bus
 }
 
 func ctxFor(id identity.Identity) context.Context {
@@ -94,7 +94,7 @@ func ident(tenant, user, session string) identity.Identity {
 
 func TestRegistry_Open_HappyPath(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	s, err := reg.Open(ctxFor(id), id.SessionID, id)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestRegistry_Open_HappyPath(t *testing.T) {
 
 func TestRegistry_Open_DuplicateOpenSameTriple_Rejected(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("first Open: %v", err)
@@ -123,7 +123,7 @@ func TestRegistry_Open_DuplicateOpenSameTriple_Rejected(t *testing.T) {
 
 func TestRegistry_Open_AfterClose_Rejected(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -139,7 +139,7 @@ func TestRegistry_Open_AfterClose_Rejected(t *testing.T) {
 
 func TestRegistry_Open_EmptyIdentity_Rejected(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	cases := []identity.Identity{
 		{TenantID: "", UserID: "u", SessionID: "s"},
 		{TenantID: "t", UserID: "", SessionID: "s"},
@@ -155,7 +155,7 @@ func TestRegistry_Open_EmptyIdentity_Rejected(t *testing.T) {
 
 func TestRegistry_CrossTenant_SessionIDReuse_Rejected(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	idA := ident("tA", "uA", "shared-sid")
 	idB := ident("tB", "uB", "shared-sid")
 	if _, err := reg.Open(ctxFor(idA), idA.SessionID, idA); err != nil {
@@ -170,14 +170,14 @@ func TestRegistry_CrossTenant_SessionIDReuse_Rejected(t *testing.T) {
 func TestRegistry_Touch_UpdatesLastSeen(t *testing.T) {
 	t.Parallel()
 	clock := newFakeClock(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC))
-	reg, _, _ := testWiring(t, sessions.WithClock(clock))
+	reg, _ := testWiring(t, sessions.WithClock(clock))
 	id := ident("t1", "u1", "s1")
 	s0, err := reg.Open(ctxFor(id), id.SessionID, id)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	clock.Advance(1 * time.Hour)
-	if err := reg.Touch(ctxFor(id), id.SessionID); err != nil {
+	if err = reg.Touch(ctxFor(id), id.SessionID); err != nil {
 		t.Fatalf("Touch: %v", err)
 	}
 	s1, err := reg.Get(ctxFor(id), id.SessionID)
@@ -191,7 +191,7 @@ func TestRegistry_Touch_UpdatesLastSeen(t *testing.T) {
 
 func TestRegistry_Touch_OnClosed_Rejected(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -207,7 +207,7 @@ func TestRegistry_Touch_OnClosed_Rejected(t *testing.T) {
 
 func TestRegistry_Close_Idempotent(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -230,7 +230,7 @@ func TestRegistry_Close_Idempotent(t *testing.T) {
 
 func TestRegistry_Close_EmitsEvent(t *testing.T) {
 	t.Parallel()
-	reg, bus, _ := testWiring(t)
+	reg, bus := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
 		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
@@ -265,7 +265,7 @@ func TestRegistry_Close_EmitsEvent(t *testing.T) {
 
 func TestRegistry_Inspect_RunningFromProbe(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t, sessions.WithGCPolicy(sessions.GCPolicy{
+	reg, _ := testWiring(t, sessions.WithGCPolicy(sessions.GCPolicy{
 		RunningProbe: func(_ context.Context, _ identity.Quadruple) (bool, error) {
 			return true, nil
 		},
@@ -285,7 +285,7 @@ func TestRegistry_Inspect_RunningFromProbe(t *testing.T) {
 
 func TestRegistry_Inspect_OnClosed(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -304,7 +304,7 @@ func TestRegistry_Inspect_OnClosed(t *testing.T) {
 
 func TestRegistry_Identity_Immutable_AcrossTouch(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	storedID := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(storedID), storedID.SessionID, storedID); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -333,7 +333,7 @@ func TestRegistry_GC_NeverReapsRunning(t *testing.T) {
 		SweepInterval: 1 * time.Hour,
 		RunningProbe:  func(_ context.Context, _ identity.Quadruple) (bool, error) { return true, nil },
 	}
-	reg, _, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
+	reg, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -364,7 +364,7 @@ func TestRegistry_GC_ReapsIdleSession(t *testing.T) {
 		HardCap:       100 * time.Hour,
 		SweepInterval: 1 * time.Hour,
 	}
-	reg, _, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
+	reg, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -394,7 +394,7 @@ func TestRegistry_GC_HardCapWins_OverRecentTouch(t *testing.T) {
 		HardCap:       3 * time.Hour,
 		SweepInterval: 1 * time.Hour,
 	}
-	reg, _, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
+	reg, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
 	id := ident("t1", "u1", "s1")
 	if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 		t.Fatalf("Open: %v", err)
@@ -429,7 +429,7 @@ func TestRegistry_GC_EmitsGCReapedEvent(t *testing.T) {
 		HardCap:       100 * time.Hour,
 		SweepInterval: 1 * time.Hour,
 	}
-	reg, bus, _ := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
+	reg, bus := testWiring(t, sessions.WithClock(clock), sessions.WithGCPolicy(policy))
 	id := ident("t1", "u1", "s1")
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
 		Tenant: id.TenantID, User: id.UserID, Session: id.SessionID,
@@ -493,7 +493,7 @@ func TestRegistry_Sweeper_StartsAndStops_NoLeak(t *testing.T) {
 	// No t.Parallel — goroutine-baseline checks are sensitive to
 	// concurrent test goroutines polluting the count.
 	baseline := runtime.NumGoroutine()
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, closeAll := wireExplicit(t)
 		closeAll()
 	}
@@ -515,15 +515,15 @@ func TestRegistry_Sweeper_StartsAndStops_NoLeak(t *testing.T) {
 
 func TestRegistry_ConcurrentReuse_ReuseContract(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 
 	const tenants = 8
 	const sessionsPerTenant = 16
 
 	var wg sync.WaitGroup
 	openErrs := atomic.Int64{}
-	for ti := 0; ti < tenants; ti++ {
-		for si := 0; si < sessionsPerTenant; si++ {
+	for ti := range tenants {
+		for si := range sessionsPerTenant {
 			wg.Add(1)
 			go func(tenant, sess int) {
 				defer wg.Done()
@@ -534,7 +534,7 @@ func TestRegistry_ConcurrentReuse_ReuseContract(t *testing.T) {
 					t.Errorf("Open: %v", err)
 					return
 				}
-				if err := reg.Touch(ctxFor(id), id.SessionID); err != nil {
+				if err := reg.Touch(ctxFor(id), id.SessionID); err != nil { //nolint:govet // per-goroutine err; shadow is required for concurrency safety
 					t.Errorf("Touch: %v", err)
 					return
 				}
@@ -560,10 +560,10 @@ func TestRegistry_ConcurrentReuse_ReuseContract(t *testing.T) {
 
 func TestRegistry_CrossTenant_OpenIsolation(t *testing.T) {
 	t.Parallel()
-	reg, _, _ := testWiring(t)
+	reg, _ := testWiring(t)
 	const tenants = 8
-	for ti := 0; ti < tenants; ti++ {
-		for si := 0; si < 4; si++ {
+	for ti := range tenants {
+		for si := range 4 {
 			id := ident(fmt.Sprintf("t-%d", ti), fmt.Sprintf("u-%d", ti), fmt.Sprintf("s-%d-%d", ti, si))
 			if _, err := reg.Open(ctxFor(id), id.SessionID, id); err != nil {
 				t.Fatalf("Open(%s): %v", id.SessionID, err)

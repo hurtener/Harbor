@@ -149,21 +149,21 @@ const (
 // intentionally narrow at Phase 20 so the Phase 21 PR adds those
 // fields against a stable shape.
 type Task struct {
-	ID                TaskID
-	Identity          identity.Quadruple
-	Kind              TaskKind
-	Status            TaskStatus
-	Priority          int
 	ParentTaskID      *TaskID
+	Error             *TaskError
+	Result            *TaskResult
+	Identity          identity.Quadruple
+	Status            TaskStatus
 	Description       string
 	Query             string
-	Result            *TaskResult
-	Error             *TaskError
+	ID                TaskID
+	Kind              TaskKind
 	PropagateOnCancel string
-	NotifyOnComplete  bool
 	IdempotencyKey    string
-	CreatedAt         int64 // unix nanoseconds; matches sessions / events convention
-	UpdatedAt         int64 // unix nanoseconds
+	Priority          int
+	CreatedAt         int64
+	UpdatedAt         int64
+	NotifyOnComplete  bool
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -179,16 +179,16 @@ type Task struct {
 // new task as a member. Empty `GroupID` is the default — most
 // foreground turns aren't group members.
 type SpawnRequest struct {
+	ParentTaskID      *TaskID
 	Identity          identity.Quadruple
 	Kind              TaskKind
-	ParentTaskID      *TaskID
 	Description       string
 	Query             string
-	Priority          int
 	IdempotencyKey    string
 	PropagateOnCancel string
-	NotifyOnComplete  bool
 	GroupID           TaskGroupID
+	Priority          int
+	NotifyOnComplete  bool
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
@@ -202,16 +202,16 @@ type SpawnRequest struct {
 // `GroupID` (Phase 21, optional) wires the new tool task into an
 // existing `TaskGroup`. See `SpawnRequest.GroupID` for the contract.
 type SpawnToolRequest struct {
-	Identity          identity.Quadruple
 	ParentTaskID      *TaskID
+	Identity          identity.Quadruple
 	ToolName          string
-	ToolArgs          json.RawMessage
 	Description       string
-	Priority          int
 	IdempotencyKey    string
 	PropagateOnCancel string
-	NotifyOnComplete  bool
 	GroupID           TaskGroupID
+	ToolArgs          json.RawMessage
+	Priority          int
+	NotifyOnComplete  bool
 }
 
 // TaskHandle is the return shape of `Spawn` / `SpawnTool`. `Reused`

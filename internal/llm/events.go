@@ -90,12 +90,12 @@ type PostureReadAdminPayload struct {
 // type, and size are operator-visible content metadata, not secrets.
 type ImageMaterializedPayload struct {
 	events.SafeSealed
+	OccurredAt  time.Time
 	Identity    identity.Quadruple
 	Model       string
 	ArtifactRef string
 	MIME        string
 	SizeBytes   int64
-	OccurredAt  time.Time
 }
 
 // ContextLeakPayload is the typed payload for EventTypeContextLeak.
@@ -108,12 +108,12 @@ type ImageMaterializedPayload struct {
 // emit, so an operator can correlate config-change-time drift.
 type ContextLeakPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Model      string
 	LeakSite   string
 	SizeBytes  int64
 	Threshold  int
-	OccurredAt time.Time
 }
 
 // ContextWindowExceededPayload is the typed payload for
@@ -121,12 +121,12 @@ type ContextLeakPayload struct {
 // configured cap are operator-visible.
 type ContextWindowExceededPayload struct {
 	events.SafeSealed
+	OccurredAt           time.Time
 	Identity             identity.Quadruple
 	Model                string
 	EstimatedTokens      int
 	ContextWindowTokens  int
 	ContextWindowReserve float64
-	OccurredAt           time.Time
 }
 
 // CostRecordedPayload is the typed payload for EventTypeCostRecorded.
@@ -134,11 +134,11 @@ type ContextWindowExceededPayload struct {
 // subscribes for per-identity accumulator updates.
 type CostRecordedPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Model      string
-	Cost       Cost
 	Usage      Usage
-	OccurredAt time.Time
+	Cost       Cost
 }
 
 // ModeDowngradedPayload is the typed payload for
@@ -148,6 +148,7 @@ type CostRecordedPayload struct {
 // `ResponseFormatKind` for backward visibility.
 type ModeDowngradedPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Model      string
 	FromMode   OutputMode
@@ -155,7 +156,6 @@ type ModeDowngradedPayload struct {
 	From       ResponseFormatKind
 	To         ResponseFormatKind
 	Reason     string
-	OccurredAt time.Time
 }
 
 // RetryWithFeedbackPayload (Phase 36) is the typed payload for
@@ -165,10 +165,10 @@ type ModeDowngradedPayload struct {
 // Reason at 256 characters to keep audit payloads bounded.
 type RetryWithFeedbackPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Model      string
+	Reason     string
 	Attempt    int
 	MaxRetries int
-	Reason     string
-	OccurredAt time.Time
 }

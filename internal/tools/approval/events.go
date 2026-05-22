@@ -53,26 +53,11 @@ func init() {
 // pending map and never reach the bus.
 type ToolApprovalRequestedPayload struct {
 	events.SafeSealed
-	// Tool is the tool name the planner / runtime chose; surfaced by
-	// the Console as "Approve call to <Tool>?".
-	Tool string
-	// PauseToken is the unified pause/resume Coordinator's Token —
-	// observers correlate this to the `pause.requested` event and the
-	// later `pause.resumed` / `tool.approved` / `tool.rejected`.
-	PauseToken string
-	// Reason is the operator-facing classification the
-	// `ApprovalPolicy` returned. Low-cardinality by convention.
-	Reason string
-	// Tags is the caller-supplied classification surface the policy
-	// branched on.
-	Tags []string
-	// ArgsSummary is the audit-redacted summary of the tool args.
-	// The redactor runs over a generic shape (map[string]any) at the
-	// gate's emit boundary; secret-shaped values are elided. The
-	// post-APPROVE tool invocation uses the ORIGINAL args (held in
-	// the gate's pending map), so a redactor that elides a field
-	// does NOT corrupt the executed call.
 	ArgsSummary any
+	Tool        string
+	PauseToken  string
+	Reason      string
+	Tags        []string
 }
 
 // ToolApprovedPayload is the typed payload for a `tool.approved`

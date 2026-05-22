@@ -57,7 +57,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		acc, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
 		if err != nil {
 			t.Fatalf("NewCostAccumulator: %v", err)
@@ -76,7 +76,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		cfg := governance.Config{
 			DefaultTier: "free",
 			IdentityTiers: map[string]governance.TierConfig{
@@ -100,10 +100,10 @@ func Run(t *testing.T, mk Factory) {
 		defer sub.Cancel()
 
 		// First call: under ceiling. PreCall permits; PostCall records.
-		if err := acc.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
+		if err = acc.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
 			t.Fatalf("first PreCall: %v", err)
 		}
-		if err := acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		if err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
 			llm.CompleteResponse{Cost: llm.Cost{TotalCost: 0.6}}, nil); err != nil {
 			t.Fatalf("first PostCall: %v", err)
 		}
@@ -134,14 +134,14 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 
 		acc1, err := governance.NewCostAccumulator(h.State, h.Bus, governance.Config{})
 		if err != nil {
 			t.Fatalf("acc1: %v", err)
 		}
-		if err := acc1.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		if err = acc1.PostCall(ctx, llm.CompleteRequest{Model: "m"},
 			llm.CompleteResponse{Cost: llm.Cost{TotalCost: 1.25}}, nil); err != nil {
 			t.Fatalf("first PostCall: %v", err)
 		}
@@ -170,14 +170,14 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		rl, err := governance.NewRateLimiter(h.State, h.Bus, governance.Config{})
 		if err != nil {
 			t.Fatalf("NewRateLimiter: %v", err)
 		}
 		defer rl.Close(context.Background())
 		req := llm.CompleteRequest{Model: "m"}
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if err := rl.PreCall(ctx, req); err != nil {
 				t.Errorf("PreCall #%d under latent default returned: %v", i, err)
 			}
@@ -188,7 +188,7 @@ func Run(t *testing.T, mk Factory) {
 		t.Parallel()
 		h := mk()
 		defer h.Cleanup()
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 		five := 5
 		cfg := governance.Config{
@@ -203,7 +203,7 @@ func Run(t *testing.T, mk Factory) {
 			t.Fatalf("rl1: %v", err)
 		}
 		req := llm.CompleteRequest{Model: "m", MaxTokens: &five}
-		if err := rl1.PreCall(ctx, req); err != nil {
+		if err = rl1.PreCall(ctx, req); err != nil {
 			t.Fatalf("first drain: %v", err)
 		}
 		_ = rl1.Close(context.Background())
@@ -228,7 +228,7 @@ func Run(t *testing.T, mk Factory) {
 		h := mk()
 		defer h.Cleanup()
 		const N = 128
-		ctx := withIdentity(t, "T", "U", "S", "R")
+		ctx := withIdentity(t)
 		q := identity.MustQuadrupleFrom(ctx)
 		ceiling := 1.0
 		perCall := 0.10
@@ -249,12 +249,12 @@ func Run(t *testing.T, mk Factory) {
 		var succeeded atomic.Int64
 
 		baseline := runtime.NumGoroutine()
-		for i := 0; i < N; i++ {
+		for range N {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				req := llm.CompleteRequest{Model: "m"}
-				if err := acc.PreCall(ctx, req); err != nil {
+				if err := acc.PreCall(ctx, req); err != nil { //nolint:govet // per-goroutine err; shadow is required for concurrency safety
 					if errors.Is(err, governance.ErrBudgetExceeded) {
 						rejected.Add(1)
 						return
@@ -262,7 +262,7 @@ func Run(t *testing.T, mk Factory) {
 					t.Errorf("PreCall err: %v", err)
 					return
 				}
-				if err := acc.PostCall(ctx, req,
+				if err := acc.PostCall(ctx, req, //nolint:govet // per-goroutine err; shadow is required for concurrency safety
 					llm.CompleteResponse{Cost: llm.Cost{TotalCost: perCall}}, nil); err != nil {
 					t.Errorf("PostCall err: %v", err)
 					return
@@ -303,10 +303,10 @@ func Run(t *testing.T, mk Factory) {
 
 // withIdentity attaches identity + run to ctx. Helper centralised so
 // every subtest uses the same shape.
-func withIdentity(t *testing.T, tenant, user, session, run string) context.Context {
+func withIdentity(t *testing.T) context.Context {
 	t.Helper()
-	id := identity.Identity{TenantID: tenant, UserID: user, SessionID: session}
-	ctx, err := identity.WithRun(context.Background(), id, run)
+	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
+	ctx, err := identity.WithRun(context.Background(), id, "R")
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}

@@ -152,62 +152,14 @@ type PlannerFactoryFn func(scenario ScenarioName) planner.Planner
 // scenario-content factories at the bottom — additive only; existing
 // per-concrete tests continue to compile.
 type Harness struct {
-	// Factory constructs a fresh planner instance per subtest. Used
-	// by scenarios that do NOT need a scenario-specific planner
-	// configuration (Sanity, WakeMode_Declared, Sealed_DecisionSum,
-	// Steering_DrainBetweenSteps, ConcurrentReuse_D025). When
-	// ScenarioFactory is non-nil, scenarios that need a tailored
-	// planner consume it instead.
-	Factory func() planner.Planner
-
-	// ScenarioFactory, when non-nil, takes a ScenarioName and returns
-	// a planner pre-configured for that scenario. Used by scenarios
-	// like TopPrompts_LLMRoundTrip (ReAct needs a specific mock-LLM
-	// envelope per scenario) and ParallelCall_Atomicity (Deterministic
-	// needs a CallParallel-emitting step). Fallback when nil: the
-	// scenario uses `Factory()`.
-	ScenarioFactory PlannerFactoryFn
-
-	// WakeMode is the wake mode the concrete declares (D-032). The
-	// WakeMode_Declared scenario asserts the planner's
-	// `ResolveWakeMode` agrees; the WakeMode_RoundTrip scenario
-	// drives the corresponding round-trip path (push vs poll).
-	WakeMode planner.WakeMode
-
-	// RunContextFactory builds the minimal valid RunContext the
-	// concrete needs. Required at Phase 49 — every concrete now
-	// validates identity at Next boundary (§6 rule 9 + D-001).
-	RunContextFactory func() planner.RunContext
-
-	// Capabilities is the planner's declared capability set. The
-	// pack uses the bitmask to gate scenarios — a scenario whose
-	// required capability is absent skips with a reason.
-	Capabilities Capability
-
-	// TaskRegistryFactory, when non-nil, builds the real
-	// `tasks.TaskRegistry` (production inprocess driver) the
-	// WakeMode_RoundTrip scenario drives. The factory also wires a
-	// real `events.EventBus` since the registry needs one (D-032 +
-	// §17.3 #1 — no mocks at the seam).
-	//
-	// The pack ships a default factory (`DefaultTaskRegistryFactory`)
-	// that opens an inmem bus + inprocess registry + inmem state
-	// store; per-concrete tests typically set this to the default.
-	TaskRegistryFactory func(t *testing.T) (*WakeRoundTripDeps, func())
-
-	// PrebuiltPlannerFactory is the optional hook the
-	// WakeMode_RoundTrip scenario consumes when the concrete planner
-	// must be constructed AGAINST a pre-existing TaskRegistry (the
-	// Deterministic planner binds its registry at construction time
-	// via `deterministic.WithRegistry`). When nil, the scenario falls
-	// back to the standard Factory and assumes the planner does NOT
-	// need a pre-bound registry (ReAct's case — its emission path is
-	// LLM-prompted, no registry binding at construction).
+	Factory                func() planner.Planner
+	ScenarioFactory        PlannerFactoryFn
+	RunContextFactory      func() planner.RunContext
+	TaskRegistryFactory    func(t *testing.T) (*WakeRoundTripDeps, func())
 	PrebuiltPlannerFactory func(*WakeRoundTripDeps) planner.Planner
-
-	// Cleanup is called at subtest end. Optional — typical for
-	// planner concretes that hold lifecycle resources.
-	Cleanup func()
+	Cleanup                func()
+	WakeMode               planner.WakeMode
+	Capabilities           Capability
 }
 
 // runContext returns the harness's per-subtest RunContext. Required
@@ -706,7 +658,7 @@ func runWakeRoundTripPush(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := deps.Registry.SealGroup(ctx, group.ID); err != nil {
+	if err = deps.Registry.SealGroup(ctx, group.ID); err != nil {
 		t.Fatalf("SealGroup: %v", err)
 	}
 	completionCh, cancelWatch, err := deps.Registry.WatchGroup(rc.Quadruple.Identity, group.ID)
@@ -715,11 +667,11 @@ func runWakeRoundTripPush(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	}
 	defer cancelWatch()
 
-	if err := deps.Registry.MarkRunning(ctx, handle.ID); err != nil {
+	if err = deps.Registry.MarkRunning(ctx, handle.ID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
 	resultBytes := json.RawMessage(`{"summary":"wake-round-trip result"}`)
-	if err := deps.Registry.MarkComplete(ctx, handle.ID, tasks.TaskResult{Value: resultBytes}); err != nil {
+	if err = deps.Registry.MarkComplete(ctx, handle.ID, tasks.TaskResult{Value: resultBytes}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
 
@@ -845,7 +797,8 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 	}
 	if ownerTaskID == "" {
 		// Fall back to listing tasks for the session.
-		summaries, err := deps.Registry.List(ctx, rc.Quadruple.Identity, tasks.TaskFilter{})
+		var summaries []tasks.TaskSummary
+		summaries, err = deps.Registry.List(ctx, rc.Quadruple.Identity, tasks.TaskFilter{})
 		if err != nil {
 			t.Fatalf("tasks.List: %v", err)
 		}
@@ -855,10 +808,10 @@ func runWakeRoundTripPoll(t *testing.T, h Harness, deps *WakeRoundTripDeps) {
 		ownerTaskID = summaries[0].ID
 	}
 
-	if err := deps.Registry.MarkRunning(ctx, ownerTaskID); err != nil {
+	if err = deps.Registry.MarkRunning(ctx, ownerTaskID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := deps.Registry.MarkComplete(ctx, ownerTaskID, tasks.TaskResult{
+	if err = deps.Registry.MarkComplete(ctx, ownerTaskID, tasks.TaskResult{
 		Value: json.RawMessage(`{"summary":"poll-mode wake-round-trip result"}`),
 	}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
@@ -1137,7 +1090,7 @@ func runConcurrentReuseScenario(t *testing.T, factoryFunc func() Harness) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	var errs atomic.Int32
-	for i := 0; i < N; i++ {
+	for i := range N {
 		idx := i
 		go func() {
 			defer wg.Done()

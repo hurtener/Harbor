@@ -81,9 +81,7 @@ func New(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
 }
 
 func init() {
-	tasks.Register("inprocess", func(deps tasks.Dependencies) (tasks.TaskRegistry, error) {
-		return New(deps)
-	})
+	tasks.Register("inprocess", New)
 }
 
 // idempotencyKey scopes IdempotencyKey by SessionID. Spec'd by the
@@ -110,28 +108,22 @@ type idempotencyRecord struct {
 }
 
 type driver struct {
-	store    state.StateStore
-	bus      events.EventBus
-	redactor audit.Redactor
-
-	mu       sync.RWMutex
-	tasks    map[tasks.TaskID]*tasks.Task
-	idemIdx  map[idempotencyKey]idempotencyRecord
-	children map[tasks.TaskID][]tasks.TaskID
-
-	// Phase 21 — group + patch + retain-turn + watcher state. All
-	// guarded by `mu`. See `drivers/inprocess/groups.go` for the
-	// access patterns + invariants.
-	groups           map[tasks.TaskGroupID]*tasks.TaskGroup
+	store            state.StateStore
+	bus              events.EventBus
+	redactor         audit.Redactor
 	taskGroup        map[tasks.TaskID]tasks.TaskGroupID
+	tasks            map[tasks.TaskID]*tasks.Task
+	idemIdx          map[idempotencyKey]idempotencyRecord
+	children         map[tasks.TaskID][]tasks.TaskID
+	groups           map[tasks.TaskGroupID]*tasks.TaskGroup
 	groupSubs        map[tasks.TaskGroupID][]*groupSubscriber
 	groupCompletions map[tasks.TaskGroupID]tasks.GroupCompletion
-	retainWaiters    map[string][]*retainWaiter // key = SessionID
+	retainWaiters    map[string][]*retainWaiter
 	patches          map[patchKey]*tasks.Patch
 	acknowledged     map[tasks.TaskID]struct{}
-
-	closed      atomic.Bool
-	ulidEntropy *ulid.MonotonicEntropy
+	ulidEntropy      *ulid.MonotonicEntropy
+	mu               sync.RWMutex
+	closed           atomic.Bool
 }
 
 // Spawn implements tasks.TaskRegistry.

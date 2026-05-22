@@ -36,7 +36,7 @@ func TestRegistry_ListServers_ConcurrentReuse(t *testing.T) {
 	// Register N servers so each goroutine has a distinct name-prefix
 	// target — a goroutine filtering on "srv-007-" must see only
 	// "srv-007".
-	for i := 0; i < n; i++ {
+	for i := range n {
 		name := fmt.Sprintf("srv-%03d", i)
 		if err := r.Register(ServerRegistration{
 			Provider:     &stubProvider{id: tools.ToolSourceID(name), toolNames: []string{"t"}},
@@ -51,7 +51,7 @@ func TestRegistry_ListServers_ConcurrentReuse(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

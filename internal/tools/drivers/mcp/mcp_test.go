@@ -147,7 +147,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := New(tc.cfg)
 			if !errors.Is(err, ErrInvalidConfig) {
@@ -421,8 +421,8 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 	}
 	results := make([]result, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -516,7 +516,7 @@ func TestProvider_Auto_FallsBackToSSE(t *testing.T) {
 	defer p.Close(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := p.Connect(ctx); err != nil {
+	if err = p.Connect(ctx); err != nil {
 		t.Fatalf("Connect SSE: %v", err)
 	}
 	if got := p.SelectedMode(); got != TransportSSE {
@@ -559,14 +559,14 @@ func TestSelectTransport_Stdio_RequiresArgvForm(t *testing.T) {
 		Bus:             newTestBus(t),
 		DefaultIdentity: defaultIdentity(),
 	}
-	_, _, err := selectTransport(context.Background(), cfg)
+	_, _, err := selectTransport(cfg)
 	if err == nil || !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("expected ErrInvalidConfig for empty Command, got: %v", err)
 	}
 }
 
 func TestSelectTransport_ModeDispatch(t *testing.T) {
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		mode MCPTransportMode
 		url  string
 		cmd  []string
@@ -579,7 +579,7 @@ func TestSelectTransport_ModeDispatch(t *testing.T) {
 		{TransportAuto, "", []string{"echo"}, TransportStdio},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(string(tc.mode), func(t *testing.T) {
 			cfg := Config{
 				Name:            "x",
@@ -589,7 +589,7 @@ func TestSelectTransport_ModeDispatch(t *testing.T) {
 				Bus:             newTestBus(t),
 				DefaultIdentity: defaultIdentity(),
 			}
-			_, mode, err := selectTransport(context.Background(), cfg)
+			_, mode, err := selectTransport(cfg)
 			if err != nil {
 				t.Fatalf("selectTransport: %v", err)
 			}
@@ -708,7 +708,7 @@ func TestDeriveSideEffect_AnnotationDispatch(t *testing.T) {
 		{"destructive defaults -> external", &mcpsdk.ToolAnnotations{}, tools.SideEffectExternal},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			if got := deriveSideEffect(tc.a); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
@@ -813,13 +813,13 @@ func TestValidTransportModes_MirrorConfigValidator(t *testing.T) {
 // raw-string YAML validation. Cover the boundary.
 func TestIsValidTransportMode(t *testing.T) {
 	cases := map[string]bool{
-		"auto":             true,
-		"sse":              true,
-		"streamable_http":  true,
-		"stdio":            true,
-		"unknown":          false,
-		"":                 false,
-		"AUTO":             false, // case-sensitive
+		"auto":            true,
+		"sse":             true,
+		"streamable_http": true,
+		"stdio":           true,
+		"unknown":         false,
+		"":                false,
+		"AUTO":            false, // case-sensitive
 	}
 	for s, want := range cases {
 		if got := IsValidTransportMode(s); got != want {

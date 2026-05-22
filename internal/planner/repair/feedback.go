@@ -63,7 +63,7 @@ func formatArgsCorrection(toolName string, validatorErr error) string {
 		"Your previous response failed validation: tool=`%s` arg-validation: %s. "+
 			"Please respond again with a corrected `args` object that satisfies the tool's schema.",
 		safeName(toolName),
-		truncate(validatorErr.Error(), reasonTruncateBytes),
+		truncate(validatorErr.Error()),
 	)
 }
 
@@ -82,6 +82,6 @@ func parserCorrection(parseErr error) string {
 			"Please respond with a single JSON object of the shape "+
 			"`{\"tool\": \"<name>\", \"args\": {...}, \"reasoning\": \"...\"}` "+
 			"(or a JSON array of such objects for multi-action plans).",
-		truncate(parseErr.Error(), reasonTruncateBytes),
+		truncate(parseErr.Error()),
 	)
 }

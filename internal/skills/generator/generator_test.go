@@ -146,15 +146,15 @@ func TestPropose_RejectsInvalidDraft(t *testing.T) {
 	drain := collectProposedEvents(t, bus, testIdentity())
 
 	cases := []struct {
-		label string
 		mut   func(*generator.SkillDraft)
+		label string
 	}{
 		{label: "empty name", mut: func(d *generator.SkillDraft) { d.Name = "" }},
 		{label: "empty trigger", mut: func(d *generator.SkillDraft) { d.Trigger = "" }},
 		{label: "empty steps", mut: func(d *generator.SkillDraft) { d.Steps = nil }},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.label, func(t *testing.T) {
 			d := validDraft("bad-" + tc.label)
 			tc.mut(&d)

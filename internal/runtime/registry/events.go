@@ -63,10 +63,10 @@ type AgentRegisteredPayload struct {
 	events.SafeSealed
 	AgentID         string
 	RegistrationKey string
-	Incarnation     uint64
 	VersionHash     string
-	Hosting         string // string form of Hosting
-	RegisteredAt    int64  // unix nanoseconds
+	Hosting         string
+	Incarnation     uint64
+	RegisteredAt    int64
 }
 
 // AgentRestartedPayload reports a re-registration of a known agent
@@ -77,10 +77,10 @@ type AgentRestartedPayload struct {
 	events.SafeSealed
 	AgentID            string
 	RegistrationKey    string
-	Incarnation        uint64
 	VersionHash        string
+	Incarnation        uint64
+	RestartedAt        int64
 	VersionHashChanged bool
-	RestartedAt        int64 // unix nanoseconds
 }
 
 // AgentHealthPayload reports a Health report / change. SafePayload by

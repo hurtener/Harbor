@@ -243,38 +243,12 @@ func WithSystemPrompt(s string) Option {
 // All fields are set at construction by [New] (with [Option] applied);
 // none are mutated by [Next].
 type ReActPlanner struct {
-	// client is the LLM client. Composed by the LLM registry's
-	// [llm.Open] with retry + downgrade + corrections + safety +
-	// governance per D-043; the planner consumes the composed
-	// surface and adds NO parallel layers (§13).
-	client llm.LLMClient
-
-	// repairCfg is the Phase 44 repair loop configuration the
-	// planner applies on every Next. The loop is constructed once
-	// per Next call (cheap — the loop's only state is the cfg + the
-	// parser, both immutable).
-	repairCfg repair.Config
-
-	// maxSteps is the planner-side circuit breaker. Set via
-	// [WithMaxSteps]; defaults to [DefaultMaxSteps].
-	maxSteps int
-
-	// builder constructs the LLM request from the RunContext. Set
-	// via [WithPromptBuilder]; defaults to [defaultBuilder].
-	builder PromptBuilder
-
-	// systemPrompt is the leading system message every prompt
-	// build starts with. Set via [WithSystemPrompt]; defaults to
-	// [DefaultSystemPrompt].
+	client       llm.LLMClient
+	builder      PromptBuilder
 	systemPrompt string
-
-	// stepsTaken is a process-wide diagnostic counter. NOT used
-	// for any per-call semantics (those are derived from the
-	// RunContext + ctx); maintained as `atomic.Int64` so the
-	// D-025 reuse contract isn't broken by a bare int field. The
-	// field is read-only from the outside (no exported accessor at
-	// V1 — observability flows through events.Event).
-	stepsTaken atomic.Int64
+	repairCfg    repair.Config
+	maxSteps     int
+	stepsTaken   atomic.Int64
 }
 
 // Compile-time assertions: ReActPlanner satisfies both
@@ -483,7 +457,7 @@ func (p *ReActPlanner) translateFinishCall(call planner.CallTool) planner.Finish
 	// missing/non-string answer surfaces as a nil Payload (the runtime
 	// executor's task.completed payload will carry the same nil).
 	if len(call.Args) > 0 {
-		_ = json.Unmarshal(call.Args, &args)
+		_ = json.Unmarshal(call.Args, &args) //nolint:errcheck // best-effort decode; parser pre-validated JSON (see comment above)
 	}
 	metadata := map[string]any{
 		"reasoning":  call.Reasoning,
@@ -532,7 +506,7 @@ func (p *ReActPlanner) translateSpawnCall(call planner.CallTool) (planner.SpawnT
 	if len(call.Args) > 0 {
 		if err := json.Unmarshal(call.Args, &env); err != nil {
 			return planner.SpawnTask{}, fmt.Errorf(
-				"%w: react._spawn_task args malformed JSON: %v (raw=%q)",
+				"%w: react._spawn_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(call.Args),
 			)
 		}
@@ -581,7 +555,7 @@ func (p *ReActPlanner) translateAwaitCall(call planner.CallTool) (planner.AwaitT
 	if len(call.Args) > 0 {
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return planner.AwaitTask{}, fmt.Errorf(
-				"%w: react._await_task args malformed JSON: %v (raw=%q)",
+				"%w: react._await_task args malformed JSON: %w (raw=%q)",
 				planner.ErrInvalidDecision, err, string(call.Args),
 			)
 		}

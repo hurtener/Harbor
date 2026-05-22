@@ -20,7 +20,7 @@ func TestSealGroup_FromCancelled_Invalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.CancelGroup(ctx, g.ID, "x", false); err != nil {
+	if err = r.CancelGroup(ctx, g.ID, "x", false); err != nil {
 		t.Fatal(err)
 	}
 	err = r.SealGroup(ctx, g.ID)
@@ -39,7 +39,7 @@ func TestCancelGroup_FromOpen_NoMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.CancelGroup(ctx, g.ID, "operator", false); err != nil {
+	if err = r.CancelGroup(ctx, g.ID, "operator", false); err != nil {
 		t.Fatalf("CancelGroup: %v", err)
 	}
 	groups, err := r.ListGroups(ctx, tripleA().Identity, nil)
@@ -146,10 +146,10 @@ func TestAcknowledgeBackground_SkipsForeignTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
+	if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
 		t.Fatal(err)
 	}
 	// Ack from a different session — must skip.

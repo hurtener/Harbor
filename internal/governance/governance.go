@@ -57,23 +57,10 @@ type Subsystem interface {
 // (no enforcement). Operators populate `IdentityTiers` + `DefaultTier`
 // (or a custom `Resolver`) to switch on per-policy enforcement.
 type Config struct {
-	// DefaultTier is the tier name applied to an identity that does
-	// not match a custom Resolver mapping. Empty = no default tier =
-	// no enforcement for unmatched identities (latent).
-	DefaultTier string
-
-	// IdentityTiers maps tier name → policy shape. A nil / empty map
-	// disables all enforcement (latent default).
+	Clock         Clock
 	IdentityTiers map[string]TierConfig
-
-	// Resolver maps identity → tier name. nil = "use DefaultTier for
-	// every identity." Operators with claim-based or session-attribute-
-	// based tier assignment wire their resolver here.
-	Resolver TierResolver
-
-	// Clock is the time source for bucket-refill math. nil =
-	// `time.Now` (the production default). Tests inject a fake clock.
-	Clock Clock
+	Resolver      TierResolver
+	DefaultTier   string
 }
 
 // TierConfig is one tier's policy bundle. Each field zero = latent for
@@ -191,7 +178,7 @@ func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 		return identity.Identity{}, fmt.Errorf("%w: no identity in ctx", ErrIdentityRequired)
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return id, nil
 }
@@ -202,7 +189,7 @@ func identityFromCtx(ctx context.Context) (identity.Identity, error) {
 func quadrupleFromCtx(ctx context.Context) (identity.Quadruple, error) {
 	if q, ok := identity.QuadrupleFrom(ctx); ok {
 		if err := identity.Validate(q.Identity); err != nil {
-			return identity.Quadruple{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+			return identity.Quadruple{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 		}
 		return q, nil
 	}

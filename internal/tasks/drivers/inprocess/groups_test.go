@@ -21,7 +21,7 @@ func TestApplyGroup_SealAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.ApplyGroup(ctx, g.ID, tasks.ActionSeal); err != nil {
+	if err = r.ApplyGroup(ctx, g.ID, tasks.ActionSeal); err != nil {
 		t.Fatalf("ApplyGroup(seal): %v", err)
 	}
 	groups, err := r.ListGroups(ctx, tripleA().Identity, nil)
@@ -44,7 +44,7 @@ func TestApplyGroup_CancelAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.ApplyGroup(ctx, g.ID, tasks.ActionCancel); err != nil {
+	if err = r.ApplyGroup(ctx, g.ID, tasks.ActionCancel); err != nil {
 		t.Fatalf("ApplyGroup(cancel): %v", err)
 	}
 	groups, err := r.ListGroups(ctx, tripleA().Identity, nil)
@@ -73,10 +73,10 @@ func TestApplyGroup_ResolveAction(t *testing.T) {
 		t.Errorf("Resolve on Open: err=%v, want ErrGroupNotSealed", err)
 	}
 	// Seal then resolve → Completed.
-	if err := r.SealGroup(ctx, g.ID); err != nil {
+	if err = r.SealGroup(ctx, g.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.ApplyGroup(ctx, g.ID, tasks.ActionResolve); err != nil {
+	if err = r.ApplyGroup(ctx, g.ID, tasks.ActionResolve); err != nil {
 		t.Fatalf("ApplyGroup(resolve) on sealed: %v", err)
 	}
 	groups, err := r.ListGroups(ctx, tripleA().Identity, nil)
@@ -142,7 +142,7 @@ func TestSealGroup_InvalidTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SealGroup(ctx, g.ID); err != nil {
+	if err = r.SealGroup(ctx, g.ID); err != nil {
 		t.Fatal(err)
 	}
 	// Re-seal → invalid.
@@ -213,7 +213,7 @@ func TestSpawn_GroupSealedRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SealGroup(ctx, g.ID); err != nil {
+	if err = r.SealGroup(ctx, g.ID); err != nil {
 		t.Fatal(err)
 	}
 	req := tasks.SpawnRequest{
@@ -282,10 +282,10 @@ func TestAcknowledgeBackground_SkipsNonBackground(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
+	if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`"ok"`)}); err != nil {
 		t.Fatal(err)
 	}
 	count, err := r.AcknowledgeBackground(ctx, tripleA().Identity, []tasks.TaskID{h.ID})
@@ -372,7 +372,7 @@ func TestAddMemberToGroup_Errors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SealGroup(ctx, g.ID); err != nil {
+	if err = r.SealGroup(ctx, g.ID); err != nil {
 		t.Fatal(err)
 	}
 	err = s.AddMemberToGroup(ctx, g.ID, h.ID)
@@ -395,7 +395,7 @@ func TestListGroups_FiltersByStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	// g1 sealed; g2 stays open.
-	if err := r.SealGroup(ctx, g1.ID); err != nil {
+	if err = r.SealGroup(ctx, g1.ID); err != nil {
 		t.Fatal(err)
 	}
 	want := tasks.GroupSealed
@@ -430,7 +430,7 @@ func TestOperationsAfterClose_GroupSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Close(ctx); err != nil {
+	if err = r.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	check := func(name string, err error) {
@@ -534,7 +534,7 @@ func TestCancelGroup_WithPropagate_CascadesToTaskChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, mem.ID); err != nil {
+	if err = r.MarkRunning(ctx, mem.ID); err != nil {
 		t.Fatal(err)
 	}
 	pid := mem.ID
@@ -546,12 +546,12 @@ func TestCancelGroup_WithPropagate_CascadesToTaskChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, child.ID); err != nil {
+	if err = r.MarkRunning(ctx, child.ID); err != nil {
 		t.Fatal(err)
 	}
 	// CancelGroup with propagate cancels member; member's cascade
 	// reaches child.
-	if err := r.CancelGroup(ctx, g.ID, "cascade-test", true); err != nil {
+	if err = r.CancelGroup(ctx, g.ID, "cascade-test", true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := r.Get(ctx, child.ID)

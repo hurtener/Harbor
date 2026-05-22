@@ -178,7 +178,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			return nil
 		}
-		for i := 0; i < v.Len(); i++ {
+		for i := range v.Len() {
 			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
 			if err := walkEncodable(v.Index(i), childPath, visited); err != nil {
 				return err
@@ -236,7 +236,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 		// time.Time and similar JSON-marshalable types implement
 		// json.Marshaler. We honour that here — they are leaves.
 		jsonMarshalerType := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
-		if v.Type().Implements(jsonMarshalerType) || reflect.PtrTo(v.Type()).Implements(jsonMarshalerType) {
+		if v.Type().Implements(jsonMarshalerType) || reflect.PointerTo(v.Type()).Implements(jsonMarshalerType) {
 			// Probe the marshaller to surface its error as
 			// ErrUnserializable if it fails.
 			var mv reflect.Value
@@ -255,7 +255,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 			}
 			out := mv.MethodByName("MarshalJSON").Call(nil)
 			if !out[1].IsNil() {
-				err, _ := out[1].Interface().(error)
+				err, _ := out[1].Interface().(error) //nolint:errcheck // type assertion on a checked-non-nil MarshalJSON error; nil fallback is fine
 				return ErrUnserializable{Field: fmt.Sprintf("%s (MarshalJSON: %v)", fieldPath, err)}
 			}
 			return nil
@@ -265,7 +265,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 		// encoding/json's behaviour). Skip unexported fields and
 		// fields tagged `json:"-"`.
 		ty := v.Type()
-		for i := 0; i < ty.NumField(); i++ {
+		for i := range ty.NumField() {
 			ft := ty.Field(i)
 			if !ft.IsExported() {
 				continue
@@ -305,7 +305,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 // indexByte is a tiny inlined helper — avoids importing strings for
 // one call.
 func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == c {
 			return i
 		}

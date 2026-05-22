@@ -25,9 +25,9 @@ import (
 // pack's wake-round-trip scenario calls Next exactly twice on the
 // SAME planner so the cursor advance is single-threaded under test.
 type scriptedConformanceLLM struct {
-	mu       sync.Mutex
 	contents []string
 	cursor   int
+	mu       sync.Mutex
 }
 
 func newScriptedLLMForConformance(contents []string) *scriptedConformanceLLM {

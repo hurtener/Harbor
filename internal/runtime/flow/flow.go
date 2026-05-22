@@ -47,10 +47,10 @@ type NodeID string
 
 // NodeSpec describes a single node in a Flow Definition.
 type NodeSpec struct {
-	Name   string
 	Func   engine.NodeFunc
-	Policy engine.NodePolicy
+	Name   string
 	To     []NodeID
+	Policy engine.NodePolicy
 }
 
 // Budget is the per-flow aggregate cap.
@@ -62,14 +62,14 @@ type Budget struct {
 
 // Definition is the canonical Go shape for a Flow.
 type Definition struct {
+	Nodes       map[NodeID]NodeSpec
 	Name        string
 	Description string
 	Entry       NodeID
 	Exit        NodeID
-	Nodes       map[NodeID]NodeSpec
-	Budget      Budget
 	InSchema    json.RawMessage
 	OutSchema   json.RawMessage
+	Budget      Budget
 }
 
 // Validate runs structural checks on the Definition.
@@ -238,8 +238,10 @@ func invokeFlow(ctx context.Context, def Definition, eng engine.Engine, args jso
 	parent := budgetFromCtx(ctx)
 	acc := newBudgetAccumulator(def.Budget, parent)
 
-	flowCtx := ctx
-	var cancelFn context.CancelFunc
+	var (
+		flowCtx  context.Context
+		cancelFn context.CancelFunc
+	)
 	if acc.deadline.IsZero() {
 		flowCtx, cancelFn = context.WithCancel(ctx)
 	} else {
@@ -400,15 +402,6 @@ func (a *budgetAccumulator) tryHop(n int) bool {
 	return next >= 0
 }
 
-func (a *budgetAccumulator) tryCost(usd float64) bool {
-	if !a.costEnabled {
-		return true
-	}
-	microcents := int64(usd * 1e6)
-	next := a.costRemaining.Add(-microcents)
-	return next >= 0
-}
-
 func emitBudgetExceeded(ctx context.Context, flowName string, q identity.Quadruple, axis string) {
 	bus, ok := events.From(ctx)
 	if !ok {
@@ -422,7 +415,7 @@ func emitBudgetExceeded(ctx context.Context, flowName string, q identity.Quadrup
 			Axis:     axis,
 		},
 	}
-	_ = bus.Publish(ctx, ev)
+	_ = bus.Publish(ctx, ev) //nolint:errcheck // best-effort event emit; publish failure must not fail the flow
 }
 
 func wrap(sentinel error, format string, args ...any) error {

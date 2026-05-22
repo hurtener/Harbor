@@ -68,8 +68,8 @@ func (e *emptySummariser) Summarise(
 
 // recordingEmit collects emitted events. Mutex-guarded.
 type recordingEmit struct {
-	mu     sync.Mutex
 	events []events.Event
+	mu     sync.Mutex
 }
 
 func (r *recordingEmit) emit(ev events.Event) {

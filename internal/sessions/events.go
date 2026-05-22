@@ -49,8 +49,8 @@ type SessionTouchedPayload struct {
 type SessionClosedPayload struct {
 	events.SafeSealed
 	SessionID string
-	ClosedAt  int64 // unix nanoseconds
 	Reason    string
+	ClosedAt  int64
 }
 
 // SessionGCReapedPayload reports a GC sweep reaping. Reason is one
@@ -59,6 +59,6 @@ type SessionClosedPayload struct {
 type SessionGCReapedPayload struct {
 	events.SafeSealed
 	SessionID string
-	ReapedAt  int64 // unix nanoseconds
 	Reason    string
+	ReapedAt  int64
 }

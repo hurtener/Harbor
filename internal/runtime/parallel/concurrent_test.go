@@ -49,8 +49,8 @@ func TestConcurrent_ExecutorIsReusableAcrossNCalls(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	var failures atomic.Int64
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 

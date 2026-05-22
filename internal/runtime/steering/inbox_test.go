@@ -13,8 +13,8 @@ import (
 // fakeClock is a controllable Clock so tests never sleep for
 // synchronisation (CLAUDE.md §11).
 type fakeClock struct {
-	mu sync.Mutex
 	t  time.Time
+	mu sync.Mutex
 }
 
 func newFakeClock() *fakeClock {
@@ -72,7 +72,7 @@ func TestInbox_EnqueueDrain_FIFO(t *testing.T) {
 	clk := newFakeClock()
 	in := newInbox(t, runA, clk)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ev := validEvent(runA)
 		ev.EventID = string(rune('0' + i))
 		if err := in.Enqueue(ev); err != nil {

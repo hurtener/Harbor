@@ -90,7 +90,7 @@ func TestAttachments_RoundTripAcrossClose(t *testing.T) {
 		t.Fatalf("Import: %v", err)
 	}
 	// Close the first importer.
-	if err := imp.Close(context.Background()); err != nil {
+	if err = imp.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	// Build a new importer and Export against the SAME mapping.

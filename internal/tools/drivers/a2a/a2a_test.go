@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	a2atypes "github.com/hurtener/Harbor/internal/distributed/a2a"
 	"github.com/hurtener/Harbor/internal/distributed"
+	a2atypes "github.com/hurtener/Harbor/internal/distributed/a2a"
 	a2adrv "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -43,7 +43,7 @@ func minimalAgentCard(serverURL string) *a2atypes.AgentCard {
 // fakeMockServer is a tiny JSON-RPC mock that handles three calls:
 // the agent-card GET, the extended-card RPC, and message/send. Used
 // by the tools-side adapter tests.
-type fakeMockServer struct {
+type fakeMockServer struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 	srv     *httptest.Server
 	card    *a2atypes.AgentCard
 	calls   atomic.Int64
@@ -70,7 +70,7 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		dec := json.NewDecoder(r.Body)
-		var req struct {
+		var req struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 			JSONRPC string          `json:"jsonrpc"`
 			ID      uint64          `json:"id"`
 			Method  string          `json:"method"`
@@ -82,9 +82,9 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		switch req.Method {
 		case "agent/getAuthenticatedExtendedCard":
-			body, _ := json.Marshal(struct {
-				JSONRPC string             `json:"jsonrpc"`
-				ID      uint64             `json:"id"`
+			body, _ := json.Marshal(struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
+				JSONRPC string              `json:"jsonrpc"`
+				ID      uint64              `json:"id"`
 				Result  *a2atypes.AgentCard `json:"result"`
 			}{JSONRPC: "2.0", ID: req.ID, Result: m.card})
 			w.Header().Set("Content-Type", "application/json")
@@ -98,9 +98,9 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 				ID:     "task-1",
 				Status: a2atypes.TaskStatus{State: a2atypes.TaskStateCompleted},
 			}
-			body, _ := json.Marshal(struct {
-				JSONRPC string                          `json:"jsonrpc"`
-				ID      uint64                          `json:"id"`
+			body, _ := json.Marshal(struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
+				JSONRPC string                       `json:"jsonrpc"`
+				ID      uint64                       `json:"id"`
 				Result  a2atypes.SendMessageResponse `json:"result"`
 			}{JSONRPC: "2.0", ID: req.ID, Result: a2atypes.SendMessageResponse{Task: &task}})
 			w.Header().Set("Content-Type", "application/json")
@@ -115,14 +115,14 @@ func (m *fakeMockServer) handle(w http.ResponseWriter, r *http.Request) {
 
 func writeRPCErr(w http.ResponseWriter, id uint64, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(struct {
-		JSONRPC string `json:"jsonrpc"`
-		ID      uint64 `json:"id"`
-		Error   struct {
+	_ = json.NewEncoder(w).Encode(struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
+		JSONRPC string   `json:"jsonrpc"`
+		ID      uint64   `json:"id"`
+		Error   struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
-	}{JSONRPC: "2.0", ID: id, Error: struct {
+	}{JSONRPC: "2.0", ID: id, Error: struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}{Code: code, Message: msg}})
@@ -173,7 +173,7 @@ func TestProvider_Connect_Discover_RegistersSkills(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx := ctxWithIdentity(context.Background(), "t-a", "u-a", "s-a")
-	if err := prov.Connect(ctx); err != nil {
+	if err = prov.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	desc, err := prov.Discover(ctx)
@@ -260,7 +260,7 @@ func TestProvider_Invoke_EndToEnd_ThroughPolicyShell(t *testing.T) {
 	// ToolPolicy shell fires.
 	cat := tools.NewCatalog()
 	for _, d := range desc {
-		if err := cat.Register(d); err != nil {
+		if err = cat.Register(d); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
 	}
@@ -324,7 +324,7 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := prov.Connect(ctxWithIdentity(context.Background(), "t", "u", "s")); err != nil {
+	if err = prov.Connect(ctxWithIdentity(context.Background(), "t", "u", "s")); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	desc, err := prov.Discover(ctxWithIdentity(context.Background(), "t", "u", "s"))
@@ -350,7 +350,7 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 		fails   atomic.Int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			tenant := fmt.Sprintf("t-%d", i)
@@ -375,4 +375,3 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 		t.Fatalf("invokes=%d fails=%d, want all %d to succeed", invokes.Load(), fails.Load(), N)
 	}
 }
-

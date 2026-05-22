@@ -108,9 +108,9 @@ type TaskSpawnedPayload struct {
 	events.SafeSealed
 	TaskID         TaskID
 	Kind           TaskKind
-	ParentTaskID   TaskID // empty when no parent
-	Priority       int
+	ParentTaskID   TaskID
 	IdempotencyKey string
+	Priority       int
 }
 
 // TaskStartedPayload reports MarkRunning. Carries the prior status
@@ -188,9 +188,9 @@ type TaskGroupCreatedPayload struct {
 	events.SafeSealed
 	GroupID     TaskGroupID
 	OwnerTaskID TaskID
+	Description string
 	RetainTurn  bool
 	FailFast    bool
-	Description string
 }
 
 // TaskGroupSealedPayload reports a SealGroup transition.

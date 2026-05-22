@@ -139,16 +139,10 @@ type ToolDescriptor struct {
 // persisted on the AgentRecord. version_hash bumps iff this content
 // changes (D-068: SHA-256 over canonical JSON).
 type AgentConfig struct {
-	// Prompts is the agent's prompt set. Order is not semantic — the
-	// hash canonicaliser sorts before hashing.
-	Prompts []string
-	// Tools is the agent's tool bindings (name + schema digest). Order
-	// is not semantic — sorted before hashing.
-	Tools []ToolDescriptor
-	// PlannerConfig is the planner's configuration key/value set.
 	PlannerConfig map[string]string
-	// ModelPolicy is the model-selection / model-policy key/value set.
-	ModelPolicy map[string]string
+	ModelPolicy   map[string]string
+	Prompts       []string
+	Tools         []ToolDescriptor
 }
 
 // RegisterOptions carries the non-identity, non-config metadata for a
@@ -167,44 +161,17 @@ type RegisterOptions struct {
 // AgentRecord is a value type; the registry returns copies so callers
 // cannot mutate registry-owned state.
 type AgentRecord struct {
-	// AgentID is the stable registration identity — a ULID minted once
-	// at first registration, persisted, rehydrated on restart. For a
-	// HostingRemote agent it is a *handle*: runtime-instance-local,
-	// never assumed globally unique.
-	AgentID string
-	// Incarnation bumps on every process start (every Register of an
-	// already-known RegistrationKey). incarnation == 1 is the first
-	// registration.
-	Incarnation uint64
-	// VersionHash is the deterministic content hash of the agent's
-	// configuration (D-068). Stable across a plain restart; bumps iff
-	// configuration content changed. Empty for HostingRemote agents
-	// (the configuration is owned by the remote operator).
-	VersionHash string
-	// RegistrationKey is the operator-stable logical-agent key. It is
-	// what distinguishes restart (same key → same agent_id) from
-	// recreate (Deregister + Register of the same key → fresh
-	// agent_id). It is NOT an isolation principal.
+	RegisteredAt    time.Time
+	UpdatedAt       time.Time
+	Identity        identity.Identity
+	AgentID         string
+	VersionHash     string
 	RegistrationKey string
-	// Identity is the (tenant, user, session) triple the agent is
-	// registered within. The registry scopes ALL storage by this
-	// triple — never by AgentID.
-	Identity identity.Identity
-	// Hosting discriminates locally-hosted vs connect-to-remote.
-	Hosting Hosting
-	// AgentCardRef references the canonical A2A AgentCard for a
-	// HostingRemote agent. Empty for HostingLocal agents.
-	AgentCardRef string
-	// DisplayName is the operator-facing cosmetic label.
-	DisplayName string
-	// Health is the last-reported / last-set operational health.
-	Health Health
-	// RegisteredAt is the wall-clock time of the FIRST registration
-	// (incarnation 1). Stable across restarts.
-	RegisteredAt time.Time
-	// UpdatedAt is the wall-clock time of the most recent mutation
-	// (re-registration, health report, control command).
-	UpdatedAt time.Time
+	Hosting         Hosting
+	AgentCardRef    string
+	DisplayName     string
+	Health          Health
+	Incarnation     uint64
 }
 
 // AgentSnapshot is the read-side projection returned by Inspect. In V1

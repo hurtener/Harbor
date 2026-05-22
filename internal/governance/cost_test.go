@@ -28,7 +28,7 @@ func TestCostAccumulator_PostCallAccumulates(t *testing.T) {
 	defer acc.Close(context.Background())
 
 	for i, cost := range []float64{0.10, 0.25, 0.05} {
-		if err := acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		if err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
 			llm.CompleteResponse{Cost: llm.Cost{TotalCost: cost}}, nil); err != nil {
 			t.Fatalf("PostCall[%d]: %v", i, err)
 		}
@@ -38,10 +38,10 @@ func TestCostAccumulator_PostCallAccumulates(t *testing.T) {
 		t.Fatalf("Snapshot: %v", err)
 	}
 	want := 0.10 + 0.25 + 0.05
-	if !floatNear(total, want, 1e-9) {
+	if !floatNear(total, want) {
 		t.Errorf("total = %v want %v", total, want)
 	}
-	if !floatNear(byModel["m"], want, 1e-9) {
+	if !floatNear(byModel["m"], want) {
 		t.Errorf("byModel[m] = %v want %v", byModel["m"], want)
 	}
 }
@@ -78,7 +78,7 @@ func TestCostAccumulator_CrossIdentityIsolation(t *testing.T) {
 	qB := identity.MustQuadrupleFrom(ctxB)
 	tA, _, _ := acc.Snapshot(ctxA, qA)
 	tB, _, _ := acc.Snapshot(ctxB, qB)
-	if !floatNear(tA, 0.90, 1e-9) || !floatNear(tB, 0.10, 1e-9) {
+	if !floatNear(tA, 0.90) || !floatNear(tB, 0.10) {
 		t.Errorf("cross-identity bleed: A=%v B=%v", tA, tB)
 	}
 }
@@ -96,7 +96,7 @@ func TestCostAccumulator_LatentZeroCost_NoOp(t *testing.T) {
 	defer acc.Close(context.Background())
 	// A failed call with zero cost + zero usage + zero content — the
 	// accumulator should skip the persist path entirely.
-	if err := acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+	if err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
 		llm.CompleteResponse{}, errors.New("upstream failed")); err != nil {
 		t.Errorf("PostCall zero-cost zero-usage: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCostAccumulator_BudgetEventCarriesIdentityAndCeiling(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	if err := acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+	if err = acc.PostCall(ctx, llm.CompleteRequest{Model: "m"},
 		llm.CompleteResponse{Cost: llm.Cost{TotalCost: 0.30}}, nil); err != nil {
 		t.Fatalf("PostCall: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestCostAccumulator_StressNoRace(t *testing.T) {
 	var errs atomic.Int64
 	// Each goroutine works under its own identity → per-identity
 	// accumulator state. Asserts D-025 across keys.
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -263,7 +263,7 @@ func TestCostAccumulator_CeilingUnderContention_D025(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			req := llm.CompleteRequest{Model: "m"}
@@ -330,10 +330,12 @@ func TestNewCostAccumulator_RejectsNilDeps(t *testing.T) {
 	}
 }
 
-func floatNear(a, b, epsilon float64) bool {
+const floatNearEpsilon = 1e-9
+
+func floatNear(a, b float64) bool {
 	d := a - b
 	if d < 0 {
 		d = -d
 	}
-	return d <= epsilon
+	return d <= floatNearEpsilon
 }

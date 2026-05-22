@@ -73,7 +73,7 @@ func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 	for i, m := range in {
 		content, err := translateContent(m.Content)
 		if err != nil {
-			return nil, fmt.Errorf("Messages[%d]: %w", i, err)
+			return nil, fmt.Errorf("messages[%d]: %w", i, err)
 		}
 		out = append(out, bfschemas.ChatMessage{
 			Role:    translateRole(m.Role),
@@ -154,23 +154,23 @@ func translateParts(in []llm.ContentPart) ([]bfschemas.ChatContentBlock, error) 
 		case llm.PartImage:
 			block, err := translateImagePart(p.Image)
 			if err != nil {
-				return nil, fmt.Errorf("Parts[%d] image: %w", i, err)
+				return nil, fmt.Errorf("parts[%d] image: %w", i, err)
 			}
 			out = append(out, block)
 		case llm.PartAudio:
 			block, err := translateAudioPart(p.Audio)
 			if err != nil {
-				return nil, fmt.Errorf("Parts[%d] audio: %w", i, err)
+				return nil, fmt.Errorf("parts[%d] audio: %w", i, err)
 			}
 			out = append(out, block)
 		case llm.PartFile:
 			block, err := translateFilePart(p.File)
 			if err != nil {
-				return nil, fmt.Errorf("Parts[%d] file: %w", i, err)
+				return nil, fmt.Errorf("parts[%d] file: %w", i, err)
 			}
 			out = append(out, block)
 		default:
-			return nil, fmt.Errorf("Parts[%d] unknown type %q", i, p.Type)
+			return nil, fmt.Errorf("parts[%d] unknown type %q", i, p.Type)
 		}
 	}
 	return out, nil
@@ -298,7 +298,7 @@ func translateFilePart(p *llm.FilePart) (bfschemas.ChatContentBlock, error) {
 // call the named fetch tool if it needs the underlying content.
 func artifactStubBlock(stub *llm.ArtifactStub) (bfschemas.ChatContentBlock, error) {
 	if stub == nil {
-		return bfschemas.ChatContentBlock{}, fmt.Errorf("Artifact is nil")
+		return bfschemas.ChatContentBlock{}, fmt.Errorf("artifact is nil")
 	}
 	bytes, err := json.Marshal(stub)
 	if err != nil {

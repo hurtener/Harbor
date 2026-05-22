@@ -55,7 +55,7 @@ func directoryCtx(t *testing.T) context.Context {
 // reads return only the calling identity's skills). Suitable for
 // directory unit + property tests where the localdb driver would be
 // excessive.
-type memStore struct {
+type memStore struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 	bus events.EventBus
 	mu  sync.Mutex
 	// skillsByIdent indexes skills by the calling Quadruple's
@@ -385,7 +385,7 @@ func TestView_PinnedByConfig_AnchoredFirst_DeclarationOrder(t *testing.T) {
 		}
 	}
 	// Pinned flag set correctly.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if !view[i].Pinned {
 			t.Errorf("view[%d].Pinned=false, want true (config-pinned)", i)
 		}
@@ -449,7 +449,7 @@ func TestView_PinnedByExtra_IgnoresNonBoolShape(t *testing.T) {
 	store := newMemStore(bus)
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name string
 		val  any
 		want bool
@@ -493,7 +493,7 @@ func TestView_MaxEntries_Truncates(t *testing.T) {
 	store := newMemStore(bus)
 	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		s := makeSkill("s-" + padIndex(i))
 		s.UpdatedAt = base.Add(time.Duration(i) * time.Minute)
 		store.seed(directoryIdentity(), s)
@@ -520,12 +520,12 @@ func TestView_PinnedOverflow(t *testing.T) {
 	store := newMemStore(bus)
 
 	pinnedNames := make([]string, 0, 30)
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		name := "pin-" + padIndex(i)
 		pinnedNames = append(pinnedNames, name)
 		store.seed(directoryIdentity(), makeSkill(name))
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		store.seed(directoryIdentity(), makeSkill("unpin-"+padIndex(i)))
 	}
 
@@ -544,7 +544,7 @@ func TestView_PinnedOverflow(t *testing.T) {
 		t.Fatalf("View length=%d, want 20", len(view))
 	}
 	// First 20 pinned, declaration order; no unpinned.
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		want := pinnedNames[i]
 		if view[i].Name != want {
 			t.Errorf("view[%d].Name=%q, want %q", i, view[i].Name, want)

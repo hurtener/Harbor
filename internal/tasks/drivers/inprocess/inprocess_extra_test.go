@@ -168,12 +168,12 @@ func TestMarkComplete_RedactsResultBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
 	// Result carries a key the audit redactor recognises ("api_key").
 	rawJSON := []byte(`{"api_key":"sk-secret-12345","result":42}`)
-	if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: rawJSON}); err != nil {
+	if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: rawJSON}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
 	got, err := r.Get(ctx, h.ID)
@@ -203,11 +203,11 @@ func TestMarkComplete_NonJSONFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
 	// Not valid JSON.
-	if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte("plain text result")}); err != nil {
+	if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte("plain text result")}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
 	got, err := r.Get(ctx, h.ID)
@@ -236,10 +236,10 @@ func TestMarkComplete_EmptyResultValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkComplete(ctx, h.ID, tasks.TaskResult{}); err != nil {
+	if err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
 	got, err := r.Get(ctx, h.ID)
@@ -267,10 +267,10 @@ func TestMarkFailed_RedactsErrorMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkFailed(ctx, h.ID, tasks.TaskError{
+	if err = r.MarkFailed(ctx, h.ID, tasks.TaskError{
 		Code:    "tool.timeout",
 		Message: "tool failed: bearer abcd1234efgh5678",
 	}); err != nil {
@@ -429,7 +429,7 @@ func TestMarkComplete_RedactorErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn (no-redact): %v", err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
 	err = r.MarkComplete(ctx, h.ID, tasks.TaskResult{Value: []byte(`{"x":1}`)})
@@ -459,7 +459,7 @@ func TestMarkFailed_RedactorErrorPropagates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.MarkRunning(ctx, h.ID); err != nil {
+	if err = r.MarkRunning(ctx, h.ID); err != nil {
 		t.Fatal(err)
 	}
 	err = r.MarkFailed(ctx, h.ID, tasks.TaskError{Code: "x", Message: "non-empty"})
@@ -555,7 +555,7 @@ func TestOperationsAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Close(ctx); err != nil {
+	if err = r.Close(ctx); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	check := func(name string, err error) {
@@ -588,8 +588,8 @@ func TestOperationsAfterClose(t *testing.T) {
 // spawnRequestsEqual is hit.
 func TestSpawn_IdempotencyConflict_DivergentFields(t *testing.T) {
 	cases := []struct {
-		name string
 		mut  func(*tasks.SpawnRequest)
+		name string
 	}{
 		{name: "kind diverges", mut: func(r *tasks.SpawnRequest) { r.Kind = tasks.KindBackground }},
 		{name: "priority diverges", mut: func(r *tasks.SpawnRequest) { r.Priority = 7 }},

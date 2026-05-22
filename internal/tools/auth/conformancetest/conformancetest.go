@@ -174,11 +174,11 @@ func runCrossTenantIsolation(t *testing.T, st auth.TokenStore) {
 	if err != nil || !ok {
 		t.Fatalf("A self-read: ok=%v err=%v", ok, err)
 	}
-	gotA, _, _ := st.Get(ctxA, auth.ScopeUser, idA.UserID, "src-X")
+	gotA, _, _ := st.Get(ctxA, auth.ScopeUser, idA.UserID, "src-X") //nolint:errcheck // test-kit isolation probe; result asserted on the next line
 	if gotA.AccessToken != "secretA" {
 		t.Fatalf("A read leaked: %q", gotA.AccessToken)
 	}
-	gotB, _, _ := st.Get(ctxB, auth.ScopeUser, idB.UserID, "src-X")
+	gotB, _, _ := st.Get(ctxB, auth.ScopeUser, idB.UserID, "src-X") //nolint:errcheck // test-kit isolation probe; result asserted on the next line
 	if gotB.AccessToken != "secretB" {
 		t.Fatalf("B read leaked: %q", gotB.AccessToken)
 	}
@@ -198,7 +198,7 @@ func runCrossUserIsolation(t *testing.T, st auth.TokenStore) {
 		t.Fatal(err)
 	}
 	// Bob cannot read Alice's token even with knowledge of her UserID.
-	_, ok, _ := st.Get(ctxBob, auth.ScopeUser, "alice", "src")
+	_, ok, _ := st.Get(ctxBob, auth.ScopeUser, "alice", "src") //nolint:errcheck // test-kit isolation probe; ok asserted on the next line
 	if ok {
 		t.Fatalf("bob reading via alice's user id leaked")
 	}
@@ -219,11 +219,11 @@ func runCrossAgentIsolation(t *testing.T, st auth.TokenStore) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	gotAlpha, _, _ := st.Get(ctx, auth.ScopeAgent, "alpha", "src")
+	gotAlpha, _, _ := st.Get(ctx, auth.ScopeAgent, "alpha", "src") //nolint:errcheck // test-kit probe; result asserted on the next line
 	if gotAlpha.AccessToken != "alpha-secret" {
 		t.Fatalf("alpha leaked")
 	}
-	gotBeta, _, _ := st.Get(ctx, auth.ScopeAgent, "beta", "src")
+	gotBeta, _, _ := st.Get(ctx, auth.ScopeAgent, "beta", "src") //nolint:errcheck // test-kit probe; result asserted on the next line
 	if gotBeta.AccessToken != "beta-secret" {
 		t.Fatalf("beta leaked")
 	}
@@ -244,8 +244,8 @@ func runMixedScope(t *testing.T, st auth.TokenStore) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	gotUser, _, _ := st.Get(ctx, auth.ScopeUser, id.UserID, "src")
-	gotAgent, _, _ := st.Get(ctx, auth.ScopeAgent, "ag", "src")
+	gotUser, _, _ := st.Get(ctx, auth.ScopeUser, id.UserID, "src") //nolint:errcheck // test-kit probe; result asserted on the next line
+	gotAgent, _, _ := st.Get(ctx, auth.ScopeAgent, "ag", "src")    //nolint:errcheck // test-kit probe; result asserted on the next line
 	if gotUser.AccessToken != "user-tok" || gotAgent.AccessToken != "agent-tok" {
 		t.Fatalf("mixed-scope readback drift: user=%q agent=%q",
 			gotUser.AccessToken, gotAgent.AccessToken)
@@ -287,14 +287,14 @@ func runDeleteIdempotent(t *testing.T, st auth.TokenStore) {
 		t.Fatalf("Delete missing: %v", err)
 	}
 	// Put then delete → gone.
-	_ = st.Put(ctx, auth.Token{
+	_ = st.Put(ctx, auth.Token{ //nolint:errcheck // test-kit seed write; delete-then-gone asserted below
 		Source: "src", BindingScope: auth.ScopeUser,
 		TenantID: id.TenantID, UserID: id.UserID, AccessToken: "x",
 	})
 	if err := st.Delete(ctx, auth.ScopeUser, id.UserID, "src"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	_, ok, _ := st.Get(ctx, auth.ScopeUser, id.UserID, "src")
+	_, ok, _ := st.Get(ctx, auth.ScopeUser, id.UserID, "src") //nolint:errcheck // test-kit probe; ok asserted on the next line
 	if ok {
 		t.Fatalf("Get after Delete: still present")
 	}

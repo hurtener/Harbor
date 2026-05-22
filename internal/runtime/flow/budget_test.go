@@ -39,7 +39,7 @@ func TestBudget_Composition_ParentWinsLower(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -96,7 +96,7 @@ func TestBudget_Composition_SelfWinsLower(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -146,7 +146,7 @@ func TestBudget_HopBudget_SingleInvocationSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -182,7 +182,7 @@ func TestBudget_NoCap_NoBudgetError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -230,7 +230,7 @@ func TestBudget_DeadlineEvent_Emits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {

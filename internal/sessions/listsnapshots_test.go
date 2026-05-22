@@ -47,14 +47,14 @@ func TestListSnapshots_FiltersAndIncludesClosed(t *testing.T) {
 	open := func(t *testing.T, ident identity.Identity) {
 		t.Helper()
 		ctx, _ := identity.With(context.Background(), ident)
-		if _, err := reg.Open(ctx, ident.SessionID, ident); err != nil {
+		if _, err = reg.Open(ctx, ident.SessionID, ident); err != nil {
 			t.Fatalf("Open %s: %v", ident.SessionID, err)
 		}
 	}
 	closed := func(t *testing.T, ident identity.Identity) {
 		t.Helper()
 		ctx, _ := identity.With(context.Background(), ident)
-		if err := reg.Close(ctx, ident.SessionID, "test-close"); err != nil {
+		if err = reg.Close(ctx, ident.SessionID, "test-close"); err != nil {
 			t.Fatalf("Close %s: %v", ident.SessionID, err)
 		}
 	}
@@ -140,7 +140,7 @@ func TestListSnapshots_ClosedRegistryRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessions.New: %v", err)
 	}
-	if err := reg.CloseRegistry(context.Background()); err != nil {
+	if err = reg.CloseRegistry(context.Background()); err != nil {
 		t.Fatalf("CloseRegistry: %v", err)
 	}
 	_, err = reg.ListSnapshots(context.Background(), sessions.SessionListFilter{})

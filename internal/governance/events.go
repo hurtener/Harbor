@@ -60,14 +60,9 @@ func init() {
 // audit Redactor before the bus publish (CLAUDE.md §7 rule 6).
 type PostureReadAdminPayload struct {
 	events.SafeSealed
-	// Actor is the identity of the admin-scoped caller that performed
-	// the cross-tenant read.
-	Actor identity.Quadruple
-	// RequestedTenant is the tenant_id the caller asked to read — a
-	// tenant other than the caller's own.
+	OccurredAt      time.Time
+	Actor           identity.Quadruple
 	RequestedTenant string
-	// OccurredAt is the wall-clock time of the cross-tenant read.
-	OccurredAt time.Time
 }
 
 // BudgetExceededPayload is the typed payload for EventTypeBudgetExceeded.
@@ -80,13 +75,13 @@ type PostureReadAdminPayload struct {
 // tier name.
 type BudgetExceededPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Tier       string
 	Model      string
+	Currency   string
 	TotalCost  float64
 	Ceiling    float64
-	Currency   string
-	OccurredAt time.Time
 }
 
 // RateLimitedPayload is the typed payload for EventTypeRateLimited.
@@ -94,6 +89,7 @@ type BudgetExceededPayload struct {
 // `Available` is the bucket's level at the moment of the block.
 type RateLimitedPayload struct {
 	events.SafeSealed
+	OccurredAt   time.Time
 	Identity     identity.Quadruple
 	Tier         string
 	Model        string
@@ -102,7 +98,6 @@ type RateLimitedPayload struct {
 	Capacity     int
 	RefillTokens int
 	RefillEvery  time.Duration
-	OccurredAt   time.Time
 }
 
 // MaxTokensExceededPayload is the typed payload for
@@ -110,10 +105,10 @@ type RateLimitedPayload struct {
 // `CompleteRequest.MaxTokens`; `Cap` is the tier's configured ceiling.
 type MaxTokensExceededPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Tier       string
 	Model      string
 	Requested  int
 	Cap        int
-	OccurredAt time.Time
 }

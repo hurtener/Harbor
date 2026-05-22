@@ -36,8 +36,8 @@ type RunErrorHandler func(ctx context.Context, re *RunError)
 // propagation). Useful for operators measuring "how loaded was the
 // cancelled run."
 type RunCancelledNotice struct {
-	RunID                string
 	CancelledAt          time.Time
+	RunID                string
 	DroppedEnvelopeCount int64
 }
 
@@ -54,17 +54,13 @@ type RunCancelledHandler func(ctx context.Context, n RunCancelledNotice)
 // engineConfig captures the New-time options. Internally consumed by
 // the engine's constructor; never exported.
 type engineConfig struct {
-	queueSize           int
+	eventBus            events.EventBus
 	channelOverrides    map[channelKey]int
-	errorEmitToEgress   bool
 	runErrorHandler     RunErrorHandler
 	runCancelledHandler RunCancelledHandler
+	queueSize           int
 	cancelTTL           time.Duration
-	// eventBus, when non-nil, is the bus the engine publishes a
-	// `topology.changed` event onto at construction (Phase 74 /
-	// D-114). nil (the default) = no emit — the Phase 02 engine-test
-	// surface that never wires a bus sees zero behavioural change.
-	eventBus events.EventBus
+	errorEmitToEgress   bool
 }
 
 // channelKey is the (from, to) pair used to key per-channel queue

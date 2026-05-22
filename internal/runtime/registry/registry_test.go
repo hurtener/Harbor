@@ -238,7 +238,7 @@ func TestRestartVsRecreate(t *testing.T) {
 	}
 
 	// recreate — Deregister then Register same key mints fresh agent_id.
-	if err := reg.Deregister(ctx, original.AgentID); err != nil {
+	if err = reg.Deregister(ctx, original.AgentID); err != nil {
 		t.Fatalf("Deregister: %v", err)
 	}
 	recreated, err := reg.Register(ctx, "agent-x", sampleConfig(), registry.RegisterOptions{})
@@ -426,10 +426,10 @@ func TestIsolation_CrossTenantInvisible(t *testing.T) {
 	}
 
 	// B cannot see A's agent and vice versa.
-	if _, err := reg.Get(ctxB, recA.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
+	if _, err = reg.Get(ctxB, recA.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
 		t.Errorf("identity B saw identity A's agent: err=%v", err)
 	}
-	if _, err := reg.Get(ctxA, recB.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
+	if _, err = reg.Get(ctxA, recB.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
 		t.Errorf("identity A saw identity B's agent: err=%v", err)
 	}
 
@@ -453,7 +453,7 @@ func TestIsolation_CrossTenantInvisible(t *testing.T) {
 func TestList_ReturnsAllAgentsForIdentity_Sorted(t *testing.T) {
 	reg, _, _ := newTestRegistry(t)
 	ctx := identityCtx(t, "T", "U", "S")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := reg.Register(ctx, fmt.Sprintf("agent-%d", i), sampleConfig(), registry.RegisterOptions{}); err != nil {
 			t.Fatalf("Register %d: %v", i, err)
 		}
@@ -484,8 +484,8 @@ func TestReportHealth_UpdatesAndEmits(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	sub := subscribeAll(t, bus, "T", "U", "S")
-	if err := reg.ReportHealth(ctx, rec.AgentID, registry.HealthHealthy); err != nil {
+	sub := subscribeAll(t, bus)
+	if err = reg.ReportHealth(ctx, rec.AgentID, registry.HealthHealthy); err != nil {
 		t.Fatalf("ReportHealth: %v", err)
 	}
 	ev := waitEvent(t, sub, registry.EventTypeAgentHealth)
@@ -532,13 +532,13 @@ func TestFleetControl_RequiresControlScope(t *testing.T) {
 
 	// Without the control-scope claim, every control command fails closed.
 	for _, tc := range []struct {
-		name string
 		call func() error
+		name string
 	}{
-		{"Pause", func() error { return reg.Pause(ctx, rec.AgentID, "r") }},
-		{"Drain", func() error { return reg.Drain(ctx, rec.AgentID, "r") }},
-		{"Restart", func() error { return reg.Restart(ctx, rec.AgentID, "r") }},
-		{"ForceStop", func() error { return reg.ForceStop(ctx, rec.AgentID, "r") }},
+		{name: "Pause", call: func() error { return reg.Pause(ctx, rec.AgentID, "r") }},
+		{name: "Drain", call: func() error { return reg.Drain(ctx, rec.AgentID, "r") }},
+		{name: "Restart", call: func() error { return reg.Restart(ctx, rec.AgentID, "r") }},
+		{name: "ForceStop", call: func() error { return reg.ForceStop(ctx, rec.AgentID, "r") }},
 	} {
 		if err := tc.call(); !errors.Is(err, registry.ErrControlScopeRequired) {
 			t.Errorf("%s without control scope: err=%v, want ErrControlScopeRequired", tc.name, err)
@@ -567,10 +567,10 @@ func TestFleetControl_WithScope_TransitionsAndEmits(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	sub := subscribeAll(t, bus, "T", "U", "S")
+	sub := subscribeAll(t, bus)
 
 	// Drain transitions Health → draining and emits agent.drained.
-	if err := reg.Drain(ctrl, rec.AgentID, "rolling deploy"); err != nil {
+	if err = reg.Drain(ctrl, rec.AgentID, "rolling deploy"); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
 	ev := waitEvent(t, sub, registry.EventTypeAgentDrained)
@@ -590,7 +590,7 @@ func TestFleetControl_WithScope_TransitionsAndEmits(t *testing.T) {
 	}
 
 	// ForceStop transitions Health → stopped and emits.
-	if err := reg.ForceStop(ctrl, rec.AgentID, "operator kill"); err != nil {
+	if err = reg.ForceStop(ctrl, rec.AgentID, "operator kill"); err != nil {
 		t.Fatalf("ForceStop: %v", err)
 	}
 	ev = waitEvent(t, sub, registry.EventTypeAgentForceStopped)
@@ -618,7 +618,7 @@ func TestFleetControl_ReasonIsRedacted(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	sub := subscribeAll(t, bus, "T", "U", "S")
+	sub := subscribeAll(t, bus)
 	// A reason that embeds a bearer token — the patterns redactor must
 	// strip it before it reaches the event payload.
 	if err := reg.Pause(ctrl, rec.AgentID, "pausing: token=Bearer sk-secret-abc123"); err != nil {
@@ -650,15 +650,15 @@ func TestDeregister_RemovesAndEmits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	sub := subscribeAll(t, bus, "T", "U", "S")
-	if err := reg.Deregister(ctx, rec.AgentID); err != nil {
+	sub := subscribeAll(t, bus)
+	if err = reg.Deregister(ctx, rec.AgentID); err != nil {
 		t.Fatalf("Deregister: %v", err)
 	}
 	ev := waitEvent(t, sub, registry.EventTypeAgentDeregistered)
 	if p, _ := ev.Payload.(registry.AgentDeregisteredPayload); p.AgentID != rec.AgentID {
 		t.Errorf("agent.deregistered carries agent_id %q, want %q", p.AgentID, rec.AgentID)
 	}
-	if _, err := reg.Get(ctx, rec.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
+	if _, err = reg.Get(ctx, rec.AgentID); !errors.Is(err, registry.ErrAgentNotFound) {
 		t.Errorf("agent still resolvable after Deregister: %v", err)
 	}
 	list, err := reg.List(ctx)
@@ -677,7 +677,7 @@ func TestDeregister_RemovesAndEmits(t *testing.T) {
 func TestRegister_EmitsAgentRegisteredWithAgentID(t *testing.T) {
 	reg, _, bus := newTestRegistry(t)
 	ctx := identityCtx(t, "T", "U", "S")
-	sub := subscribeAll(t, bus, "T", "U", "S")
+	sub := subscribeAll(t, bus)
 
 	rec, err := reg.Register(ctx, "agent", sampleConfig(), registry.RegisterOptions{})
 	if err != nil {
@@ -715,7 +715,7 @@ func TestRegister_RestartEmitsAgentRestarted(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reg2.Close(context.Background()) })
 
-	sub := subscribeAll(t, bus2, "T", "U", "S")
+	sub := subscribeAll(t, bus2)
 	if _, err := reg2.Register(ctx, "agent", sampleConfig(), registry.RegisterOptions{}); err != nil {
 		t.Fatalf("Register #2: %v", err)
 	}
@@ -783,7 +783,7 @@ func TestRegistry_ConcurrentReuse_D025(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -892,7 +892,7 @@ func TestRegistry_ConcurrentSameAgentMutation_NoLostUpdate(t *testing.T) {
 
 	// M re-registrations of the SAME key — each is a restart that bumps
 	// Incarnation by exactly 1 (under r.mu).
-	for i := 0; i < m; i++ {
+	for range m {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -904,7 +904,7 @@ func TestRegistry_ConcurrentSameAgentMutation_NoLostUpdate(t *testing.T) {
 	// M ReportHealth calls on the SAME agent — load→mutate→save on the
 	// record document. Before the fix these ran without r.mu and could
 	// revert a concurrent Incarnation bump.
-	for i := 0; i < m; i++ {
+	for range m {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -936,10 +936,10 @@ func TestRegistry_ConcurrentSameAgentMutation_NoLostUpdate(t *testing.T) {
 // bus subscription helpers
 // ---------------------------------------------------------------------
 
-func subscribeAll(t *testing.T, bus events.EventBus, tenant, user, session string) events.Subscription {
+func subscribeAll(t *testing.T, bus events.EventBus) events.Subscription {
 	t.Helper()
 	sub, err := bus.Subscribe(context.Background(), events.Filter{
-		Tenant: tenant, User: user, Session: session,
+		Tenant: "T", User: "U", Session: "S",
 	})
 	if err != nil {
 		t.Fatalf("bus.Subscribe: %v", err)

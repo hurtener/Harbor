@@ -16,47 +16,14 @@ import (
 // function pointer; the function itself must be safe for concurrent
 // invocation across the same Node.
 type NodePolicy struct {
-	// Validate selects which side(s) of the invocation the worker
-	// runs ValidateFunc on. Zero value is ValidateNone (no validation
-	// — matches the Phase 10 bare-worker behavior).
-	Validate ValidateMode
-	// TimeoutMS is the per-invocation deadline in milliseconds. 0
-	// means "no timeout" — the worker invokes Func with the engine's
-	// ctx unchanged. > 0 wraps each invocation in
-	// context.WithTimeout(ctx, time.Duration(TimeoutMS) * Millisecond).
-	TimeoutMS int
-	// MaxRetries is the count of retry attempts AFTER the initial
-	// invocation. 0 means "no retries" (the node runs exactly once on
-	// failure). Total invocations = MaxRetries + 1.
-	MaxRetries int
-	// BackoffBase is the first-retry sleep before retry attempt 1.
-	// Subsequent retries multiply by BackoffMult, capped at
-	// MaxBackoff. 0 means no sleep between retries.
-	BackoffBase time.Duration
-	// BackoffMult is the multiplier between successive retry sleeps.
-	// 0 or 1 means "no growth" (linear retries at BackoffBase). 2 is
-	// the canonical exponential value.
-	BackoffMult float64
-	// MaxBackoff caps the per-retry sleep regardless of BackoffMult.
-	// 0 means no cap.
-	MaxBackoff time.Duration
-	// ValidateFunc is the function pointer the worker calls on input
-	// (Validate=Both/In) and/or output (Validate=Both/Out) envelopes.
-	// nil with Validate != ValidateNone is a no-op (the worker treats
-	// it as "no validator configured" — fail-loud at construction
-	// time is the engine's responsibility, not the shell's; Phase 10
-	// could harden this if needed).
 	ValidateFunc func(messages.Envelope) error
-	// RunCapacity (Phase 12) caps the number of pending stream frames
-	// (EmitChunk-emitted) for a run originating at this node before
-	// EmitChunk blocks. 0 means "use the engine's DefaultQueueSize"
-	// (64). Per-run override via WithRunCapacity on the originating
-	// Engine.Emit takes precedence over this field.
-	//
-	// Backpressure is per-run, not per-engine: one run's saturation
-	// never pauses other runs (this is the deadlock-prevention
-	// guarantee from brief 01 §4).
-	RunCapacity int
+	Validate     ValidateMode
+	TimeoutMS    int
+	MaxRetries   int
+	BackoffBase  time.Duration
+	BackoffMult  float64
+	MaxBackoff   time.Duration
+	RunCapacity  int
 }
 
 // ValidateMode selects which side of a node invocation the worker

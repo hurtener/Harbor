@@ -70,42 +70,16 @@ const (
 // (cmd/harbor wiring, future phase) is responsible for the
 // projection.
 type Config struct {
-	// Name is the unique source ID prefix. Empty rejects with
-	// ErrInvalidConfig.
-	Name string
-	// TransportMode selects the wire transport. Empty defaults to
-	// TransportAuto.
-	TransportMode MCPTransportMode
-	// URL is the endpoint for SSE / streamable-HTTP transports.
-	// Required for those modes.
-	URL string
-	// Command is the argv-form subprocess command for the stdio
-	// transport. [0] is the binary; [1:] are args. Required for
-	// stdio. NEVER shell-form — the driver enforces this in
-	// transport_stdio.go.
-	Command []string
-	// Headers are operator-supplied HTTP headers added to every
-	// SSE / streamable-HTTP request (auth tokens, custom auth).
-	// "URL connections require explicit headers for auth (no
-	// implicit env passthrough)" — brief 03 §4.
-	Headers map[string]string
-	// KeepAlive is the ping interval for the MCP session; zero
-	// disables. The SDK's KeepAlive runs the underlying ping/pong.
-	KeepAlive time.Duration
-	// Logger is the per-provider slog logger. nil → a discard
-	// logger; runtime never panics on absent Logger.
-	Logger *slog.Logger
-	// Bus is the event bus used to publish `mcp.resource_updated`
-	// notifications. Required.
-	Bus events.EventBus
-	// DefaultPolicy is the ToolPolicy applied to descriptors built
-	// from this provider. Zero-valued → tools.DefaultPolicy().
-	DefaultPolicy tools.ToolPolicy
-	// DefaultIdentity is used to scope server-pushed
-	// `mcp.resource_updated` events when no per-subscription
-	// identity is available. Required so the bus's
-	// ValidateEvent doesn't reject the event.
+	Bus             events.EventBus
+	Headers         map[string]string
+	Logger          *slog.Logger
 	DefaultIdentity identity.Identity
+	Name            string
+	TransportMode   MCPTransportMode
+	URL             string
+	Command         []string
+	DefaultPolicy   tools.ToolPolicy
+	KeepAlive       time.Duration
 }
 
 // validate checks Config invariants. Used by New + tests.
@@ -161,18 +135,14 @@ func (c Config) validate() error {
 //   - The resource-update goroutine reads `session` once at Connect
 //     time and exits when the session closes.
 type Provider struct {
-	cfg    Config
-	logger *slog.Logger
-	source tools.ToolSourceID
-	client *mcpsdk.Client
-
-	mu      sync.RWMutex
-	session *mcpsdk.ClientSession
-	closed  bool
-
-	// selectedMode is the actual transport mode chosen by
-	// selectTransport — useful for tests and observability.
+	logger       *slog.Logger
+	client       *mcpsdk.Client
+	session      *mcpsdk.ClientSession
+	source       tools.ToolSourceID
 	selectedMode MCPTransportMode
+	cfg          Config
+	mu           sync.RWMutex
+	closed       bool
 }
 
 // New constructs a Provider. The Provider is NOT connected; the
@@ -242,7 +212,7 @@ func (p *Provider) Connect(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	transport, mode, err := selectTransport(ctx, p.cfg)
+	transport, mode, err := selectTransport(p.cfg)
 	if err != nil {
 		return err
 	}
@@ -263,13 +233,13 @@ func (p *Provider) Connect(ctx context.Context) error {
 		p.cfg.URL != "" &&
 		classifyConnectError(firstErr)
 	if !autoFallback {
-		return fmt.Errorf("%w: %v", ErrTransportFailed, firstErr)
+		return fmt.Errorf("%w: %w", ErrTransportFailed, firstErr)
 	}
 
 	sseTransport := newSSETransport(p.cfg)
 	session, sseErr := p.client.Connect(ctx, sseTransport, nil)
 	if sseErr != nil {
-		return fmt.Errorf("%w: streamable-http failed (%v); sse failed (%v)",
+		return fmt.Errorf("%w: streamable-http failed (%w); sse failed (%w)",
 			ErrTransportFailed, firstErr, sseErr)
 	}
 	p.logger.Info("mcp: auto-fallback streamable-http -> sse",
@@ -307,18 +277,17 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 		return nil, err
 	}
 
-	var out []tools.ToolDescriptor
-
 	// Tools.
 	toolsRes, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: list tools: %v", ErrTransportFailed, err)
+		return nil, fmt.Errorf("%w: list tools: %w", ErrTransportFailed, err)
 	}
+	out := make([]tools.ToolDescriptor, 0, len(toolsRes.Tools))
 	for _, t := range toolsRes.Tools {
 		if t == nil {
 			continue
 		}
-		desc, err := p.buildToolDescriptor(t)
+		desc, err := p.buildToolDescriptor(t) //nolint:govet // loop-local; err shadow is benign
 		if err != nil {
 			// A schema-compile failure on one tool MUST NOT poison the
 			// whole catalog — log and skip. Other tools may still be
@@ -371,9 +340,9 @@ func (p *Provider) Discover(ctx context.Context) ([]tools.ToolDescriptor, error)
 func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, error) {
 	schemaBytes, err := marshalSchema(t.InputSchema)
 	if err != nil {
-		return tools.ToolDescriptor{}, fmt.Errorf("%w: %v", ErrSchemaInvalid, err)
+		return tools.ToolDescriptor{}, fmt.Errorf("%w: %w", ErrSchemaInvalid, err)
 	}
-	outSchemaBytes, _ := marshalSchema(t.OutputSchema) // optional; nil-tolerant.
+	outSchemaBytes, _ := marshalSchema(t.OutputSchema) //nolint:errcheck // optional schema; nil-tolerant by design
 
 	tool := tools.Tool{
 		Name:        fmt.Sprintf("%s.%s", string(p.source), t.Name),
@@ -448,8 +417,8 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	}
 	var argMap map[string]any
 	if len(args) > 0 {
-		if err := json.Unmarshal(args, &argMap); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
+		if err = json.Unmarshal(args, &argMap); err != nil {
+			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	meta, err := buildIdentityMeta(ctx)
@@ -463,7 +432,7 @@ func (p *Provider) callTool(ctx context.Context, name string, args json.RawMessa
 	params.Meta = meta
 	res, err := session.CallTool(ctx, params)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %v", ErrTransportFailed, name, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: call %q: %w", ErrTransportFailed, name, err)
 	}
 	value, lowerErr := lowerCallToolResult(res)
 	if lowerErr != nil {
@@ -505,7 +474,7 @@ func (p *Provider) buildResourceDescriptor(r *mcpsdk.Resource) tools.ToolDescrip
 				params.Meta = meta
 				res, err := session.ReadResource(ctx, params)
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %v", ErrTransportFailed, uri, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: read %q: %w", ErrTransportFailed, uri, err)
 				}
 				return tools.ToolResult{Value: lowerReadResourceResult(res)}, nil
 			},
@@ -541,8 +510,8 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				}
 				var argMap map[string]string
 				if len(args) > 0 {
-					if err := json.Unmarshal(args, &argMap); err != nil {
-						return tools.ToolResult{}, fmt.Errorf("%w: decode prompt args: %v", tools.ErrToolInvalidArgs, err)
+					if err = json.Unmarshal(args, &argMap); err != nil {
+						return tools.ToolResult{}, fmt.Errorf("%w: decode prompt args: %w", tools.ErrToolInvalidArgs, err)
 					}
 				}
 				params := &mcpsdk.GetPromptParams{Name: name, Arguments: argMap}
@@ -553,7 +522,7 @@ func (p *Provider) buildPromptDescriptor(pr *mcpsdk.Prompt) tools.ToolDescriptor
 				params.Meta = meta
 				res, err := session.GetPrompt(ctx, params)
 				if err != nil {
-					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %v", ErrTransportFailed, name, err)
+					return tools.ToolResult{}, fmt.Errorf("%w: get prompt %q: %w", ErrTransportFailed, name, err)
 				}
 				return tools.ToolResult{Value: lowerGetPromptResult(res)}, nil
 			},
@@ -579,7 +548,7 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 	}
 	params.Meta = meta
 	if err := session.Subscribe(ctx, params); err != nil {
-		return fmt.Errorf("%w: subscribe %q: %v", ErrTransportFailed, uri, err)
+		return fmt.Errorf("%w: subscribe %q: %w", ErrTransportFailed, uri, err)
 	}
 	return nil
 }
@@ -717,6 +686,6 @@ func promptArgsSchema(pr *mcpsdk.Prompt) json.RawMessage {
 	if len(required) > 0 {
 		schema["required"] = required
 	}
-	bytes, _ := json.Marshal(schema)
+	bytes, _ := json.Marshal(schema) //nolint:errcheck // marshalling a static map[string]any schema; cannot fail in practice
 	return bytes
 }

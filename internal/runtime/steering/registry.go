@@ -20,10 +20,9 @@ import (
 // state never leaks across runs: each run's events live on its own
 // Inbox, keyed by its own identity quadruple.
 type Registry struct {
-	clock Clock
-
-	mu      sync.Mutex
+	clock   Clock
 	inboxes map[identity.Quadruple]*Inbox
+	mu      sync.Mutex
 }
 
 // Option configures a Registry at construction time.

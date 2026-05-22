@@ -36,34 +36,16 @@ const checkpointKindPrefix = "pauseresume.checkpoint:"
 // json.RawMessage (rather than re-marshalling) preserves the
 // byte-stable round-trip the trajectory package guarantees.
 type checkpointRecord struct {
-	// FormatVersion is the envelope schema version (RFC §6.3:
-	// format_version: 1). Owned by SerializeRecord — it stamps the
-	// current FormatVersion constant on every write; DeserializeRecord
-	// rejects any other value loud.
-	FormatVersion int `json:"format_version"`
-	// Token is the opaque pause Token (also the StateRecord EventID).
-	Token Token `json:"token"`
-	// Reason is one of the four canonical pause reasons.
-	Reason Reason `json:"reason"`
-	// State is the pause lifecycle state (paused / resumed).
-	State State `json:"state"`
-	// Identity is the (tenant, user, session) triple the pause was
-	// recorded under. Persisted IN the envelope so Status / Resume can
-	// recover the scope from a Token alone (the restart-survival path).
-	Identity identity.Identity `json:"identity"`
-	// RunID is the per-execution run id, when the pause is run-scoped.
-	// Empty for session-scoped pauses (e.g. a pre-run approval gate).
-	RunID string `json:"run_id,omitempty"`
-	// Payload is the sanitised, bounded pause payload.
-	Payload map[string]any `json:"payload,omitempty"`
-	// PausedAt is the wall-clock time the pause was recorded.
-	PausedAt time.Time `json:"paused_at"`
-	// ResumedAt is the wall-clock time Resume was called; zero unless
-	// State == StatusResumed.
-	ResumedAt time.Time `json:"resumed_at,omitempty"`
-	// TrajectoryBytes is trajectory.Trajectory.Serialize output,
-	// stored verbatim. Nil when the PauseRequest carried no trajectory.
-	TrajectoryBytes json.RawMessage `json:"trajectory_bytes,omitempty"`
+	PausedAt        time.Time         `json:"paused_at"`
+	ResumedAt       time.Time         `json:"resumed_at,omitempty"`
+	Payload         map[string]any    `json:"payload,omitempty"`
+	Identity        identity.Identity `json:"identity"`
+	Token           Token             `json:"token"`
+	Reason          Reason            `json:"reason"`
+	State           State             `json:"state"`
+	RunID           string            `json:"run_id,omitempty"`
+	TrajectoryBytes json.RawMessage   `json:"trajectory_bytes,omitempty"`
+	FormatVersion   int               `json:"format_version"`
 }
 
 // quadruple reconstructs the StateStore identity key from the

@@ -186,8 +186,8 @@ func TestPostureProvider_Posture_ConcurrentReuse(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	errCh := make(chan error, n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		go func() {
 			defer wg.Done()
 			// Even goroutines use the bigco tenant (→ enterprise);

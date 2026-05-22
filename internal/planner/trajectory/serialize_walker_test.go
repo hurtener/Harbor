@@ -232,8 +232,8 @@ func TestValidateEncodable_FailLoud_FunctionLeaf(t *testing.T) {
 // nested in a struct field surfaces with a dotted path.
 func TestValidateEncodable_FailLoud_ChannelInStruct(t *testing.T) {
 	type envelope struct {
-		Name    string         `json:"name"`
 		Payload map[string]any `json:"payload"`
+		Name    string         `json:"name"`
 	}
 	v := envelope{Name: "x", Payload: map[string]any{"sock": make(chan int)}}
 	err := trajectory.ValidateEncodable(v, "Envelope")

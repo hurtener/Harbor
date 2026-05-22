@@ -121,7 +121,7 @@ func DeserializeRecord(b []byte) (checkpointRecord, error) {
 
 	var rec checkpointRecord
 	if err := json.Unmarshal(b, &rec); err != nil {
-		return checkpointRecord{}, fmt.Errorf("%w: %v", ErrCheckpointCorrupt, err)
+		return checkpointRecord{}, fmt.Errorf("%w: %w", ErrCheckpointCorrupt, err)
 	}
 
 	// format_version guard: a record the current Runtime cannot read is

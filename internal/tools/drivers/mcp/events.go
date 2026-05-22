@@ -53,8 +53,8 @@ func init() {
 //     notification.
 type ResourceUpdatedPayload struct {
 	events.SafeSealed
+	OccurredAt time.Time
 	Identity   identity.Quadruple
 	Source     tools.ToolSourceID
 	URI        string
-	OccurredAt time.Time
 }

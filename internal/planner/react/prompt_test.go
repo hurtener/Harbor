@@ -80,7 +80,7 @@ func TestDefaultBuilder_FallsBackToDefaultSystemPrompt(t *testing.T) {
 // falls back to a marker when both are empty.
 func TestDefaultBuilder_UserMessagePrefersGoalOverQuery(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name    string
 		rc      planner.RunContext
 		wantSub string

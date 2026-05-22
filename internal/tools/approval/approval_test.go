@@ -59,9 +59,9 @@ func TestIsValidDecision(t *testing.T) {
 func TestApprovalRequest_Validate(t *testing.T) {
 	good := identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"}
 	cases := []struct {
-		name    string
-		req     *ApprovalRequest
 		wantErr error
+		req     *ApprovalRequest
+		name    string
 	}{
 		{
 			name:    "nil",

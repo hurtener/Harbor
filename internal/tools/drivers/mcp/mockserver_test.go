@@ -22,9 +22,9 @@ import (
 // in-process test seam (mcp_example_test.go).
 type mockServer struct {
 	server          *mcpsdk.Server
-	flakyTarget     atomic.Int64 // when > 0, the first N flaky calls return IsError
+	identityCapture sync.Map
+	flakyTarget     atomic.Int64
 	flakyAttempts   atomic.Int64
-	identityCapture sync.Map // map[string]map[string]any — keyed by tool name
 }
 
 // newMockServer constructs the test MCP server with the expected

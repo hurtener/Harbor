@@ -63,25 +63,10 @@ import (
 // canonicalises every relative attachment path under it via
 // path_safety.go.
 type ImportSource struct {
-	// Bytes is the raw Skills.md source. Required.
-	Bytes []byte
-	// PathHint names the source file (used for slugified-name
-	// fallback when frontmatter lacks `name`). Empty is acceptable;
-	// the resulting Skill will fail the Phase 37 validator with
-	// `Name empty` in that case.
-	PathHint string
-	// AllowedRoot is the operator-declared safe filesystem root for
-	// attachments. Relative attachment paths in the body are joined
-	// against this root and verified via path_safety.go. Empty means
-	// "no attachment resolution permitted" — any inline
-	// `![alt](path)` in the body returns ErrAttachmentOutsideRoot.
+	Scope       artifacts.ArtifactScope
+	PathHint    string
 	AllowedRoot string
-	// Scope is the ArtifactScope under which attachments upload.
-	// The importer does not synthesise the scope itself — callers
-	// (Phase 60+ upload handlers) thread the identity quadruple plus
-	// the import-task ID through. Required when AllowedRoot is set;
-	// ignored when AllowedRoot is empty (no uploads happen).
-	Scope artifacts.ArtifactScope
+	Bytes       []byte
 }
 
 // ImportArtifacts captures the round-trip-load-bearing mapping
@@ -100,12 +85,8 @@ type ImportArtifacts struct {
 
 // AttachmentMapping is one entry in ImportArtifacts.PathToRef.
 type AttachmentMapping struct {
-	// Path is the verbatim path as it appeared in the source
-	// (left side of `![alt](path)`).
+	Ref  artifacts.ArtifactRef
 	Path string
-	// Ref is the ArtifactRef returned by Deps.Store.PutBytes when
-	// the attachment was uploaded.
-	Ref artifacts.ArtifactRef
 }
 
 // Importer is the importer entry point. Safe to share across N

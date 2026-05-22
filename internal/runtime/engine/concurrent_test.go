@@ -53,8 +53,8 @@ func TestEngine_ConcurrentReuse_ReuseContract(t *testing.T) {
 	sent := make([]sentEnv, emitters)
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
+
 		sent[i] = sentEnv{
 			tenant: fmt.Sprintf("t-%d", i%8), // 8 tenants spread across emitters
 			runID:  fmt.Sprintf("r-%d", i),
@@ -83,7 +83,7 @@ func TestEngine_ConcurrentReuse_ReuseContract(t *testing.T) {
 	var wgFetch sync.WaitGroup
 	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelFetch()
-	for f := 0; f < fetchers; f++ {
+	for range fetchers {
 		wgFetch.Add(1)
 		go func() {
 			defer wgFetch.Done()
@@ -170,7 +170,7 @@ func TestEngine_ConcurrentReuse_NoCrossCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := e.Run(context.Background()); err != nil {
+	if err = e.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	defer func() { _ = e.Stop(context.Background()) }()
@@ -178,11 +178,11 @@ func TestEngine_ConcurrentReuse_NoCrossCancel(t *testing.T) {
 	id := identity.Identity{TenantID: "T", UserID: "U", SessionID: "S"}
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancelled
-	if err := e.Emit(cancelledCtx, envFor(id, "R-cancelled")); err == nil {
+	if err = e.Emit(cancelledCtx, envFor(id, "R-cancelled")); err == nil {
 		t.Error("Emit on cancelled ctx should have returned an error")
 	}
 	// A normal Emit on a fresh ctx must still succeed.
-	if err := e.Emit(context.Background(), envFor(id, "R-ok")); err != nil {
+	if err = e.Emit(context.Background(), envFor(id, "R-ok")); err != nil {
 		t.Errorf("subsequent Emit on fresh ctx failed: %v", err)
 	}
 	ctx, cancelFetch := context.WithTimeout(context.Background(), 2*time.Second)
@@ -268,8 +268,8 @@ func TestEngine_ConcurrentReuse_ReuseContract_WithPolicy(t *testing.T) {
 	sent := make([]sentEnv, emitters)
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
+
 		sent[i] = sentEnv{
 			tenant: fmt.Sprintf("t-%d", i%8),
 			runID:  fmt.Sprintf("r-%d", i),
@@ -297,7 +297,7 @@ func TestEngine_ConcurrentReuse_ReuseContract_WithPolicy(t *testing.T) {
 	var wgFetch sync.WaitGroup
 	fetchCtx, cancelFetch := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelFetch()
-	for f := 0; f < fetchers; f++ {
+	for range fetchers {
 		wgFetch.Add(1)
 		go func() {
 			defer wgFetch.Done()
@@ -392,8 +392,8 @@ func TestEngine_ConcurrentReuse_WithCancel(t *testing.T) {
 	var cancelledMu sync.Mutex
 
 	var wgEmit sync.WaitGroup
-	for i := 0; i < emitters; i++ {
-		i := i
+	for i := range emitters {
+
 		wgEmit.Add(1)
 		go func() {
 			defer wgEmit.Done()

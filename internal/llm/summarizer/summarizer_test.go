@@ -22,16 +22,16 @@ import (
 // production llm.Register seam — it lives in this _test.go and never
 // reaches a production binary path.
 type stubClient struct {
-	mu       sync.Mutex
+	err      error
 	calls    []recordedCall
 	response llm.CompleteResponse
-	err      error
+	mu       sync.Mutex
 }
 
 type recordedCall struct {
 	id      identity.Identity
-	req     llm.CompleteRequest
 	content string
+	req     llm.CompleteRequest
 }
 
 func (s *stubClient) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -242,7 +242,7 @@ func TestSummarize_ConcurrentReuse(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
 	var wg sync.WaitGroup
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -268,7 +268,7 @@ func TestSummarize_ConcurrentReuse(t *testing.T) {
 	for _, c := range client.seenCalls() {
 		seen[c.id.SessionID]++
 	}
-	for i := 0; i < N; i++ {
+	for i := range N {
 		session := fmt.Sprintf("s-%d", i)
 		if seen[session] != 1 {
 			t.Errorf("session %s observed %d times; want exactly 1", session, seen[session])

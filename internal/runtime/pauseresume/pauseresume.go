@@ -151,36 +151,19 @@ type Pause struct {
 
 // PauseRequest is the input to Coordinator.Request.
 type PauseRequest struct {
-	// Identity is the (tenant, user, session) triple the paused run
-	// belongs to. Mandatory — a partial triple fails closed with
-	// ErrIdentityRequired (CLAUDE.md §6 rule 9).
-	Identity identity.Identity
-	// Reason is one of the four canonical pause reasons. An invalid
-	// reason fails closed with ErrInvalidReason.
-	Reason Reason
-	// Payload is the sanitised, bounded pause payload. Optional;
-	// may be nil.
-	Payload map[string]any
-	// Trajectory, when non-nil, is checkpointed alongside the pause
-	// record when a checkpoint store is configured. A non-serialisable
-	// trajectory fails Request loud with trajectory.ErrUnserializable
-	// — the pause is NOT half-persisted. Optional; may be nil (a pause
-	// with no trajectory is valid — e.g. a pre-run approval gate).
+	Payload    map[string]any
 	Trajectory *trajectory.Trajectory
+	Identity   identity.Identity
+	Reason     Reason
 }
 
 // Status is the value returned by Coordinator.Status: a read-only
 // snapshot of a pause record's lifecycle without mutating it.
 type Status struct {
-	// State is StatusPaused or StatusResumed.
-	State State
-	// Reason is the pause reason recorded at Request time.
-	Reason Reason
-	// PausedAt is the wall-clock time the pause was recorded.
-	PausedAt time.Time
-	// ResumedAt is the wall-clock time Resume was called; the zero
-	// value unless State == StatusResumed.
+	PausedAt  time.Time
 	ResumedAt time.Time
+	State     State
+	Reason    Reason
 }
 
 // Coordinator is Harbor's unified pause/resume primitive. One
@@ -252,48 +235,24 @@ type Coordinator interface {
 // ListRequest is the input to Coordinator.List — the runtime-internal
 // projection of the Protocol-edge types.PauseListRequest.
 type ListRequest struct {
-	// Identity is the caller's (tenant, user, session) triple.
-	// Mandatory — an incomplete triple fails closed with
-	// ErrIdentityRequired.
-	Identity identity.Identity
-	// Filter narrows the snapshot. An empty filter means "the caller's
-	// own identity scope, status=paused".
-	Filter ListFilter
-	// Page is the 1-based page number. 0 is treated as 1; a negative
-	// Page fails closed with ErrInvalidPage.
-	Page int
-	// PageSize is the per-page row count. 0 is treated as the default
-	// (DefaultListPageSize); a negative or over-max value fails closed
-	// with ErrInvalidPage.
-	PageSize int
-	// AdminScoped is true when the caller carries the verified
-	// auth.ScopeAdmin claim. Set by the Protocol-edge handler; the
-	// Coordinator itself does NOT read the scope from ctx.
+	Identity    identity.Identity
+	Filter      ListFilter
+	Page        int
+	PageSize    int
 	AdminScoped bool
 }
 
 // ListFilter is the runtime-internal filter shape for Coordinator.List.
 // Empty slices are wildcards; a zero Since / Until is "no bound".
 type ListFilter struct {
-	// States narrows by lifecycle state. Empty defaults to
-	// [StatusPaused] — the intervention-queue use case.
-	States []State
-	// TenantIDs narrows to a tenant set. Empty defaults to the
-	// caller's own tenant. A foreign tenant OR len>1 requires
-	// ListRequest.AdminScoped.
-	TenantIDs []string
-	// UserIDs narrows to a user set within the visible tenants.
-	UserIDs []string
-	// SessionIDs narrows to a session set.
+	Since      time.Time
+	Until      time.Time
+	States     []State
+	TenantIDs  []string
+	UserIDs    []string
 	SessionIDs []string
-	// RunIDs narrows to a run set.
-	RunIDs []string
-	// Reasons narrows to one or more canonical pause reasons.
-	Reasons []Reason
-	// Since is an optional lower bound on PausedAt (inclusive).
-	Since time.Time
-	// Until is an optional upper bound on PausedAt (inclusive).
-	Until time.Time
+	RunIDs     []string
+	Reasons    []Reason
 }
 
 // ListResponse is the value returned by Coordinator.List.

@@ -104,49 +104,21 @@ type ToolExample struct {
 // Concurrent reuse: Tool is a value type; all fields are read-only
 // after Register. The Tool itself never carries per-invocation state.
 type Tool struct {
-	// Name is the unique catalog key. Two descriptors with the same
-	// Name return ErrToolDuplicateName from Register.
-	Name string
-	// Description is the planner-facing summary. Surfaced in the
-	// prompt-time catalog so the LLM can choose between tools.
+	Source      ToolSourceID
+	CostHint    string
 	Description string
-	// ArgsSchema is the JSON-Schema (object) describing the tool's
-	// argument shape. Catalogs validate against this before dispatch
-	// — failures yield ErrToolInvalidArgs.
-	ArgsSchema json.RawMessage
-	// OutSchema is the JSON-Schema (object) describing the tool's
-	// result shape. Used for output validation when policy enables it.
-	OutSchema json.RawMessage
-	// SideEffects classifies the tool's effect domain — operators
-	// gate which classes are safe to retry / parallelize.
+	Name        string
 	SideEffects SideEffect
-	// Tags allow operators to filter / categorise tools.
-	Tags []string
-	// AuthScopes lists the scopes a planner step's identity MUST
-	// carry (via CatalogFilter.GrantedScopes) for the Tool to be
-	// visible. Empty = no scope requirement.
-	AuthScopes []string
-	// CostHint is free-form (cheap / normal / expensive) and
-	// non-authoritative — Governance owns real cost gates.
-	CostHint string
-	// LatencyHint is non-authoritative; surfaced for prompt ordering.
-	LatencyHint time.Duration
-	// SafetyNotes is free-form text the planner sees alongside
-	// Description; used for "this tool writes to production" hints.
+	Transport   TransportKind
 	SafetyNotes string
-	// Loading mode: Always (visible in every planner step) or
-	// Deferred (loaded on demand).
-	Loading LoadingMode
-	// Examples surface canonical argument shapes to the planner.
-	Examples []ToolExample
-	// Source identifies the provider (empty for in-process tools).
-	Source ToolSourceID
-	// Transport discriminates the tool's source. Determines which
-	// driver's Invoke implementation runs.
-	Transport TransportKind
-	// Policy is the reliability shell wrapping every invocation.
-	// Zero value → DefaultPolicy is applied at dispatch time.
-	Policy ToolPolicy
+	Loading     LoadingMode
+	OutSchema   json.RawMessage
+	Examples    []ToolExample
+	AuthScopes  []string
+	Tags        []string
+	ArgsSchema  json.RawMessage
+	Policy      ToolPolicy
+	LatencyHint time.Duration
 }
 
 // ToolResult is the canonical result type returned by every
@@ -172,9 +144,9 @@ type ToolResult struct {
 // first Invoke attempt (validation BEFORE retry — failing args
 // don't get retried).
 type ToolDescriptor struct {
-	Tool     Tool
 	Invoke   func(ctx context.Context, args json.RawMessage) (ToolResult, error)
 	Validate func(args json.RawMessage) error
+	Tool     Tool
 }
 
 // CatalogFilter is the server-enforced subscription predicate on
@@ -199,10 +171,12 @@ type ToolDescriptor struct {
 //   - NameRegex: optional final filter for operator queries; nil
 //     matches every tool.
 type CatalogFilter struct {
-	TenantID, UserID, SessionID string
-	GrantedScopes               []string
-	LoadingModes                []LoadingMode
-	NameRegex                   *regexp.Regexp
+	NameRegex     *regexp.Regexp
+	TenantID      string
+	UserID        string
+	SessionID     string
+	GrantedScopes []string
+	LoadingModes  []LoadingMode
 }
 
 // HasFullTriple reports whether the filter has all three identity

@@ -35,7 +35,7 @@ func TestList_ConcurrentReuse_D025(t *testing.T) {
 
 	ids := make([]identity.Identity, N)
 	runIDs := make([]string, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		ids[i] = identity.Identity{
 			TenantID:  fmt.Sprintf("tenant-%03d", i),
 			UserID:    fmt.Sprintf("user-%03d", i),
@@ -51,7 +51,7 @@ func TestList_ConcurrentReuse_D025(t *testing.T) {
 	wg.Add(N)
 	errCh := make(chan error, N)
 
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 

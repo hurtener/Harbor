@@ -75,10 +75,10 @@ type RunLoop struct {
 type runLoopConfig struct {
 	taskRegistry      tasks.TaskRegistry
 	bus               events.EventBus
-	hardCancelHook    func(ctx context.Context, runID string) error
 	clock             Clock
-	maxControlHistory int
+	hardCancelHook    func(ctx context.Context, runID string) error
 	gates             map[string]*approval.ApprovalGate
+	maxControlHistory int
 }
 
 // RunLoopOption configures a RunLoop at construction. Options are applied
@@ -216,19 +216,9 @@ const DefaultMaxSteps = 64
 // RunSpec is the per-run input to RunLoop.Run. ALL run-specific state
 // lives here + ctx — never on the RunLoop struct (D-025).
 type RunSpec struct {
-	// Planner is the swappable reasoning policy the loop drives. Nil
-	// fails loud with ErrNoPlanner.
-	Planner planner.Planner
-	// Base is the run's RunContext template. RunLoop refreshes the
-	// per-step fields (Control, Goal) on a copy each step; the planner
-	// receives a fresh RunContext per Next call (Phase 42 contract).
-	// Base.Quadruple is the run's identity — its triple is validated
-	// identity-mandatory before the loop starts.
-	Base planner.RunContext
-	// TaskID is the run's task. Optional — when set, a PRIORITIZE
-	// control event targets it; when empty, a PRIORITIZE fails loud.
-	TaskID tasks.TaskID
-	// MaxSteps caps the planner-step count. ≤ 0 ⇒ DefaultMaxSteps.
+	Planner  planner.Planner
+	TaskID   tasks.TaskID
+	Base     planner.RunContext
 	MaxSteps int
 }
 
@@ -269,7 +259,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// tracked in issue #79; each ring is capped so the per-session entry
 	// is bounded, only the session-keyed map grows. Accepted V1 limit — D-071.
 	defer func() {
-		_ = rl.registry.Retire(q)
+		_ = rl.registry.Retire(q) //nolint:errcheck // best-effort retire during deferred cleanup; error cannot be acted on
 	}()
 
 	maxSteps := spec.MaxSteps
@@ -287,7 +277,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// goroutine's stack, never on the RunLoop struct (D-025).
 	var outstandingToken pauseresume.Token
 
-	for step := 0; step < maxSteps; step++ {
+	for step := range maxSteps {
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, fmt.Errorf("steering: run cancelled at step boundary: %w", err)
 		}
@@ -351,7 +341,6 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// HITL gate is a constraint conflict the planner cannot resolve
 		// (D-071). The Coordinator.Resume already happened in applyEvent.
 		if sc.resumeRequested && sc.resumeKind == ControlReject {
-			outstandingToken = ""
 			return planner.Finish{
 				Reason: planner.FinishConstraintsConflict,
 				Metadata: map[string]any{
@@ -507,7 +496,7 @@ func (rl *RunLoop) emitLifecycle(ctx context.Context, q identity.Quadruple, t Co
 			outcome = outcomeFailed
 		}
 	}
-	_ = rl.bus.Publish(ctx, events.Event{
+	_ = rl.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail the run loop
 		Type:     evType,
 		Identity: q,
 		Payload: ControlLifecyclePayload{

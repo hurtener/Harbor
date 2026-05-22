@@ -10,8 +10,8 @@ import (
 // recordingBus is a minimal events.EventBus that captures every
 // Publish in memory.
 type recordingBus struct {
-	mu     sync.Mutex
 	events []events.Event
+	mu     sync.Mutex
 	closed bool
 }
 

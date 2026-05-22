@@ -24,7 +24,7 @@ func TestResolveSafePath_HappyPath(t *testing.T) {
 
 func TestResolveSafePath_RejectionTable(t *testing.T) {
 	root := t.TempDir()
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name    string
 		root    string
 		rel     string

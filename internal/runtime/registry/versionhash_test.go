@@ -82,7 +82,7 @@ func TestVersionHash_ChangesOnContentChange(t *testing.T) {
 		t.Fatalf("VersionHash(base): %v", err)
 	}
 
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name string
 		mut  func(c *AgentConfig)
 	}{

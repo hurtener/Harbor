@@ -509,13 +509,13 @@ func TestWatchGroupStep_ResolvedGroupInvokesOnResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if err := deps.registry.SealGroup(ctxIdent, group.ID); err != nil {
+	if err = deps.registry.SealGroup(ctxIdent, group.ID); err != nil {
 		t.Fatalf("SealGroup: %v", err)
 	}
-	if err := deps.registry.MarkRunning(ctxIdent, handle.ID); err != nil {
+	if err = deps.registry.MarkRunning(ctxIdent, handle.ID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := deps.registry.MarkComplete(ctxIdent, handle.ID, tasks.TaskResult{
+	if err = deps.registry.MarkComplete(ctxIdent, handle.ID, tasks.TaskResult{
 		Value: json.RawMessage(`{"v":1}`),
 	}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
@@ -698,7 +698,7 @@ func TestSpawnAndAwaitStep_ResolvedSkipsAfterFire(t *testing.T) {
 
 	// Call 1: SpawnTask emitted.
 	rc := planner.RunContext{Quadruple: q}
-	if _, err := p.Next(ctxIdent, rc); err != nil {
+	if _, err = p.Next(ctxIdent, rc); err != nil {
 		t.Fatalf("Next #1: %v", err)
 	}
 
@@ -717,10 +717,10 @@ func TestSpawnAndAwaitStep_ResolvedSkipsAfterFire(t *testing.T) {
 	if memberID == "" {
 		t.Fatal("member task not found")
 	}
-	if err := deps.registry.MarkRunning(ctxIdent, memberID); err != nil {
+	if err = deps.registry.MarkRunning(ctxIdent, memberID); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := deps.registry.MarkComplete(ctxIdent, memberID, tasks.TaskResult{}); err != nil {
+	if err = deps.registry.MarkComplete(ctxIdent, memberID, tasks.TaskResult{}); err != nil {
 		t.Fatalf("MarkComplete: %v", err)
 	}
 

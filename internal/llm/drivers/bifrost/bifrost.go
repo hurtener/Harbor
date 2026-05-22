@@ -43,10 +43,9 @@ type bifrostClient interface {
 // model, response shape) lives on the call stack / ctx.
 type Driver struct {
 	client   bifrostClient
-	provider bfschemas.ModelProvider
 	bus      events.EventBus
-
-	closed atomic.Bool
+	provider bfschemas.ModelProvider
+	closed   atomic.Bool
 }
 
 // Compile-time assertion: *Driver implements llm.Driver.
@@ -88,9 +87,7 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 // `llm` package's factory registry. The blank import in
 // `cmd/harbor/main.go` triggers this.
 func init() {
-	llm.Register(driverName, func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
-		return New(cfg, deps)
-	})
+	llm.Register(driverName, New)
 }
 
 // Complete is the Driver entry point. The Phase 32 safety pass has
@@ -315,4 +312,3 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 	id, _ := identity.From(ctx)
 	return identity.Quadruple{Identity: id}
 }
-

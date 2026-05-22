@@ -342,8 +342,8 @@ func TestMap_ConcurrentReuse(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	errs := make([]error, N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			idx := i % len(triggers)
@@ -386,7 +386,7 @@ func stableNumGoroutine(t *testing.T) int {
 	t.Helper()
 	// Three sequential reads spaced by short yields — if they agree,
 	// we're at steady state.
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		a := runtime.NumGoroutine()
 		runtime.Gosched()
 		time.Sleep(5 * time.Millisecond)

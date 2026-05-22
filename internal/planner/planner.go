@@ -91,83 +91,21 @@ type Planner interface {
 //     ALWAYS goes through SpawnTask / AwaitTask, not via a goroutine
 //     spawned inside Next.
 type RunContext struct {
-	// Quadruple is the (tenant, user, session, run) identity scope.
-	// The triple (Identity field) is the isolation boundary; RunID is
-	// the per-execution scope inside a session.
-	Quadruple identity.Quadruple
-
-	// Query is the user-facing query that started the run. Set once
-	// at run start; never mutated.
-	Query string
-
-	// Goal is the current planner-visible goal. May be redirected by
-	// a REDIRECT control signal; the Runtime updates the field
-	// between planner steps.
-	Goal string
-
-	// LLMContext is the visible-to-LLM context (memories, system
-	// notes, prior turn summaries). The Runtime populates from the
-	// MemoryView + steering injections; the Planner reads only.
-	LLMContext map[string]any
-
-	// ToolContext is the tool-only handle bundle. Phase 43 closes
-	// the split (serialisable half + handle registry); Phase 42
-	// ships the skeleton.
+	Catalog     ToolCatalogView
+	Artifacts   artifacts.ArtifactStore
+	Skills      SkillLookup
+	Memory      MemoryView
+	LLMContext  map[string]any
+	Trajectory  *Trajectory
+	Clock       func() time.Time
+	Emit        func(events.Event)
+	Control     ControlSignals
+	Quadruple   identity.Quadruple
+	Hints       PlanningHints
+	Goal        string
+	Query       string
 	ToolContext ToolContext
-
-	// Trajectory is the append-only execution log. The Planner reads
-	// the history (compaction artefact, prior steps); the Runtime
-	// appends each step. Phase 43 closes the fail-loudly Serialize
-	// contract; Phase 42 ships the type skeleton with a stub Serialize
-	// that returns ErrTrajectoryNotImplemented.
-	Trajectory *Trajectory
-
-	// Hints are caller-provided ordering / parallel / budget nudges.
-	// Planners MAY honour them; the Runtime enforces the hard caps
-	// (system absolute_max_parallel, identity-tier budget) outside
-	// the planner.
-	Hints PlanningHints
-
-	// Catalog is the planner-facing tool view (schemas only — never
-	// Descriptors). Phase 26 ships the production ToolCatalog; the
-	// runtime engine phase wires a ToolCatalogView adapter.
-	Catalog ToolCatalogView
-
-	// Memory is the declared-policy memory view. The runtime engine
-	// phase wires a MemoryView adapter over the production MemoryStore.
-	Memory MemoryView
-
-	// Skills is the skills subsystem's search/get surface. Phase 37
-	// (parallel to Phase 42 — Wave 8 Stage A) ships the production
-	// surface; Phase 42 declares the planner-facing view.
-	Skills SkillLookup
-
-	// Artifacts is the artifact store. Heavy outputs MUST round-trip
-	// through ArtifactRef per D-022 + D-026; the planner is the
-	// caller responsible for upgrading inline bytes to refs at the
-	// LLM edge.
-	Artifacts artifacts.ArtifactStore
-
-	// Control is the accumulated steering signals (control events
-	// observed since the last planner step). The Planner reads;
-	// the Runtime owns the inbox.
-	Control ControlSignals
-
-	// Budget is the per-run hard caps: deadline, hop budget, cost cap.
-	// The Runtime enforces them; the Planner observes them to make
-	// budget-aware decisions.
-	Budget Budget
-
-	// Clock is the (typically `time.Now`) clock the Planner reads. A
-	// controllable clock lets tests fix time across a planner step.
-	Clock func() time.Time
-
-	// Emit publishes onto the event bus with the run's identity
-	// quadruple already attached. The Planner uses Emit to surface
-	// planner-side telemetry (`planner.decision`, `planner.finish`,
-	// `planner.error` — see events.go). May be nil in tests; concretes
-	// MUST nil-check.
-	Emit func(events.Event)
+	Budget      Budget
 }
 
 // ToolCatalogView is the planner-facing read view over the production
@@ -251,24 +189,11 @@ type SkillResult struct {
 // UserMessage, Prioritize, External) are observed via the typed
 // slices; planners react in their Next implementation.
 type ControlSignals struct {
-	// Cancelled is true when a CANCEL control event was observed for
-	// this run. The Planner SHOULD return Finish{Reason: Cancelled}
-	// at the next step boundary.
-	Cancelled bool
-	// PauseRequested is true when a PAUSE control event was observed.
-	// The Planner SHOULD return RequestPause{Reason: AwaitInput} at
-	// the next step boundary.
-	PauseRequested bool
-	// InjectedContext carries INJECT_CONTEXT payloads accumulated
-	// since the last planner step. The Planner SHOULD merge them
-	// into its prompt construction.
+	RedirectGoal    string
 	InjectedContext []map[string]any
-	// UserMessages carries USER_MESSAGE payloads accumulated since
-	// the last planner step.
-	UserMessages []string
-	// RedirectGoal is non-empty when a REDIRECT control event
-	// updated the goal between planner steps.
-	RedirectGoal string
+	UserMessages    []string
+	Cancelled       bool
+	PauseRequested  bool
 }
 
 // Budget carries the per-run hard caps the planner observes. The
@@ -308,15 +233,8 @@ type Budget struct {
 // PlanningHints are caller-provided nudges the planner MAY honour.
 // The Runtime hard caps win in every case.
 type PlanningHints struct {
-	// MaxParallel hints the maximum CallParallel branch count the
-	// planner should produce. The Runtime's system cap
-	// (absolute_max_parallel = 50, per RFC §6.2 / Phase 47) wins.
-	// Zero means no hint.
-	MaxParallel int
-	// PreferTransport hints the planner should prefer tools of the
-	// given transport kind when multiple tools satisfy the same
-	// goal. Empty means no preference.
 	PreferTransport string
+	MaxParallel     int
 }
 
 // PauseReason is the planner-side enum mirroring RFC §6.3's pause

@@ -50,12 +50,12 @@ func TestMaxTokens_BlocksOverCap(t *testing.T) {
 
 	// Under cap: permits.
 	under := 50
-	if err := e.PreCall(ctx, llm.CompleteRequest{Model: "m", MaxTokens: &under}); err != nil {
+	if err = e.PreCall(ctx, llm.CompleteRequest{Model: "m", MaxTokens: &under}); err != nil {
 		t.Errorf("under cap PreCall: %v", err)
 	}
 	// At cap: permits (≤ cap).
 	at := 100
-	if err := e.PreCall(ctx, llm.CompleteRequest{Model: "m", MaxTokens: &at}); err != nil {
+	if err = e.PreCall(ctx, llm.CompleteRequest{Model: "m", MaxTokens: &at}); err != nil {
 		t.Errorf("at cap PreCall: %v", err)
 	}
 	// Over cap: fail loud.
@@ -170,8 +170,8 @@ func TestMaxTokens_ConcurrentReuse_D025(t *testing.T) {
 	var errs atomic.Int64
 
 	wg.Add(n)
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
+
 		go func() {
 			defer wg.Done()
 			// Per-call identity so the per-key state map is exercised.

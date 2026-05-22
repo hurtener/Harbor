@@ -19,14 +19,14 @@ import (
 
 // ImageRef is the lowered form of an MCP ImageContent.
 type ImageRef struct {
-	Data     []byte
 	MIMEType string
+	Data     []byte
 }
 
 // AudioRef is the lowered form of an MCP AudioContent.
 type AudioRef struct {
-	Data     []byte
 	MIMEType string
+	Data     []byte
 }
 
 // LinkRef is the lowered form of an MCP ResourceLink (a pointer to
@@ -54,26 +54,20 @@ type EmbeddedRef struct {
 // preserve the wire ordering so downstream consumers (LLM context
 // assembly, audit) can reconstruct the server's response.
 type MCPToolValue struct {
-	// Text concatenates every TextContent block in encounter order.
-	Text string
-	// Parts is the ordered, typed slice of every non-text content
-	// block. Empty when the response is pure text.
-	Parts []ContentPart
-	// StructuredContent is the MCP `structuredContent` field on
-	// servers that support typed JSON output (mcpsdk.ToolHandlerFor).
-	// nil when absent.
 	StructuredContent any
+	Text              string
+	Parts             []ContentPart
 }
 
 // ContentPart is the discriminated union of non-text content
 // shapes. Exactly one of Image / Audio / Link / Embedded is set;
 // Kind names which.
 type ContentPart struct {
-	Kind     ContentKind
 	Image    *ImageRef
 	Audio    *AudioRef
 	Link     *LinkRef
 	Embedded *EmbeddedRef
+	Kind     ContentKind
 }
 
 // ContentKind discriminates a ContentPart.

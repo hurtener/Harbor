@@ -21,31 +21,14 @@ import (
 // is therefore single-goroutine by construction (the run's own loop) and
 // needs no synchronisation.
 type stepControl struct {
-	// signals is the planner-visible projection — exactly the shape the
-	// planner reads via RunContext.Control (Phase 42).
-	signals planner.ControlSignals
-	// goal carries a REDIRECT's new goal so the RunLoop can update
-	// RunContext.Goal in addition to Control.RedirectGoal. Empty when no
-	// REDIRECT was drained this step.
-	goal string
-	// hardCancel is true when a CANCEL with payload.hard == true was
-	// drained — the RunLoop additionally fires the hard-cancel hook.
-	hardCancel bool
-	// pauseRequested mirrors signals.PauseRequested; kept distinct so the
-	// RunLoop can branch on "a PAUSE control arrived" without re-reading
-	// the projection.
-	pauseRequested bool
-	// resumeRequested / resumeKind record that a RESUME / APPROVE /
-	// REJECT was drained this step. resumeKind records which of the
-	// three it was so the RunLoop branches correctly (APPROVE / RESUME
-	// re-enter the planner; REJECT terminates the run). The resume
-	// payload itself is NOT stashed here — advancePause reads it from
-	// the drained ControlEvent directly.
-	resumeRequested bool
+	goal            string
 	resumeKind      ControlType
-	// prioritize carries a PRIORITIZE's new priority + a "was set" flag.
-	prioritizeSet bool
-	prioritizeVal int
+	signals         planner.ControlSignals
+	prioritizeVal   int
+	hardCancel      bool
+	pauseRequested  bool
+	resumeRequested bool
+	prioritizeSet   bool
 }
 
 // applier holds the runtime dependencies the per-control-type side-effect

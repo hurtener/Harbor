@@ -49,17 +49,9 @@ import (
 // driver ignores it. Future drivers consume their entries from `Extra`
 // without changing the boundary's signature.
 type PlannerConfig struct {
-	// Driver names the registered planner driver to resolve. Required;
-	// the validator rejects empty + unknown values pre-boot.
-	Driver string
-
-	// MaxSteps is the optional circuit-breaker step cap. Zero =
-	// driver default.
+	Extra    map[string]string
+	Driver   string
 	MaxSteps int
-
-	// Extra is the driver-specific extras map. Reserved for future
-	// drivers' per-flow knobs; unused by the V1 `react` driver.
-	Extra map[string]string
 }
 
 // FactoryDeps bundles the shared collaborators every planner driver

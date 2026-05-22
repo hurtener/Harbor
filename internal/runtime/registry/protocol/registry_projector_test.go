@@ -80,10 +80,10 @@ func TestRegistryProjector_List_ScopedByTuple_NotAgentID(t *testing.T) {
 
 	ctxA := idCtx(t, "tenant-a", "u", "s")
 	ctxB := idCtx(t, "tenant-b", "u", "s")
-	if _, err := reg.Register(ctxA, "agent-a", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "Alpha"}); err != nil {
+	if _, err = reg.Register(ctxA, "agent-a", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "Alpha"}); err != nil {
 		t.Fatalf("Register A: %v", err)
 	}
-	if _, err := reg.Register(ctxB, "agent-b", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "Bravo"}); err != nil {
+	if _, err = reg.Register(ctxB, "agent-b", registry.AgentConfig{}, registry.RegisterOptions{DisplayName: "Bravo"}); err != nil {
 		t.Fatalf("Register B: %v", err)
 	}
 

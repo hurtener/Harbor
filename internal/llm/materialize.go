@@ -136,7 +136,7 @@ func materializeDataURL(
 	}
 	bytes, declaredMIME, err := decodeDataURL(dataURL)
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: data URL: %v", ErrInvalidContent, err)
+		return nil, false, fmt.Errorf("%w: data URL: %w", ErrInvalidContent, err)
 	}
 	if len(bytes) < threshold {
 		return nil, false, nil
@@ -233,7 +233,7 @@ func emitMaterialized(ctx context.Context, bus events.EventBus, id identity.Quad
 	if bus == nil || stub == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail materialization
 		Type:       EventTypeImageMaterialized,
 		Identity:   id,
 		OccurredAt: time.Now(),

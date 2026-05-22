@@ -33,13 +33,13 @@ import (
 // Empty fields pass through unchanged at this layer; the engine
 // (Phase 10) enforces non-empty identity at the API boundary.
 type Envelope struct {
-	Payload    any            `json:"payload"`
-	Headers    Headers        `json:"headers"`
-	RunID      string         `json:"run_id"`
-	SessionID  string         `json:"session_id"`
 	Timestamp  time.Time      `json:"timestamp"`
+	Payload    any            `json:"payload"`
 	DeadlineAt *time.Time     `json:"deadline_at,omitempty"`
 	Meta       map[string]any `json:"meta,omitempty"`
+	RunID      string         `json:"run_id"`
+	SessionID  string         `json:"session_id"`
+	Headers    Headers        `json:"headers"`
 }
 
 // Headers carries routing + identity. TenantID and UserID complete

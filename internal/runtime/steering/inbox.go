@@ -15,32 +15,13 @@ import (
 // the run's Inbox. Phase 53 drains these between planner steps and
 // projects the result onto RunContext.Control.
 type ControlEvent struct {
-	// Type is one of the nine canonical control types. An invalid
-	// Type is rejected by Inbox.Enqueue with ErrUnknownControlType.
-	Type ControlType
-	// Identity is the run quadruple this control targets. It MUST
-	// match the Inbox's own quadruple — Enqueue rejects a mismatch
-	// (an event for run A must never land on run B's inbox).
-	Identity identity.Quadruple
-	// CallerScope is the (trust-based at Phase 52) Scope the Protocol
-	// edge derived from the submitting caller's JWT. Enqueue runs
-	// CheckScope against it.
-	CallerScope Scope
-	// CallerTenant is the tenant the submitting caller authenticated
-	// under. Used by the cross-tenant scope check (RFC §6.3).
+	EnqueuedAt   time.Time
+	Payload      map[string]any
+	Identity     identity.Quadruple
+	Type         ControlType
+	CallerScope  Scope
 	CallerTenant string
-	// Payload is the sanitised, bounds-checked control payload. May
-	// be nil — a bare CANCEL / PAUSE carries no payload. Enqueue runs
-	// ValidatePayload against it.
-	Payload map[string]any
-	// EventID is the caller-supplied idempotency / correlation key
-	// (ULID-shaped, mirrors events.EventID). Optional at Phase 52 —
-	// Phase 53's control-history dedupe uses it. Empty is permitted.
-	EventID string
-	// EnqueuedAt is stamped by Inbox.Enqueue from the Inbox's Clock.
-	// Callers MUST NOT pre-fill it; a non-zero value is rejected so
-	// the Inbox owns the timeline (mirrors events.Event.Sequence).
-	EnqueuedAt time.Time
+	EventID      string
 }
 
 // Inbox is the per-run steering inbox. The Runtime owns it; planners
@@ -57,22 +38,12 @@ type ControlEvent struct {
 // Construct an Inbox via Registry.Open; do not construct one
 // directly.
 type Inbox struct {
-	identity identity.Quadruple
 	clock    Clock
-
-	mu     sync.Mutex
-	queue  []ControlEvent
-	closed bool
-
-	// notify is a 1-buffered "something was enqueued" signal channel.
-	// Enqueue does a non-blocking send on it; WaitForEvent (Phase 53's
-	// RunLoop, while a pause is outstanding) selects on it so the loop
-	// blocks instead of busy-spinning on Drain. The 1-buffer + non-
-	// blocking send is the standard coalesced-signal pattern: N
-	// enqueues between two waits coalesce to one wake, and the waiter
-	// always Drains everything queued. close() closes it so a waiter on
-	// a retired inbox unblocks.
-	notify chan struct{}
+	notify   chan struct{}
+	identity identity.Quadruple
+	queue    []ControlEvent
+	mu       sync.Mutex
+	closed   bool
 }
 
 // Identity returns the run quadruple this Inbox is scoped to.
@@ -245,7 +216,7 @@ func (in *Inbox) close() {
 // the (tenant, user, session) triple.
 func validateQuadruple(q identity.Quadruple) error {
 	if err := identity.Validate(q.Identity); err != nil {
-		return fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	if q.RunID == "" {
 		return fmt.Errorf("%w: run_id empty", ErrIdentityRequired)

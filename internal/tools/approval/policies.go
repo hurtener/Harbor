@@ -58,14 +58,8 @@ func (AlwaysApprovePolicy) ShouldApprove(_ context.Context, _ *ApprovalRequest) 
 // and live behind a different policy type; the ApprovalPolicy
 // interface is the seam.
 type TaggedPolicy struct {
-	// RequireTags lists the tags that, when present on the request,
-	// trigger approval. An empty list means "approve nothing"
-	// (i.e. every call short-circuits — explicit operator choice).
+	Reason      string
 	RequireTags []string
-	// Reason is the operator-facing classification carried on
-	// `tool.approval_requested` when the policy fires. Empty
-	// defaults to "policy: tagged".
-	Reason string
 }
 
 // ShouldApprove implements ApprovalPolicy.

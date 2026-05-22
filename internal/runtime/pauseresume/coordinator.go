@@ -25,45 +25,27 @@ import (
 // share across N goroutines; concurrent_test.go pins N≥100 under
 // -race.
 type coordinator struct {
-	// store is the OPTIONAL checkpoint store. nil ⇒ pauses are
-	// process-local only and do not survive Runtime restart. Set once
-	// at construction.
-	store state.StateStore
-	// registry is the handle registry for re-attaching the
-	// non-serialisable half of ToolContext on resume. Always non-nil
-	// (New defaults to a process-local registry). Set once at
-	// construction; the registry is itself internally synchronised
-	// (sync.Map-backed).
+	store    state.StateStore
 	registry trajectory.HandleRegistry
-	// bus is the OPTIONAL event bus. nil ⇒ no events emitted. Set once
-	// at construction.
-	bus events.EventBus
-	// now is the clock. Defaults to time.Now; overridable for tests
-	// (CLAUDE.md §11 — time-sensitive tests use a controllable clock).
-	// Set once at construction.
-	now func() time.Time
-
-	// mu guards pauses. The map is the coordinator's only mutable
-	// state and is documented internally-synchronised per the D-025
-	// concurrent-reuse contract (CLAUDE.md §5).
-	mu sync.Mutex
-	// pauses is the process-local pause registry, keyed by Token.
-	pauses map[Token]*pauseEntry
+	bus      events.EventBus
+	now      func() time.Time
+	pauses   map[Token]*pauseEntry
+	mu       sync.Mutex
 }
 
 // pauseEntry is the in-memory pause record. Guarded by coordinator.mu;
 // never escapes the coordinator (callers receive value copies via the
 // Pause / Status return types).
 type pauseEntry struct {
+	pausedAt   time.Time
+	resumedAt  time.Time
+	payload    map[string]any
+	trajectory *trajectory.Trajectory
+	identity   identity.Identity
 	token      Token
 	reason     Reason
 	state      State
-	identity   identity.Identity
 	runID      string
-	payload    map[string]any
-	pausedAt   time.Time
-	resumedAt  time.Time
-	trajectory *trajectory.Trajectory
 }
 
 // Option configures a coordinator at construction. Options are applied
@@ -150,7 +132,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		return Pause{}, fmt.Errorf("pauseresume: request cancelled: %w", err)
 	}
 	if err := identity.Validate(req.Identity); err != nil {
-		return Pause{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return Pause{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	if !IsValidReason(req.Reason) {
 		return Pause{}, fmt.Errorf("%w: %q", ErrInvalidReason, req.Reason)
@@ -414,7 +396,7 @@ func (c *coordinator) emit(ctx context.Context, evType events.EventType, entry *
 	if c.bus == nil {
 		return
 	}
-	_ = c.bus.Publish(ctx, events.Event{
+	_ = c.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail pause/resume
 		Type:     evType,
 		Identity: identity.Quadruple{Identity: entry.identity, RunID: entry.runID},
 		Payload:  payload,
@@ -468,7 +450,7 @@ func entryFromCheckpoint(rec checkpointRecord) (*pauseEntry, error) {
 	if len(rec.TrajectoryBytes) > 0 {
 		tr, err := trajectory.Deserialize(rec.TrajectoryBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: token %q trajectory: %v", ErrCheckpointCorrupt, rec.Token, err)
+			return nil, fmt.Errorf("%w: token %q trajectory: %w", ErrCheckpointCorrupt, rec.Token, err)
 		}
 		entry.trajectory = tr
 	}

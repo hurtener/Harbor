@@ -130,33 +130,21 @@ type Deps struct {
 // a JSON Schema by the inproc driver at registration time.
 type SearchArgs struct {
 	Query      string            `json:"query"`
-	Limit      int               `json:"limit,omitempty"`
 	Capability CapabilityContext `json:"capability"`
+	Limit      int               `json:"limit,omitempty"`
 }
 
 // SearchResult is the output shape for `skill_search`.
 type SearchResult struct {
-	// Skills are the ranked candidates after capability filter +
-	// redaction. The slice never exceeds `Limit` (or the SkillStore
-	// default when zero).
+	Path   string               `json:"path"`
 	Skills []skills.RankedSkill `json:"skills"`
-	// Path is the ranking ladder branch that produced the rows
-	// ("fts5" | "regex" | "exact"). Surfaced for observability;
-	// inert to the planner's reasoning.
-	Path string `json:"path"`
 }
 
 // GetArgs is the input shape for `skill_get`.
 type GetArgs struct {
-	// Names are the skill names to fetch. Each is looked up via
-	// `SkillStore.Get`; missing names are SKIPPED (not an error) so
-	// a partial response remains useful when one name is stale.
-	Names []string `json:"names"`
-	// MaxTokens caps the returned skills' combined estimated
-	// token count. 0 → `defaultMaxTokens` (1024).
-	MaxTokens int `json:"max_tokens,omitempty"`
-	// Capability gates + redacts the returned skills.
+	Names      []string          `json:"names"`
 	Capability CapabilityContext `json:"capability"`
+	MaxTokens  int               `json:"max_tokens,omitempty"`
 }
 
 // GetResult is the output shape for `skill_get`.
@@ -179,9 +167,9 @@ type ListArgs struct {
 	Scope      skills.Scope      `json:"scope,omitempty"`
 	TaskType   string            `json:"task_type,omitempty"`
 	Tags       []string          `json:"tags,omitempty"`
+	Capability CapabilityContext `json:"capability"`
 	Limit      int               `json:"limit,omitempty"`
 	Offset     int               `json:"offset,omitempty"`
-	Capability CapabilityContext `json:"capability"`
 }
 
 // ListResult is the output shape for `skill_list`.
@@ -327,7 +315,7 @@ func getHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 
 	gathered := make([]skills.Skill, 0, len(args.Names))
 	for _, name := range args.Names {
-		s, err := store.Get(ctx, q, name)
+		s, err := store.Get(ctx, q, name) //nolint:govet // loop-local; err shadow is benign
 		if err != nil {
 			if errors.Is(err, skills.ErrSkillNotFound) {
 				// Partial response is acceptable.

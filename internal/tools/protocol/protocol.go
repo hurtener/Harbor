@@ -201,7 +201,7 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 		SessionID: scope.Session,
 	}
 	if err := identity.Validate(id); err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	return id, nil
 }
@@ -229,7 +229,7 @@ func (s *Service) List(ctx context.Context, req prototypes.ToolListRequest) (pro
 		page = 1
 	}
 
-	if err := validateFilter(req.Filter); err != nil {
+	if err = validateFilter(req.Filter); err != nil {
 		return prototypes.ToolListResponse{}, err
 	}
 

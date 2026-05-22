@@ -9,7 +9,7 @@ import (
 )
 
 func TestAuthSpec_Validate(t *testing.T) {
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name    string
 		spec    AuthSpec
 		wantErr error

@@ -56,9 +56,9 @@ func Wrap(inner llm.LLMClient, cfg llm.ConfigSnapshot, deps llm.Deps) llm.LLMCli
 }
 
 type client struct {
+	deps   llm.Deps
 	inner  llm.LLMClient
 	cfg    llm.ConfigSnapshot
-	deps   llm.Deps
 	closed atomic.Bool
 }
 
@@ -213,7 +213,7 @@ func emitRetryWithFeedback(ctx context.Context, bus events.EventBus, id identity
 	if bus == nil {
 		return
 	}
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail the retry loop
 		Type:       llm.EventTypeRetryWithFeedback,
 		Identity:   id,
 		OccurredAt: time.Now(),

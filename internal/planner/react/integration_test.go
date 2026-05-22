@@ -112,7 +112,7 @@ func TestE2E_React_RepairExhaustion_PropagatesThroughLoop(t *testing.T) {
 
 	// The bus observes planner.repair_exhausted (from Phase 44's
 	// loop) — NOT planner.max_steps_exceeded.
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypePlannerRepairExhausted {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypePlannerRepairExhausted)
 	}
@@ -192,7 +192,7 @@ func TestE2E_React_MaxStepsCircuitBreaker_EmitsOnRealBus(t *testing.T) {
 		t.Errorf("client.calls = %d, want 0 (breaker must fire BEFORE LLM call)", client.callCount())
 	}
 
-	ev := drainOneEvent(t, sub, 2*time.Second)
+	ev := drainOneEvent(t, sub)
 	if ev.Type != planner.EventTypePlannerMaxStepsExceeded {
 		t.Fatalf("ev.Type = %q, want %q", ev.Type, planner.EventTypePlannerMaxStepsExceeded)
 	}
@@ -314,7 +314,7 @@ func TestE2E_React_FullThreeStepLoopOnRealBus(t *testing.T) {
 // drainOneEvent reads one event with a bounded wall-clock deadline.
 // Returns the event or fatals out. Same pattern as Phase 44's
 // integration tests.
-func drainOneEvent(t *testing.T, sub events.Subscription, deadline time.Duration) events.Event {
+func drainOneEvent(t *testing.T, sub events.Subscription) events.Event {
 	t.Helper()
 	select {
 	case ev, ok := <-sub.Events():
@@ -322,7 +322,7 @@ func drainOneEvent(t *testing.T, sub events.Subscription, deadline time.Duration
 			t.Fatal("subscription closed before event arrived")
 		}
 		return ev
-	case <-time.After(deadline):
+	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for event")
 	}
 	return events.Event{}

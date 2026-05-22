@@ -169,8 +169,8 @@ type Deps struct {
 // installs ARE. The D-025 concurrent-reuse invariant lives on those
 // descriptors, not on Builder.
 type Builder struct {
-	entries []config.ToolEntryConfig
 	deps    Deps
+	entries []config.ToolEntryConfig
 	applied bool
 }
 

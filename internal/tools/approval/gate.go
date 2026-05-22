@@ -52,19 +52,9 @@ type ApprovalGate struct {
 	coordinator pauseresume.Coordinator
 	bus         events.EventBus
 	redactor    audit.Redactor
-
-	// mu guards pending. Documented internally-synchronised per the
-	// D-025 concurrent-reuse contract (CLAUDE.md §5).
-	mu sync.Mutex
-	// pending is the per-pause resolution channel registry. Keyed by
-	// `pauseresume.Token` because that is what `ResolveApproval`
-	// receives. The waitingEntry holds (a) the resolution channel the
-	// RunGuarded caller blocks on, and (b) the original ApprovalRequest
-	// so the gate can publish the right events without re-deriving
-	// from the pause payload.
-	pending map[pauseresume.Token]*waitingEntry
-
-	closed atomic.Bool
+	pending     map[pauseresume.Token]*waitingEntry
+	mu          sync.Mutex
+	closed      atomic.Bool
 }
 
 // waitingEntry is the gate's per-pause record. Allocated fresh per
@@ -299,7 +289,7 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 		// (the Coordinator will accept the Resume), but the original
 		// RunGuarded caller has moved on.
 		g.removePending(pause.Token)
-		return nil, fmt.Errorf("%w: %v", ErrApprovalCancelled, ctx.Err())
+		return nil, fmt.Errorf("%w: %w", ErrApprovalCancelled, ctx.Err())
 	}
 }
 

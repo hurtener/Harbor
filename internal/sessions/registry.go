@@ -53,29 +53,16 @@ func WithGCPolicy(p GCPolicy) Option {
 //   - The cross-tenant SessionID-uniqueness map is guarded by mu.
 //   - The sweeper goroutine's lifecycle is owned by `done` + `wg`.
 type Registry struct {
-	store    state.StateStore
-	bus      events.EventBus
-	clock    Clock
-	gcPolicy GCPolicy
-
-	// mu guards idIndex AND openSessions (both used by GC + Open).
-	mu sync.Mutex
-	// idIndex maps SessionID → (Tenant, User) of the most-recent
-	// session opened with that SessionID. Closed sessions are NOT
-	// removed (per RFC §6.9 the closed record is preserved; reopening
-	// the same SessionID is forbidden regardless of tenant).
-	idIndex map[string]identity.Identity
-	// openSessions is the list of currently-open session quadruples
-	// the GC sweeper iterates. Entries are removed on Close (operator
-	// or GC). We carry an in-registry index because the StateStore
-	// surface is `(Quadruple, Kind, Bytes)` with no List operation —
-	// the typed wrapper layer owns enumeration.
-	openSessions map[string]identity.Quadruple // SessionID → quadruple
-
-	// Sweeper goroutine plumbing.
-	done   chan struct{}
-	wg     sync.WaitGroup
-	closed atomic.Bool
+	store        state.StateStore
+	bus          events.EventBus
+	clock        Clock
+	idIndex      map[string]identity.Identity
+	openSessions map[string]identity.Quadruple
+	done         chan struct{}
+	gcPolicy     GCPolicy
+	wg           sync.WaitGroup
+	mu           sync.Mutex
+	closed       atomic.Bool
 }
 
 // New constructs a Registry. The store and bus are required; cfg
@@ -490,7 +477,7 @@ func (r *Registry) save(ctx context.Context, s Session) error {
 // Identity-mandatory at the bus boundary: q must already carry the
 // triple (caller is the registry, which always has it).
 func (r *Registry) publish(ctx context.Context, _ identity.Quadruple, ev events.Event) {
-	_ = r.bus.Publish(ctx, ev)
+	_ = r.bus.Publish(ctx, ev) //nolint:errcheck // best-effort event emit; publish failure must not fail the session op
 }
 
 // sameIdentity is a triple equality check.

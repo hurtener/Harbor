@@ -45,8 +45,8 @@ var (
 // runs on the [planner.CallTool] shape only.
 type ActionEnvelope struct {
 	Tool      string          `json:"tool"`
-	Args      json.RawMessage `json:"args"`
 	Reasoning string          `json:"reasoning,omitempty"`
+	Args      json.RawMessage `json:"args"`
 }
 
 // ActionParser extracts one OR many [planner.CallTool] actions from
@@ -269,7 +269,7 @@ func tryScan(text string) []planner.CallTool {
 // a JSON value start — whitespace, commas, prose. Stops at the first
 // `{` / `[` / digit / `"` / `t` / `f` / `n` / `-`.
 func trimLeftJunk(s string) string {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		c := s[i]
 		switch {
 		case c == '{' || c == '[' || c == '"' || c == '-':

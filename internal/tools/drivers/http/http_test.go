@@ -49,10 +49,10 @@ func echoServer(t *testing.T) *httptest.Server {
 // retryAfterServer returns 429 with `Retry-After: <secs>` the first
 // `failures` times, then 200 OK. Counts attempts via attemptCount.
 type retryAfterServer struct {
+	server       *httptest.Server
 	attemptCount atomic.Int64
 	failures     int64
 	retryAfter   time.Duration
-	server       *httptest.Server
 }
 
 func newRetryAfterServer(t *testing.T, failures int64, retryAfter time.Duration) *retryAfterServer {
@@ -79,10 +79,10 @@ func newRetryAfterServer(t *testing.T, failures int64, retryAfter time.Duration)
 // flakeServer returns the supplied status the first `failures` times,
 // then 200 OK.
 type flakeServer struct {
+	server        *httptest.Server
 	attemptCount  atomic.Int64
 	failures      int64
 	failureStatus int
-	server        *httptest.Server
 }
 
 func newFlakeServer(t *testing.T, failures int64, status int) *flakeServer {
@@ -370,46 +370,46 @@ func TestHTTPTool_AuthHeaderApplied(t *testing.T) {
 	defer srv.Close()
 
 	cases := []struct {
-		name     string
-		spec     hdriver.AuthSpec
-		secret   string
 		assertFn func(t *testing.T, o observed)
+		spec     hdriver.AuthSpec
+		name     string
+		secret   string
 	}{
 		{
-			"api_key header",
-			hdriver.AuthSpec{Kind: hdriver.AuthKindAPIKey, HeaderName: "X-API-Key"},
-			"top-secret",
-			func(t *testing.T, o observed) {
+			name:   "api_key header",
+			spec:   hdriver.AuthSpec{Kind: hdriver.AuthKindAPIKey, HeaderName: "X-API-Key"},
+			secret: "top-secret",
+			assertFn: func(t *testing.T, o observed) {
 				if o.header != "top-secret" {
 					t.Errorf("expected X-API-Key=top-secret, got %q", o.header)
 				}
 			},
 		},
 		{
-			"api_key query",
-			hdriver.AuthSpec{Kind: hdriver.AuthKindAPIKey, QueryParam: "api_key"},
-			"q-secret",
-			func(t *testing.T, o observed) {
+			name:   "api_key query",
+			spec:   hdriver.AuthSpec{Kind: hdriver.AuthKindAPIKey, QueryParam: "api_key"},
+			secret: "q-secret",
+			assertFn: func(t *testing.T, o observed) {
 				if o.query != "q-secret" {
 					t.Errorf("expected ?api_key=q-secret, got %q", o.query)
 				}
 			},
 		},
 		{
-			"bearer",
-			hdriver.AuthSpec{Kind: hdriver.AuthKindBearer},
-			"bearer-token",
-			func(t *testing.T, o observed) {
+			name:   "bearer",
+			spec:   hdriver.AuthSpec{Kind: hdriver.AuthKindBearer},
+			secret: "bearer-token",
+			assertFn: func(t *testing.T, o observed) {
 				if o.header != "Bearer bearer-token" {
 					t.Errorf("expected Authorization=Bearer bearer-token, got %q", o.header)
 				}
 			},
 		},
 		{
-			"cookie",
-			hdriver.AuthSpec{Kind: hdriver.AuthKindCookie, CookieName: "session"},
-			"cookie-token",
-			func(t *testing.T, o observed) {
+			name:   "cookie",
+			spec:   hdriver.AuthSpec{Kind: hdriver.AuthKindCookie, CookieName: "session"},
+			secret: "cookie-token",
+			assertFn: func(t *testing.T, o observed) {
 				if o.cookie != "cookie-token" {
 					t.Errorf("expected session cookie cookie-token, got %q", o.cookie)
 				}

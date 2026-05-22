@@ -38,48 +38,20 @@ var ErrInvalidCustomProvider = errors.New("bifrost: invalid custom provider")
 // Concurrent-reuse: the struct is read-only after `newAccount`
 // returns. Safe for N concurrent bifrost goroutines.
 type Account struct {
-	// provider is the configured PRIMARY provider — the one
-	// `LLMConfig.Provider` named. Bifrost ChatCompletion requests
-	// from Harbor route to this provider via `BifrostChatRequest.Provider`.
-	provider bfschemas.ModelProvider
-	// apiKey is the resolved API key for the primary provider.
-	// Resolved at construction (`env.NAME` for native primary, plain
-	// `os.Getenv(APIKeyEnvVar)` for custom primary). NEVER logged.
-	apiKey string
-	// primaryModels is the model allowlist for the primary provider's
-	// bifrost `Key.Models`. For custom primary, this is the operator-
-	// declared `Models` list. For native primary, the wildcard
-	// `["*"]` — bifrost's documented "all non-blacklisted models"
-	// sentinel (`core@v1.5.8/bifrost.go:7218-7220`: empty Models =
-	// deny-by-default, `["*"]` = allow-all, non-empty list = explicit
-	// allowlist). Earlier Phase 33 commits left this empty intending
-	// "all," which silently broke every native-primary routing
-	// because bifrost's deny-by-default semantic does NOT match the
-	// in-code comment — wave-end E2E surfaced this and §17.6 routed
-	// the fix into the same PR.
-	primaryModels []string
-	// primaryConfig is the resolved `ProviderConfig` for the primary
-	// provider (network / concurrency / custom-provider details).
-	// Built once at construction so the per-request hot path makes
-	// no map lookups.
 	primaryConfig *bfschemas.ProviderConfig
-	// customByName maps each declared custom-provider name to the
-	// resolved entry. Used by `GetKeysForProvider` /
-	// `GetConfigForProvider` lookups when bifrost asks about a
-	// custom provider. V1 only registers the PRIMARY so this map
-	// effectively has at most one entry today; the field stays a
-	// map so future multi-provider phases (post-Phase 33a) widen
-	// without restructuring the Account.
-	customByName map[string]customRuntime
+	customByName  map[string]customRuntime
+	provider      bfschemas.ModelProvider
+	apiKey        string
+	primaryModels []string
 }
 
 // customRuntime is the resolved-at-construction shape of one custom
 // provider. Holds the API-key value (resolved from env) and the
 // pre-computed `ProviderConfig`. Internal; never serialized.
 type customRuntime struct {
+	config *bfschemas.ProviderConfig
 	apiKey string
 	models []string
-	config *bfschemas.ProviderConfig
 }
 
 // newAccount resolves the configured provider + API key from the

@@ -20,8 +20,8 @@ import (
 // map. Each tool's Invoke + Validate functions are caller-supplied so
 // each test can program the behaviour (success / failure / sleep / etc.).
 type stubResolver struct {
-	mu    sync.RWMutex
 	tools map[string]tools.ToolDescriptor
+	mu    sync.RWMutex
 }
 
 func newStub() *stubResolver {
@@ -65,11 +65,11 @@ func ctxWithQ(t *testing.T, q identity.Quadruple) context.Context {
 
 // echoTool returns a descriptor whose Invoke echoes args under
 // Value["tool"]=name, Value["args"]=raw.
-func echoTool(name string) (func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error), func(args json.RawMessage) error) {
+func echoTool(name string) func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
 	invoke := func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
 		return tools.ToolResult{Value: map[string]any{"tool": name, "args": string(args)}}, nil
 	}
-	return invoke, nil
+	return invoke
 }
 
 // TestExecute_JoinAll_AllSucceed pins the load-bearing Phase 47
@@ -79,8 +79,8 @@ func TestExecute_JoinAll_AllSucceed(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
 	for _, n := range []string{"alpha", "beta", "gamma"} {
-		inv, val := echoTool(n)
-		resolver.Register(n, inv, val)
+		inv := echoTool(n)
+		resolver.Register(n, inv, nil)
 	}
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-joinall")
@@ -122,7 +122,7 @@ func TestExecute_JoinAll_RejectsInvalidArgsBranchAtomically(t *testing.T) {
 	resolver := newStub()
 
 	// good tool — happy invoke + permissive validator.
-	invG, _ := echoTool("good")
+	invG := echoTool("good")
 	resolver.Register("good", invG, nil)
 
 	// bad tool — validator rejects everything.
@@ -262,7 +262,7 @@ loop:
 func TestExecute_AbsoluteMaxParallelCap(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("tool")
+	inv := echoTool("tool")
 	resolver.Register("tool", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-cap")
@@ -291,7 +291,7 @@ func TestExecute_AbsoluteMaxParallelCap(t *testing.T) {
 func TestExecute_AbsoluteMaxParallelExactly50Allowed(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("tool")
+	inv := echoTool("tool")
 	resolver.Register("tool", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-cap-50")
@@ -317,7 +317,7 @@ func TestExecute_AbsoluteMaxParallelExactly50Allowed(t *testing.T) {
 func TestExecute_MissingIdentityFailsClosed(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("alpha")
+	inv := echoTool("alpha")
 	resolver.Register("alpha", inv, nil)
 	exec := parallel.New(resolver)
 
@@ -343,7 +343,7 @@ func TestExecute_MissingIdentityFailsClosed(t *testing.T) {
 func TestExecute_ToolNotFoundFailsAtomically(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("registered")
+	inv := echoTool("registered")
 	resolver.Register("registered", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-notfound")
@@ -369,7 +369,7 @@ func TestExecute_JoinN_WaitsForNSuccesses(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
 	for _, n := range []string{"a", "b", "c", "d", "e"} {
-		inv, _ := echoTool(n)
+		inv := echoTool(n)
 		resolver.Register(n, inv, nil)
 	}
 	exec := parallel.New(resolver)
@@ -409,7 +409,7 @@ func TestExecute_JoinN_ThresholdUnmetIsRuntimeOutcome(t *testing.T) {
 	resolver := newStub()
 
 	// one branch succeeds, two fail at invoke — JoinN N=3 cannot be met.
-	invOK, _ := echoTool("ok")
+	invOK := echoTool("ok")
 	resolver.Register("ok", invOK, nil)
 	invFail := func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
 		return tools.ToolResult{}, errors.New("branch invoke failed")
@@ -447,7 +447,7 @@ func TestExecute_JoinN_ThresholdUnmetIsRuntimeOutcome(t *testing.T) {
 func TestExecute_JoinN_InvalidThresholdFailsLoudly(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("a")
+	inv := echoTool("a")
 	resolver.Register("a", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-joinn-bad")
@@ -461,7 +461,7 @@ func TestExecute_JoinN_InvalidThresholdFailsLoudly(t *testing.T) {
 		{"exceeds-branches", 10},
 	}
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := exec.Execute(ctxWithQ(t, q), planner.CallParallel{
 				Branches: []planner.CallTool{
@@ -515,7 +515,7 @@ func TestExecute_EmptyBranchesFailsLoudly(t *testing.T) {
 func TestExecute_JoinKindUnknownFailsLoudly(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("a")
+	inv := echoTool("a")
 	resolver.Register("a", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-unknown-kind")
@@ -537,7 +537,7 @@ func TestExecute_JoinKindUnknownFailsLoudly(t *testing.T) {
 func TestExecute_JoinKeyedNotImplementedFailsLoudly(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("a")
+	inv := echoTool("a")
 	resolver.Register("a", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-keyed")
@@ -560,7 +560,7 @@ func TestExecute_JoinKeyedNotImplementedFailsLoudly(t *testing.T) {
 func TestExecute_JoinAllSurfacesPerBranchFailures(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	invOK, _ := echoTool("ok")
+	invOK := echoTool("ok")
 	resolver.Register("ok", invOK, nil)
 	wantErr := errors.New("upstream failure")
 	resolver.Register("oops", func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
@@ -595,7 +595,7 @@ func TestExecute_JoinAllSurfacesPerBranchFailures(t *testing.T) {
 func TestExecute_NilJoinDefaultsToJoinAll(t *testing.T) {
 	t.Parallel()
 	resolver := newStub()
-	inv, _ := echoTool("a")
+	inv := echoTool("a")
 	resolver.Register("a", inv, nil)
 	exec := parallel.New(resolver)
 	q := fixedQ(t, "r-nil-join")

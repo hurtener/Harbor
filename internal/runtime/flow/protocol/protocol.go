@@ -167,7 +167,7 @@ func (s *Surface) List(ctx context.Context, req prototypes.FlowListRequest, admi
 	if err != nil {
 		return prototypes.FlowListResponse{}, err
 	}
-	if err := validatePageSize(req.PageSize); err != nil {
+	if err = validatePageSize(req.PageSize); err != nil {
 		return prototypes.FlowListResponse{}, err
 	}
 	if crossTenantRequested(req.Filter.Tenants, id.TenantID) && !adminScoped {
@@ -220,7 +220,7 @@ func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListReque
 	if strings.TrimSpace(req.FlowID) == "" {
 		return prototypes.FlowRunsListResponse{}, fmt.Errorf("%w: flow_id is empty", ErrInvalidRequest)
 	}
-	if err := validatePageSize(req.PageSize); err != nil {
+	if err = validatePageSize(req.PageSize); err != nil {
 		return prototypes.FlowRunsListResponse{}, err
 	}
 	if crossTenantRequested(req.Tenants, id.TenantID) && !adminScoped {

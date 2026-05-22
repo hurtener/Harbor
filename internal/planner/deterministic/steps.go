@@ -74,19 +74,10 @@ func bindRegistry(step DecisionTreeStep, reg tasks.TaskRegistry) {
 // returns a step error from [Decide] (fail-loudly per §13 — a
 // silent default-args behaviour would mask operator bugs).
 type CallToolStep struct {
-	// Tool is the tool name registered in the ToolCatalogView. The
-	// runtime executor dispatches via Phase 26's catalog.
-	Tool string
-	// ArgsBuilder constructs the JSON-encoded args payload from the
-	// run context. Required; nil → step error.
 	ArgsBuilder func(planner.RunContext) (json.RawMessage, error)
-	// Reasoning is the planner's free-text justification surfaced in
-	// observability + audit. Capped by the runtime's payload bounds
-	// before emit.
-	Reasoning string
-	// When is the optional guard. nil → always match. Non-nil → step
-	// claims the call only when the guard returns true.
-	When func(planner.RunContext) bool
+	When        func(planner.RunContext) bool
+	Tool        string
+	Reasoning   string
 }
 
 // Decide implements [DecisionTreeStep].
@@ -123,18 +114,10 @@ func (s *CallToolStep) Decide(_ context.Context, rc planner.RunContext) (planner
 // `Reason` MUST be one of the canonical [planner.FinishReason]
 // values; an invalid reason surfaces as a step error.
 type FinishStep struct {
-	// Reason is the terminal reason. MUST be canonical (see
-	// planner.IsValidFinishReason).
-	Reason planner.FinishReason
-	// PayloadBuilder constructs the terminal payload from the run
-	// context. nil → nil Payload.
-	PayloadBuilder func(planner.RunContext) (any, error)
-	// MetadataBuilder constructs the terminal metadata from the run
-	// context. nil → nil Metadata (the step still stamps `run_id`
-	// when the run has one — see Decide).
+	PayloadBuilder  func(planner.RunContext) (any, error)
 	MetadataBuilder func(planner.RunContext) (map[string]any, error)
-	// When is the optional guard. nil → always match.
-	When func(planner.RunContext) bool
+	When            func(planner.RunContext) bool
+	Reason          planner.FinishReason
 }
 
 // Decide implements [DecisionTreeStep].
@@ -193,14 +176,9 @@ func (s *FinishStep) Decide(_ context.Context, rc planner.RunContext) (planner.D
 // `Reason` MUST be one of the canonical [planner.PauseReason]
 // values; an invalid reason surfaces as a step error.
 type PauseStep struct {
-	// Reason is the pause reason. MUST be canonical (see
-	// planner.IsValidPauseReason).
-	Reason planner.PauseReason
-	// PayloadBuilder constructs the pause payload from the run
-	// context. nil → empty Payload map.
 	PayloadBuilder func(planner.RunContext) (map[string]any, error)
-	// When is the optional guard. nil → always match.
-	When func(planner.RunContext) bool
+	When           func(planner.RunContext) bool
+	Reason         planner.PauseReason
 }
 
 // Decide implements [DecisionTreeStep].
@@ -237,18 +215,11 @@ func (s *PauseStep) Decide(_ context.Context, rc planner.RunContext) (planner.De
 //   - resolved: the OnResolved callback has fired; future calls of
 //     the same `(SessionID, StepID)` SKIP (the step is "done").
 type spawnState struct {
-	// mu guards every field below. Decide locks it for the whole
-	// transition so concurrent invocations sharing one
-	// `(SessionID, StepID)` key are serialised — the D-025
-	// concurrent-reuse contract is binary (§5): the artifact must be
-	// race-free for shared concurrent use, not merely race-free when
-	// callers happen to use distinct keys. Distinct keys still get
-	// distinct *spawnState values, so cross-run calls never contend.
+	groupID     tasks.TaskGroupID
+	ownerTaskID tasks.TaskID
 	mu          sync.Mutex
 	spawned     bool
 	resolved    bool
-	groupID     tasks.TaskGroupID
-	ownerTaskID tasks.TaskID
 }
 
 // SpawnAndAwaitStep is the operator-configured spawn-then-await
@@ -286,34 +257,15 @@ type spawnState struct {
 // `OnResolved` MUST be safe for concurrent use — the same step
 // instance is shared across N concurrent runs against the planner.
 type SpawnAndAwaitStep struct {
-	// StepID is the step's unique identifier within the planner's
-	// configured step set. Used as the per-(SessionID, StepID) key
-	// for the spawn-state map. Default: "<spawn-and-await>".
-	StepID string
-	// Kind is the [tasks.TaskKind] for the spawned member task.
-	// Typically [tasks.KindBackground].
-	Kind tasks.TaskKind
-	// SpecBuilder constructs the [planner.SpawnSpec] from the run
-	// context. Required; nil → step error.
+	registry    tasks.TaskRegistry
 	SpecBuilder func(planner.RunContext) (planner.SpawnSpec, error)
-	// GroupID is the optional pre-assigned group identifier. Empty
-	// → the step creates an ad-hoc group keyed by
-	// `(SessionID, StepID)`.
-	GroupID tasks.TaskGroupID
-	// OnResolved is invoked once the group reaches a terminal
-	// state. The returned decision becomes the planner's next
-	// decision. Required; nil → step error.
-	OnResolved func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error)
-	// When is the optional guard. nil → always match (claim the
-	// call until the step is resolved).
-	When func(planner.RunContext) bool
-
-	// Internal fields. The registry is bound by the planner's
-	// constructor via bindRegistry. The state map is keyed by
-	// `(SessionID, StepID)`; values are *spawnState.
-	mu       sync.Mutex
-	registry tasks.TaskRegistry
-	states   sync.Map
+	OnResolved  func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error)
+	When        func(planner.RunContext) bool
+	states      sync.Map
+	StepID      string
+	Kind        tasks.TaskKind
+	GroupID     tasks.TaskGroupID
+	mu          sync.Mutex
 }
 
 // bindRegistry implements [registryBinder].
@@ -337,11 +289,11 @@ func (s *SpawnAndAwaitStep) stateKey(q identity.Quadruple) string {
 func (s *SpawnAndAwaitStep) getState(q identity.Quadruple) *spawnState {
 	key := s.stateKey(q)
 	if existing, ok := s.states.Load(key); ok {
-		return existing.(*spawnState)
+		return existing.(*spawnState) //nolint:errcheck // sync.Map only ever stores *spawnState; assertion cannot fail
 	}
 	fresh := &spawnState{}
 	actual, _ := s.states.LoadOrStore(key, fresh)
-	return actual.(*spawnState)
+	return actual.(*spawnState) //nolint:errcheck // sync.Map only ever stores *spawnState; assertion cannot fail
 }
 
 // Decide implements [DecisionTreeStep]. See type godoc for the
@@ -494,21 +446,13 @@ func (s *SpawnAndAwaitStep) kindOrBackground() tasks.TaskKind {
 //     step is marked resolved and SKIPS future calls of the same
 //     `(SessionID, OwnerTaskID)`.
 type WatchGroupStep struct {
-	// GroupID is the pre-existing group identifier.
-	GroupID tasks.TaskGroupID
-	// OwnerTaskID is the task whose lifecycle the planner reports
-	// as the AwaitTask target. Typically the spawn handle's TaskID
-	// surfaced by an earlier SpawnTask emission.
+	registry    tasks.TaskRegistry
+	OnResolved  func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error)
+	When        func(planner.RunContext) bool
+	resolved    sync.Map
+	GroupID     tasks.TaskGroupID
 	OwnerTaskID tasks.TaskID
-	// OnResolved is invoked once the group reaches a terminal
-	// state. Required; nil → step error.
-	OnResolved func(planner.RunContext, []tasks.MemberOutcome) (planner.Decision, error)
-	// When is the optional guard. nil → always match.
-	When func(planner.RunContext) bool
-
-	mu       sync.Mutex
-	registry tasks.TaskRegistry
-	resolved sync.Map // map[string]bool keyed by SessionID
+	mu          sync.Mutex
 }
 
 // bindRegistry implements [registryBinder].
@@ -535,7 +479,7 @@ func (s *WatchGroupStep) Decide(ctx context.Context, rc planner.RunContext) (pla
 
 	key := rc.Quadruple.SessionID + "::" + string(s.GroupID)
 	if v, has := s.resolved.Load(key); has {
-		if v.(bool) {
+		if v.(bool) { //nolint:errcheck // s.resolved only ever stores bool; assertion cannot fail
 			return nil, false, nil
 		}
 	}

@@ -37,7 +37,7 @@ func TestSafety_PlantedLeak_RawTextEmitsContextLeak(t *testing.T) {
 
 	sub := subscribeBus(t, deps.Bus, llm.EventTypeContextLeak)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t)
 	// Build a string ≥ 32 KiB (the heavy-output threshold default).
 	leaky := strings.Repeat("X", 33*1024)
 	req := llm.CompleteRequest{
@@ -81,7 +81,7 @@ func TestSafety_TokenBudgetGuard(t *testing.T) {
 
 	sub := subscribeBus(t, deps.Bus, llm.EventTypeContextWindowExceeded)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t)
 	// ~3500 chars → ~875 tokens via chars/4 — comfortably over 190.
 	huge := strings.Repeat("ab", 1500)
 	_, err = client.Complete(ctx, llm.CompleteRequest{
@@ -114,7 +114,7 @@ func TestSafety_HappyPath_NoLeak(t *testing.T) {
 	leakSub := subscribeBus(t, deps.Bus, llm.EventTypeContextLeak)
 	budgetSub := subscribeBus(t, deps.Bus, llm.EventTypeContextWindowExceeded)
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t)
 	text := "hello"
 	resp, err := client.Complete(ctx, llm.CompleteRequest{
 		Model:    "m",
@@ -148,7 +148,7 @@ func TestSafety_PartTextLeak(t *testing.T) {
 	}
 	defer func() { _ = client.Close(context.Background()) }()
 
-	ctx := withIdentity(t, context.Background(), "T", "U", "S")
+	ctx := withIdentity(t)
 	// Leaky payload inside a multimodal text part.
 	leaky := strings.Repeat("Y", 33*1024)
 	req := llm.CompleteRequest{

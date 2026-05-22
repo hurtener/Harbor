@@ -108,11 +108,11 @@ func init() {
 // pack asserts the round-trip.
 type RepairExhaustedPayload struct {
 	events.SafeSealed
+	OccurredAt             time.Time
 	Identity               identity.Quadruple
+	Reasons                []string
 	Attempts               int
 	ConsecutiveArgFailures int
-	Reasons                []string
-	OccurredAt             time.Time
 }
 
 // MaxStepsExceededPayload is the typed payload for
@@ -133,11 +133,11 @@ type RepairExhaustedPayload struct {
 // breaker not silent (§13). D-051.
 type MaxStepsExceededPayload struct {
 	events.SafeSealed
+	OccurredAt    time.Time
 	Identity      identity.Quadruple
+	LastTool      string
 	MaxSteps      int
 	StepsObserved int
-	LastTool      string
-	OccurredAt    time.Time
 }
 
 // TrajectoryCompressedPayload is the typed payload for
@@ -160,11 +160,11 @@ type MaxStepsExceededPayload struct {
 // D-055.
 type TrajectoryCompressedPayload struct {
 	events.SafeSealed
+	OccurredAt    time.Time
 	Identity      identity.Quadruple
 	StepsBefore   int
 	StepsAfter    int
 	TokenEstimate int
-	OccurredAt    time.Time
 }
 
 // TrajectoryCompressionFailedPayload is the typed payload for
@@ -191,10 +191,10 @@ type TrajectoryCompressedPayload struct {
 // observability surface (§13 — silent degradation banned). D-055.
 type TrajectoryCompressionFailedPayload struct {
 	events.SafeSealed
+	OccurredAt    time.Time
 	Identity      identity.Quadruple
-	StepsObserved int
-	TokenEstimate int
 	ErrorCode     string
 	ErrorMessage  string
-	OccurredAt    time.Time
+	StepsObserved int
+	TokenEstimate int
 }

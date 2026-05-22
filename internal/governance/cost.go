@@ -76,22 +76,22 @@ type CostAccumulator struct {
 //     don't race the JSON encode + state.Save sequence (each individual
 //     write is one upsert; the mutex is short-lived).
 type costKeyState struct {
+	modelTotals sync.Map
 	totalBits   atomic.Uint64
-	modelTotals sync.Map     // map[string]*atomic.Uint64
-	loaded      atomic.Bool  // lazy load gate
-	loadMu      sync.Mutex   // serialises the lazy load
-	persistMu   sync.Mutex   // serialises state.Save
-	updatedAt   atomic.Int64 // unix nanos
+	updatedAt   atomic.Int64
+	loadMu      sync.Mutex
+	persistMu   sync.Mutex
+	loaded      atomic.Bool
 }
 
 // costRecord is the JSON-encoded wire shape persisted at
 // (Identity, Kind="governance.cost"). Stable across drivers per the
 // `internal/state` Bytes-opaque contract.
 type costRecord struct {
-	Total       float64            `json:"total"`
-	ByModel     map[string]float64 `json:"by_model,omitempty"`
-	UpdatedAt   time.Time          `json:"updated_at"`
-	Schema      int                `json:"schema"` // forward-compat — current=1.
+	UpdatedAt time.Time          `json:"updated_at"`
+	ByModel   map[string]float64 `json:"by_model,omitempty"`
+	Total     float64            `json:"total"`
+	Schema    int                `json:"schema"`
 }
 
 const costRecordSchema = 1
@@ -203,7 +203,7 @@ func (a *CostAccumulator) Snapshot(ctx context.Context, q identity.Quadruple) (f
 		return 0, nil, ErrClosed
 	}
 	if err := state.ValidateIdentity(q); err != nil {
-		return 0, nil, fmt.Errorf("%w: %v", ErrIdentityRequired, err)
+		return 0, nil, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
 	ks, err := a.keyState(ctx, q)
 	if err != nil {
@@ -212,8 +212,8 @@ func (a *CostAccumulator) Snapshot(ctx context.Context, q identity.Quadruple) (f
 	total := math.Float64frombits(ks.totalBits.Load())
 	byModel := make(map[string]float64)
 	ks.modelTotals.Range(func(k, v any) bool {
-		name, _ := k.(string)
-		bits, _ := v.(*atomic.Uint64)
+		name, _ := k.(string)         //nolint:errcheck // modelTotals only ever stores string keys; assertion cannot fail
+		bits, _ := v.(*atomic.Uint64) //nolint:errcheck // modelTotals only ever stores *atomic.Uint64 values; assertion cannot fail
 		if bits != nil {
 			byModel[name] = math.Float64frombits(bits.Load())
 		}
@@ -235,7 +235,7 @@ func (a *CostAccumulator) Close(_ context.Context) error {
 func (a *CostAccumulator) keyState(ctx context.Context, q identity.Quadruple) (*costKeyState, error) {
 	k := quadKeyFor(q)
 	if v, ok := a.keys.Load(k); ok {
-		ks := v.(*costKeyState)
+		ks := v.(*costKeyState) //nolint:errcheck // a.keys only ever stores *costKeyState; assertion cannot fail
 		if err := a.lazyLoad(ctx, q, ks); err != nil {
 			return nil, err
 		}
@@ -243,7 +243,7 @@ func (a *CostAccumulator) keyState(ctx context.Context, q identity.Quadruple) (*
 	}
 	fresh := &costKeyState{}
 	actual, _ := a.keys.LoadOrStore(k, fresh)
-	ks := actual.(*costKeyState)
+	ks := actual.(*costKeyState) //nolint:errcheck // a.keys only ever stores *costKeyState; assertion cannot fail
 	if err := a.lazyLoad(ctx, q, ks); err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (a *CostAccumulator) lazyLoad(ctx context.Context, q identity.Quadruple, ks
 			ks.loaded.Store(true)
 			return nil
 		}
-		return fmt.Errorf("%w: %v", ErrStateUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrStateUnavailable, err)
 	}
 	if len(rec.Bytes) == 0 {
 		ks.loaded.Store(true)
@@ -275,7 +275,7 @@ func (a *CostAccumulator) lazyLoad(ctx context.Context, q identity.Quadruple, ks
 	var cr costRecord
 	if err := json.Unmarshal(rec.Bytes, &cr); err != nil {
 		// Corrupt record → fail loud rather than silently reset.
-		return fmt.Errorf("%w: unmarshal cost record: %v", ErrStateUnavailable, err)
+		return fmt.Errorf("%w: unmarshal cost record: %w", ErrStateUnavailable, err)
 	}
 	// Forward-compat guard: a record from a future schema would be
 	// partially parsed silently; fail loud per AGENTS.md §13.
@@ -311,11 +311,11 @@ func (a *CostAccumulator) addAtomic(ks *costKeyState, model string, delta float6
 	if model != "" {
 		var bitsPtr *atomic.Uint64
 		if v, ok := ks.modelTotals.Load(model); ok {
-			bitsPtr = v.(*atomic.Uint64)
+			bitsPtr = v.(*atomic.Uint64) //nolint:errcheck // modelTotals only ever stores *atomic.Uint64; assertion cannot fail
 		} else {
 			fresh := &atomic.Uint64{}
 			actual, _ := ks.modelTotals.LoadOrStore(model, fresh)
-			bitsPtr = actual.(*atomic.Uint64)
+			bitsPtr = actual.(*atomic.Uint64) //nolint:errcheck // modelTotals only ever stores *atomic.Uint64; assertion cannot fail
 		}
 		for {
 			cur := bitsPtr.Load()
@@ -346,8 +346,8 @@ func (a *CostAccumulator) persist(ctx context.Context, q identity.Quadruple, ks 
 		Schema:    costRecordSchema,
 	}
 	ks.modelTotals.Range(func(k, v any) bool {
-		name, _ := k.(string)
-		bits, _ := v.(*atomic.Uint64)
+		name, _ := k.(string)         //nolint:errcheck // modelTotals only ever stores string keys; assertion cannot fail
+		bits, _ := v.(*atomic.Uint64) //nolint:errcheck // modelTotals only ever stores *atomic.Uint64; assertion cannot fail
 		if bits != nil {
 			cr.ByModel[name] = math.Float64frombits(bits.Load())
 		}
@@ -373,7 +373,7 @@ func (a *CostAccumulator) persist(ctx context.Context, q identity.Quadruple, ks 
 // happened regardless of whether the observer saw the event).
 func (a *CostAccumulator) emitBudgetExceeded(ctx context.Context, q identity.Quadruple, tier, model string, total, ceiling float64) {
 	now := a.clock.Now()
-	_ = a.bus.Publish(ctx, events.Event{
+	_ = a.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail cost accounting
 		Type:       EventTypeBudgetExceeded,
 		Identity:   q,
 		OccurredAt: now,
@@ -403,6 +403,6 @@ func (a *CostAccumulator) totalLoaded(q identity.Quadruple) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	ks := v.(*costKeyState)
+	ks := v.(*costKeyState) //nolint:errcheck // a.keys only ever stores *costKeyState; assertion cannot fail
 	return math.Float64frombits(ks.totalBits.Load()), ks.loaded.Load()
 }

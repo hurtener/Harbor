@@ -199,39 +199,17 @@ type OAuthConfig struct {
 // (which is itself called only by trusted tool drivers immediately
 // before composing the upstream request).
 type Token struct {
-	// Source is the ToolSourceID this token authorises.
-	Source tools.ToolSourceID
-	// BindingScope is ScopeUser or ScopeAgent — matches the
-	// originating OAuthConfig.BindingScope.
-	BindingScope BindingScope
-	// TenantID is always set.
-	TenantID string
-	// UserID is set when BindingScope == ScopeUser; empty otherwise.
-	UserID string
-	// AgentID is set when BindingScope == ScopeAgent; empty otherwise.
-	// Phase 53a registration identity — never substituted for an
-	// isolation-tuple element.
-	AgentID string
-	// AccessToken — bearer credential. NEVER logged, NEVER emitted on
-	// the bus, NEVER persisted in plaintext (encryption-at-rest is
-	// enforced in the store layer).
-	AccessToken string
-	// RefreshToken — refresh credential. NEVER logged. Encrypted
-	// independently of AccessToken so a compromised access cache does
-	// not yield refresh capability.
-	RefreshToken string
-	// TokenType is conventionally "Bearer".
-	TokenType string
-	// ExpiresAt is the wall-clock expiry of AccessToken. Zero means
-	// "no expiry advertised" — the provider treats this as
-	// long-lived but still validates via 401 retry.
-	ExpiresAt time.Time
-	// Scopes is the scope list granted by the authorization server.
-	// May be a subset of the requested scopes.
-	Scopes []string
-	// LastRefreshedAt is the wall-clock time of the most recent
-	// successful refresh; zero on first issuance.
+	ExpiresAt       time.Time
 	LastRefreshedAt time.Time
+	Source          tools.ToolSourceID
+	BindingScope    BindingScope
+	TenantID        string
+	UserID          string
+	AgentID         string
+	AccessToken     string
+	RefreshToken    string
+	TokenType       string
+	Scopes          []string
 }
 
 // SubjectID returns the principal-side half of the persistence
@@ -286,26 +264,13 @@ type FlowInitiation struct {
 // caller-controllable / runtime-stamped; NEVER contains AccessToken /
 // RefreshToken plaintext.
 type ErrAuthRequired struct {
-	// Source is the ToolSourceID that needs auth.
-	Source tools.ToolSourceID
-	// SourceName is the human-readable name (echoed from
-	// OAuthConfig.SourceName); the Console renders this in the
-	// "Connect <SourceName>" prompt.
-	SourceName string
-	// BindingScope discriminates user-bound vs agent-bound — drives
-	// the Console UX target (user prompt vs admin banner).
+	Source       tools.ToolSourceID
+	SourceName   string
 	BindingScope BindingScope
-	// AuthorizeURL is the URL to visit to complete OAuth.
 	AuthorizeURL string
-	// State is the CSRF token / flow-correlation key. NOT a secret
-	// (it's a one-time-use nonce); safe to surface in events for
-	// callback correlation.
-	State string
-	// Scopes is the scope list requested.
-	Scopes []string
-	// Message is human-readable advisory text. Never includes raw
-	// upstream-response bytes.
-	Message string
+	State        string
+	Message      string
+	Scopes       []string
 }
 
 // Error implements the error interface.

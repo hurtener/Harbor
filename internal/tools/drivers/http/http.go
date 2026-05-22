@@ -74,19 +74,19 @@ type HTTPOption func(*httpToolConfig)
 // With* helpers.
 type httpToolConfig struct {
 	client       *http.Client
-	authSpec     AuthSpec
-	secret       string
 	staticHeader map[string]string
-	bodyTmpl     string
+	authSpec     AuthSpec
 	source       tools.ToolSourceID
-	argsSchema   []byte
-	outSchema    []byte
+	secret       string
+	bodyTmpl     string
 	description  string
-	policy       tools.ToolPolicy
-	tags         []string
-	authScopes   []string
 	sideEffect   tools.SideEffect
 	loading      tools.LoadingMode
+	argsSchema   []byte
+	outSchema    []byte
+	tags         []string
+	authScopes   []string
+	policy       tools.ToolPolicy
 }
 
 // defaultClient is the http.Client used when WithClient is not
@@ -252,13 +252,13 @@ func RegisterHTTPTool(
 
 	urlTmpl, err := compileTemplate("url:"+name, urlTemplate)
 	if err != nil {
-		return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %v", name, ErrTemplateRender, err)
+		return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %w", name, ErrTemplateRender, err)
 	}
 	var bodyTmpl *stdtemplate.Template
 	if cfg.bodyTmpl != "" {
 		bodyTmpl, err = compileTemplate("body:"+name, cfg.bodyTmpl)
 		if err != nil {
-			return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %v", name, ErrTemplateRender, err)
+			return fmt.Errorf("http.RegisterHTTPTool[%s]: %w: %w", name, ErrTemplateRender, err)
 		}
 	}
 
@@ -369,28 +369,28 @@ func doHTTPInvoke(
 	var argsAny any
 	if len(args) > 0 && !bytes.Equal(bytes.TrimSpace(args), []byte("null")) {
 		if err := json.Unmarshal(args, &argsAny); err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %v", tools.ErrToolInvalidArgs, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: decode args: %w", tools.ErrToolInvalidArgs, err)
 		}
 	}
 	tmplData := map[string]any{"Args": argsAny}
 
 	renderedURL, err := renderTemplate(urlTmpl, tmplData)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: %v", ErrTemplateRender, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: %w", ErrTemplateRender, err)
 	}
 
 	// Sanity: URL must parse.
 	parsedURL, err := url.Parse(renderedURL)
 	if err != nil {
-		return tools.ToolResult{}, fmt.Errorf("%w: url parse %q: %v", ErrTemplateRender, renderedURL, err)
+		return tools.ToolResult{}, fmt.Errorf("%w: url parse %q: %w", ErrTemplateRender, renderedURL, err)
 	}
 
 	var body io.Reader
 	var bodyBytes []byte
 	if bodyTmpl != nil {
-		rendered, err := renderTemplate(bodyTmpl, tmplData)
+		rendered, err := renderTemplate(bodyTmpl, tmplData) //nolint:govet // block-local; err shadow is benign
 		if err != nil {
-			return tools.ToolResult{}, fmt.Errorf("%w: body: %v", ErrTemplateRender, err)
+			return tools.ToolResult{}, fmt.Errorf("%w: body: %w", ErrTemplateRender, err)
 		}
 		bodyBytes = []byte(rendered)
 		body = bytes.NewReader(bodyBytes)
@@ -408,7 +408,7 @@ func doHTTPInvoke(
 	}
 
 	// Apply auth FIRST so static headers can't accidentally overwrite it.
-	if err := applyAuth(req, cfg.authSpec, cfg.secret); err != nil {
+	if err = applyAuth(req, cfg.authSpec, cfg.secret); err != nil {
 		return tools.ToolResult{}, err
 	}
 
@@ -551,9 +551,9 @@ func classifyHTTPResponse(resp *http.Response, body []byte) error {
 // shell's classifier can honour it. Implements RateLimited so
 // callers can errors.As against it.
 type rateLimitError struct {
+	snippet string
 	status  int
 	delay   time.Duration
-	snippet string
 }
 
 // Error formats the status + parsed delay. The string deliberately

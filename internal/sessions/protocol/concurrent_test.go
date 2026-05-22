@@ -28,7 +28,7 @@ func TestService_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	// Two-tenant catalog; each goroutine queries exactly one tenant.
 	rows := []prototypes.SessionRow{}
 	base := time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		tenant := "t-even"
 		if i%2 == 1 {
 			tenant = "t-odd"
@@ -56,7 +56,7 @@ func TestService_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(N)
 	errCh := make(chan error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(n int) {
 			defer wg.Done()
 			tenant := "t-even"

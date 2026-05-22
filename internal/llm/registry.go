@@ -55,67 +55,21 @@ type Deps struct {
 // snapshot's shape is stable across phases; the mock driver ignores
 // them. Phase 33's bifrost driver will read them.
 type ConfigSnapshot struct {
+	ModelProfiles        map[string]ModelProfile
+	Model                string
+	BaseURL              string
+	APIKey               string
 	Driver               string
+	Provider             string
+	CustomProviders      []CustomProviderSpec
+	NetworkDefaults      NetworkDefaults
 	ContextWindowReserve float64
 	HeavyOutputThreshold int
-	ModelProfiles        map[string]ModelProfile
-
-	// DisableCorrections opts OUT of the Phase 34 per-provider
-	// correction layer. Zero-value (false) = corrections enabled —
-	// production callers wire `corrections.Wrap(safetyClient(driver))`
-	// so quirks like NIM message reordering, OpenAI strict-schema
-	// mode, thinking-class reasoning routing, Anthropic envelope
-	// translation, and usage backfill all apply automatically. Tests
-	// that need to exercise the safety pass in isolation set this to
-	// true.
-	//
-	// Inverse-named so the zero-value matches the production default
-	// — direct callers (tests, programmatic snapshot construction)
-	// don't have to flip an extra knob to get correct behaviour. The
-	// config loader resolves the operator-facing `corrections.enabled`
-	// yaml field (default true) into this inverse.
-	DisableCorrections bool
-
-	// DisableDowngrade opts OUT of the Phase 35 structured-output
-	// downgrade chain. Zero-value (false) = enabled. Inverse-named so
-	// production callers get the right behaviour by default.
-	DisableDowngrade bool
-
-	// DisableRetry opts OUT of the Phase 36 retry-with-feedback
-	// wrapper. Zero-value (false) = enabled. The wrapper is a no-op
-	// when `CompleteRequest.Validator` is nil, so disabling is only
-	// useful for tests that need to isolate the downgrade layer.
-	DisableRetry bool
-
-	// DisableGovernance opts OUT of the Phase 36a/36b governance
-	// wrapper. Zero-value (false) = enabled — but the wrapper is also
-	// a no-op pass-through when no `governance.Factory` has been
-	// registered, so the latent default (Wave 7b scoping) requires
-	// neither flag flip nor factory wiring. Tests that want to bypass
-	// even a registered factory flip this true.
-	DisableGovernance bool
-
-	// Bifrost-driver knobs (Phase 33).
-	Provider string
-	Model    string
-	APIKey   string
-	BaseURL  string
-	Timeout  time.Duration
-
-	// CustomProviders is the operator-declared registry of
-	// OpenAI-compatible providers (Phase 33a). When `Provider`
-	// matches a custom entry's `Name`, the entry's `BaseURL` /
-	// `APIKeyEnvVar` / `Models` / network knobs apply (legacy
-	// `APIKey` / `BaseURL` / `Timeout` ignored for that case). The
-	// list is keyed only by `Name`; the bifrost driver iterates and
-	// registers all entries with bifrost's `Account`.
-	CustomProviders []CustomProviderSpec
-
-	// NetworkDefaults applies to every provider when the per-provider
-	// override is absent. Zero-valued fields fall through to
-	// bifrost's package-level defaults at construction. Restart-
-	// required.
-	NetworkDefaults NetworkDefaults
+	Timeout              time.Duration
+	DisableRetry         bool
+	DisableGovernance    bool
+	DisableDowngrade     bool
+	DisableCorrections   bool
 }
 
 // CustomProviderSpec is one operator-declared OpenAI-compatible
@@ -135,18 +89,18 @@ type ConfigSnapshot struct {
 // for OpenAI-compatible endpoints that host e.g. `/chat/completions`
 // at the root.
 type CustomProviderSpec struct {
+	RequestPathOverrides map[string]string
 	Name                 string
 	BaseURL              string
 	APIKeyEnvVar         string
-	Models               []string
 	BaseProviderType     string
+	Models               []string
 	Timeout              time.Duration
 	MaxRetries           int
 	RetryBackoffInitial  time.Duration
 	RetryBackoffMax      time.Duration
 	Concurrency          int
 	BufferSize           int
-	RequestPathOverrides map[string]string
 }
 
 // NetworkDefaults are the operator-tunable defaults bifrost applies

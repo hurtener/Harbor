@@ -46,8 +46,8 @@ func TestTrajectory_Serialize_ConcurrentReuse_D025(t *testing.T) {
 		bleeds   int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			tr := &trajectory.Trajectory{
@@ -117,8 +117,8 @@ func TestHandleRegistry_ConcurrentReuse_D025(t *testing.T) {
 		lost   int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 			id := trajectory.HandleID(fmt.Sprintf("h-%d", i))
@@ -181,7 +181,7 @@ func TestHandleRegistry_SharedReader_ConcurrentReuse(t *testing.T) {
 		failures int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			got, err := r.Get("shared")
@@ -230,7 +230,7 @@ func TestSerialize_SharedTrajectory_ConcurrentReuse(t *testing.T) {
 		errResult int64
 	)
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			got, err := tr.Serialize()

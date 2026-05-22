@@ -168,9 +168,9 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 // metadata; the underlying `*auth.Provider` is already D-025-safe
 // (per `internal/tools/auth/concurrent_test.go`).
 type provider struct {
+	inner  auth.OAuthProvider
 	name   string
 	source tools.ToolSourceID
-	inner  auth.OAuthProvider
 }
 
 // Token implements OAuthProvider.Token.

@@ -19,7 +19,7 @@ func passthrough(_ context.Context, in messages.Envelope, _ *engine.NodeContext)
 }
 
 func TestDefinition_Validate_RejectsMissingFields(t *testing.T) {
-	cases := []struct {
+	cases := []struct { //nolint:govet // fieldalignment on a table-test struct; positional literals kept for readability
 		name string
 		def  flow.Definition
 		want error
@@ -127,7 +127,7 @@ func TestRegisterAsTool_3NodeFlow_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -195,7 +195,7 @@ func TestRegisterAsTool_DeadlineExceeded_FiresBudgetEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -235,7 +235,7 @@ func TestRegisterAsTool_NoIdentity_Rejects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {

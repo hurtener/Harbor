@@ -19,19 +19,10 @@ const MaxControlHistory = 256
 // caller payload itself is NOT carried (mirroring ControlRejectedPayload):
 // the history is a low-cardinality audit trail, not a payload archive.
 type AppliedControl struct {
-	// Type is the control type that was applied.
-	Type ControlType
-	// RunID is the run the control targeted (a session may host multiple
-	// concurrent runs — the run component disambiguates).
-	RunID string
-	// AppliedAt is the wall-clock time the side effect was applied,
-	// stamped from the RunLoop's Clock.
 	AppliedAt time.Time
-	// Err is the non-nil error when the side effect failed (e.g. a
-	// PRIORITIZE whose task does not exist). A failed apply is still
-	// recorded — the history is the audit trail, and a silent drop would
-	// violate CLAUDE.md §5 "fail loudly".
-	Err error
+	Err       error
+	Type      ControlType
+	RunID     string
 }
 
 // controlHistory is the process-wide, per-session capped applied-control
@@ -44,10 +35,9 @@ type AppliedControl struct {
 // capped per session", and a session is the steering-relevant scope
 // (multiple runs in one session share the operator's steering attention).
 type controlHistory struct {
-	cap int
-
+	rings map[string][]AppliedControl
+	cap   int
 	mu    sync.Mutex
-	rings map[string][]AppliedControl // keyed by SessionID
 }
 
 // newControlHistory builds a per-session capped applied-control log. A

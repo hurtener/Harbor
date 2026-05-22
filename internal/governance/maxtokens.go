@@ -19,9 +19,9 @@ import (
 // is trivially satisfied. Operators may share one enforcer across the
 // entire runtime.
 type MaxTokensEnforcer struct {
-	cfg    Config
 	bus    events.EventBus
 	clock  Clock
+	cfg    Config
 	closed atomic.Bool
 }
 
@@ -61,7 +61,7 @@ func (e *MaxTokensEnforcer) PreCall(ctx context.Context, req llm.CompleteRequest
 	}
 	tierName := e.cfg.resolveTier(id)
 	now := e.clock.Now()
-	_ = e.bus.Publish(ctx, events.Event{
+	_ = e.bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail the MaxTokens check
 		Type:       EventTypeMaxTokensExceeded,
 		Identity:   quad,
 		OccurredAt: now,

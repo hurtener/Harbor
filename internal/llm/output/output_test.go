@@ -25,9 +25,9 @@ import (
 // request + returns a caller-supplied response (or error). Concurrent-
 // reuse safe.
 type recordingDriver struct {
-	mu     sync.Mutex
-	seen   []llm.CompleteRequest
 	respCB func(req llm.CompleteRequest, attempt int) (llm.CompleteResponse, error)
+	seen   []llm.CompleteRequest
+	mu     sync.Mutex
 	closed atomic.Bool
 }
 

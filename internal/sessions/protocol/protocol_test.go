@@ -19,8 +19,8 @@ import (
 // SessionLister the Service-level unit tests need; the integration
 // test uses the real registry.
 type fakeProjector struct {
-	rows    []prototypes.SessionRow
 	listErr error
+	rows    []prototypes.SessionRow
 }
 
 func (f *fakeProjector) ListSessions(_ context.Context, id identity.Identity, filter prototypes.SessionFilter, adminScoped bool) ([]prototypes.SessionRow, error) {

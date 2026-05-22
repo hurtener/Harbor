@@ -65,7 +65,7 @@ func TestSearchLadder_FTSOff_FallsBackToRegex(t *testing.T) {
 		UpdatedAt:   time.Now().UTC(),
 	}
 	s.ContentHash = skills.CanonicalContentHash(s)
-	if err := d.Upsert(ctx, id, s); err != nil {
+	if err = d.Upsert(ctx, id, s); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 

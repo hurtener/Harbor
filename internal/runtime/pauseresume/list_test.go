@@ -13,13 +13,13 @@ import (
 // listClock returns a controllable clock whose first N calls produce
 // strictly increasing timestamps one minute apart, anchored at a fixed
 // base — so PausedAt ordering in List is deterministic (CLAUDE.md §11).
-func listClock(base time.Time) (func() time.Time, *int) {
+func listClock(base time.Time) func() time.Time {
 	calls := 0
 	return func() time.Time {
 		t := base.Add(time.Duration(calls) * time.Minute)
 		calls++
 		return t
-	}, &calls
+	}
 }
 
 // requestPause is a small helper that records a pause under the given
@@ -36,7 +36,7 @@ func requestPause(t *testing.T, c pauseresume.Coordinator, id identity.Identity,
 
 func TestList_EmptyFilterDefaultsToCallerScopePaused(t *testing.T) {
 	t.Parallel()
-	clk, _ := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
+	clk := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
 	c := pauseresume.New(pauseresume.WithClock(clk))
 
 	requestPause(t, c, testID, "run-a", pauseresume.ReasonApprovalRequired)
@@ -65,7 +65,7 @@ func TestList_EmptyFilterDefaultsToCallerScopePaused(t *testing.T) {
 
 func TestList_OrdersPausedAtDescending(t *testing.T) {
 	t.Parallel()
-	clk, _ := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
+	clk := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
 	c := pauseresume.New(pauseresume.WithClock(clk))
 
 	// Three pauses recorded at t, t+1m, t+2m.
@@ -101,11 +101,11 @@ func TestList_IdentityMandatory(t *testing.T) {
 
 func TestList_PaginationMath(t *testing.T) {
 	t.Parallel()
-	clk, _ := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
+	clk := listClock(time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
 	c := pauseresume.New(pauseresume.WithClock(clk))
 
 	// 25 records, PageSize 10 ⇒ 3 pages (10, 10, 5).
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		requestPause(t, c, testID, "run", pauseresume.ReasonApprovalRequired)
 	}
 	cases := []struct {
@@ -200,7 +200,7 @@ func TestList_FilterByRunID(t *testing.T) {
 func TestList_FilterByTimeWindow(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-	clk, _ := listClock(base)
+	clk := listClock(base)
 	c := pauseresume.New(pauseresume.WithClock(clk))
 
 	// Records at base, base+1m, base+2m.
@@ -350,7 +350,7 @@ func TestList_HonoursCancelledContext(t *testing.T) {
 func TestList_AllAxesCombination(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-	clk, _ := listClock(base)
+	clk := listClock(base)
 	c := pauseresume.New(pauseresume.WithClock(clk))
 
 	// The one record that passes every axis.

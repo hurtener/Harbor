@@ -148,22 +148,10 @@ func IsValidDecision(d ApprovalDecision) bool {
 // args; they NEVER appear on the bus (the redactor sees only the
 // gate's summary payload).
 type ApprovalRequest struct {
-	// Tool is the planner-visible tool description. The gate emits
-	// Tool.Name on `tool.approval_requested` so the Console can
-	// render "Approve call to <Tool.Name>?".
-	Tool tools.Tool
-	// Args is the original argument blob the gate will return to the
-	// caller post-APPROVE. NEVER published on the bus.
-	Args json.RawMessage
-	// Identity is the (tenant, user, session) triple the call is
-	// running under. The Coordinator's pause record scopes against
-	// it; a cross-tenant resolver is rejected with
-	// `pauseresume.ErrScopeMismatch`.
 	Identity identity.Identity
-	// Tags is the caller-supplied classification surface. Operators
-	// reach for Tags in `TaggedPolicy` to decide "this is a write to
-	// a sensitive endpoint — require approval."
-	Tags []string
+	Args     json.RawMessage
+	Tags     []string
+	Tool     tools.Tool
 }
 
 // ApprovalPolicy decides, per ApprovalRequest, whether approval is

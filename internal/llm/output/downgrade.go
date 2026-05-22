@@ -17,9 +17,9 @@ import (
 // construction; the closed flag is atomic; the wrapped inner client
 // owns the per-attempt heavy lifting.
 type downgradeClient struct {
+	deps   llm.Deps
 	inner  llm.LLMClient
 	cfg    llm.ConfigSnapshot
-	deps   llm.Deps
 	closed atomic.Bool
 }
 
@@ -63,12 +63,10 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 	id := identityFromCtx(ctx)
 	mode := profile.OutputMode
 
-	var (
-		attempts []attemptRecord
-		lastErr  error
-	)
+	attempts := make([]attemptRecord, 0, maxDowngradeAttempts)
+	var lastErr error
 
-	for step := 0; step < maxDowngradeAttempts; step++ {
+	for range maxDowngradeAttempts {
 		if err := ctx.Err(); err != nil {
 			return llm.CompleteResponse{}, err
 		}
@@ -116,8 +114,8 @@ func (d *downgradeClient) Close(ctx context.Context) error {
 // attemptRecord captures one step in the downgrade chain for chain
 // summaries on exhaustion. Bounded — only used for the final error.
 type attemptRecord struct {
-	Mode llm.OutputMode
 	Err  error
+	Mode llm.OutputMode
 }
 
 // nextDowngrade returns the next `OutputMode` in the chain. The chain
@@ -311,7 +309,7 @@ func emitModeDowngraded(ctx context.Context, bus events.EventBus, id identity.Qu
 		return
 	}
 	fromKind, toKind := outputModeToResponseFormatKind(from), outputModeToResponseFormatKind(to)
-	_ = bus.Publish(ctx, events.Event{
+	_ = bus.Publish(ctx, events.Event{ //nolint:errcheck // best-effort event emit; publish failure must not fail downgrade
 		Type:       llm.EventTypeModeDowngraded,
 		Identity:   id,
 		OccurredAt: time.Now(),

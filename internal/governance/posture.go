@@ -51,16 +51,9 @@ func NewPostureProvider(cfg Config) *PostureProvider {
 // the provider's underlying Config — the snapshot is a defensive deep
 // copy.
 type Snapshot struct {
-	// DefaultTier is the operator-configured default tier name. Empty
-	// when no default is configured.
-	DefaultTier string
-	// ResolvedTier is the tier the caller's identity resolves to via the
-	// configured TierResolver (or DefaultTier when no resolver is set).
-	// Empty when no tier resolves.
-	ResolvedTier string
-	// IdentityTiers is a deep copy of the configured tier map. Always
-	// non-nil — an empty map signals no enforcement (latent default).
 	IdentityTiers map[string]TierConfig
+	DefaultTier   string
+	ResolvedTier  string
 }
 
 // Posture returns a deep-copied Snapshot of the configured governance

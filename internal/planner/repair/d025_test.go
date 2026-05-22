@@ -22,11 +22,10 @@ import (
 // each goroutine's response stream so the only shared state is the
 // RepairLoop itself — which is the D-025 contract.
 type perRunStubClient struct {
-	mu        sync.Mutex
 	responses []llm.CompleteResponse
+	seenIDs   []identity.Quadruple
 	cursor    int
-	// recorded ctx-identity per call (per-goroutine assertion)
-	seenIDs []identity.Quadruple
+	mu        sync.Mutex
 }
 
 func (s *perRunStubClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -97,8 +96,8 @@ func TestRepairLoop_ConcurrentReuse_D025(t *testing.T) {
 	)
 
 	wg.Add(N)
-	for i := 0; i < N; i++ {
-		i := i
+	for i := range N {
+
 		go func() {
 			defer wg.Done()
 

@@ -95,22 +95,22 @@ func TestCanonicalContentHash_ContentChangeFlipsHash(t *testing.T) {
 	want := skills.CanonicalContentHash(base)
 
 	for _, tc := range []struct {
-		name   string
 		mutate func(*skills.Skill)
+		name   string
 	}{
-		{"name", func(s *skills.Skill) { s.Name = "deploy-v2" }},
-		{"title", func(s *skills.Skill) { s.Title = "Deploy differently" }},
-		{"description", func(s *skills.Skill) { s.Description = "changed" }},
-		{"trigger", func(s *skills.Skill) { s.Trigger = "changed" }},
-		{"task type", func(s *skills.Skill) { s.TaskType = "infra" }},
-		{"tags", func(s *skills.Skill) { s.Tags = []string{"a", "b", "c"} }},
-		{"steps", func(s *skills.Skill) { s.Steps = []string{"build"} }},
-		{"preconditions", func(s *skills.Skill) { s.Preconditions = nil }},
-		{"failure modes", func(s *skills.Skill) { s.FailureModes = []string{"alert"} }},
-		{"required tools", func(s *skills.Skill) { s.RequiredTools = []string{"kubectl"} }},
-		{"required ns", func(s *skills.Skill) { s.RequiredNS = []string{"staging"} }},
-		{"required tags", func(s *skills.Skill) { s.RequiredTags = nil }},
-		{"extra", func(s *skills.Skill) { s.Extra = map[string]any{"model": "other"} }},
+		{name: "name", mutate: func(s *skills.Skill) { s.Name = "deploy-v2" }},
+		{name: "title", mutate: func(s *skills.Skill) { s.Title = "Deploy differently" }},
+		{name: "description", mutate: func(s *skills.Skill) { s.Description = "changed" }},
+		{name: "trigger", mutate: func(s *skills.Skill) { s.Trigger = "changed" }},
+		{name: "task type", mutate: func(s *skills.Skill) { s.TaskType = "infra" }},
+		{name: "tags", mutate: func(s *skills.Skill) { s.Tags = []string{"a", "b", "c"} }},
+		{name: "steps", mutate: func(s *skills.Skill) { s.Steps = []string{"build"} }},
+		{name: "preconditions", mutate: func(s *skills.Skill) { s.Preconditions = nil }},
+		{name: "failure modes", mutate: func(s *skills.Skill) { s.FailureModes = []string{"alert"} }},
+		{name: "required tools", mutate: func(s *skills.Skill) { s.RequiredTools = []string{"kubectl"} }},
+		{name: "required ns", mutate: func(s *skills.Skill) { s.RequiredNS = []string{"staging"} }},
+		{name: "required tags", mutate: func(s *skills.Skill) { s.RequiredTags = nil }},
+		{name: "extra", mutate: func(s *skills.Skill) { s.Extra = map[string]any{"model": "other"} }},
 	} {
 		s := hashSkill()
 		tc.mutate(&s)

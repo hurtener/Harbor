@@ -38,7 +38,7 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 			ErrInvalidRequest, pageSize, prototypes.MaxTaskListPageSize)
 	}
 
-	if err := validateFilter(req.Filter); err != nil {
+	if err = validateFilter(req.Filter); err != nil {
 		return prototypes.TaskListResponse{}, err
 	}
 

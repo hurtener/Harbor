@@ -189,7 +189,7 @@ func TestDeserializeRecord_RejectsUnknownFormatVersion(t *testing.T) {
 		t.Fatalf("SerializeRecord: %v", err)
 	}
 	var envelope map[string]any
-	if err := json.Unmarshal(out, &envelope); err != nil {
+	if err = json.Unmarshal(out, &envelope); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	envelope["format_version"] = FormatVersion + 99

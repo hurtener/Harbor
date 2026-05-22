@@ -117,30 +117,18 @@ type Driver interface {
 // `Extra` is provider-passthrough sanitized by Phase 34's correction
 // layer. Phase 32 stores the field but does not interpret it.
 type CompleteRequest struct {
-	Model           string
-	Messages        []ChatMessage
 	ResponseFormat  *ResponseFormat
-	Stream          bool
 	OnContent       func(delta string, done bool)
 	OnReasoning     func(delta string, done bool)
 	Temperature     *float32
 	MaxTokens       *int
-	Stops           []string
-	ReasoningEffort ReasoningEffort
 	Extra           map[string]any
-	// Validator (Phase 36) is the caller-supplied post-response
-	// validation hook. When non-nil, the retry wrapper invokes it
-	// after each successful `Complete`; a non-nil return triggers a
-	// corrective re-ask bounded by `ModelProfile.MaxRetries`. The
-	// validator is opaque to the wrapper — return any error type;
-	// the wrapper truncates and includes its `Error()` in the retry
-	// sub-prompt + the `llm.retry_with_feedback` event payload.
-	//
-	// `nil` Validator (the default) disables the retry loop entirely;
-	// the wrapper is a no-op pass-through. Validators MUST be safe for
-	// concurrent invocation against the same compiled artifact (the
-	// wrapper itself enforces D-025; the validator runs once per call).
-	Validator func(CompleteResponse) error
+	Validator       func(CompleteResponse) error
+	Model           string
+	ReasoningEffort ReasoningEffort
+	Messages        []ChatMessage
+	Stops           []string
+	Stream          bool
 }
 
 // CompleteResponse is the LLM-call return shape.
@@ -157,8 +145,8 @@ type CompleteRequest struct {
 // re-stamps these shapes.
 type CompleteResponse struct {
 	Content string
-	Cost    Cost
 	Usage   Usage
+	Cost    Cost
 }
 
 // Role is the chat-message role. Settled at the four canonical
@@ -186,9 +174,9 @@ const (
 // when the message carries multimodal content. `Name` is optional —
 // used by some providers for participant naming.
 type ChatMessage struct {
+	Name    *string
 	Role    Role
 	Content Content
-	Name    *string
 }
 
 // Content is the multimodal sum-type. Exactly one of `Text` or
@@ -214,11 +202,11 @@ const (
 // Exactly one of `Text` / `Image` / `Audio` / `File` is set per the
 // `Type` discriminator.
 type ContentPart struct {
+	Image *ImagePart
+	Audio *AudioPart
+	File  *FilePart
 	Type  PartType
-	Text  string     // when Type == PartText
-	Image *ImagePart // when Type == PartImage
-	Audio *AudioPart // when Type == PartAudio
-	File  *FilePart  // when Type == PartFile
+	Text  string
 }
 
 // ImagePart is a multimodal image input.
@@ -351,24 +339,21 @@ const (
 // drive per-identity accumulators; Phase 36a's payload re-stamps
 // these fields.
 type Cost struct {
+	Currency            string
 	InputTokensCost     float64
 	OutputTokensCost    float64
 	ReasoningTokensCost float64
 	TotalCost           float64
-	Currency            string // "USD" canonical; reserved for future multi-currency
 }
 
 // Usage is the provider-reported token usage.
 type Usage struct {
+	ProviderExtras   map[string]string
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
 	TotalTokens      int
 	LatencyMS        int64
-	// ProviderExtras — opaque provider-specific bag (e.g. cache
-	// hit/miss). Phase 32 does not interpret these fields; Phase 34+
-	// may read them for correction-layer decisions.
-	ProviderExtras map[string]string
 }
 
 // ArtifactStub is the model-agnostic JSON shape the LLM sees in
@@ -387,12 +372,12 @@ type Usage struct {
 //	 "hash":"sha256:...","summary":"User-uploaded screenshot at turn 3",
 //	 "fetch":{"tool":"artifact.fetch","id":"ref-abc-def"}}
 type ArtifactStub struct {
+	Fetch     *StubFetch `json:"fetch,omitempty"`
 	Ref       string     `json:"artifact_ref"`
 	MIME      string     `json:"mime"`
-	SizeBytes int64      `json:"size_bytes"`
 	Hash      string     `json:"hash,omitempty"`
 	Summary   string     `json:"summary,omitempty"`
-	Fetch     *StubFetch `json:"fetch,omitempty"`
+	SizeBytes int64      `json:"size_bytes"`
 }
 
 // StubFetch is the optional pointer-to-tool hint on an
@@ -435,42 +420,15 @@ func (s ArtifactStub) MarshalJSON() ([]byte, error) {
 // `ContextWindowTokens` + `TokenEstimator` consumers; Phase 33+
 // consume the rest.
 type ModelProfile struct {
-	// ContextWindowTokens is the model's hard input-token cap.
-	// Required (> 0); the safety net's token-budget guard uses it.
+	DefaultMaxTokens    *int
+	CostOverrides       *CostTable
+	TokenEstimator      string
+	JSONSchemaMode      string
+	OutputMode          OutputMode
+	ReasoningEffort     ReasoningEffort
+	Corrections         CorrectionsProfile
 	ContextWindowTokens int
-	// TokenEstimator selects the estimator the safety net runs.
-	// "" / "chars_div_4" — default chars/4 + role-overhead.
-	// Phase 33+ may register tiktoken-equivalent estimators by name.
-	TokenEstimator string
-	// JSONSchemaMode — Phase 32-era placeholder; the config loader
-	// normalises this string into `OutputMode` at snapshot time
-	// (Phase 35). Direct callers SHOULD set `OutputMode`; this field
-	// is read only when `OutputMode` is `OutputModeUnset`.
-	JSONSchemaMode string
-	// OutputMode (Phase 35) — Harbor-side structured-output strategy.
-	// Drives the request-shaping in `internal/llm/output` and the
-	// downgrade chain. See `OutputMode` constants for semantics.
-	// Zero value (`OutputModeUnset`) falls back to the per-known-
-	// provider default (see `corrections.DefaultOutputModeFor`).
-	OutputMode OutputMode
-	// DefaultMaxTokens — Phase 36b's identity-tier override target.
-	DefaultMaxTokens *int
-	// ReasoningEffort — request-level default; req.ReasoningEffort
-	// overrides per call.
-	ReasoningEffort ReasoningEffort
-	// CostOverrides — per-1M-token rates when the provider doesn't
-	// report cost (some OpenRouter routes don't). Phase 36a reads.
-	CostOverrides *CostTable
-	// Corrections — per-provider quirk flags consumed by the Phase 34
-	// `internal/llm/corrections` layer. Zero-valued struct means
-	// "no corrections needed for this model"; the corrections layer
-	// runs a no-op pass for default-shaped profiles.
-	Corrections CorrectionsProfile
-	// MaxRetries (Phase 36) — caps the validator-driven corrective
-	// re-asks performed by the retry wrapper. Zero (default) maps to
-	// `DefaultMaxRetries` (1). A negative value is rejected at config
-	// validation.
-	MaxRetries int
+	MaxRetries          int
 }
 
 // CorrectionsProfile carries the per-model quirk flags the Phase 34
@@ -594,10 +552,10 @@ const (
 // CostTable carries fallback per-1M-token rates. Used when the
 // provider's response doesn't include cost. Phase 36a consumes.
 type CostTable struct {
+	Currency       string
 	InputPer1M     float64
 	OutputPer1M    float64
 	ReasoningPer1M float64
-	Currency       string // "USD" canonical
 }
 
 // HasIdentity reports whether `ctx` carries a complete Harbor

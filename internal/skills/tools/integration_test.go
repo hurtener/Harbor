@@ -40,7 +40,7 @@ func TestIntegration_PlannerTools_AgainstLocalDB(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close(context.Background()) })
 
 	catalog := tcat.NewCatalog()
-	if err := skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
+	if err = skilltools.Register(catalog, store, skilltools.Deps{Bus: bus}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestIntegration_PlannerTools_AgainstLocalDB(t *testing.T) {
 		},
 	}
 	for _, s := range seed {
-		if err := store.Upsert(seedCtx, id, s); err != nil {
+		if err = store.Upsert(seedCtx, id, s); err != nil {
 			t.Fatalf("Upsert(%q): %v", s.Name, err)
 		}
 	}

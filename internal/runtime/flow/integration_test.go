@@ -60,7 +60,7 @@ func TestIntegration_FlowAndInProcTool_CoexistInCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {
@@ -142,7 +142,7 @@ func TestIntegration_FlowBudget_ParentCtxDeadline_FiresViaCtx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if err := eng.Run(context.Background()); err != nil {
+	if err = eng.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() {

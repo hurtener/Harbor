@@ -129,7 +129,7 @@ func TestFilter_AllAxesMustMatch(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
+
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			got := Filter(in, c.cap)

@@ -148,7 +148,7 @@ func TestList_StatusCounterStrip_ConcurrentReuse(t *testing.T) {
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -191,8 +191,8 @@ func errStripMismatch(i int, got *prototypes.TasksListStatusCounterStrip, wantRu
 }
 
 type stripMismatchError struct {
-	i           int
 	got         *prototypes.TasksListStatusCounterStrip
+	i           int
 	wantRunning int
 	wantFailed  int
 }

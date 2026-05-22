@@ -38,7 +38,7 @@ func TestPromote_HappyPath(t *testing.T) {
 	}
 	draft := validDraft("promote-target")
 	draft.Scope = skills.ScopeSession
-	if _, err := generator.Propose(ctxA, store, deps, generator.ProposeArgs{Skill: draft, Persist: true}); err != nil {
+	if _, err = generator.Propose(ctxA, store, deps, generator.ProposeArgs{Skill: draft, Persist: true}); err != nil {
 		t.Fatalf("Propose under A: %v", err)
 	}
 
@@ -47,13 +47,13 @@ func TestPromote_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Get(ctxB, idB, "promote-target"); !errors.Is(err, skills.ErrSkillNotFound) {
+	if _, err = store.Get(ctxB, idB, "promote-target"); !errors.Is(err, skills.ErrSkillNotFound) {
 		t.Fatalf("pre-promote Get under B: got %v, want ErrSkillNotFound (cross-session no-leak invariant)", err)
 	}
 
 	// Promote to B's session at Scope=project.
 	bDrain := collectProposedEvents(t, bus, idB)
-	if err := generator.Promote(ctxA, store, deps, idA, "promote-target",
+	if err = generator.Promote(ctxA, store, deps, idA, "promote-target",
 		[]identity.Quadruple{idB}, skills.ScopeProject); err != nil {
 		t.Fatalf("Promote: %v", err)
 	}

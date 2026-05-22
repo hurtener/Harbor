@@ -10,7 +10,7 @@ import (
 // recursive structures; the scenario's primary use case is single-
 // digit depth.
 func TestMapDepth_AssortedShapes(t *testing.T) {
-	tests := []struct {
+	tests := []struct { //nolint:govet // fieldalignment on a test-only struct; field order kept for readability
 		name  string
 		input any
 		want  int
@@ -53,7 +53,7 @@ func TestMapDepth_BoundedAtCap(t *testing.T) {
 	// Build a 40-deep nested map; expect depth = 32 (cap).
 	root := map[string]any{}
 	curr := root
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		next := map[string]any{}
 		curr["k"] = next
 		curr = next
@@ -67,7 +67,7 @@ func TestMapDepth_BoundedAtCap(t *testing.T) {
 // TestCountKeys_AssortedShapes pins the key-count helper used by the
 // pause-payload bounds scenario.
 func TestCountKeys_AssortedShapes(t *testing.T) {
-	tests := []struct {
+	tests := []struct { //nolint:govet // fieldalignment on a table-test struct; field order kept for readability
 		name  string
 		input any
 		want  int

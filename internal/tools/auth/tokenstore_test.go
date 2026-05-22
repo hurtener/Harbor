@@ -54,7 +54,7 @@ func mkStore(t *testing.T) state.StateStore {
 	return s
 }
 
-func mkTokenStore(t *testing.T) (TokenStore, state.StateStore) {
+func mkTokenStore(t *testing.T) TokenStore {
 	t.Helper()
 	store := mkStore(t)
 	sealer, err := NewAESGCMSealer(fixedKEK(t))
@@ -65,12 +65,12 @@ func mkTokenStore(t *testing.T) (TokenStore, state.StateStore) {
 	if err != nil {
 		t.Fatalf("NewTokenStore: %v", err)
 	}
-	return ts, store
+	return ts
 }
 
 func TestTokenStore_PutGet_RoundTrip_UserBound(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	id := mkIdentity(t)
 	ctx := mkCtx(t, id)
 
@@ -109,7 +109,7 @@ func TestTokenStore_PutGet_RoundTrip_UserBound(t *testing.T) {
 
 func TestTokenStore_PutGet_RoundTrip_AgentBound(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	id := mkIdentity(t)
 	ctx := mkCtx(t, id)
 
@@ -143,7 +143,7 @@ func TestTokenStore_PutGet_RoundTrip_AgentBound(t *testing.T) {
 
 func TestTokenStore_Get_Miss_ReturnsFalseNilError(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	tok, ok, err := ts.Get(ctx, ScopeUser, tDummyUser, "nonexistent-source")
 	if err != nil {
@@ -159,7 +159,7 @@ func TestTokenStore_Get_Miss_ReturnsFalseNilError(t *testing.T) {
 
 func TestTokenStore_Delete_Idempotent(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	ctx := mkCtx(t, mkIdentity(t))
 	// Delete missing record — no error.
 	if err := ts.Delete(ctx, ScopeUser, tDummyUser, "nonexistent"); err != nil {
@@ -190,7 +190,7 @@ func TestTokenStore_Delete_Idempotent(t *testing.T) {
 
 func TestTokenStore_MissingIdentity_FailsLoud(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	noIDCtx := context.Background()
 	_, _, err := ts.Get(noIDCtx, ScopeUser, tDummyUser, tDummySource)
 	if !errors.Is(err, ErrIdentityRequired) {
@@ -207,7 +207,7 @@ func TestTokenStore_MissingIdentity_FailsLoud(t *testing.T) {
 
 func TestTokenStore_CrossTenantIsolation(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 
 	idA := identity.Identity{TenantID: "tenantA", UserID: "ua", SessionID: "sa"}
 	idB := identity.Identity{TenantID: "tenantB", UserID: "ub", SessionID: "sb"}
@@ -257,7 +257,7 @@ func TestTokenStore_CrossTenantIsolation(t *testing.T) {
 
 func TestTokenStore_CrossAgentIsolation(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	id := mkIdentity(t)
 	ctx := mkCtx(t, id)
 
@@ -299,7 +299,7 @@ func TestTokenStore_CrossAgentIsolation(t *testing.T) {
 
 func TestTokenStore_MixedScopeCoexistence(t *testing.T) {
 	t.Parallel()
-	ts, _ := mkTokenStore(t)
+	ts := mkTokenStore(t)
 	id := mkIdentity(t)
 	ctx := mkCtx(t, id)
 
@@ -363,7 +363,7 @@ func TestTokenStore_EncryptionAtRest_CiphertextNotPlaintext(t *testing.T) {
 		AccessToken:  verySensitiveAccess,
 		RefreshToken: verySensitiveRefresh,
 	}
-	if err := ts.Put(ctx, tok); err != nil {
+	if err = ts.Put(ctx, tok); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 

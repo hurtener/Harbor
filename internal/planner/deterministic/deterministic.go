@@ -90,9 +90,9 @@ type Option func(*config)
 // the planner does NOT retain the *config (so operator mutation
 // post-construction cannot affect runtime behaviour).
 type config struct {
-	steps    []DecisionTreeStep
 	registry tasks.TaskRegistry
 	name     string
+	steps    []DecisionTreeStep
 }
 
 // WithSteps sets the ordered decision-tree step set. At least one
@@ -131,9 +131,9 @@ func WithName(name string) Option {
 // `ctx` + [planner.RunContext]. See package godoc for the wake-mode
 // contract and the decision-tree walker semantics.
 type DeterministicPlanner struct {
-	steps    []DecisionTreeStep
 	registry tasks.TaskRegistry
 	name     string
+	steps    []DecisionTreeStep
 }
 
 // Compile-time assertions: DeterministicPlanner satisfies both
