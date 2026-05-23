@@ -132,6 +132,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 83f| Dev RunLoop populates 83-band RunContext      | runtime/dev          | §6.2, §6.6  | 83c, 83d, 23, 37, 20  | 80%  | Shipped  |
 | 83g| MCP southbound consumer in harbor dev         | runtime/dev          | §6.4        | 28, 26                | 80%  | Shipped  |
 | 83h| Dev-binary fixes (hot-reload sqlite + LLM Model)| runtime/dev + llm  | §6.5, §8    | 83g, 64, 32           | 80%  | Shipped  |
+| 83i| RunContext wiring closure (Catalog/Trajectory/Memory/Emit)| runtime/dev + steering | §6.2, §6.6, §6.8 | 83f, 83g, 83h, 26, 23 | 80% | Shipped  |
 | 84 | Reflection / critique loop                    | planner              | §12         | 45                    | n/a  | Post-V1  |
 | 85a| MCP client core-compliance fixes              | tools/mcp            | §6.4        | 28                    | 85%  | Post-V1  |
 | 85b| MCP HTTP OAuth (RFC 9728 + 8707 + step-up)    | tools/mcp+auth       | §6.4, §3.3  | 28, 30, 50            | 85%  | Post-V1  |
