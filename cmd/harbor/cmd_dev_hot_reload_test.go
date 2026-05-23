@@ -117,6 +117,39 @@ func TestShouldTrigger_FiltersChmodOnly(t *testing.T) {
 	}
 }
 
+// TestShouldTrigger_SkipsDBSidecars — Phase 83h (D-151): the watcher
+// must NOT fire on SQLite WAL/SHM/journal companion files, which the
+// running binary rewrites on every commit and which would otherwise
+// reboot-loop the dev binary the moment the planner persisted state.
+// The v1.1 operator validation surfaced this as a hard-block bug.
+func TestShouldTrigger_SkipsDBSidecars(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"sqlite_wal_skipped", "media-helper-agent-state.sqlite-wal", false},
+		{"sqlite_shm_skipped", "media-helper-agent-state.sqlite-shm", false},
+		{"sqlite_journal_skipped", "media-helper-agent-state.sqlite-journal", false},
+		{"db_wal_skipped", "harbor.db-wal", false},
+		{"db_shm_skipped", "harbor.db-shm", false},
+		{"db_journal_skipped", "harbor.db-journal", false},
+		{"bare_journal_skipped", "media-helper-agent-state-journal", false},
+		{"yaml_fires", "harbor.yaml", true},
+		{"sqlite_main_fires", "media-helper-agent-state.sqlite", true},
+		{"go_source_fires", "agent.go", true},
+		{"nested_wal_skipped", "/tmp/harbor-validation/media-helper-agent-state.sqlite-wal", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := fsnotify.Event{Name: tc.path, Op: fsnotify.Write | fsnotify.Create}
+			if got := shouldTrigger(ev); got != tc.want {
+				t.Errorf("shouldTrigger(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNewHotReloadSupervisor_RejectsNilDeps — the constructor fails
 // loud when any required input is nil. Documents the supervisor's
 // invariants.

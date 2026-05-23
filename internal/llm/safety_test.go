@@ -168,3 +168,40 @@ func TestSafety_PartTextLeak(t *testing.T) {
 		t.Errorf("err=%q does not name the part-text leak site", err.Error())
 	}
 }
+
+// TestSafety_DefaultsModelFromConfigSnapshot — Phase 83h (D-151).
+// When the caller does not pin a Model on CompleteRequest (the react
+// planner's default since Phase 45 / 83a — it never sets Model), the
+// safety wrapper fills it in from the agent-configured `cfg.Model`.
+// Before this fill landed, every real-bifrost dev-binary run failed
+// at step 0 with `CompleteRequest.Model is empty` because the mock
+// LLM driver used in integration tests does not enforce Model. The
+// gap surfaced under the v1.1 operator validation.
+func TestSafety_DefaultsModelFromConfigSnapshot(t *testing.T) {
+	deps, cleanup := makeDeps(t)
+	defer cleanup()
+	snap := makeSnapshot("m", 1_000_000)
+	snap.Model = "m" // the agent-configured default model
+	client, err := llm.Open(context.Background(), snap, deps)
+	if err != nil {
+		t.Fatalf("llm.Open: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+
+	ctx := withIdentity(t, context.Background())
+	// Caller leaves Model empty; the safety wrapper must default it
+	// from cfg.Model before the model-profile lookup.
+	helloText := "hello"
+	req := llm.CompleteRequest{
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &helloText}},
+		},
+	}
+	_, err = client.Complete(ctx, req)
+	if err != nil {
+		// The mock driver responds successfully — any error here
+		// would mean the default-fill failed (the profile lookup
+		// rejected an empty Model with ErrUnsupportedModel).
+		t.Fatalf("Complete returned %v — Model default-fill did not happen", err)
+	}
+}

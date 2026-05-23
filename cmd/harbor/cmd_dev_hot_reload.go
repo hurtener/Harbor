@@ -64,6 +64,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -561,11 +562,51 @@ func (s *hotReloadSupervisor) emitCompleted(
 // window collapses bursts anyway, so the operator-visible effect is
 // "the editor save triggered one restart" regardless of how many
 // fsnotify events the swap-file dance produced.
+//
+// Database engine sidecar files ARE skipped (Phase 83h — D-151):
+// SQLite's WAL/SHM/journal companions get rewritten on every commit,
+// which under the default `sqlite` state + skills drivers means a
+// reboot loop the moment the planner writes anything. The skip list
+// is fixed; an operator with an exotic db backend can submit a PR.
+// Operator-supplied path-pattern ignores stay deferred (would need a
+// config schema addition); the fixed-list approach unblocks v1.1.
 func shouldTrigger(ev fsnotify.Event) bool {
 	if ev.Op == fsnotify.Chmod {
 		return false
 	}
-	return ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0
+	if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) == 0 {
+		return false
+	}
+	if isDBSidecar(ev.Name) {
+		return false
+	}
+	return true
+}
+
+// dbSidecarSuffixes lists filename suffixes for engine artifacts the
+// hot-reload watcher skips. Phase 83h (D-151) — these files get
+// rewritten on every commit by the running binary, so triggering a
+// reload on them creates a feedback loop that reboots the binary
+// indefinitely. The suffixes cover SQLite (WAL/SHM/journal) and the
+// rollback-journal forms other lightweight engines use.
+var dbSidecarSuffixes = []string{
+	".sqlite-wal",
+	".sqlite-shm",
+	".sqlite-journal",
+	".db-wal",
+	".db-shm",
+	".db-journal",
+	"-journal",
+}
+
+func isDBSidecar(path string) bool {
+	base := filepath.Base(path)
+	for _, suf := range dbSidecarSuffixes {
+		if strings.HasSuffix(base, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveHotReloadWatchRoots unions the operator-declared watch roots

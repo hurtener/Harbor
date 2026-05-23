@@ -57,6 +57,20 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	}
 	id := identityQuad(ctx)
 
+	// Fill in the agent-configured default Model when the caller did
+	// not pin one. The react planner (Phase 45 / 83a) builds
+	// `CompleteRequest{Messages: ...}` without setting Model — the
+	// configured `llm.model` is the natural default. A caller that
+	// explicitly pins Model (multi-model agents, posture sub-clients)
+	// keeps their pin. Surfaced by the v1.1 operator-validation work:
+	// before this default, every real-bifrost run failed at step 0
+	// with `CompleteRequest.Model is empty` because the mock LLM
+	// driver used in integration tests does not enforce Model and the
+	// gap never surfaced under real LLM workloads.
+	if req.Model == "" {
+		req.Model = c.cfg.Model
+	}
+
 	// Step 0: structural validation. Cheap; surface obviously-broken
 	// requests before doing real work.
 	if err := validateRequest(req); err != nil {
