@@ -223,6 +223,44 @@ func TestList_CrossTenant_RequiresAdmin(t *testing.T) {
 	})
 }
 
+// TestList_ProjectsToolCount — Phase 83m item 7. The registry-side
+// `Task.ToolCount` (incremented by `IncrementToolCount` after every
+// successful tool dispatch) round-trips onto the projected
+// `prototypes.TaskRow.ToolCount` so the Console Tasks page renders
+// the count without subscribing to the per-tool event stream.
+func TestList_ProjectsToolCount(t *testing.T) {
+	svc, reg, _ := newListService(t)
+	id := idFor("t1", "u1", "s1")
+	ctx := ctxFor(t, id)
+
+	taskID := seedTask(t, reg, id, tasks.KindForeground, tasks.StatusRunning, "tool-counted task", "q")
+	// Three increments via the registry's new surface.
+	for range 3 {
+		if err := reg.IncrementToolCount(ctx, taskID); err != nil {
+			t.Fatalf("IncrementToolCount: %v", err)
+		}
+	}
+	resp, err := svc.List(context.Background(), prototypes.TaskListRequest{Identity: scopeOf("t1", "u1", "s1")}, false)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var got int
+	var found bool
+	for _, r := range resp.Rows {
+		if r.ID == string(taskID) {
+			got = r.ToolCount
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("seeded task not found in List response")
+	}
+	if got != 3 {
+		t.Errorf("projected TaskRow.ToolCount = %d, want 3 (registry-side increments not projected)", got)
+	}
+}
+
 func TestList_RejectsBadPageSizeAndCursor(t *testing.T) {
 	svc, _, _ := newListService(t)
 	ctx := context.Background()

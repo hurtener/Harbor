@@ -164,6 +164,12 @@ type Task struct {
 	IdempotencyKey    string
 	CreatedAt         int64 // unix nanoseconds; matches sessions / events convention
 	UpdatedAt         int64 // unix nanoseconds
+	// ToolCount is the running count of tool dispatches the runtime
+	// has performed against this task. Advanced exclusively through
+	// `TaskRegistry.IncrementToolCount` — never set directly by callers
+	// (Phase 83m item 7). Projected to `prototypes.TaskRow.ToolCount`
+	// for the Console Tasks page.
+	ToolCount int
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -325,6 +331,24 @@ type TaskRegistry interface {
 	// MarkFailed transitions Running → Failed. Persists `err` on the
 	// Task record; emits `task.failed`.
 	MarkFailed(ctx context.Context, id TaskID, err TaskError) error
+
+	// IncrementToolCount atomically increments `Task.ToolCount` by 1
+	// and persists the updated record (Phase 83m item 7). NOT
+	// idempotent — every call increments. The new value is reflected
+	// on the next `Get` / `List` projection (`prototypes.TaskRow.ToolCount`).
+	//
+	// Returns `ErrNotFound` when the task does not exist or is not
+	// visible to the ctx identity; `ErrRegistryClosed` after Close.
+	// Does NOT change the task's FSM status — runs against tasks in
+	// any non-terminal state. Terminal tasks (Complete / Failed /
+	// Cancelled) still accept increments (the runloop's late-arriving
+	// tool dispatches against a cancelled run can still be counted);
+	// the storage write is unconditional.
+	//
+	// The runloop calls this from its CallTool dispatch path once the
+	// ToolExecutor returns without error — that is the only documented
+	// producer in V1.
+	IncrementToolCount(ctx context.Context, id TaskID) error
 
 	// ResolveOrCreateGroup is the idempotent group constructor. Empty
 	// `GroupRequest.ID` → registry assigns a fresh ULID. Non-empty +
