@@ -121,6 +121,7 @@ import (
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -338,6 +339,12 @@ type DevStack struct {
 	Coordinator    pauseresume.Coordinator
 	Gates          map[string]*toolapproval.ApprovalGate
 	OAuthProviders map[string]toolauth.OAuthProvider
+
+	// Phase 83g (D-150): the MCP Registry the dev stack populates
+	// from cfg.Tools.MCPServers. Nil when SkipCatalog is set or no
+	// servers are configured. Integration tests inspect this
+	// directly to assert each configured server reached the Registry.
+	MCPRegistry *mcpdrv.Registry
 
 	// Validator / SigningKey / KID / Token are nil/empty when
 	// SkipAuth is set. The Token is a signed Bearer the caller
@@ -682,6 +689,19 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.Coordinator = coord
 		stack.Gates = gates
 		stack.OAuthProviders = providers
+
+		// Phase 83g (D-150): mirror cmd_dev.go's MCP southbound
+		// consumer wiring so devstack-driven integration tests see
+		// the same boot-time MCP-server attachment the production
+		// dev binary performs. Skip silently when the cfg has no
+		// MCP servers configured.
+		mcpRegistry := mcpdrv.NewRegistry()
+		for _, ms := range cfg.Tools.MCPServers {
+			if err := attachDevStackMCPServer(context.Background(), ms, cat, mcpRegistry, bus, opts.Logger, &stack.closeFns); err != nil {
+				return stack, fmt.Errorf("mcp[%s]: %w", ms.Name, err)
+			}
+		}
+		stack.MCPRegistry = mcpRegistry
 	}
 
 	// Steering + ControlSurface. Skip-aware. The Mux phase below
@@ -1500,6 +1520,88 @@ func devStackProjectSkillsContext(ranked []skills.RankedSkill) []any {
 			entry["steps"] = r.Skill.Steps
 		}
 		out = append(out, entry)
+	}
+	return out
+}
+
+// attachDevStackMCPServer mirrors cmd/harbor/cmd_dev.go's
+// attachDevMCPServer per D-094's source-of-truth invariant. Phase 83g
+// (D-150) — boot-time MCP southbound consumer wiring.
+func attachDevStackMCPServer(
+	ctx context.Context,
+	ms config.MCPServerConfig,
+	cat tools.ToolCatalog,
+	reg *mcpdrv.Registry,
+	bus events.EventBus,
+	logger *slog.Logger,
+	closeFns *[]func(context.Context) error,
+) error {
+	mode := mcpdrv.MCPTransportMode(ms.TransportMode)
+	if mode == "" {
+		mode = mcpdrv.TransportAuto
+	}
+	provider, err := mcpdrv.New(mcpdrv.Config{
+		Name:          ms.Name,
+		TransportMode: mode,
+		URL:           ms.URL,
+		Command:       append([]string(nil), ms.Command...),
+		Headers:       devStackCloneStringMap(ms.Headers),
+		KeepAlive:     ms.KeepAlive,
+		Logger:        logger,
+		Bus:           bus,
+		DefaultIdentity: identity.Identity{
+			TenantID:  DefaultDevTenant,
+			UserID:    DefaultDevUser,
+			SessionID: DefaultDevSession,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mcp.New: %w", err)
+	}
+	if connectErr := provider.Connect(ctx); connectErr != nil {
+		_ = provider.Close(ctx)
+		return fmt.Errorf("provider.Connect: %w", connectErr)
+	}
+	*closeFns = append(*closeFns, provider.Close)
+
+	descriptors, discoverErr := provider.Discover(ctx)
+	if discoverErr != nil {
+		return fmt.Errorf("provider.Discover: %w", discoverErr)
+	}
+	for _, d := range descriptors {
+		if regErr := cat.Register(d); regErr != nil {
+			return fmt.Errorf("catalog.Register(%q): %w", d.Tool.Name, regErr)
+		}
+	}
+	urlOrCommand := ms.URL
+	if urlOrCommand == "" {
+		urlOrCommand = strings.Join(ms.Command, " ")
+	}
+	if regErr := reg.Register(mcpdrv.ServerRegistration{
+		Provider:     provider,
+		Transport:    string(mode),
+		URLOrCommand: urlOrCommand,
+		InitialState: mcpdrv.ServerStateOnline,
+	}); regErr != nil {
+		return fmt.Errorf("registry.Register: %w", regErr)
+	}
+	if logger != nil {
+		logger.Info("devstack: MCP server attached",
+			slog.String("name", ms.Name),
+			slog.String("transport", string(mode)),
+			slog.Int("tools_registered", len(descriptors)),
+		)
+	}
+	return nil
+}
+
+func devStackCloneStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
 	}
 	return out
 }

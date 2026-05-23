@@ -3562,3 +3562,26 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None — 83f is a pure consumer phase against already-shipped primitives. The memory keying observation (point 2) surfaces a divergence between the RFC's session-scope and the inmem driver's run-scope, documented here for a future memory-driver phase to normalise.
 
 **Protocol additions.** None — 83f is internal wiring plus two operator-facing config keys. No new Protocol method, error code, wire type, or CLI subcommand.
+
+---
+
+## D-150 — Phase 83g: dev binary spawns + registers MCP southbound providers at boot; fail-loud on connect/discover
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83g)
+
+**Where it lives:** `cmd/harbor/cmd_dev.go` (`attachDevMCPServer` helper + the `bootDevStack` per-server loop); `harbortest/devstack/devstack.go` (mirror per D-094); `cmd/harbor-mcptest-stdio/` (the integration test's stdio MCP server fixture); `test/integration/phase83g_mcp_dev_consumer_test.go`.
+
+**Decision.** Phase 83g closes the second consumer gap surfaced during the Phase 83f operator-validation work. The 83-band's gap (issue #208) was that the dev binary populated only `Quadruple` on `RunContext`; the MCP gap is the same shape one layer over: `cfg.Tools.MCPServers[]` is declared in the config schema, validated at boot, and exposed READ-ONLY by Phase 73h's Console `mcp.servers.*` Protocol methods, but **nothing in `bootDevStack` calls `mcpdrv.New` to spawn an MCP server, open a session, discover tools, or register them into the tool catalog**. Configuring an `mcp_servers[]` entry in `harbor.yaml` was silently ignored. Three calls are settled here.
+
+**1. Per-server attachment shape — `attachDevMCPServer`.** For each `cfg.Tools.MCPServers[i]`, the dev boot: (a) constructs `mcpdrv.Config` with the configured transport / URL / Command / Headers / KeepAlive + the dev token's identity (tenant=dev / user=dev / session=dev) for server-pushed `mcp.resource_updated` events; (b) calls `mcpdrv.New(cfg)` then `provider.Connect(ctx)`; (c) calls `provider.Discover(ctx)` for the tool list; (d) registers each returned `ToolDescriptor` on the tool catalog via `cat.Register(d)`; (e) registers the live Provider with the boot-time `mcp.Registry` so the Console MCP-page mount lands with no re-spawn when the surface wiring follows. The Provider's `Close` is appended to the dev stack's closer chain — stack teardown drains every subprocess; no orphan-process regression.
+
+**2. Fail-loud on Connect / Discover / Register errors.** Any non-nil error from `mcpdrv.New` / `provider.Connect` / `provider.Discover` / `cat.Register` is returned wrapped (`mcp[<name>]: <stage>: <err>`) and `bootDevStack` calls `closeAll(ctx)` + returns. The dev binary exits non-zero with the operator-actionable error. No silent-degradation branch that boots without a configured MCP server. Matches the §5 / §13 / 83f convention. The decision to fail-loud rather than degrade (`optional: true` per-server flag, `--skip-mcp-on-error` CLI flag) is deliberate for V1.1 — an operator who declared an MCP server should see a clear failure if it cannot reach. Graceful-degradation knobs are a follow-up if pain accrues.
+
+**3. Console MCP-page mount is a follow-up, not part of 83g.** Wiring the Registry onto the Protocol mux via `mcp.NewRegistryAccessor` + `protocol.NewMCPSurface` requires a single `*auth.Provider` accessor (per `mcpconsole.NewOAuthAccessor`'s signature). The dev binary's OAuth side is a slice of per-tool-entry providers (returned from `applyToolCatalogWiring`), not a master `*auth.Provider`. Plumbing that is a small but separate phase. 83g constructs and populates the Registry so the follow-up only adds the surface mount — no re-spawning, no second source of truth. The integration test asserts on the Registry directly (via `stack.MCPRegistry`); operator visibility through the Console UI lands when the surface mount does.
+
+**Why.** Without 83g, configuring an `mcp_servers[]` entry in `harbor.yaml` was a no-op — the operator's chat-with-MCP-tools story (the headline use case for the v1.1 cut) didn't work out of the box. The §17.5 audits to date didn't trace the MCP path end-to-end with `ps`-real subprocess spawning, so the gap escaped Wave 15's checkpoint. 83g is the lift-and-cover phase: same shape as 83f (primitive without dev-binary consumer), same fail-loud posture, same D-094 devstack mirror discipline.
+
+**Findings I'm departing from.** None — 83g is a pure consumer phase. The decision to defer the Console MCP-page mount is documented in the phase plan's risks section, not a departure from any brief.
+
+**Protocol additions.** None — 83g consumes existing `cfg.Tools.MCPServers` config and the already-exported `mcpdrv` API. No new method, error code, wire type, or CLI subcommand.
