@@ -921,6 +921,21 @@ const (
 // to 3 inside the react driver. The validator rejects negative values
 // loudly pre-boot. Other drivers ignore it.
 //
+// `SkillsContextMax` caps how many skill bodies the dev run loop
+// fetches from `skills.SkillStore.Search` and hands the planner via
+// `RunContext.SkillsContext` (Phase 83f — D-149). Zero (the default)
+// resolves to 5; the validator rejects negatives loudly pre-boot.
+// Only consumed by the dev binary's per-task run loop; library
+// consumers that build their own RunContext are unaffected.
+//
+// `PlanningHints` is the operator-supplied per-run planning steering
+// the dev run loop projects onto `RunContext.PlanningHints` (Phase 83f
+// — D-149). Renders into the ReAct prompt's `<planning_constraints>`
+// via 83c. V1.1 ships only `Constraints` and `PreferredTools`; the
+// richer Go-struct fields (`ParallelGroups`, `DisallowTools`,
+// `Budget`) remain reachable via a custom planner Option, not via
+// `harbor.yaml`. The block is omitted entirely when empty.
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -930,10 +945,36 @@ const (
 // runtime would race with in-flight RunLoop goroutines holding the old
 // concrete.
 type PlannerConfig struct {
-	Driver                 string            `yaml:"driver,omitempty"`
-	MaxSteps               int               `yaml:"max_steps,omitempty"`
-	ExtraGuidance          string            `yaml:"extra_guidance,omitempty"`
-	ReasoningReplay        string            `yaml:"reasoning_replay,omitempty"`
-	MaxToolExamplesPerTool int               `yaml:"max_tool_examples_per_tool,omitempty"`
-	Extra                  map[string]string `yaml:"extra,omitempty"`
+	Driver                 string                  `yaml:"driver,omitempty"`
+	MaxSteps               int                     `yaml:"max_steps,omitempty"`
+	ExtraGuidance          string                  `yaml:"extra_guidance,omitempty"`
+	ReasoningReplay        string                  `yaml:"reasoning_replay,omitempty"`
+	MaxToolExamplesPerTool int                     `yaml:"max_tool_examples_per_tool,omitempty"`
+	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
+	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
+	Extra                  map[string]string       `yaml:"extra,omitempty"`
+}
+
+// PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
+// `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the
+// richer Go-struct fields stay reachable through a custom planner
+// Option, not the YAML surface. An empty struct projects to nil on
+// `RunContext.PlanningHints`, so the `<planning_constraints>` prompt
+// section is omitted.
+type PlannerPlanningHintsCfg struct {
+	// Constraints is free-form text rendered verbatim into the
+	// `<planning_constraints>` section. Voice/tone rules, hard
+	// negative-space guidance ("never call X without prior approval"),
+	// or domain-specific constraints. Empty omits the line.
+	Constraints string `yaml:"constraints,omitempty"`
+	// PreferredTools lists tool names the planner should prefer when
+	// multiple satisfy the same goal. Empty omits the line.
+	PreferredTools []string `yaml:"preferred_tools,omitempty"`
+}
+
+// IsZero reports whether every field on the YAML config is empty —
+// the dev run loop reads this to decide whether to project onto
+// `RunContext.PlanningHints` (nil) or to allocate a populated struct.
+func (p PlannerPlanningHintsCfg) IsZero() bool {
+	return p.Constraints == "" && len(p.PreferredTools) == 0
 }

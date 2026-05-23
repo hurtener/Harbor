@@ -3537,3 +3537,28 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None — brief 13 §2.3 + brief 04 are followed as written. Render-only is deliberate: runtime-side retrieval policy (when to fetch, what query, cardinality) stays on the runtime where it has identity + cost context.
 
 **Protocol additions.** None — `RunContext.MemoryBlocks` / `SkillsContext` and `ErrMemoryBlockUnserializable` are internal Go types, not Protocol wire types. No new method, error code, config key, or CLI subcommand.
+
+---
+
+## D-149 — Phase 83f: dev RunLoop driver populates the four 83-band primitives + session-scoped memory/skills fetch + fail-loud on store errors
+
+**Date:** 2026-05-22
+**Status:** Settled (shipping with Phase 83f)
+
+**Where it lives:** `cmd/harbor/cmd_dev_runloop.go` (`perTaskRunLoopDriver` opts + `runOne` fetch path + `projectMemoryBlocks` / `projectSkillsContext` helpers); `cmd/harbor/cmd_dev.go` (`bootDevStack` opens `skills.SkillStore` when configured and threads MemoryStore / SkillStore / `SkillsContextMax` / projected `PlanningHints` into the driver; `plannerHintsFromConfig` is the YAML→Go projector); `internal/config/config.go` (`PlannerConfig.SkillsContextMax` + `PlannerConfig.PlanningHints` of type `PlannerPlanningHintsCfg`); `internal/config/validate.go` (validates the new fields); `harbortest/devstack/devstack.go` (mirror of the production driver per D-094); `examples/harbor.yaml`.
+
+**Decision.** Phase 83f closes the §17.5 Wave 15 audit's W3/W4 finding (issue #208). Four calls are settled here.
+
+**1. Where the fetch happens — `perTaskRunLoopDriver.runOne`.** After `MarkRunning` and before building the `steering.RunSpec`, the driver: (a) calls `tasks.Get(taskCtx, taskID)` to read the user-facing `Query`; (b) calls `memory.GetLLMContext(taskCtx, sessionQ)` when MemoryStore is configured; (c) calls `skills.Search(taskCtx, sessionQ, task.Query, skillsContextMax)` when SkillStore is configured AND `task.Query != ""`; (d) allocates `&planner.RepairCounters{}` per run; (e) projects the operator-supplied `*planner.PlanningHints` from config. The RunSpec.Base is then built with `Query`, `Goal: Query`, `MemoryBlocks`, `SkillsContext`, `RepairCounters`, `PlanningHints` — every field 83c/83d/83e require. The runtime side of the 83-band is now genuinely on the operator's golden path.
+
+**2. Memory + skills are session-scoped — `sessionQ := {Identity: q.Identity}`.** Per RFC §6.6 ("Memory is session-scoped by default") + §6.7 (skills DB schema keys by `(tenant, user, session)` only), the fetch quadruple zeroes RunID so each run inherits the session's accumulated state rather than seeing only its own (empty) per-run slice. This matches the brief 02 §6 split — runtime owns identity-scoped fetch, planner is render-only. The MemoryStore inmem driver's internal keying currently includes RunID; the driver works around that by always handing RunID="" — a future memory-driver phase should normalise the inmem key to the session triple, but that is out of 83f's scope.
+
+**3. Fail-loud on store errors — `runtime_fetch_error`.** Any non-nil error from `tasks.Get` / `memory.GetLLMContext` / `skills.Search` immediately calls `tasks.MarkFailed` with `Code: "runtime_fetch_error"` and a `Message` naming the failing call site, and bails BEFORE the LLM is called. No silent degradation to nil blocks; no provider cost burned on a degraded run. This matches CLAUDE.md §5 fail-loud and the §13 "silent degradation forbidden" rule. The integration test pins this with a forced `MemoryStore.GetLLMContext` error.
+
+**4. YAML surface is intentionally small for V1.1.** `planner.skills_context_max` (int, default 5 via package const, validator rejects negatives) caps the `Search` result count. `planner.planning_hints` is a struct with `constraints` (free-form text) + `preferred_tools` ([]string); the richer Go-struct fields on `planner.PlanningHints` (`ParallelGroups`, `DisallowTools`, `Budget`) remain reachable through a custom planner Option but not via `harbor.yaml`. Empty YAML block ⇒ nil pointer projection ⇒ `<planning_constraints>` section omitted from the prompt. The richer surface lands in a follow-up when an operator actually needs it.
+
+**Why.** Wave 15 shipped the four primitives (`MemoryBlocks`, `SkillsContext`, `RepairCounters`, `PlanningHints`) and the 83e reasoning-trace capture path, but the production dev binary never populated them — only the test code did. That made the wave's value real for library consumers building their own RunContext but invisible to operators running `harbor dev`. The audit (W3/W4) named this a §13 "test stubs as production defaults on operator-facing seams" failure mode read one level out: the seams exist but the production wiring doesn't fill them. 83f closes the consumer gap so the prompt-quality band's value reaches the operator on the golden path.
+
+**Findings I'm departing from.** None — 83f is a pure consumer phase against already-shipped primitives. The memory keying observation (point 2) surfaces a divergence between the RFC's session-scope and the inmem driver's run-scope, documented here for a future memory-driver phase to normalise.
+
+**Protocol additions.** None — 83f is internal wiring plus two operator-facing config keys. No new Protocol method, error code, wire type, or CLI subcommand.

@@ -115,6 +115,8 @@ import (
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	"github.com/hurtener/Harbor/internal/skills"
+	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -563,7 +565,29 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	// memStore is consumed by the Phase 73j (D-118) Console Memory page
 	// `memory.*` read routes — wired into transports.NewMux below via
-	// transports.WithMemory.
+	// transports.WithMemory. Phase 83f (D-149) also threads it into the
+	// per-task RunLoop driver so the dev binary actually populates
+	// `RunContext.MemoryBlocks` for every run.
+
+	// Phase 83f (D-149): skills are OPTIONAL on the dev binary. When
+	// `skills.driver` is set in harbor.yaml, the dev stack opens the
+	// store and the per-task RunLoop driver hands the planner pre-
+	// retrieved skill bodies via `RunContext.SkillsContext`. Empty
+	// config = no skills opened = SkillsContext stays nil = the
+	// `<skills_context>` prompt wrapper is omitted.
+	var skillStore skills.SkillStore
+	if cfg.Skills.Driver != "" {
+		ss, openErr := skills.Open(ctx, skills.ConfigSnapshot{
+			Driver: cfg.Skills.Driver,
+			DSN:    cfg.Skills.DSN,
+		}, skills.Deps{Bus: bus})
+		if openErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("skills: %w", openErr)
+		}
+		closers = append(closers, ss.Close)
+		skillStore = ss
+	}
 
 	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
 		Store:    stateStore,
@@ -700,6 +724,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		planner:  plnr,
 		tasks:    taskReg, // D-098: the FSM the driver advances on RunLoop exit (closes #123)
 		taskKind: tasks.KindForeground,
+		// Phase 83f (D-149): per-run consumer wiring. Each of the four
+		// optional surfaces is projected onto RunContext when the
+		// corresponding subsystem / config block is configured; nil
+		// surfaces leave the planner's matching wrapper omitted.
+		memory:           memStore,
+		skills:           skillStore,
+		skillsContextMax: cfg.Planner.SkillsContextMax,
+		planningHints:    plannerHintsFromConfig(cfg.Planner.PlanningHints),
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -1722,3 +1754,24 @@ func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]ll
 // identity.Quadruple under the dev token's claims; the import is also
 // used by the dev-cmd integration test via the SignDevToken helper).
 var _ identity.Identity
+
+// plannerHintsFromConfig projects the YAML PlannerPlanningHintsCfg
+// onto a planner.PlanningHints pointer. Returns nil when the YAML
+// block is empty — the per-task RunLoop driver then hands the planner
+// a nil PlanningHints and the `<planning_constraints>` prompt wrapper
+// is omitted entirely.
+//
+// V1.1 projects only the two YAML-exposed fields (Constraints +
+// PreferredTools). The richer Go-struct fields on planner.PlanningHints
+// (ParallelGroups, DisallowTools, Budget) remain reachable through a
+// custom planner Option but not via harbor.yaml; see Phase 83f's plan
+// risks/open-questions section.
+func plannerHintsFromConfig(cfg config.PlannerPlanningHintsCfg) *planner.PlanningHints {
+	if cfg.IsZero() {
+		return nil
+	}
+	return &planner.PlanningHints{
+		Constraints:    cfg.Constraints,
+		PreferredTools: append([]string(nil), cfg.PreferredTools...),
+	}
+}
