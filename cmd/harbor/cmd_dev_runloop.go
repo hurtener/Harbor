@@ -81,6 +81,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -89,6 +90,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
+	"github.com/hurtener/Harbor/internal/tools"
 )
 
 // devRuntimeSkillsContextMaxDefault is the dev-binary default when
@@ -121,6 +123,16 @@ type perTaskRunLoopDriverOpts struct {
 	skills           skills.SkillStore
 	skillsContextMax int
 	planningHints    *planner.PlanningHints
+
+	// Phase 83i (D-152) — tool dispatch + Catalog projection +
+	// Trajectory. The tool catalog is the shared catalog the rest of
+	// the dev stack already populated (in-process tools, MCP-discovered
+	// tools, etc.). MaxStepsRunLoop caps the runloop's outer step
+	// counter (separate from the planner-internal cap that goes onto
+	// react via PlannerConfig.MaxSteps).
+	catalog         tools.ToolCatalog
+	executor        steering.ToolExecutor
+	maxStepsRunLoop int
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -139,6 +151,11 @@ type perTaskRunLoopDriver struct {
 	skills           skills.SkillStore
 	skillsContextMax int
 	planningHints    *planner.PlanningHints
+
+	// Phase 83i (D-152) — tool dispatch + Catalog projection.
+	catalog         tools.ToolCatalog
+	executor        steering.ToolExecutor
+	maxStepsRunLoop int
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -193,6 +210,9 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		skills:           opts.skills,
 		skillsContextMax: skillsCap,
 		planningHints:    opts.planningHints,
+		catalog:          opts.catalog,
+		executor:         opts.executor,
+		maxStepsRunLoop:  opts.maxStepsRunLoop,
 	}, nil
 }
 
@@ -470,6 +490,43 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// D-145 (counters scope to RunContext, not the planner artifact).
 	counters := &planner.RepairCounters{}
 
+	// Step 4 (Phase 83i — D-152): per-run Trajectory + the per-run
+	// Catalog view. The Trajectory is appended to by the runloop
+	// after every non-Finish, non-RequestPause step; without it the
+	// planner sees an empty trajectory every step and (with a real
+	// LLM) sends the identical prompt repeatedly. The Catalog view
+	// is the planner-facing schema-only projection of the production
+	// catalog under the run's identity scope; without it the
+	// `<available_tools>` section renders empty and the LLM has no
+	// tool affordance.
+	traj := &planner.Trajectory{Query: task.Query}
+	var catalogView planner.ToolCatalogView
+	if d.catalog != nil {
+		catalogView = newRuntimeCatalogView(
+			d.catalog,
+			runtimeIdentity{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID},
+			nil, // GrantedScopes — TODO (Phase 83m): plumb the token's scopes here
+		)
+	}
+
+	// Phase 83i (D-152) — wire the planner's event-emit closure so
+	// `planner.decision` / `planner.finish` / `planner.repair_guidance_injected`
+	// reach the bus. Without this the entire planner-side telemetry
+	// stream is silent (operators / Console / inspect-runs see only
+	// llm.cost.recorded). The closure stamps the run's identity
+	// quadruple on every event and publishes under the driver's bus
+	// context so a bus-close mid-run logs Warn rather than races.
+	emit := func(ev events.Event) {
+		if ev.Identity.Identity.TenantID == "" {
+			ev.Identity = q
+		}
+		if pubErr := d.bus.Publish(d.subCtx, ev); pubErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: bus publish failed",
+				slog.String("type", string(ev.Type)),
+				slog.String("err", pubErr.Error()))
+		}
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -480,8 +537,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			SkillsContext:  skillsCtx,
 			RepairCounters: counters,
 			PlanningHints:  d.planningHints, // nil when operator left the config block empty
+			Catalog:        catalogView,     // Phase 83i (D-152) — populates <available_tools>
+			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
+			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
 		},
-		TaskID: taskID,
+		TaskID:       taskID,
+		ToolExecutor: d.executor, // Phase 83i (D-152) — dispatch CallTool decisions
+		MaxSteps:     d.maxStepsRunLoop,
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
@@ -523,6 +585,28 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// is a non-success terminal (the run finished but did not satisfy
 	// the goal) and maps to Failed with the reason as the error code.
 	if fin.Reason == planner.FinishGoal {
+		// Phase 83i (D-152) — Memory writeback. The 83d/83f read path
+		// is wired (run loop hands MemoryBlocks to the planner); the
+		// write path was the missing half. Without a writeback the
+		// session-scoped memory stays empty forever and the operator's
+		// multi-turn sessions cannot carry context. Best-effort: a
+		// memory.AddTurn error is logged Warn but does NOT downgrade
+		// the run's terminal status — the planner reached FinishGoal,
+		// the operator should see Complete.
+		if d.memory != nil {
+			turn := memory.ConversationTurn{
+				UserMessage:       task.Query,
+				AssistantResponse: extractAssistantAnswer(fin),
+				Timestamp:         time.Now(),
+			}
+			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: memory.AddTurn failed; run still marked complete",
+					slog.String("task_id", string(taskID)),
+					slog.String("run_id", q.RunID),
+					slog.String("err", mErr.Error()))
+			}
+		}
+
 		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
@@ -533,7 +617,8 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		d.logger.Info("perTaskRunLoopDriver: run finished (complete)",
 			slog.String("task_id", string(taskID)),
 			slog.String("run_id", q.RunID),
-			slog.String("reason", string(fin.Reason)))
+			slog.String("reason", string(fin.Reason)),
+			slog.Int("trajectory_steps", len(traj.Steps)))
 		return
 	}
 	// Non-goal terminal Finish (NoPath, Cancelled, DeadlineExceeded,
@@ -638,4 +723,29 @@ func projectSkillsContext(ranked []skills.RankedSkill) []any {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// extractAssistantAnswer pulls the planner's natural-language answer
+// out of a terminal Finish for the memory.AddTurn writeback. Phase 83i
+// (D-152). The react planner's FinishGoal carries
+// Payload = map[string]any{"answer": "<the LLM's answer>"}. Other
+// planners may shape Payload differently; we accept any string-valued
+// "answer" key and otherwise fall back to a Sprintf so something
+// always lands in memory (matching CLAUDE.md §5 fail-loud — silent
+// "nothing written" would lose the run's outcome).
+func extractAssistantAnswer(fin planner.Finish) string {
+	switch p := fin.Payload.(type) {
+	case string:
+		return p
+	case map[string]any:
+		if v, ok := p["answer"]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+	}
+	if fin.Payload == nil {
+		return string(fin.Reason)
+	}
+	return fmt.Sprintf("%v", fin.Payload)
 }
