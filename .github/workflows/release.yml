@@ -93,7 +93,7 @@ jobs:
       # dependency, no goreleaser — so the stretch lands cleanly here
       # rather than being deferred (D-139).
       - name: Attach SLSA build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.artifact.outputs.path }}
 
