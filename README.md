@@ -29,8 +29,11 @@ whole runtime on your laptop in under a second.
 ```bash
 go install github.com/hurtener/Harbor/cmd/harbor@v1.0.0
 
-harbor scaffold --name my-agent   # a runnable agent + test, production-shaped
-cd my-agent
+mkdir my-agent && cd my-agent
+harbor init                       # tiered harbor.yaml + AGENTS.md/CLAUDE.md/README.md
+# edit harbor.yaml — uncomment one LLM provider block + set its API key env var
+harbor validate ./harbor.yaml     # fail-loud config check (file:line precision)
+harbor scaffold --name my-agent   # materialise the Go project + worked agent + test
 harbor dev                        # local runtime + protocol server on :18080
 ```
 
@@ -73,7 +76,7 @@ Harbor is four layers, each with a hard boundary:
 | **Runtime** | The orchestration kernel — tasks, planner runtime, tools, memory, sessions, events, skills, artifacts, the unified pause/resume primitive. Headless. |
 | **Protocol** | The canonical, versioned event/state contract. Streaming events, the task-control surface, state snapshots, topology, traces, metrics. |
 | **Console** | The observability + control-plane UI (SvelteKit). Architecturally just a Protocol client — it never reads a Runtime object directly. |
-| **CLI** | The `harbor` binary: `dev`, `console`, `scaffold`, `validate`, `version`, and the `inspect-*` family. |
+| **CLI** | The `harbor` binary: `init`, `dev`, `console`, `scaffold`, `validate`, `version`, and the `inspect-*` family. |
 
 Because the Console only ever speaks Protocol, the same surface powers a remote
 attach, a third-party dashboard, or an IDE/TUI client. Nothing about
@@ -93,10 +96,16 @@ Build an agent against the runtime library:
 import "github.com/hurtener/Harbor/harbortest"
 ```
 
-The fastest path is `harbor scaffold --name my-agent`, which writes a
-production-shaped `harbor.yaml`, a `go.mod`, and a worked agent + test pair.
-From there:
+The fastest path is the four-step CLI flow: `harbor init` drops a tiered,
+commented `harbor.yaml` plus `AGENTS.md` / `CLAUDE.md` / `README.md` companion
+files into the current directory; you edit one LLM-provider example block, run
+`harbor validate`, then `harbor scaffold --name <name>` to materialise the Go
+project (`go.mod`, a worked agent, a `harbortest`-driven test). From there:
 
+- `harbor init` — drop the editable yaml + companion docs. Pick from four
+  commented LLM-provider examples (OpenRouter / Anthropic / OpenAI / NVIDIA NIM
+  — Bifrost speaks many more; see [`docs/CONFIG.md`](docs/CONFIG.md)).
+- `harbor scaffold --name <name>` — materialise the Go project + test pair.
 - `harbor dev` — boots the local Runtime + Protocol server, mints an ephemeral
   dev token, serves until you `Ctrl-C`.
 - `harbor console` — serves the Harbor Console (baked into the binary) against a
@@ -105,6 +114,10 @@ From there:
   file:line-precise errors; suitable as a CI pre-flight.
 - `harbor inspect-events` / `inspect-runs` — tail the live event stream or
   reconstruct a run's trajectory from event replay.
+
+The full operator-facing configuration reference for every knob in
+`harbor.yaml` lives at [`docs/CONFIG.md`](docs/CONFIG.md); a CI test fails the
+build when a new config field lands without a documentation entry.
 
 Worked, runnable examples live in [`examples/`](examples/); copy-paste how-to
 guides — defining a tool, wiring a planner, testing an agent — live in
@@ -125,6 +138,7 @@ example.
 | [`RFC-001-Harbor.md`](RFC-001-Harbor.md) | The design RFC — product intent and every architectural decision. |
 | [`docs/plans/README.md`](docs/plans/README.md) | The master phase plan — how Harbor was built, phase by phase. |
 | [`docs/recipes/`](docs/recipes/) | Practical how-to guides, grounded in current APIs. |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | Full operator-facing reference for every `harbor.yaml` knob. |
 | [`docs/decisions.md`](docs/decisions.md) | The append-only architectural decision log (D-001…). |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history, Keep-a-Changelog format. |
 

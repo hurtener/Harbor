@@ -1,0 +1,108 @@
+# {{.Name}}
+
+A Harbor agent. This directory was initialised by `harbor init`; the
+next steps below take you from "fresh yaml" to "running agent."
+
+## What's in the box
+
+```text
+{{.Name}}/
+├── harbor.yaml      Tiered configuration (REQUIRED / COMMON / ADVANCED).
+├── AGENTS.md        Binding rules for AI assistants editing this agent.
+├── CLAUDE.md        Verbatim mirror of AGENTS.md (Claude Code auto-loads it).
+└── README.md        This file.
+```
+
+## Step 1 — Pick an LLM provider
+
+Open `harbor.yaml` and find the `llm:` block. Four commented
+provider examples are shown:
+
+- **OpenRouter** — aggregator; pay-per-token; many models.
+- **Anthropic** — direct.
+- **OpenAI** — direct.
+- **NVIDIA NIM** — custom OpenAI-compatible endpoint.
+
+Bifrost (Harbor's LLM driver) speaks dozens more providers; the four
+above cover the common starting points. Uncomment **exactly one**
+block, set the API key env var in your shell, and you're done with
+REQUIRED config:
+
+```sh
+# Pick the one matching your uncommented block:
+export OPENROUTER_API_KEY=sk-or-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export NVIDIA_API_KEY=nvapi-...
+```
+
+## Step 2 — Validate
+
+```sh
+harbor validate ./harbor.yaml
+```
+
+The validator fails loud on missing or malformed fields. The error
+message names the offending YAML path — grep `docs/CONFIG.md` in the
+Harbor repo for the key to see what values it accepts.
+
+## Step 3 — Scaffold
+
+```sh
+harbor scaffold --name {{.Name}}
+```
+
+This materialises the Go project (`go.mod`, `agent.go`,
+`agent_test.go`) into this directory. The scaffolded `agent.go`
+includes a worked example you can extend.
+
+## Step 4 — Boot
+
+In one terminal:
+
+```sh
+harbor dev --config ./harbor.yaml
+```
+
+In another:
+
+```sh
+harbor console --config ./harbor.yaml
+```
+
+`harbor dev` exposes the Protocol surface (default `127.0.0.1:8080`);
+`harbor console` serves the SvelteKit UI (default `127.0.0.1:18790`)
+and connects to the dev binary as a Protocol client. Open the
+console URL in a browser, send a prompt to your agent, and watch the
+trajectory unfold.
+
+## Step 5 — Test
+
+```sh
+go test ./...
+```
+
+`agent_test.go` uses the public `harbortest` package — a real,
+in-process Harbor runtime with the same drivers your production
+deployment uses (no mocks at the seams).
+
+## Next steps
+
+- **Add a tool.** Built-ins (`clock.now`, `text.echo`) → add the
+  name to `tools.built_in` in `harbor.yaml`. Custom Go function →
+  call `inproc.RegisterFunc` in `agent.go`. External over MCP →
+  add an entry to `tools.mcp_servers` in `harbor.yaml`.
+- **Enable memory.** Uncomment the `memory:` block in
+  `harbor.yaml`. Strategies: `none` (default), `truncation`,
+  `rolling_summary`.
+- **Plug in skills.** Uncomment the `skills:` block in
+  `harbor.yaml`. The catalog is a token-savvy DB-backed surface the
+  planner can search and inject into prompts.
+- **Tune the planner.** `planner.max_steps`,
+  `planner.extra_guidance`, `planner.reasoning_replay`.
+
+## References
+
+- Harbor project: <https://github.com/hurtener/Harbor>
+- Configuration reference: `docs/CONFIG.md` (in the Harbor repo)
+- `harbortest` godoc: <https://pkg.go.dev/github.com/hurtener/Harbor/harbortest>
