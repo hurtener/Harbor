@@ -712,6 +712,26 @@ var allowedMCPTransportModes = map[string]struct{}{
 // Auto-mode + empty URL + empty Command is rejected (no candidate
 // transport would be selected).
 func (c *Config) validateTools() error {
+	// Phase 83n / D-153 — built-in tools opt-in via name. Each entry
+	// must be in the mirror allowlist; a typo fails loudly with the
+	// known set in the error message.
+	seenBuiltIn := make(map[string]struct{}, len(c.Tools.BuiltIn))
+	for i, name := range c.Tools.BuiltIn {
+		prefix := fmt.Sprintf("tools.built_in[%d]", i)
+		if name == "" {
+			return fieldError(prefix, "must not be empty")
+		}
+		if _, dup := seenBuiltIn[name]; dup {
+			return fieldError(prefix,
+				fmt.Sprintf("duplicate built-in tool %q (must be unique within tools.built_in)", name))
+		}
+		seenBuiltIn[name] = struct{}{}
+		if _, ok := allowedBuiltInTools[name]; !ok {
+			return fieldError(prefix,
+				fmt.Sprintf("unknown built-in tool %q (known: %s)",
+					name, sortedKeys(allowedBuiltInTools)))
+		}
+	}
 	for i, p := range c.Tools.HTTPManifests {
 		if strings.TrimSpace(p) == "" {
 			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
@@ -891,6 +911,40 @@ func (c *Config) validateTools() error {
 		}
 	}
 	return nil
+}
+
+// allowedBuiltInTools mirrors `internal/tools/builtin.KnownNames()`.
+// Same duplication rationale as `allowedApprovalPolicies` — the
+// `internal/config` package MUST NOT import a concrete tool-side
+// package (CLAUDE.md §4.4). The mirror is asserted by the
+// `TestKnownNames_MirrorsConfigAllowlist` test in
+// `internal/tools/builtin/builtin_test.go`. New built-ins land here
+// in the same PR as their addition to the registry.
+var allowedBuiltInTools = map[string]struct{}{
+	"clock.now": {},
+	"text.echo": {},
+}
+
+// KnownBuiltInTools returns the sorted built-in allowlist as a slice.
+// Public so the `internal/tools/builtin` mirror test can reach it
+// without importing internal validator state.
+func KnownBuiltInTools() []string {
+	out := make([]string, 0, len(allowedBuiltInTools))
+	for name := range allowedBuiltInTools {
+		out = append(out, name)
+	}
+	sortStringSlice(out)
+	return out
+}
+
+// sortStringSlice keeps the package free of an `sort` import for one
+// trivial use. Bubble sort is fine for ≤ 32 entries.
+func sortStringSlice(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // allowedApprovalPolicies mirrors the bundled `approval.ApprovalPolicy`

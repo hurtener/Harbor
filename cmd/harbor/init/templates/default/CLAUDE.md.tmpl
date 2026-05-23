@@ -1,0 +1,123 @@
+# {{.Name}} — AI assistant rules
+
+This file is **binding** for anyone (human or AI) editing this Harbor
+agent. It is mirrored verbatim in `CLAUDE.md` so Claude Code picks it
+up automatically.
+
+> The rules below are the project-local minimum. Harbor's binding
+> framework rules live in the Harbor repo's `AGENTS.md` / `CLAUDE.md`;
+> read them whenever you make a non-trivial change.
+
+---
+
+## 1. What this project is
+
+`{{.Name}}` is a Harbor-runtime agent. The shape:
+
+- **`harbor.yaml`** — the runtime configuration. Loaded by
+  `harbor validate`, `harbor scaffold`, and `harbor dev`. The file
+  was dropped by `harbor init` with a tiered structure (REQUIRED /
+  COMMON / ADVANCED); see `docs/CONFIG.md` in the Harbor repo for the
+  full knob reference.
+- **`AGENTS.md` / `CLAUDE.md`** — these files. Editing one without
+  the other is a drift bug.
+- **`README.md`** — the operator-facing entry. Explains the local
+  development loop.
+
+After running `harbor scaffold --name {{.Name}}`, this directory also
+holds:
+
+- **`go.mod`** — the Go module for your agent code.
+- **`agent.go`** — your agent's entry point.
+- **`agent_test.go`** — a `harbortest`-driven smoke test.
+
+---
+
+## 2. The hard rules
+
+These rules are non-negotiable. A violation is a bug, not a style nit.
+
+1. **Identity is mandatory.** Every code path that touches Harbor's
+   storage APIs (memory, state, artifacts) carries the
+   `(tenant_id, user_id, session_id)` triple. The runtime fails closed
+   on missing identity.
+2. **Fail loudly.** No `try { ... } catch { return nil }`-shaped
+   degradation. Errors are explicit; missing dependencies surface at
+   boot, not at first use.
+3. **No hardcoded secrets.** API keys read from env vars via
+   `api_key: env.NAME` directives in `harbor.yaml`. The `.env` file
+   (if you have one) is in `.gitignore`.
+4. **JWT validation is asymmetric-only** (RS256/ES256 family). Never
+   HS\* or `none`. The default `identity` block in `harbor.yaml`
+   already encodes this; do not relax it.
+5. **The Console reads through the Protocol.** Never reach into the
+   Harbor runtime's internal types from your agent code.
+6. **No CGo dependencies.** Builds run with `CGO_ENABLED=0` to keep
+   the binary statically linkable. SQLite uses `modernc.org/sqlite`.
+
+---
+
+## 3. Where to look when
+
+- **Adding a tool the agent can call:**
+  - Built-in (`clock.now`, `text.echo`): add the name under
+    `tools.built_in` in `harbor.yaml`.
+  - Custom Go function: register via `inproc.RegisterFunc` in your
+    `agent.go`. Schema is derived from the function's input / output
+    types via reflection.
+  - External over MCP: add an entry under `tools.mcp_servers` in
+    `harbor.yaml`. Harbor spawns the subprocess at boot and discovers
+    tools automatically.
+- **Changing the LLM provider:** edit the `llm:` block in
+  `harbor.yaml` — switch between OpenRouter / Anthropic / OpenAI /
+  NVIDIA NIM / any of the other Bifrost-supported providers (see
+  `docs/CONFIG.md#llm` in the Harbor repo).
+- **Tuning the planner:** `planner.max_steps`, `planner.extra_guidance`,
+  `planner.reasoning_replay`. See `docs/CONFIG.md#planner`.
+- **Enabling multi-turn memory:** uncomment the `memory:` block in
+  `harbor.yaml`. Strategies: `none` (default), `truncation`,
+  `rolling_summary`.
+
+---
+
+## 4. The local dev loop
+
+```sh
+# 1. Validate the config.
+harbor validate ./harbor.yaml
+
+# 2. Materialise the Go project (one-time).
+harbor scaffold --name {{.Name}}
+
+# 3. Boot the runtime + Console (in two terminals).
+harbor dev --config ./harbor.yaml
+harbor console --config ./harbor.yaml
+
+# 4. Run your tests.
+go test ./...
+```
+
+The first time you run `harbor dev` against a real LLM provider, set
+the provider's API key env var in your shell:
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...     # for Example 1
+export ANTHROPIC_API_KEY=sk-ant-...     # for Example 2
+export OPENAI_API_KEY=sk-...            # for Example 3
+export NVIDIA_API_KEY=nvapi-...         # for Example 4
+```
+
+---
+
+## 5. When in doubt
+
+- **A rule contradicts a feature you need?** Pause and ask the
+  operator. Don't silently weaken the rule.
+- **The runtime errors at boot?** The error message names the
+  offending config key. Grep `docs/CONFIG.md` for the key to see what
+  values it accepts.
+- **The planner loops without calling a tool?** Re-run with
+  `--quiet=false`; the planner's `<available_tools>` rendering
+  decision shows up in the trace.
+- **Something is genuinely missing from this file?** Add it. AGENTS.md
+  grows with the agent. Update the CLAUDE.md mirror in the same edit.

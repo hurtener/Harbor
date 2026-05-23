@@ -588,6 +588,16 @@ type ToolsConfig struct {
 	Entries          []ToolEntryConfig         `yaml:"entries,omitempty"`
 	OAuthProviders   []ToolOAuthProviderConfig `yaml:"oauth_providers,omitempty"`
 	OAuthTokenKEKEnv string                    `yaml:"oauth_token_kek_env,omitempty"`
+
+	// BuiltIn lists opt-in tools shipped in the Harbor binary that the
+	// runtime should register against the catalog at boot. V1.1 ships
+	// two names: `clock.now` (current UTC time) and `text.echo` (echo
+	// input verbatim). The names are mirrored from
+	// `internal/tools/builtin.KnownNames()` via `KnownBuiltInTools()`
+	// below; a typo fails validation pre-boot rather than at runtime.
+	// Empty list = no built-ins registered. Restart-required (no
+	// `reload:"live"` tag).
+	BuiltIn []string `yaml:"built_in,omitempty"`
 }
 
 // ToolOAuthProviderConfig declares one operator-configured OAuth

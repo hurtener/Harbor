@@ -124,6 +124,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
@@ -618,6 +619,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `devStack.coordinator` — there is NEVER a second Coordinator
 	// instance (CLAUDE.md §13).
 	toolCat := tools.NewCatalog()
+	// Phase 83n / D-153 — register opt-in built-in tools (clock.now,
+	// text.echo) BEFORE the catalog-wiring step so any `tools.entries[]`
+	// middleware that names a built-in resolves cleanly. Empty list is
+	// a no-op; an unknown name fails loud at this boundary (the config
+	// validator also rejects pre-boot, this is the runtime sanity gate).
+	if err := builtin.Register(toolCat, cfg.Tools.BuiltIn); err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("tools/builtin: %w", err)
+	}
 	// WithBus(bus) is mandatory in production: it is what makes
 	// pause.requested / pause.resumed land on the canonical event
 	// stream so wire consumers (Console, third-party Protocol clients,

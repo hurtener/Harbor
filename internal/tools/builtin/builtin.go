@@ -1,0 +1,122 @@
+// Package builtin ships the small set of opt-in tools that travel
+// with the Harbor binary. Built-ins exist to give a freshly-scaffolded
+// agent a zero-dependency way to prove the planner → executor →
+// trajectory loop without forcing an operator to author Go code or
+// attach an MCP server first.
+//
+// Phase 83n / D-153. V1.1 ships two built-ins:
+//
+//   - `clock.now` — returns the current UTC time as RFC 3339 +
+//     epoch milliseconds. Useful as a heartbeat / sanity-check tool.
+//   - `text.echo` — returns its `text` input verbatim. Useful as a
+//     smoke-test action the planner can call without side effects.
+//
+// Built-ins are NEVER registered implicitly. The operator opts in
+// via the `tools.built_in` yaml field, which the dev binary's
+// `bootDevStack` passes to `builtin.Register(cat, names)`. An empty
+// list registers nothing — the registry is purely additive and
+// opt-in by design.
+//
+// The §4.4 seam pattern applies in the same shape as OAuth drivers
+// (`internal/tools/auth/drivers/oauth2`) and planner drivers
+// (`internal/planner/react`): the `internal/config` validator
+// mirrors `KnownNames()` so a typo in the yaml fails at validation
+// time rather than at boot. A drift test (`builtin_test.go`)
+// asserts the two surfaces stay in lockstep.
+//
+// Concurrent reuse (D-025). Built-in tools are registered through
+// `inproc.RegisterFunc`, which captures the closure into a fresh
+// `ToolDescriptor` per call. The functions themselves
+// (`clock.Now`, `text.Echo`) hold no per-invocation state and are
+// safe for concurrent use; D-025 is trivially satisfied through the
+// existing inproc driver's contract.
+package builtin
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+
+	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
+)
+
+// Sentinel errors. Callers (`cmd/harbor/cmd_dev.go::bootDevStack`,
+// the devstack mirror, the config validator) compare via errors.Is.
+var (
+	// ErrUnknownBuiltIn is returned when a name in `tools.built_in`
+	// is not in the registered set. The wrapped message lists every
+	// known name so an operator sees the typo immediately.
+	ErrUnknownBuiltIn = errors.New("builtin: unknown built-in tool")
+	// ErrRegisterFailed wraps an underlying `inproc.RegisterFunc`
+	// failure. Should be impossible at runtime (the inproc deriver
+	// has unit tests against all built-in payload types) but is
+	// surfaced loudly per §13 fail-loud posture.
+	ErrRegisterFailed = errors.New("builtin: failed to register built-in tool")
+)
+
+// registrar binds a built-in name to the function that registers it
+// against a catalog. Package-private — callers use Register, never
+// touch the table directly.
+type registrar func(cat tools.ToolCatalog) error
+
+// registry holds the V1.1 built-in surface. Each entry self-describes
+// its name and a registration thunk that calls `inproc.RegisterFunc`
+// with the right typed signature.
+var registry = map[string]registrar{
+	"clock.now": func(cat tools.ToolCatalog) error {
+		return inproc.RegisterFunc[ClockNowArgs, ClockNowOut](
+			cat,
+			"clock.now",
+			ClockNow,
+			tools.WithDescription("Return the current UTC time as RFC 3339 + epoch milliseconds."),
+			tools.WithSideEffect(tools.SideEffectPure),
+		)
+	},
+	"text.echo": func(cat tools.ToolCatalog) error {
+		return inproc.RegisterFunc[TextEchoArgs, TextEchoOut](
+			cat,
+			"text.echo",
+			TextEcho,
+			tools.WithDescription("Echo the input text back verbatim. Useful for smoke-testing the planner/executor loop."),
+			tools.WithSideEffect(tools.SideEffectPure),
+		)
+	},
+}
+
+// KnownNames returns the sorted list of built-in tool names the
+// binary ships with. The `internal/config` validator's
+// `allowedBuiltInTools` allowlist mirrors this slice; the
+// `TestKnownNames_MirrorsConfigAllowlist` test enforces no drift.
+func KnownNames() []string {
+	out := make([]string, 0, len(registry))
+	for name := range registry {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Register attaches each named built-in to the catalog. A name that
+// is not in the registry returns ErrUnknownBuiltIn (the message
+// lists the known names so an operator sees the typo); a name that
+// is in the registry but whose underlying registration fails
+// returns ErrRegisterFailed wrapping the inproc error.
+//
+// An empty `names` slice is a no-op — operators who don't opt into
+// any built-in see zero behaviour change.
+func Register(cat tools.ToolCatalog, names []string) error {
+	if cat == nil {
+		return fmt.Errorf("%w: catalog is nil", ErrRegisterFailed)
+	}
+	for _, name := range names {
+		reg, ok := registry[name]
+		if !ok {
+			return fmt.Errorf("%w: %q (known: %v)", ErrUnknownBuiltIn, name, KnownNames())
+		}
+		if err := reg(cat); err != nil {
+			return fmt.Errorf("%w: %q: %w", ErrRegisterFailed, name, err)
+		}
+	}
+	return nil
+}
