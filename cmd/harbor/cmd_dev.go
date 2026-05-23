@@ -125,6 +125,7 @@ import (
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
+	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -641,6 +642,24 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	for _, p := range oauthProviders {
 		prov := p
 		closers = append(closers, func(closeCtx context.Context) error { return prov.Close(closeCtx) })
+	}
+
+	// Phase 83g (D-150) — the production consumer for the Phase 28
+	// MCP southbound driver. Per `cfg.Tools.MCPServers[i]` the dev
+	// boot spawns the configured MCP server (stdio subprocess /
+	// HTTP), opens the MCP session, discovers tools, and registers
+	// each ToolDescriptor on the tool catalog. Fail-loud at boot if
+	// the server cannot connect or discover — silent degradation
+	// would hide a misconfigured server. The Registry is built so a
+	// follow-up phase can mount the Console MCP-page surface (the
+	// surface needs a single *auth.Provider accessor; the dev
+	// binary's OAuth side is a slice today).
+	mcpRegistry := mcpdrv.NewRegistry()
+	for _, ms := range cfg.Tools.MCPServers {
+		if err := attachDevMCPServer(ctx, ms, toolCat, mcpRegistry, bus, opts.logger, &closers); err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("mcp[%s]: %w", ms.Name, err)
+		}
 	}
 
 	steeringReg := steering.NewRegistry()
@@ -1774,4 +1793,99 @@ func plannerHintsFromConfig(cfg config.PlannerPlanningHintsCfg) *planner.Plannin
 		Constraints:    cfg.Constraints,
 		PreferredTools: append([]string(nil), cfg.PreferredTools...),
 	}
+}
+
+// attachDevMCPServer wires one configured MCP server into the dev
+// stack (Phase 83g — D-150). It spawns the transport, opens the
+// session, discovers tools, registers each ToolDescriptor on the tool
+// catalog, registers the Provider with the Registry (so the Console
+// MCP-page mount lands when its surface is wired), and threads the
+// Provider's Close into the closer chain so stack teardown drains
+// the subprocess. Fail-loud on any step: a misconfigured / unreachable
+// MCP server must not boot silently per §13.
+func attachDevMCPServer(
+	ctx context.Context,
+	ms config.MCPServerConfig,
+	cat tools.ToolCatalog,
+	reg *mcpdrv.Registry,
+	bus events.EventBus,
+	logger *slog.Logger,
+	closers *[]func(context.Context) error,
+) error {
+	mode := mcpdrv.MCPTransportMode(ms.TransportMode)
+	if mode == "" {
+		mode = mcpdrv.TransportAuto
+	}
+	provider, err := mcpdrv.New(mcpdrv.Config{
+		Name:          ms.Name,
+		TransportMode: mode,
+		URL:           ms.URL,
+		Command:       append([]string(nil), ms.Command...),
+		Headers:       cloneStringMap(ms.Headers),
+		KeepAlive:     ms.KeepAlive,
+		Logger:        logger,
+		Bus:           bus,
+		DefaultIdentity: identity.Identity{
+			TenantID:  DevTenant,
+			UserID:    DevUser,
+			SessionID: DevSession,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mcp.New: %w", err)
+	}
+	if connectErr := provider.Connect(ctx); connectErr != nil {
+		_ = provider.Close(ctx)
+		return fmt.Errorf("provider.Connect: %w", connectErr)
+	}
+	// Append closer NOW (after a successful Connect) so a Discover
+	// failure still drains the live subprocess.
+	*closers = append(*closers, provider.Close)
+
+	descriptors, discoverErr := provider.Discover(ctx)
+	if discoverErr != nil {
+		return fmt.Errorf("provider.Discover: %w", discoverErr)
+	}
+	for _, d := range descriptors {
+		if regErr := cat.Register(d); regErr != nil {
+			return fmt.Errorf("catalog.Register(%q): %w", d.Tool.Name, regErr)
+		}
+	}
+
+	// Surface the live Provider on the MCP Registry so a follow-up
+	// can mount the Console MCP-page surface without re-spawning.
+	// URLOrCommand is best-effort cosmetic — Console operators read
+	// it to identify the server.
+	urlOrCommand := ms.URL
+	if urlOrCommand == "" {
+		urlOrCommand = strings.Join(ms.Command, " ")
+	}
+	if regErr := reg.Register(mcpdrv.ServerRegistration{
+		Provider:     provider,
+		Transport:    string(mode),
+		URLOrCommand: urlOrCommand,
+		InitialState: mcpdrv.ServerStateOnline,
+	}); regErr != nil {
+		return fmt.Errorf("registry.Register: %w", regErr)
+	}
+	logger.Info("dev: MCP server attached",
+		slog.String("name", ms.Name),
+		slog.String("transport", string(mode)),
+		slog.Int("tools_registered", len(descriptors)),
+	)
+	return nil
+}
+
+// cloneStringMap returns a defensive copy of m so the Provider's
+// Headers slice cannot be mutated by callers that retain the
+// MCPServerConfig.
+func cloneStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
