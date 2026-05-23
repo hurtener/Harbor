@@ -132,11 +132,16 @@ func (s *scriptedLLMServer) Requests() []openAIRequestEnvelope {
 	return out
 }
 
+// scriptedModel is the model identifier the two 83l tests pin. The
+// fake server echoes it back in the response shape; the tests assert
+// every recorded LLM request carries it on the way in.
+const scriptedModel = "google/gemma-4-31b-it"
+
 // scriptedResponse returns a canned OpenAI-compatible /v1/chat/completions
 // response whose assistant `content` is the supplied envelope (the
 // react planner reads `content` and parses it as `{"tool":...,
 // "args":...}`).
-func scriptedResponse(model, envelopeJSON string) string {
+func scriptedResponse(envelopeJSON string) string {
 	return fmt.Sprintf(`{
 		"id":"chatcmpl-83l-test",
 		"object":"chat.completion",
@@ -148,7 +153,7 @@ func scriptedResponse(model, envelopeJSON string) string {
 			"finish_reason":"stop"
 		}],
 		"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}
-	}`, model, envelopeJSON)
+	}`, scriptedModel, envelopeJSON)
 }
 
 // phase83lConfig writes the 83l test yaml + loads/validates it. The
@@ -159,7 +164,7 @@ func phase83lConfig(t *testing.T, serverURL string) *config.Config {
 	t.Helper()
 	const envKey = "HARBOR_TEST_83L_FAKE_KEY"
 	t.Setenv(envKey, "test-key-value")
-	const model = "google/gemma-4-31b-it"
+	model := scriptedModel
 	yaml := fmt.Sprintf(`
 server:
   bind_addr: 127.0.0.1:0
@@ -267,11 +272,9 @@ func TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath(t *testing.T) {
 	// NOT t.Parallel(): phase83lConfig calls t.Setenv to populate the
 	// fake-provider API-key env var, which the testing package forbids
 	// alongside t.Parallel.
-	const model = "google/gemma-4-31b-it"
-
 	server := newScriptedLLMServer(t,
-		scriptedResponse(model, `{"tool":"text.echo","args":{"text":"hello from 83l"}}`),
-		scriptedResponse(model, `{"tool":"_finish","args":{"answer":"echo returned 'hello from 83l'"}}`),
+		scriptedResponse(`{"tool":"text.echo","args":{"text":"hello from 83l"}}`),
+		scriptedResponse(`{"tool":"_finish","args":{"answer":"echo returned 'hello from 83l'"}}`),
 	)
 
 	cfg := phase83lConfig(t, server.URL())
@@ -323,8 +326,8 @@ func TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath(t *testing.T) {
 		if req.Model == "" {
 			t.Errorf("LLM request %d has empty model — regression of 83h V2 (D-151)", i)
 		}
-		if req.Model != model {
-			t.Errorf("LLM request %d model = %q, want %q", i, req.Model, model)
+		if req.Model != scriptedModel {
+			t.Errorf("LLM request %d model = %q, want %q", i, req.Model, scriptedModel)
 		}
 		if len(req.Messages) == 0 {
 			t.Errorf("LLM request %d has no messages — empty prompt would be a serious break", i)
@@ -354,16 +357,14 @@ func TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath(t *testing.T) {
 // observation; the next LLM response finishes with an apology.
 func TestE2E_RealBifrost_ToolValidationFailure_PlannerReplans(t *testing.T) {
 	// NOT t.Parallel(): same t.Setenv reason as the happy-path test.
-	const model = "google/gemma-4-31b-it"
-
 	server := newScriptedLLMServer(t,
 		// Bad-args call: text.echo's input requires a `text` string,
 		// but we send `wrong_field`. The inproc validator rejects;
 		// the planner sees the error observation.
-		scriptedResponse(model, `{"tool":"text.echo","args":{"wrong_field":"oops"}}`),
+		scriptedResponse(`{"tool":"text.echo","args":{"wrong_field":"oops"}}`),
 		// Recovery: the planner re-plans with the validator error in
 		// the trajectory + finishes with an apology.
-		scriptedResponse(model, `{"tool":"_finish","args":{"answer":"I could not call the echo tool — bad arguments. Sorry."}}`),
+		scriptedResponse(`{"tool":"_finish","args":{"answer":"I could not call the echo tool — bad arguments. Sorry."}}`),
 	)
 
 	cfg := phase83lConfig(t, server.URL())
