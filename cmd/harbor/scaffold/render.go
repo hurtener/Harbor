@@ -338,7 +338,6 @@ func copyUpstreamYAML(srcPath, absOut string, patch bool) (string, string, error
 		return "", "", fmt.Errorf("%w: open upstream yaml %s: %w", ErrRender, srcPath, err)
 	}
 	defer src.Close()
-	//nolint:gosec // scaffolded project source files are intended to be world-readable (0o644); they carry no secrets
 	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: open dest yaml %s: %w", ErrRender, dst, err)
