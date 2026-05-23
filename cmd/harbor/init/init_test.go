@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hurtener/Harbor/cmd/harbor/init"
+	harborinit "github.com/hurtener/Harbor/cmd/harbor/init"
 	"github.com/hurtener/Harbor/internal/config"
 )
 

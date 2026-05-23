@@ -84,7 +84,7 @@ func collectLeavesInto(v reflect.Value, prefix []string, out *[]string) {
 		return
 	}
 	t := v.Type()
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		if !f.IsExported() {
 			continue
