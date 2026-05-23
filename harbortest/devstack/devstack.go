@@ -573,6 +573,15 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				ContextWindowReserve: cfg.LLM.ContextWindowReserve,
 				HeavyOutputThreshold: cfg.Artifacts.HeavyOutputThresholdBytes,
 				ModelProfiles:        copyModelProfiles(cfg.LLM.ModelProfiles),
+				// Phase 83l / D-155 — D-094 mirror of the production
+				// bug fix in `cmd/harbor/cmd_dev.go::bootDevStack`. The
+				// snapshot construction was previously missing these
+				// three fields; without them an operator-declared
+				// custom provider was silently dropped + the corrections
+				// layer ran with stale defaults.
+				CustomProviders:    copyCustomProviders(cfg.LLM.CustomProviders),
+				NetworkDefaults:    copyNetworkDefaults(cfg.LLM.NetworkDefaults),
+				DisableCorrections: disableCorrectionsFromConfig(cfg.LLM.Corrections),
 			}
 		}
 		llmPostureCfg = llmCfg
@@ -1514,6 +1523,68 @@ func governanceConfigForDevstack(in config.GovernanceConfig) governance.Config {
 		DefaultTier:   in.DefaultTier,
 		IdentityTiers: tiers,
 	}
+}
+
+// copyCustomProviders mirrors `cmd/harbor/cmd_dev.go::copyCustomProviders`
+// (Phase 83l / D-155). Production-bug fix — before 83l the snapshot
+// dropped CustomProviders, NetworkDefaults, and Corrections.
+func copyCustomProviders(in []config.LLMCustomProviderConfig) []llm.CustomProviderSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]llm.CustomProviderSpec, 0, len(in))
+	for _, p := range in {
+		out = append(out, llm.CustomProviderSpec{
+			Name:                 p.Name,
+			BaseURL:              p.BaseURL,
+			APIKeyEnvVar:         p.APIKeyEnvVar,
+			Models:               append([]string(nil), p.Models...),
+			BaseProviderType:     p.BaseProviderType,
+			Timeout:              p.Timeout,
+			MaxRetries:           p.MaxRetries,
+			RetryBackoffInitial:  p.RetryBackoffInitial,
+			RetryBackoffMax:      p.RetryBackoffMax,
+			Concurrency:          p.Concurrency,
+			BufferSize:           p.BufferSize,
+			RequestPathOverrides: copyStringMap(p.RequestPathOverrides),
+		})
+	}
+	return out
+}
+
+// copyNetworkDefaults mirrors `cmd/harbor/cmd_dev.go::copyNetworkDefaults`.
+func copyNetworkDefaults(in config.LLMNetworkDefaults) llm.NetworkDefaults {
+	return llm.NetworkDefaults{
+		Timeout:             in.Timeout,
+		MaxRetries:          in.MaxRetries,
+		RetryBackoffInitial: in.RetryBackoffInitial,
+		RetryBackoffMax:     in.RetryBackoffMax,
+		Concurrency:         in.Concurrency,
+		BufferSize:          in.BufferSize,
+	}
+}
+
+// disableCorrectionsFromConfig mirrors
+// `cmd/harbor/cmd_dev.go::disableCorrectionsFromConfig`.
+func disableCorrectionsFromConfig(cfg config.LLMCorrectionsConfig) bool {
+	if cfg.Enabled == nil {
+		return false
+	}
+	return !*cfg.Enabled
+}
+
+// copyStringMap is the local map-clone helper used by
+// copyCustomProviders so we don't depend on `cmd/harbor`'s unexported
+// `cloneStringMap`.
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // copyModelProfiles converts the config-package map shape into the

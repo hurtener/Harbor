@@ -3683,3 +3683,24 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — the scaffold flags + Options/Result fields are operator-side; the new yaml field (`tools.custom`) is internal config; no wire shape changed.
+
+---
+
+## D-155 — Phase 83l: real-bifrost integration tests + production bug fix (snapshot drops CustomProviders / NetworkDefaults / Corrections)
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83l)
+
+**Where it lives:** `test/integration/phase83l_real_bifrost_test.go` (the scripted-server helper + two end-to-end tests); `cmd/harbor/cmd_dev.go` (three new projection helpers `copyCustomProviders` / `copyNetworkDefaults` / `disableCorrectionsFromConfig` + the snapshot wiring); `harbortest/devstack/devstack.go` (D-094 mirror).
+
+**Decision.** The 83l integration test was supposed to be a defensive backfill — the audit-lesson hole-plug from D-151. The first run of `TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath` immediately failed with `bifrost: invalid provider: "83l-fake" (allowed native: …; declared custom: (none))`. The test was correct; the production code was wrong. `cmd/harbor/cmd_dev.go::bootDevStack` constructed the `llm.ConfigSnapshot` by hand, copying only `Driver` / `Provider` / `Model` / `APIKey` / `BaseURL` / `Timeout` / `ContextWindowReserve` / `HeavyOutputThreshold` / `ModelProfiles` — silently dropping `cfg.LLM.CustomProviders`, `cfg.LLM.NetworkDefaults`, `cfg.LLM.Corrections`. The config validator accepted the operator's yaml (a `custom_providers[]` entry is structurally valid); `llm.Open` then rejected at boot with the misleading "declared custom: (none)" error because the snapshot it received carried no custom providers. Two settled calls.
+
+**1. Fix the bug in the same PR that surfaces it (CLAUDE.md §17.6).** §17.6 is unambiguous: when an integration test surfaces a bug, fix it in the same PR, even when the root cause is in a previously-shipped phase's code. The fix lands as three new projection helpers (`copyCustomProviders`, `copyNetworkDefaults`, `disableCorrectionsFromConfig`) at the bottom of `cmd_dev.go` next to the existing `copyModelProfiles`, wired into the `llm.ConfigSnapshot` literal at `bootDevStack` line 490. D-094 requires the devstack mirror — same three helpers + same wiring at the matching `tryAssemble` call site. The fix is ~80 lines (helpers + mirror); the integration test surfacing it is ~400.
+
+**2. The fake-server pattern is `scriptedLLMServer`, not a stub LLM driver.** The 83l tests stand up a real `httptest.NewServer` that mimics OpenAI's `/v1/chat/completions` endpoint, records every request, and replays a scripted JSON-response sequence. This exercises the FULL production path — the bifrost driver opens its HTTP client, the safety wrapper validates the request, the correction layer optionally rewrites, the retry layer handles a hypothetical failure, the response parses back through the same chain. A stub LLM driver (the path the mock takes) skips every one of those layers. Wire-level assertions are the value-prop: `Model` field present (the 83h V2 regression), the second request's prompt contains the first request's observation (the 83i trajectory regression), the request body parses as OpenAI-compat (the snapshot-projection bug surfaced exactly here). The scripted-server pattern scales to any wire-level invariant a future test needs to assert.
+
+**Why.** The audit lesson from D-151 was specifically: "test stubs as production defaults on operator-facing seams" is the failure mode CLAUDE.md §13 forbids, read one layer over to integration tests — the mock LLM is a stub-as-default for the wire path. Wave 17 closeout cannot ship without at least one real-bifrost integration test, full stop. The bug surfaced here is the proof that the lesson was real: every Wave 13/14/15 audit "passed" against the mock; the moment a real wire-level assertion ran, the bug fell out within seconds.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — the bug fix is internal Go; the integration test is operator-side coverage.

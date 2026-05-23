@@ -497,6 +497,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		ContextWindowReserve: cfg.LLM.ContextWindowReserve,
 		HeavyOutputThreshold: cfg.Artifacts.HeavyOutputThresholdBytes,
 		ModelProfiles:        copyModelProfiles(cfg.LLM.ModelProfiles),
+		// Phase 83l / D-155 — production-bug fix. Before 83l the
+		// snapshot dropped CustomProviders, NetworkDefaults, and
+		// Corrections; an operator-declared custom provider was
+		// silently ignored at boot. Surfaced by the 83l real-bifrost
+		// integration test; mocked-LLM tests never exercised the path.
+		CustomProviders:    copyCustomProviders(cfg.LLM.CustomProviders),
+		NetworkDefaults:    copyNetworkDefaults(cfg.LLM.NetworkDefaults),
+		DisableCorrections: disableCorrectionsFromConfig(cfg.LLM.Corrections),
 	}
 	llmClient, err := llm.Open(ctx, llmCfg, llm.Deps{
 		Artifacts: artStore,
@@ -1761,6 +1769,64 @@ func devInstanceID() string {
 		return "harbor-dev-" + h
 	}
 	return "harbor-dev"
+}
+
+// copyCustomProviders projects `config.LLMCustomProviderConfig`
+// entries onto the `llm.CustomProviderSpec` shape the bifrost driver
+// reads. Phase 83l / D-155 — the production bug fix: before 83l the
+// snapshot construction dropped this field, so an operator-declared
+// custom provider (NIM, vLLM, ollama, in-house gateway) was silently
+// ignored — `llm.Open` failed with "invalid provider … declared
+// custom: (none)" even though the operator's yaml passed validation.
+// Surfaced by the 83l real-bifrost integration test the moment it
+// ran; mocked-LLM tests never exercised this path.
+func copyCustomProviders(in []config.LLMCustomProviderConfig) []llm.CustomProviderSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]llm.CustomProviderSpec, 0, len(in))
+	for _, p := range in {
+		out = append(out, llm.CustomProviderSpec{
+			Name:                 p.Name,
+			BaseURL:              p.BaseURL,
+			APIKeyEnvVar:         p.APIKeyEnvVar,
+			Models:               append([]string(nil), p.Models...),
+			BaseProviderType:     p.BaseProviderType,
+			Timeout:              p.Timeout,
+			MaxRetries:           p.MaxRetries,
+			RetryBackoffInitial:  p.RetryBackoffInitial,
+			RetryBackoffMax:      p.RetryBackoffMax,
+			Concurrency:          p.Concurrency,
+			BufferSize:           p.BufferSize,
+			RequestPathOverrides: cloneStringMap(p.RequestPathOverrides),
+		})
+	}
+	return out
+}
+
+// copyNetworkDefaults projects the operator's `network_defaults` block
+// onto the snapshot. Phase 83l / D-155 — same production-fix shape as
+// copyCustomProviders.
+func copyNetworkDefaults(in config.LLMNetworkDefaults) llm.NetworkDefaults {
+	return llm.NetworkDefaults{
+		Timeout:             in.Timeout,
+		MaxRetries:          in.MaxRetries,
+		RetryBackoffInitial: in.RetryBackoffInitial,
+		RetryBackoffMax:     in.RetryBackoffMax,
+		Concurrency:         in.Concurrency,
+		BufferSize:          in.BufferSize,
+	}
+}
+
+// disableCorrectionsFromConfig resolves the operator-facing
+// `llm.corrections.enabled` field onto the snapshot's
+// `DisableCorrections` bool (the inverse — empty / nil pointer means
+// "enabled by default"). Phase 83l / D-155 — same production-fix.
+func disableCorrectionsFromConfig(cfg config.LLMCorrectionsConfig) bool {
+	if cfg.Enabled == nil {
+		return false
+	}
+	return !*cfg.Enabled
 }
 
 func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]llm.ModelProfile {
