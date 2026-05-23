@@ -3633,3 +3633,28 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None — 83i is a pure consumer phase.
 
 **Protocol additions.** None — the runloop seam is internal Go; the dev executor + view are package-private; no wire shape changed.
+
+---
+
+## D-153 — Phase 83n: `harbor init` + tiered yaml + docs/CONFIG.md drift gate + opt-in built-in tools
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83n)
+
+**Where it lives:** `cmd/harbor/cmd_init.go` (cobra wiring + CLIError code mapping); `cmd/harbor/init/init.go` (`harborinit.Init` engine + sentinels); `cmd/harbor/init/templates/default/` (the four `.tmpl` files); `internal/tools/builtin/` (the new package — `builtin.go`, `clock.go`, `text.go`, `builtin_test.go`); `internal/config/config.go` (`ToolsConfig.BuiltIn`); `internal/config/validate.go` (`allowedBuiltInTools` mirror + `KnownBuiltInTools()` + validation); `internal/config/doc_drift_test.go` (the CI drift gate); `docs/CONFIG.md` (the operator-facing reference); `cmd/harbor/cmd_dev.go` + `harbortest/devstack/devstack.go` (built-in registration + D-094 mirror).
+
+**Decision.** V1.1's adoption-first posture demands a real first-clone entry point. Until 83n the operator path was: read the RFC → fork a YAML example → grep godoc → guess. `harbor init` collapses that into one command. Four settled calls.
+
+**1. `harbor init` ships exactly one template (`default`) with a tiered yaml.** REQUIRED (identity placeholders that pass validation + four commented LLM-provider example blocks for OpenRouter / Anthropic / OpenAI / NVIDIA NIM, all reachable through bifrost), COMMON KNOBS (memory / planner / tools / skills / governance — all commented with sensible defaults shown), ADVANCED (pointer to `docs/CONFIG.md`). The operator uncomments exactly one provider block, sets the API key env var, runs `harbor validate`, then `harbor scaffold` (83o consumes the operator-edited yaml). The choice of "tiered + commented" over "fully populated and operator-trims" is deliberate: a commented block invites editing; a populated block reads as "this is fine as-is, don't touch."
+
+**2. The framework is prescriptive about correctness, unopinionated about taste.** The yaml hard-codes nothing about provider / model / reasoning_effort / budget; the four examples are equivalent starting points. The init's bias is toward "easy on-ramp" not "ideal config." This is the V1.1 mantra: prescriptive about catalog wiring, trajectory append, fail-loud (D-152's ToolExecutor seam, D-026's heavy-output discipline); unopinionated about provider / model / utility tools.
+
+**3. Built-in tools are opt-in by name through `tools.built_in []string`.** V1.1 ships two — `clock.now` and `text.echo`. They live at `internal/tools/builtin/` and register through `inproc.RegisterFunc` the same way an operator's custom Go function would. The yaml field is purely additive: an empty list registers nothing. The §4.4 mirror pattern (`internal/config` carries `allowedBuiltInTools`; `builtin_test.go` asserts the mirror) means a typo fails at `harbor validate` time rather than at boot, while a new built-in addition requires both surfaces to update or the mirror test fails. Phase 83o consumes the same yaml field to materialise per-built-in Go imports in the scaffolded project.
+
+**4. `docs/CONFIG.md` ships with a Go drift gate.** Every leaf yaml path on `Config{}` MUST have a corresponding `### <path>` heading in `docs/CONFIG.md`. The gate (`TestConfigDoc_AllFieldsDocumented`) walks the struct via reflection — the same shape `walkLeaves` uses for env-overrides — and fails CI when a new field lands without an entry. The test is deliberately permissive about format (any line starting with `### path` satisfies the assertion, trailing text allowed). This pattern is the operator-side companion to the brief-reading rule from §16: documentation lives next to the code it documents, and CI rejects drift.
+
+**Why.** Without `harbor init` the V1.1 framework is undiscoverable: a fresh operator clones the repo, runs `harbor --help`, and sees `dev / scaffold / validate / console` — but there is no obvious "start here." Adding `init` as the first surface flips the discovery: `harbor init` → drops a workflow-explaining `README.md` → operator follows it. Without `docs/CONFIG.md` the operator's only path to discovering knobs is to read `internal/config/config.go` godoc — which is the §6 "DevX is binding" failure mode brief 06 calls out. Without the drift gate, CONFIG.md rots within two phases. Without built-in tools, the smoke-test path for a fresh agent depends on the operator authoring Go code or attaching an MCP server first — neither is a zero-friction first experience.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — `harbor init` is operator-side; built-in tools are catalog-side; `docs/CONFIG.md` is documentation.

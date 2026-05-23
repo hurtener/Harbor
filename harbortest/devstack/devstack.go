@@ -119,6 +119,7 @@ import (
 	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
+	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
@@ -649,6 +650,12 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if regErr := cat.Register(d); regErr != nil {
 				return stack, fmt.Errorf("PreRegisterTools[%q]: %w", d.Tool.Name, regErr)
 			}
+		}
+		// Phase 83n / D-153 — mirror cmd_dev.go's built-in tool
+		// registration so devstack-driven tests see the same opt-in
+		// surface as the production dev binary (D-094 invariant).
+		if err := builtin.Register(cat, cfg.Tools.BuiltIn); err != nil {
+			return stack, fmt.Errorf("tools/builtin: %w", err)
 		}
 		// Wire the bus into the Coordinator so pause.requested /
 		// pause.resumed events land on the bus — wire consumers

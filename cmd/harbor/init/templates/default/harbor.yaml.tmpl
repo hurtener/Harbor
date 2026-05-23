@@ -1,0 +1,168 @@
+# Harbor agent — {{.Name}}
+#
+# This file was dropped by `harbor init`. It is the upstream config
+# for `harbor scaffold` (which materialises the Go project) and
+# `harbor dev` (which boots the runtime). Workflow:
+#
+#   1. Edit this file:
+#        - REQUIRED:  pick an LLM provider (uncomment exactly one block).
+#        - COMMON:    enable memory / planner / tools / skills as needed.
+#        - ADVANCED:  see docs/CONFIG.md for the full knob reference.
+#   2. `harbor validate ./harbor.yaml` — fails loudly on missing fields.
+#   3. `harbor scaffold --name {{.Name}}` — materialises the Go project.
+#   4. `harbor dev` — boots the runtime + Console-attached agent.
+#
+# Yaml syntax tip: the `env.NAME` form on `api_key` is a runtime
+# directive — the LLM driver reads `os.Getenv("NAME")` at boot.
+# A missing env var fails closed (`ErrMissingAPIKey`) per §13.
+
+# ============================================================================
+# REQUIRED — Identity + LLM provider
+# Uncomment exactly one provider example. Bifrost (Harbor's LLM driver) speaks
+# many providers under one wire surface — OpenRouter, Anthropic, OpenAI,
+# Google AI, Azure OpenAI, Vertex, Bedrock, Mistral, Groq, Cohere, NVIDIA NIM,
+# vLLM, ollama, and any other OpenAI-compatible endpoint. The four examples
+# below cover common starting points; the full provider list lives at
+# https://github.com/maximhq/bifrost (and in docs/CONFIG.md#llm).
+# ============================================================================
+
+identity:
+  # Placeholder identity that passes validation. REPLACE before any non-local
+  # deployment — the JWT verifier will reject real tokens against these.
+  jwt_algorithms: [RS256]
+  issuer: https://issuer.example.com
+  audience: {{.Name}}
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+
+llm:
+  # --- Example 1: OpenRouter (aggregator; pay-per-token; many models) ---
+  # provider: openrouter
+  # model: anthropic/claude-haiku-4-5
+  # api_key: env.OPENROUTER_API_KEY
+  # timeout: 60s
+  # model_profiles:
+  #   anthropic/claude-haiku-4-5:
+  #     context_window_tokens: 200000
+  #
+  # --- Example 2: Anthropic direct ---
+  # provider: anthropic
+  # model: claude-haiku-4-5
+  # api_key: env.ANTHROPIC_API_KEY
+  # timeout: 60s
+  # model_profiles:
+  #   claude-haiku-4-5:
+  #     context_window_tokens: 200000
+  #
+  # --- Example 3: OpenAI direct ---
+  # provider: openai
+  # model: gpt-4.1-mini
+  # api_key: env.OPENAI_API_KEY
+  # timeout: 60s
+  # model_profiles:
+  #   gpt-4.1-mini:
+  #     context_window_tokens: 1000000
+  #
+  # --- Example 4: NVIDIA NIM (custom OpenAI-compatible endpoint) ---
+  # provider: nim
+  # model: nvidia/nemotron-3-super
+  # timeout: 60s
+  # custom_providers:
+  #   - name: nim
+  #     base_url: https://integrate.api.nvidia.com/v1
+  #     api_key_env_var: NVIDIA_API_KEY
+  #     models: [nvidia/nemotron-3-super]
+  # model_profiles:
+  #   nvidia/nemotron-3-super:
+  #     context_window_tokens: 128000
+
+# ============================================================================
+# COMMON KNOBS — sensible defaults; tune for your workload.
+# Every block below is OPTIONAL — the runtime applies documented defaults
+# when the key is absent. See docs/CONFIG.md for every default value.
+# ============================================================================
+
+# planner — chooses the reasoning strategy (V1.1 ships `react` only).
+# `extra_guidance` is operator-supplied domain-specific guidance injected
+# into the planner's system prompt. `reasoning_replay` controls whether the
+# captured provider-side reasoning trace is re-fed into the next turn.
+#
+# planner:
+#   max_steps: 12
+#   extra_guidance: |
+#     Voice/tone rules, hard negatives, safety notes.
+#   reasoning_replay: never   # or `text` to round-trip the trace
+
+# memory — multi-turn context across runs in a session.
+# Strategies: none (default), truncation, rolling_summary.
+# Backends: inmem (default), sqlite, postgres (need `dsn:`).
+#
+# memory:
+#   driver: sqlite
+#   dsn: ./{{.Name}}-memory.sqlite
+#   strategy: rolling_summary
+#   budget_tokens: 8000
+
+# state — durable run / task / session state.
+# Default `inmem` is process-local (lost on restart). Flip to sqlite for
+# single-node persistence, postgres for multi-replica deployments.
+#
+# state:
+#   driver: sqlite
+#   dsn: ./{{.Name}}-state.sqlite
+
+# tools — built-in tools shipped with Harbor + external sources.
+# `built_in` opts into tools shipped in the harbor binary; remove the
+# entries you don't want. `mcp_servers` lists MCP southbound subprocesses
+# Harbor will spawn at boot — the planner discovers their tools via the
+# live transport. See docs/CONFIG.md#tools for the full surface.
+#
+# tools:
+#   built_in:
+#     - clock.now
+#     - text.echo
+#   mcp_servers:
+#     - name: my-mcp
+#       transport_mode: stdio
+#       command: [uvx, my-mcp-server]
+
+# skills — token-savvy DB-backed skill catalog the planner can search.
+# Driver `localdb` uses SQLite under the hood; the file is created on
+# first write. See docs/CONFIG.md#skills for the full surface.
+#
+# skills:
+#   driver: localdb
+#   dsn: ./{{.Name}}-skills.sqlite
+
+# governance — per-identity cost ceilings + rate limits + MaxTokens caps.
+# Tier-keyed; empty map = no enforcement. See docs/CONFIG.md#governance.
+#
+# governance:
+#   default_tier: free
+#   identity_tiers:
+#     free:
+#       budget_ceiling_usd: 5.00
+#       max_tokens: 4096
+
+# ============================================================================
+# ADVANCED — server bind, telemetry, artifacts, events, sessions, tasks,
+# distributed transport, protocol limits, dev hot-reload, OAuth providers,
+# A2A peers.
+#
+# Every knob is documented at:  docs/CONFIG.md
+#
+# Defaults applied when absent:
+#   server.bind_addr               127.0.0.1:8080
+#   server.shutdown_grace_period   30s
+#   telemetry.log_format           json
+#   telemetry.log_level            info
+#   telemetry.service_name         {{.Name}}
+#   artifacts.driver               inmem
+#   artifacts.heavy_output_threshold_bytes  32768
+#   events.driver                  inmem
+#   sessions.idle_ttl              24h
+#   sessions.hard_cap              720h
+#   sessions.sweep_interval        15m
+#   tasks.driver                   inprocess
+#   distributed.bus_driver         loopback
+#   distributed.remote_driver      loopback
+# ============================================================================
