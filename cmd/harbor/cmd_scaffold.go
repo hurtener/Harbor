@@ -47,22 +47,31 @@ const (
 	// failures. The hint carries the wrapped engine error so an
 	// operator can grep the offending file path.
 	CodeScaffoldFailed = "scaffold_failed"
+	// CodeUpstreamConfigInvalid fires when --from-config (or the
+	// auto-detected ./harbor.yaml) failed to load or validate
+	// (Phase 83o / D-154). The hint surfaces the wrapped config
+	// error so the operator can fix the offending key.
+	CodeUpstreamConfigInvalid = "upstream_config_invalid"
 )
 
 // Flag names declared as constants so subcommand body, tests, and the
 // help golden reference one spelling.
 const (
-	flagScaffoldName     = "name"
-	flagScaffoldTemplate = "template"
-	flagScaffoldOutput   = "output"
+	flagScaffoldName       = "name"
+	flagScaffoldTemplate   = "template"
+	flagScaffoldOutput     = "output"
+	flagScaffoldFromConfig = "from-config"
+	flagScaffoldPatch      = "patch"
 )
 
 // scaffoldJSONResult is the wire shape `harbor scaffold --json` emits
-// on success. Field names are pinned by D-087.
+// on success. Field names are pinned by D-087; `skipped` added by
+// Phase 83o / D-154 (omitted when empty for backward compatibility).
 type scaffoldJSONResult struct {
 	Name      string   `json:"name"`
 	OutputDir string   `json:"output_dir"`
 	Files     []string `json:"files"`
+	Skipped   []string `json:"skipped,omitempty"`
 }
 
 // newScaffoldCmd builds the `scaffold` cobra subcommand. Flags:
@@ -94,7 +103,11 @@ Examples:
 	cmd.Flags().String(flagScaffoldTemplate, scaffold.DefaultTemplate,
 		"template to render (known: "+strings.Join(scaffold.Templates(), ",")+")")
 	cmd.Flags().String(flagScaffoldOutput, "",
-		"output directory (defaults to ./<name>); MUST NOT already exist")
+		"output directory (defaults to ./<name>); MUST NOT already exist (relax with --patch)")
+	cmd.Flags().String(flagScaffoldFromConfig, "",
+		"path to an operator-edited harbor.yaml; when unset, ./harbor.yaml is auto-detected")
+	cmd.Flags().Bool(flagScaffoldPatch, false,
+		"skip files that already exist in --output (preserve operator-edited code on re-runs)")
 	return cmd
 }
 
@@ -104,9 +117,11 @@ Examples:
 func runScaffold(cmd *cobra.Command, _ []string) error {
 	// Every flag below is statically registered on this command, so the
 	// GetString lookups cannot fail; the blank-error discards are intentional.
-	name, _ := cmd.Flags().GetString(flagScaffoldName)     //nolint:errcheck // flag statically registered; lookup cannot fail
-	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate) //nolint:errcheck // flag statically registered; lookup cannot fail
-	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput) //nolint:errcheck // flag statically registered; lookup cannot fail
+	name, _ := cmd.Flags().GetString(flagScaffoldName)          //nolint:errcheck // flag statically registered; lookup cannot fail
+	tmpl, _ := cmd.Flags().GetString(flagScaffoldTemplate)      //nolint:errcheck // flag statically registered; lookup cannot fail
+	outDir, _ := cmd.Flags().GetString(flagScaffoldOutput)      //nolint:errcheck // flag statically registered; lookup cannot fail
+	fromCfg, _ := cmd.Flags().GetString(flagScaffoldFromConfig) //nolint:errcheck // flag statically registered; lookup cannot fail
+	patch, _ := cmd.Flags().GetBool(flagScaffoldPatch)          //nolint:errcheck // flag statically registered; lookup cannot fail
 	if outDir == "" {
 		// Default to ./<name>. validateName (inside Scaffold) will
 		// reject an empty/invalid name with ErrInvalidName, which
@@ -116,9 +131,11 @@ func runScaffold(cmd *cobra.Command, _ []string) error {
 		outDir = name
 	}
 	result, err := scaffold.Scaffold(scaffold.Options{
-		Name:      name,
-		Template:  tmpl,
-		OutputDir: outDir,
+		Name:           name,
+		Template:       tmpl,
+		OutputDir:      outDir,
+		FromConfigPath: fromCfg,
+		Patch:          patch,
 	})
 	if err != nil {
 		return emitCLIError(cmd, scaffoldErrorToCLIError(err))
@@ -161,6 +178,13 @@ func scaffoldErrorToCLIError(err error) CLIError {
 			Code:       CodeUnknownTemplate,
 			Hint:       "known templates: " + strings.Join(scaffold.Templates(), ","),
 		}
+	case errors.Is(err, scaffold.ErrUpstreamConfigInvalid):
+		return CLIError{
+			Subcommand: "scaffold",
+			Message:    err.Error(),
+			Code:       CodeUpstreamConfigInvalid,
+			Hint:       "fix the offending yaml key per the wrapped config error and re-run; see docs/CONFIG.md for the knob reference",
+		}
 	default:
 		return CLIError{
 			Subcommand: "scaffold",
@@ -177,6 +201,7 @@ func writeScaffoldJSON(cmd *cobra.Command, r scaffold.Result) error {
 		Name:      r.Name,
 		OutputDir: r.OutputDir,
 		Files:     r.Files,
+		Skipped:   r.Skipped,
 	})
 	if err != nil {
 		// Marshal of three string fields + a []string is "impossible
@@ -198,5 +223,11 @@ func writeScaffoldHuman(cmd *cobra.Command, r scaffold.Result) {
 	_, _ = fmt.Fprintln(out, "files:")
 	for _, f := range r.Files {
 		_, _ = fmt.Fprintf(out, "  %s\n", f)
+	}
+	if len(r.Skipped) > 0 {
+		_, _ = fmt.Fprintln(out, "skipped (already exist; --patch preserved operator-edited code):")
+		for _, f := range r.Skipped {
+			_, _ = fmt.Fprintf(out, "  %s\n", f)
+		}
 	}
 }

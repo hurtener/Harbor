@@ -3658,3 +3658,28 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — `harbor init` is operator-side; built-in tools are catalog-side; `docs/CONFIG.md` is documentation.
+
+---
+
+## D-154 — Phase 83o: scaffold reads operator-edited yaml + materialises per-custom-tool Go stubs + `--patch` preserves operator code
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83o)
+
+**Where it lives:** `internal/config/config.go` (`ToolsConfig.Custom`, `CustomToolConfig`); `internal/config/validate.go` (`allowedCustomToolTypes` mirror + `KnownCustomToolTypes()` + `validateCustomTools` inline in `validateTools`); `cmd/harbor/scaffold/scaffold.go` (`Options.FromConfigPath`, `Options.Patch`, `Result.Skipped`, `ErrUpstreamConfigInvalid`); `cmd/harbor/scaffold/render.go` (`renderProject` rewrite + `loadUpstreamConfig` + `renderCustomTools` fan-out + `copyUpstreamYAML` + the projection helpers); `cmd/harbor/scaffold/templates/minimal-react/{tool.go.tmpl,tool_test.go.tmpl}` (NEW); `cmd/harbor/scaffold/templates/minimal-react/agent.go.tmpl` (the `RegisterTools` function); `cmd/harbor/cmd_scaffold.go` (`--from-config` / `--patch` flag wiring + `CodeUpstreamConfigInvalid`); `cmd/harbor/scaffold/scaffold_from_yaml_test.go` (the engine-level coverage); `cmd/harbor/cmd_scaffold_test.go` (the cobra-level coverage); `docs/CONFIG.md` (`tools.custom`).
+
+**Decision.** Phase 83n landed `harbor init` and made the operator yaml the source of truth, but `harbor scaffold` still rendered its own self-contained yaml and ignored what the operator just edited. 83o closes the loop. Four settled calls.
+
+**1. Scaffold reads the operator yaml by default.** Explicit `--from-config <path>` wins; an empty flag auto-detects `./harbor.yaml` in cwd; neither resolved falls through to the template-only path (so the pre-83o "scaffold without init" workflow still works for one-shot quick starts). The yaml is loaded + validated via `internal/config.Load` — if it doesn't pass the validator, scaffold fails closed with `ErrUpstreamConfigInvalid` (CLI code `upstream_config_invalid`). The loaded yaml is then copied VERBATIM into the output project's `harbor.yaml` (the operator's comments + uncommented LLM block survive; the templated harbor.yaml is the placeholder that the copy overwrites).
+
+**2. Custom tools declared in `tools.custom` materialise as typed Go stubs.** New `CustomToolConfig` shape: `name` / `description` / `input` (map of `field: type`) / `output` (same shape). V1.1 type allowlist is intentionally flat — `string` / `integer` / `number` / `boolean` / `[]string` — operators with complex shapes write Go by hand via `inproc.RegisterFunc` (the schema deriver already handles arbitrary Go types). The yaml-shorthand cap is a deliberate scope cut: every shape the scaffold supports must round-trip through a deterministic Go type, and nested objects expand the test surface faster than they pay off for V1.1. Each entry produces `tools/<name>.go` (typed Input/Output structs + stub Handle) + `tools/<name>_test.go` (round-trip happy path). The validator catches name collisions between `tools.custom` and `tools.built_in` so the catalog never sees two registrations under the same name.
+
+**3. `RegisterTools(cat tools.ToolCatalog) error` is the operator's wiring entry point.** The generated `agent.go` includes one function that registers each built-in (calling `builtin.Register(cat, [...])`) and each custom tool (calling `inproc.RegisterFunc[Input, Output]` with the operator's typed Handle). The runtime does NOT auto-discover the scaffolded tools — the operator imports the generated `tools/` package + calls `RegisterTools` from their binary's bootstrap. This stays consistent with §1 ("no magic") and §13 ("primitive-with-consumer") — the generated wiring is a *consumer the operator chooses to wire*, not a runtime that silently scans `tools/`.
+
+**4. `--patch` is the operator-edit-survival invariant.** When set: the existing output dir is accepted (no `ErrOutputDirExists`), existing files are SKIPPED (listed under `Result.Skipped`), only new files (newly-declared tools, missing scaffolded files) are written. The skipped list surfaces in the human + JSON output so the operator sees what scaffold left alone. The semantics are deliberately conservative: scaffold NEVER merges, NEVER modifies an existing file. Operators who want diff-and-merge use `git`. The rationale: an in-place merge would invite the silent-degradation failure mode CLAUDE.md §13 forbids — a "smart" scaffold that re-emits agent.go with a new RegisterTools body could overwrite hand-edited registration calls. Refuse to touch existing files; force the operator to delete (or git-rebase) if they want a fresh re-emit.
+
+**Why.** Without 83o the four-step workflow (`init → edit → validate → scaffold → dev`) collapses into "rewrite the yaml twice." The operator runs `harbor init`, edits the yaml, runs `harbor scaffold`, and the scaffold ships a fresh placeholder yaml that ignores everything the operator just edited. The result: operators distrust the framework and hand-author everything. 83o makes the operator's edit canonical end-to-end.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — the scaffold flags + Options/Result fields are operator-side; the new yaml field (`tools.custom`) is internal config; no wire shape changed.

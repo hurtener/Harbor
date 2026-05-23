@@ -34,6 +34,10 @@ var (
 	// ErrRender signals a template execution or filesystem write
 	// failed. The wrapped message names the offending file path.
 	ErrRender = errors.New("scaffold: render failed")
+	// ErrUpstreamConfigInvalid signals the operator-supplied yaml at
+	// FromConfigPath failed to load or validate (Phase 83o / D-154).
+	// Wraps the underlying `internal/config.ErrConfigInvalid`.
+	ErrUpstreamConfigInvalid = errors.New("scaffold: upstream harbor.yaml is invalid")
 )
 
 // Options is the input to Scaffold.
@@ -47,18 +51,40 @@ type Options struct {
 	// from Templates().
 	Template string
 	// OutputDir is the directory Scaffold creates and writes the
-	// rendered project into. Required. The path is resolved with
-	// filepath.Abs; the result MUST NOT exist on disk.
+	// rendered project into. Required. Without `Patch`, the path is
+	// resolved with `filepath.Abs` and MUST NOT exist on disk; with
+	// `Patch`, an existing directory is accepted and existing files
+	// are skipped.
 	OutputDir string
+	// FromConfigPath is the optional path to an operator-edited
+	// `harbor.yaml` (Phase 83o / D-154). When set, Scaffold loads +
+	// validates it and uses its `tools.custom[]` entries to generate
+	// per-tool Go stubs under `OutputDir/tools/`. Empty + no
+	// `./harbor.yaml` in the cwd ⇒ Scaffold falls back to the
+	// template-only behavior (the existing scaffold-without-init
+	// path stays valid).
+	FromConfigPath string
+	// Patch relaxes the refuse-overwrite default (Phase 83o / D-154).
+	// When true, an existing OutputDir is accepted and Scaffold writes
+	// only files that do NOT already exist; existing files are
+	// skipped and listed under `Result.Skipped`. The operator-edit
+	// survival invariant.
+	Patch bool
 }
 
 // Result reports what Scaffold wrote. Files are paths RELATIVE to
 // OutputDir, in deterministic (lexicographic) order — a smoke script
 // or scripted consumer can rely on the ordering.
+//
+// Phase 83o / D-154: `Skipped` lists files that were already on disk
+// at scaffold time and were therefore NOT overwritten. Only populated
+// when `Options.Patch == true`; non-patch runs reject existing output
+// dirs outright.
 type Result struct {
 	Name      string   `json:"name"`
 	OutputDir string   `json:"output_dir"`
 	Files     []string `json:"files"`
+	Skipped   []string `json:"skipped,omitempty"`
 }
 
 // templatesFS bundles the embedded template tree into the binary at
@@ -133,16 +159,25 @@ func templateExists(name string) bool {
 //  1. opts.Name is validated via validateName.
 //  2. opts.Template (empty → DefaultTemplate) must be a registered
 //     template.
-//  3. opts.OutputDir is resolved via filepath.Abs and MUST NOT exist.
+//  3. opts.OutputDir is resolved via filepath.Abs and (in default
+//     mode) MUST NOT exist. With `opts.Patch == true`, an existing
+//     directory is accepted; existing files are skipped.
+//
+// Upstream config (Phase 83o / D-154): when `opts.FromConfigPath` is
+// set OR `./harbor.yaml` exists in the cwd, Scaffold loads + validates
+// it via `internal/config.Load`. Its `tools.custom[]` entries drive
+// per-tool stub generation; the yaml file itself is copied verbatim
+// into OutputDir/harbor.yaml (overriding the template-rendered yaml).
 //
 // On success, every template file is rendered through text/template
-// (vars: {.Name, .Template}) and written to OutputDir/<rel-path>. The
-// returned Result.Files is the lexicographic-order list of relative
-// paths written.
+// and written to OutputDir/<rel-path>. The returned Result.Files is
+// the lexicographic-order list of relative paths written;
+// Result.Skipped lists files left untouched in patch mode.
 //
-// On any failure after the output dir has been created, Scaffold
-// removes the dir before returning so the operator never sees a half-
-// scaffolded project.
+// On any failure during a NON-patch run after the output dir has
+// been created, Scaffold removes the dir before returning so the
+// operator never sees a half-scaffolded project. Patch runs do not
+// roll back — the operator's pre-existing files are sacred.
 func Scaffold(opts Options) (Result, error) {
 	if err := validateName(opts.Name); err != nil {
 		return Result{}, err
@@ -162,19 +197,35 @@ func Scaffold(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: resolve output_dir: %w", ErrRender, err)
 	}
-	if _, statErr := os.Stat(absOut); statErr == nil {
-		return Result{}, fmt.Errorf("%w: %s", ErrOutputDirExists, absOut)
-	} else if !errors.Is(statErr, fs.ErrNotExist) {
-		return Result{}, fmt.Errorf("%w: stat output_dir: %w", ErrRender, statErr)
+	// Output-dir existence check. Without `Patch`, an existing dir
+	// fails closed (operator deletes it / picks a fresh path).
+	// With `Patch`, an existing dir is OK; a missing dir is also OK
+	// (Scaffold creates it).
+	if !opts.Patch {
+		if _, statErr := os.Stat(absOut); statErr == nil {
+			return Result{}, fmt.Errorf("%w: %s", ErrOutputDirExists, absOut)
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return Result{}, fmt.Errorf("%w: stat output_dir: %w", ErrRender, statErr)
+		}
 	}
-	files, err := renderTemplate(tmpl, opts.Name, absOut)
+	// Resolve the upstream config (Phase 83o / D-154). An explicit
+	// path is honoured verbatim; an empty path auto-detects
+	// `./harbor.yaml` and silently falls through to template-only
+	// when neither resolves.
+	upstreamPath, upstreamCfg, loadErr := loadUpstreamConfig(opts.FromConfigPath)
+	if loadErr != nil {
+		return Result{}, loadErr
+	}
+	files, skipped, err := renderProject(tmpl, opts, absOut, upstreamPath, upstreamCfg)
 	if err != nil {
 		// Best-effort cleanup so the operator never sees a half-
-		// scaffolded tree. The cleanup error is logged through the
-		// returned error chain (silent-degradation guard per
-		// CLAUDE.md §5).
-		if rmErr := removeAll(absOut); rmErr != nil {
-			return Result{}, fmt.Errorf("%w (also failed to clean up partial output: %w)", err, rmErr)
+		// scaffolded tree. Cleanup ONLY runs on non-patch runs (a
+		// patch run touched only NEW files; rolling back would also
+		// nuke operator-edited siblings that pre-existed).
+		if !opts.Patch {
+			if rmErr := removeAll(absOut); rmErr != nil {
+				return Result{}, fmt.Errorf("%w (also failed to clean up partial output: %w)", err, rmErr)
+			}
 		}
 		return Result{}, err
 	}
@@ -182,5 +233,6 @@ func Scaffold(opts Options) (Result, error) {
 		Name:      opts.Name,
 		OutputDir: absOut,
 		Files:     files,
+		Skipped:   skipped,
 	}, nil
 }
