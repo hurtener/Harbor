@@ -751,6 +751,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		skills:           skillStore,
 		skillsContextMax: cfg.Planner.SkillsContextMax,
 		planningHints:    plannerHintsFromConfig(cfg.Planner.PlanningHints),
+		// Phase 83i (D-152): tool dispatch + Catalog projection +
+		// Trajectory. Closes the structural gap that made multi-step
+		// ReAct broken against real LLMs.
+		catalog:         toolCat,
+		executor:        newDevToolExecutor(toolCat, artStore, cfg.Artifacts.HeavyOutputThresholdBytes, opts.logger),
+		maxStepsRunLoop: cfg.Planner.MaxSteps,
 	})
 	if err != nil {
 		closeAll(ctx)

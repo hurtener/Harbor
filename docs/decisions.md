@@ -3608,3 +3608,28 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None — both fixes follow the project's fail-loud / fill-loud posture (V1: filter inputs that produce noise; V2: fill the documented default at the documented boundary).
 
 **Protocol additions.** None — both fixes are inside implementation packages and preserve existing function signatures.
+
+---
+
+## D-152 — Phase 83i: runloop ToolExecutor + Catalog/Trajectory/Emit/Memory wiring closes the v1.1 operator-validation blockers
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83i)
+
+**Where it lives:** `internal/runtime/steering/runloop.go` (`ToolExecutor` interface, `ErrDecisionShapeUnsupported`, `RunSpec.ToolExecutor`, the default-case dispatch + trajectory append); `cmd/harbor/cmd_dev_executor.go` (the dev binary's `devToolExecutor`); `cmd/harbor/cmd_dev_catalog_view.go` (the planner-facing `runtimeCatalogView`); `cmd/harbor/cmd_dev_runloop.go::runOne` (Catalog + Trajectory + Emit + Executor + MaxSteps wiring + memory.AddTurn writeback + `extractAssistantAnswer`); `harbortest/devstack/devstack.go` (D-094 mirror).
+
+**Decision.** Wave 17's operator validation against `harbor dev` + real bifrost + `mcp-youtube` hit the "64 steps, 0 tool calls" failure mode. The §17.5 audit pinned four root causes, all the same shape: primitives shipped without their production runtime consumer. 83i closes all four. Four calls are settled here.
+
+**1. `steering.ToolExecutor` is the runloop's dispatch seam.** Phase 53 left the runloop's `default:` case as dead code with a comment that "a later phase wires the executor." That phase never landed; every CallTool decision was observed and discarded, and the planner was structurally a "decide-without-doing" loop. 83i ships the interface (`ExecuteDecision(ctx, rc, decision) (observation, llmObservation, error)`) and the runloop's dispatch path. CallParallel / SpawnTask / AwaitTask remain executor-side errors (`ErrDecisionShapeUnsupported`) for V1.1 — the runloop seam supports them; the dev executor declines and the planner re-plans.
+
+**2. Trajectory is appended by the runloop after every dispatched step.** Without an append, the planner's prompt was identical on every iteration — the live validation showed 30 LLM calls with byte-for-byte identical `(PromptTokens, CompletionTokens)`. 83i's runloop append uses the per-run pointer on `spec.Base.Trajectory` (value-copy of `spec.Base` per step preserves the pointer, so mutations are visible to the next iteration's rc). Each step records `Action` (the planner's Decision), `Observation` (raw runtime result), and `LLMObservation` (the D-026 projection — see point 3).
+
+**3. D-026 heavy-content discipline lives in the dev executor.** The first successful tool call returned a 1.5 MB JSON observation. Rendered verbatim into the next prompt, the LLM safety wrapper rejected with `ErrContextLeak`. 83i's executor encodes the raw result with `json.Marshal`, checks against the configured `cfg.Artifacts.HeavyOutputThresholdBytes`, and on overflow stores the encoded bytes in the artifact store + returns a small summary map (`{tool, size_bytes, truncated:true, preview, artifact_ref}`) as `llmObservation`. Small results pass through as `observation == llmObservation`. The artifact-store path degrades to a logged-Warn truncation summary when the store is unavailable — silent context loss is §13-forbidden, the operator must see what was elided.
+
+**4. `RunContext.Emit` + `MemoryStore.AddTurn` close the observability + multi-turn affordances.** The runOne builds an `Emit` closure that stamps the run's identity quadruple and publishes through the bus; without it the planner's `planner.decision` / `planner.finish` / `planner.repair_guidance_injected` events stay in the planner's head and never reach the Console / `harbor inspect-runs`. On `FinishGoal` the driver calls `memory.AddTurn(taskCtx, sessionQ, ConversationTurn{user, assistant})` so the next session turn sees prior context. Best-effort: a memory.AddTurn failure logs Warn but does NOT downgrade the run's status (the planner reached FinishGoal; the operator should see Complete).
+
+**Why.** Without 83i, every Wave 13/14/15/83f-h investment in the planner band is invisible to operators — the dev binary boots, accepts a prompt, runs the planner against the LLM, but the planner can never CALL anything because the catalog projection is empty, can never make progress because the trajectory never grows, and can never persist context because memory writeback never fires. The §17.5 operator-validation audit was the surface that pinned this; live validation against `mcp-youtube` after 83i lands shows a 2-LLM-call end-to-end (decision: CallTool → executor runs the tool → planner sees the observation → decision: Finish).
+
+**Findings I'm departing from.** None — 83i is a pure consumer phase.
+
+**Protocol additions.** None — the runloop seam is internal Go; the dev executor + view are package-private; no wire shape changed.

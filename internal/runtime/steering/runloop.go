@@ -2,6 +2,7 @@ package steering
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -213,6 +214,51 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 // unbounded planner loop is a misconfiguration, never a silent spin.
 const DefaultMaxSteps = 64
 
+// ToolExecutor is the runtime-side dispatch surface the RunLoop calls
+// when the planner returns a non-Finish, non-RequestPause decision
+// (CallTool, CallParallel, SpawnTask, AwaitTask). The executor:
+//
+//   - Looks up the tool descriptor by name.
+//   - Invokes it under the run's identity-scoped ctx.
+//   - Returns a planner-readable observation (the runtime appends it
+//     onto trajectory.Step.Observation for the planner's next step).
+//
+// Phase 83i (D-152) introduces this seam so the dev binary can wire
+// a real `tools.ToolCatalog`-backed executor; before 83i the runloop's
+// `default:` case dropped every CallTool on the floor (Phase 53's
+// punted scope), which made multi-step ReAct structurally broken
+// against real LLMs because the planner saw the same trajectory on
+// every step.
+//
+// An executor that does not support a given decision shape returns
+// ErrDecisionShapeUnsupported with a message naming the unsupported
+// shape — the runloop surfaces this as the step's observation so the
+// planner can choose a different path (repair, finish, alternative tool).
+type ToolExecutor interface {
+	// ExecuteDecision dispatches `decision` and returns BOTH the raw
+	// observation (preserved for inspect-runs / audit) AND the
+	// projection the next prompt sees (`llmObservation`, the D-026
+	// heavy-content-discipline projection: a small summary +
+	// ArtifactRef when the raw result is over the heavy threshold,
+	// or just == raw when the result is small enough to inline).
+	//
+	// The runloop appends a trajectory.Step{Action: decision,
+	// Observation: raw, LLMObservation: projection} so the planner's
+	// renderer (Phase 46 / D-055) sees only the projection.
+	//
+	// `rc` is the per-step RunContext (identity, ToolContext, etc.).
+	// ctx is the per-step ctx; the executor MUST honour cancellation.
+	ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (observation, llmObservation any, err error)
+}
+
+// ErrDecisionShapeUnsupported — returned by ToolExecutor implementations
+// for decision shapes the executor does not yet dispatch (e.g. the
+// dev binary's V1.1 executor handles CallTool only; CallParallel /
+// SpawnTask / AwaitTask need their own dispatcher layers). The runloop
+// records the error as the step's observation so the planner sees
+// "this didn't run" and can re-plan.
+var ErrDecisionShapeUnsupported = errors.New("steering: ToolExecutor does not support this decision shape")
+
 // RunSpec is the per-run input to RunLoop.Run. ALL run-specific state
 // lives here + ctx — never on the RunLoop struct (D-025).
 type RunSpec struct {
@@ -230,6 +276,15 @@ type RunSpec struct {
 	TaskID tasks.TaskID
 	// MaxSteps caps the planner-step count. ≤ 0 ⇒ DefaultMaxSteps.
 	MaxSteps int
+
+	// ToolExecutor dispatches the planner's non-Finish, non-RequestPause
+	// decisions (CallTool, CallParallel, SpawnTask, AwaitTask). Phase
+	// 83i (D-152): when nil, the runloop's default case logs and
+	// appends an empty-observation step (the Phase 53 behaviour) so
+	// existing pause/steering tests still drive deterministic finishes.
+	// In production the dev binary wires a real executor backed by the
+	// tool catalog so the planner's CallTool decisions actually run.
+	ToolExecutor ToolExecutor
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -452,14 +507,50 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// Token — the existing pause stands.
 
 		default:
-			// CallTool / CallParallel / SpawnTask / AwaitTask — the
-			// runtime decision-execution layer (a later phase) dispatches
-			// these. Phase 53's scope is the steering + pause wiring; it
-			// records the step boundary and re-enters the planner. A
-			// production RunLoop wired with a decision executor would
-			// dispatch here; Phase 53's tests use planners whose step
-			// sets reach a Finish (or a RequestPause) so the loop
-			// terminates deterministically.
+			// CallTool / CallParallel / SpawnTask / AwaitTask. Phase 83i
+			// (D-152): dispatch via spec.ToolExecutor when present, then
+			// append a trajectory.Step the planner sees on its next step.
+			// Without the trajectory append the planner repeats the same
+			// prompt forever (the failure mode the audit pinned in
+			// production). Without the dispatch the operator gets a
+			// "planner-only" loop that never actually does work. Both
+			// are V1.1 blockers.
+			//
+			// When spec.ToolExecutor is nil (the Phase 53 dev / legacy
+			// test path), the step still gets appended with a nil
+			// Observation so the planner sees its decision did NOT
+			// silently disappear (audit lesson: silent execution gaps
+			// are §13-forbidden silent degradation).
+			var observation, llmObservation any
+			if spec.ToolExecutor != nil {
+				obs, llmObs, execErr := spec.ToolExecutor.ExecuteDecision(runCtx, rc, decision)
+				if execErr != nil {
+					// Fail-loud per CLAUDE.md §5 / §13: the executor's
+					// own error path (catalog lookup failed, tool Invoke
+					// returned an error, decision shape unsupported) is
+					// surfaced as the step's observation so the planner
+					// can re-plan. The runloop does NOT abort the run
+					// on a single tool error — that's the planner's
+					// call (it may repair, try another tool, or finish).
+					errPayload := map[string]any{"error": execErr.Error()}
+					observation = errPayload
+					llmObservation = errPayload
+				} else {
+					observation = obs
+					llmObservation = llmObs
+				}
+			}
+			// Append the step to the run's Trajectory so the planner
+			// sees the prior action + observation on its next step.
+			// `rc` is a value-copy of `spec.Base`, but `Trajectory` is a
+			// pointer — mutations are visible to the next step's rc.
+			if spec.Base.Trajectory != nil {
+				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
+					Action:         decision,
+					Observation:    observation,
+					LLMObservation: llmObservation,
+				})
+			}
 		}
 	}
 

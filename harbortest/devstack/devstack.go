@@ -768,11 +768,22 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			stack.RunLoop = rl
 
+			// Phase 83i (D-152): mirror production's tool dispatch +
+			// Catalog projection + Trajectory wiring. The catalog is
+			// the SAME stack.Catalog the test (and operator) already
+			// populated via PreRegisterTools + MCP attachment;
+			// devStackToolExecutor dispatches against it.
+			var devExecutor steering.ToolExecutor
+			if stack.Catalog != nil {
+				devExecutor = devStackToolExecutor{cat: stack.Catalog, logger: opts.Logger}
+			}
+
 			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
 				bus:     bus,
 				runLoop: rl,
 				planner: plnr,
 				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
+				logger:  opts.Logger,
 				// Phase 83f (D-149): mirror production's per-run consumer
 				// wiring. The fields are exposed via AssembleOpts so the
 				// per-83f integration test populates them with a real
@@ -781,6 +792,10 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				skills:           opts.SkillStore,
 				skillsContextMax: opts.SkillsContextMax,
 				planningHints:    opts.PlanningHints,
+				// Phase 83i (D-152): tool dispatch + Catalog + Trajectory.
+				catalog:         stack.Catalog,
+				executor:        devExecutor,
+				maxStepsRunLoop: cfg.Planner.MaxSteps,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1142,6 +1157,11 @@ type DevStackRunLoopDriver struct {
 	skillsContextMax int
 	planningHints    *planner.PlanningHints
 
+	// Phase 83i (D-152) — tool dispatch + Catalog projection.
+	catalog         tools.ToolCatalog
+	executor        steering.ToolExecutor
+	maxStepsRunLoop int
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1164,6 +1184,14 @@ type devStackRunLoopDriverOpts struct {
 	skills           skills.SkillStore
 	skillsContextMax int
 	planningHints    *planner.PlanningHints
+
+	// Phase 83i (D-152): tool dispatch + Catalog projection +
+	// Trajectory wiring. Optional; nil catalog ⇒ planner sees no
+	// tools, nil executor ⇒ CallTool decisions get appended with no
+	// observation. Tests that need full end-to-end pass real values.
+	catalog         tools.ToolCatalog
+	executor        steering.ToolExecutor
+	maxStepsRunLoop int
 }
 
 const devStackRuntimeSkillsContextMaxDefault = 5
@@ -1195,6 +1223,9 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		skills:           opts.skills,
 		skillsContextMax: skillsCap,
 		planningHints:    opts.planningHints,
+		catalog:          opts.catalog,
+		executor:         opts.executor,
+		maxStepsRunLoop:  opts.maxStepsRunLoop,
 	}, nil
 }
 
@@ -1362,6 +1393,18 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 
 	counters := &planner.RepairCounters{}
 
+	// Phase 83i (D-152) — mirror the production driver: per-run
+	// Trajectory + Catalog view + executor + outer max-steps.
+	traj := &planner.Trajectory{Query: task.Query}
+	var catalogView planner.ToolCatalogView
+	if d.catalog != nil {
+		catalogView = devStackCatalogView{cat: d.catalog, filter: tools.CatalogFilter{
+			TenantID:  q.TenantID,
+			UserID:    q.UserID,
+			SessionID: q.SessionID,
+		}}
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -1372,8 +1415,12 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			SkillsContext:  skillsCtx,
 			RepairCounters: counters,
 			PlanningHints:  d.planningHints,
+			Catalog:        catalogView,
+			Trajectory:     traj,
 		},
-		TaskID: taskID,
+		TaskID:       taskID,
+		ToolExecutor: d.executor,
+		MaxSteps:     d.maxStepsRunLoop,
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
@@ -1392,6 +1439,19 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 	if fin.Reason == planner.FinishGoal {
+		// Phase 83i (D-152) — memory writeback mirror.
+		if d.memory != nil {
+			turn := memory.ConversationTurn{
+				UserMessage:       task.Query,
+				AssistantResponse: devStackExtractAssistantAnswer(fin),
+				Timestamp:         time.Now(),
+			}
+			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: memory.AddTurn failed; run still marked complete",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", mErr.Error()))
+			}
+		}
 		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
 			d.logger.Warn("devstack runloop: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
@@ -1604,4 +1664,81 @@ func devStackCloneStringMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// devStackCatalogView mirrors `cmd/harbor/cmd_dev_catalog_view.go`'s
+// runtimeCatalogView per D-094 source-of-truth. Phase 83i (D-152).
+type devStackCatalogView struct {
+	cat    tools.ToolCatalog
+	filter tools.CatalogFilter
+}
+
+func (v devStackCatalogView) Resolve(name string) (tools.Tool, bool) {
+	desc, ok := v.cat.Resolve(name)
+	return desc.Tool, ok
+}
+
+func (v devStackCatalogView) List() []tools.Tool {
+	return v.cat.List(v.filter)
+}
+
+// devStackExtractAssistantAnswer mirrors cmd_dev_runloop.go's
+// extractAssistantAnswer per D-094. Phase 83i (D-152).
+func devStackExtractAssistantAnswer(fin planner.Finish) string {
+	switch p := fin.Payload.(type) {
+	case string:
+		return p
+	case map[string]any:
+		if v, ok := p["answer"]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+	}
+	if fin.Payload == nil {
+		return string(fin.Reason)
+	}
+	return fmt.Sprintf("%v", fin.Payload)
+}
+
+// devStackToolExecutor mirrors cmd/harbor/cmd_dev_executor.go's
+// devToolExecutor per D-094 source-of-truth. Phase 83i (D-152).
+type devStackToolExecutor struct {
+	cat    tools.ToolCatalog
+	logger *slog.Logger
+}
+
+func (e devStackToolExecutor) ExecuteDecision(ctx context.Context, _ planner.RunContext, decision planner.Decision) (any, any, error) {
+	switch d := decision.(type) {
+	case planner.CallTool:
+		if d.Tool == "" {
+			return nil, nil, errors.New("CallTool.Tool is empty")
+		}
+		desc, ok := e.cat.Resolve(d.Tool)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: %q", tools.ErrToolNotFound, d.Tool)
+		}
+		if desc.Invoke == nil {
+			return nil, nil, fmt.Errorf("tool %q is registered without an Invoke function", d.Tool)
+		}
+		result, err := desc.Invoke(ctx, d.Args)
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("devstack executor: tool invoke failed",
+					slog.String("tool", d.Tool),
+					slog.String("err", err.Error()))
+			}
+			return nil, nil, fmt.Errorf("tool %q invoke: %w", d.Tool, err)
+		}
+		raw := result.Value
+		if raw == nil && len(result.Meta) > 0 {
+			raw = map[string]any{"meta": result.Meta}
+		}
+		// V1.1 devstack: llmObservation == raw (the test mirror does
+		// not promote heavy results; production cmd_dev_executor.go
+		// does D-026 promotion).
+		return raw, raw, nil
+	default:
+		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
+	}
 }
