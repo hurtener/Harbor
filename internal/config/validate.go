@@ -732,6 +732,51 @@ func (c *Config) validateTools() error {
 					name, sortedKeys(allowedBuiltInTools)))
 		}
 	}
+	// Phase 83o / D-154 — operator-declared custom tools (the
+	// scaffold reads these). Each entry's name must be non-empty,
+	// unique within the slice, and not collide with `tools.built_in`.
+	// Each input/output field's type must be in the V1.1 yaml-
+	// shorthand allowlist. Empty `tools.custom` is valid.
+	seenCustom := make(map[string]struct{}, len(c.Tools.Custom))
+	for i, ct := range c.Tools.Custom {
+		prefix := fmt.Sprintf("tools.custom[%d]", i)
+		if ct.Name == "" {
+			return fieldError(prefix+".name", "must not be empty")
+		}
+		if _, dup := seenCustom[ct.Name]; dup {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("duplicate custom tool %q (must be unique within tools.custom)", ct.Name))
+		}
+		seenCustom[ct.Name] = struct{}{}
+		if _, builtIn := seenBuiltIn[ct.Name]; builtIn {
+			return fieldError(prefix+".name",
+				fmt.Sprintf("collides with tools.built_in entry %q (custom tool names must not shadow built-ins)", ct.Name))
+		}
+		if ct.Description == "" {
+			return fieldError(prefix+".description",
+				"must not be empty (the description surfaces in the planner-facing tool catalog and the generated Go comment)")
+		}
+		for field, ftype := range ct.Input {
+			if field == "" {
+				return fieldError(prefix+".input", "input field names must not be empty")
+			}
+			if _, ok := allowedCustomToolTypes[ftype]; !ok {
+				return fieldError(
+					fmt.Sprintf("%s.input[%q]", prefix, field),
+					fmt.Sprintf("unknown type %q (known: %s)", ftype, sortedKeys(allowedCustomToolTypes)))
+			}
+		}
+		for field, ftype := range ct.Output {
+			if field == "" {
+				return fieldError(prefix+".output", "output field names must not be empty")
+			}
+			if _, ok := allowedCustomToolTypes[ftype]; !ok {
+				return fieldError(
+					fmt.Sprintf("%s.output[%q]", prefix, field),
+					fmt.Sprintf("unknown type %q (known: %s)", ftype, sortedKeys(allowedCustomToolTypes)))
+			}
+		}
+	}
 	for i, p := range c.Tools.HTTPManifests {
 		if strings.TrimSpace(p) == "" {
 			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
@@ -911,6 +956,40 @@ func (c *Config) validateTools() error {
 		}
 	}
 	return nil
+}
+
+// allowedCustomToolTypes is the V1.1 yaml-shorthand type allowlist for
+// `tools.custom[].input` / `.output` entries (Phase 83o / D-154). Each
+// value maps to a Go primitive at scaffold time:
+//
+//	string   → string
+//	integer  → int
+//	number   → float64
+//	boolean  → bool
+//	[]string → []string
+//
+// V1.1 keeps the surface flat — nested objects + arrays of objects are
+// not supported through the yaml shorthand. Operators with complex
+// shapes register tools by hand via `inproc.RegisterFunc`, where the
+// schema deriver already handles arbitrary Go types.
+var allowedCustomToolTypes = map[string]struct{}{
+	"string":   {},
+	"integer":  {},
+	"number":   {},
+	"boolean":  {},
+	"[]string": {},
+}
+
+// KnownCustomToolTypes returns the sorted allowlist of yaml-shorthand
+// types `tools.custom[]` accepts. Public so the scaffold engine + a
+// future drift test can read the same source of truth.
+func KnownCustomToolTypes() []string {
+	out := make([]string, 0, len(allowedCustomToolTypes))
+	for t := range allowedCustomToolTypes {
+		out = append(out, t)
+	}
+	sortStringSlice(out)
+	return out
 }
 
 // allowedBuiltInTools mirrors `internal/tools/builtin.KnownNames()`.
