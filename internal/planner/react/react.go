@@ -520,6 +520,18 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// (D-148; the trajectory renderer enforces this).
 	p.emitDecision(rc, final, result.Reasoning)
 
+	// Phase 83m item 8: hand the captured reasoning trace to the
+	// runloop via the per-step `RunContext.OnReasoning` callback. The
+	// runloop copies it onto `trajectory.Step.ReasoningTrace` when it
+	// appends the step — without this, `ReasoningReplay=text` mode is
+	// structurally ineffective in production because the trajectory
+	// append leaves the field empty. A nil callback (tests without
+	// observability) is a no-op; an empty reasoning string is still
+	// delivered so the runloop's append is consistent.
+	if rc.OnReasoning != nil {
+		rc.OnReasoning(result.Reasoning)
+	}
+
 	p.stepsTaken.Add(1)
 	return final, nil
 }

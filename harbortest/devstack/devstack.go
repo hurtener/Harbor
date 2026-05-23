@@ -1451,6 +1451,18 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		}}
 	}
 
+	// Phase 83m item 7 (D-094 mirror of cmd/harbor/cmd_dev_runloop.go):
+	// per-run OnToolDispatched hook that advances Task.ToolCount via the
+	// registry after every successful executor dispatch. Errors are
+	// surfaced loud — silent degradation of an observability counter is
+	// forbidden per §13.
+	dispatchHook := func(hookCtx context.Context) error {
+		if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
+			return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+		}
+		return nil
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -1464,9 +1476,10 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			Catalog:        catalogView,
 			Trajectory:     traj,
 		},
-		TaskID:       taskID,
-		ToolExecutor: d.executor,
-		MaxSteps:     d.maxStepsRunLoop,
+		TaskID:           taskID,
+		ToolExecutor:     d.executor,
+		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
+		MaxSteps:         d.maxStepsRunLoop,
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {

@@ -562,6 +562,21 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		}
 	}
 
+	// Phase 83m item 7: per-run OnToolDispatched hook that advances
+	// the task's `ToolCount` registry-side after every successful
+	// CallTool dispatch. The dev binary closes the seam from the
+	// runloop's side (the executor returned without error) to the
+	// tasks.TaskRegistry surface the Console Tasks page reads. A
+	// best-effort log + non-fatal continuation would mask a counter
+	// drift the operator depends on for visibility — the hook
+	// surfaces an IncrementToolCount error loud, matching §13.
+	dispatchHook := func(hookCtx context.Context) error {
+		if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
+			return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+		}
+		return nil
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -576,9 +591,10 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
 			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
 		},
-		TaskID:       taskID,
-		ToolExecutor: d.executor, // Phase 83i (D-152) — dispatch CallTool decisions
-		MaxSteps:     d.maxStepsRunLoop,
+		TaskID:           taskID,
+		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
+		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
+		MaxSteps:         d.maxStepsRunLoop,
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
