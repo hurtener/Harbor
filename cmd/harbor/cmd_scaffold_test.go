@@ -282,6 +282,116 @@ func TestScaffoldCmd_Quiet_SuppressesInformationalOutput(t *testing.T) {
 	}
 }
 
+// TestScaffoldCmd_FromConfig_GeneratesCustomToolFiles asserts that the
+// cobra surface (Phase 83o / D-154) propagates --from-config and
+// --patch end to end: a yaml with a tools.custom entry produces a
+// rendered tools/<name>.go on disk + the JSON wire shape carries it.
+func TestScaffoldCmd_FromConfig_GeneratesCustomToolFiles(t *testing.T) {
+	t.Parallel()
+	upstream := filepath.Join(t.TempDir(), "harbor.yaml")
+	const body = `
+server:
+  bind_addr: 127.0.0.1:8080
+  shutdown_grace_period: 30s
+identity:
+  jwt_algorithms: [RS256]
+  issuer: https://issuer.example.com
+  audience: alpha
+  jwks_url: https://issuer.example.com/.well-known/jwks.json
+telemetry:
+  log_format: json
+  log_level: info
+  service_name: alpha
+llm:
+  provider: openrouter
+  model: anthropic/claude-haiku-4-5
+  api_key: env.OPENROUTER_API_KEY
+  timeout: 60s
+  model_profiles:
+    anthropic/claude-haiku-4-5:
+      context_window_tokens: 200000
+tools:
+  custom:
+    - name: weather.lookup
+      description: Look up current weather by city.
+      input:
+        city: string
+      output:
+        temp_c: number
+`
+	if err := os.WriteFile(upstream, []byte(body), 0o644); err != nil {
+		t.Fatalf("write upstream yaml: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), "alpha")
+	root := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{
+		"scaffold",
+		"--name", "alpha",
+		"--output", out,
+		"--from-config", upstream,
+		"--json",
+	})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v (stderr: %q)", err, stderr.String())
+	}
+	body2 := strings.TrimSpace(stdout.String())
+	var parsed struct {
+		Files []string `json:"files"`
+	}
+	if err := json.Unmarshal([]byte(body2), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v (body: %q)", err, body2)
+	}
+	found := false
+	for _, f := range parsed.Files {
+		if f == "tools/weather_lookup.go" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected tools/weather_lookup.go in .files; got: %v", parsed.Files)
+	}
+	if _, err := os.Stat(filepath.Join(out, "tools/weather_lookup.go")); err != nil {
+		t.Errorf("expected tools/weather_lookup.go on disk: %v", err)
+	}
+}
+
+// TestScaffoldCmd_FromConfig_InvalidUpstream_FailsLoud asserts the
+// CLIError mapping for the upstream_config_invalid code (D-154).
+func TestScaffoldCmd_FromConfig_InvalidUpstream_FailsLoud(t *testing.T) {
+	t.Parallel()
+	upstream := filepath.Join(t.TempDir(), "harbor.yaml")
+	if err := os.WriteFile(upstream, []byte("not: valid: yaml: identity\n"), 0o644); err != nil {
+		t.Fatalf("write bad yaml: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), "alpha")
+	root := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{
+		"scaffold",
+		"--name", "alpha",
+		"--output", out,
+		"--from-config", upstream,
+		"--json",
+	})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	var cli CLIError
+	if !errors.As(err, &cli) {
+		t.Fatalf("error is not a CLIError: %T %v", err, err)
+	}
+	if cli.Code != CodeUpstreamConfigInvalid {
+		t.Errorf("CLIError.Code = %q, want %q", cli.Code, CodeUpstreamConfigInvalid)
+	}
+}
+
 // TestScaffoldCmd_DefaultsOutputToProjectName pins the cobra body's
 // default-output-dir behaviour: when --output is omitted, the
 // scaffold writes to ./<name>. We exercise this from a tmp CWD so
