@@ -3585,3 +3585,26 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None — 83g is a pure consumer phase. The decision to defer the Console MCP-page mount is documented in the phase plan's risks section, not a departure from any brief.
 
 **Protocol additions.** None — 83g consumes existing `cfg.Tools.MCPServers` config and the already-exported `mcpdrv` API. No new method, error code, wire type, or CLI subcommand.
+
+---
+
+## D-151 — Phase 83h: hot-reload watcher skips DB sidecars; LLM safety wrapper defaults `req.Model` from `cfg.Model`
+
+**Date:** 2026-05-23
+**Status:** Settled (shipping with Phase 83h)
+
+**Where it lives:** `cmd/harbor/cmd_dev_hot_reload.go` (`dbSidecarSuffixes`, `isDBSidecar`, `shouldTrigger`); `cmd/harbor/cmd_dev_hot_reload_test.go` (`TestShouldTrigger_SkipsDBSidecars`); `internal/llm/safety.go` (the `req.Model = c.cfg.Model` default-fill in `safetyClient.Complete`); `internal/llm/safety_test.go` (`TestSafety_DefaultsModelFromConfigSnapshot`).
+
+**Decision.** Two hard-block bugs surfaced when the v1.1 operator validation booted `harbor dev` against a real bifrost LLM + the scaffolded sqlite-backed state + skills drivers. Both fixes are tiny; the audit lesson is bigger.
+
+**V1 — hot-reload watcher reboot-loops on SQLite WAL/SHM/journal sidecars.** Default `harbor dev` watches the cwd. SQLite (the scaffold-default for `state.driver` and `skills.driver`) rewrites its `*.sqlite-wal` / `*.sqlite-shm` companions on every commit. fsnotify fires CREATE/WRITE on each rewrite; the watcher triggers a drain+reboot; the rebooted binary opens SQLite, the WAL gets rewritten, repeat. ~700ms loop, dev binary unusable. Fix: extend `shouldTrigger` with a fixed suffix-deny list — `.sqlite-wal`, `.sqlite-shm`, `.sqlite-journal`, `.db-wal`, `.db-shm`, `.db-journal`, `-journal`. Operator-supplied glob ignores stay deferred to a follow-up when pain accrues; the fixed list unblocks V1.1 against the scaffold defaults.
+
+**V2 — LLM safety wrapper rejects requests with empty `Model`.** The react planner (Phase 45 / 83a) builds `llm.CompleteRequest{Messages: ...}` without setting `Model`. The safety wrapper's `validateRequest` rejects with `CompleteRequest.Model is empty`. The mock LLM driver used in every existing dev-binary integration test does not invoke the safety wrapper's structural validation path (the mock returns canned responses), so the gap escaped the Wave 13 / 14 / 15 checkpoints. Real-bifrost reaches `validateRequest` and fails at step 0. Fix: in `safetyClient.Complete`, before `validateRequest`, default `req.Model = c.cfg.Model` when the caller did not pin one. Callers that DO pin `Model` (multi-model agents, posture sub-clients) keep their pin.
+
+**Audit lesson — record explicitly so the §17.5 audits to come catch these earlier.** Both V1 and V2 are §13 "test stubs as production defaults on operator-facing seams" failure modes read one layer over: the integration tests used the mock LLM and didn't spawn real subprocesses + write real sqlite + send real prompts, so two real-bifrost+real-sqlite-binding bugs sat untested through Wave 14's V1 cut + Wave 15's prompt-quality band. The post-83h checkpoint audit specifically targets the `harbor dev` + real-bifrost end-to-end path to find whatever V4/V5/V6 are waiting after the next prompt.
+
+**Why now.** Without V1 the operator's first `harbor dev` boot enters an infinite reboot loop after the planner persists any state; without V2 the operator's first prompt is rejected before the LLM call. Together they are the difference between "v1.1 ships a working out-of-the-box framework" and "v1.1 ships only to operators who already know to set `--no-hot-reload` and pin Model upstream." The fixes are 10 lines each + a unit test apiece.
+
+**Findings I'm departing from.** None — both fixes follow the project's fail-loud / fill-loud posture (V1: filter inputs that produce noise; V2: fill the documented default at the documented boundary).
+
+**Protocol additions.** None — both fixes are inside implementation packages and preserve existing function signatures.
