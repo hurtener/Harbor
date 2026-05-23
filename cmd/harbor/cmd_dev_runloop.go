@@ -84,10 +84,17 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 )
+
+// devRuntimeSkillsContextMaxDefault is the dev-binary default when
+// `planner.skills_context_max` is unset (0). Matches the cap mentioned
+// in Phase 83f's plan and brief 13 §2.4's "small, bounded" guidance.
+const devRuntimeSkillsContextMaxDefault = 5
 
 // perTaskRunLoopDriverOpts bundles the dependencies the driver
 // consumes. Bus + RunLoop + Planner + TaskRegistry are all mandatory;
@@ -102,6 +109,18 @@ type perTaskRunLoopDriverOpts struct {
 	planner  planner.Planner
 	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit (D-098)
 	taskKind tasks.TaskKind     // KindForeground at V1; the driver only spawns RunLoops for matching kinds
+
+	// Phase 83f (D-149) — RunContext consumer wiring. All three of
+	// memory / skills / planningHints are OPTIONAL: a dev stack that
+	// did not open the respective subsystem hands nil; the driver
+	// projects the corresponding RunContext field to nil and the
+	// planner omits the wrapper. `skillsContextMax` is the cap the
+	// driver applies when calling `SkillStore.Search` — zero resolves
+	// to the package default (5).
+	memory           memory.MemoryStore
+	skills           skills.SkillStore
+	skillsContextMax int
+	planningHints    *planner.PlanningHints
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -114,6 +133,12 @@ type perTaskRunLoopDriver struct {
 	planner  planner.Planner
 	tasks    tasks.TaskRegistry
 	taskKind tasks.TaskKind
+
+	// Phase 83f (D-149) per-run consumer wiring. See driver opts godoc.
+	memory           memory.MemoryStore
+	skills           skills.SkillStore
+	skillsContextMax int
+	planningHints    *planner.PlanningHints
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -153,13 +178,21 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 	if opts.taskKind == "" {
 		opts.taskKind = tasks.KindForeground
 	}
+	skillsCap := opts.skillsContextMax
+	if skillsCap <= 0 {
+		skillsCap = devRuntimeSkillsContextMaxDefault
+	}
 	return &perTaskRunLoopDriver{
-		logger:   opts.logger,
-		bus:      opts.bus,
-		runLoop:  opts.runLoop,
-		planner:  opts.planner,
-		tasks:    opts.tasks,
-		taskKind: opts.taskKind,
+		logger:           opts.logger,
+		bus:              opts.bus,
+		runLoop:          opts.runLoop,
+		planner:          opts.planner,
+		tasks:            opts.tasks,
+		taskKind:         opts.taskKind,
+		memory:           opts.memory,
+		skills:           opts.skills,
+		skillsContextMax: skillsCap,
+		planningHints:    opts.planningHints,
 	}, nil
 }
 
@@ -350,10 +383,103 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
+	// Phase 83f (D-149): build the per-run consumer state BEFORE
+	// handing the RunSpec to the RunLoop. The four primitives the
+	// 83-band shipped now have a real production consumer.
+	//
+	// Step 1: fetch the task record to read the user-facing Query.
+	// The Query becomes the run's `Goal` (the planner-visible goal
+	// starts equal to the user's request; runtime REDIRECT can mutate
+	// it later — see RunContext.Goal godoc).
+	task, gErr := d.tasks.Get(taskCtx, taskID)
+	if gErr != nil {
+		d.logger.Warn("perTaskRunLoopDriver: tasks.Get failed; failing run",
+			slog.String("task_id", string(taskID)),
+			slog.String("run_id", q.RunID),
+			slog.String("err", gErr.Error()))
+		if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    "runtime_fetch_error",
+			Message: fmt.Sprintf("tasks.Get: %v", gErr),
+		}); fErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", fErr.Error()))
+		}
+		return
+	}
+
+	// Step 2: fetch identity-scoped memory + skills. Each is OPTIONAL
+	// — a stack without the subsystem configured leaves the
+	// corresponding field nil and the planner omits the wrapper. A
+	// store-side error is LOUD per CLAUDE.md §5 fail-loud: the run
+	// fails with the wrapped error, the LLM is never called, and the
+	// operator sees a clear `runtime_fetch_error` on the task.
+	//
+	// Memory + skills are SESSION-scoped per RFC §6.6/§6.7 (memory
+	// spans runs within a session; skills are stored per-session). The
+	// fetch quadruple zeroes RunID so the run inherits the session's
+	// accumulated state rather than seeing only its own (empty) per-run
+	// slice. D-149.
+	sessionQ := identity.Quadruple{Identity: q.Identity}
+	var memBlocks *planner.MemoryBlocks
+	if d.memory != nil {
+		patch, mErr := d.memory.GetLLMContext(taskCtx, sessionQ)
+		if mErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: memory.GetLLMContext failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", mErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: fmt.Sprintf("memory.GetLLMContext: %v", mErr),
+			}); fErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if mb := projectMemoryBlocks(patch); mb != nil {
+			memBlocks = mb
+		}
+	}
+
+	var skillsCtx []any
+	if d.skills != nil && task.Query != "" {
+		ranked, sErr := d.skills.Search(taskCtx, sessionQ, task.Query, d.skillsContextMax)
+		if sErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: skills.Search failed; failing run",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", sErr.Error()))
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: fmt.Sprintf("skills.Search: %v", sErr),
+			}); fErr != nil {
+				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = projectSkillsContext(ranked)
+	}
+
+	// Step 3: per-run RepairCounters. ONE pointer per run, threaded
+	// onto RunContext; Phase 44's repair pipeline increments it.
+	// D-145 (counters scope to RunContext, not the planner artifact).
+	counters := &planner.RepairCounters{}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple: q,
+			Quadruple:      q,
+			Query:          task.Query,
+			Goal:           task.Query, // initial goal = user query; runtime REDIRECT may mutate
+			MemoryBlocks:   memBlocks,
+			SkillsContext:  skillsCtx,
+			RepairCounters: counters,
+			PlanningHints:  d.planningHints, // nil when operator left the config block empty
 		},
 		TaskID: taskID,
 	}
@@ -460,4 +586,56 @@ func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 		d.runsWG.Wait()
 	})
 	return nil
+}
+
+// projectMemoryBlocks shapes a memory.LLMContextPatch into the
+// JSON-encodable map the planner's `<read_only_conversation_memory>`
+// wrapper renders. Returns nil when the patch is empty — the wrapper
+// is omitted entirely. V1.1 ships only the Conversation tier; the
+// External tier remains nil pending a long-term memory phase.
+func projectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
+	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
+		return nil
+	}
+	recent := make([]map[string]any, 0, len(patch.RecentTurns))
+	for _, turn := range patch.RecentTurns {
+		recent = append(recent, map[string]any{
+			"user":      turn.UserMessage,
+			"assistant": turn.AssistantResponse,
+		})
+	}
+	conversation := map[string]any{
+		"strategy":     string(patch.Strategy),
+		"recent_turns": recent,
+	}
+	if patch.Summary != "" {
+		conversation["summary"] = patch.Summary
+	}
+	return &planner.MemoryBlocks{Conversation: conversation}
+}
+
+// projectSkillsContext shapes a []skills.RankedSkill into the
+// []any the planner's `<skills_context>` wrapper renders. Each
+// element is a small map carrying the body fields the LLM consumes
+// (name / title / description / steps). An empty input returns nil
+// so the wrapper is omitted.
+func projectSkillsContext(ranked []skills.RankedSkill) []any {
+	if len(ranked) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(ranked))
+	for _, r := range ranked {
+		entry := map[string]any{
+			"name":  r.Skill.Name,
+			"title": r.Skill.Title,
+		}
+		if r.Skill.Description != "" {
+			entry["description"] = r.Skill.Description
+		}
+		if len(r.Skill.Steps) > 0 {
+			entry["steps"] = r.Skill.Steps
+		}
+		out = append(out, entry)
+	}
+	return out
 }

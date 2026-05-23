@@ -367,6 +367,23 @@ memory:
 # renderer keeps the top N. Zero / unset resolves to 3. Dial it down for
 # catalogs with many tools to keep prompt token usage bounded.
 #
+# `skills_context_max` (Phase 83f — D-149) caps how many skill bodies
+# the dev binary's per-task run loop fetches from `SkillStore.Search`
+# and hands the planner via `RunContext.SkillsContext`. Zero / unset
+# resolves to 5. Only consumed by the dev binary; library consumers
+# that build their own RunContext are unaffected.
+#
+# `planning_hints` (Phase 83f — D-149) is the operator-supplied per-run
+# planning steering the dev binary projects onto `RunContext.PlanningHints`.
+# The ReAct planner renders the contents into `<planning_constraints>`
+# via 83c's prompt section. V1.1 ships two YAML fields:
+#   - `constraints` (string)         — free-form rules / negative space
+#   - `preferred_tools` (list[str])  — names the planner prefers
+# The richer Go-struct fields (ParallelGroups, DisallowTools, Budget)
+# stay reachable via a custom planner Option but not via this YAML
+# surface. Omit the block entirely and the section is left out of the
+# prompt.
+#
 # Reasoning-capture note for Anthropic: Anthropic's extended-thinking
 # API requires `reasoning.max_tokens >= 1024`. Harbor maps the LLM
 # `reasoning_effort` enum to a budget for the Anthropic provider and
@@ -383,6 +400,14 @@ planner:
   #   in your final answer.
   # reasoning_replay: never   # never (default) | text
   # max_tool_examples_per_tool: 3   # 0/unset → 3
+  # skills_context_max: 5            # 0/unset → 5; cap on SkillStore.Search results per run
+  # planning_hints:
+  #   constraints: |
+  #     Never call external download tools without confirming the URL
+  #     resolves to an allowed source.
+  #   preferred_tools:
+  #     - youtube_get_metadata
+  #     - http_get
 
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`

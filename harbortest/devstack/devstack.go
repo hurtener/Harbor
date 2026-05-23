@@ -111,6 +111,8 @@ import (
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/skills"
+	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver for tests that open one
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -239,6 +241,26 @@ type AssembleOpts struct {
 		User    string
 		Session string
 	}
+
+	// Phase 83f (D-149) — mirror the production cmd_dev.go
+	// per-run consumer wiring. The four fields are optional; nil /
+	// zero leaves the planner's matching wrapper omitted (matching
+	// production's behaviour when an operator did not configure the
+	// underlying subsystem).
+	//
+	// `MemoryStore` is the store the per-task driver calls
+	// `GetLLMContext(ctx, q)` against — the test passes a real
+	// inmem store keyed to the run's identity.
+	// `SkillStore` is the store the driver calls `Search(ctx, q, query, cap)`
+	// against — the test passes a real localdb store.
+	// `SkillsContextMax` caps the Search result count; zero resolves
+	// to the package default (5).
+	// `PlanningHints`, when non-nil, projects directly onto
+	// `RunContext.PlanningHints` for every run the driver spawns.
+	MemoryStore      memory.MemoryStore
+	SkillStore       skills.SkillStore
+	SkillsContextMax int
+	PlanningHints    *planner.PlanningHints
 
 	// TopologyAccessor, when non-nil, is wired into the
 	// ControlSurface via protocol.WithTopologyAccessor so the Phase 74
@@ -731,6 +753,14 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				runLoop: rl,
 				planner: plnr,
 				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
+				// Phase 83f (D-149): mirror production's per-run consumer
+				// wiring. The fields are exposed via AssembleOpts so the
+				// per-83f integration test populates them with a real
+				// MemoryStore + SkillStore.
+				memory:           opts.MemoryStore,
+				skills:           opts.SkillStore,
+				skillsContextMax: opts.SkillsContextMax,
+				planningHints:    opts.PlanningHints,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1084,6 +1114,14 @@ type DevStackRunLoopDriver struct {
 	tasks   tasks.TaskRegistry // D-098: the FSM the driver advances on Run exit
 	logger  *slog.Logger       // audit N5: opt-in; matches production's Warn logging when supplied
 
+	// Phase 83f (D-149) per-run consumer wiring — mirrors the
+	// production driver's matching fields. Optional; nil = no
+	// projection (the planner omits the corresponding wrapper).
+	memory           memory.MemoryStore
+	skills           skills.SkillStore
+	skillsContextMax int
+	planningHints    *planner.PlanningHints
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1099,7 +1137,16 @@ type devStackRunLoopDriverOpts struct {
 	planner planner.Planner
 	tasks   tasks.TaskRegistry
 	logger  *slog.Logger // optional; when non-nil, Mark* failures log Warn (matches production)
+
+	// Phase 83f (D-149): per-run consumer wiring. See production
+	// `perTaskRunLoopDriverOpts` godoc.
+	memory           memory.MemoryStore
+	skills           skills.SkillStore
+	skillsContextMax int
+	planningHints    *planner.PlanningHints
 }
+
+const devStackRuntimeSkillsContextMaxDefault = 5
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
 	if opts.bus == nil {
@@ -1114,12 +1161,20 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 	if opts.tasks == nil {
 		return nil, fmt.Errorf("devstack RunLoop driver: tasks is nil")
 	}
+	skillsCap := opts.skillsContextMax
+	if skillsCap <= 0 {
+		skillsCap = devStackRuntimeSkillsContextMaxDefault
+	}
 	return &DevStackRunLoopDriver{
-		bus:     opts.bus,
-		runLoop: opts.runLoop,
-		planner: opts.planner,
-		tasks:   opts.tasks,
-		logger:  opts.logger,
+		bus:              opts.bus,
+		runLoop:          opts.runLoop,
+		planner:          opts.planner,
+		tasks:            opts.tasks,
+		logger:           opts.logger,
+		memory:           opts.memory,
+		skills:           opts.skills,
+		skillsContextMax: skillsCap,
+		planningHints:    opts.planningHints,
 	}, nil
 }
 
@@ -1212,10 +1267,91 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		}
 		return
 	}
+
+	// Phase 83f (D-149) — mirror the production runOne's per-run
+	// consumer wiring. Same fail-loud semantics: a memory or skills
+	// fetch error fails the run with `runtime_fetch_error` and the LLM
+	// is never called. The implementation mirrors
+	// cmd/harbor/cmd_dev_runloop.go::perTaskRunLoopDriver.runOne.
+	task, gErr := d.tasks.Get(taskCtx, taskID)
+	if gErr != nil {
+		if d.logger != nil {
+			d.logger.Warn("devstack runloop: tasks.Get failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", gErr.Error()))
+		}
+		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+			Code:    "runtime_fetch_error",
+			Message: fmt.Sprintf("tasks.Get: %v", gErr),
+		}); mErr != nil && d.logger != nil {
+			d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", mErr.Error()))
+		}
+		return
+	}
+
+	// Memory + skills are session-scoped (D-149) — see the production
+	// driver for the rationale. The fetch quadruple zeroes RunID.
+	sessionQ := identity.Quadruple{Identity: q.Identity}
+	var memBlocks *planner.MemoryBlocks
+	if d.memory != nil {
+		patch, mErr := d.memory.GetLLMContext(taskCtx, sessionQ)
+		if mErr != nil {
+			if d.logger != nil {
+				d.logger.Warn("devstack runloop: memory.GetLLMContext failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", mErr.Error()))
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: fmt.Sprintf("memory.GetLLMContext: %v", mErr),
+			}); fErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		if mb := devStackProjectMemoryBlocks(patch); mb != nil {
+			memBlocks = mb
+		}
+	}
+
+	var skillsCtx []any
+	if d.skills != nil && task.Query != "" {
+		ranked, sErr := d.skills.Search(taskCtx, sessionQ, task.Query, d.skillsContextMax)
+		if sErr != nil {
+			if d.logger != nil {
+				d.logger.Warn("devstack runloop: skills.Search failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", sErr.Error()))
+			}
+			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
+				Code:    "runtime_fetch_error",
+				Message: fmt.Sprintf("skills.Search: %v", sErr),
+			}); fErr != nil && d.logger != nil {
+				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", fErr.Error()))
+			}
+			return
+		}
+		skillsCtx = devStackProjectSkillsContext(ranked)
+	}
+
+	counters := &planner.RepairCounters{}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple: q,
+			Quadruple:      q,
+			Query:          task.Query,
+			Goal:           task.Query,
+			MemoryBlocks:   memBlocks,
+			SkillsContext:  skillsCtx,
+			RepairCounters: counters,
+			PlanningHints:  d.planningHints,
 		},
 		TaskID: taskID,
 	}
@@ -1316,6 +1452,54 @@ func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]ll
 			mp.DefaultMaxTokens = &v
 		}
 		out[name] = mp
+	}
+	return out
+}
+
+// devStackProjectMemoryBlocks mirrors the production projection
+// helper at cmd/harbor/cmd_dev_runloop.go::projectMemoryBlocks.
+// Per Phase 83f (D-149) the projection shape stays identical
+// across the production driver and the devstack mirror.
+func devStackProjectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
+	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
+		return nil
+	}
+	recent := make([]map[string]any, 0, len(patch.RecentTurns))
+	for _, turn := range patch.RecentTurns {
+		recent = append(recent, map[string]any{
+			"user":      turn.UserMessage,
+			"assistant": turn.AssistantResponse,
+		})
+	}
+	conversation := map[string]any{
+		"strategy":     string(patch.Strategy),
+		"recent_turns": recent,
+	}
+	if patch.Summary != "" {
+		conversation["summary"] = patch.Summary
+	}
+	return &planner.MemoryBlocks{Conversation: conversation}
+}
+
+// devStackProjectSkillsContext mirrors the production projection
+// helper at cmd/harbor/cmd_dev_runloop.go::projectSkillsContext.
+func devStackProjectSkillsContext(ranked []skills.RankedSkill) []any {
+	if len(ranked) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(ranked))
+	for _, r := range ranked {
+		entry := map[string]any{
+			"name":  r.Skill.Name,
+			"title": r.Skill.Title,
+		}
+		if r.Skill.Description != "" {
+			entry["description"] = r.Skill.Description
+		}
+		if len(r.Skill.Steps) > 0 {
+			entry["steps"] = r.Skill.Steps
+		}
+		out = append(out, entry)
 	}
 	return out
 }
