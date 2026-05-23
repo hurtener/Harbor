@@ -973,6 +973,11 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be >= 0 (0 = use driver default of 3), got %d",
 				c.Planner.MaxToolExamplesPerTool))
 	}
+	if c.Planner.SkillsContextMax < 0 {
+		return fieldError("planner.skills_context_max",
+			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 5), got %d",
+				c.Planner.SkillsContextMax))
+	}
 	return nil
 }
 
