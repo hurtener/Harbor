@@ -84,6 +84,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -812,6 +813,10 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				catalog:         stack.Catalog,
 				executor:        devExecutor,
 				maxStepsRunLoop: cfg.Planner.MaxSteps,
+				// Phase 83m (Item 6, D-156): mirror the production
+				// granted-scopes plumb-through so the devstack's
+				// catalog view sees the same operator-declared scopes.
+				grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -885,6 +890,11 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		return stack, fmt.Errorf("devdraft.NewStore: %w", dsErr)
 	}
 	stack.DraftStore = draftStore
+	// Phase 83m (Item 3, D-156): mirror the production bootDevStack —
+	// every constructed subsystem registers its Close. The Store's
+	// V1 Close is a no-op but the contract carries forward to any
+	// future driver that owns goroutines / persistent handles.
+	stack.closeFns = append(stack.closeFns, draftStore.Close)
 
 	// Transports + router. Requires the Surface + Validator (when
 	// auth is enabled). SkipTransports OR SkipSteering both leave
@@ -1178,6 +1188,9 @@ type DevStackRunLoopDriver struct {
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
 
+	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
+	grantedScopes []string
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1208,6 +1221,9 @@ type devStackRunLoopDriverOpts struct {
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
+
+	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
+	grantedScopes []string
 }
 
 const devStackRuntimeSkillsContextMaxDefault = 5
@@ -1242,6 +1258,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		catalog:          opts.catalog,
 		executor:         opts.executor,
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
+		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 	}, nil
 }
 
@@ -1387,7 +1404,15 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 
 	var skillsCtx []any
 	if d.skills != nil && task.Query != "" {
-		ranked, sErr := d.skills.Search(taskCtx, sessionQ, task.Query, d.skillsContextMax)
+		// Phase 83m (Item 4, D-156): mirror the production runloop —
+		// extract keyword tokens before handing the query to the FTS5-
+		// backed skills driver. Falls back to the raw Query if
+		// extraction yields nothing useful so Search still has signal.
+		searchQuery := devStackExtractSkillKeywords(task.Query)
+		if searchQuery == "" {
+			searchQuery = task.Query
+		}
+		ranked, sErr := d.skills.Search(taskCtx, sessionQ, searchQuery, d.skillsContextMax)
 		if sErr != nil {
 			if d.logger != nil {
 				d.logger.Warn("devstack runloop: skills.Search failed",
@@ -1414,10 +1439,15 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	traj := &planner.Trajectory{Query: task.Query}
 	var catalogView planner.ToolCatalogView
 	if d.catalog != nil {
+		// Phase 83m (Item 6, D-156): mirror the production runloop —
+		// the per-run CatalogFilter carries the operator-configured
+		// GrantedScopes so AuthScopes-protected tools are gated the
+		// same way they are in `cmd/harbor`.
 		catalogView = devStackCatalogView{cat: d.catalog, filter: tools.CatalogFilter{
-			TenantID:  q.TenantID,
-			UserID:    q.UserID,
-			SessionID: q.SessionID,
+			TenantID:      q.TenantID,
+			UserID:        q.UserID,
+			SessionID:     q.SessionID,
+			GrantedScopes: append([]string(nil), d.grantedScopes...),
 		}}
 	}
 
@@ -1665,6 +1695,11 @@ func devStackProjectSkillsContext(ranked []skills.RankedSkill) []any {
 // attachDevStackMCPServer mirrors cmd/harbor/cmd_dev.go's
 // attachDevMCPServer per D-094's source-of-truth invariant. Phase 83g
 // (D-150) — boot-time MCP southbound consumer wiring.
+//
+// Phase 83m (Item 1, D-156): `DefaultIdentity` is the fallback for
+// transport-side events only; per-call subscriptions stamp the
+// inflight caller's identity via the driver's `pushIdentity(ctx, cfg)`
+// helper. Mirror of the production attachDevMCPServer godoc.
 func attachDevStackMCPServer(
 	ctx context.Context,
 	ms config.MCPServerConfig,
@@ -1758,6 +1793,58 @@ func (v devStackCatalogView) Resolve(name string) (tools.Tool, bool) {
 
 func (v devStackCatalogView) List() []tools.Tool {
 	return v.cat.List(v.filter)
+}
+
+// devStackSkillKeywordStopwords mirrors cmd_dev_runloop.go's
+// skillKeywordStopwords per D-094 source-of-truth. Phase 83m (Item 4,
+// D-156).
+var devStackSkillKeywordStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {},
+	"if": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {},
+	"been": {}, "being": {}, "have": {}, "has": {}, "had": {},
+	"do": {}, "does": {}, "did": {}, "of": {}, "to": {}, "in": {},
+	"on": {}, "at": {}, "for": {}, "with": {}, "by": {}, "from": {},
+	"as": {}, "into": {}, "that": {}, "this": {}, "it": {}, "i": {},
+	"you": {}, "we": {}, "they": {}, "my": {}, "your": {},
+}
+
+// devStackMaxSkillKeywords mirrors cmd_dev_runloop.go's
+// maxSkillKeywords. Phase 83m (Item 4, D-156).
+const devStackMaxSkillKeywords = 10
+
+// devStackExtractSkillKeywords mirrors cmd_dev_runloop.go's
+// extractSkillKeywords per D-094. Phase 83m (Item 4, D-156): turns a
+// raw task Query into the keyword-shaped string the FTS5 ranker
+// performs best on. Returns an empty string for an all-stopword
+// pathological input; the caller falls back to the raw Query so
+// Search still has SOMETHING to rank against.
+func devStackExtractSkillKeywords(query string) string {
+	if query == "" {
+		return ""
+	}
+	lower := strings.ToLower(query)
+	tokens := strings.FieldsFunc(lower, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if len(tok) <= 1 {
+			continue
+		}
+		if _, drop := devStackSkillKeywordStopwords[tok]; drop {
+			continue
+		}
+		if _, dup := seen[tok]; dup {
+			continue
+		}
+		seen[tok] = struct{}{}
+		out = append(out, tok)
+		if len(out) >= devStackMaxSkillKeywords {
+			break
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // devStackExtractAssistantAnswer mirrors cmd_dev_runloop.go's

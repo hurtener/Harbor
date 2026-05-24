@@ -380,6 +380,105 @@ func TestProvider_ResourceUpdated_PublishesEvent(t *testing.T) {
 	}
 }
 
+// TestPushIdentity_PrefersCtxOverDefault — Phase 83m (Item 1, D-156):
+// the helper that drives server-pushed event identity prefers
+// `identity.From(ctx)` whenever the ctx carries a populated triple;
+// only when the ctx has no triple (or one is incomplete) does the
+// helper fall back to the cached Config.DefaultIdentity. Validates the
+// isolation-rule narrowing: per-call subscriptions stamp the inflight
+// caller's identity on the resulting bus event so multi-tenant
+// operators see correct provenance.
+func TestPushIdentity_PrefersCtxOverDefault(t *testing.T) {
+	cfg := Config{DefaultIdentity: defaultIdentity()}
+
+	// Case 1: ctx with full triple — the helper returns the ctx
+	// identity, not the cached default.
+	ctxID := identity.Identity{TenantID: "ctx-tenant", UserID: "ctx-user", SessionID: "ctx-session"}
+	ctx, err := identity.With(context.Background(), ctxID)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	got := pushIdentity(ctx, cfg)
+	if got != ctxID {
+		t.Errorf("ctx-identity preferred: got %+v, want %+v", got, ctxID)
+	}
+
+	// Case 2: bare ctx with no triple — falls back to the default.
+	got = pushIdentity(context.Background(), cfg)
+	if got != cfg.DefaultIdentity {
+		t.Errorf("no-triple fallback: got %+v, want %+v", got, cfg.DefaultIdentity)
+	}
+
+	// Case 3: nil ctx — same fallback shape; the helper must not panic.
+	got = pushIdentity(nil, cfg) //nolint:staticcheck // intentional nil for fallback test
+	if got != cfg.DefaultIdentity {
+		t.Errorf("nil-ctx fallback: got %+v, want %+v", got, cfg.DefaultIdentity)
+	}
+}
+
+// TestProvider_ResourceUpdated_FallsBackToDefaultWhenCtxBare — Phase
+// 83m (Item 1, D-156): the SDK's notification dispatch path delivers
+// the handler a bare session ctx (no identity) for transport-side
+// pushes. The driver MUST fall back to `Config.DefaultIdentity` so the
+// bus's `ValidateEvent` does not reject the resulting event. The
+// existing `TestProvider_ResourceUpdated_PublishesEvent` exercises
+// this path implicitly (it subscribes under `defaultIdentity()` —
+// which happens to coincide with `Config.DefaultIdentity`); this test
+// pins the contract explicitly so a regression that drops the
+// fallback would fail loud here.
+//
+// Note: the MCP SDK does not propagate the per-call subscription ctx
+// into the `ResourceUpdatedHandler` (see
+// `Client.callResourceUpdatedHandler` — the ctx is the session's
+// internal dispatch ctx). The pushIdentity helper still PREFERS a
+// populated ctx when one is supplied, but the production path almost
+// always falls back to `Config.DefaultIdentity` for these SDK-pushed
+// notifications. A future SDK release that threads the subscription
+// ctx through would make the unit-tested preference path live.
+func TestProvider_ResourceUpdated_FallsBackToDefaultWhenCtxBare(t *testing.T) {
+	p, _, bus, cleanup := newTestProvider(t)
+	defer cleanup()
+
+	subCtx := mustIdentity(t)
+	if err := p.SubscribeResource(subCtx, "mem://hello"); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	id := defaultIdentity()
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  id.TenantID,
+		User:    id.UserID,
+		Session: id.SessionID,
+		Types:   []events.EventType{EventTypeMCPResourceUpdated},
+	})
+	if err != nil {
+		t.Fatalf("subscribe bus: %v", err)
+	}
+	defer sub.Cancel()
+
+	// Fire the server-side notification with a BARE ctx (no identity)
+	// — mirrors the SDK's dispatch ctx for transport pushes. The
+	// driver must fall back to Config.DefaultIdentity; a regression
+	// that drops the fallback would either panic on validate or
+	// silently emit nothing.
+	srv := getMockServer(p)
+	if err := srv.ResourceUpdated(context.Background(), &mcpsdk.ResourceUpdatedNotificationParams{
+		URI: "mem://hello",
+	}); err != nil {
+		t.Fatalf("ResourceUpdated: %v", err)
+	}
+
+	select {
+	case ev := <-sub.Events():
+		if ev.Identity.TenantID != id.TenantID {
+			t.Errorf("event.Identity.TenantID = %q, want %q (DefaultIdentity fallback dropped)",
+				ev.Identity.TenantID, id.TenantID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for mcp.resource_updated event under DefaultIdentity fallback")
+	}
+}
+
 func TestProvider_Close_Idempotent(t *testing.T) {
 	p, _, _, cleanup := newTestProvider(t)
 	_ = cleanup // we still get session via pair; we'll Close manually

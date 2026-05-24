@@ -702,3 +702,100 @@ func itoa(i int) string {
 	}
 	return string(digits)
 }
+
+// TestExtractSkillKeywords — Phase 83m (Item 4, D-156): the helper
+// the runloop runs the raw task Query through before calling
+// `skills.Search`. The FTS5 ranker performs best on keyword-shaped
+// input — articles + punctuation + stopwords dilute the BM25 signal.
+// The helper lowercases, splits on whitespace + punctuation, drops
+// stopwords + 1-char tokens, dedupes (preserving order), caps at 10.
+func TestExtractSkillKeywords(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty_input",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "all_stopwords_returns_empty",
+			input: "the a an of to in",
+			want:  "",
+		},
+		{
+			name:  "sentence_with_punctuation",
+			input: "How do I configure the OAuth provider?",
+			want:  "how configure oauth provider",
+		},
+		{
+			name:  "lowercases_input",
+			input: "DEPLOY my Helm Chart",
+			want:  "deploy helm chart",
+		},
+		{
+			name:  "dedupes_preserving_order",
+			input: "auth config auth setup auth",
+			want:  "auth config setup",
+		},
+		{
+			name:  "drops_single_char_tokens",
+			input: "a b configure x setup y",
+			want:  "configure setup",
+		},
+		{
+			name:  "splits_on_punctuation",
+			input: "tool.invoke(name,args)",
+			want:  "tool invoke name args",
+		},
+		{
+			name:  "caps_at_ten_terms",
+			input: "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima",
+			want:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
+		},
+		{
+			name:  "preserves_domain_keywords",
+			input: "Search the api docs for the rate-limit knob",
+			want:  "search api docs rate limit knob",
+		},
+		{
+			name:  "numbers_kept_when_long_enough",
+			input: "deploy version 42 to staging",
+			want:  "deploy version 42 staging",
+		},
+		{
+			name:  "single_digit_dropped",
+			input: "task 1 needs attention",
+			want:  "task needs attention",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractSkillKeywords(tc.input)
+			if got != tc.want {
+				t.Errorf("extractSkillKeywords(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractSkillKeywords_CapsAtTenTermsExactly — boundary assert:
+// the helper returns EXACTLY maxSkillKeywords tokens when the input
+// produces more than that, never more, never fewer.
+func TestExtractSkillKeywords_CapsAtTenTermsExactly(t *testing.T) {
+	// 12 distinct non-stopword tokens.
+	input := "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"
+	got := extractSkillKeywords(input)
+	terms := 0
+	for _, ch := range got {
+		if ch == ' ' {
+			terms++
+		}
+	}
+	terms++ // count = spaces + 1
+	if terms != maxSkillKeywords {
+		t.Errorf("extractSkillKeywords cap: got %d terms, want %d (output=%q)", terms, maxSkillKeywords, got)
+	}
+}

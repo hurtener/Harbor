@@ -101,11 +101,45 @@ type Config struct {
 	// DefaultPolicy is the ToolPolicy applied to descriptors built
 	// from this provider. Zero-valued → tools.DefaultPolicy().
 	DefaultPolicy tools.ToolPolicy
-	// DefaultIdentity is used to scope server-pushed
-	// `mcp.resource_updated` events when no per-subscription
-	// identity is available. Required so the bus's
-	// ValidateEvent doesn't reject the event.
+	// DefaultIdentity is the fallback identity stamped on
+	// transport-side events (notifications that arrive without an
+	// inflight call). Required so the bus's ValidateEvent does not
+	// reject the event when the SDK-supplied ctx carries no triple.
+	//
+	// Phase 83m (Item 1, D-156): the role narrows. For events the
+	// SDK delivers WITH a populated ctx (per-call notifications
+	// originating from an inflight tool / resource subscription),
+	// the driver prefers `identity.From(ctx)` over this cached
+	// default — `pushIdentity(ctx, cfg)` is the single helper that
+	// implements the preference. The DefaultIdentity remains the
+	// fallback for genuine transport-level events (a server-pushed
+	// `notifications/resources/updated` arriving outside any
+	// inflight call) where the ctx has no triple to read.
 	DefaultIdentity identity.Identity
+}
+
+// pushIdentity returns the identity to stamp on a server-pushed
+// event. Prefers `identity.From(ctx)` so per-call subscriptions
+// (subscriptions registered under a real (tenant, user, session)
+// triple) keep the inflight caller's identity on the resulting
+// event — multi-tenant operators get correct provenance instead of
+// a cached single-triple stamp. Falls back to the configured
+// `DefaultIdentity` for transport-side events (notifications
+// arriving without an inflight call); `Config.validate()` ensures
+// that fallback is fully populated so the bus never sees an empty
+// triple.
+//
+// Phase 83m / D-156 (Item 1). Mirrors the §6 isolation rule: per-
+// call identity beats a cached default whenever both are present.
+func pushIdentity(ctx context.Context, cfg Config) identity.Identity {
+	if ctx != nil {
+		if id, ok := identity.From(ctx); ok {
+			if id.TenantID != "" && id.UserID != "" && id.SessionID != "" {
+				return id
+			}
+		}
+	}
+	return cfg.DefaultIdentity
 }
 
 // validate checks Config invariants. Used by New + tests.
@@ -594,12 +628,16 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 // the bus.Publish + event construction is allocation-only, so no
 // shared mutable state is touched.
 //
-// The published event's Identity is the Config.DefaultIdentity
-// (operator-supplied for server-pushed events). Subscriptions
-// registered with a per-call identity flow that identity into the
-// per-URI subscription; future work (Phase 30 / OAuth) can lift
-// per-URI identity by carrying it in the subscription request's
-// `_meta` field.
+// The published event's Identity prefers `identity.From(ctx)` when
+// the SDK-supplied ctx carries a populated (tenant, user, session)
+// triple — per-call subscriptions stamp the inflight caller's
+// identity on the resulting event so multi-tenant operators see
+// correct provenance instead of a cached single-triple stamp.
+// Falls back to `Config.DefaultIdentity` for genuine transport-
+// side events that arrive without an inflight call. Phase 83m
+// (Item 1, D-156) narrows the role of the cached default to that
+// fallback path; the prior shape stamped every push with the
+// cached default regardless of the ctx's contents.
 func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUpdatedNotificationRequest) {
 	if req == nil || req.Params == nil {
 		return
@@ -610,7 +648,7 @@ func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUp
 		// dereference.
 		return
 	}
-	q := identity.Quadruple{Identity: p.cfg.DefaultIdentity}
+	q := identity.Quadruple{Identity: pushIdentity(ctx, p.cfg)}
 	ev := events.Event{
 		Type:       EventTypeMCPResourceUpdated,
 		Identity:   q,
