@@ -61,7 +61,7 @@ None.
   routes through the disconnected predicate — disabled buttons +
   disabled textarea + a banner / tooltip explaining why (W2).
 - The Tools page stops stacking two empty messages ("Not connected"
-  + "Select a tool from the catalog") in the disconnected state —
+  AND "Select a tool from the catalog") in the disconnected state —
   only the first renders (N5).
 - The Agents page's KPI cards (Active agents / Running tasks / Total
   cost / Total tokens) use `—` (single em-dash) consistently — match

@@ -13,7 +13,7 @@ walkthrough. Pure copy + layout dedup.
   phrasings: "Save current as…" / "Save view as…" / "Save view" /
   "Save snapshot" / "Save filter" / "Save". The concept is the same;
   the label drift erodes consistency. Settle on one verb (Save view)
-  + one input placeholder ("Save current as…").
+  AND one input placeholder ("Save current as…").
 
 ## RFC anchor
 
