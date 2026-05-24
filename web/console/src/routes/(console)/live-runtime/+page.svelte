@@ -74,7 +74,7 @@
   } from '$lib/components/live-runtime/interventions-panel.svelte';
   import LiveRuntimeFooter from '$lib/components/live-runtime/footer.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError } from '$lib/protocol/errors.js';
+  import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
   import type { Event } from '$lib/protocol/events.js';
   import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
@@ -108,6 +108,12 @@
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
   let pageError = $state<ProtocolError | { code: string; message: string } | null>(null);
+  // Phase 83w-F5 / D-164 — the friendly "topology not available on this
+  // Runtime" info banner the page renders when topology.snapshot returns
+  // `unknown_method` (planner/RunLoop runtimes — no engine graph). NOT
+  // an error; the page is functional, the topology canvas just isn't
+  // part of this Runtime's shape.
+  let pageInfo = $state<{ headline: string; detail: string } | null>(null);
 
   /* ---- topology canvas (the §5 depth-bar primary view) ------------ */
   let projection = $state<TopologyProjection | null>(null);
@@ -197,6 +203,14 @@
   // load resolves the topology snapshot + the status-counter-strip
   // aggregate. Both go through the typed client; a thrown ProtocolError
   // routes into PageState's Error state with a working Retry.
+  //
+  // Phase 83w-F5 / D-164 — `topology.snapshot` returning `unknown_method`
+  // is not an error: the Runtime is planner/RunLoop-shaped (no engine
+  // graph), so the topology surface is honestly not part of its shape.
+  // The page maps that one error code to the friendly `info` branch
+  // (a banner, not a red ERROR with a Retry that would always fail).
+  // Every other error — `identity_required`, `unauthorized`, transport
+  // failure — still routes into the Error state with a working Retry.
   async function load(): Promise<void> {
     if (client === null) {
       status = 'disconnected';
@@ -204,6 +218,7 @@
     }
     status = 'loading';
     pageError = null;
+    pageInfo = null;
     try {
       const [proj, taskResp] = await Promise.all([
         client.topology.snapshot<TopologyProjection>(),
@@ -213,11 +228,21 @@
       strip = taskResp.status_counter_strip ?? { ...EMPTY_STRIP };
       status = proj.nodes.length === 0 ? 'empty' : 'ready';
     } catch (err) {
-      // The Error state suppresses any stale view — drop last-good data.
+      // The Error / Info states both suppress any stale view — drop
+      // last-good data so the canvas doesn't render a half-state.
       projection = null;
       strip = { ...EMPTY_STRIP };
-      pageError = toError(err);
-      status = 'error';
+      if (isUnknownMethod(err)) {
+        pageInfo = {
+          headline: 'Topology view not available on this Runtime',
+          detail:
+            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
+        };
+        status = 'info';
+      } else {
+        pageError = toError(err);
+        status = 'error';
+      }
     }
   }
 
@@ -517,7 +542,7 @@
 
   <div class="layout">
     <div class="main-col">
-      <PageState status={status} error={pageError} onretry={() => void load()}>
+      <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
         {#snippet skeleton()}
           <div class="canvas-skeleton" aria-hidden="true"></div>
         {/snippet}

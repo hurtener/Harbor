@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
-# Phase 83w smoke — wire-surface gaps (F5 Console + F6 Runtime).
 #
-# This script covers the Go-side F6 assertions. The F5 (Console-side)
-# assertions land in a separate script Agent B / coordinator adds when
-# the Console patch lands.
-#
-# F6 is wiring-only: the Phase 73k MCPSurface dispatcher already
-# existed (internal/protocol/mcp.go); F6 simply constructs it in
-# bootDevStack and threads it into transports.NewMux via the
-# WithMCPSurface option. The smoke pins the call sites.
+# Phase 83w — wire-surface gaps from the round-2 walkthrough.
+# D-164. Two distinct fixes integrated by coordinator from two agents:
+#   - F5 (Console-side, Agent B): friendly unknown_method on
+#     topology.snapshot. The pre-83w-F5 Live Runtime + Playground
+#     pages routed the unknown_method error through PageState's red
+#     ERROR branch with a Retry button that would always fail. The
+#     fix special-cases unknown_method to render an info banner
+#     instead.
+#   - F6 (Go-side, Agent A): adds `mcp.servers.list` to the Runtime's
+#     wire surface. The handler reads the *mcp.Registry already
+#     constructed at bootDevStack.
 #
 # Conventions (CLAUDE.md §4.2):
 #   - 404/405/501 → SKIP for any live-server checks (not used here).
@@ -22,6 +24,73 @@ cd "${ROOT}"
 
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
+
+# ----------------------------------------------------------------------------
+# F5 — friendly unknown_method on topology.snapshot.
+# ----------------------------------------------------------------------------
+
+# The shared PageState gains the `info` branch (option (a) of the plan —
+# additive to disconnected/loading/error/empty/ready). Reusable across
+# the two affected pages (live-runtime + playground/[session_id]).
+assert_grep_present "'info'" \
+    "web/console/src/lib/components/ui/PageState.svelte" \
+    "PageState.PageStatus union includes the 'info' branch"
+assert_grep_present "status === 'info'" \
+    "web/console/src/lib/components/ui/PageState.svelte" \
+    "PageState renders the info branch when status is 'info'"
+assert_grep_present 'data-testid="page-state-info"' \
+    "web/console/src/lib/components/ui/PageState.svelte" \
+    "info branch carries the page-state-info testid"
+
+# The shared error-mapping helper that detects unknown_method on the
+# typed client — the single sanctioned read of "this Runtime answered
+# with the not-applicable shape" code.
+assert_grep_present 'export function isUnknownMethod' \
+    "web/console/src/lib/protocol/errors.ts" \
+    'isUnknownMethod helper exported from $lib/protocol/errors.js'
+assert_grep_present "code === 'unknown_method'" \
+    "web/console/src/lib/protocol/errors.ts" \
+    "isUnknownMethod matches the 'unknown_method' canonical code"
+
+# The Live Runtime page routes topology.snapshot's unknown_method to
+# the friendly info banner — NOT the red ERROR state.
+assert_grep_present 'isUnknownMethod' \
+    "web/console/src/routes/(console)/live-runtime/+page.svelte" \
+    "Live Runtime page imports + uses isUnknownMethod"
+assert_grep_present 'Topology view not available on this Runtime' \
+    "web/console/src/routes/(console)/live-runtime/+page.svelte" \
+    "Live Runtime page renders the friendly headline on unknown_method"
+assert_grep_present 'planner/RunLoop' \
+    "web/console/src/routes/(console)/live-runtime/+page.svelte" \
+    "Live Runtime page's friendly detail names the runtime shape"
+
+# The Playground session_id page routes topology.snapshot's
+# unknown_method to the friendly info banner above the chat surface,
+# AND degrades to empty/ready (the chat is still functional on a
+# planner/RunLoop runtime).
+assert_grep_present 'isUnknownMethod' \
+    "web/console/src/routes/(console)/playground/[session_id]/+page.svelte" \
+    "Playground session_id page imports + uses isUnknownMethod"
+assert_grep_present 'Topology view not available on this Runtime' \
+    "web/console/src/routes/(console)/playground/[session_id]/+page.svelte" \
+    "Playground page renders the friendly headline on unknown_method"
+assert_grep_present 'data-testid="playground-topology-info"' \
+    "web/console/src/routes/(console)/playground/[session_id]/+page.svelte" \
+    "Playground info-banner carries a stable testid"
+
+# Negative-shape assertion: the Playground main index page does NOT
+# call topology.snapshot (it redirects to the session_id deep-link).
+# Only the [session_id] page calls topology.snapshot; the main index
+# is not in scope for F5.
+if grep -q 'topology\.snapshot' "web/console/src/routes/(console)/playground/+page.svelte" 2>/dev/null; then
+    fail "Playground main index page should NOT call topology.snapshot directly"
+else
+    ok "Playground main index page does not call topology.snapshot (only [session_id] does)"
+fi
+
+# ----------------------------------------------------------------------------
+# F6 — Runtime exposes mcp.servers.list.
+# ----------------------------------------------------------------------------
 
 # F6.1 — cmd_dev.go constructs the MCPSurface from the boot-time
 # mcpRegistry.
