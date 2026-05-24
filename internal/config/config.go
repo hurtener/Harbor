@@ -611,6 +611,24 @@ type ToolsConfig struct {
 	// imports the generated `tools/` package + calls `RegisterTools`
 	// from the agent's bootstrap. Restart-required (no `reload:"live"`).
 	Custom []CustomToolConfig `yaml:"custom,omitempty"`
+
+	// GrantedScopes is the operator-declared list of authorization
+	// scopes the dev binary's planner-facing catalog view treats as
+	// granted. The runtime catalog projects only tools whose
+	// `AuthScopes` are entirely contained in this set; tools that
+	// require a missing scope are invisible to the planner.
+	//
+	// Phase 83m (Item 6, D-156): the field closes the runloop's
+	// `nil /* TODO Phase 83m */` hard-code that left the catalog
+	// unfiltered. Empty list = no scopes granted (the existing latent
+	// default — tools that declare AuthScopes are invisible). The
+	// scopes are operator-defined per their tool sources; the
+	// validator only asserts that each entry is a non-empty string,
+	// with no allowlist.
+	//
+	// Restart-required (no `reload:"live"` tag — scope changes
+	// trigger a re-evaluation of every catalog descriptor).
+	GrantedScopes []string `yaml:"granted_scopes,omitempty"`
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go

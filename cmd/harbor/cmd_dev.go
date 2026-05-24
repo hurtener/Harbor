@@ -775,6 +775,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		catalog:         toolCat,
 		executor:        newDevToolExecutor(toolCat, artStore, cfg.Artifacts.HeavyOutputThresholdBytes, opts.logger),
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
+		// Phase 83m (Item 6, D-156): operator-declared granted scopes
+		// flow into the per-run catalog view's CatalogFilter, closing
+		// the runloop's `nil /* TODO Phase 83m */` hard-code. Empty
+		// list = no scopes granted (the existing latent default).
+		grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 	})
 	if err != nil {
 		closeAll(ctx)
@@ -885,6 +890,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("agent registry: %w", err)
 	}
+	// Phase 83m (Item 3, D-156): append the registry's Close to the
+	// closer chain. The V1 Registry flips a closed flag (no long-
+	// lived goroutines) but the contract is "every constructed
+	// subsystem registers its Close" — a future driver that DOES own
+	// goroutines must not be discovered as a leak via the §11
+	// goroutine-leak gate.
+	closers = append(closers, agentRegistry.Close)
 	agentsProjector, err := agentsprotocol.NewRegistryProjector(agentRegistry)
 	if err != nil {
 		closeAll(ctx)
@@ -1207,6 +1219,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("devdraft: %w", err)
 	}
+	// Phase 83m (Item 3, D-156): append the draft store's Close to
+	// the closer chain. The V1 Store is a no-op (no goroutines, no
+	// persistent handles) — the contract is "every constructed
+	// subsystem registers its Close" so a future SQLite-backed Draft
+	// store does not need to be retro-fitted into every caller.
+	closers = append(closers, draftStore.Close)
 	draftHandler, err := devdraft.NewHandler(draftStore, opts.logger)
 	if err != nil {
 		closeAll(ctx)
@@ -1885,6 +1903,19 @@ func plannerHintsFromConfig(cfg config.PlannerPlanningHintsCfg) *planner.Plannin
 // Provider's Close into the closer chain so stack teardown drains
 // the subprocess. Fail-loud on any step: a misconfigured / unreachable
 // MCP server must not boot silently per §13.
+//
+// Phase 83m (Item 1, D-156): the `DefaultIdentity` passed below is
+// now the FALLBACK identity stamped on server-pushed events that
+// arrive without an inflight call (transport-side notifications).
+// Per-call subscriptions — registered under a real (tenant, user,
+// session) triple via `provider.SubscribeResource(ctx, ...)` — produce
+// events stamped with the subscription's ctx-resident identity via the
+// driver's `pushIdentity(ctx, cfg)` helper. The dev triple here remains
+// correct for transport-level events because the dev binary boots a
+// single (DevTenant, DevUser, DevSession); multi-tenant deployments
+// invariably register their subscriptions under their own per-call
+// identity and therefore rely on the helper's preference, not this
+// cached default.
 func attachDevMCPServer(
 	ctx context.Context,
 	ms config.MCPServerConfig,

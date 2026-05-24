@@ -80,8 +80,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -133,6 +135,13 @@ type perTaskRunLoopDriverOpts struct {
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
+
+	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes
+	// threaded into the per-run catalog view's CatalogFilter. Tools
+	// whose AuthScopes exceed this set are invisible to the planner.
+	// Nil / empty list means no scopes granted (the existing latent
+	// default before the plumb-through).
+	grantedScopes []string
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -156,6 +165,9 @@ type perTaskRunLoopDriver struct {
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
+
+	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
+	grantedScopes []string
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -213,6 +225,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		catalog:          opts.catalog,
 		executor:         opts.executor,
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
+		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 	}, nil
 }
 
@@ -466,7 +479,23 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 
 	var skillsCtx []any
 	if d.skills != nil && task.Query != "" {
-		ranked, sErr := d.skills.Search(taskCtx, sessionQ, task.Query, d.skillsContextMax)
+		// Phase 83m (Item 4, D-156): extract keyword tokens from the
+		// raw task Query before handing it to the FTS5-backed skills
+		// driver. The SQLite skills driver's FTS5 ranker (BM25)
+		// performs poorly on full-sentence inputs — articles, common
+		// stopwords, and punctuation diffuse the score across noisy
+		// terms. The helper lowercases, drops stopwords + punctuation,
+		// dedupes, and caps at the standard 10-term ceiling. A
+		// pathological input that produces no keywords falls back to
+		// the raw Query so Search still has SOMETHING to rank
+		// against — the driver's empty-query handling is the
+		// canonical "no ranked skills" path and we prefer the raw
+		// query to that empty path.
+		searchQuery := extractSkillKeywords(task.Query)
+		if searchQuery == "" {
+			searchQuery = task.Query
+		}
+		ranked, sErr := d.skills.Search(taskCtx, sessionQ, searchQuery, d.skillsContextMax)
 		if sErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: skills.Search failed; failing run",
 				slog.String("task_id", string(taskID)),
@@ -502,10 +531,16 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	traj := &planner.Trajectory{Query: task.Query}
 	var catalogView planner.ToolCatalogView
 	if d.catalog != nil {
+		// Phase 83m (Item 6, D-156): the catalog view's CatalogFilter
+		// now receives the operator-configured `tools.granted_scopes`
+		// list. Tools whose AuthScopes exceed this set are invisible
+		// to the planner; an empty list preserves the prior behaviour
+		// (tools without AuthScopes are always visible; tools with
+		// AuthScopes are filtered out).
 		catalogView = newRuntimeCatalogView(
 			d.catalog,
 			runtimeIdentity{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID},
-			nil, // GrantedScopes — TODO (Phase 83m): plumb the token's scopes here
+			d.grantedScopes,
 		)
 	}
 
@@ -527,6 +562,21 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		}
 	}
 
+	// Phase 83m item 7: per-run OnToolDispatched hook that advances
+	// the task's `ToolCount` registry-side after every successful
+	// CallTool dispatch. The dev binary closes the seam from the
+	// runloop's side (the executor returned without error) to the
+	// tasks.TaskRegistry surface the Console Tasks page reads. A
+	// best-effort log + non-fatal continuation would mask a counter
+	// drift the operator depends on for visibility — the hook
+	// surfaces an IncrementToolCount error loud, matching §13.
+	dispatchHook := func(hookCtx context.Context) error {
+		if err := d.tasks.IncrementToolCount(hookCtx, taskID); err != nil {
+			return fmt.Errorf("tasks.IncrementToolCount(%q): %w", taskID, err)
+		}
+		return nil
+	}
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -541,9 +591,10 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
 			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
 		},
-		TaskID:       taskID,
-		ToolExecutor: d.executor, // Phase 83i (D-152) — dispatch CallTool decisions
-		MaxSteps:     d.maxStepsRunLoop,
+		TaskID:           taskID,
+		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
+		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
+		MaxSteps:         d.maxStepsRunLoop,
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
@@ -723,6 +774,85 @@ func projectSkillsContext(ranked []skills.RankedSkill) []any {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// skillKeywordStopwords lists the common English stopwords the
+// keyword extractor drops before handing the query to the FTS5
+// skills driver. The list is intentionally CONSERVATIVE — domain
+// keywords ("api", "config", "auth", "tool") survive because they
+// drive the BM25 ranker's signal. The list mirrors the standard
+// short-stopword sets shipped with SQLite FTS5 tokenizers; it is
+// fixed (operator-tunable lists are a Phase 91+ concern).
+// Phase 83m (Item 4, D-156).
+var skillKeywordStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {},
+	"if": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {},
+	"been": {}, "being": {}, "have": {}, "has": {}, "had": {},
+	"do": {}, "does": {}, "did": {}, "of": {}, "to": {}, "in": {},
+	"on": {}, "at": {}, "for": {}, "with": {}, "by": {}, "from": {},
+	"as": {}, "into": {}, "that": {}, "this": {}, "it": {}, "i": {},
+	"you": {}, "we": {}, "they": {}, "my": {}, "your": {},
+}
+
+// maxSkillKeywords caps the number of terms the helper returns. A
+// longer term list dilutes the BM25 signal without improving recall;
+// 10 mirrors the standard search-keyword cap.
+const maxSkillKeywords = 10
+
+// extractSkillKeywords turns a raw task Query (a full sentence, with
+// punctuation + articles + stopwords) into the keyword-shaped string
+// the SQLite skills driver's FTS5 ranker performs best on. The
+// pipeline is intentionally CONSERVATIVE: tokens that look like
+// domain vocabulary survive; only the highest-noise common-English
+// stopwords + 1-char tokens get dropped. Phase 83m (Item 4, D-156).
+//
+// Steps (in order):
+//
+//  1. Lowercase the input so the case-insensitive token comparison
+//     matches the FTS5 tokenizer's default case-folding.
+//  2. Split on whitespace + punctuation (every rune that is neither a
+//     letter nor a digit acts as a separator). Apostrophes inside a
+//     word ("operator's") are split — the driver tokenizes the same
+//     way, so the result is a single contiguous letter run rather
+//     than the contraction.
+//  3. Drop tokens in `skillKeywordStopwords`.
+//  4. Drop 1-character tokens — they carry no signal at the BM25
+//     edge.
+//  5. Deduplicate while preserving order — the first occurrence wins
+//     so the operator-visible word order is preserved.
+//  6. Cap at `maxSkillKeywords` (10) terms.
+//
+// Returns the space-joined keyword string. An empty result is
+// possible for a pathological all-stopword input; the caller MUST
+// fall back to the raw Query so Search still has signal.
+func extractSkillKeywords(query string) string {
+	if query == "" {
+		return ""
+	}
+	lower := strings.ToLower(query)
+	// Token boundary: any rune that is not a letter or a digit.
+	tokens := strings.FieldsFunc(lower, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if len(tok) <= 1 {
+			continue
+		}
+		if _, drop := skillKeywordStopwords[tok]; drop {
+			continue
+		}
+		if _, dup := seen[tok]; dup {
+			continue
+		}
+		seen[tok] = struct{}{}
+		out = append(out, tok)
+		if len(out) >= maxSkillKeywords {
+			break
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // extractAssistantAnswer pulls the planner's natural-language answer

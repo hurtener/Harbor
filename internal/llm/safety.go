@@ -117,13 +117,21 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	}
 
 	// Drive the underlying driver. Per-call timeout: if the caller's
-	// ctx has no deadline, layer one in defensively. (Long streams
-	// from real providers can hang; the bifrost driver lands its
-	// own per-call timeout from cfg.Timeout in Phase 33 — this is
-	// the universal floor.)
+	// ctx has no deadline, layer one in defensively. Prefer the
+	// operator-configured `llm.timeout` (`c.cfg.Timeout`) when > 0;
+	// fall back to `defaultRequestTimeout` only when the operator
+	// left it zero. (Phase 83m item 5 — the operator-facing yaml
+	// field was wired through `ConfigSnapshot.Timeout` but the
+	// safety wrapper ignored it and always used the 5-minute floor,
+	// so any operator who tightened `llm.timeout` saw no effect on
+	// the safety-net's defensive deadline.)
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := c.cfg.Timeout
+		if timeout <= 0 {
+			timeout = defaultRequestTimeout
+		}
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	return c.driver.Complete(ctx, materialized)

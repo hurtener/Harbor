@@ -540,6 +540,30 @@ tools:
         summary: string
 ```
 
+### tools.granted_scopes
+
+Operator-declared list of authorization scopes the dev runtime's
+planner-facing catalog view treats as granted (Phase 83m / D-156).
+The runtime catalog projects only tools whose `AuthScopes` are
+entirely contained in this set; tools that require a missing scope
+are invisible to the planner. Tools with no `AuthScopes` are always
+visible.
+
+Default: empty (no scopes granted — tools that declare `AuthScopes`
+are invisible). Validation: each entry MUST be a non-empty string;
+scope names are operator-defined per their tool sources (no
+allowlist). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  granted_scopes:
+    - read:repo
+    - write:issues
+    - admin
+```
+
 ---
 
 ## Planner

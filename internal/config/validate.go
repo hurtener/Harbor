@@ -783,6 +783,18 @@ func (c *Config) validateTools() error {
 				"path must not be empty")
 		}
 	}
+	// Phase 83m (Item 6, D-156) — operator-declared granted scopes
+	// pass-through. The validator asserts only that each entry is a
+	// non-empty string; scope names are operator-defined per their
+	// tool sources (no allowlist). An empty list is valid (the
+	// existing latent default — no scopes granted, tools with
+	// AuthScopes are invisible to the planner).
+	for i, s := range c.Tools.GrantedScopes {
+		if strings.TrimSpace(s) == "" {
+			return fieldError(fmt.Sprintf("tools.granted_scopes[%d]", i),
+				"must not be empty (each granted scope is a non-empty operator-defined string)")
+		}
+	}
 	names := make(map[string]struct{})
 	for i, s := range c.Tools.MCPServers {
 		prefix := fmt.Sprintf("tools.mcp_servers[%d]", i)

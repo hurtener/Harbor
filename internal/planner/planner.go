@@ -224,6 +224,27 @@ type RunContext struct {
 	// renderer compact-JSON-encodes whatever is passed. The runtime,
 	// not the planner, decides which skills land here (RFC §6.7).
 	SkillsContext []any
+
+	// OnReasoning is a per-step callback the Planner invokes with the
+	// provider-side reasoning trace captured by the LLM call (Phase 83m
+	// item 8). The Runtime sets it on each per-step RunContext so the
+	// runloop can copy the trace onto `trajectory.Step.ReasoningTrace`
+	// when it appends the step. May be nil — a planner that finds no
+	// callback skips the emission silently (no observability surface
+	// wired this run).
+	//
+	// Why a side-channel rather than a field on Decision: the Decision
+	// sum is the planner→runtime instruction contract (CallTool,
+	// CallParallel, SpawnTask, AwaitTask, RequestPause, Finish) and
+	// must stay narrow so future planner concretes (Deterministic,
+	// Workflow, Plan-Execute) implement it cleanly without populating
+	// a field most planners never produce. Reasoning is per-step
+	// observation, not per-step instruction — this seam matches.
+	//
+	// Concurrent-reuse (D-025): the callback closure is captured per
+	// run on the runloop's stack; the planner reads it from rc, never
+	// from itself. N concurrent runs see N independent closures.
+	OnReasoning func(string)
 }
 
 // MemoryBlocks carries the two memory tiers the ReAct planner injects

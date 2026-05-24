@@ -564,6 +564,23 @@ func (s *Store) Discard(ctx context.Context, draftID string) error {
 // only inspection; production code should NOT path-join into this.
 func (s *Store) Root() string { return s.root }
 
+// Close releases the Store. Phase 83m (Item 3, D-156): the V1 Store
+// owns no long-lived goroutines and no persistent file handles — the
+// per-call methods open + close their own descriptors — so Close is
+// a no-op today. It exists so cmd/harbor's bootDevStack and
+// harbortest/devstack can append it to their closer chain alongside
+// every other subsystem's Close, and so a future on-disk / SQLite-
+// backed Draft store (one that DOES own goroutines / handles) does
+// not need to be retro-fitted into every caller. Safe to call
+// concurrently and idempotent.
+//
+// The ctx is accepted for closer-signature compatibility (closers
+// take `func(context.Context) error`); the Store's drain has no
+// blocking shape to bound.
+func (s *Store) Close(_ context.Context) error {
+	return nil
+}
+
 // ---- internal helpers --------------------------------------------
 
 func (s *Store) mustIdentity(ctx context.Context) (identity.Identity, error) {

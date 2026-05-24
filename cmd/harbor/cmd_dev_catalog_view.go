@@ -48,9 +48,15 @@ func (v runtimeCatalogView) List() []tools.Tool {
 }
 
 // newRuntimeCatalogView constructs the per-run view. `granted` is the
-// GrantedScopes list the dev-token carries (admin + console:fleet in
-// the dev path); the filter applies the standard AuthScopes subset
-// check.
+// operator-configured GrantedScopes list — sourced from
+// `cfg.Tools.GrantedScopes` and threaded through the runloop driver
+// (Phase 83m / Item 6 / D-156). The filter applies the standard
+// AuthScopes subset check: tools whose declared AuthScopes are
+// entirely contained in `granted` are visible; tools that require a
+// missing scope are filtered out. An empty / nil `granted` keeps the
+// prior "no scopes granted" default — tools with AuthScopes are
+// invisible to the planner; tools without AuthScopes are always
+// visible (the standard CatalogFilter rule).
 func newRuntimeCatalogView(cat tools.ToolCatalog, q runtimeIdentity, granted []string) runtimeCatalogView {
 	return runtimeCatalogView{
 		cat: cat,

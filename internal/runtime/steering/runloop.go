@@ -285,6 +285,24 @@ type RunSpec struct {
 	// In production the dev binary wires a real executor backed by the
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
+
+	// OnToolDispatched is the optional per-run hook the runloop
+	// invokes after the ToolExecutor returns WITHOUT ERROR (Phase 83m
+	// item 7). The dev binary wires it to
+	// `taskReg.IncrementToolCount(ctx, taskID)` so the Console Tasks
+	// page reflects the per-task tool-dispatch count. A nil hook is
+	// the legacy / test path (no counter wired); a hook that errors
+	// fails the run loud — silent degradation of an observability
+	// counter is forbidden per §13 (the counter is an integrity
+	// surface, not a best-effort log line).
+	//
+	// The runloop calls the hook for every successful executor
+	// dispatch — CallTool today, CallParallel + SpawnTask + AwaitTask
+	// once those executor shapes land. A dispatch that the executor
+	// reports as failed (the executor's own error path) does NOT
+	// invoke the hook; the planner's repair / re-plan flow records
+	// the failure on the trajectory and the counter stays put.
+	OnToolDispatched func(ctx context.Context) error
 }
 
 // Run drives the planner to a terminal planner.Finish decision. It Opens
@@ -466,6 +484,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			spec.Base.Goal = sc.goal
 		}
 
+		// Phase 83m item 8: per-step closure that captures the planner's
+		// reasoning trace via the RunContext.OnReasoning side-channel.
+		// The runloop reads stepReasoning after Planner.Next returns and
+		// copies it into the appended trajectory.Step. The closure is
+		// scoped to THIS step (one captured variable per iteration); a
+		// new closure is installed each step so a stale read from a
+		// prior step never reaches the next append. The capture lives
+		// on this goroutine's stack — D-025 holds (no planner-side
+		// mutable state).
+		var stepReasoning string
+		rc.OnReasoning = func(s string) { stepReasoning = s }
+
 		// --- NEXT: the planner contributes exactly this. ---
 		decision, nerr := spec.Planner.Next(runCtx, rc)
 		if nerr != nil {
@@ -538,17 +568,38 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 				} else {
 					observation = obs
 					llmObservation = llmObs
+					// Phase 83m item 7: notify the per-run dispatch hook
+					// on a successful executor return. The dev binary
+					// wires this to `taskReg.IncrementToolCount` so the
+					// Console Tasks page's tool_count reflects the
+					// running per-task dispatch count. Hook errors are
+					// surfaced loud — silent degradation of an
+					// observability counter is §13-forbidden.
+					if spec.OnToolDispatched != nil {
+						if hookErr := spec.OnToolDispatched(runCtx); hookErr != nil {
+							return planner.Finish{}, fmt.Errorf("steering: tool-dispatched hook: %w", hookErr)
+						}
+					}
 				}
 			}
 			// Append the step to the run's Trajectory so the planner
 			// sees the prior action + observation on its next step.
 			// `rc` is a value-copy of `spec.Base`, but `Trajectory` is a
 			// pointer — mutations are visible to the next step's rc.
+			//
+			// Phase 83m item 8: copy the captured reasoning trace
+			// (delivered by the planner via the rc.OnReasoning
+			// side-channel) onto Step.ReasoningTrace. Without this
+			// copy, `ReasoningReplay=text` mode (Phase 83e — D-148)
+			// is structurally ineffective in production because the
+			// prompt builder reads from Step.ReasoningTrace and finds
+			// an empty string on every prior step.
 			if spec.Base.Trajectory != nil {
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
 					Action:         decision,
 					Observation:    observation,
 					LLMObservation: llmObservation,
+					ReasoningTrace: stepReasoning,
 				})
 			}
 		}

@@ -231,6 +231,12 @@ func projectRow(t *tasks.Task) prototypes.TaskRow {
 		// stream without reshaping this projection.
 		IsBackground:   kind == prototypes.TaskKindBackground,
 		LastActivityAt: updated,
+		// Phase 83m item 7: the registry-side ToolCount counter is the
+		// running count of tool dispatches the runloop has performed
+		// against this task; mirrored to the wire so the Console Tasks
+		// page renders the count without subscribing to the per-tool
+		// event stream.
+		ToolCount: t.ToolCount,
 	}
 	if t.ParentTaskID != nil {
 		row.ParentTaskID = string(*t.ParentTaskID)

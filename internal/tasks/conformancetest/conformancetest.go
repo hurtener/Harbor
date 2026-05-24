@@ -58,6 +58,10 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Cancel_AlreadyTerminal_NoOp
 //   - Cancel_DeepGrandchildren_AllReceiveCancellation
 //   - Prioritize_UpdatesValue
+//   - IncrementToolCount_HappyPath (Phase 83m item 7)
+//   - IncrementToolCount_NotFound (Phase 83m item 7)
+//   - IncrementToolCount_CrossSession_Rejected (Phase 83m item 7)
+//   - IncrementToolCount_D025_Concurrent (Phase 83m item 7, D-025)
 //   - Identity_Mandatory
 //   - CrossTenant_Isolation
 //   - CrossSession_Isolation
@@ -528,6 +532,112 @@ func Run(t *testing.T, factory Factory) {
 		}
 		if ok {
 			t.Errorf("Prioritize returned true on a no-op")
+		}
+	})
+
+	// IncrementToolCount_HappyPath — Phase 83m item 7.
+	//
+	// Each call atomically increments Task.ToolCount by 1; the new
+	// value is visible on Get.
+	t.Run("IncrementToolCount_HappyPath", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+		h, err := r.Spawn(ctx, freshSpawnReq(tripleA()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Sanity check: a freshly-spawned task has ToolCount=0.
+		got, err := r.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ToolCount != 0 {
+			t.Errorf("fresh task: ToolCount=%d, want 0", got.ToolCount)
+		}
+		// Three sequential increments.
+		for range 3 {
+			if err := r.IncrementToolCount(ctx, h.ID); err != nil {
+				t.Fatalf("IncrementToolCount: %v", err)
+			}
+		}
+		got, err = r.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ToolCount != 3 {
+			t.Errorf("after 3 increments: ToolCount=%d, want 3", got.ToolCount)
+		}
+	})
+
+	// IncrementToolCount_NotFound — IncrementToolCount on an unknown
+	// task ID returns ErrNotFound.
+	t.Run("IncrementToolCount_NotFound", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+		err := r.IncrementToolCount(ctx, tasks.TaskID("does-not-exist"))
+		if !errors.Is(err, tasks.ErrNotFound) {
+			t.Errorf("IncrementToolCount on unknown id: err=%v, want ErrNotFound", err)
+		}
+	})
+
+	// IncrementToolCount_CrossSession_Rejected — a caller in session
+	// B cannot increment a task spawned by session A. Existence is
+	// surfaced as ErrNotFound (existence-without-access).
+	t.Run("IncrementToolCount_CrossSession_Rejected", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		idA := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-A"}
+		idB := identity.Identity{TenantID: "T", UserID: "U", SessionID: "sess-B"}
+		ctxAA := mustWithIdentity(idA)
+		ctxBB := mustWithIdentity(idB)
+		h, err := r.Spawn(ctxAA, freshSpawnReq(identity.Quadruple{Identity: idA}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = r.IncrementToolCount(ctxBB, h.ID)
+		if !errors.Is(err, tasks.ErrNotFound) {
+			t.Errorf("cross-session IncrementToolCount: err=%v, want ErrNotFound", err)
+		}
+	})
+
+	// IncrementToolCount_D025_Concurrent — D-025 concurrent-reuse:
+	// N=128 concurrent increments against ONE shared task yield
+	// exactly N as the final count. Asserts no torn writes under
+	// the FSM lock.
+	t.Run("IncrementToolCount_D025_Concurrent", func(t *testing.T) {
+		r, cleanup := factory()
+		defer cleanup()
+		ctx := ctxA()
+		h, err := r.Spawn(ctx, freshSpawnReq(tripleA()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const N = 128
+		var wg sync.WaitGroup
+		var errs atomic.Int64
+		wg.Add(N)
+		for range N {
+			go func() {
+				defer wg.Done()
+				if err := r.IncrementToolCount(ctx, h.ID); err != nil {
+					errs.Add(1)
+					t.Errorf("IncrementToolCount: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+		if errs.Load() > 0 {
+			t.Fatalf("%d concurrent increments errored", errs.Load())
+		}
+		got, err := r.Get(ctx, h.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ToolCount != N {
+			t.Errorf("after %d concurrent increments: ToolCount=%d, want %d (torn writes under FSM lock)",
+				N, got.ToolCount, N)
 		}
 	})
 

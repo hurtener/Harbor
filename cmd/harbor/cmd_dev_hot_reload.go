@@ -589,6 +589,16 @@ func shouldTrigger(ev fsnotify.Event) bool {
 // reload on them creates a feedback loop that reboots the binary
 // indefinitely. The suffixes cover SQLite (WAL/SHM/journal) and the
 // rollback-journal forms other lightweight engines use.
+//
+// Phase 83m (Item 2, D-156): the MAIN `.sqlite` / `.db` files are also
+// skipped. The Phase 83h fix covered only the WAL/SHM/journal sidecars,
+// but SQLite rewrites the main file on every commit too (transient
+// metadata changes are normal — they fire fsnotify Write events even
+// when the operator did not touch the file). Skipping only the sidecars
+// produced a slower reboot loop on every persisted state change rather
+// than closing it; the §17.5 audit pinned this as the remaining half of
+// the same bug shape. A SQLite-managed file should never trigger
+// hot-reload regardless of which file in the bundle is being rewritten.
 var dbSidecarSuffixes = []string{
 	".sqlite-wal",
 	".sqlite-shm",
@@ -597,6 +607,8 @@ var dbSidecarSuffixes = []string{
 	".db-shm",
 	".db-journal",
 	"-journal",
+	".sqlite",
+	".db",
 }
 
 func isDBSidecar(path string) bool {
