@@ -3838,3 +3838,104 @@ The bug is purely structural — `SettingsState.load()`'s own docstring already 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None.
+
+---
+
+## D-162 — Phase 83v: Runtime CORS allowlist with default-deny posture + dev-only escape hatch
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83v)
+
+**Where it lives:** `internal/protocol/transports/cors/` (new package — `Wrap()` middleware factory + `Config` shape + tests); `internal/config/config.go` (`ServerConfig.AllowedOrigins []string` + `ServerConfig.CORSDevAllowAny bool`); `internal/config/validate.go` (origin shape validation + `*` rejection unless dev flag); `cmd/harbor/cmd_dev.go` (wraps the protocol mux + SSE handler at `bootDevStack`); `harbortest/devstack/devstack.go` (D-094 mirror); `test/integration/phase83v_cors_test.go` (cross-origin preflight end-to-end); `docs/CONFIG.md` (`server.allowed_origins` + `server.cors_dev_allow_any` sections with production-security note); `scripts/smoke/phase-83v.sh`.
+
+**Decision.** The round-2 walkthrough (Phase 83t) pinned F4: cross-origin requests from the Console (`:18790`) to a remote Runtime (`:18080`) were blocked at the browser CORS preflight stage. The repo-wide grep `grep -rn 'Access-Control\|cors' --include='*.go'` returned zero matches. The D-091 multi-process posture was advertised in the docs but structurally broken at the wire. 83v closes the gap with operator-configurable CORS that defaults to deny.
+
+**Three settled calls.**
+
+**1. Default deny.** Empty `server.allowed_origins` (the default) emits no CORS headers — same-origin only, which preserves the existing co-resident `harbor console` mode. Operators opt in by listing exact origins. No silent broadening of the wire's reachability.
+
+**2. Per-origin echo, never `*`, in production.** The middleware echoes the request's `Origin` header verbatim after an exact-match check against the allowlist. `Access-Control-Allow-Credentials: true` (required for the Bearer-token + future cookie auth path) is incompatible with `*` per the CORS spec, which forces the per-origin shape. The validator rejects `*` in `server.allowed_origins` unless the operator ALSO sets the dev-only escape hatch.
+
+**3. Dev-only wildcard escape hatch is explicit + loud.** `server.cors_dev_allow_any: true` is the single sanctioned `*` path, intended for iterative `harbor dev` workflows where the Console origin changes per browser tab. When enabled, every boot prints a stderr banner (`[DEV-ONLY CORS WILDCARD — DO NOT USE IN PRODUCTION]`). The validator + the banner + the explicit godoc warning on the field together prevent silent prod leakage.
+
+**Why now.** The pre-83v state is a §13 forbidden-practice tripwire: two parallel postures (advertised "Console can attach any remote Runtime" + actual "blocked at preflight"). 83v makes the documented posture real and ships it in the same wave as the Console DB chicken-and-egg fix (D-163) so the multi-process surface works end-to-end in one cut.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — this is a transport-layer change, not a method addition.
+
+---
+
+## D-163 — Phase 83u: Console DB chicken-and-egg fix — `attachConnection()` helper writes localStorage first, DB upsert is best-effort
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83u)
+
+**Where it lives:** `web/console/src/lib/connection.ts` (new `attachConnection(baseURL, opts)` helper + `AttachConnectionOptions` interface); `web/console/src/lib/settings/console_db.svelte.ts` (`addRuntime` rewires through `attachConnection()` first + adds private `#catchUpAddressBook()` invoked from `load()`); `web/console/src/lib/components/settings/ConnectedRuntimesCard.svelte` (accepts `addWarning` + `onaddsuccess` props + renders info banner); `web/console/src/routes/(console)/settings/+page.svelte` (wires props + reload-on-success); `web/console/src/lib/tests/connection.spec.ts` (4 new unit tests); `web/console/tests/settings-page.spec.ts` (new test `(h)` — disconnected-boot → Add → reload → connected); `scripts/smoke/phase-83u.sh`.
+
+**Decision.** The round-2 walkthrough pinned F3: `console_db.svelte.ts::addRuntime` called `this.#db.runtimes.upsert(...)` on a Console DB that required an active `RuntimeConnection` to derive its per-operator AES key. Operator without a Runtime → no connection → DB stays closed → `addRuntime` threw "Console DB not open — attach to a Runtime first". The form was reachable (Phase 83p) but structurally non-functional: operator could not attach a Runtime through the UI without first attaching a Runtime through the UI.
+
+**Two settled calls.**
+
+**1. localStorage is the source of truth for the active connection; Console DB is the convenience address book.** The Connected Runtimes form's two effects split cleanly: (a) "make the Console talk to this Runtime" → write `harbor.runtime.*` keys to localStorage (no DB dependency); (b) "remember this Runtime for later" → upsert into the Console DB's `runtime_registry` table (only works after the DB has unlocked via a connected operator). The form does (a) first, then attempts (b) and degrades to a non-fatal warning if the DB is still locked.
+
+**2. Page reload after attach; address-book catch-up on next DB load.** A connection change requires a reload (every page subscribes to the connection on mount). The form triggers it explicitly. On the reloaded page the Console DB opens via the now-active connection, and `#catchUpAddressBook()` runs on `load()` — if the active connection is not yet in the address book, it's inserted with `is_default: 1`. The operator's first-attach gesture round-trips through to a persisted address-book entry without a second user gesture.
+
+**Why now.** F3 is the load-bearing showstopper that blocks the multi-process posture from working at all. D-162 (CORS) makes the wire reachable; D-163 makes the form usable. Without both, the documented "Console attach to remote Runtime" flow doesn't work end-to-end. Shipping them in the same wave is the rule (§13 — no primitive without its consumer; here the consumer of the CORS allowlist is the Settings add-form).
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — this is a Console-local layering fix; no wire-shape change.
+
+---
+
+## D-164 — Phase 83w: Friendly `unknown_method` info banner + `mcp.servers.list` wire surface
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83w)
+
+**Where it lives:**
+
+- **F5 (Console side, Agent B):** `web/console/src/lib/components/ui/PageState.svelte` (new `'info'` branch added to `PageStatus` union); `web/console/src/lib/protocol/errors.ts` (new `isUnknownMethod(err)` helper); `web/console/src/routes/(console)/live-runtime/+page.svelte` + `web/console/src/routes/(console)/playground/[session_id]/+page.svelte` (special-case `unknown_method` on `topology.snapshot` → route to PageState info branch with "Topology view not available on this Runtime — planner/RunLoop runtime, not engine-graph" copy).
+- **F6 (Go side, Agent A):** `cmd/harbor/cmd_dev.go::bootDevStack` constructs the Phase 73k `MCPSurface` from the boot-time `*mcp.Registry` and threads it into `transports.NewMux` via `transports.WithMCPSurface(mcpSurface)`; `harbortest/devstack/devstack.go` (D-094 mirror); `internal/mcpconsole/mcpconsole.go` (new `NoOAuthAccessor` type — read-only methods work, OAuth-flow methods fail loudly with `ErrNoOAuthConfigured` per §13 fail-loud); `test/integration/phase83w_mcp_servers_list_test.go`; `scripts/smoke/phase-83w.sh`.
+
+**Decision.** The round-2 walkthrough pinned two wire-surface gaps that surfaced as scary red `ERROR` PageStates on the operator's most-used debugging surfaces (Live Runtime + Playground + MCP Connections). F5 was a Console-side error-mapping miss; F6 was a missing Go-side method handler. Both fit naturally in one phase because both are wire-surface coherence and both produce identical operator-visible symptoms (red error on a page that should render fine).
+
+**Two settled calls.**
+
+**1. The `'info'` branch is a first-class addition to `PageState`, not a per-page mapping.** Agent B chose option (a) of the plan — add `'info'` to the `PageStatus` union, mirroring the existing four states (disconnected/loading/error/empty/ready). Rationale: two existing call sites need the same shape today, and D-164-style "Runtime does not host this surface" cases are anticipated to recur. Adding ~12 LOC to the single async-state contract is cheaper than duplicating per-page mapping and preserves PageState as the canonical contract per CONVENTIONS.md §4. The info branch carries no Retry button — "Retry" makes no sense for a fundamentally-not-applicable surface.
+
+**2. The `mcp.servers.list` handler reuses the existing Phase 73k `MCPSurface` — no new package.** The `*mcp.Registry` already exists at boot (Phase 83g); the wire-side `MCPSurface` dispatcher already exists from Phase 73k. F6 is wiring-only: construct `MCPSurface` from the boot-time registry + thread it into `transports.NewMux`. For the V1 `harbor dev` posture (no OAuth providers), `mcpconsole.NoOAuthAccessor` provides the read-only access pattern; OAuth-flow methods (start/finish/refresh) fail loudly with `ErrNoOAuthConfigured` rather than returning a stub. Fail-loud per §13.
+
+**Why now.** Both gaps surface as red errors on operator-visible pages that worked fine in every prior walkthrough except real-data round-2. The cluster of "Runtime is healthy but the Console shows error" is the most damaging UX regression in the post-Phase-83p surface. F5 + F6 together close it.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** `mcp.servers.list` — the read-only list shape (existing `prototypes.MCPServerRow` / `prototypes.MCPServersListResponse`). Identity-required; no new scope.
+
+---
+
+## D-165 — Phase 83x: Per-page real-data layout polish + cross-stack `created_at` / session-row fixes
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83x)
+
+**Where it lives:**
+
+- **Console side:** `web/console/src/lib/components/live-runtime/status-counter-strip.svelte` (N14 "(now)" suffix + W10 status derivation); `web/console/src/lib/components/tasks/KanbanBoard.svelte` + `web/console/src/lib/protocol/tasks.ts` (W7 Complete column); `web/console/src/lib/components/tools/ToolOverviewCard.svelte` (N12 "In-flight (now)" relabel + N13 `--size-col-reliability` width token); `web/console/src/lib/tokens.css` (new column-width token); per-page `+page.svelte` files for agents (W11), artifacts (W5 grid layout), events (W9 driver-name copy), live-runtime (W10), memory (W4 ellipsis), overview (N11 "(now)" suffixes), tools (N12/N13).
+- **Go side:** `cmd/harbor/cmd_dev_executor.go::projectForLLM` (W6 `created_at: time.Now().UTC()` on heavy-tool artifact promotion); `internal/protocol/artifacts.go::handlePut` (W6 `created_at: s.clock()` on `artifacts.put` upload); `cmd/harbor/cmd_dev.go::bootDevStack` (W8 idempotent dev-session `Open` after registry construction — swallows `ErrSessionAlreadyOpen`).
+- **Tests + smoke:** `web/console/tests/tasks-page.spec.ts` (5-column kanban); `scripts/smoke/phase-83x.sh` (170-line static tripwire across all 12 items).
+
+**Decision.** The round-2 walkthrough pinned 12 polish items (W4-W11 + N11-N14) — none individually a showstopper, together a "every page has a paper cut" backdrop that erodes operator trust. Two items (W6 + W8) span Console + Go because the symptom is on the Console but the root cause is in the Go-side data source. Per §17.6, fix both sides in the same PR.
+
+**Two settled calls.**
+
+**1. Empty-state copy carries the operator hint, not a "fix it for you" code path.** W9 (events) + W11 (agents) both surface "this Runtime is configured for a different posture; that's not a bug." Rather than auto-switching the events driver or auto-registering a synthetic agent row, the empty-state copy names the configuration knob (`events.driver: durable`) or the posture (synthetic-default agent). Operators learn the model rather than chasing a phantom bug.
+
+**2. The W10 status derivation reads the live status-counter strip, not the page-level `PageStatus`.** A `topology.snapshot` failure pre-83x poisoned the session-detail right-rail with `Status: error` even though the task itself completed cleanly. 83x derives the session status from the strip's aggregate counts — `Complete` if any completed task is present, `Running` if any in-flight, etc. The page's own `PageStatus` (which reflects topology fetch outcome, not session state) no longer drives the rail's Status field.
+
+**Why now.** Round-3 walkthrough validates the multi-process posture (D-162 + D-163 + D-164) end-to-end; 83x ensures the per-page surfaces it lands on read honestly under real data. Shipping all four phases (83u + 83v + 83w + 83x) in one wave gives round-3 a clean target.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — W6's `created_at` field already exists on `prototypes.Artifact`; the change is to populate it.
