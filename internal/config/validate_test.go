@@ -63,6 +63,50 @@ func TestValidate_TableDriven(t *testing.T) {
 			func(c *config.Config) { c.Server.ShutdownGracePeriod = 0 },
 			"server.shutdown_grace_period",
 		},
+		// Phase 83v (D-162) — CORS allowlist validation.
+		{
+			"allowed_origins entry empty",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"   "}
+			},
+			"server.allowed_origins[0]",
+		},
+		{
+			"allowed_origins entry missing scheme",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"console.example.com"}
+			},
+			"server.allowed_origins[0]",
+		},
+		{
+			"allowed_origins entry with path",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"https://console.example.com/foo"}
+			},
+			"server.allowed_origins[0]",
+		},
+		{
+			"allowed_origins entry with query",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"https://console.example.com?x=1"}
+			},
+			"server.allowed_origins[0]",
+		},
+		{
+			"allowed_origins wildcard rejected without dev flag",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"*"}
+				c.Server.CORSDevAllowAny = false
+			},
+			"server.allowed_origins[0]",
+		},
+		{
+			"allowed_origins ftp scheme rejected",
+			func(c *config.Config) {
+				c.Server.AllowedOrigins = []string{"ftp://console.example.com"}
+			},
+			"server.allowed_origins[0]",
+		},
 		{
 			"empty issuer",
 			func(c *config.Config) { c.Identity.Issuer = "" },
@@ -561,6 +605,30 @@ func TestValidate_AcceptsPostgresMemoryDriverWithDSN(t *testing.T) {
 	cfg.Memory.DSN = "postgres://harbor:secret@localhost:5432/harbor?sslmode=disable"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate rejected postgres memory driver: %v", err)
+	}
+}
+
+// Phase 83v (D-162) — a valid CORS allowlist passes validation.
+func TestValidate_AcceptsCORSAllowedOrigins(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Server.AllowedOrigins = []string{
+		"https://console.example.com",
+		"https://console.example.com:8443",
+		"http://127.0.0.1:18790",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected valid CORS allowlist: %v", err)
+	}
+}
+
+// Phase 83v (D-162) — the dev-only wildcard escape hatch passes
+// validation when the operator explicitly opts in.
+func TestValidate_AcceptsCORSDevAllowAny(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Server.CORSDevAllowAny = true
+	cfg.Server.AllowedOrigins = []string{"*"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected dev-only wildcard with explicit opt-in: %v", err)
 	}
 }
 

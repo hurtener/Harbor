@@ -124,7 +124,7 @@ assert_status 200 "$(api_url /healthz)" "phase 73k: healthz returns 200"
 # 2. mcp.servers.list with valid identity → 2xx + .servers is an array.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.list' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"}}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"}}' \
     'phase 73k: mcp.servers.list (operator scope)'; then
     assert_2xx_json '.servers' 'phase 73k: mcp.servers.list returns .servers array'
 fi
@@ -142,7 +142,7 @@ fi
 # 4. mcp.servers.get for an unknown server → not_found.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.get' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"__nonexistent__"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"__nonexistent__"}' \
     'phase 73k: mcp.servers.get unknown name'; then
     assert_error_code 'not_found' \
         'phase 73k: mcp.servers.get unknown → not_found'
@@ -152,7 +152,7 @@ fi
 # 5. mcp.servers.resources for a likely-empty dev runtime → 2xx + array.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.resources' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.resources'; then
     case "${PROTOCOL_STATUS}" in
         2*)
@@ -172,7 +172,7 @@ fi
 # 6. mcp.servers.prompts — same shape.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.prompts' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.prompts'; then
     case "${PROTOCOL_STATUS}" in
         2*) ok 'phase 73k: mcp.servers.prompts reachable (2xx)' ;;
@@ -187,7 +187,7 @@ fi
 # server is configured; otherwise not_found.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.health' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.health'; then
     case "${PROTOCOL_STATUS}" in
         2*) ok 'phase 73k: mcp.servers.health reachable (2xx)' ;;
@@ -201,7 +201,7 @@ fi
 # 8. mcp.servers.policy — read-only ToolPolicy projection.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.policy' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.policy'; then
     case "${PROTOCOL_STATUS}" in
         2*) ok 'phase 73k: mcp.servers.policy reachable (2xx)' ;;
@@ -215,7 +215,7 @@ fi
 # 9. mcp.servers.bindings.list — operator's own bindings only.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.bindings.list' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.bindings.list'; then
     case "${PROTOCOL_STATUS}" in
         2*) ok 'phase 73k: mcp.servers.bindings.list reachable (2xx)' ;;
@@ -229,7 +229,7 @@ fi
 # 10. mcp.servers.refresh_discovery without control claim → scope_mismatch.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.refresh_discovery' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.refresh_discovery (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
         'phase 73k: refresh_discovery without control claim → scope_mismatch'
@@ -239,7 +239,7 @@ fi
 # 11. mcp.servers.probe without control claim → scope_mismatch.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.probe' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp"}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp"}' \
     'phase 73k: mcp.servers.probe (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
         'phase 73k: probe without control claim → scope_mismatch'
@@ -247,22 +247,38 @@ fi
 
 # ----------------------------------------------------------------------------
 # 12. mcp.servers.refresh_binding without tools.admin → scope_mismatch.
+#     Only run when an operator-only token is genuinely distinct from
+#     the admin token. In plain `harbor dev` the same dev token carries
+#     all scopes, so the scope check passes; the call then reaches the
+#     OAuth dispatch which under the V1 dev posture (Phase 83w F6) is
+#     served by mcpconsole.NoOAuthAccessor — it fails loudly with
+#     ErrNoOAuthConfigured (§13). Asserting scope_mismatch in that
+#     posture is structurally impossible.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.refresh_binding' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","principal_id":"smoke"}' \
-    'phase 73k: mcp.servers.refresh_binding (operator scope, expect scope_mismatch)'; then
-    assert_error_code 'scope_mismatch' \
-        'phase 73k: refresh_binding without tools.admin → scope_mismatch'
+if [ -n "${TOKEN_ADMIN}" ] && [ "${TOKEN_ADMIN}" != "${TOKEN_OPERATOR}" ]; then
+    if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.refresh_binding' \
+        '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp","principal_id":"smoke"}' \
+        'phase 73k: mcp.servers.refresh_binding (operator scope, expect scope_mismatch)'; then
+        assert_error_code 'scope_mismatch' \
+            'phase 73k: refresh_binding without tools.admin → scope_mismatch'
+    fi
+else
+    skip 'phase 73k: refresh_binding scope-mismatch negative — no operator-only token (HARBOR_DEV_OPERATOR_TOKEN distinct from admin)'
 fi
 
 # ----------------------------------------------------------------------------
 # 13. mcp.servers.revoke_binding without tools.admin → scope_mismatch.
+#     Same operator-vs-admin token distinctness gate as refresh_binding.
 # ----------------------------------------------------------------------------
-if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.revoke_binding' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","principal_id":"smoke"}' \
-    'phase 73k: mcp.servers.revoke_binding (operator scope, expect scope_mismatch)'; then
-    assert_error_code 'scope_mismatch' \
-        'phase 73k: revoke_binding without tools.admin → scope_mismatch'
+if [ -n "${TOKEN_ADMIN}" ] && [ "${TOKEN_ADMIN}" != "${TOKEN_OPERATOR}" ]; then
+    if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.revoke_binding' \
+        '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp","principal_id":"smoke"}' \
+        'phase 73k: mcp.servers.revoke_binding (operator scope, expect scope_mismatch)'; then
+        assert_error_code 'scope_mismatch' \
+            'phase 73k: revoke_binding without tools.admin → scope_mismatch'
+    fi
+else
+    skip 'phase 73k: revoke_binding scope-mismatch negative — no operator-only token (HARBOR_DEV_OPERATOR_TOKEN distinct from admin)'
 fi
 
 # ----------------------------------------------------------------------------
@@ -271,7 +287,7 @@ fi
 #     mcp.servers.get shows .raw_html_trusted=true.
 # ----------------------------------------------------------------------------
 if protocol_post "${TOKEN_OPERATOR}" '/v1/control/mcp.servers.set_raw_html_trust' \
-    '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","trusted":true}' \
+    '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp","trusted":true}' \
     'phase 73k: set_raw_html_trust (operator scope, expect scope_mismatch)'; then
     assert_error_code 'scope_mismatch' \
         'phase 73k: set_raw_html_trust without tools.admin → scope_mismatch'
@@ -279,7 +295,7 @@ fi
 
 if [ -n "${TOKEN_ADMIN}" ] && [ "${TOKEN_ADMIN}" != "${TOKEN_OPERATOR}" ]; then
     if protocol_post "${TOKEN_ADMIN}" '/v1/control/mcp.servers.set_raw_html_trust' \
-        '{"identity":{"tenant":"smoke","user":"smoke","session":"smoke"},"name":"smoke-mcp","trusted":true}' \
+        '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"name":"smoke-mcp","trusted":true}' \
         'phase 73k: set_raw_html_trust (admin scope)'; then
         case "${PROTOCOL_STATUS}" in
             2*) ok 'phase 73k: set_raw_html_trust admin → 2xx' ;;

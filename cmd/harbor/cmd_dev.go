@@ -92,12 +92,14 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
+	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
@@ -680,6 +682,31 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		}
 	}
 
+	// Phase 83w F6 (D-164) — wire the Phase 73k MCPSurface over the
+	// constructed MCP Registry so the Console MCP Connections page's
+	// twelve `mcp.servers.*` methods resolve to live data instead of
+	// returning `unknown_method`. The dev binary's OAuth side is a
+	// slice today (no single `*auth.Provider` to wrap); the V1 dev
+	// posture uses NoOAuthAccessor so the OAuth-binding verbs fail
+	// loud while the read-only methods (list / get / resources /
+	// prompts / health) — the surface the page leans on — serve real
+	// data.
+	mcpRegAccessor, err := mcpconsole.NewRegistryAccessor(mcpRegistry)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("mcp accessor: %w", err)
+	}
+	mcpSurface, err := protocol.NewMCPSurface(protocol.MCPDeps{
+		MCP:      mcpRegAccessor,
+		OAuth:    mcpconsole.NewNoOAuthAccessor(),
+		Redactor: red,
+		Bus:      bus,
+	})
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("mcp surface: %w", err)
+	}
+
 	steeringReg := steering.NewRegistry()
 
 	// Planner — the swappable reasoning policy the RunLoop drives.
@@ -988,6 +1015,28 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("sessions registry: %w", err)
 	}
 	closers = append(closers, sessionRegistry.CloseRegistry)
+
+	// W8 (Phase 83x): the dev token carries `(DevTenant, DevUser,
+	// DevSession)`, but the SessionRegistry has no row until something
+	// explicitly Opens that triple. The Console's `sessions.list` reads
+	// from the registry, so without a row the Sessions page rendered
+	// "No sessions match these filters" even while a task was actively
+	// running under that identity. Open the dev session at boot so the
+	// catalog has the live row a fresh `harbor dev` user can see. A
+	// pre-existing row (e.g. an earlier boot that persisted into a
+	// SQLite state store) is fine — `ErrSessionAlreadyOpen` is
+	// expected and swallowed; any other error fails the boot loud.
+	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
+	devSessCtx, devSessErr := identity.With(ctx, devID)
+	if devSessErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions: dev identity scope: %w", devSessErr)
+	}
+	if _, openErr := sessionRegistry.Open(devSessCtx, DevSession, devID); openErr != nil &&
+		!errors.Is(openErr, sessions.ErrSessionAlreadyOpen) {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions: open dev session: %w", openErr)
+	}
 	sessionsProjector, err := sessionsprotocol.NewListerProjector(sessionRegistry)
 	if err != nil {
 		closeAll(ctx)
@@ -1136,6 +1185,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Phase 72c (D-108): mount the five `search.*` methods.
 		transports.WithSearch(searchSurface),
 		transports.WithArtifactsSurface(artifactsSurface),
+		// Phase 83w F6 (D-164): mount the twelve `mcp.servers.*` methods
+		// so the Console MCP Connections page renders live data instead
+		// of an "unknown_method" red error on every visit.
+		transports.WithMCPSurface(mcpSurface),
 		// Phase 72e: mount the `pause.list` snapshot route. The
 		// production path always wires the unified Coordinator + the
 		// artifact store + the configured heavy-content threshold so
@@ -1272,9 +1325,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		bindAddr = opts.bindAddr
 	}
 
+	// Phase 83v (D-162) — CORS middleware. Default-deny: empty allowlist
+	// = no CORS headers = same-origin only (the pre-83v posture).
+	// `server.cors_dev_allow_any: true` opens the door to any origin and
+	// prints a loud stderr banner so the posture is visibly dev-only
+	// (CLAUDE.md §13 — dev-only escape hatches are explicit, never the
+	// default). The middleware wraps the WHOLE router so every surface
+	// (REST `/v1/control/*`, SSE `/v1/events`, `/v1/dev/drafts/*`,
+	// `/healthz`, `/readyz`) is reachable cross-origin from an allowed
+	// Console origin.
+	if cfg.Server.CORSDevAllowAny {
+		_, _ = fmt.Fprintln(opts.stderr,
+			"[DEV-ONLY CORS WILDCARD — server.cors_dev_allow_any=true; DO NOT USE IN PRODUCTION]")
+	}
+	corsHandler := cors.Wrap(router, cors.Config{
+		AllowedOrigins: append([]string(nil), cfg.Server.AllowedOrigins...),
+		DevAllowAny:    cfg.Server.CORSDevAllowAny,
+	})
+
 	server := &http.Server{
 		Addr:              bindAddr,
-		Handler:           router,
+		Handler:           corsHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Long read/write timeouts because SSE streams hold the conn
 		// open. The dev server is not production-tuned — operators

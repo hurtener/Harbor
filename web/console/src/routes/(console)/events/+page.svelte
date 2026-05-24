@@ -207,10 +207,29 @@
         onretry={() => void state.load()}
       >
         {#snippet empty()}
-          <p class="empty-headline" data-testid="events-empty">
-            No events match these filters in this window — clear filters or
-            widen the time range.
-          </p>
+          <!-- W9 (Phase 83x): the Events list calls `events.search` /
+               `events.subscribe`, both of which read from a persistent
+               buffer that only the `durable` event driver populates.
+               The default `inmem` driver renders this surface as an
+               always-empty list — historically the empty copy did not
+               explain that, so an operator who'd seen real events fire
+               via the bus drilled in here, found zero rows, and
+               assumed a Console bug. Spell out the storage-driver
+               dependency in the empty copy so the operator can pick
+               the right path (or knows the list will stay empty by
+               design under `inmem`). -->
+          <div class="empty-block" data-testid="events-empty">
+            <p class="empty-headline">No events match these filters in this window</p>
+            <p class="empty-detail">
+              The list reads from the persistent event log. The default
+              <code>inmem</code> driver does not persist events, so the
+              list stays empty even while the bus fires — set
+              <code>events.driver: durable</code> in <code>harbor.yaml</code>
+              (see <code>docs/CONFIG.md#events.driver</code>) for the
+              full read-back. Otherwise clear filters or widen the
+              time range.
+            </p>
+          </div>
         {/snippet}
 
         {#if state.aggregator}
@@ -351,9 +370,28 @@
     font-size: var(--text-xs);
   }
 
+  .empty-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-0);
+  }
+
   .empty-headline {
     margin: var(--space-0);
     font-size: var(--text-sm);
+    color: var(--color-text);
+    font-weight: 600;
+  }
+
+  .empty-detail {
+    margin: var(--space-0);
+    font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+
+  .empty-detail code {
+    font-family: var(--font-mono);
+    color: var(--color-text);
   }
 </style>

@@ -128,3 +128,61 @@ export const DISCONNECTED_TOOLTIP = 'Attach a Runtime to enable';
 export function hasScope(connection: RuntimeConnection | null, scope: string): boolean {
 	return connection !== null && connection.scopes.includes(scope);
 }
+
+/**
+ * Options for {@link attachConnection} — every field except `baseURL` is
+ * optional. When omitted, the corresponding `localStorage` key is left
+ * untouched (so a Settings-page "+ Add Runtime" form can write only the
+ * base URL and let the next page reload re-derive the identity/token
+ * from the operator's existing auth posture).
+ */
+export interface AttachConnectionOptions {
+	/** Bearer JWT carrying the verified identity + scope claims. */
+	token?: string;
+	/** Operator identity triple — CLAUDE.md §6 multi-isolation. */
+	identity?: ConnectionIdentity;
+	/** Verified scope claims (D-066 / D-079); persisted comma-joined. */
+	scopes?: string[];
+}
+
+/**
+ * Attach the Console to a Runtime by writing the `harbor.runtime.*`
+ * localStorage keys (Phase 83u / D-163).
+ *
+ * The single Console-side write path for the active Runtime connection.
+ * Bypasses the Console DB entirely so the operator's first-attach
+ * gesture works without the chicken-and-egg the Settings page
+ * previously hit (F3: the address-book DB needs a connection to
+ * derive its per-operator encryption key, but adding a connection
+ * requires writing to the address book — pre-83u, the form could
+ * not break the loop).
+ *
+ * Mandatory: `baseURL` is normalised (trailing slash removed) and
+ * always written. Optional: `opts.token`, `opts.identity`,
+ * `opts.scopes` — when present, each is written; when absent, the
+ * existing storage key is left untouched so a partial attach (just
+ * a URL) is possible.
+ *
+ * A no-op in non-browser environments (SSR / test harnesses without
+ * `localStorage`). Pages that need the new connection to take effect
+ * must reload — the Console's `HarborClient` reads the connection
+ * once per page mount (CONVENTIONS.md §6); the Settings page's
+ * add-runtime form triggers the reload explicitly.
+ */
+export function attachConnection(baseURL: string, opts: AttachConnectionOptions = {}): void {
+	if (typeof localStorage === 'undefined') {
+		return;
+	}
+	localStorage.setItem(STORAGE_KEYS.baseURL, baseURL.replace(/\/$/, ''));
+	if (opts.token !== undefined) {
+		localStorage.setItem(STORAGE_KEYS.token, opts.token);
+	}
+	if (opts.identity !== undefined) {
+		localStorage.setItem(STORAGE_KEYS.tenant, opts.identity.tenant);
+		localStorage.setItem(STORAGE_KEYS.user, opts.identity.user);
+		localStorage.setItem(STORAGE_KEYS.session, opts.identity.session);
+	}
+	if (opts.scopes !== undefined) {
+		localStorage.setItem(STORAGE_KEYS.scopes, opts.scopes.join(','));
+	}
+}

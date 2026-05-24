@@ -539,6 +539,14 @@
 
         {#if counters !== null}
           <div class="counter-row" data-testid="counter-row">
+            <!-- N11 (Phase 83x): every counter card on this row reads
+                 a CURRENTLY-active gauge (not a window-cumulative
+                 count). The legacy labels did not say so — an operator
+                 expecting "tasks completed in the last hour" read
+                 zero after a successful 13s run and assumed the
+                 counter was broken. Suffix each label with "(now)" so
+                 the semantics are explicit. The Events/min card is
+                 already a per-minute RATE so it keeps its own label. -->
             <CounterCard
               testid="counter-events"
               label="Events/min"
@@ -548,19 +556,19 @@
             />
             <CounterCard
               testid="counter-tasks"
-              label="Tasks Running"
+              label="Tasks Running (now)"
               value={String(counters.tasks_running)}
               href="/tasks"
             />
             <CounterCard
               testid="counter-jobs"
-              label="Background Jobs"
+              label="Background Jobs (now)"
               value={String(counters.background_jobs_active)}
               href="/background-jobs"
             />
             <CounterCard
               testid="counter-mcp"
-              label="MCP Connections"
+              label="MCP Connections (now)"
               value={String(counters.mcp_connections_healthy)}
               href="/mcp-connections"
             />

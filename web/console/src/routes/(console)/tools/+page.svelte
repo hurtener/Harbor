@@ -411,6 +411,11 @@
   });
 
   /* ---- catalog table column config -------------------------------- */
+  // N13 (Phase 83x): the legacy Reliability column had no explicit
+  // width, so it collapsed to the header text width and truncated tier
+  // values like `production-tested` mid-glyph. Give it a minimum
+  // width that fits the longest known tier label without bleeding the
+  // surrounding columns.
   const COLUMNS: DataTableColumn[] = [
     { key: 'name', label: 'Name' },
     { key: 'version', label: 'Version' },
@@ -418,7 +423,7 @@
     { key: 'transport', label: 'Transport' },
     { key: 'oauth', label: 'OAuth' },
     { key: 'approval', label: 'Approval' },
-    { key: 'reliability', label: 'Reliability' },
+    { key: 'reliability', label: 'Reliability', width: 'var(--size-col-reliability)' },
     { key: 'last_used', label: 'Last used' },
     { key: 'owner', label: 'Owner' }
   ];

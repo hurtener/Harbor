@@ -2,6 +2,7 @@ package mcpconsole_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -100,5 +101,38 @@ func TestRegistryAccessor_ListAndGet(t *testing.T) {
 func TestOAuthAccessor_NilRejected(t *testing.T) {
 	if _, err := mcpconsole.NewOAuthAccessor(nil); err == nil {
 		t.Fatal("want error for nil provider")
+	}
+}
+
+// Phase 83w F6 (D-164) — NoOAuthAccessor returns empty bindings and
+// fails loudly on flow-initiation / revocation. The V1 dev posture
+// uses this when no OAuth provider is wired so the read-only
+// `mcp.servers.*` methods still serve real data while the OAuth verbs
+// fail closed (CLAUDE.md §13 no silent degradation).
+func TestNoOAuthAccessor_EmptyBindingsAndLoudFailure(t *testing.T) {
+	ctx := context.Background()
+	a := mcpconsole.NewNoOAuthAccessor()
+
+	bindings, err := a.ListBindings(ctx, "any-server")
+	if err != nil {
+		t.Fatalf("ListBindings: unexpected error: %v", err)
+	}
+	if len(bindings) != 0 {
+		t.Errorf("ListBindings: got %d bindings, want 0", len(bindings))
+	}
+	if bindings == nil {
+		t.Error("ListBindings: returned nil slice; want empty (non-nil) slice for JSON [] rendering")
+	}
+
+	if _, _, err := a.InitiateBinding(ctx, "any-server", "subject"); err == nil {
+		t.Error("InitiateBinding: expected ErrNoOAuthConfigured, got nil")
+	} else if !errors.Is(err, mcpconsole.ErrNoOAuthConfigured) {
+		t.Errorf("InitiateBinding: err=%v, want ErrNoOAuthConfigured", err)
+	}
+
+	if _, err := a.RevokeBinding(ctx, "any-server", "subject"); err == nil {
+		t.Error("RevokeBinding: expected ErrNoOAuthConfigured, got nil")
+	} else if !errors.Is(err, mcpconsole.ErrNoOAuthConfigured) {
+		t.Errorf("RevokeBinding: err=%v, want ErrNoOAuthConfigured", err)
 	}
 }

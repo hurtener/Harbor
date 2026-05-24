@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"reflect"
 	"strings"
 )
@@ -74,6 +75,48 @@ func (c *Config) validateServer() error {
 	}
 	if c.Server.ShutdownGracePeriod <= 0 {
 		return fieldError("server.shutdown_grace_period", "must be > 0")
+	}
+	// Phase 83v (D-162) — CORS allowlist validation. Each entry must be
+	// an exact origin (`scheme://host[:port]`); wildcards are forbidden
+	// unless the operator explicitly opts in via `server.cors_dev_allow_any`.
+	// CLAUDE.md §7: never wildcard in production.
+	for i, raw := range c.Server.AllowedOrigins {
+		o := strings.TrimSpace(raw)
+		if o == "" {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				"must not be empty or whitespace")
+		}
+		if o == "*" || strings.Contains(o, "*") {
+			if !c.Server.CORSDevAllowAny {
+				return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+					"wildcard (\"*\") not allowed; set server.cors_dev_allow_any: true to enable the dev-only any-origin posture (NEVER in production)")
+			}
+			// Wildcard entry with the dev flag set is a no-op — the
+			// dev-any path is driven by CORSDevAllowAny directly, not
+			// by an allowlist entry. Skip the URL-shape check.
+			continue
+		}
+		u, err := url.Parse(o)
+		if err != nil {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				fmt.Sprintf("must be a valid origin (scheme://host[:port]), got %q (%v)", raw, err))
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				fmt.Sprintf("scheme must be http or https, got %q in %q", u.Scheme, raw))
+		}
+		if u.Host == "" {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				fmt.Sprintf("host must be non-empty, got %q", raw))
+		}
+		if u.Path != "" && u.Path != "/" {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				fmt.Sprintf("must be an origin (no path), got %q", raw))
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return fieldError(fmt.Sprintf("server.allowed_origins[%d]", i),
+				fmt.Sprintf("must be an origin (no query or fragment), got %q", raw))
+		}
 	}
 	return nil
 }

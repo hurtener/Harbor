@@ -21,12 +21,19 @@
 
   // The five chips, in the page-spec mockup order, each mapped to a
   // StatusChip kind off the shared status token scale.
+  //
+  // N14 (Phase 83x): the legacy labels (`Pending` / `Running` / ...)
+  // hid the fact that these are currently-in-status counts, not
+  // historical totals. An operator who watched a task complete and
+  // then read `Completed 0` mis-read the strip as broken — the
+  // initial-load aggregate IS a point-in-time snapshot. Suffix each
+  // label with "(now)" so the semantics are explicit.
   const chips = $derived<{ key: keyof StatusCounterStrip; label: string; kind: StatusKind }[]>([
-    { key: 'pending', label: 'Pending', kind: 'neutral' },
-    { key: 'running', label: 'Running', kind: 'accent' },
-    { key: 'completed', label: 'Completed', kind: 'success' },
-    { key: 'paused', label: 'Paused', kind: 'warning' },
-    { key: 'failed', label: 'Failed', kind: 'danger' }
+    { key: 'pending', label: 'Pending (now)', kind: 'neutral' },
+    { key: 'running', label: 'Running (now)', kind: 'accent' },
+    { key: 'completed', label: 'Completed (now)', kind: 'success' },
+    { key: 'paused', label: 'Paused (now)', kind: 'warning' },
+    { key: 'failed', label: 'Failed (now)', kind: 'danger' }
   ]);
 </script>
 

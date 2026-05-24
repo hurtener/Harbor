@@ -32,6 +32,56 @@ via `net.SplitHostPort`.
 Max time `harbor dev` waits for in-flight requests to drain on
 SIGTERM before forcing close. Default: `30s`. Validation: > 0.
 
+### server.allowed_origins
+
+CORS allowlist for the D-091 multi-process Console+Runtime posture
+(Phase 83v / D-162). Each entry is an exact origin
+(`scheme://host[:port]`, no path / query / fragment) the Runtime
+accepts cross-origin requests from. Empty list (the default) = no
+CORS headers = same-origin only.
+
+On a matching origin the middleware echoes the request's `Origin`
+header verbatim into `Access-Control-Allow-Origin` and sets
+`Access-Control-Allow-Credentials: true` so the browser sends the
+`Authorization` bearer on subsequent requests. The middleware
+NEVER emits `Access-Control-Allow-Origin: *` in production — `*` is
+incompatible with credentialed requests and the browser refuses
+the combination. CLAUDE.md §7: declare exact origins in production.
+
+The validator rejects `*` (and any wildcard shape) unless
+`server.cors_dev_allow_any: true` is also set. Validation: each
+entry must parse as a URL with `http` or `https` scheme and a
+non-empty host; paths / queries / fragments are rejected.
+
+Example:
+
+```yaml
+server:
+  allowed_origins:
+    - https://console.example.com
+    - https://console.example.com:8443
+    - http://127.0.0.1:18790
+```
+
+### server.cors_dev_allow_any
+
+Explicit, dev-only escape hatch that opens the CORS surface to ANY
+origin (Phase 83v / D-162). NEVER set in production: a `harbor dev`
+boot with this flag set prints a stderr banner so the posture is
+visibly dev-only. Provided for first-clone Console iteration
+against a `harbor dev` loop where the Console origin (Vite,
+`:5173`) varies during development.
+
+Default: `false`. Set explicitly:
+
+```yaml
+server:
+  cors_dev_allow_any: true
+```
+
+The middleware still emits the per-origin `Access-Control-Allow-
+Origin` echo (never `*`) so credentialed responses keep working.
+
 ---
 
 ## Identity

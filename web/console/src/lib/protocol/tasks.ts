@@ -230,11 +230,21 @@ export interface TaskDetail {
   result_inline?: string;
 }
 
-/** The four primary kanban columns, in mockup order. */
+/** The kanban columns, in mockup order.
+ *
+ * W7 (Phase 83x): the legacy board carried only the four in-flight
+ * statuses (Pending / Running / Paused / Failed). A completed task
+ * disappeared from the kanban entirely — the right-rail summary still
+ * counted it but the operator could not see WHICH task had completed
+ * without switching to list view. Adding a Complete column closes the
+ * "everywhere a task can live" surface so the kanban tells the whole
+ * story.
+ */
 export const KANBAN_COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: 'pending', label: 'Pending' },
   { status: 'running', label: 'Running' },
   { status: 'paused', label: 'Paused' },
+  { status: 'complete', label: 'Complete' },
   { status: 'failed', label: 'Failed' }
 ];
 

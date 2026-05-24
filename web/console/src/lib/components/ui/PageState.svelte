@@ -2,24 +2,32 @@
   // Harbor Console — shared PageState async boundary (D-121,
   // CONVENTIONS.md §4).
   //
-  // `<PageState>` owns the FOUR mutually-exclusive async states every
+  // `<PageState>` owns the mutually-exclusive async states every
   // Console page (and every detail rail) routes through. The audit found
   // five incompatible hand-rolled async contracts — several conflating
   // "no Runtime attached" with "request failed". This is the one contract.
   //
-  // The four states, as an if / else-if / else-if / else chain:
+  // The states, as an if / else-if … chain:
   //   1. disconnected — no Runtime (connection.ts returned null). A
   //      centered CTA; NEVER conflated with error.
   //   2. loading      — a request in flight. A shape-matched skeleton
   //      (the `skeleton` snippet), never a bare "Loading…".
   //   3. error        — a thrown ProtocolError. `code: message` + a
   //      mandatory Retry button; suppresses any stale primary view.
-  //   4. empty        — succeeded, zero rows. A page-specific message
+  //   4. info         — the Runtime answered, but the requested surface
+  //      is honestly "not available on this Runtime" (e.g. a planner /
+  //      RunLoop runtime that returns `unknown_method` for
+  //      `topology.snapshot`). A friendly info banner — never a red
+  //      ERROR with a Retry that will always fail. Phase 83w-F5 /
+  //      D-164. Use this branch for the `unknown_method` /
+  //      `not_applicable` shape on a surface that simply isn't part
+  //      of the Runtime's shape.
+  //   5. empty        — succeeded, zero rows. A page-specific message
   //      (the `empty` snippet) + the page's primary affordance.
   // Otherwise the `children` (the loaded primary view) renders.
 
   /** The discriminated async-state union a page feeds `<PageState>`. */
-  export type PageStatus = 'disconnected' | 'loading' | 'error' | 'empty' | 'ready';
+  export type PageStatus = 'disconnected' | 'loading' | 'error' | 'info' | 'empty' | 'ready';
 </script>
 
 <script lang="ts">
@@ -29,6 +37,7 @@
   let {
     status,
     error,
+    info,
     onretry,
     skeleton,
     empty,
@@ -38,6 +47,16 @@
     status: PageStatus;
     /** The thrown error — required when `status === 'error'`. */
     error?: ProtocolError | { code: string; message: string } | null;
+    /**
+     * The friendly explanation rendered when `status === 'info'`
+     * (Phase 83w-F5 / D-164). Use for "the Runtime answered but the
+     * surface is not applicable to its shape" — the canonical case
+     * being `unknown_method` on `topology.snapshot` when the Runtime
+     * is planner/RunLoop-shaped, not engine-graph-shaped. `headline`
+     * is the page-specific name of the unavailable surface; `detail`
+     * is the one-line explanation pointing to docs.
+     */
+    info?: { headline: string; detail: string } | null;
     /** Re-invokes the page loader; wired to the Error-state Retry button. */
     onretry?: () => void;
     /** The shape-matched loading skeleton (CONVENTIONS.md §4 state 2). */
@@ -75,6 +94,13 @@
       Retry
     </button>
   </div>
+{:else if status === 'info'}
+  <div class="page-state info" data-testid="page-state-info">
+    <p class="headline">{info?.headline ?? 'Not available on this Runtime'}</p>
+    <p class="detail">
+      {info?.detail ?? 'This surface is not part of this Runtime’s shape.'}
+    </p>
+  </div>
 {:else if status === 'empty'}
   <div class="page-state empty" data-testid="page-state-empty">
     {#if empty}
@@ -105,7 +131,8 @@
      padding for skeleton rows. */
   .page-state.disconnected,
   .page-state.empty,
-  .page-state.error {
+  .page-state.error,
+  .page-state.info {
     min-height: 40vh;
   }
 
