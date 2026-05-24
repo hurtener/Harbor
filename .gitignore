@@ -63,6 +63,9 @@ node_modules/
 # Tooling
 .tool-versions
 
+# Playwright MCP scratch (per-session screenshots + accessibility snapshots)
+.playwright-mcp/
+
 # Tmp
 *.tmp
 .tmp/

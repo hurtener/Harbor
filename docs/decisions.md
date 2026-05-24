@@ -3750,3 +3750,28 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — 83k is build pipeline + operator-facing copy.
+
+---
+
+## D-158 — Phase 83p: Settings page two-group layout closes the F1 add-runtime-form regression
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83p)
+
+**Where it lives:** `web/console/src/lib/settings/state.svelte.ts` (`SETTINGS_SECTIONS` entries gain a `group` discriminator; two new exported helpers `consoleLocalSections()` + `runtimePostureSections()`); `web/console/src/routes/(console)/settings/+page.svelte` (cards loop splits into two groups — console-local outside `<PageState>`, runtime-posture inside it); `web/console/tests/settings-page.spec.ts` (new test asserting the add-form is reachable in the disconnected state).
+
+**Decision.** The post-83k visual walkthrough surfaced Bug F1: a fresh `harbor console` operator sees "Not connected to a Harbor Runtime · Attach one in Settings." on every page. Clicking through to Settings shows the SAME placeholder + a circular link. The `+ Add Runtime` form (`ConnectedRuntimesCard`) existed in the codebase but the page template wrapped the WHOLE cards loop in `<PageState status={settings.status}>`. When the operator had no Runtime attached, `settings.status === 'disconnected'` and `<PageState>` short-circuited the children render — hiding the form behind the same placeholder it was supposed to help the operator escape.
+
+The bug is purely structural — `SettingsState.load()`'s own docstring already pinned the intended split: "The Console-local sections (Connected Runtimes, Per-Runtime Auth, Appearance, …) do NOT depend on the runtime posture, only the four read-only posture cards do." The state-machine code is correct; the template ignored its docstring.
+
+**Two settled calls.**
+
+**1. The split lives on the section definitions, not in a template branch.** Adding `group: 'console-local' | 'runtime-posture'` to each `SETTINGS_SECTIONS` entry — plus the two `consoleLocalSections()` / `runtimePostureSections()` helpers — pushes the discrimination into the data model. The template iterates each subset once. A future section addition just sets its `group` field; the template need not change. This is the §4.4 seam-pattern read one layer over: the data shape carries the dependency, not the consumer.
+
+**2. The Settings page is the ONE page where `<PageState>` cannot wrap everything.** Every other Console page can degrade to "disconnected — attach in Settings"; Settings itself MUST NOT degrade the Connected Runtimes section because the connection happens *there*. The template now reflects this: console-local sections render unconditionally; runtime-posture sections still route through `<PageState>` (preserving the per-page four-state contract D-121 mandates).
+
+**Why.** Without 83p the Console is unusable for a fresh `harbor console` operator: the only path to attach a Runtime through the UI is gated by Settings, but Settings hides the gate behind a "not connected" placeholder. Operators must edit `console_default.yaml` by hand pre-boot — defeating the entire `harbor console` zero-config DX bet. This is exactly the "two parallel implementations of the same conceptual feature" trap §13 forbids, read one layer over: two state contracts (state-machine docstring vs template wrapper) drifted, and the operator paid the cost.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — the fix is template + state-file shape only.
