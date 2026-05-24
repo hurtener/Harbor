@@ -82,7 +82,15 @@ async function gotoPageImpl(
   // index; the rest map slug → `/<slug>`.
   const path = slug === "overview" ? "/" : `/${slug}`;
   await page.goto(new URL(path, runtime.baseURL).toString());
-  await page.waitForLoadState("networkidle");
+  // "load" not "networkidle": every Console page opens a long-lived SSE
+  // `EventSource` (events.subscribe) on mount. `networkidle` requires
+  // 500ms of zero in-flight requests, which never fires while SSE holds
+  // the connection open — every test hits its 30s timeout. The fix that
+  // exposed this (PR #226 / round-3 SSE access_token shim) made SSE
+  // actually work cross-origin; pre-fix the SSE 401'd instantly and
+  // `networkidle` fired by accident. `load` is the correct end-of-
+  // page-load signal here.
+  await page.waitForLoadState("load");
 }
 
 /**

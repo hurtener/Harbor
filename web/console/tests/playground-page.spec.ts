@@ -105,7 +105,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='chat-panel']"),
@@ -133,7 +133,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator("[data-testid='chat-composer-input']")
@@ -162,7 +162,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='chat-attach-input']"),
@@ -178,7 +178,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page
       .locator("[data-testid='controls-reasoning-effort']")
@@ -199,7 +199,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const drift = page.locator("[data-testid='controls-drift-mode']");
     await expect(drift, "the drift-mode toggle renders").toBeVisible();
@@ -214,7 +214,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page.locator("[data-testid='trace-toggle-checkbox']").check();
     await expect(
@@ -231,7 +231,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='playground-recent-artifacts-card']"),
@@ -247,7 +247,7 @@ test.describe("Console Playground page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='playground-interventions-card']"),
@@ -264,7 +264,7 @@ test.describe("Console Playground page", () => {
     // null connection and renders PageState's Disconnected branch.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("playground");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='page-state-disconnected']"),

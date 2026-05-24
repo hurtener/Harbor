@@ -119,7 +119,7 @@ test.describe("Console Agents page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("agents");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const before = await page
       .locator("[data-testid='agent-card']")
@@ -131,7 +131,7 @@ test.describe("Console Agents page", () => {
     await page
       .locator("[data-testid='agents-status-facet']")
       .selectOption("active");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     const after = await page
       .locator("[data-testid='agent-card']")
       .count();
@@ -145,7 +145,7 @@ test.describe("Console Agents page", () => {
       .locator("[data-testid='agents-search']")
       .fill("nonexistent-agent-xyz");
     await page.locator("[data-testid='agents-search']").blur();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
   });
 
   test("(c) clicking an agent card navigates to the detail route", async ({
@@ -156,7 +156,7 @@ test.describe("Console Agents page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("agents");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const firstCard = page.locator("[data-testid='agent-card']").first();
     const cardCount = await page
@@ -165,7 +165,7 @@ test.describe("Console Agents page", () => {
     test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await firstCard.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='agent-detail-page']"),
       "the detail route rendered",
@@ -181,7 +181,7 @@ test.describe("Console Agents page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("agents");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const cardCount = await page
       .locator("[data-testid='agent-card']")
@@ -189,7 +189,7 @@ test.describe("Console Agents page", () => {
     test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='agent-tab-strip']"),
@@ -219,7 +219,7 @@ test.describe("Console Agents page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("agents");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const cardCount = await page
       .locator("[data-testid='agent-card']")
@@ -227,7 +227,7 @@ test.describe("Console Agents page", () => {
     test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='agent-control-buttons']"),
@@ -268,7 +268,7 @@ test.describe("Console Agents page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("agents");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const cardCount = await page
       .locator("[data-testid='agent-card']")
@@ -276,9 +276,9 @@ test.describe("Console Agents page", () => {
     test.skip(cardCount === 0, "no agents registered in the dev runtime (seeding tracked in issue #178)");
 
     await page.locator("[data-testid='agent-card']").first().click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await page.locator("[data-testid='agent-tab-tools']").click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The Tools tab renders. OAuth binding rows, when present, expose a
     // Manage/Reconnect deep-link to the Tools-page binding surface —

@@ -200,7 +200,7 @@ test.describe("Console Settings page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("settings");
     await page.locator("[data-testid='settings-subnav-llm-posture']").click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The harbor console embedded runtime boots with the mock LLM
     // (the zero-config default), so `llm.posture` reports MockMode =
@@ -344,7 +344,7 @@ test.describe("Console Settings page", () => {
     // The Add submit reloads the page; await both the click and the
     // resulting load completion.
     await Promise.all([
-      page.waitForLoadState("networkidle"),
+      page.waitForLoadState("load"),
       page.locator("[data-testid='add-runtime-submit']").click(),
     ]);
 
