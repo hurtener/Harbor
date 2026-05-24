@@ -599,6 +599,32 @@ func (d *driver) MarkFailed(ctx context.Context, id tasks.TaskID, taskErr tasks.
 	})
 }
 
+// IncrementToolCount implements tasks.TaskRegistry.
+//
+// Atomically increments `t.ToolCount` by 1 under the FSM lock and
+// persists the updated record (Phase 83m item 7). The lock ensures
+// N concurrent calls against the same task yield the correct final
+// count — N — without torn writes.
+//
+// Does NOT advance the FSM status and does NOT emit a bus event:
+// per-tool-dispatch traffic is already covered by `task.spawned` /
+// `tool.*` events; ToolCount is the cheap rollup the Console reads
+// without subscribing to the per-tool stream.
+func (d *driver) IncrementToolCount(ctx context.Context, id tasks.TaskID) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	t, err := d.lookupLocked(ctx, id)
+	if err != nil {
+		return err
+	}
+	t.ToolCount++
+	t.UpdatedAt = time.Now().UnixNano()
+	if err := d.persistLocked(ctx, t); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Close implements tasks.TaskRegistry. Idempotent.
 //
 // Drains every still-open `WatchGroup` subscriber and every

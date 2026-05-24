@@ -431,3 +431,198 @@ func TestInbox_WaitForEvent_HonoursContextCancel(t *testing.T) {
 		t.Fatal("WaitForEvent did not unblock within 2s after ctx cancel")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 83m item 8 — reasoning trace round-trip.
+// ---------------------------------------------------------------------------
+
+// reasoningPlanner is a scriptedPlanner-like stub that ALSO invokes the
+// per-step `RunContext.OnReasoning` callback with a pre-scripted reasoning
+// string. Mirrors what the real ReAct planner does in production (it
+// passes the LLM response's Reasoning through the callback).
+type reasoningPlanner struct {
+	mu         sync.Mutex
+	reasonings []string // one per step; "" allowed
+	dec        []planner.Decision
+	step       int
+}
+
+func (p *reasoningPlanner) Next(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.step >= len(p.reasonings) {
+		// Default: clean finish.
+		return planner.Finish{Reason: planner.FinishGoal}, nil
+	}
+	if rc.OnReasoning != nil {
+		rc.OnReasoning(p.reasonings[p.step])
+	}
+	d := p.dec[p.step]
+	p.step++
+	return d, nil
+}
+
+// recordingExecutor is a minimal ToolExecutor that returns a fixed
+// observation pair. Used to drive the runloop's CallTool dispatch path
+// (without it, the runloop returns nil/nil and the planner sees an empty
+// observation — fine for the reasoning-trace test).
+type recordingExecutor struct {
+	mu    sync.Mutex
+	calls int
+	err   error // when non-nil, returned on every dispatch
+}
+
+func (e *recordingExecutor) ExecuteDecision(_ context.Context, _ planner.RunContext, _ planner.Decision) (any, any, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls++
+	if e.err != nil {
+		return nil, nil, e.err
+	}
+	return "obs", "llmObs", nil
+}
+
+// TestRun_PopulatesReasoningTrace — Phase 83m item 8.
+//
+// A planner that invokes `rc.OnReasoning("X")` at step N must produce a
+// trajectory step at index N whose `ReasoningTrace == "X"`. This closes
+// the gap Phase 83e documented: `ReasoningReplay=text` mode is
+// structurally ineffective in production when the runloop's trajectory
+// append leaves the field empty.
+func TestRun_PopulatesReasoningTrace(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &reasoningPlanner{
+		reasonings: []string{"reasoning-step-0", "reasoning-step-1"},
+		dec: []planner.Decision{
+			planner.CallTool{Tool: "noop"},
+			planner.Finish{Reason: planner.FinishGoal},
+		},
+	}
+	spec := runSpecFor(runA, p)
+	traj := &planner.Trajectory{}
+	spec.Base.Trajectory = traj
+	spec.ToolExecutor = &recordingExecutor{}
+	fin, err := rl.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fin.Reason != planner.FinishGoal {
+		t.Errorf("Finish.Reason = %q, want %q", fin.Reason, planner.FinishGoal)
+	}
+	if len(traj.Steps) != 1 {
+		t.Fatalf("trajectory has %d steps, want 1 (only the non-Finish step is appended)", len(traj.Steps))
+	}
+	if got, want := traj.Steps[0].ReasoningTrace, "reasoning-step-0"; got != want {
+		t.Errorf("Step[0].ReasoningTrace = %q, want %q (reasoning trace round-trip broken)", got, want)
+	}
+}
+
+// TestRun_EmptyReasoning_RoundTripsAsEmpty — when the planner has no
+// reasoning to deliver (the LLM returned nothing on the reasoning
+// channel), the trajectory append must still produce a step (with an
+// empty `ReasoningTrace`). The runloop must not require a non-empty
+// reasoning to append.
+func TestRun_EmptyReasoning_RoundTripsAsEmpty(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &reasoningPlanner{
+		reasonings: []string{""}, // planner invokes OnReasoning("")
+		dec: []planner.Decision{
+			planner.CallTool{Tool: "noop"},
+		},
+	}
+	spec := runSpecFor(runA, p)
+	traj := &planner.Trajectory{}
+	spec.Base.Trajectory = traj
+	spec.ToolExecutor = &recordingExecutor{}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(traj.Steps) < 1 {
+		t.Fatalf("trajectory has %d steps, want ≥1", len(traj.Steps))
+	}
+	if traj.Steps[0].ReasoningTrace != "" {
+		t.Errorf("Step[0].ReasoningTrace = %q, want \"\" (empty reasoning leaked stale value)", traj.Steps[0].ReasoningTrace)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 83m item 7 — OnToolDispatched hook.
+// ---------------------------------------------------------------------------
+
+// TestRun_OnToolDispatched_InvokedOnSuccess — the hook fires once per
+// successful executor dispatch. This is the seam the dev binary wires
+// to `taskReg.IncrementToolCount` so the Console Tasks page's tool_count
+// reflects the running per-task dispatch count.
+func TestRun_OnToolDispatched_InvokedOnSuccess(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &scriptedPlanner{
+		script: []scriptStep{
+			{dec: planner.CallTool{Tool: "noop"}},
+			{dec: planner.CallTool{Tool: "noop"}},
+			{dec: planner.Finish{Reason: planner.FinishGoal}},
+		},
+	}
+	var hookCalls int
+	spec := runSpecFor(runA, p)
+	spec.ToolExecutor = &recordingExecutor{}
+	spec.OnToolDispatched = func(_ context.Context) error {
+		hookCalls++
+		return nil
+	}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hookCalls != 2 {
+		t.Errorf("OnToolDispatched calls = %d, want 2 (one per successful dispatch)", hookCalls)
+	}
+}
+
+// TestRun_OnToolDispatched_SkippedOnExecutorError — when the executor
+// returns an error, the hook MUST NOT fire (a failed dispatch is not a
+// dispatch). The trajectory step still appends with the error
+// observation so the planner can re-plan.
+func TestRun_OnToolDispatched_SkippedOnExecutorError(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &scriptedPlanner{
+		script: []scriptStep{
+			{dec: planner.CallTool{Tool: "noop"}},
+			{dec: planner.Finish{Reason: planner.FinishGoal}},
+		},
+	}
+	var hookCalls int
+	spec := runSpecFor(runA, p)
+	spec.ToolExecutor = &recordingExecutor{err: errors.New("tool blew up")}
+	spec.OnToolDispatched = func(_ context.Context) error {
+		hookCalls++
+		return nil
+	}
+	if _, err := rl.Run(context.Background(), spec); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hookCalls != 0 {
+		t.Errorf("OnToolDispatched calls = %d, want 0 (no hook on a failed dispatch)", hookCalls)
+	}
+}
+
+// TestRun_OnToolDispatched_HookError_FailsLoud — a hook that returns
+// an error fails the run loud (silent degradation of an observability
+// counter is §13-forbidden).
+func TestRun_OnToolDispatched_HookError_FailsLoud(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &scriptedPlanner{
+		script: []scriptStep{
+			{dec: planner.CallTool{Tool: "noop"}},
+		},
+	}
+	hookErr := errors.New("counter blew up")
+	spec := runSpecFor(runA, p)
+	spec.ToolExecutor = &recordingExecutor{}
+	spec.OnToolDispatched = func(_ context.Context) error { return hookErr }
+	_, err := rl.Run(context.Background(), spec)
+	if err == nil {
+		t.Fatal("Run should fail loud on a hook error — silent degradation forbidden (§13)")
+	}
+	if !errors.Is(err, hookErr) {
+		t.Errorf("Run err = %v, want it to wrap the hook error", err)
+	}
+}

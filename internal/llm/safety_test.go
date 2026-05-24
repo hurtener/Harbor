@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,6 +167,161 @@ func TestSafety_PartTextLeak(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Parts[0].Text") {
 		t.Errorf("err=%q does not name the part-text leak site", err.Error())
+	}
+}
+
+// captureDeadlineDriver records the ctx deadline observed at
+// Complete-time so tests can assert the safety wrapper's defensive
+// timeout matches the operator-configured value.
+type captureDeadlineDriver struct {
+	mu       *sync.Mutex
+	captured *time.Time
+	hasDL    *bool
+}
+
+func (d *captureDeadlineDriver) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if dl, ok := ctx.Deadline(); ok {
+		*d.captured = dl
+		*d.hasDL = true
+	} else {
+		*d.hasDL = false
+	}
+	return llm.CompleteResponse{Content: "ok"}, nil
+}
+
+func (d *captureDeadlineDriver) Close(_ context.Context) error { return nil }
+
+// TestSafety_UsesCfgTimeout — Phase 83m item 5.
+//
+// The safety wrapper's Complete must prefer `c.cfg.Timeout` when the
+// caller's ctx has no deadline; it must fall back to
+// `defaultRequestTimeout` only when the operator left the timeout
+// unset. Both branches exercised here.
+//
+// Note: only the "no caller deadline" path layers the timeout in —
+// when the caller passes a ctx with its own deadline, the wrapper
+// leaves it alone (the operator-configured floor is purely defensive).
+func TestSafety_UsesCfgTimeout(t *testing.T) {
+	cases := []struct {
+		name       string
+		cfgTimeout time.Duration
+		// approx is the deadline we expect, modulo small clock drift.
+		approx time.Duration
+	}{
+		{name: "cfg_timeout_set", cfgTimeout: 7 * time.Second, approx: 7 * time.Second},
+		{name: "cfg_timeout_zero_falls_back_to_default", cfgTimeout: 0, approx: 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, cleanup := makeDeps(t)
+			defer cleanup()
+
+			var (
+				mu       sync.Mutex
+				captured time.Time
+				hasDL    bool
+			)
+			factoryName := "capture-deadline-driver-" + tc.name
+			llm.Register(factoryName, func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
+				return &captureDeadlineDriver{
+					mu:       &mu,
+					captured: &captured,
+					hasDL:    &hasDL,
+				}, nil
+			})
+
+			snap := makeSnapshot("m", 1_000_000)
+			snap.Driver = factoryName
+			snap.Timeout = tc.cfgTimeout
+			client, err := llm.Open(context.Background(), snap, deps)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = client.Close(context.Background()) }()
+
+			ctx := withIdentity(t, context.Background())
+			before := time.Now()
+			text := "hello"
+			if _, err := client.Complete(ctx, llm.CompleteRequest{
+				Model:    "m",
+				Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+			}); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if !hasDL {
+				t.Fatalf("driver observed no deadline; the safety wrapper must layer one in when the caller's ctx has none")
+			}
+			observed := captured.Sub(before)
+			// Allow ±2s tolerance for scheduler / GC jitter.
+			lower := tc.approx - 2*time.Second
+			upper := tc.approx + 2*time.Second
+			if observed < lower || observed > upper {
+				t.Fatalf("observed deadline=%v, want approx=%v (cfgTimeout=%v)", observed, tc.approx, tc.cfgTimeout)
+			}
+		})
+	}
+}
+
+// TestSafety_PreservesCallerDeadline — Phase 83m item 5 corollary.
+//
+// When the caller's ctx already carries a deadline, the safety
+// wrapper MUST NOT extend or replace it — the operator-configured
+// `cfg.Timeout` is purely the defensive floor for callers who pass
+// no deadline.
+func TestSafety_PreservesCallerDeadline(t *testing.T) {
+	deps, cleanup := makeDeps(t)
+	defer cleanup()
+
+	var (
+		mu       sync.Mutex
+		captured time.Time
+		hasDL    bool
+	)
+	const factoryName = "capture-deadline-driver-preserve"
+	llm.Register(factoryName, func(_ llm.ConfigSnapshot, _ llm.Deps) (llm.Driver, error) {
+		return &captureDeadlineDriver{
+			mu:       &mu,
+			captured: &captured,
+			hasDL:    &hasDL,
+		}, nil
+	})
+
+	snap := makeSnapshot("m", 1_000_000)
+	snap.Driver = factoryName
+	snap.Timeout = 30 * time.Second // would be applied if wrapper ignored caller deadline
+	client, err := llm.Open(context.Background(), snap, deps)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+
+	// Caller pins a 3-second deadline.
+	parent := withIdentity(t, context.Background())
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+	want, _ := ctx.Deadline()
+
+	text := "hello"
+	if _, err := client.Complete(ctx, llm.CompleteRequest{
+		Model:    "m",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: &text}}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !hasDL {
+		t.Fatalf("driver observed no deadline")
+	}
+	delta := captured.Sub(want)
+	if delta < -100*time.Millisecond || delta > 100*time.Millisecond {
+		t.Fatalf("safety wrapper replaced caller deadline: observed=%v want=%v (delta=%v)", captured, want, delta)
 	}
 }
 

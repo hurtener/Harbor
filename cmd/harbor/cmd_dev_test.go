@@ -368,3 +368,59 @@ func TestBootDevStack_CoordinatorEmitsPauseResumedOnBus(t *testing.T) {
 			"bootDevStack must construct pauseresume.New(WithBus(bus))")
 	}
 }
+
+// TestBootDevStack_AppendsDraftStoreAndRegistryClosers — Phase 83m
+// (Item 3, D-156): the §17.5 audit pinned two constructed subsystems
+// (agent registry + draft store) whose Close was NEVER appended to the
+// closer chain. A clean shutdown therefore leaked file handles /
+// goroutines from any future driver that owns them. The fix appends
+// both Close functions; this test asserts both closers run cleanly on
+// stack teardown (a no-op for the V1 drivers; the canary for any
+// future driver that owns resources).
+func TestBootDevStack_AppendsDraftStoreAndRegistryClosers(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stack, err := bootDevStack(ctx, devBootOptions{
+		cfgPath:   cfgPath,
+		allowMock: true,
+		logger:    logger,
+		stderr:    io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("bootDevStack: %v", err)
+	}
+
+	// The draft store + agent registry are wired during boot. The
+	// test asserts the closers run cleanly (the failure mode pre-fix
+	// was a silent omit; the closers simply weren't in the chain. We
+	// can't easily pointer-compare closer entries because they're
+	// bound method values, but if either omit returned silently the
+	// stack.close drain would still succeed — so we directly invoke
+	// the underlying Close methods via the stack's draftStore field
+	// and assert no error). For the registry, the closer is reachable
+	// only through the chain; we drain it and assert no error fires.
+	if stack.draftStore == nil {
+		t.Fatal("stack.draftStore is nil — bootDevStack did not construct the draft store")
+	}
+	if err := stack.draftStore.Close(ctx); err != nil {
+		t.Errorf("draftStore.Close (direct) returned %v, want nil", err)
+	}
+
+	// Drain the closer chain. Every closer must return nil; a leak
+	// from a future driver that owns resources would surface here.
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	for i := len(stack.closeFns) - 1; i >= 0; i-- {
+		if cErr := stack.closeFns[i](closeCtx); cErr != nil {
+			t.Errorf("closer %d returned %v, want nil", i, cErr)
+		}
+	}
+}

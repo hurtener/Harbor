@@ -117,11 +117,15 @@ func TestShouldTrigger_FiltersChmodOnly(t *testing.T) {
 	}
 }
 
-// TestShouldTrigger_SkipsDBSidecars — Phase 83h (D-151): the watcher
-// must NOT fire on SQLite WAL/SHM/journal companion files, which the
-// running binary rewrites on every commit and which would otherwise
-// reboot-loop the dev binary the moment the planner persisted state.
-// The v1.1 operator validation surfaced this as a hard-block bug.
+// TestShouldTrigger_SkipsDBSidecars — Phase 83h (D-151) + Phase 83m
+// Item 2 (D-156): the watcher must NOT fire on SQLite-managed files at
+// all — neither the WAL/SHM/journal companion files (the original
+// Phase 83h scope) nor the MAIN `.sqlite` / `.db` file itself (the
+// Phase 83m completion). SQLite rewrites the main file on every commit
+// alongside the sidecars; skipping only the sidecars produced a slower
+// reboot loop rather than closing it. The v1.1 operator validation
+// surfaced the original sidecar shape as a hard-block; the §17.5 audit
+// pinned the missing main-file skip as the remaining half.
 func TestShouldTrigger_SkipsDBSidecars(t *testing.T) {
 	cases := []struct {
 		name string
@@ -136,7 +140,13 @@ func TestShouldTrigger_SkipsDBSidecars(t *testing.T) {
 		{"db_journal_skipped", "harbor.db-journal", false},
 		{"bare_journal_skipped", "media-helper-agent-state-journal", false},
 		{"yaml_fires", "harbor.yaml", true},
-		{"sqlite_main_fires", "media-helper-agent-state.sqlite", true},
+		// Phase 83m (Item 2, D-156): the main `.sqlite` / `.db` files
+		// are SKIPPED — SQLite rewrites them on every commit, so a
+		// trigger here reboot-loops the binary the same way a sidecar
+		// trigger would.
+		{"sqlite_main_skipped", "media-helper-agent-state.sqlite", false},
+		{"db_main_skipped", "harbor.db", false},
+		{"nested_sqlite_main_skipped", "/tmp/harbor-validation/media-helper-agent-state.sqlite", false},
 		{"go_source_fires", "agent.go", true},
 		{"nested_wal_skipped", "/tmp/harbor-validation/media-helper-agent-state.sqlite-wal", false},
 	}

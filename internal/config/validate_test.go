@@ -603,6 +603,39 @@ func TestValidate_RejectsEmptyToolsManifestPath(t *testing.T) {
 	}
 }
 
+// TestValidate_ToolsGrantedScopes — Phase 83m (Item 6, D-156): the
+// `tools.granted_scopes` operator-declared scope list accepts any
+// non-empty string list; an empty list is valid; a blank entry is
+// rejected with a path-prefixed error so the operator sees which
+// index needs attention.
+func TestValidate_ToolsGrantedScopes(t *testing.T) {
+	t.Run("empty_list_passes", func(t *testing.T) {
+		cfg := mustLoadValid(t)
+		cfg.Tools = config.ToolsConfig{}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("empty granted_scopes rejected: %v", err)
+		}
+	})
+	t.Run("non_empty_strings_pass", func(t *testing.T) {
+		cfg := mustLoadValid(t)
+		cfg.Tools = config.ToolsConfig{GrantedScopes: []string{"read:repo", "write:issues", "admin"}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("operator-defined scopes rejected: %v", err)
+		}
+	})
+	t.Run("blank_entry_rejected", func(t *testing.T) {
+		cfg := mustLoadValid(t)
+		cfg.Tools = config.ToolsConfig{GrantedScopes: []string{"read:repo", "   ", "admin"}}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("Validate accepted blank granted_scopes entry")
+		}
+		if !strings.Contains(err.Error(), "tools.granted_scopes[1]") {
+			t.Errorf("err missing path index: %v", err)
+		}
+	})
+}
+
 func TestLiveReloadable_EmptyInPhase02(t *testing.T) {
 	cfg := mustLoadValid(t)
 	got := cfg.LiveReloadable()
