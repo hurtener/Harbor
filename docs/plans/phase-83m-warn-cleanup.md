@@ -206,8 +206,8 @@ Re-validate the `ReasoningReplay=text` round-trip via the existing
   dispatch; populate Step.ReasoningTrace from per-step reasoning.
 - `internal/planner/planner.go` + react driver — per-step reasoning
   surface (the exact shape is the agent's call; the simplest path is
-  a new `Reasoning string` field on each non-Finish Decision variant
-  + the react planner populating it from the LLM response).
+  a new `Reasoning string` field on each non-Finish Decision variant,
+  with the react planner populating it from the LLM response).
 
 ### Coordinator-owned (post-integration)
 
