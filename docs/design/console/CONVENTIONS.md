@@ -62,11 +62,15 @@ provides:
 - **A persistent sidebar** listing the full 14-page information architecture in
   four clusters:
   - **Runtime** — Overview, Live Runtime.
-  - **Execution** — Sessions, Tasks, Agents, Tools, Events, Background Jobs.
+  - **Execution** — Sessions, Tasks, Agents, Tools, Events, Background Jobs,
+    Playground.
   - **Resources** — Flows, Memory, MCP Connections, Artifacts.
   - **Settings** — Settings.
-  - Playground is a **session-level surface**, reached from within a session —
-    it is NOT a sidebar entry.
+  - Playground is reachable directly from the sidebar (Phase 83q / D-159 —
+    supersedes the original D-121 stance). The `/playground` index route
+    resolves the operator's active session and redirects to
+    `/playground/<session_id>`; the breadcrumb derives "Playground" from the
+    NAV entry like every other page.
 - **A top bar** carrying a breadcrumb (derived from the active route) and an
   identity / connection indicator: the resolved `(tenant, user, session)` triple,
   the Runtime base URL, and a connected / reconnecting / disconnected status dot.
