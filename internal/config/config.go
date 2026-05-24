@@ -54,9 +54,27 @@ type Config struct {
 }
 
 // ServerConfig is the network surface for the Harbor binary.
+//
+// AllowedOrigins is the Phase 83v CORS allowlist for the
+// D-091 multi-process Console+Runtime posture. Each entry is an exact
+// origin (`scheme://host[:port]`) the Runtime accepts cross-origin
+// requests from. Empty list (the default) = no CORS headers = same-
+// origin only (the pre-83v posture). The validator rejects `*` (or any
+// wildcard shape) unless CORSDevAllowAny is true. See D-162 + CLAUDE.md
+// §7 — never wildcard in production.
+//
+// CORSDevAllowAny is the explicit, dev-only escape hatch that opens the
+// CORS surface to ANY origin. NEVER set in production: a `harbor dev`
+// boot with this flag set prints a stderr banner so the posture is
+// visibly dev-only, and the validator refuses `*` shapes without it.
+// Provided for first-clone Console iteration against a `harbor dev`
+// loop where the Console origin (Vite, `:5173`) varies during
+// development.
 type ServerConfig struct {
 	BindAddr            string        `yaml:"bind_addr"`
 	ShutdownGracePeriod time.Duration `yaml:"shutdown_grace_period"`
+	AllowedOrigins      []string      `yaml:"allowed_origins,omitempty"`
+	CORSDevAllowAny     bool          `yaml:"cors_dev_allow_any,omitempty"`
 }
 
 // IdentityConfig configures JWT validation. Per AGENTS.md §7 the
