@@ -145,7 +145,7 @@ test.describe("MCP Connections page", () => {
       return;
     }
     await firstLink.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='mcp-connections-detail']"),
@@ -171,7 +171,7 @@ test.describe("MCP Connections page", () => {
       return;
     }
     await firstLink.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     for (const tab of ["resources", "prompts", "oauth", "health", "policy", "tools"]) {
       await page.locator(`[data-testid='tab-${tab}']`).click();
@@ -197,7 +197,7 @@ test.describe("MCP Connections page", () => {
       return;
     }
     await firstLink.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page.locator("[data-testid='refresh-discovery']").click();
     await expect(
@@ -221,7 +221,7 @@ test.describe("MCP Connections page", () => {
       return;
     }
     await firstLink.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const toggle = page.locator("[data-testid='raw-html-toggle']");
     await expect(toggle, "the raw-HTML toggle renders").toBeVisible();
@@ -246,7 +246,7 @@ test.describe("MCP Connections page", () => {
       return;
     }
     await firstLink.click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await page.locator("[data-testid='tab-tools']").click();
     const deepLink = page.locator("[data-testid='tools-deep-link']");
@@ -265,7 +265,7 @@ test.describe("MCP Connections page", () => {
     );
     expect(response, "navigation returned a response").not.toBeNull();
     expect(response!.status(), "the detail route does not 5xx").toBeLessThan(500);
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='page-state-error']"),
       "the Error state renders for an unknown server",
@@ -279,7 +279,7 @@ test.describe("MCP Connections page", () => {
     // Deliberately do NOT seed the connection — the page must render the
     // Disconnected PageState, never the Error state (CONVENTIONS.md §4).
     await page.goto(new URL("/mcp-connections", runtime.baseURL).toString());
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='page-state-disconnected']"),
       "the Disconnected state renders, not an error",

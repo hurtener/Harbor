@@ -94,7 +94,7 @@ test.describe("Console Live Runtime page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='status-counter-strip']"),
@@ -132,7 +132,7 @@ test.describe("Console Live Runtime page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='live-runtime-tab-strip']"),
@@ -172,7 +172,7 @@ test.describe("Console Live Runtime page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The Topology tab is the default; the canvas is the §5 primary view.
     await page.locator("[data-testid='tab-topology']").click();
@@ -190,7 +190,7 @@ test.describe("Console Live Runtime page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='event-stream-dock']"),
@@ -215,7 +215,7 @@ test.describe("Console Live Runtime page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("live-runtime");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const pauseBtn = page.locator("[data-testid='composer-pause']");
     await expect(pauseBtn, "the composer Pause verb surfaces").toBeVisible();
