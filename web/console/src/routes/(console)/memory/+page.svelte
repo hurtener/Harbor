@@ -513,7 +513,13 @@
         >
           {#snippet row(r)}
             {@const item = r as MemoryItem}
-            <td class="mono key">{item.key}</td>
+            <!-- W4 (Phase 83x): the legacy `overflow-wrap: anywhere`
+                 broke real (mid-length, unbroken) keys into one-glyph-
+                 per-line vertical wraps that destroyed the row's
+                 horizontal rhythm. Switch to single-line ellipsis +
+                 title tooltip so the full key is still reachable by
+                 hover (and accessible to screen readers via title). -->
+            <td class="mono key" title={item.key}>{item.key}</td>
             <td>
               <StatusChip kind={strategyKind(item.strategy)} label={item.strategy} />
             </td>
@@ -648,7 +654,13 @@
   }
 
   .key {
-    overflow-wrap: anywhere;
+    /* W4 (Phase 83x): single-line ellipsis prevents per-character
+       vertical wrap on mid-length keys. The full key is available via
+       the row's title attribute on hover. */
+    max-width: var(--size-rail);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .owner {

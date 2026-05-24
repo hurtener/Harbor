@@ -53,6 +53,11 @@
         return aggregates.running;
       case 'paused':
         return aggregates.paused;
+      case 'complete':
+        // W7 (Phase 83x): the Complete column reads `aggregates.complete`
+        // — the same counter the right-rail summary already shows. The
+        // two surfaces now agree.
+        return aggregates.complete;
       case 'failed':
         return aggregates.failed;
       default:
@@ -100,8 +105,10 @@
 
 <style>
   .kanban-board {
+    /* W7 (Phase 83x): the board now carries five columns
+       (Pending / Running / Paused / Complete / Failed). */
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: var(--space-3);
     align-items: start;
   }

@@ -176,6 +176,29 @@
       : subscription.events.filter((ev) => traceRunID !== '' && ev.run === traceRunID)
   );
 
+  // W10 (Phase 83x): the session-detail rail's `Status` field used to
+  // mirror the PAGE's PageStatus (`'ready' ? 'active' : status`). That
+  // wired the rail to react to a topology-snapshot failure — a load()
+  // failure left the rail reading "error" forever, even after the task
+  // itself had completed. Derive the session-level status from the
+  // status-counter strip instead: it is the live aggregate of every
+  // task event in the session and reflects the SESSION's lifecycle
+  // truthfully (active while anything is in-flight; complete when
+  // everything terminated cleanly; failed when something failed). The
+  // page's own loading-state status remains separate and drives the
+  // PageState chrome — the rail stops conflating the two.
+  let sessionStatusLabel = $derived(
+    status === 'disconnected'
+      ? 'disconnected'
+      : strip.running + strip.pending + strip.paused > 0
+        ? 'active'
+        : strip.failed > 0 && strip.completed === 0
+          ? 'failed'
+          : strip.completed > 0
+            ? 'complete'
+            : 'idle'
+  );
+
   // The event-stream dock page window — real pagination over the
   // rolling event buffer (not a fake "load more").
   let pagedEvents = $derived<Event[]>(
@@ -631,7 +654,7 @@
           <SessionDetailCard
             identity={connection.identity}
             agentName="default agent"
-            sessionStatus={status === 'ready' ? 'active' : status}
+            sessionStatus={sessionStatusLabel}
             costUSD={costUSD}
             lastError={lastError}
             tenant={connection.identity.tenant}

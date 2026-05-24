@@ -388,10 +388,25 @@
       </div>
     {/snippet}
     {#snippet empty()}
+      <!-- W11 (Phase 83x): the Agents page reads from the AgentRegistry,
+           which carries zero rows until something explicitly registers
+           an agent. The runtime still runs a SYNTHETIC "default agent"
+           for the dev token's identity scope (the Live Runtime page
+           surfaces it under that label) — but that synthetic is NOT a
+           registered row and is intentionally invisible here. The
+           legacy "scaffold one" copy did not explain that two-surfaces
+           reality; the new copy names the synthetic-default posture so
+           the operator stops chasing a phantom mismatch with Live
+           Runtime. -->
       <p class="empty-headline">No agents match these filters</p>
       <p class="empty-detail">
-        No agents registered — scaffold one with <code>harbor scaffold</code>
-        and run it with <code>harbor dev</code>.
+        The registry has 0 registered agents. The runtime still runs a
+        synthetic <strong>default agent</strong> for the dev token's
+        identity scope (visible on <a href="/live-runtime">Live Runtime</a>)
+        — that synthetic is not a registered row and does not appear
+        here. To register a named agent, scaffold one with
+        <code>harbor scaffold</code> and run it with
+        <code>harbor dev</code>.
       </p>
     {/snippet}
 
