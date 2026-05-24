@@ -93,6 +93,34 @@ export function isConnected(): boolean {
 }
 
 /**
+ * True when the Console has no Runtime attached — the shared
+ * disconnected-state predicate (Phase 83r / D-160). The post-83k
+ * walkthrough (W1/W2/W3) pinned the per-page divergence: every page
+ * hand-rolled its own `connection === null` check, with five different
+ * disabled-tooltip strings and three pages forgetting to disable
+ * controls at all. This helper is the single sanctioned read of "the
+ * Console is not attached to a Runtime" for secondary controls (header
+ * actions, FilterBar buttons, synthetic-data cards) that sit OUTSIDE
+ * `<PageState>` in the page chrome.
+ *
+ * The companion `<PageState>` boundary owns the page-level disconnected
+ * CTA (CONVENTIONS.md §4). Both branches MUST agree: when
+ * `resolveConnection()` returns `null`, `<PageState>` renders the
+ * Disconnected branch AND every secondary control routes through this
+ * predicate to render disabled.
+ */
+export function isDisconnected(): boolean {
+	return resolveConnection() === null;
+}
+
+/**
+ * The standard hover tooltip every disabled-because-disconnected control
+ * carries (Phase 83r / D-160). Pages use this verbatim so screen readers
+ * and hover affordances read the same string across the catalog.
+ */
+export const DISCONNECTED_TOOLTIP = 'Attach a Runtime to enable';
+
+/**
  * True when the resolved connection carries `scope` among its verified
  * claims. A `null` connection (Console not attached) carries no scopes —
  * `hasScope` returns `false`, never throws.

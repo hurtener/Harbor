@@ -38,6 +38,7 @@
     canControl,
     pending,
     result,
+    disconnected = false,
     onverb
   }: {
     /** Whether the connection carries the control scope claim (D-079). */
@@ -46,6 +47,10 @@
     pending: boolean;
     /** The last dispatch result — inline pass/fail (never silent). */
     result: { ok: boolean; message: string } | null;
+    /** True when the Console has no Runtime attached (Phase 83r / W2). When
+        true, the textarea + every verb render disabled-with-tooltip — no
+        composer affordance dispatches against a phantom runtime. */
+    disconnected?: boolean;
     /** Emitted with (verb, text) — the page dispatches the real method. */
     onverb: (verb: ComposerVerb, text: string) => void;
   } = $props();
@@ -72,7 +77,17 @@
     }
   }
 
+  // The Phase 83r W2 tooltip — the verbatim string is the shared
+  // `DISCONNECTED_TOOLTIP` from connection.ts; duplicated here only
+  // because importing a TS constant from a .svelte component for a
+  // single string would force a runtime read for no benefit. Tests
+  // that hover-assert the tooltip use this literal.
+  const DISCONNECTED_TIP = 'Attach a Runtime to enable';
+
   function tipFor(verb: ComposerVerb): string | undefined {
+    if (disconnected) {
+      return DISCONNECTED_TIP;
+    }
     if (canControl || !elevated.has(verb)) {
       return undefined;
     }
@@ -86,9 +101,13 @@
   <textarea
     class="composer-input"
     rows="3"
-    placeholder="Type a message, redirect, or context to inject…"
+    placeholder={disconnected
+      ? 'Attach a Runtime in Settings to start composing…'
+      : 'Type a message, redirect, or context to inject…'}
     bind:value={text}
     data-testid="composer-textarea"
+    disabled={disconnected}
+    title={disconnected ? DISCONNECTED_TIP : undefined}
   ></textarea>
 
   <div class="verb-row">
@@ -96,7 +115,8 @@
       type="button"
       class="control primary"
       data-testid="composer-start"
-      disabled={pending}
+      disabled={pending || disconnected}
+      title={tipFor('start')}
       onclick={() => dispatch('start')}
     >
       Start
@@ -105,7 +125,8 @@
       type="button"
       class="control"
       data-testid="composer-user-message"
-      disabled={pending}
+      disabled={pending || disconnected}
+      title={tipFor('user_message')}
       onclick={() => dispatch('user_message')}
     >
       User message
@@ -114,7 +135,7 @@
       type="button"
       class="control"
       data-testid="composer-redirect"
-      disabled={pending || !canControl}
+      disabled={pending || disconnected || !canControl}
       title={tipFor('redirect')}
       onclick={() => dispatch('redirect')}
     >
@@ -124,7 +145,7 @@
       type="button"
       class="control"
       data-testid="composer-inject"
-      disabled={pending || !canControl}
+      disabled={pending || disconnected || !canControl}
       title={tipFor('inject_context')}
       onclick={() => dispatch('inject_context')}
     >
@@ -137,7 +158,7 @@
       type="button"
       class="control"
       data-testid="composer-pause"
-      disabled={pending || !canControl}
+      disabled={pending || disconnected || !canControl}
       title={tipFor('pause')}
       onclick={() => dispatch('pause')}
     >
@@ -147,7 +168,7 @@
       type="button"
       class="control"
       data-testid="composer-resume"
-      disabled={pending || !canControl}
+      disabled={pending || disconnected || !canControl}
       title={tipFor('resume')}
       onclick={() => dispatch('resume')}
     >
@@ -157,7 +178,7 @@
       type="button"
       class="control danger"
       data-testid="composer-cancel"
-      disabled={pending || !canControl}
+      disabled={pending || disconnected || !canControl}
       title={tipFor('cancel')}
       onclick={() => dispatch('cancel')}
     >

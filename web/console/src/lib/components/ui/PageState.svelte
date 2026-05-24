@@ -98,6 +98,17 @@
     text-align: center;
   }
 
+  /* Phase 83r / N10 — Disconnected / Empty / Error placeholders center
+     vertically in the main column rather than hugging the top. The
+     `min-height: 40vh` is enough to make a near-empty page feel
+     centered. The Loading state keeps the stretch alignment + smaller
+     padding for skeleton rows. */
+  .page-state.disconnected,
+  .page-state.empty,
+  .page-state.error {
+    min-height: 40vh;
+  }
+
   .page-state.loading {
     align-items: stretch;
     padding: var(--space-4) var(--space-0);

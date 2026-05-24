@@ -23,7 +23,7 @@
   import { HarborClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
   import { SessionsProtocol } from '$lib/protocol/sessions.js';
-  import { resolveConnection, hasScope } from '$lib/connection.js';
+  import { resolveConnection, hasScope, DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import {
     PageHeader,
     FilterBar,
@@ -64,6 +64,8 @@
     connection !== null ? new SessionsProtocol(new HarborClient({ connection })) : null;
   // The tenant facet renders only with the admin scope claim (D-079).
   const adminScoped = hasScope(connection, 'admin');
+  // Phase 83r disconnected predicate — drives Refresh / Search / Save view.
+  const disconnected = connection === null;
 
   // ---- Async-state model (CONVENTIONS.md §4) ----
   let status = $state<PageStatus>(connection === null ? 'disconnected' : 'loading');
@@ -294,6 +296,8 @@
           class="sort-select"
           data-testid="sessions-sort"
           value={sort}
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onchange={(e) =>
             changeSort((e.currentTarget as HTMLSelectElement).value as SessionSort)}
         >
@@ -307,6 +311,8 @@
         type="button"
         class="ghost"
         data-testid="sessions-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void loadCatalog(cursorStack[cursorStack.length - 1] ?? '')}
       >
         Refresh
@@ -326,13 +332,15 @@
         type="button"
         class="ghost small"
         data-testid="sessions-save-view"
-        disabled={savedStore === null}
-        title={savedStore === null
-          ? 'Connect to a Runtime to save filters'
-          : 'Save the current filter as a view'}
+        disabled={savedStore === null || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedStore === null
+            ? 'Connect to a Runtime to save views'
+            : 'Save the current filter as a view'}
         onclick={() => void saveCurrentView()}
       >
-        Save filter
+        Save view
       </button>
     {/snippet}
     {#snippet facets()}
@@ -344,6 +352,8 @@
         placeholder="Search session id, agent, user…"
         data-testid="sessions-search"
         bind:value={query}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             applySearch();
@@ -354,6 +364,8 @@
         type="button"
         class="ghost small"
         data-testid="sessions-search-apply"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={applySearch}
       >
         Search

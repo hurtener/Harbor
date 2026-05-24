@@ -44,7 +44,9 @@
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
-  import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
+  // ConnectionFooter is rendered ONCE by the app shell ((console)/+layout.svelte —
+  // CONVENTIONS.md §2). Per-page imports were duplicating the footer
+  // (post-83k walkthrough N2); they are removed.
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
   import StatusCounterStripView from '$lib/components/live-runtime/status-counter-strip.svelte';
   import {
@@ -77,7 +79,12 @@
   import type { Event } from '$lib/protocol/events.js';
   import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
-  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    hasScope,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
   import {
@@ -94,6 +101,9 @@
   // the admin scope claim the composer + per-task control render
   // disabled-with-tooltip (CONVENTIONS.md §5).
   let canControl = $state(false);
+  // The Phase 83r W2 disconnected predicate — drives the Refresh /
+  // Save-view buttons + the composer (textarea + verbs).
+  let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
@@ -455,6 +465,8 @@
         type="button"
         class="control"
         data-testid="live-runtime-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void load()}
       >
         Refresh
@@ -475,23 +487,26 @@
       <input
         class="control save-input"
         type="text"
-        placeholder="Save view as…"
+        placeholder="Save current as…"
         bind:value={saveName}
         data-testid="live-runtime-save-name"
-        disabled={savedFilters === null}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
       />
       <button
         type="button"
         class="control"
         data-testid="live-runtime-save-view"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
+        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Console-local saved-view store unavailable'
+            : undefined}
         onclick={() => void saveCurrentView()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
 
@@ -572,6 +587,7 @@
             canControl={canControl}
             pending={composerPending}
             result={composerResult}
+            {disconnected}
             onverb={(verb, text) => void dispatchVerb(verb, text)}
           />
         {/if}
@@ -610,8 +626,6 @@
       </RailCard>
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </div>
 
 <style>

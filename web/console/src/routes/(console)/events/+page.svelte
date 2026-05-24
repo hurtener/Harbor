@@ -25,11 +25,14 @@
     DataTable,
     DetailRail,
     Pagination,
-    ConnectionFooter,
     PageState,
     StatusChip,
     type DataTableColumn
   } from '$lib/components/ui/index.js';
+  // ConnectionFooter is rendered ONCE by the app shell
+  // ((console)/+layout.svelte — CONVENTIONS.md §2). Per-page imports were
+  // duplicating the footer (post-83k walkthrough N2); removed.
+  import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import EventFilterChips from '$lib/components/events/EventFilterChips.svelte';
   import EventRateSparkline from '$lib/components/events/EventRateSparkline.svelte';
   import EventDetailRail from '$lib/components/events/EventDetailRail.svelte';
@@ -43,6 +46,8 @@
 
   const state = new EventsPageState();
   const savedViews = new EventsSavedViews();
+  // Phase 83r disconnected predicate — drives Save view + search input.
+  const disconnected = $derived(state.status === 'disconnected');
 
   /** The event table columns, in page-events.md §12 mockup order. */
   const COLUMNS: DataTableColumn[] = [
@@ -153,8 +158,11 @@
         class="search-input"
         placeholder="Search events…"
         data-testid="events-search"
-        title="Searching the loaded page only — runtime-side search lands with Phase 72c"
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : 'Searching the loaded page only — runtime-side search lands with Phase 72c'}
         value={state.search}
+        disabled={disconnected}
         oninput={(e) => state.setSearch((e.currentTarget as HTMLInputElement).value)}
       />
     {/snippet}
@@ -168,6 +176,8 @@
         type="button"
         class="bar-action"
         data-testid="save-view"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void saveCurrentView()}
       >
         Save view
@@ -260,8 +270,6 @@
       {/if}
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </section>
 
 <style>

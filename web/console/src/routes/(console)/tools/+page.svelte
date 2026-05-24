@@ -46,7 +46,12 @@
   import RunHistoryStrip from '$lib/components/tools/RunHistoryStrip.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
-  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    hasScope,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { ToolsSavedFilters } from '$lib/db/saved_filters_tools.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -72,6 +77,11 @@
 
   let connection = $state<RuntimeConnection | null>(null);
   let client = $state<ProtocolClient | null>(null);
+  // The Phase 83r W3 disconnected predicate — drives Refresh / Apply /
+  // Clear / Export / Save-view + collapses the secondary
+  // `ToolDetailTabs` empty state so the disconnected page renders ONE
+  // empty message (N5), not two stacked ones.
+  let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
@@ -468,20 +478,23 @@
         placeholder="Save current as…"
         bind:value={saveName}
         data-testid="tools-save-filter-name"
-        disabled={savedFilters === null}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentFilter()}
       />
       <button
         type="button"
         class="control"
         data-testid="tools-save-filter"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
+        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Console-local saved-view store unavailable'
+            : undefined}
         onclick={() => void saveCurrentFilter()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
 
@@ -496,12 +509,16 @@
         placeholder="Search tools…"
         bind:value={searchText}
         data-testid="tools-search"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && submitSearch()}
       />
       <button
         type="button"
         class="control"
         data-testid="tools-search-apply"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={submitSearch}
       >
         Apply
@@ -510,6 +527,8 @@
         type="button"
         class="control"
         data-testid="tools-filter-clear"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={clearFilters}
       >
         Clear
@@ -521,6 +540,8 @@
         type="button"
         class="control"
         data-testid="tools-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void loadCatalog()}
       >
         Refresh
@@ -529,7 +550,8 @@
         type="button"
         class="control"
         data-testid="tools-export-csv"
-        disabled={tools.length === 0}
+        disabled={tools.length === 0 || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => handleExport('csv')}
       >
         Export CSV
@@ -538,7 +560,8 @@
         type="button"
         class="control"
         data-testid="tools-export-json"
-        disabled={tools.length === 0}
+        disabled={tools.length === 0 || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => handleExport('json')}
       >
         Export JSON
@@ -641,15 +664,23 @@
         />
       {/if}
 
-      <ToolDetailTabs
-        tool={selectedTool}
-        {manifest}
-        loading={detailStatus === 'loading'}
-        {canAdmin}
-        {approvalPending}
-        {approvalResult}
-        onsetpolicy={(id, policy) => void setApprovalPolicy(id, policy)}
-      />
+      {#if !disconnected}
+        <!-- N5 fix (Phase 83r): the disconnected `<PageState>` branch
+             already renders the "Not connected" placeholder. The
+             secondary `ToolDetailTabs` empty ("Select a tool from the
+             catalog…") was stacking BELOW that, producing the
+             post-83k walkthrough's two-empties bug. Collapsing the
+             tabs while disconnected leaves ONE empty message. -->
+        <ToolDetailTabs
+          tool={selectedTool}
+          {manifest}
+          loading={detailStatus === 'loading'}
+          {canAdmin}
+          {approvalPending}
+          {approvalResult}
+          onsetpolicy={(id, policy) => void setApprovalPolicy(id, policy)}
+        />
+      {/if}
       {#if selectedTool !== null}
         <!-- D-132 / W4: a `tools.invoke` Protocol method is NOT shipped
              at V1. Rather than silently omit a "try the tool" surface,
@@ -677,7 +708,7 @@
 
     <DetailRail>
       <RailCard title="Tool overview">
-        <ToolOverviewCard {aggregates} />
+        <ToolOverviewCard {aggregates} {disconnected} />
       </RailCard>
       <RailCard title="Status & error rate">
         <StatusErrorRateCard

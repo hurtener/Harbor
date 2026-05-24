@@ -25,10 +25,15 @@
 
   let {
     active,
+    disconnected = false,
     onselect
   }: {
     /** The currently-applied single-state facet, or null for "all". */
     active: MCPServerState | null;
+    /** When true, the chips desaturate + render non-clickable
+        (Phase 83r / N8). Hover-affordances carry the disconnected
+        tooltip via the `title` attribute. */
+    disconnected?: boolean;
     /** Emitted with the selected state (or null to clear). */
     onselect: (state: MCPServerState | null) => void;
   } = $props();
@@ -41,10 +46,16 @@
     class:active={facet.value === active}
     data-testid={`filter-${facet.value ?? 'all'}`}
     aria-pressed={facet.value === active}
+    disabled={disconnected}
+    title={disconnected ? 'Attach a Runtime to enable' : undefined}
     onclick={() => onselect(facet.value)}
   >
     {#if facet.value}
-      <StatusChip kind={mcpStatusKind(facet.value)} label={facet.label} />
+      <StatusChip
+        kind={mcpStatusKind(facet.value)}
+        label={facet.label}
+        desaturated={disconnected}
+      />
     {:else}
       <span class="all-label">{facet.label}</span>
     {/if}
