@@ -285,4 +285,79 @@ test.describe("Console Settings page", () => {
       "runtime-posture sections route through PageState (disconnected branch)",
     ).toBeVisible();
   });
+
+  test("(h) Settings + Add Runtime from disconnected boot writes localStorage and reconnects (Phase 83u / D-163)", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Phase 83u — the F3 chicken-and-egg fix. From a clean Console boot
+    // (no prior `harbor.runtime.*` in localStorage), the operator clicks
+    // + Add Runtime, fills the form, clicks Add. The pre-83u flow threw
+    // "Console DB not open — attach to a Runtime first" because the
+    // address-book DB needed a connection to derive its per-operator
+    // encryption key, but adding a connection required writing to the
+    // address book.
+    //
+    // The fix splits the form's two effects:
+    //   1) addRuntime() calls attachConnection(baseURL) FIRST —
+    //      writes `harbor.runtime.base_url` to localStorage; no DB.
+    //   2) Then attempts the DB write best-effort. On first attach
+    //      the DB is not open, so this is deferred and the catch-up
+    //      in SettingsDBController.load() runs after the page reload.
+    //
+    // This test exercises (1) end-to-end. The Playwright harness
+    // pre-seeds the auth token but NOT the runtime connection triple,
+    // so `connection.ts::resolveConnection` returns null on first mount
+    // (the operator's first-boot state). Clicking Add writes the
+    // localStorage `base_url` key, which is the load-bearing assertion.
+    await helpers.seedAuth(runtime.token);
+    await helpers.gotoPage("settings");
+
+    // Confirm the pre-attach state: localStorage base_url is unset.
+    const baseURLBefore = await page.evaluate(() =>
+      window.localStorage.getItem("harbor.runtime.base_url"),
+    );
+    expect(baseURLBefore, "no Runtime attached on first boot").toBeNull();
+
+    // Open the add-form, fill it, and submit. The submit triggers a
+    // page reload (the new connection only takes effect on next mount).
+    // We intercept the reload by capturing the localStorage write
+    // BEFORE the navigation completes — Playwright's `page.evaluate`
+    // runs synchronously against the current page context.
+    const addBtn = page.locator("button:has-text('+ Add Runtime')").first();
+    await addBtn.click();
+    await page
+      .locator("[data-testid='add-runtime-name']")
+      .fill("local-dev-runtime");
+    await page
+      .locator("[data-testid='add-runtime-url']")
+      .fill(runtime.baseURL);
+
+    // The Add submit reloads the page; await both the click and the
+    // resulting load completion.
+    await Promise.all([
+      page.waitForLoadState("networkidle"),
+      page.locator("[data-testid='add-runtime-submit']").click(),
+    ]);
+
+    // After the reload, the localStorage key is written and the
+    // page reads it on mount — confirm both.
+    const baseURLAfter = await page.evaluate(() =>
+      window.localStorage.getItem("harbor.runtime.base_url"),
+    );
+    expect(
+      baseURLAfter,
+      "addRuntime wrote the active connection's base_url to localStorage",
+    ).toBe(runtime.baseURL.replace(/\/$/, ""));
+
+    // The form-submit path no longer throws "Console DB not open" —
+    // the pre-83u red error is gone. The post-reload page renders
+    // the cards group without the disconnected state on the
+    // console-local sections.
+    await expect(
+      page.locator("[data-testid='settings-cards-console-local']"),
+      "console-local cards still render after the reload",
+    ).toBeVisible();
+  });
 });

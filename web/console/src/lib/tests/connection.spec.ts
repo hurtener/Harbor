@@ -7,7 +7,13 @@
  * key is missing (CONVENTIONS.md §6/§8).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { STORAGE_KEYS, hasScope, isConnected, resolveConnection } from '../connection.js';
+import {
+	STORAGE_KEYS,
+	attachConnection,
+	hasScope,
+	isConnected,
+	resolveConnection
+} from '../connection.js';
 
 afterEach(() => {
 	localStorage.clear();
@@ -99,5 +105,63 @@ describe('hasScope', () => {
 		expect(hasScope(conn, 'admin')).toBe(true);
 		expect(hasScope(conn, 'observer')).toBe(true);
 		expect(hasScope(conn, '')).toBe(false);
+	});
+});
+
+describe('attachConnection (Phase 83u / D-163)', () => {
+	it('writes just the base URL when no opts are provided', () => {
+		attachConnection('http://127.0.0.1:18080');
+		expect(localStorage.getItem(STORAGE_KEYS.baseURL)).toBe('http://127.0.0.1:18080');
+		// The other keys remain untouched (the operator's existing
+		// identity/token/scopes carry over — partial attach is supported).
+		expect(localStorage.getItem(STORAGE_KEYS.token)).toBeNull();
+		expect(localStorage.getItem(STORAGE_KEYS.tenant)).toBeNull();
+		expect(localStorage.getItem(STORAGE_KEYS.user)).toBeNull();
+		expect(localStorage.getItem(STORAGE_KEYS.session)).toBeNull();
+		expect(localStorage.getItem(STORAGE_KEYS.scopes)).toBeNull();
+	});
+
+	it('normalises the trailing slash on the base URL', () => {
+		attachConnection('http://127.0.0.1:18080/');
+		expect(localStorage.getItem(STORAGE_KEYS.baseURL)).toBe('http://127.0.0.1:18080');
+	});
+
+	it('writes every opt when supplied', () => {
+		attachConnection('http://example.com', {
+			token: 'jwt-xyz',
+			identity: { tenant: 't1', user: 'u1', session: 's1' },
+			scopes: ['admin', 'observer']
+		});
+		expect(localStorage.getItem(STORAGE_KEYS.baseURL)).toBe('http://example.com');
+		expect(localStorage.getItem(STORAGE_KEYS.token)).toBe('jwt-xyz');
+		expect(localStorage.getItem(STORAGE_KEYS.tenant)).toBe('t1');
+		expect(localStorage.getItem(STORAGE_KEYS.user)).toBe('u1');
+		expect(localStorage.getItem(STORAGE_KEYS.session)).toBe('s1');
+		expect(localStorage.getItem(STORAGE_KEYS.scopes)).toBe('admin,observer');
+	});
+
+	it('round-trips through resolveConnection when every opt is supplied', () => {
+		attachConnection('http://example.com/', {
+			token: 'tok',
+			identity: { tenant: 'ta', user: 'ua', session: 'sa' },
+			scopes: ['admin']
+		});
+		const conn = resolveConnection();
+		expect(conn).not.toBeNull();
+		expect(conn?.baseURL).toBe('http://example.com');
+		expect(conn?.token).toBe('tok');
+		expect(conn?.identity).toEqual({ tenant: 'ta', user: 'ua', session: 'sa' });
+		expect(conn?.scopes).toEqual(['admin']);
+		expect(isConnected()).toBe(true);
+	});
+
+	it('leaves a partial attach as null (the honest "not yet attached" signal)', () => {
+		// A base URL alone is the first-attach gesture — the operator's
+		// next page reload imports the token/identity from auth storage.
+		// Until then `resolveConnection()` returns null (no token), and
+		// pages render the Disconnected `<PageState>` — not Error.
+		attachConnection('http://example.com');
+		expect(resolveConnection()).toBeNull();
+		expect(isConnected()).toBe(false);
 	});
 });
