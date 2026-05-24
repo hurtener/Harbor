@@ -1015,6 +1015,28 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("sessions registry: %w", err)
 	}
 	closers = append(closers, sessionRegistry.CloseRegistry)
+
+	// W8 (Phase 83x): the dev token carries `(DevTenant, DevUser,
+	// DevSession)`, but the SessionRegistry has no row until something
+	// explicitly Opens that triple. The Console's `sessions.list` reads
+	// from the registry, so without a row the Sessions page rendered
+	// "No sessions match these filters" even while a task was actively
+	// running under that identity. Open the dev session at boot so the
+	// catalog has the live row a fresh `harbor dev` user can see. A
+	// pre-existing row (e.g. an earlier boot that persisted into a
+	// SQLite state store) is fine — `ErrSessionAlreadyOpen` is
+	// expected and swallowed; any other error fails the boot loud.
+	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
+	devSessCtx, devSessErr := identity.With(ctx, devID)
+	if devSessErr != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions: dev identity scope: %w", devSessErr)
+	}
+	if _, openErr := sessionRegistry.Open(devSessCtx, DevSession, devID); openErr != nil &&
+		!errors.Is(openErr, sessions.ErrSessionAlreadyOpen) {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions: open dev session: %w", openErr)
+	}
 	sessionsProjector, err := sessionsprotocol.NewListerProjector(sessionRegistry)
 	if err != nil {
 		closeAll(ctx)

@@ -396,13 +396,18 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			"method %q: audit redactor refused the upload payload: %v", m, err)
 	}
 
+	// W6 (Phase 83x): stamp `created_at` on the Source map so
+	// projectRow's `extractCreatedAt` populates a real timestamp on
+	// the wire row. Without this every uploaded artifact rendered with
+	// the Go zero-value `0001-01-01T00:00:00Z` on the Console.
 	opts := artifacts.PutOpts{
 		MimeType:  req.Opts.MimeType,
 		Filename:  req.Opts.Filename,
 		Namespace: req.Opts.Namespace,
 		Source: map[string]any{
-			"source": string(source),
-			"tags":   stringSlice(req.Opts.Tags),
+			"source":     string(source),
+			"tags":       stringSlice(req.Opts.Tags),
+			"created_at": s.clock(),
 		},
 	}
 	ref, err := s.store.PutBytes(ctx, scope, req.Bytes, opts)
