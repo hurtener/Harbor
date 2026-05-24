@@ -3727,3 +3727,26 @@ A value `json.Marshal` rejects (a `chan`, a function, a cyclic structure) fails 
 **Findings I'm departing from.** None. Bucket A agent surfaced one MCP SDK behavior worth recording: the SDK's `Client.callResourceUpdatedHandler` does not propagate the per-call subscription ctx through to the registered handler today. The `pushIdentity` helper closes the latent multi-tenant cross-stamp bug at the boundary we control (preferring ctx-identity when present, falling back to cached default); a future SDK release that threads the subscription ctx through would land transparently with the helper unchanged.
 
 **Protocol additions.** None — every item is internal. The `prototypes.Task.ToolCount` wire field existed pre-83m; this phase just produces a non-zero value for it.
+
+---
+
+## D-157 — Phase 83k: `make build` + release pipeline rebuild Console; placeholder copy reframed for `go install` operators
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83k)
+
+**Where it lives:** `Makefile` (`build` target gains `console-build` dependency; new `build-fast` for iterative dev); `scripts/release-build.sh` (calls `make console-build` before `go build`); `scripts/check-console-bundle.sh` (NEW — staleness gate); `.github/workflows/ci.yml` (wires the gate into the `frontend-e2e` job); `cmd/harbor/cmd_console.go` (placeholder page copy refreshed); `docs/plans/README.md` + `docs/plans/phase-83k-console-release-embed.md` + `docs/glossary.md` + `scripts/smoke/phase-83k.sh`.
+
+**Decision.** The operator-validation surfaced that `cmd/harbor/consoledist/*` is gitignored except for `.gitkeep` (committed in Phase 73m to keep `//go:embed` happy on a bare checkout). A fresh `git clone` + `go build ./cmd/harbor` produces a binary that embeds an empty Console — `harbor console` serves the synthesized placeholder page, not the real UI. Operators must remember to run `make console-build` before `make build` to get a working Console. The release pipeline (`scripts/release-build.sh` + `.github/workflows/release.yml`) skips the Console build too, so tagged releases would carry an empty bundle if not for a stale local artifact carrying over. Three settled calls.
+
+**1. `make build` rebuilds the Console first; `make build-fast` preserves the iterative-dev shortcut.** The default `make build` invocation (operators' "I cloned the repo, let's run it" path) MUST produce a working binary. Adding `console-build` as a prereq of `build` makes the dev loop slower but correct. `make build-fast` is the iterative shortcut for changes that don't touch `web/console/`; documented in the Makefile comment block. The `go build ./cmd/harbor` invocation (Go's own canonical command) bypasses Make and is documented as "embeds whatever consoledist/ holds on disk — caveat operator." This is the smallest possible footprint for the binding behavior change: operators who type `make build` always get a working binary; operators who reach for `go build` directly get the documented caveat.
+
+**2. The release pipeline rebuilds Console before `go build`.** `scripts/release-build.sh` runs `make console-build` in its new step 2 before the existing build (renumbered to step 3). The release artifact ALWAYS carries a fresh Console — a tagged release shipping an empty bundle is exactly the "test stubs as production defaults" failure mode CLAUDE.md §13 forbids, applied one layer over to deployment artifacts. The fix is identical in shape to D-093's `make protocol-ts-gen-check` discipline: generated artifacts that drift from source fail the build LOUDLY.
+
+**3. The placeholder page copy is reframed for the `go install` reality.** The pre-83k copy said "run `make console-build`, then `make build`" — accurate for repo operators, useless for `go install` operators (who never `cd Harbor` and can't make-target). The new copy has three sections: "If you cloned the repo" (just `make build` now), "If you ran `go install`" (workaround: clone + `make build`; long-term: wait for tagged release with embedded Console), "Configuration" (pointers to `harbor init` + `docs/CONFIG.md`). Better visual hierarchy, dark mode, code blocks, real links. The placeholder is now an operator-onboarding surface, not a "build the thing" stub.
+
+**Why.** Without 83k, every operator who tries the framework outside a repo checkout sees a broken Console. The Protocol surface still works (Bearer-token RPC against the dev binary) but the in-browser UI — the entire DX bet — is dark. The release pipeline + Makefile fix makes "I want to try Harbor" a one-command experience; the placeholder rewrite makes "I tried it and the UI is missing" a 30-second self-recovery instead of a GitHub-issue file.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — 83k is build pipeline + operator-facing copy.

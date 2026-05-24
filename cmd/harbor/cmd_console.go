@@ -226,14 +226,44 @@ type consoleAssetHandler struct {
 const consolePlaceholderIndex = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Harbor Console — build not bundled</title></head>
-<body><main style="font-family:system-ui,sans-serif;padding:2rem;max-width:40rem;margin:0 auto">
-<h1>Harbor Console</h1>
-<p>This <code>harbor</code> binary was built without the Console static
-assets bundled.</p>
-<p>Run <code>make console-build</code> (which builds the SvelteKit Console
-and stages it into <code>cmd/harbor/consoledist/</code>), then rebuild the
-binary with <code>make build</code>.</p>
+<title>Harbor Console — build not bundled</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+  main { max-width: 44rem; margin: 0 auto; padding: 3rem 2rem; }
+  h1 { font-weight: 600; font-size: 1.75rem; margin: 0 0 1.5rem; }
+  h2 { font-weight: 500; font-size: 1.1rem; margin: 2rem 0 0.5rem; color: #94a3b8; }
+  code { background: #1e293b; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.95em; }
+  pre { background: #1e293b; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  pre code { background: transparent; padding: 0; }
+  p { line-height: 1.55; margin: 0.5rem 0; }
+  a { color: #60a5fa; }
+</style>
+</head>
+<body><main>
+<h1>Harbor Console — build not bundled</h1>
+<p>This <code>harbor</code> binary was built without the SvelteKit Console
+static assets bundled. The Protocol surface still works — only the
+in-browser UI is missing.</p>
+
+<h2>If you cloned the repo</h2>
+<pre><code>make build         # builds the Console bundle, then the binary
+./bin/harbor console</code></pre>
+<p>Use <code>make build-fast</code> to skip the Console rebuild for
+iterative dev work that did not touch <code>web/console/</code>.</p>
+
+<h2>If you ran <code>go install</code></h2>
+<p>Until tagged releases publish a Console-bundled binary, install
+from a checkout instead:</p>
+<pre><code>git clone https://github.com/hurtener/Harbor
+cd Harbor
+make build
+./bin/harbor console</code></pre>
+
+<h2>Configuration</h2>
+<p>Every yaml knob lives at
+<a href="https://github.com/hurtener/Harbor/blob/main/docs/CONFIG.md">docs/CONFIG.md</a>.
+Start with <code>harbor init</code> to drop a tiered <code>harbor.yaml</code>
+into your project.</p>
 </main></body></html>
 `
 

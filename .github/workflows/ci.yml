@@ -160,9 +160,12 @@ jobs:
       - name: Build + stage the Console bundle (console-build)
         if: steps.detect.outputs.present == 'true'
         run: make console-build
+      - name: Console bundle staleness gate (Phase 83k / D-157)
+        if: steps.detect.outputs.present == 'true'
+        run: scripts/check-console-bundle.sh
       - name: Build bin/harbor (embeds the staged Console bundle)
         if: steps.detect.outputs.present == 'true'
-        run: make build
+        run: make build-fast
       - name: Cache Playwright browsers
         if: steps.detect.outputs.present == 'true'
         uses: actions/cache@v5
