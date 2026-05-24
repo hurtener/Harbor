@@ -80,9 +80,14 @@ test.describe("Events page", () => {
       page.locator("[data-testid='events-page']"),
       "the Events page section is present",
     ).toBeAttached();
+    // Phase 83s (D-161) — the per-page inline `connection-footer` was
+    // removed in favour of the single viewport-fixed `ConnectionFooter`
+    // rendered once by `(console)/+layout.svelte`. The assertion now
+    // looks for the footer at the layout level (no `events-page`
+    // ancestor selector).
     await expect(
-      page.locator("[data-testid='events-page'] [data-testid='connection-footer']"),
-      "the ConnectionFooter renders",
+      page.locator("[data-testid='connection-footer']").first(),
+      "the shared viewport ConnectionFooter renders",
     ).toBeVisible();
     await expect(
       page.locator("[data-testid='events-search']"),
