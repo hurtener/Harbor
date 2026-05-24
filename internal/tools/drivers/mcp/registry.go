@@ -736,6 +736,46 @@ func appendBucket(buckets []HealthBucket, b HealthBucket) []HealthBucket {
 	return buckets
 }
 
+// RecordDiscovery seeds the per-server stats from an already-fetched
+// descriptor slice without re-calling provider.Discover. The boot-time
+// dev attach path uses this so the Console MCP-page wire surface
+// (`mcp.servers.list`) reports the actual tool count + a real
+// `last_discovery_at`, not zero values.
+//
+// Pre-RecordDiscovery the boot-time path called Register() with
+// initial-zero stats; the only API that updated stats was
+// RefreshDiscovery, which re-runs the network call. Operators saw
+// `tool_count: 0` and `last_discovery_at: 0001-01-01T00:00:00Z` on
+// every just-booted Runtime because the boot-time discovery never
+// reached the registry's stats — its result went straight to the tool
+// catalog. Round-4 walkthrough fix.
+//
+// RecordDiscovery is a no-network counterpart to RefreshDiscovery:
+// caller already has the descriptors (from a previous provider.Discover
+// at boot), so the method just classifies them + writes the stats.
+// State is set to Online (the descriptors arrived successfully) and
+// recentLatencyMs is set to 0 (the boot-time latency is not threaded
+// through; a follow-up RefreshDiscovery from the Console will populate
+// it).
+//
+// Identity is NOT required — this is a server-side seeding gesture
+// from the boot path, not a Protocol-edge read.
+func (r *Registry) RecordDiscovery(name string, descs []tools.ToolDescriptor) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.servers[name]
+	if !ok {
+		return fmt.Errorf("mcp: RecordDiscovery %q: unknown server (Register first)", name)
+	}
+	tc, rc, pc := classifyDescriptors(descs, name)
+	e.stats.toolCount = tc
+	e.stats.resourceCount = rc
+	e.stats.promptCount = pc
+	e.stats.lastDiscoveryAt = r.clock()
+	e.stats.state = ServerStateOnline
+	return nil
+}
+
 // classifyDescriptors counts tools / resources / prompts in a descriptor
 // slice, using the Phase 28 synthetic-name markers.
 func classifyDescriptors(descs []tools.ToolDescriptor, server string) (toolCount, resourceCount, promptCount int) {

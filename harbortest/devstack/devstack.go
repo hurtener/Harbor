@@ -1812,6 +1812,14 @@ func attachDevStackMCPServer(
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}
+	// Round-4 (P1+P2) D-094 mirror: seed the registry's per-server
+	// stats from the boot-time discovery so the Console's
+	// mcp.servers.list wire surface reports the actual tool_count + a
+	// real last_discovery_at. Mirror of the production
+	// attachDevMCPServer path in cmd/harbor/cmd_dev.go.
+	if recErr := reg.RecordDiscovery(ms.Name, descriptors); recErr != nil {
+		return fmt.Errorf("registry.RecordDiscovery: %w", recErr)
+	}
 	if logger != nil {
 		logger.Info("devstack: MCP server attached",
 			slog.String("name", ms.Name),
