@@ -34,11 +34,34 @@ console-build:
 		echo "skip console-build: web/console absent"; \
 	fi
 
-build:
+# build rebuilds the Console bundle first (so the produced binary
+# embeds a fresh Console) and then builds the static CGo-free `harbor`
+# binary. Phase 83k (D-157): the pre-83k `make build` skipped the
+# Console rebuild, so a fresh `git clone` + `make build` produced a
+# binary that served the synthesized placeholder page — the same
+# failure mode `go install github.com/.../cmd/harbor@latest` still
+# hits today (operators can't tell `go install` to run a Make target).
+# Local iterative dev that knows it didn't touch `web/console/`
+# should use `make build-fast` to skip the npm step.
+build: console-build
 	@if [ -f cmd/harbor/main.go ]; then \
 		CGO_ENABLED=0 go build -ldflags='-s -w' -o bin/harbor ./cmd/harbor; \
 	else \
 		echo "skip build: cmd/harbor/main.go absent (Phase 1 hasn't landed)"; \
+	fi
+
+# build-fast skips the Console rebuild (Phase 83k / D-157). The
+# iterative-dev shortcut for changes that don't touch `web/console/`.
+# The produced binary embeds whatever `cmd/harbor/consoledist/` holds
+# on disk — stale relative to `web/console/src/` if you edited the
+# Console without re-running `make console-build` yourself. CI's
+# Console-staleness gate (`scripts/check-console-bundle.sh`) catches
+# the drift before merge.
+build-fast:
+	@if [ -f cmd/harbor/main.go ]; then \
+		CGO_ENABLED=0 go build -ldflags='-s -w' -o bin/harbor ./cmd/harbor; \
+	else \
+		echo "skip build-fast: cmd/harbor/main.go absent (Phase 1 hasn't landed)"; \
 	fi
 
 test:
