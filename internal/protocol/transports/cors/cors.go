@@ -60,11 +60,20 @@ const (
 // The fixed allow-method / allow-header / max-age values the middleware
 // emits on a match. Per the phase plan: explicit lists, not `*`. The set
 // covers every method the Protocol surface needs (REST + SSE GET) and
-// every header a cross-origin Console sends (Authorization for Bearer
-// auth, Content-Type for POST bodies, Last-Event-ID for SSE resume).
+// every header a cross-origin Console sends:
+//
+//   - Authorization — Bearer auth
+//   - Content-Type — POST bodies
+//   - Last-Event-ID — SSE resume
+//   - X-Harbor-Tenant / X-Harbor-User / X-Harbor-Session — the Console's
+//     identity envelope (`web/console/src/lib/protocol/client.ts`). Round-3
+//     walkthrough caught the omission: the browser's preflight allow-
+//     headers check failed because these custom headers were not listed,
+//     blocking every cross-origin request even though the server-side
+//     auth had nothing to reject. (Round 3 / post-83v structural fix.)
 const (
 	allowMethods = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
-	allowHeaders = "Authorization, Content-Type, Last-Event-ID"
+	allowHeaders = "Authorization, Content-Type, Last-Event-ID, X-Harbor-Tenant, X-Harbor-User, X-Harbor-Session"
 	// 24h preflight cache — the standard browser default. Future phases
 	// can make this operator-configurable; V1 picks one value.
 	maxAgeSeconds = "86400"

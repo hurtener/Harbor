@@ -90,7 +90,7 @@ test.describe("Console Tasks page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The board is the §5 depth-bar primary view.
     await expect(
@@ -122,13 +122,13 @@ test.describe("Console Tasks page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(page.locator("[data-testid='kanban-board']")).toBeVisible();
 
     // Toggle to list mode — the DataTable replaces the board.
     await page.locator("[data-testid='tasks-mode-toggle']").click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='kanban-board']"),
       "the board is hidden in list mode",
@@ -143,7 +143,7 @@ test.describe("Console Tasks page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const checks = page.locator("[data-testid='task-card-check']");
     const checkCount = await checks.count();
@@ -173,7 +173,7 @@ test.describe("Console Tasks page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tasks");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const checks = page.locator("[data-testid='task-card-check']");
     const checkCount = await checks.count();

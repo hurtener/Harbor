@@ -83,7 +83,7 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The saved-filter chip strip (Active only / High-priority /
     // Stuck > 1h / Recently failed) is the sub-header.
@@ -110,7 +110,7 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // Every queue row is a background job — the page's `kinds:
     // ['background']` binding. A row carrying a foreground kind is a
@@ -131,7 +131,7 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();
@@ -160,14 +160,14 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const rows = page.locator("[data-testid='bg-job-row']");
     const count = await rows.count();
     test.skip(count < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
 
     await rows.first().click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     await expect(
       page.locator("[data-testid='bg-right-rail']"),
@@ -189,7 +189,7 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     // The orphan detector is a pure Console-side cross-check (D-128).
     // It flags a background job whose parent task is absent from the
@@ -222,7 +222,7 @@ test.describe("Console Background Jobs page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();

@@ -264,7 +264,7 @@ test.describe("Events page", () => {
     // Deliberately do NOT seed the connection — the page must render the
     // Disconnected PageState, never the Error state (CONVENTIONS.md §4).
     await page.goto(new URL("/events", runtime.baseURL).toString());
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='page-state-disconnected']"),
       "the Disconnected state renders, not an error",

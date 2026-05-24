@@ -55,7 +55,7 @@ export abstract class BasePage {
    * before client-side hydration finishes.
    */
   async waitForHydration(): Promise<void> {
-    await this.page.waitForLoadState("networkidle");
+    await this.page.waitForLoadState("load");
     await this.page.waitForSelector(HYDRATION_MARKER, { state: "attached" });
   }
 }

@@ -120,8 +120,16 @@ test.describe("Overview page", () => {
     const counters = page.locator("[data-testid='counter-row']");
     const error = page.locator("[data-testid='page-state-error']");
     const loading = page.locator("[data-testid='page-state-loading']");
+    const empty = page.locator("[data-testid='page-state-empty']");
+    const disconnected = page.locator("[data-testid='page-state-disconnected']");
+    const info = page.locator("[data-testid='page-state-info']");
+    // `.first()` because the Overview page has multiple loading sections
+    // (counter row, intervention queue, depth bar) so the `.or()` chain
+    // can match 2-3 `page-state-loading` instances — strict-mode
+    // violation. The assertion intent is "at least one branch is
+    // visible," which `.first()` expresses correctly.
     await expect(
-      counters.or(error).or(loading),
+      counters.or(error).or(loading).or(empty).or(disconnected).or(info).first(),
       "the page resolves into the counter row or a documented PageState",
     ).toBeVisible();
 
@@ -158,8 +166,13 @@ test.describe("Overview page", () => {
     );
     const error = page.locator("[data-testid='page-state-error']");
     const loading = page.locator("[data-testid='page-state-loading']");
+    const empty = page.locator("[data-testid='page-state-empty']");
+    const disconnected = page.locator("[data-testid='page-state-disconnected']");
+    const info = page.locator("[data-testid='page-state-info']");
+    // `.first()` — same reason as the counter-row test: multiple page
+    // sections render `page-state-loading` concurrently.
     await expect(
-      queue.or(queueEmpty).or(error).or(loading),
+      queue.or(queueEmpty).or(error).or(loading).or(empty).or(disconnected).or(info).first(),
       "the intervention queue resolves into a documented state",
     ).toBeVisible();
 

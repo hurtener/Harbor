@@ -840,7 +840,13 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 	if cfg.validator != nil {
 		mw := auth.Middleware(cfg.validator, auth.MWLogger(cfg.logger))
 		mountedControl = mw(controlHandler)
-		mountedStream = mw(streamHandler)
+		// SSE-only: promote `?access_token=...` to a synthesized
+		// Authorization header so EventSource cross-origin clients
+		// (Console multi-process posture) can subscribe. The shim
+		// wraps OUTSIDE the auth middleware so the request is
+		// rewritten BEFORE the JWT validation reads the header.
+		// Round-3 walkthrough fix.
+		mountedStream = auth.SSEAccessTokenShim(mw(streamHandler))
 		mountedAggregate = mw(aggregateHandler)
 	}
 

@@ -144,6 +144,17 @@ func TestE2E_Phase83v_CORS_AllowlistMatch(t *testing.T) {
 	if got := preResp.Header.Get("Access-Control-Allow-Headers"); got == "" {
 		t.Error("preflight allow-headers missing")
 	}
+	// Round-3 fix: the X-Harbor-* identity envelope headers MUST be in
+	// the allowlist. The Console sends them on every cross-origin
+	// request via `web/console/src/lib/protocol/client.ts`. Without
+	// them, the browser blocks every cross-origin call at preflight
+	// even though the server-side auth would have accepted the request.
+	allowHeaders := preResp.Header.Get("Access-Control-Allow-Headers")
+	for _, required := range []string{"X-Harbor-Tenant", "X-Harbor-User", "X-Harbor-Session"} {
+		if !strings.Contains(allowHeaders, required) {
+			t.Errorf("preflight allow-headers missing required %q (round-3 fix); got %q", required, allowHeaders)
+		}
+	}
 	if got := preResp.Header.Get("Access-Control-Allow-Origin"); got == "*" {
 		t.Error("preflight emitted '*' — incompatible with credentialed responses")
 	}

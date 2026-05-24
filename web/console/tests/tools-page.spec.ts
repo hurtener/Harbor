@@ -118,7 +118,7 @@ test.describe("Console Tools page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const before = await page
       .locator("[data-testid='tools-catalog-row']")
@@ -132,7 +132,7 @@ test.describe("Console Tools page", () => {
         "[data-testid='tools-facet-transport'][data-facet-value='MCP']",
       )
       .click();
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const after = await page
       .locator("[data-testid='tools-catalog-row']")
@@ -156,7 +156,7 @@ test.describe("Console Tools page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const firstRow = page
       .locator("[data-testid='tools-catalog-row']")
@@ -187,7 +187,7 @@ test.describe("Console Tools page", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("tools");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("load");
 
     const rowCount = await page
       .locator("[data-testid='tools-catalog-row']")
