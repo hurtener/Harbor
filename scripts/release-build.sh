@@ -87,7 +87,22 @@ echo "release-build: version=${RELEASE_VERSION} os=${GOOS_VAL} arch=${GOARCH_VAL
 echo "release-build: output dir=${OUT_DIR}"
 
 # ---------------------------------------------------------------------------
-# 2. Build the CGo-free static binary with the version stamped in.
+# 2. Rebuild the Console bundle so the binary embeds the FRESH SvelteKit
+#    static build (Phase 83k / D-157). Without this, the release artifact
+#    embeds whatever `cmd/harbor/consoledist/` happens to hold on the
+#    builder — usually empty on CI, so `harbor console` would serve the
+#    synthesized "run make console-build" placeholder. Fail loud if the
+#    Console build fails: a release without a working Console is not a
+#    release artifact (§13 fail-loud posture). Skipped when `web/console/`
+#    is absent (the build target's no-op branch covers that path too).
+# ---------------------------------------------------------------------------
+if [ -d web/console ]; then
+    echo "release-build: rebuilding Console bundle (make console-build)"
+    make console-build
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Build the CGo-free static binary with the version stamped in.
 #    CGO_ENABLED=0 + -ldflags='-s -w' is the CLAUDE.md §5 invariant; the
 #    extra `-X` clause stamps the release version into main.HarborVersion.
 # ---------------------------------------------------------------------------
@@ -103,7 +118,7 @@ CGO_ENABLED=0 go build \
 echo "release-build: built ${BIN_PATH}"
 
 # ---------------------------------------------------------------------------
-# 3. Emit a SHA-256 checksum alongside the binary.
+# 4. Emit a SHA-256 checksum alongside the binary.
 # ---------------------------------------------------------------------------
 CHECKSUM_PATH="${BIN_PATH}.sha256"
 (
@@ -119,7 +134,7 @@ CHECKSUM_PATH="${BIN_PATH}.sha256"
 echo "release-build: wrote checksum ${CHECKSUM_PATH}"
 
 # ---------------------------------------------------------------------------
-# 4. Verify the stamp took. A cross-built binary cannot be exec'd here,
+# 5. Verify the stamp took. A cross-built binary cannot be exec'd here,
 #    so this check runs only for a native build (GOOS/GOARCH unchanged).
 #    Fail loudly if `harbor version` does not report the stamped string.
 # ---------------------------------------------------------------------------
