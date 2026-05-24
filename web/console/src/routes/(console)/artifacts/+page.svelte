@@ -731,13 +731,20 @@
   }
 
   .catalog {
-    display: flex;
+    /* W5 (Phase 83x): the legacy `display: flex` allowed the 9-column
+       table to spill past its share of the row and visually overlap
+       the right-rail DetailRail (which already has `flex-shrink: 0`,
+       so the rail kept its width and the table content bled under
+       it). Switching to the same 1fr + size-rail grid pattern the
+       Tasks / Tools pages use reserves the rail's column properly
+       and the table reflows into the remaining 1fr. */
+    display: grid;
+    grid-template-columns: 1fr var(--size-rail);
     gap: var(--space-4);
-    align-items: flex-start;
+    align-items: start;
   }
 
   .table-area {
-    flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;

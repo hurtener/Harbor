@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -184,13 +185,19 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 		UserID:    rc.Quadruple.UserID,
 		SessionID: rc.Quadruple.SessionID,
 	}
+	// W6 (Phase 83x): stamp `created_at` on the Source map so the
+	// Protocol wire layer's `extractCreatedAt` populates the row with
+	// a real timestamp. Without this the Console renders the Go
+	// zero-value `0001-01-01T00:00:00Z` for every heavy-promoted
+	// artifact. The wire layer accepts a time.Time directly.
 	ref, putErr := e.artifacts.PutText(ctx, scope, string(encoded), artifacts.PutOpts{
 		Filename: fmt.Sprintf("tool-result-%s.json", tool),
 		MimeType: "application/json",
 		Source: map[string]any{
-			"producer": "dev-tool-executor",
-			"tool":     tool,
-			"run_id":   rc.Quadruple.RunID,
+			"producer":   "dev-tool-executor",
+			"tool":       tool,
+			"run_id":     rc.Quadruple.RunID,
+			"created_at": time.Now().UTC(),
 		},
 	})
 	if putErr != nil {

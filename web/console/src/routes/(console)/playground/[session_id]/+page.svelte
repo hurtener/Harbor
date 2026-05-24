@@ -47,7 +47,7 @@
   import TraceToggle, { type TraceNode } from '$lib/components/playground/TraceToggle.svelte';
   import { ChatPanel, type ChatMessage, type ChatProtocolClient } from '$lib/chat/index.js';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError } from '$lib/protocol/errors.js';
+  import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
@@ -73,6 +73,14 @@
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
   let pageError = $state<ProtocolError | { code: string; message: string } | null>(null);
+  // Phase 83w-F5 / D-164 — the friendly "topology not available on this
+  // Runtime" info banner. Mirrors the live-runtime page's handling of
+  // `unknown_method` on topology.snapshot. The initial load uses the
+  // topology call as a connectivity probe; on a planner/RunLoop runtime
+  // the chat surface is still fully functional, so the page degrades
+  // to `ready` with messages flowing — the trace toggle becomes the
+  // surface that surfaces the info banner instead.
+  let pageInfo = $state<{ headline: string; detail: string } | null>(null);
 
   /* ---- chat stream ------------------------------------------------ */
   let messages = $state<ChatMessage[]>([]);
@@ -232,6 +240,7 @@
     }
     status = 'loading';
     pageError = null;
+    pageInfo = null;
     try {
       // The Playground opens against a live session — V1 starts with an
       // empty stream and grows as the operator sends messages. The
@@ -240,8 +249,24 @@
       await client.topology.snapshot<TopologyProjection>();
       status = messages.length === 0 ? 'empty' : 'ready';
     } catch (err) {
-      pageError = toError(err);
-      status = 'error';
+      // Phase 83w-F5 / D-164 — `topology.snapshot` returning
+      // `unknown_method` is not an error: this Runtime is planner/
+      // RunLoop-shaped and has no engine graph. The chat surface still
+      // works, so the page proceeds to its empty/ready state — the
+      // trace toggle is the surface that now surfaces the friendly
+      // "no topology" message when the operator toggles it on (see
+      // toggleTrace below).
+      if (isUnknownMethod(err)) {
+        pageInfo = {
+          headline: 'Topology view not available on this Runtime',
+          detail:
+            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
+        };
+        status = messages.length === 0 ? 'empty' : 'ready';
+      } else {
+        pageError = toError(err);
+        status = 'error';
+      }
     }
   }
 
@@ -402,7 +427,13 @@
       const proj = await client.topology.snapshot<TopologyProjection>();
       traceNodes = proj.nodes.map((n) => ({ id: n.name, kind: n.kind }));
     } catch (err) {
-      traceError = toError(err).message;
+      // Phase 83w-F5 / D-164 — `unknown_method` on this Runtime is the
+      // friendly "no engine graph" case, not a failure.
+      if (isUnknownMethod(err)) {
+        traceError = 'Topology view not available on this Runtime (planner/RunLoop runtime).';
+      } else {
+        traceError = toError(err).message;
+      }
       traceNodes = [];
     } finally {
       traceLoading = false;
@@ -580,7 +611,21 @@
 
   <div class="layout">
     <div class="main-col">
-      <PageState status={status} error={pageError} onretry={() => void load()}>
+      {#if pageInfo !== null}
+        <!--
+          Phase 83w-F5 / D-164 — The chat surface is still functional
+          on a planner/RunLoop runtime, so the page renders normally
+          but surfaces a friendly banner explaining the topology absence
+          above the chat. The pre-83w-F5 behaviour routed the whole
+          page through PageState's red ERROR state with a Retry that
+          would always fail.
+        -->
+        <p class="info-banner" data-testid="playground-topology-info">
+          <strong>{pageInfo.headline}.</strong>
+          {pageInfo.detail}
+        </p>
+      {/if}
+      <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
         {#snippet skeleton()}
           <div class="chat-skeleton" aria-hidden="true"></div>
         {/snippet}
@@ -733,5 +778,17 @@
   .footer-item {
     font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+
+  /* Phase 83w-F5 / D-164 — friendly info banner above the chat when
+     topology.snapshot returned unknown_method. NOT a red error. */
+  .info-banner {
+    margin: var(--space-0);
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-raised);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 </style>

@@ -14,14 +14,30 @@
 
   let {
     runtimes,
+    addWarning = null,
     onadd,
-    onremove
+    onremove,
+    onaddsuccess
   }: {
     runtimes: RuntimeRegistryRow[];
+    /**
+     * Non-fatal warning surfaced by `addRuntime` when the active-connection
+     * write landed in `localStorage` but the address-book write was
+     * deferred (Phase 83u / D-163 — the F3 first-attach path). Rendered
+     * as a neutral info banner, NEVER a red error.
+     */
+    addWarning?: string | null;
     /** Writes a new runtime row through the Console DB. */
     onadd: (name: string, baseURL: string) => Promise<void>;
     /** Deletes a runtime row from the Console DB. */
     onremove: (id: string) => Promise<void>;
+    /**
+     * Fires after a successful Add submit. The Settings page wires this
+     * to `window.location.reload()` so the new connection takes effect
+     * AND the Console DB opens on the reloaded page, enabling the
+     * address-book catch-up (Phase 83u / D-163).
+     */
+    onaddsuccess?: () => void;
   } = $props();
 
   let formOpen = $state(false);
@@ -38,10 +54,17 @@
     }
     busy = true;
     try {
+      // Phase 83u / D-163: addRuntime no longer throws on a deferred
+      // DB write — it sets `addWarning` instead. A thrown error here
+      // means an actual failure (e.g. localStorage unavailable in SSR).
       await onadd(draftName.trim(), draftURL.trim());
       draftName = '';
       draftURL = '';
       formOpen = false;
+      // Notify the page so it can reload — the new connection only
+      // takes effect on the next page mount (every page reads
+      // resolveConnection() once via HarborClient — CONVENTIONS.md §6).
+      onaddsuccess?.();
     } catch (e) {
       formError = e instanceof Error ? e.message : 'Could not add the runtime.';
     } finally {
@@ -80,6 +103,10 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if addWarning !== null}
+    <p class="info-banner" data-testid="add-runtime-warning">{addWarning}</p>
   {/if}
 
   {#if formOpen}
@@ -211,5 +238,14 @@
   .note {
     font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+  .info-banner {
+    margin: var(--space-0);
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-raised);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
   }
 </style>

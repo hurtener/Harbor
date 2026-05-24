@@ -1,8 +1,9 @@
 // Harbor Console e2e — Tasks page per-page spec (Phase 73d / D-123).
 //
 // Covers the Tasks page built on the D-121 design-system foundation:
-//   (a) the kanban 4-column board renders (Pending / Running / Paused /
-//       Failed), each column carrying its aggregate counter,
+//   (a) the kanban 5-column board renders (Pending / Running / Paused /
+//       Complete / Failed; W7 added the Complete column in Phase 83x),
+//       each column carrying its aggregate counter,
 //   (b) the Board / List mode toggle swaps the primary view,
 //   (c) selecting ≥2 task cards reveals the shared `BulkActionBar`,
 //   (d) the bulk Pause / Cancel + per-task control verbs render
@@ -97,8 +98,11 @@ test.describe("Console Tasks page", () => {
       "the kanban board is the primary view",
     ).toBeVisible();
 
-    // Four columns, in mockup order, each carrying an aggregate counter.
-    for (const status of ["pending", "running", "paused", "failed"]) {
+    // Five columns, in mockup order, each carrying an aggregate
+    // counter. W7 (Phase 83x) added the Complete column so completed
+    // tasks are visible on the board (not just in the right-rail
+    // summary).
+    for (const status of ["pending", "running", "paused", "complete", "failed"]) {
       await expect(
         page.locator(`[data-testid='kanban-column'][data-status='${status}']`),
         `the ${status} column renders`,
@@ -107,7 +111,7 @@ test.describe("Console Tasks page", () => {
     expect(
       await page.locator("[data-testid='kanban-column-count']").count(),
       "each column carries an aggregate counter",
-    ).toBe(4);
+    ).toBe(5);
   });
 
   test("(b) the Board / List mode toggle swaps the primary view", async ({

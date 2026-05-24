@@ -98,12 +98,14 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
+	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
@@ -949,6 +951,34 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)
 		}
 		muxOpts = append(muxOpts, transports.WithPostureSurface(postureSurface))
+
+		// Phase 83w F6 (D-164): mount the twelve `mcp.servers.*` methods
+		// so the Console MCP Connections page renders live data. The
+		// devstack mirrors the production `cmd/harbor` boot path
+		// (CLAUDE.md §17.6 / §17.6 source-of-truth invariant — the
+		// fixture must not diverge from production). The V1 dev posture
+		// uses NoOAuthAccessor since dev typically attaches MCP without
+		// OAuth — the OAuth-binding verbs fail loud per CLAUDE.md §13
+		// while the read-only methods (list / get / resources / prompts /
+		// health) — the surface the Connections page leans on — serve
+		// real data.
+		if stack.MCPRegistry != nil {
+			mcpRegAccessor, mraErr := mcpconsole.NewRegistryAccessor(stack.MCPRegistry)
+			if mraErr != nil {
+				return stack, fmt.Errorf("mcp accessor: %w", mraErr)
+			}
+			mcpSurface, msErr := protocol.NewMCPSurface(protocol.MCPDeps{
+				MCP:      mcpRegAccessor,
+				OAuth:    mcpconsole.NewNoOAuthAccessor(),
+				Redactor: stack.Audit,
+				Bus:      bus,
+			})
+			if msErr != nil {
+				return stack, fmt.Errorf("mcp surface: %w", msErr)
+			}
+			muxOpts = append(muxOpts, transports.WithMCPSurface(mcpSurface))
+		}
+
 		// Phase 72e: mount the `pause.list` snapshot route. The
 		// devstack mirrors the production `cmd/harbor` boot path
 		// (CLAUDE.md §17.6 — the fixture must not diverge from
@@ -1104,7 +1134,18 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		router.Handle("/v1/", mux)
 		stack.Mux = router
-		stack.Handler = router
+		// Phase 83v (D-162) — CORS middleware. D-094 source-of-truth
+		// invariant: devstack tracks the production `bootDevStack` field-
+		// for-field. The middleware wraps the WHOLE router so every
+		// surface is reachable cross-origin from an allowed Console origin
+		// (or any origin when CORSDevAllowAny is set). Empty allowlist +
+		// CORSDevAllowAny=false is the default-deny posture — the
+		// middleware passes through with no CORS headers (the pre-83v
+		// behavior).
+		stack.Handler = cors.Wrap(router, cors.Config{
+			AllowedOrigins: append([]string(nil), cfg.Server.AllowedOrigins...),
+			DevAllowAny:    cfg.Server.CORSDevAllowAny,
+		})
 	}
 
 	return stack, nil

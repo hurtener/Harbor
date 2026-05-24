@@ -28,7 +28,11 @@
     </dd>
   </div>
   <div class="metric">
-    <dt>Active</dt>
+    <!-- N12 (Phase 83x): "Active" was ambiguous — operators read it as
+         "tools that have ever fired" (the catalog total minus retired
+         ones). The aggregate actually counts currently in-flight tool
+         invocations. Relabel to disambiguate. -->
+    <dt>In-flight (now)</dt>
     <dd data-testid="tools-overview-active">
       {disconnected ? placeholder : aggregates.active}
     </dd>

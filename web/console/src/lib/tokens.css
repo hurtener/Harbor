@@ -117,6 +117,10 @@
   --size-progress-track: 0.5rem;
   --size-bar-min: 0.125rem;
   --size-card-min: 18rem;
+  /* N13 (Phase 83x): the minimum width the Tools-page Reliability
+     column needs so the longest tier label (`production-tested`)
+     fits without mid-glyph truncation. */
+  --size-col-reliability: 9rem;
   --layout-detail-min-height: 14rem;
   --layout-table-row-height: 2.5rem;
   --layout-hist-label-width: 5rem;

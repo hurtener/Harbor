@@ -274,3 +274,54 @@ func (a *OAuthAccessor) RevokeBinding(ctx context.Context, server, _ string) (bo
 	}
 	return true, nil
 }
+
+// NoOAuthAccessor is the protocol.MCPOAuthAccessor implementation for
+// Runtimes that have an MCP registry but NO operator-configured OAuth
+// providers — the V1 `harbor dev` default when an operator attaches an
+// MCP server without OAuth (the common case today).
+//
+// The accessor projects the canonical "no binding configured" shape:
+// ListBindings returns an empty slice for every server (no bindings to
+// project), and InitiateBinding / RevokeBinding fail loudly with
+// ErrNoOAuthConfigured so the Console renders an actionable message
+// instead of a silent no-op.
+//
+// This keeps the F6 contract clean: a Runtime can serve the read-only
+// `mcp.servers.list` / `.get` / `.resources` / `.prompts` / `.health`
+// methods (which the Console MCP Connections page leans on) without
+// needing OAuth wiring, while the OAuth-specific verbs fail loudly per
+// CLAUDE.md §13 (no silent degradation).
+type NoOAuthAccessor struct{}
+
+// NewNoOAuthAccessor returns a NoOAuthAccessor.
+func NewNoOAuthAccessor() *NoOAuthAccessor {
+	return &NoOAuthAccessor{}
+}
+
+// compile-time assertion: NoOAuthAccessor satisfies protocol.MCPOAuthAccessor.
+var _ protocol.MCPOAuthAccessor = (*NoOAuthAccessor)(nil)
+
+// ErrNoOAuthConfigured — the Runtime has no OAuth providers configured,
+// so OAuth flow methods cannot be served. Surfaces as a Protocol
+// CodeRuntimeError with an actionable message naming the missing config
+// key.
+var ErrNoOAuthConfigured = errors.New("mcpconsole: no OAuth provider configured (set tools.oauth_providers in your config to enable OAuth binding flows)")
+
+// ListBindings reports zero bindings for every server. The Console
+// MCP Connections page renders this as "OAuth not connected" rather
+// than as an error — the empty list is a first-class state.
+func (a *NoOAuthAccessor) ListBindings(_ context.Context, _ string) ([]protocol.MCPBindingRow, error) {
+	return []protocol.MCPBindingRow{}, nil
+}
+
+// InitiateBinding fails loud — without an OAuth provider there is no
+// flow to initiate. Operators see the message in the Console toast.
+func (a *NoOAuthAccessor) InitiateBinding(_ context.Context, server, _ string) (string, string, error) {
+	return "", "", fmt.Errorf("initiate OAuth flow for %q: %w", server, ErrNoOAuthConfigured)
+}
+
+// RevokeBinding fails loud — without an OAuth provider there is no
+// binding to revoke.
+func (a *NoOAuthAccessor) RevokeBinding(_ context.Context, server, _ string) (bool, error) {
+	return false, fmt.Errorf("revoke OAuth binding for %q: %w", server, ErrNoOAuthConfigured)
+}

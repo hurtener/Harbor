@@ -212,8 +212,20 @@
               {#if section.id === 'connected-runtimes'}
                 <ConnectedRuntimesCard
                   runtimes={db.runtimes}
+                  addWarning={db.addWarning}
                   onadd={(name, url) => db.addRuntime(name, url)}
                   onremove={(id) => db.removeRuntime(id)}
+                  onaddsuccess={() => {
+                    // Phase 83u / D-163 — the new connection only takes
+                    // effect on the next page mount (every page reads
+                    // resolveConnection() once via HarborClient —
+                    // CONVENTIONS.md §6). Reload so the DB opens against
+                    // the now-live connection and the address-book
+                    // catch-up routine in load() promotes the active URL.
+                    if (typeof window !== 'undefined') {
+                      window.location.reload();
+                    }
+                  }}
                 />
                 <DataTable
                   columns={RUNTIME_COLUMNS}
