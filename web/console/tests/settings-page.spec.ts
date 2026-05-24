@@ -231,4 +231,58 @@ test.describe("Console Settings page", () => {
       "the Settings page shell renders even when disconnected",
     ).toBeVisible();
   });
+
+  test("(g) Settings page lets operator add a runtime when disconnected (Phase 83p / D-158)", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Phase 83p — the Connected Runtimes form MUST render when the
+    // Console has no Runtime attached (it's the operator's only path to
+    // attach one). The pre-83p Settings page wrapped EVERY section in
+    // <PageState>, so the disconnected state short-circuited the whole
+    // page to the "Not connected" placeholder — hiding the form an
+    // operator needs to fix the disconnection. The two-group layout
+    // (console-local sections render unconditionally; runtime-posture
+    // sections wrap in PageState) closes Bug F1 from the post-83k
+    // walkthrough.
+    await helpers.seedAuth(runtime.token);
+    await helpers.gotoPage("settings");
+
+    // The console-local card group renders unconditionally.
+    await expect(
+      page.locator("[data-testid='settings-cards-console-local']"),
+      "console-local cards render even when no Runtime is attached",
+    ).toBeVisible();
+
+    // The Connected Runtimes section + add-form trigger reach the DOM.
+    await expect(
+      page.locator("[data-testid='settings-section-connected-runtimes']"),
+      "Connected Runtimes section is reachable in the disconnected state",
+    ).toBeVisible();
+    const addBtn = page.locator("button:has-text('+ Add Runtime')").first();
+    await expect(
+      addBtn,
+      "+ Add Runtime button is visible in the disconnected state",
+    ).toBeVisible();
+
+    // Opening the form reveals the runtime-name + base-url inputs.
+    await addBtn.click();
+    await expect(
+      page.locator("input[placeholder='Runtime name']"),
+      "runtime name input is in the DOM after opening the form",
+    ).toBeVisible();
+    await expect(
+      page.locator("input[placeholder='https://runtime.example.com']"),
+      "base URL input is in the DOM after opening the form",
+    ).toBeVisible();
+
+    // The runtime-posture card group is wrapped in <PageState> and
+    // shows the consolidated disconnected placeholder (one card, not
+    // N empty per-section placeholders).
+    await expect(
+      page.locator("[data-testid='page-state-disconnected']").first(),
+      "runtime-posture sections route through PageState (disconnected branch)",
+    ).toBeVisible();
+  });
 });

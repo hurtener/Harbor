@@ -74,23 +74,60 @@ export function describeError(e: unknown): PageError {
 /**
  * The Settings sections, in section-nav-rail order. Each is one anchor
  * the sub-nav rail scrolls to.
+ *
+ * The `group` field discriminates by DATA DEPENDENCY (Phase 83p / D-158):
+ *   - `console-local` — reads from the Console-side DB
+ *     (`db.runtimes` / `db.authProfiles` / `db.pats` / `db.profile` /
+ *     `db.keybindings` / `db.routing`). Renders unconditionally; works
+ *     when no Runtime is attached.
+ *   - `runtime-posture` — reads from `settings.posture.*` (the four
+ *     read-only posture methods on the Runtime). Wraps in `<PageState>`
+ *     so the disconnected state shows the standard placeholder instead
+ *     of an empty card per section.
+ *
+ * Before 83p, the page template wrapped EVERY section in `<PageState>`,
+ * which hid the Connected Runtimes form behind the disconnected
+ * placeholder — defeating the operator's only path to attach a Runtime.
+ * `SettingsState.load()`'s docstring documented the intended split but
+ * the template ignored it. 83p moves the split into structure.
  */
 export const SETTINGS_SECTIONS = [
-	{ id: 'connected-runtimes', label: 'Connected Runtimes' },
-	{ id: 'per-runtime-auth', label: 'Per-Runtime Auth' },
-	{ id: 'api-tokens', label: 'API Tokens' },
-	{ id: 'appearance', label: 'Appearance' },
-	{ id: 'time-locale', label: 'Time & Locale' },
-	{ id: 'keybindings', label: 'Keybindings' },
-	{ id: 'notifications-routing', label: 'Notifications Routing' },
-	{ id: 'runtime-info', label: 'Runtime Info' },
-	{ id: 'governance-posture', label: 'Governance Posture' },
-	{ id: 'storage-drivers', label: 'Storage Drivers' },
-	{ id: 'llm-posture', label: 'LLM-Provider Posture' },
-	{ id: 'about', label: 'About' }
+	{ id: 'connected-runtimes', label: 'Connected Runtimes', group: 'console-local' },
+	{ id: 'per-runtime-auth', label: 'Per-Runtime Auth', group: 'console-local' },
+	{ id: 'api-tokens', label: 'API Tokens', group: 'console-local' },
+	{ id: 'appearance', label: 'Appearance', group: 'console-local' },
+	{ id: 'time-locale', label: 'Time & Locale', group: 'console-local' },
+	{ id: 'keybindings', label: 'Keybindings', group: 'console-local' },
+	{ id: 'notifications-routing', label: 'Notifications Routing', group: 'console-local' },
+	{ id: 'runtime-info', label: 'Runtime Info', group: 'runtime-posture' },
+	{ id: 'governance-posture', label: 'Governance Posture', group: 'runtime-posture' },
+	{ id: 'storage-drivers', label: 'Storage Drivers', group: 'runtime-posture' },
+	{ id: 'llm-posture', label: 'LLM-Provider Posture', group: 'runtime-posture' },
+	{ id: 'about', label: 'About', group: 'runtime-posture' }
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
+export type SettingsSectionGroup = (typeof SETTINGS_SECTIONS)[number]['group'];
+
+/**
+ * consoleLocalSections returns the subset of SETTINGS_SECTIONS that
+ * does NOT depend on a Runtime connection. Used by the page template
+ * to render these sections OUTSIDE the `<PageState>` boundary so they
+ * always work (Phase 83p / D-158).
+ */
+export function consoleLocalSections(): readonly (typeof SETTINGS_SECTIONS)[number][] {
+	return SETTINGS_SECTIONS.filter((s) => s.group === 'console-local');
+}
+
+/**
+ * runtimePostureSections returns the subset of SETTINGS_SECTIONS that
+ * reads from the Runtime's posture surface. Used by the page template
+ * to render these sections INSIDE `<PageState>` so the disconnected /
+ * error states show one consolidated placeholder + Retry button.
+ */
+export function runtimePostureSections(): readonly (typeof SETTINGS_SECTIONS)[number][] {
+	return SETTINGS_SECTIONS.filter((s) => s.group === 'runtime-posture');
+}
 
 /**
  * The runtime-posture bundle the Settings page renders — composed from

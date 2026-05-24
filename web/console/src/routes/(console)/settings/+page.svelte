@@ -47,6 +47,8 @@
     SettingsState,
     RotateTokenState,
     SETTINGS_SECTIONS,
+    consoleLocalSections,
+    runtimePostureSections,
     type SettingsSectionId
   } from '$lib/settings/state.svelte.js';
   import { SettingsDBController } from '$lib/settings/console_db.svelte.js';
@@ -71,6 +73,25 @@
       sectionPage * sectionPageSize
     )
   );
+
+  /**
+   * Phase 83p / D-158 — partition the visible sections by data
+   * dependency. Console-local sections render unconditionally; runtime-
+   * posture sections route through `<PageState>` so the disconnected /
+   * error states show one consolidated placeholder.
+   */
+  const visibleConsoleLocal = $derived(
+    visibleSections.filter((s) => s.group === 'console-local')
+  );
+  const visibleRuntimePosture = $derived(
+    visibleSections.filter((s) => s.group === 'runtime-posture')
+  );
+
+  // Reference the section-helpers so Vite + svelte-check do NOT prune the
+  // exports; the template branches above derive from the discriminator
+  // already, but a future refactor that switches to the helpers should
+  // not require re-adding the import.
+  const _ = [consoleLocalSections, runtimePostureSections];
 
   /** The Connected-Runtimes table columns (the page's primary DataTable). */
   const RUNTIME_COLUMNS: DataTableColumn[] = [
@@ -172,6 +193,74 @@
     <SubNavRail active={activeSection} onselect={selectSection} />
 
     <div class="main-col">
+      <!--
+        Phase 83p / D-158 — Console-local sections (Connected Runtimes,
+        Per-Runtime Auth, API Tokens, Appearance, Time & Locale,
+        Keybindings, Notifications Routing) render UNCONDITIONALLY. They
+        read from the Console-side DB, not from the Runtime posture; the
+        operator MUST be able to reach the Connected Runtimes form even
+        when no Runtime is attached (it's the ONLY path to attach one).
+      -->
+      <div class="cards" data-testid="settings-cards-console-local">
+        {#each visibleConsoleLocal as section (section.id)}
+          <div id="section-{section.id}" class="card-anchor" data-testid="settings-section-{section.id}">
+            <RailCard title={section.label}>
+              {#if section.id === 'connected-runtimes'}
+                <ConnectedRuntimesCard
+                  runtimes={db.runtimes}
+                  onadd={(name, url) => db.addRuntime(name, url)}
+                  onremove={(id) => db.removeRuntime(id)}
+                />
+                <DataTable
+                  columns={RUNTIME_COLUMNS}
+                  rows={db.runtimes}
+                  rowKey={runtimeRowKey}
+                >
+                  {#snippet row(r)}
+                    {@const rt = r as { name: string; base_url: string; transport: string; is_default: number }}
+                    <td>{rt.name}</td>
+                    <td>{rt.base_url}</td>
+                    <td>{rt.transport}</td>
+                    <td>
+                      {#if rt.is_default === 1}
+                        <StatusChip kind="accent" label="default" />
+                      {:else}
+                        <span class="muted">—</span>
+                      {/if}
+                    </td>
+                  {/snippet}
+                  {#snippet empty()}
+                    <p class="muted">No runtimes in the address book yet.</p>
+                  {/snippet}
+                </DataTable>
+              {:else if section.id === 'per-runtime-auth'}
+                <PerRuntimeAuthCard authProfiles={db.authProfiles} {rotate} />
+              {:else if section.id === 'api-tokens'}
+                <APITokensCard pats={db.pats} />
+              {:else if section.id === 'appearance'}
+                <AppearanceCard profile={db.profile} />
+              {:else if section.id === 'time-locale'}
+                <TimeLocaleCard profile={db.profile} />
+              {:else if section.id === 'keybindings'}
+                <KeybindingsCard keybindings={db.keybindings} />
+              {:else if section.id === 'notifications-routing'}
+                <NotificationsRoutingCard
+                  routing={db.routing}
+                  hasAdminScope={rotate.hasAdminScope}
+                />
+              {/if}
+            </RailCard>
+          </div>
+        {/each}
+      </div>
+
+      <!--
+        Phase 83p / D-158 — Runtime-posture sections (Runtime Info,
+        Governance Posture, Storage Drivers, LLM-Provider Posture, About)
+        DO depend on a live Runtime connection. They route through
+        `<PageState>` so the disconnected / error states show ONE
+        consolidated placeholder + Retry button instead of N empty cards.
+      -->
       <PageState
         status={settings.status}
         error={settings.error}
@@ -181,54 +270,11 @@
           <p class="empty-headline">No runtime posture to show.</p>
         {/snippet}
 
-        <div class="cards">
-          {#each visibleSections as section (section.id)}
+        <div class="cards" data-testid="settings-cards-runtime-posture">
+          {#each visibleRuntimePosture as section (section.id)}
             <div id="section-{section.id}" class="card-anchor" data-testid="settings-section-{section.id}">
               <RailCard title={section.label}>
-                {#if section.id === 'connected-runtimes'}
-                  <ConnectedRuntimesCard
-                    runtimes={db.runtimes}
-                    onadd={(name, url) => db.addRuntime(name, url)}
-                    onremove={(id) => db.removeRuntime(id)}
-                  />
-                  <DataTable
-                    columns={RUNTIME_COLUMNS}
-                    rows={db.runtimes}
-                    rowKey={runtimeRowKey}
-                  >
-                    {#snippet row(r)}
-                      {@const rt = r as { name: string; base_url: string; transport: string; is_default: number }}
-                      <td>{rt.name}</td>
-                      <td>{rt.base_url}</td>
-                      <td>{rt.transport}</td>
-                      <td>
-                        {#if rt.is_default === 1}
-                          <StatusChip kind="accent" label="default" />
-                        {:else}
-                          <span class="muted">—</span>
-                        {/if}
-                      </td>
-                    {/snippet}
-                    {#snippet empty()}
-                      <p class="muted">No runtimes in the address book yet.</p>
-                    {/snippet}
-                  </DataTable>
-                {:else if section.id === 'per-runtime-auth'}
-                  <PerRuntimeAuthCard authProfiles={db.authProfiles} {rotate} />
-                {:else if section.id === 'api-tokens'}
-                  <APITokensCard pats={db.pats} />
-                {:else if section.id === 'appearance'}
-                  <AppearanceCard profile={db.profile} />
-                {:else if section.id === 'time-locale'}
-                  <TimeLocaleCard profile={db.profile} />
-                {:else if section.id === 'keybindings'}
-                  <KeybindingsCard keybindings={db.keybindings} />
-                {:else if section.id === 'notifications-routing'}
-                  <NotificationsRoutingCard
-                    routing={db.routing}
-                    hasAdminScope={rotate.hasAdminScope}
-                  />
-                {:else if section.id === 'runtime-info'}
+                {#if section.id === 'runtime-info'}
                   <RuntimeInfoCard info={settings.posture.info} />
                 {:else if section.id === 'governance-posture'}
                   <GovernancePostureCard
