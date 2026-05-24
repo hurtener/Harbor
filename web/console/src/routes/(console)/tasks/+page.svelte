@@ -49,7 +49,12 @@
   import RightRailCostBreakdown from '$lib/components/tasks/RightRailCostBreakdown.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
-  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    hasScope,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { TasksSavedFilters } from '$lib/db/saved_filters_tasks.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -73,6 +78,8 @@
   // control gate on the admin scope claim; without it the controls
   // render disabled-with-tooltip (CONVENTIONS.md §5).
   let canControl = $state(false);
+  // Phase 83r disconnected predicate.
+  let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
@@ -525,20 +532,23 @@
         placeholder="Save current as…"
         bind:value={saveName}
         data-testid="tasks-save-filter-name"
-        disabled={savedFilters === null}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentFilter()}
       />
       <button
         type="button"
         class="control"
         data-testid="tasks-save-filter"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
+        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Console-local saved-view store unavailable'
+            : undefined}
         onclick={() => void saveCurrentFilter()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
 
@@ -550,6 +560,8 @@
             class="chip"
             class:on={(filter.statuses ?? []).includes(s)}
             data-testid={`tasks-facet-${s}`}
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
             onclick={() => toggleStatusFacet(s)}
           >
             {s}
@@ -561,6 +573,8 @@
             class="chip"
             class:on={(filter.kinds ?? []).includes(k)}
             data-testid={`tasks-facet-kind-${k}`}
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
             onclick={() => toggleKindFacet(k)}
           >
             {k}
@@ -576,12 +590,28 @@
         placeholder="Search tasks…"
         bind:value={searchText}
         data-testid="tasks-search"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && submitSearch()}
       />
-      <button type="button" class="control" data-testid="tasks-search-apply" onclick={submitSearch}>
+      <button
+        type="button"
+        class="control"
+        data-testid="tasks-search-apply"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={submitSearch}
+      >
         Apply
       </button>
-      <button type="button" class="control" data-testid="tasks-filter-clear" onclick={clearFilters}>
+      <button
+        type="button"
+        class="control"
+        data-testid="tasks-filter-clear"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={clearFilters}
+      >
         Clear
       </button>
     {/snippet}
@@ -599,6 +629,8 @@
         type="button"
         class="control"
         data-testid="tasks-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void loadTasks(cursorStack.length - 1)}
       >
         Refresh
@@ -607,7 +639,8 @@
         type="button"
         class="control"
         data-testid="tasks-export"
-        disabled={rows.length === 0}
+        disabled={rows.length === 0 || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={exportRows}
       >
         Export

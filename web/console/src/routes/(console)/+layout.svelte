@@ -22,7 +22,10 @@
   }
 
   // The 14-page information architecture in four clusters (CONVENTIONS.md
-  // §2). Playground is a session-level surface — deliberately NOT here.
+  // §2). Playground rides in the Execution cluster as an execution-shaped
+  // surface — the operator's sandbox for steering / inject-context / replay
+  // against the active session. Closes walkthrough F2 (Phase 83q / D-159);
+  // supersedes the original D-121 stance that the Playground was off-nav.
   const NAV: NavCluster[] = [
     {
       label: 'Runtime',
@@ -39,7 +42,8 @@
         { label: 'Agents', href: '/agents' },
         { label: 'Tools', href: '/tools' },
         { label: 'Events', href: '/events' },
-        { label: 'Background Jobs', href: '/background-jobs' }
+        { label: 'Background Jobs', href: '/background-jobs' },
+        { label: 'Playground', href: '/playground' }
       ]
     },
     {

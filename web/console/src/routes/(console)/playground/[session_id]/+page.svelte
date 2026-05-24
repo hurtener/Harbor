@@ -30,7 +30,9 @@
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
-  import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
+  // ConnectionFooter is rendered ONCE by the app shell
+  // ((console)/+layout.svelte — CONVENTIONS.md §2). The per-page import was
+  // duplicating the footer (post-83k walkthrough N2); removed.
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
   import PlaygroundHeader, {
     type ImpersonationTarget
@@ -545,7 +547,7 @@
       <input
         class="control save-input"
         type="text"
-        placeholder="Save preset as…"
+        placeholder="Save current as…"
         bind:value={saveName}
         data-testid="playground-save-name"
         disabled={savedFilters === null}
@@ -561,7 +563,7 @@
           : undefined}
         onclick={() => void saveCurrentView()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
     {#snippet search()}
@@ -651,8 +653,6 @@
       </RailCard>
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </div>
 
 <style>

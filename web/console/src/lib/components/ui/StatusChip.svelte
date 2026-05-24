@@ -12,16 +12,26 @@
 <script lang="ts">
   let {
     kind = 'neutral',
-    label
+    label,
+    desaturated = false
   }: {
     /** The status kind — selects the token-driven colour. */
     kind?: StatusKind;
     /** The pill text. */
     label: string;
+    /** When true, the chip drops its kind-coloured styling and renders
+        in the neutral palette (Phase 83r / N8). Pages set this on
+        chips whose state is meaningless when the Console is
+        disconnected — the colour without a backing Runtime is noise. */
+    desaturated?: boolean;
   } = $props();
 </script>
 
-<span class="status-chip" data-kind={kind}>{label}</span>
+<span
+  class="status-chip"
+  data-kind={desaturated ? 'neutral' : kind}
+  data-desaturated={desaturated ? 'true' : undefined}
+>{label}</span>
 
 <style>
   .status-chip {

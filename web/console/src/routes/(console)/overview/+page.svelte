@@ -28,8 +28,10 @@
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
-  import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
+  // ConnectionFooter is rendered ONCE by the app shell ((console)/+layout.svelte —
+  // CONVENTIONS.md §2). Per-page imports were duplicating the footer at the
+  // bottom of every page (post-83k walkthrough N2); they are removed.
   import CounterCard from '$lib/components/overview/CounterCard.svelte';
   import HealthChipStrip from '$lib/components/overview/HealthChipStrip.svelte';
   import CostRollupCard from '$lib/components/overview/CostRollupCard.svelte';
@@ -46,7 +48,12 @@
   import type { RuntimeCounters, RuntimeHealth } from '$lib/protocol/posture.js';
   import type { PauseListResponse, PauseSnapshot } from '$lib/protocol/pause.js';
   import { DEFAULT_PAUSE_LIST_PAGE_SIZE } from '$lib/protocol/pause.js';
-  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    hasScope,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import {
     aggregateRate,
     eventsPerMinute,
@@ -71,6 +78,11 @@
   // scope the intervention-queue buttons render disabled-with-tooltip;
   // the same claim drives the per-tenant cost-rollup elevation (D-079).
   let canControl = $state(false);
+  // The Phase 83r W1/W2/W3 disconnected predicate — drives the
+  // Refresh button + Save view + filter chips disabled state. The
+  // synthetic-data CostRollupCard reads it directly so it stops
+  // rendering `$0.00 · No cost recorded` against a phantom Runtime.
+  let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
@@ -418,6 +430,8 @@
         type="button"
         class="control"
         data-testid="overview-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void reloadAll()}
       >
         Refresh
@@ -452,23 +466,26 @@
       <input
         class="control save-input"
         type="text"
-        placeholder="Save hub layout as…"
+        placeholder="Save current as…"
         bind:value={saveName}
         data-testid="overview-save-name"
-        disabled={savedFilters === null}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
       />
       <button
         type="button"
         class="control"
         data-testid="overview-save-view"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
+        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Console-local saved-view store unavailable'
+            : undefined}
         onclick={() => void saveCurrentView()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
 
@@ -480,6 +497,8 @@
             class="window-chip"
             data-active={counterWindow === w}
             data-testid={`overview-window-${w}`}
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
             onclick={() => (counterWindow = w)}
           >
             {w}
@@ -495,6 +514,8 @@
         placeholder="Filter recent activity…"
         bind:value={activitySearch}
         data-testid="overview-activity-search"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
       />
     {/snippet}
   </FilterBar>
@@ -594,7 +615,7 @@
 
         <section class="cost-panel">
           <h2 class="panel-title">Cost rollup</h2>
-          <CostRollupCard rollup={costRollup} canElevate={canControl} />
+          <CostRollupCard rollup={costRollup} canElevate={canControl} {disconnected} />
         </section>
       </div>
 
@@ -658,8 +679,6 @@
       </RailCard>
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </div>
 
 <style>

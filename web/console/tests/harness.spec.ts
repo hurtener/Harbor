@@ -96,4 +96,55 @@ test.describe("Console e2e harness baseline", () => {
       "tokenless index load is not a 5xx",
     ).toBeLessThan(500);
   });
+
+  test("the sidebar lists Playground in the Execution cluster (D-159)", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Closes walkthrough F2 (Phase 83q): the Playground page route exists
+    // but was unreachable from the sidebar pre-83q. Asserting on the
+    // harness baseline so a future refactor that drops the entry fails
+    // here, not just in the wave-aggregator. CLAUDE.md §17.6 — the nav
+    // shell is shared infrastructure; its smoke lives next to the boot
+    // smoke, not buried in a per-page spec.
+    await helpers.seedAuth(runtime.token);
+    await helpers.gotoPage("overview");
+    await expect(
+      page.locator("[data-testid='console-hydrated']"),
+    ).toBeAttached();
+
+    const sidebar = page.locator("nav.sidebar");
+    await expect(
+      sidebar.locator("a", { hasText: "Playground" }),
+      "the Playground entry is present in the sidebar",
+    ).toHaveCount(1);
+    await expect(
+      sidebar.locator("a[href='/playground']"),
+      "the Playground entry links to /playground",
+    ).toHaveCount(1);
+  });
+
+  test("the Playground route renders a capital-P breadcrumb (N1)", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Closes walkthrough N1 (Phase 83q): the pre-83q breadcrumb derived
+    // the first URL segment verbatim ("playground" lowercase) because no
+    // NAV entry matched. With Playground in NAV, the breadcrumb's
+    // `crumbLabel` lookup returns the Title-Case label. The fix is
+    // structural — adding a NAV entry — so the breadcrumb assertion
+    // belongs in the same baseline that asserts the NAV entry exists.
+    await helpers.seedAuth(runtime.token);
+    await helpers.gotoPage("playground");
+    await expect(
+      page.locator("[data-testid='console-hydrated']"),
+    ).toBeAttached();
+
+    await expect(
+      page.locator("nav.breadcrumb .current"),
+      "the breadcrumb renders 'Playground' (capital P)",
+    ).toHaveText("Playground");
+  });
 });

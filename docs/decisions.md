@@ -3775,3 +3775,66 @@ The bug is purely structural — `SettingsState.load()`'s own docstring already 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — the fix is template + state-file shape only.
+
+---
+
+## D-159 — Phase 83q: Playground sidebar entry + breadcrumb derives from the NAV constant
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83q)
+
+**Where it lives:** `web/console/src/routes/(console)/+layout.svelte` (the `NAV` constant — adds the Playground entry to the EXECUTION cluster); `docs/design/console/CONVENTIONS.md` §2 (rewrites the Playground bullet that explicitly declared it was NOT a sidebar entry); `web/console/tests/harness.spec.ts` + `web/console/tests/wave13.spec.ts` (cardinality bump + Playground entry assertion).
+
+**Decision.** The post-83k visual walkthrough surfaced Bug F2 + Nit N1 — Playground route exists, but it was unreachable from the sidebar nav, and the page's breadcrumb showed lowercase `playground` instead of `Playground`. The root cause for both: the Console's `(console)/+layout.svelte` defines the NAV constant (cluster → items) and derives the breadcrumb's `crumbLabel` from the SAME NAV by matching the first URL segment to an `item.href`. Missing `{ label: 'Playground', href: '/playground' }` in NAV closed both bugs simultaneously — F2 because the entry now renders in the sidebar, N1 because the breadcrumb lookup now returns "Playground" instead of falling through to the lowercase URL segment.
+
+**Why this matters.** The fix is structurally satisfying — one entry in one constant closes both bugs. The pre-83q failure mode existed because CONVENTIONS.md §2 declared "Playground is NOT a sidebar entry" (a Phase 73n design call) without anyone updating the doc when the page actually shipped as a Console-bound surface. The decision is a 5-line code change + a doc-truth update.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None — Console-internal.
+
+---
+
+## D-160 — Phase 83r: Disconnected-state hygiene + `isDisconnected()` predicate
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83r)
+
+**Where it lives:** `web/console/src/lib/connection.ts` (new `isDisconnected()` predicate + `DISCONNECTED_TOOLTIP` constant); `web/console/src/lib/components/ui/PageState.svelte` (vertical-centring CSS with `min-height: 40vh` on disconnected/empty/error branches); `web/console/src/lib/components/ui/StatusChip.svelte` + `StateFacetChips.svelte` (new `desaturated` prop that flips `data-kind` to `neutral`); `web/console/src/lib/components/runtime/CostRollupCard.svelte` (no synthetic `$0.00` when disconnected); `web/console/src/lib/components/live-runtime/run-composer.svelte` (disabled textarea + buttons + tooltip when disconnected); 13 page Svelte files standardised on the predicate; `web/console/tests/disconnected-state.spec.ts` (new Playwright spec covering W1/W2/W3 + N5/N7/N8/N9/N2).
+
+**Decision.** The post-83k walkthrough surfaced a cluster of disconnected-state failure modes: action buttons enabled with no Runtime (W2/W3), synthetic `$0.00` cost data even when disconnected (W1), two stacked empty-state messages on Tools (N5), inconsistent KPI dashes between Agents and Tools (N4), full-state status chip colors when meaningless (N8), "— 0 artifacts" subtitles when no Runtime attached (N9), and empty-state placeholders hugging the top of the viewport instead of centring (N10). The pattern was the same: each page reached for its own disconnected check, sometimes none at all.
+
+**Two settled calls.**
+
+**1. The predicate lives in `connection.ts`, not a new helper file.** `connection.ts` already exposes `resolveConnection()` — adding `isDisconnected()` and `DISCONNECTED_TOOLTIP` next to it puts the predicate where consumers already look. Pages compose it via `$derived(connection === null)` locally. The shared tooltip constant prevents the five-different-strings drift the walkthrough pinned.
+
+**2. The shared `<PageState>` component stays the visual contract.** 83r adds vertical-centring CSS to its disconnected / empty / error branches (`min-height: 40vh`) so the placeholder appears in the middle of the viewport, not hugging the top. Loading keeps `min-height: auto` so skeleton rows don't stretch.
+
+**Bundled production-bug fix (§17.6):** during the 83r pass the agent surfaced a pre-83r ESLint break in `web/console/src/routes/(console)/settings/+page.svelte` line 94 — the placeholder `const _ = [consoleLocalSections, runtimePostureSections];` I added in Phase 83p to keep the helper imports alive. ESLint flagged it as unused-variable. Fixed inline (`void [...]` instead of `const _ = [...]`) so the new svelte-check pass stays clean.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None.
+
+---
+
+## D-161 — Phase 83s: Canonical saved-views label + per-page footer dedup
+
+**Date:** 2026-05-24
+**Status:** Settled (shipping with Phase 83s)
+
+**Where it lives:** Inline across 13 page Svelte files (canonical "Save view" button + "Save current as…" placeholder + removed inline `Disconnected · no Runtime attached` footers); `web/console/src/routes/(console)/playground/[session_id]/+page.svelte` (the playground detail page — only walkthrough-surfaced changes here are 83s-shaped); `scripts/smoke/phase-83s.sh` enumerates the 13 pages + asserts the canonical label + single-footer invariant per route.
+
+**Decision.** The walkthrough N2 + N7 nits were both shape-consistent: the same concept (a saved-view save gesture, a disconnected indicator) drifted into eight different phrasings + two stacked indicators across pages. The pre-83s drift was real but not load-bearing — operators could still use the surfaces — but it eroded the visual contract CONVENTIONS.md §3 + §6 explicitly mandate.
+
+**Two settled calls.**
+
+**1. The canonical pair is `"Save view"` (button) + `"Save current as…"` (input placeholder).** Settled by enumerating the eight pre-83s phrasings and picking the shortest one that reads as an action (verb "Save", noun "view"). The eight drifted phrasings — "Save current as…" / "Save view as…" / "Save view" / "Save snapshot" / "Save filter" / "Save" / "Save current as…" / "Bookmark section" — are all derivatives or shortenings of the same gesture; the canonical pair is one form of the dominant shape.
+
+**2. The viewport-fixed `ConnectionFooter` is the single source of truth for the disconnected indicator.** Every per-page inline copy of "Disconnected · no Runtime attached" is removed; pages now show ONE indicator per viewport (the fixed footer) instead of two stacked ones. The fixed footer's identity-aware shape (it already handles the disconnected, partial-scope, and full-attach states) is the canonical surface; the inline duplicates were vestigial.
+
+**Why now.** N2 + N7 are tied to 83r's disconnected-state pass — both touch per-page footers + filter rows. Shipping them together avoids a second per-page edit pass for unrelated nits.
+
+**Findings I'm departing from.** None.
+
+**Protocol additions.** None.
