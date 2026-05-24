@@ -2052,6 +2052,16 @@ func attachDevMCPServer(
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}
+	// Round-4 (P1+P2): seed the registry's per-server stats from the
+	// boot-time discovery so the Console's mcp.servers.list wire surface
+	// reports the actual tool_count + a real last_discovery_at. Without
+	// this the page renders `tool_count: 0` + `last_discovery_at:
+	// 0001-01-01T00:00:00Z` on a just-booted Runtime even though tool
+	// registration already ran (the descriptors landed on the tool
+	// catalog but bypassed the registry's stats).
+	if recErr := reg.RecordDiscovery(ms.Name, descriptors); recErr != nil {
+		return fmt.Errorf("registry.RecordDiscovery: %w", recErr)
+	}
 	logger.Info("dev: MCP server attached",
 		slog.String("name", ms.Name),
 		slog.String("transport", string(mode)),

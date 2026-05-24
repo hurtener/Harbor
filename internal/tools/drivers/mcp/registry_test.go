@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -199,6 +200,54 @@ func TestRegistry_ListPrompts_Happy(t *testing.T) {
 	}
 	if len(pr) != 1 || pr[0].Name != "pr" {
 		t.Fatalf("ListPrompts shape wrong: %v", pr)
+	}
+}
+
+func TestRegistry_RecordDiscovery_SeedsBootTimeStats(t *testing.T) {
+	// Round-4 (P1+P2): the boot path discovers descriptors before the
+	// registry exists, then Register()s the server without stats.
+	// RecordDiscovery seeds the stats from the already-fetched
+	// descriptors so the wire surface reports the actual tool_count +
+	// a real last_discovery_at (not zero values).
+	r := newTestRegistry(t)
+	// Boot-time discover happens OUTSIDE the registry (cmd_dev.go
+	// flow); the test simulates that by hand-rolling a descriptor
+	// slice with 2 tools, 1 resource, 1 prompt.
+	descs := []tools.ToolDescriptor{
+		{Tool: tools.Tool{Name: "github-server-tool-a"}},
+		{Tool: tools.Tool{Name: "github-server-tool-b"}},
+		{Tool: tools.Tool{Name: "github-server__resource.repo://foo"}},
+		{Tool: tools.Tool{Name: "github-server__prompt.summarise"}},
+	}
+	if err := r.RecordDiscovery("github-server", descs); err != nil {
+		t.Fatalf("RecordDiscovery: %v", err)
+	}
+	v, _ := r.GetServer(idCtx(t), "github-server")
+	if v.ToolCount != 2 {
+		t.Errorf("want ToolCount=2, got %d", v.ToolCount)
+	}
+	if v.ResourceCount != 1 {
+		t.Errorf("want ResourceCount=1, got %d", v.ResourceCount)
+	}
+	if v.PromptCount != 1 {
+		t.Errorf("want PromptCount=1, got %d", v.PromptCount)
+	}
+	if v.LastDiscoveryAt.IsZero() {
+		t.Errorf("LastDiscoveryAt is zero — RecordDiscovery did not stamp the clock")
+	}
+	if v.State != ServerStateOnline {
+		t.Errorf("want State=online, got %q", v.State)
+	}
+}
+
+func TestRegistry_RecordDiscovery_UnknownServer(t *testing.T) {
+	r := NewRegistry()
+	err := r.RecordDiscovery("nope", nil)
+	if err == nil {
+		t.Fatalf("want error for unknown server")
+	}
+	if !strings.Contains(err.Error(), "unknown server") {
+		t.Errorf("want unknown-server error, got %v", err)
 	}
 }
 
