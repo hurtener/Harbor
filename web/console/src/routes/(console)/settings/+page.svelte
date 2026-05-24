@@ -26,10 +26,12 @@
     RailCard,
     StatusChip,
     Pagination,
-    ConnectionFooter,
     PageState,
     type DataTableColumn
   } from '$lib/components/ui/index.js';
+  // ConnectionFooter is rendered ONCE by the app shell
+  // ((console)/+layout.svelte — CONVENTIONS.md §2). The per-page import was
+  // duplicating the footer (post-83k walkthrough N2); removed.
   import SubNavRail from '$lib/components/settings/SubNavRail.svelte';
   import ConnectedRuntimesCard from '$lib/components/settings/ConnectedRuntimesCard.svelte';
   import PerRuntimeAuthCard from '$lib/components/settings/PerRuntimeAuthCard.svelte';
@@ -90,8 +92,10 @@
   // Reference the section-helpers so Vite + svelte-check do NOT prune the
   // exports; the template branches above derive from the discriminator
   // already, but a future refactor that switches to the helpers should
-  // not require re-adding the import.
-  const _ = [consoleLocalSections, runtimePostureSections];
+  // not require re-adding the import. `void` discards the array; the
+  // expression keeps the imports reachable without an unused identifier
+  // (a pre-83r ESLint drift from Phase 83p — §17.6).
+  void [consoleLocalSections, runtimePostureSections];
 
   /** The Connected-Runtimes table columns (the page's primary DataTable). */
   const RUNTIME_COLUMNS: DataTableColumn[] = [
@@ -332,8 +336,6 @@
       </RailCard>
     </DetailRail>
   </div>
-
-  <ConnectionFooter />
 </section>
 
 <style>

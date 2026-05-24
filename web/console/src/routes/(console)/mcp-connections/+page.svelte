@@ -31,10 +31,15 @@
   import { McpListState, DEFAULT_PAGE_SIZE } from '$lib/mcp-connections/state.svelte.js';
   import { McpSavedViews } from '$lib/mcp-connections/saved_views.svelte.js';
   import { mcpStatusKind, mcpStateLabel } from '$lib/mcp-connections/status.js';
+  import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import type { MCPServerView } from '$lib/protocol/mcp.js';
 
   const list = new McpListState();
   const savedViews = new McpSavedViews();
+  // Phase 83r N8 — when `<PageState>` is in the disconnected branch,
+  // status chips desaturate (the kind-coloured pill is meaningless
+  // without a backing Runtime), and the Save view button disables.
+  const disconnected = $derived(list.status === 'disconnected');
 
   /** The currently row-selected server (drives the detail rail). */
   let selected = $state<MCPServerView | null>(null);
@@ -108,6 +113,7 @@
     {#snippet facets()}
       <StateFacetChips
         active={list.activeStateFilter}
+        {disconnected}
         onselect={(state) => {
           selected = null;
           list.setStateFilter(state);
@@ -121,6 +127,8 @@
         placeholder="Search servers…"
         data-testid="mcp-search"
         value={list.search}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         oninput={(e) => list.setSearch((e.currentTarget as HTMLInputElement).value)}
       />
     {/snippet}
@@ -129,6 +137,8 @@
         type="button"
         class="bar-action"
         data-testid="save-view"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void saveCurrentView()}
       >
         Save view
@@ -172,6 +182,7 @@
                 <StatusChip
                   kind={mcpStatusKind(srv.state)}
                   label={mcpStateLabel(srv.state)}
+                  desaturated={disconnected}
                 />
               </span>
             </td>

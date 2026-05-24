@@ -31,7 +31,11 @@
     type MemoryStrategyName,
     type MemoryListResponse
   } from '$lib/protocol/memory-types.js';
-  import { resolveConnection, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openMemorySavedFilters } from '$lib/memory/saved_views.js';
   import type { MemorySavedFilters } from '$lib/db/saved_filters_memory.js';
   import {
@@ -67,6 +71,8 @@
   // ---- connection + client ----------------------------------------
   let connection = $state<RuntimeConnection | null>(null);
   let client = $state<ProtocolClient | null>(null);
+  // Phase 83r disconnected predicate.
+  let disconnected = $derived(connection === null);
 
   // ---- primary-table async state (the four-state contract) --------
   let status = $state<PageStatus>('loading');
@@ -381,10 +387,12 @@
         type="button"
         class="action save-view"
         data-testid="memory-save-view"
-        disabled={savedFiltersDB === null}
-        title={savedFiltersDB === null
-          ? 'Saved views need a profile unlocked in Settings'
-          : 'Save the current filter as a view'}
+        disabled={savedFiltersDB === null || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFiltersDB === null
+            ? 'Saved views need a profile unlocked in Settings'
+            : 'Save the current filter as a view'}
         onclick={() => void saveCurrentView()}
       >
         Save view
@@ -397,6 +405,8 @@
         <select
           value={scopeFacet}
           data-testid="memory-scope-facet"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onchange={(e) => applyScopeFacet(e.currentTarget.value)}
         >
           <option value="">All</option>
@@ -410,6 +420,8 @@
         <select
           value={driverFacet}
           data-testid="memory-driver-facet"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onchange={(e) => applyDriverFacet(e.currentTarget.value)}
         >
           <option value="">All</option>
@@ -427,12 +439,21 @@
         placeholder="Search memory content…"
         data-testid="memory-content-search"
         value={contentSearch}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onchange={(e) => applyContentSearch(e.currentTarget.value)}
       />
     {/snippet}
 
     {#snippet actions()}
-      <button type="button" class="action" onclick={() => void loadList()}>
+      <button
+        type="button"
+        class="action"
+        data-testid="memory-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={() => void loadList()}
+      >
         Refresh
       </button>
     {/snippet}

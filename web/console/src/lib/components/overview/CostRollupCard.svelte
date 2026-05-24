@@ -14,12 +14,17 @@
 
   let {
     rollup,
-    canElevate
+    canElevate,
+    disconnected = false
   }: {
     /** The client-side cost rollup. */
     rollup: CostRollup;
     /** Whether the operator carries the admin scope (drives the per-tenant note). */
     canElevate: boolean;
+    /** True when the Console has no Runtime attached (Phase 83r / W1). When
+        true, the card renders the consolidated "Not connected" placeholder
+        rather than the synthetic `$0.00 · No cost recorded` shape. */
+    disconnected?: boolean;
   } = $props();
 
   function fmtUSD(n: number): string {
@@ -28,28 +33,39 @@
 </script>
 
 <div class="cost-card" data-testid="cost-rollup-card">
-  <div class="cost-head">
-    <span class="total" data-testid="cost-rollup-total">{fmtUSD(rollup.totalUSD)}</span>
-    <span class="axis">
-      by {rollup.breakdown}
-      {#if !canElevate}
-        <span class="axis-note">(per-tenant needs admin)</span>
-      {/if}
-    </span>
-  </div>
-  {#if rollup.rows.length === 0}
-    <p class="empty" data-testid="cost-rollup-empty">No cost recorded in the window.</p>
+  {#if disconnected}
+    <!-- W1 fix (Phase 83r): the disconnected state stops the synthetic
+         `$0.00 · No cost recorded` rendering. The other three Overview
+         cards already route through `<PageState>`'s disconnected branch;
+         this card now matches that posture. -->
+    <p class="empty" data-testid="cost-rollup-disconnected">
+      Not connected to a Runtime.
+    </p>
+    <a class="govern-link" href="/settings">Attach a Runtime in Settings →</a>
   {:else}
-    <ul class="rows">
-      {#each rollup.rows as row (row.key)}
-        <li class="row" data-testid="cost-rollup-row">
-          <span class="key">{row.key}</span>
-          <span class="cost">{fmtUSD(row.costUSD)}</span>
-        </li>
-      {/each}
-    </ul>
+    <div class="cost-head">
+      <span class="total" data-testid="cost-rollup-total">{fmtUSD(rollup.totalUSD)}</span>
+      <span class="axis">
+        by {rollup.breakdown}
+        {#if !canElevate}
+          <span class="axis-note">(per-tenant needs admin)</span>
+        {/if}
+      </span>
+    </div>
+    {#if rollup.rows.length === 0}
+      <p class="empty" data-testid="cost-rollup-empty">No cost recorded in the window.</p>
+    {:else}
+      <ul class="rows">
+        {#each rollup.rows as row (row.key)}
+          <li class="row" data-testid="cost-rollup-row">
+            <span class="key">{row.key}</span>
+            <span class="cost">{fmtUSD(row.costUSD)}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <a class="govern-link" href="/settings">Cost ceilings →</a>
   {/if}
-  <a class="govern-link" href="/settings">Cost ceilings →</a>
 </div>
 
 <style>

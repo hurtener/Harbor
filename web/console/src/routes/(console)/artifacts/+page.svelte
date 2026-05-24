@@ -51,7 +51,7 @@
   } from '$lib/components/artifacts/ArtifactPreview.svelte';
 
   import { HarborClient, ProtocolError, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { resolveConnection } from '$lib/connection.js';
+  import { resolveConnection, DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import { openArtifactsSavedViewStore } from '$lib/artifacts/saved_views.js';
   import type { ArtifactsSavedFilters } from '$lib/db/saved_filters_artifacts.js';
   import type {
@@ -123,10 +123,16 @@
     { key: 'actions', label: 'Actions' }
   ];
 
+  // Phase 83r N9 — when the Console is disconnected, the subtitle stops
+  // claiming "0 artifacts" (a synthetic count against a phantom Runtime)
+  // and instead carries the honest "no Runtime attached" suffix.
+  const disconnected = $derived(status === 'disconnected');
   const subtitle = $derived(
-    `The runtime's content-addressed artifact store — ${totalMatched} artifact${
-      totalMatched === 1 ? '' : 's'
-    }.`
+    disconnected
+      ? "The runtime's content-addressed artifact store — no Runtime attached"
+      : `The runtime's content-addressed artifact store — ${totalMatched} artifact${
+          totalMatched === 1 ? '' : 's'
+        }.`
   );
 
   /* ---- formatting helpers ------------------------------------------ */
@@ -450,7 +456,8 @@
         class="action primary"
         data-testid="upload-artifact"
         onclick={uploadArtifact}
-        disabled={status === 'disconnected'}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
       >
         Upload artifact
       </button>
@@ -459,7 +466,8 @@
         class="action"
         data-testid="export-csv"
         onclick={exportCSV}
-        disabled={rows.length === 0}
+        disabled={rows.length === 0 || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
       >
         Export ▾
       </button>
@@ -479,7 +487,8 @@
         class="action save-view"
         data-testid="save-view"
         onclick={() => void saveCurrentView()}
-        disabled={savedViewStore === null}
+        disabled={savedViewStore === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
       >
         Save view
       </button>
@@ -487,7 +496,13 @@
     {#snippet facets()}
       <label class="facet">
         <span>MIME type</span>
-        <select bind:value={mimeFilter} onchange={changeMime} data-testid="filter-mime">
+        <select
+          bind:value={mimeFilter}
+          onchange={changeMime}
+          data-testid="filter-mime"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        >
           {#each MIME_CHOICES as choice (choice)}
             <option value={choice}>{choice || 'Any'}</option>
           {/each}
@@ -495,7 +510,13 @@
       </label>
       <label class="facet">
         <span>Source</span>
-        <select bind:value={sourceFilter} onchange={changeSource} data-testid="filter-source">
+        <select
+          bind:value={sourceFilter}
+          onchange={changeSource}
+          data-testid="filter-source"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        >
           {#each SOURCE_CHOICES as choice (choice)}
             <option value={choice}>{choice || 'Any'}</option>
           {/each}
@@ -564,7 +585,8 @@
               type="button"
               class="action primary"
               onclick={uploadArtifact}
-              disabled={status === 'disconnected'}
+              disabled={disconnected}
+              title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
             >
               Upload artifact
             </button>

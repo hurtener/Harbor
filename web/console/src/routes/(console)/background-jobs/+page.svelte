@@ -54,7 +54,12 @@
   import { detectOrphans } from '$lib/background-jobs/orphan-detector.js';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
-  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    hasScope,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { BackgroundJobsSavedFilters } from '$lib/db/saved_filters_background_jobs.js';
   import { operatorIdOf } from '$lib/db/schema.js';
@@ -75,6 +80,8 @@
   // gates on the admin scope claim; without it the controls render
   // disabled-with-tooltip (CONVENTIONS.md §5).
   let canControl = $state(false);
+  // Phase 83r disconnected predicate.
+  let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
@@ -498,20 +505,23 @@
         placeholder="Save current as…"
         bind:value={saveName}
         data-testid="bg-save-filter-name"
-        disabled={savedFilters === null}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentFilter()}
       />
       <button
         type="button"
         class="control"
         data-testid="bg-save-filter"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
+        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Console-local saved-view store unavailable'
+            : undefined}
         onclick={() => void saveCurrentFilter()}
       >
-        Save
+        Save view
       </button>
     {/snippet}
 
@@ -523,6 +533,8 @@
             class="chip"
             class:on={(facetFilter.statuses ?? []).includes(s)}
             data-testid={`bg-facet-status-${s}`}
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
             onclick={() => toggleStatusFacet(s)}
           >
             {s}
@@ -533,6 +545,8 @@
           class="chip"
           class:on={approvalFacet === true}
           data-testid="bg-facet-approval"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onclick={toggleApprovalFacet}
         >
           Has pending approval
@@ -547,12 +561,28 @@
         placeholder="Search this queue…"
         bind:value={searchText}
         data-testid="bg-search"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => e.key === 'Enter' && submitSearch()}
       />
-      <button type="button" class="control" data-testid="bg-search-apply" onclick={submitSearch}>
+      <button
+        type="button"
+        class="control"
+        data-testid="bg-search-apply"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={submitSearch}
+      >
         Apply
       </button>
-      <button type="button" class="control" data-testid="bg-filter-clear" onclick={clearFilters}>
+      <button
+        type="button"
+        class="control"
+        data-testid="bg-filter-clear"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={clearFilters}
+      >
         Clear
       </button>
     {/snippet}
@@ -562,6 +592,8 @@
         type="button"
         class="control"
         data-testid="bg-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void loadJobs(cursorStack.length - 1)}
       >
         Refresh

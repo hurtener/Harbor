@@ -26,7 +26,7 @@
   import { HarborClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
   import { FlowsProtocol } from '$lib/protocol/flows.js';
-  import { resolveConnection, hasScope } from '$lib/connection.js';
+  import { resolveConnection, hasScope, DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import {
     PageHeader,
     FilterBar,
@@ -64,6 +64,8 @@
       ? new FlowsProtocol(new HarborClient({ connection }))
       : null;
   const canRun = hasScope(connection, 'admin');
+  // Phase 83r disconnected predicate.
+  const disconnected = connection === null;
 
   // ---- Async-state model (CONVENTIONS.md §4) ----
   let status = $state<PageStatus>(connection === null ? 'disconnected' : 'loading');
@@ -282,6 +284,8 @@
         type="button"
         class="ghost"
         data-testid="flows-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={() => void loadCatalog()}
       >
         Refresh
@@ -301,13 +305,15 @@
         type="button"
         class="ghost small"
         data-testid="flows-save-view"
-        disabled={savedStore === null}
-        title={savedStore === null
-          ? 'Connect to a Runtime to save views'
-          : 'Save the current filter as a view'}
+        disabled={savedStore === null || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedStore === null
+            ? 'Connect to a Runtime to save views'
+            : 'Save the current filter as a view'}
         onclick={() => void saveCurrentView()}
       >
-        Save snapshot
+        Save view
       </button>
     {/snippet}
     {#snippet search()}
@@ -316,13 +322,22 @@
         placeholder="Search flows…"
         data-testid="flows-search"
         bind:value={query}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onkeydown={(e) => {
           if (e.key === 'Enter') {
             applySearch();
           }
         }}
       />
-      <button type="button" class="ghost small" data-testid="flows-search-apply" onclick={applySearch}>
+      <button
+        type="button"
+        class="ghost small"
+        data-testid="flows-search-apply"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={applySearch}
+      >
         Apply
       </button>
     {/snippet}

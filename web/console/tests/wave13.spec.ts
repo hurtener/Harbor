@@ -203,15 +203,19 @@ test.describe("Wave 13 wave-end — cross-cutting concerns", () => {
 
     const sidebar = page.locator("nav.sidebar");
     await expect(sidebar, "the app-shell sidebar renders").toBeVisible();
-    // The sidebar carries 13 sidebar entries — Playground is a
-    // session-level surface reached from within a session, NOT a
-    // sidebar entry (CONVENTIONS.md §2).
+    // The sidebar carries all 14 V1 IA entries (Phase 83q / D-159 —
+    // supersedes the original D-121 stance that the Playground was
+    // off-nav; CONVENTIONS.md §2).
     const links = sidebar.locator("a");
     const linkCount = await links.count();
     expect(
       linkCount,
-      "the sidebar lists the 13 non-Playground IA pages",
-    ).toBeGreaterThanOrEqual(13);
+      "the sidebar lists the 14 V1 IA pages including Playground",
+    ).toBeGreaterThanOrEqual(14);
+    await expect(
+      sidebar.locator("a", { hasText: "Playground" }),
+      "the Playground entry is present in the sidebar (D-159)",
+    ).toHaveCount(1);
   });
 
   test("an identity-isolation deep-link is gated, never a 5xx (Disconnected state)", async ({

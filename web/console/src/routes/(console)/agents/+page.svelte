@@ -37,7 +37,11 @@
     type AgentMetrics,
     type AgentStatus
   } from '$lib/protocol/agents.js';
-  import { resolveConnection, type RuntimeConnection } from '$lib/connection.js';
+  import {
+    resolveConnection,
+    DISCONNECTED_TOOLTIP,
+    type RuntimeConnection
+  } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
   import { AgentsSavedFilters } from '$lib/db/saved_filters_agents.js';
@@ -65,6 +69,9 @@
   // ---- connection + client ----------------------------------------
   let connection = $state<RuntimeConnection | null>(null);
   let agentsApi = $state<AgentsProtocol | null>(null);
+  // The Phase 83r W3 disconnected predicate — drives Refresh / Clear /
+  // Save view + filter facet selects.
+  let disconnected = $derived(connection === null);
 
   // ---- primary async state (the four-state contract) --------------
   let status = $state<PageStatus>('loading');
@@ -290,10 +297,12 @@
         type="button"
         class="action"
         data-testid="agents-save-view"
-        disabled={savedFilters === null}
-        title={savedFilters === null
-          ? 'Saved views need a Console profile'
-          : 'Save the current filter as a view'}
+        disabled={savedFilters === null || disconnected}
+        title={disconnected
+          ? DISCONNECTED_TOOLTIP
+          : savedFilters === null
+            ? 'Saved views need a Console profile'
+            : 'Save the current filter as a view'}
         onclick={() => void saveCurrentView()}
       >
         Save view
@@ -306,6 +315,8 @@
         <select
           value={statusFacet}
           data-testid="agents-status-facet"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onchange={(e) => applyStatusFacet(e.currentTarget.value)}
         >
           <option value="">All</option>
@@ -320,6 +331,8 @@
         <select
           value={plannerFacet}
           data-testid="agents-planner-facet"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
           onchange={(e) => applyPlannerFacet(e.currentTarget.value)}
         >
           <option value="">All</option>
@@ -336,6 +349,8 @@
         placeholder="Search agents by name…"
         data-testid="agents-search"
         value={searchText}
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onchange={(e) => applySearch(e.currentTarget.value)}
       />
     {/snippet}
@@ -345,11 +360,20 @@
         type="button"
         class="action"
         data-testid="agents-clear-filters"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
         onclick={clearFilters}
       >
         Clear
       </button>
-      <button type="button" class="action" onclick={() => void loadAgents()}>
+      <button
+        type="button"
+        class="action"
+        data-testid="agents-refresh"
+        disabled={disconnected}
+        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+        onclick={() => void loadAgents()}
+      >
         Refresh
       </button>
     {/snippet}

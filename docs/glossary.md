@@ -206,6 +206,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 ## D
 
+**Disconnected predicate** — Phase 83r / D-160. The Console-side shared check `isDisconnected()` (and the matching `DISCONNECTED_TOOLTIP` constant) in `web/console/src/lib/connection.ts`. Every page composes it via `$derived(connection === null)` locally; action buttons + filter controls + synthetic-data cards route through the same predicate so disconnected behavior is consistent across pages. Pre-83r each page reached for its own check (or none at all), producing W1/W2/W3-shaped bugs (enabled buttons with no Runtime, fake `$0.00` cost data, two stacked empty-state messages). The predicate is paired with `<PageState>`'s vertical-centring CSS (`min-height: 40vh`) so empty-state placeholders centre in the viewport instead of hugging the top.
+
 **`DefaultIdentity` (MCP fallback)** — `mcp.Config.DefaultIdentity`'s narrowed role after Phase 83m / D-156. Used as the identity stamped on TRANSPORT-side events (notifications, resource-updated pushes) that arrive without an inflight per-call ctx. Per-call tool invocations now read identity from `ctx` via the `pushIdentity` helper; the cached `DefaultIdentity` is the fallback for transport-level events only. Before 83m the cached identity was used for every push, which would have surfaced as a multi-isolation footgun the moment a second tenant attached to the same MCP server.
 
 **`DeadlineAt`** — Wall-clock deadline on an `Envelope`. Set once at the API boundary; checked before scheduling each node (Phase 10 worker loop). `nil` means "no deadline." Distinct from `Policy.TimeoutMS` (per-node timeout) and `flow.Budget.Deadline` (per-flow). RFC §6.1, brief 01 §2.
