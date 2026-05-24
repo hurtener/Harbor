@@ -482,12 +482,6 @@ func (e *recordingExecutor) ExecuteDecision(_ context.Context, _ planner.RunCont
 	return "obs", "llmObs", nil
 }
 
-func (e *recordingExecutor) callCount() int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.calls
-}
-
 // TestRun_PopulatesReasoningTrace — Phase 83m item 8.
 //
 // A planner that invokes `rc.OnReasoning("X")` at step N must produce a
