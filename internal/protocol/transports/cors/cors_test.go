@@ -226,7 +226,6 @@ func TestWrap_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
-		i := i
 		go func() {
 			defer wg.Done()
 			var origin string

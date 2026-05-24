@@ -137,10 +137,17 @@ test.describe("Console Settings page", () => {
 
     // The new runtime appears in the Connected-Runtimes list (a real
     // Console-DB round-trip, not a stubbed feedback string).
+    //
+    // Phase 83u (D-163) — `#catchUpAddressBook()` auto-inserts the
+    // active connection on load(), so the list carries 2+ rows: the
+    // auto-imported active connection AND the e2e-runtime row this
+    // test added. Scope the assertion to the e2e-runtime row by name.
     await expect(
-      page.locator("[data-testid='connected-runtime-row']"),
+      page
+        .locator("[data-testid='connected-runtime-row']")
+        .filter({ hasText: "e2e-runtime" }),
       "the added runtime appears in the address book",
-    ).toContainText("e2e-runtime");
+    ).toBeVisible();
   });
 
   test("(d) Rotate token is disabled-with-tooltip without the admin scope", async ({

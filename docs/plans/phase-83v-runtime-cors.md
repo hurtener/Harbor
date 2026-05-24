@@ -54,7 +54,7 @@ None.
     PATCH, OPTIONS`), `Access-Control-Allow-Headers` (`Authorization,
     Content-Type, Last-Event-ID`), `Access-Control-Max-Age` (24h).
   - Emits `Access-Control-Allow-Origin: <exact-origin>` (NOT `*`)
-    + `Access-Control-Allow-Credentials: true` on matching requests
+    AND `Access-Control-Allow-Credentials: true` on matching requests
     (we send the JWT in the `Authorization` header on REST; for SSE
     the access_token query-param works without credentials, but the
     REST surface needs credentials enabled to let the operator

@@ -10,7 +10,7 @@ operator's primary debugging surfaces.
   unconditionally. The dev binary's runtime is planner/RunLoop-shaped
   (no engine graph); the method returns `unknown_method`. The
   PageState's `error` branch displays "Request failed · unknown_method"
-  + Retry button on EVERY visit. Operators see red on the most-used
+  AND a Retry button on EVERY visit. Operators see red on the most-used
   pages.
 - **F6.** MCP Connections page calls `mcp.servers.list` which
   returns `unknown_method`. The MCP registry IS attached (Phase 83g)
