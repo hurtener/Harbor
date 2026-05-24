@@ -1096,7 +1096,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		Health: func(_ context.Context) []types.SubsystemHealth {
 			return runtimeposture.HealthFromConfig(cfg)
 		},
-		Counters: runtimeposture.CountersProvider(taskReg, sessionRegistry),
+		Counters: runtimeposture.CountersProvider(taskReg, sessionRegistry, mcpRegistry),
 		Drivers: func() []types.SubsystemDriver {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
