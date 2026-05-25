@@ -457,6 +457,41 @@ export class ControlNamespace {
 		}
 		return this.#t.request<R>(`/v1/control/${verb}`, body);
 	}
+	/**
+	 * `start` — spawn a new foreground task in the caller's session.
+	 *
+	 * Round-6 F7 — `start` is NOT a steering verb. The wire shape is
+	 * FLAT (mirrors `internal/protocol/types/control.go::StartRequest`):
+	 * `{identity:triple, query, description, priority, idempotency_key}`,
+	 * with no `task:{...}` wrapper. The previous Playground sendMessage
+	 * went through `dispatch('user_message', sessionID, ...)` which (a)
+	 * treated sessionID as a taskID and (b) used the steering-verb body
+	 * shape — the runtime rejected it with "no live run for the
+	 * requested run id" and the chat panel could never send its first
+	 * message.
+	 *
+	 * The runtime folds the connection-scoped identity (tenant/user/
+	 * session) into `identity` automatically via {@link Transport.request}
+	 * — we do NOT override identity here. Kind is hardcoded to
+	 * `foreground` at the dispatch layer (background runs go through
+	 * `tasks.spawn_background`, not `start`).
+	 */
+	start<R = { task_id: string; reused: boolean; protocol_version: string }>(
+		query: string,
+		opts: { description?: string; priority?: number; idempotencyKey?: string } = {}
+	): Promise<R> {
+		const body: Record<string, unknown> = { query };
+		if (opts.description !== undefined) {
+			body.description = opts.description;
+		}
+		if (opts.priority !== undefined) {
+			body.priority = opts.priority;
+		}
+		if (opts.idempotencyKey !== undefined) {
+			body.idempotency_key = opts.idempotencyKey;
+		}
+		return this.#t.request<R>('/v1/control/start', body);
+	}
 	/** `cancel` — cancel the task's run. */
 	cancel<R = unknown>(taskID: string): Promise<R> {
 		return this.dispatch<R>('cancel', taskID);

@@ -118,13 +118,29 @@ export interface ChatOverrides {
  * carries the resolved connection); the chat module treats this as an
  * opaque, already-scoped surface.
  */
+/** The mode the operator picked while a run was active. */
+export type ChatSendMode = 'queue' | 'steer';
+
 export interface ChatProtocolClient {
 	/**
-	 * Send a user message into the session. Maps onto the SHIPPED
-	 * `user_message` Protocol method (Phase 54) — there is NO parallel
-	 * chat protocol.
+	 * Send a user message into the session.
+	 *
+	 * - When no run is active (`mode === undefined`): spawn a fresh
+	 *   foreground task via the SHIPPED `start` Protocol method.
+	 * - When a run is active and `mode === 'steer'`: inject the message
+	 *   into the running task via the SHIPPED `user_message` control verb
+	 *   (Phase 54). The runtime's run loop picks up the message on its
+	 *   next planner turn.
+	 * - When a run is active and `mode === 'queue'`: stash the message
+	 *   locally and dispatch it via `start` as soon as the current run
+	 *   reaches a terminal state. The adapter is responsible for the
+	 *   lifecycle subscription that detects terminal-state.
 	 */
-	sendMessage(text: string, artifactIDs: string[]): Promise<SendMessageResult>;
+	sendMessage(
+		text: string,
+		artifactIDs: string[],
+		mode?: ChatSendMode
+	): Promise<SendMessageResult>;
 	/**
 	 * Record a next-message override. Maps onto the `runs.set_overrides`
 	 * Protocol method (Phase 73n).

@@ -2,7 +2,9 @@ package protocol_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -87,5 +89,47 @@ func TestGet_UnknownIDReturnsNotFound(t *testing.T) {
 	})
 	if !errors.Is(err, tasksprotocol.ErrTaskNotFound) {
 		t.Fatalf("unknown id: want ErrTaskNotFound, got %v", err)
+	}
+}
+
+// TestGet_CostPerStepIsNeverNullOnWire — round-6 F5 fix. The TS contract
+// declares TaskCostRollup.per_step as a non-null TaskCostStep[]. A Go
+// nil slice JSON-marshals to `null`, which made the Console's
+// RightRailCostBreakdown null-deref on `.length` when clicking a
+// just-completed task with no cost data. The projector now normalizes
+// an empty PerStep to `[]` before returning. This test pins the wire
+// shape: the JSON-encoded response carries `"per_step":[]`, never
+// `"per_step":null`.
+func TestGet_CostPerStepIsNeverNullOnWire(t *testing.T) {
+	svc, reg, _ := newListService(t)
+	id := idFor("t1", "u1", "s1")
+	taskID := seedTask(t, reg, id, tasks.KindForeground, tasks.StatusComplete, "no cost", "trivial")
+
+	resp, err := svc.Get(context.Background(), prototypes.TaskGetRequest{
+		Identity: scopeOf("t1", "u1", "s1"),
+		ID:       string(taskID),
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	// Structural assertion — PerStep must be non-nil even when empty.
+	if resp.Cost.PerStep == nil {
+		t.Fatalf("Cost.PerStep is nil; contract requires an empty slice for the wire")
+	}
+	if len(resp.Cost.PerStep) != 0 {
+		t.Fatalf("Cost.PerStep len=%d, want 0 (no enricher wired)", len(resp.Cost.PerStep))
+	}
+
+	// Wire assertion — encode and confirm the JSON output uses `[]`.
+	enc, err := json.Marshal(resp.Cost)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(enc), `"per_step":null`) {
+		t.Fatalf("wire-shape regression: per_step encoded as null:\n%s", enc)
+	}
+	if !strings.Contains(string(enc), `"per_step":[]`) {
+		t.Fatalf("wire-shape regression: expected per_step:[] in output:\n%s", enc)
 	}
 }

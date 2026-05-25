@@ -44,5 +44,6 @@ export type {
 	ChatArtifactRef,
 	ChatOverrides,
 	ChatProtocolClient,
+	ChatSendMode,
 	SendMessageResult
 } from './types.js';

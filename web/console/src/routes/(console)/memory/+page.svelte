@@ -131,6 +131,13 @@
   /** Short, stable timestamp label (no priority dimension — D-065). */
   function shortTime(iso: string | undefined): string {
     if (!iso) return '—';
+    // Round-6 F9 — Go's `time.Time` zero value serializes to
+    // `0001-01-01T00:00:00Z` and leaks through the wire for nullable
+    // timestamps that have no value (memory records under the
+    // `truncation` strategy carry no expires_at). The presentation
+    // layer is responsible for rendering "no value" as "—"; do not
+    // print a literal year-1 date.
+    if (iso.startsWith('0001-01-01')) return '—';
     const d = new Date(iso);
     return Number.isNaN(d.getTime())
       ? '—'

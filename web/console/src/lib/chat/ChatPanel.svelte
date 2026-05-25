@@ -20,14 +20,26 @@
     messages,
     client,
     sending = false,
+    running = false,
     onsend
   }: {
     messages: ChatMessage[];
     client: ChatProtocolClient;
-    /** True while a send is in flight. */
+    /** True while a send round-trip is in flight. */
     sending?: boolean;
-    /** Forwarded from the composer — the host does the Protocol round-trip. */
-    onsend: (text: string, artifactIDs: string[]) => void;
+    /**
+     * Round-6 F10 — true when the parent session has a non-terminal
+     * task. Forwarded to the composer so the operator can pick between
+     * queueing a follow-up message after the current run finishes and
+     * steering the current run with a `user_message` inject.
+     */
+    running?: boolean;
+    /**
+     * Forwarded from the composer — the host does the Protocol round-
+     * trip. `mode` is `'queue'` / `'steer'` when `running` is true,
+     * undefined otherwise (the host then calls `start`).
+     */
+    onsend: (text: string, artifactIDs: string[], mode?: 'queue' | 'steer') => void;
   } = $props();
 </script>
 
@@ -44,7 +56,7 @@
     {/if}
   </div>
 
-  <ChatComposer {client} {sending} {onsend} />
+  <ChatComposer {client} {sending} {running} {onsend} />
 </div>
 
 <style>

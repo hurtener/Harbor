@@ -193,6 +193,15 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 			SessionID: task.Identity.SessionID,
 		}
 	}
+	// Round-6 fix: the TS contract declares cost.per_step as a non-null
+	// array (TaskCostStep[]); a Go nil slice JSON-marshals to `null` and
+	// the Console null-derefs on `.length`. Normalize to an empty slice
+	// so the wire honours the contract — failing loud is the rule
+	// (CLAUDE.md §5), and a missing-per-step rollup is honestly "no
+	// per-step rows yet," not "null."
+	if detail.Cost.PerStep == nil {
+		detail.Cost.PerStep = []prototypes.TaskCostStep{}
+	}
 	if task.Result != nil && len(task.Result.Value) > 0 {
 		detail.ResultInline = string(task.Result.Value)
 	}

@@ -17,14 +17,37 @@
   let {
     client,
     sending = false,
+    running = false,
     onsend
   }: {
     client: ChatProtocolClient;
-    /** True while a send is in flight — disables the composer. */
+    /** True while a send round-trip is in flight — disables the composer. */
     sending?: boolean;
-    /** Invoked with the composed text + attached artifact ids. */
-    onsend: (text: string, artifactIDs: string[]) => void;
+    /**
+     * Round-6 F10 — true when the parent session has a non-terminal task
+     * the operator has not yet acknowledged. The composer stays usable;
+     * pressing Send chooses between "queue this message until the
+     * current run finishes" (default) and "steer the current run with
+     * this message as a `user_message` inject." When `running` is
+     * `false`, the mode picker is hidden and Send always starts a
+     * fresh task.
+     */
+    running?: boolean;
+    /**
+     * Invoked with the composed text + attached artifact ids. `mode`
+     * is set when `running` is true: `'queue'` is the default; `'steer'`
+     * is the explicit "inject into the current run" path. When `running`
+     * is false, `mode` is undefined and the caller routes to `start`.
+     */
+    onsend: (text: string, artifactIDs: string[], mode?: 'queue' | 'steer') => void;
   } = $props();
+
+  // The send-mode picker is hidden when no run is in flight. When a
+  // run is active, the operator can choose between queueing the next
+  // message (sent automatically after the current task completes) and
+  // steering the current run via the SHIPPED `user_message` control
+  // verb.
+  let mode = $state<'queue' | 'steer'>('queue');
 
   let text = $state('');
   let attachments = $state<ChatArtifactRef[]>([]);
@@ -77,7 +100,8 @@
     }
     onsend(
       text.trim(),
-      attachments.map((a) => a.id)
+      attachments.map((a) => a.id),
+      running ? mode : undefined
     );
     text = '';
     attachments = [];
@@ -201,9 +225,37 @@
       onclick={send}
       disabled={!canSend}
     >
-      {sending ? 'Sending…' : 'Send'}
+      {sending ? 'Sending…' : running ? (mode === 'steer' ? 'Steer' : 'Queue') : 'Send'}
     </button>
   </div>
+
+  {#if running}
+    <fieldset class="mode-picker" data-testid="chat-mode-picker">
+      <legend class="sr-only">Send mode while a run is active</legend>
+      <label class="mode-option">
+        <input
+          type="radio"
+          name="chat-send-mode"
+          value="queue"
+          checked={mode === 'queue'}
+          onchange={() => (mode = 'queue')}
+          data-testid="chat-mode-queue"
+        />
+        <span class="mode-label">Queue after current run</span>
+      </label>
+      <label class="mode-option">
+        <input
+          type="radio"
+          name="chat-send-mode"
+          value="steer"
+          checked={mode === 'steer'}
+          onchange={() => (mode = 'steer')}
+          data-testid="chat-mode-steer"
+        />
+        <span class="mode-label">Steer current run</span>
+      </label>
+    </fieldset>
+  {/if}
 
   <div class="composer-foot">
     <span class="token-count" data-testid="chat-token-count">~{tokenEstimate} tokens</span>
@@ -338,6 +390,27 @@
   .composer-foot {
     display: flex;
     gap: var(--space-3);
+  }
+
+  .mode-picker {
+    display: flex;
+    gap: var(--space-3);
+    border: none;
+    margin: var(--space-0);
+    padding: var(--space-0);
+  }
+
+  .mode-option {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .mode-label {
+    font-family: var(--font-sans);
   }
 
   .token-count,
