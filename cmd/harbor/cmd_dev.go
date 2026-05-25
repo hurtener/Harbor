@@ -807,6 +807,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// the runloop's `nil /* TODO Phase 83m */` hard-code. Empty
 		// list = no scopes granted (the existing latent default).
 		grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
+		// Round-7 F11 / D-166: multimodal materializer reads bytes /
+		// metadata from the artifact store when a task's
+		// InputArtifactIDs is non-empty. The same `artStore` the
+		// devToolExecutor already consumes is reused — there is one
+		// canonical ArtifactStore per dev stack.
+		artifactStore: artStore,
 	})
 	if err != nil {
 		closeAll(ctx)

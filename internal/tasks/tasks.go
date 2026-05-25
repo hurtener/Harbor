@@ -170,6 +170,14 @@ type Task struct {
 	// (Phase 83m item 7). Projected to `prototypes.TaskRow.ToolCount`
 	// for the Console Tasks page.
 	ToolCount int
+	// InputArtifactIDs carry operator-uploaded multimodal inputs the
+	// run consumes on its first planner turn (Round-7 F11 / D-166).
+	// The run loop materializes these into `RunContext.InputArtifacts`
+	// via the per-MIME dispatcher: image bytes inline as
+	// `ImagePart.DataURL`; everything else stays as an `ArtifactStub`
+	// the LLM routes to a matching tool through the tool catalog. Empty
+	// is the common case — text-only turns.
+	InputArtifactIDs []string
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -195,6 +203,11 @@ type SpawnRequest struct {
 	PropagateOnCancel string
 	NotifyOnComplete  bool
 	GroupID           TaskGroupID
+	// InputArtifactIDs are operator-uploaded multimodal inputs the
+	// task carries onto its first planner turn (Round-7 F11 / D-166).
+	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
+	// loop's first-turn materializer. Empty is the text-only default.
+	InputArtifactIDs []string
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape

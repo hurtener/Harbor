@@ -177,13 +177,33 @@
         //     The lifecycle watcher below (subscribeTaskLifecycle)
         //     auto-drains the queue when activeTaskID becomes null.
         //
-        // TODO multimodal — artifactIDs need a richer wire payload
-        // (StartRequest.input_artifacts + the user_message payload
-        // gaining an `artifact_ids` slot). The runtime LLM layer already
-        // models multimodal Content.Parts; the planner first-turn
-        // assembly is the remaining seam. Tracked as the F11 follow-up.
-        void artifactIDs;
+        // Round-7 F11 / D-166 — multimodal artifact inputs. The
+        // composer's chat-attach uploads each File via `artifacts.put`
+        // and tracks the returned ids; sendMessage now plumbs them
+        // through `control.start` (or stashes them on the queue path).
+        // The runtime resolves each id to a `planner.InputArtifactView`
+        // and renders per MIME on the first planner turn: image/*
+        // inlines as `ImagePart.DataURL` (Path 1); everything else
+        // stays as an `ArtifactStub` ref the LLM routes via the tool
+        // catalog (operators register tools with `HandlesMIME` to
+        // get the routing hint baked into the stub).
+        //
+        // user_message steering today carries only `{message: string}`
+        // — mid-run artifact attachment is a separate seam (an
+        // extension to the user_message payload). V1.1 limits
+        // multimodal to start; mid-run inject stays text-only and we
+        // surface a brief notice to the operator when they pick
+        // 'steer' with attachments.
         if (mode === 'steer' && activeTaskID !== null) {
+          if (artifactIDs.length > 0) {
+            // No silent degradation — surface the gap and let the
+            // operator decide whether to re-send as Queue. The chat
+            // appears as a system bubble (the page-level error path
+            // catches the throw and renders it).
+            throw new Error(
+              'steering attachment not supported: V1.1 inject is text-only; queue or wait for the run to finish.'
+            );
+          }
           await c.control.dispatch('user_message', activeTaskID, { message: text });
           return { taskID: activeTaskID };
         }
@@ -194,7 +214,8 @@
           return { taskID: activeTaskID };
         }
         const resp = await c.control.start<{ task_id: string }>(text, {
-          description: `Playground turn · ${activeAgent}`
+          description: `Playground turn · ${activeAgent}`,
+          inputArtifactIDs: artifactIDs
         });
         activeTaskID = resp.task_id;
         return { taskID: resp.task_id };

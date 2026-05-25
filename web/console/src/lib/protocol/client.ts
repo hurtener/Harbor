@@ -478,7 +478,12 @@ export class ControlNamespace {
 	 */
 	start<R = { task_id: string; reused: boolean; protocol_version: string }>(
 		query: string,
-		opts: { description?: string; priority?: number; idempotencyKey?: string } = {}
+		opts: {
+			description?: string;
+			priority?: number;
+			idempotencyKey?: string;
+			inputArtifactIDs?: string[];
+		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
 		if (opts.description !== undefined) {
@@ -489,6 +494,16 @@ export class ControlNamespace {
 		}
 		if (opts.idempotencyKey !== undefined) {
 			body.idempotency_key = opts.idempotencyKey;
+		}
+		// Round-7 F11 / D-166 — multimodal artifact inputs. The runtime
+		// resolves each id to a `planner.InputArtifactView` and routes
+		// per MIME on the first planner turn: image/* bytes inline as
+		// `ImagePart.DataURL`; pdf/audio stay as typed refs; everything
+		// else emits an `ArtifactStub` text block the LLM routes via
+		// the tool catalog. Empty / undefined keeps the wire shape
+		// text-only (the omitempty tag elides the field server-side).
+		if (opts.inputArtifactIDs !== undefined && opts.inputArtifactIDs.length > 0) {
+			body.input_artifact_ids = opts.inputArtifactIDs;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

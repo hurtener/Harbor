@@ -176,6 +176,14 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		return tasks.TaskHandle{}, fmt.Errorf("tasks/inprocess: redact: %w", err)
 	}
 
+	// Defensive copy of the input-artifact ID slice — protects the
+	// stored task from caller-side mutation of the SpawnRequest. Nil
+	// stays nil so the JSON `omitempty` tag elides the field for
+	// text-only spawns.
+	var inputArtifactIDs []string
+	if len(req.InputArtifactIDs) > 0 {
+		inputArtifactIDs = append([]string(nil), req.InputArtifactIDs...)
+	}
 	t := &tasks.Task{
 		ID:                id,
 		Identity:          req.Identity,
@@ -190,6 +198,7 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		IdempotencyKey:    req.IdempotencyKey,
 		CreatedAt:         now,
 		UpdatedAt:         now,
+		InputArtifactIDs:  inputArtifactIDs,
 	}
 	if err := d.persistLocked(ctx, t); err != nil {
 		return tasks.TaskHandle{}, err
@@ -862,6 +871,23 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if existing.IdempotencyKey != req.IdempotencyKey {
 		return false
 	}
+	// Round-7 F11 / D-166 — input artifact attachments are part of the
+	// task's content identity. Same key, different attachments → conflict.
+	if !stringSliceEqual(existing.InputArtifactIDs, req.InputArtifactIDs) {
+		return false
+	}
+	return true
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
 	return true
 }
 
@@ -880,6 +906,12 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	h.Write([]byte(req.Description))
 	h.Write([]byte{0x1F})
 	h.Write([]byte(req.Query))
+	// Round-7 F11 / D-166 — fold InputArtifactIDs into the hash so
+	// "same key, different attachments" surfaces as ErrIdempotencyConflict.
+	for _, id := range req.InputArtifactIDs {
+		h.Write([]byte{0x1F})
+		h.Write([]byte(id))
+	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out

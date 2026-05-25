@@ -85,6 +85,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -142,6 +143,14 @@ type perTaskRunLoopDriverOpts struct {
 	// Nil / empty list means no scopes granted (the existing latent
 	// default before the plumb-through).
 	grantedScopes []string
+
+	// Round-7 F11 / D-166 — the artifact store the multimodal
+	// materializer reads from. Required only when `task.InputArtifactIDs`
+	// is non-empty (text-only tasks never touch the store). A nil
+	// store with input artifacts on the task degrades gracefully —
+	// the materializer emits text-stub-only references the LLM
+	// routes via the catalog.
+	artifactStore artifacts.ArtifactStore
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -168,6 +177,10 @@ type perTaskRunLoopDriver struct {
 
 	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
 	grantedScopes []string
+
+	// Round-7 F11 / D-166 — artifact store handle for the multimodal
+	// materializer.
+	artifactStore artifacts.ArtifactStore
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -226,6 +239,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		executor:         opts.executor,
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
+		artifactStore:    opts.artifactStore,
 	}, nil
 }
 
@@ -577,6 +591,14 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return nil
 	}
 
+	// Round-7 F11 / D-166 — pre-resolve operator-uploaded input
+	// artifacts so the planner's first-turn materializer renders them
+	// as multimodal Content.Parts. The runloop clears
+	// `Base.InputArtifacts` after the first step (per
+	// `runloop.go::spec.Base.InputArtifacts = nil` at the end of the
+	// per-step build) so subsequent steps see an empty slice.
+	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -590,6 +612,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Catalog:        catalogView,     // Phase 83i (D-152) — populates <available_tools>
 			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
 			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
+			InputArtifacts: inputArtifacts,  // Round-7 F11 / D-166 — first-turn multimodal inputs
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
@@ -703,6 +726,85 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 // indefinitely would block Close; the dev cmd's serve loop applies
 // the Server.ShutdownGracePeriod ceiling at the http boundary, so a
 // blocked Close eventually surfaces as a graceless exit.
+// resolveInputArtifacts pre-fetches the metadata (+ bytes for
+// `image/*`) for every operator-uploaded artifact ID on a task,
+// producing the `planner.InputArtifactView` slice the run loop hands
+// to the planner's first turn. Round-7 F11 / D-166 — the synchronous
+// pre-resolution keeps the planner's prompt assembly I/O-free.
+//
+// Failures are bounded:
+//   - Nil artifact store with non-empty IDs → empty slice + Warn log
+//     (the LLM still sees a text-only prompt; the operator can re-
+//     attach after wiring the store). Avoids a hard fail-loud here
+//     because the artifact-store dependency is genuinely optional in
+//     some dev postures.
+//   - `GetRef` not-found / errored → skip that ID + Warn (the rest
+//     of the slice survives; the artifact may have been GC'd between
+//     spawn and run).
+//   - `Get` (bytes fetch) errored on an image/* → keep the entry but
+//     leave Bytes nil. The materializer falls back to a stub-text
+//     part for missing-bytes images — see
+//     `TestMaterializeInputContent_ImageMissingBytesFallsBackToRef`.
+//
+// The scope on every store call is the run's identity tuple — the
+// artifact store enforces tenant isolation on read.
+func (d *perTaskRunLoopDriver) resolveInputArtifacts(
+	ctx context.Context, q identity.Quadruple, ids []string,
+) []planner.InputArtifactView {
+	if len(ids) == 0 {
+		return nil
+	}
+	if d.artifactStore == nil {
+		d.logger.Warn("perTaskRunLoopDriver: input artifacts ignored — no artifact store wired",
+			slog.String("run_id", q.RunID),
+			slog.Int("count", len(ids)))
+		return nil
+	}
+	scope := artifacts.ArtifactScope{
+		TenantID:  q.TenantID,
+		UserID:    q.UserID,
+		SessionID: q.SessionID,
+	}
+	out := make([]planner.InputArtifactView, 0, len(ids))
+	for _, id := range ids {
+		ref, found, gerr := d.artifactStore.GetRef(ctx, scope, id)
+		if gerr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: artifact GetRef failed; skipping",
+				slog.String("run_id", q.RunID),
+				slog.String("artifact_id", id),
+				slog.String("err", gerr.Error()))
+			continue
+		}
+		if !found || ref == nil {
+			d.logger.Warn("perTaskRunLoopDriver: artifact not found; skipping",
+				slog.String("run_id", q.RunID),
+				slog.String("artifact_id", id))
+			continue
+		}
+		view := planner.InputArtifactView{
+			ID:        ref.ID,
+			MIME:      ref.MimeType,
+			SizeBytes: ref.SizeBytes,
+			Filename:  ref.Filename,
+		}
+		// Image MIMEs need the bytes inline (Path 1 — DataURL).
+		// Everything else stays as a ref the materializer renders as
+		// an `ArtifactStub`.
+		if strings.HasPrefix(ref.MimeType, "image/") {
+			bytesPayload, getFound, berr := d.artifactStore.Get(ctx, scope, id)
+			if berr != nil || !getFound || len(bytesPayload) == 0 {
+				d.logger.Warn("perTaskRunLoopDriver: image artifact bytes missing; emitting ref-only fallback",
+					slog.String("run_id", q.RunID),
+					slog.String("artifact_id", id))
+			} else {
+				view.Bytes = bytesPayload
+			}
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
 func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 	d.closedOnce.Do(func() {
 		if !d.started {

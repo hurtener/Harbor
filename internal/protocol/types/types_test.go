@@ -2,6 +2,7 @@ package types_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -24,10 +25,11 @@ func TestStartRequest_JSONRoundTrip(t *testing.T) {
 			User:    "user-1",
 			Session: "session-x",
 		},
-		Query:          "summarise the Q3 report",
-		Description:    "quarterly summary run",
-		Priority:       5,
-		IdempotencyKey: "idem-key-001",
+		Query:            "summarise the Q3 report",
+		Description:      "quarterly summary run",
+		Priority:         5,
+		IdempotencyKey:   "idem-key-001",
+		InputArtifactIDs: []string{"art_screenshot_a1", "art_audio_b2"},
 	}
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -37,9 +39,47 @@ func TestStartRequest_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round-trip mismatch:\n got %+v\nwant %+v", out, in)
 	}
+}
+
+// TestStartRequest_JSONOmitsEmptyArtifactIDs pins the wire-shape
+// contract for the text-only case: an empty `InputArtifactIDs` MUST
+// elide from the JSON entirely (omitempty), not appear as `null` or
+// `[]`. Round-7 F11 / D-166 — the field is opt-in; the existing
+// text-only start path must continue to ship its smaller wire body.
+func TestStartRequest_JSONOmitsEmptyArtifactIDs(t *testing.T) {
+	in := types.StartRequest{
+		Identity: types.IdentityScope{
+			Tenant:  "tenant-a",
+			User:    "user-1",
+			Session: "session-x",
+		},
+		Query: "hello",
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(b) == "" {
+		t.Fatal("empty Marshal output")
+	}
+	got := string(b)
+	if containsAny(got, []string{`"input_artifact_ids"`}) {
+		t.Fatalf("text-only StartRequest must elide input_artifact_ids; got: %s", got)
+	}
+}
+
+func containsAny(haystack string, needles []string) bool {
+	for _, n := range needles {
+		for i := 0; i+len(n) <= len(haystack); i++ {
+			if haystack[i:i+len(n)] == n {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestStartResponse_JSONRoundTrip(t *testing.T) {
