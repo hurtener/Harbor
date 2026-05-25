@@ -1113,6 +1113,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		Bus:         bus,
 		DisplayName: "harbor dev",
 		InstanceID:  devInstanceID(),
+		// Round-8 F1 / phase 84a: `harbor dev` against an agent yaml is
+		// planner/RunLoop-shaped — no engine-graph topology accessor is
+		// wired into the ControlSurface. Advertising
+		// `topology_snapshot` here would lie about the wire. Future
+		// engine-graph runtimes flip this true at construction.
+		TopologyAvailable: false,
 	})
 	if err != nil {
 		closeAll(ctx)

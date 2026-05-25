@@ -374,16 +374,36 @@ const (
 	// backward-compatible (RFC §5.3 minor-class change) — no version
 	// bump.
 	CapRuntimePosture Capability = "runtime_posture"
+	// CapTopologySnapshot — the engine-graph topology projection
+	// (`topology.snapshot`, Phase 74 / D-114). Conditional: a runtime
+	// only advertises this capability when it hosts an engine (the
+	// ControlSurface's topology accessor is non-nil). Planner /
+	// RunLoop-shaped runtimes — including `harbor dev` against an
+	// agent yaml — do NOT advertise it; the Console reads
+	// `runtime.info.capabilities` at attach and gates its
+	// `topology.snapshot` calls behind `caps.has('topology_snapshot')`
+	// so the browser console stays clean on runtimes without the
+	// surface (round-8 F1 / phase 84a). Backward-compatible (RFC §5.3
+	// minor-class addition) — no version bump.
+	CapTopologySnapshot Capability = "topology_snapshot"
 )
 
-// canonicalCapabilities is the registered set — a fixed package-level
-// map, mirroring methods.canonicalMethods. A new Protocol surface
+// canonicalCapabilities is the registered set — the universe of
+// capability values a runtime MAY advertise. A new Protocol surface
 // extends this map in its own phase; there is no registration escape
 // hatch.
+//
+// Phase 84a clarification: this is distinct from what a SPECIFIC
+// runtime instance advertises in `runtime.info.capabilities`. The
+// canonical set is the Protocol-version surface a handshake negotiates
+// against; the per-instance list is the *wired subset* (e.g.
+// `topology_snapshot` is in the canonical set, but only runtimes
+// hosting an engine surface it on `runtime.info`).
 var canonicalCapabilities = map[Capability]struct{}{
-	CapTaskControl:     {},
-	CapEventsSubscribe: {},
-	CapRuntimePosture:  {},
+	CapTaskControl:      {},
+	CapEventsSubscribe:  {},
+	CapRuntimePosture:   {},
+	CapTopologySnapshot: {},
 }
 
 // IsValidCapability reports whether c is one of the canonical Protocol

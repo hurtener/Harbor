@@ -952,6 +952,10 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			Bus:         bus,
 			DisplayName: "harbor devstack",
 			InstanceID:  "harbor-devstack",
+			// Round-8 F1 / phase 84a — D-094 mirror. The devstack is
+			// planner/RunLoop-shaped (same as the production `harbor
+			// dev` boot); no engine-graph topology accessor is wired.
+			TopologyAvailable: false,
 		})
 		if postErr != nil {
 			return stack, fmt.Errorf("protocol.NewPostureSurface: %w", postErr)

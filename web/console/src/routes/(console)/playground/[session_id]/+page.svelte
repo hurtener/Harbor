@@ -437,19 +437,32 @@
     pageError = null;
     pageInfo = null;
     try {
+      // Round-8 F1 / phase 84a — gate the topology probe behind the
+      // runtime's advertised capabilities. A planner/RunLoop runtime
+      // (the dev posture) omits `topology_snapshot` from
+      // `runtime.info.capabilities`; we short-circuit to the info
+      // banner without making the fetch, so the browser network log
+      // stays clean. The Phase 83w-F5 / D-164 `unknown_method` catch
+      // below remains the safety net for runtimes that advertise the
+      // capability but reject at the wire.
+      const caps = await client.capabilities();
+      if (!caps.has('topology_snapshot')) {
+        pageInfo = {
+          headline: 'Topology view not available on this Runtime',
+          detail:
+            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
+        };
+        // Round-6 F6 — never route the Playground main column through
+        // PageState's `empty` branch. ChatPanel owns the "no messages
+        // yet" copy + the composer.
+        status = 'ready';
+        return;
+      }
       // The Playground opens against a live session — V1 starts with an
       // empty stream and grows as the operator sends messages. The
       // initial load proves the connection + Protocol surface are live
       // by fetching the topology snapshot (also feeds the trace toggle).
       await client.topology.snapshot<TopologyProjection>();
-      // Round-6 F6 — never route the Playground main column through
-      // PageState's `empty` branch. `<ChatPanel>` already renders its
-      // own "No messages yet" copy AND the composer below it. Going
-      // through PageState `empty` would hide the composer entirely
-      // (PageState renders snippets OR children, never both — see
-      // PageState.svelte CONVENTIONS.md §4 state 5), leaving the
-      // operator stranded on a "Send a message below" message with no
-      // input to send from.
       status = 'ready';
     } catch (err) {
       // Phase 83w-F5 / D-164 — `topology.snapshot` returning
@@ -633,6 +646,17 @@
     traceLoading = true;
     traceError = '';
     try {
+      // Round-8 F1 / phase 84a: gate the on-demand topology fetch
+      // behind the runtime's advertised capabilities so the trace
+      // toggle doesn't fire a wire request on a planner/RunLoop
+      // runtime that can't answer. The D-164 unknown_method catch
+      // below stays as the safety net.
+      const caps = await client.capabilities();
+      if (!caps.has('topology_snapshot')) {
+        traceError = 'Topology view not available on this Runtime (planner/RunLoop runtime).';
+        traceNodes = [];
+        return;
+      }
       const proj = await client.topology.snapshot<TopologyProjection>();
       traceNodes = proj.nodes.map((n) => ({ id: n.name, kind: n.kind }));
     } catch (err) {

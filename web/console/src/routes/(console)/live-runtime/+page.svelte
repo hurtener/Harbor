@@ -243,6 +243,29 @@
     pageError = null;
     pageInfo = null;
     try {
+      // Round-8 F1 / phase 84a: gate the topology fetch behind the
+      // runtime's advertised capabilities. A planner/RunLoop runtime
+      // (the dev posture) omits `topology_snapshot` from
+      // `runtime.info.capabilities`; the Console then short-circuits
+      // to the info banner WITHOUT making the fetch, so the browser
+      // network log stays clean. The D-164 `unknown_method` catch
+      // remains the safety net for any runtime that advertises the
+      // capability but rejects at the wire (defence-in-depth).
+      const caps = await client.capabilities();
+      if (!caps.has('topology_snapshot')) {
+        projection = null;
+        const taskResp = await client.tasks.list<TaskListResponse>({
+          include_status_counter_strip: true
+        });
+        strip = taskResp.status_counter_strip ?? { ...EMPTY_STRIP };
+        pageInfo = {
+          headline: 'Topology view not available on this Runtime',
+          detail:
+            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
+        };
+        status = 'info';
+        return;
+      }
       const [proj, taskResp] = await Promise.all([
         client.topology.snapshot<TopologyProjection>(),
         client.tasks.list<TaskListResponse>({ include_status_counter_strip: true })

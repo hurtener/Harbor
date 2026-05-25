@@ -787,6 +787,14 @@ export interface ProtocolClient {
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
+
+	/**
+	 * Round-8 F1 / phase 84a: returns the per-instance Protocol
+	 * capabilities the runtime advertises (memoised per client). Pages
+	 * with optional surfaces gate their fetches on
+	 * `caps.has('topology_snapshot')` etc.
+	 */
+	capabilities(): Promise<ReadonlySet<string>>;
 }
 
 /**
@@ -816,6 +824,16 @@ export class HarborClient implements ProtocolClient {
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
 
+	// Round-8 F1 / phase 84a: per-connection capability cache. Pages
+	// with optional Protocol surfaces (Live Runtime topology view,
+	// Playground topology trace) consult this BEFORE calling
+	// `topology.snapshot` / similar, so the browser console stays
+	// clean on planner/RunLoop runtimes that don't advertise the
+	// surface. Lazy-loaded on first `capabilities()` call; the
+	// returned Set is immutable, the resolution memoised for the
+	// lifetime of the client (a re-attach builds a new HarborClient).
+	#capsCache: Promise<ReadonlySet<string>> | null = null;
+
 	constructor(opts: HarborClientOptions) {
 		const transport = new Transport(opts);
 		this.tools = new ToolsNamespace(transport);
@@ -834,5 +852,26 @@ export class HarborClient implements ProtocolClient {
 		this.pause = new PauseNamespace(transport);
 		this.posture = new PostureNamespace(transport);
 		this.auth = new AuthNamespace(transport);
+	}
+
+	/**
+	 * Returns the runtime's advertised capability set, fetched once per
+	 * client and memoised. Pages with optional Protocol surfaces call
+	 * `await client.capabilities()` then branch on `caps.has('...')`
+	 * instead of eagerly invoking a method the runtime might not
+	 * advertise. Round-8 F1 / phase 84a.
+	 *
+	 * The fetch goes through `posture.info` (the SHIPPED Phase 72f
+	 * surface, every runtime advertises it). A network failure rejects
+	 * the promise; the resolved Set is frozen.
+	 */
+	capabilities(): Promise<ReadonlySet<string>> {
+		if (this.#capsCache !== null) {
+			return this.#capsCache;
+		}
+		this.#capsCache = this.posture
+			.info<{ capabilities?: string[] }>()
+			.then((info) => new Set<string>(info.capabilities ?? []));
+		return this.#capsCache;
 	}
 }
