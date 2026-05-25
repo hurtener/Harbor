@@ -87,21 +87,13 @@ test.describe("Console Playground page", () => {
     runtime,
     helpers,
   }) => {
-    // §17.6 deferral — NOT a seeding-gap skip. The Phase 75a fixture
-    // seeder (D-131) closes the runtime-entity gap. The Playground's
-    // `<ChatPanel>` (panel + composer) renders inside `<PageState>`,
-    // which only renders children when `status === 'ready'`; the
-    // Playground page is `ready` only when the session carries chat
-    // messages. Seeding a chat history needs `user_message` /
-    // planner-run trajectory fixtures — a larger seam than registry
-    // entity seeding. Tracked in issue #178 (live-planner-run
-    // trajectory fixtures).
-    test.skip(
-      true,
-      "deferred: needs a session chat-history fixture (planner-run " +
-        "trajectory, not entity seeding) — tracked in issue #178. " +
-        "See CLAUDE.md §17.6.",
-    );
+    // Round-6 F6 — formerly skipped behind "needs a chat-history
+    // fixture", but that rationale assumed the Playground only went
+    // `ready` once the session carried messages. The actual bug was
+    // that PageState's `empty` branch hid the children entirely; the
+    // Playground page now always goes to `ready` on a successful load
+    // (`ChatPanel` owns its own "No messages yet" copy + composer),
+    // so this test runs on a vanilla fresh session — no seed needed.
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");
@@ -151,14 +143,9 @@ test.describe("Console Playground page", () => {
     runtime,
     helpers,
   }) => {
-    // §17.6 deferral — see (b). The attach control lives in the chat
-    // composer, reachable only once the Playground page is `ready`.
-    test.skip(
-      true,
-      "deferred: needs a session chat-history fixture (planner-run " +
-        "trajectory, not entity seeding) — tracked in issue #178. " +
-        "See CLAUDE.md §17.6.",
-    );
+    // Round-6 F6 — formerly skipped behind "needs a chat-history
+    // fixture"; the attach control is part of the chat composer, which
+    // now renders unconditionally on the Playground page (see (b)).
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("playground");

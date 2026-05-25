@@ -162,14 +162,27 @@
   function buildChatClient(c: ProtocolClient): ChatProtocolClient {
     return {
       async sendMessage(text, artifactIDs) {
-        // The SHIPPED Phase 54 `user_message` control verb — NO parallel
-        // chat protocol. The override (set via `runs.set_overrides`) is
-        // consumed by the runtime on this message.
-        await c.control.dispatch('user_message', sessionID, {
-          text,
-          artifact_ids: artifactIDs
+        // Round-6 F7 — the Playground V1 chat surface spawns a fresh
+        // foreground task per operator turn; session-scoped memory
+        // (D-149) carries the conversation across turns. The previous
+        // implementation called `dispatch('user_message', sessionID,
+        // ...)` which (a) treated sessionID as a taskID and (b) used
+        // the steering-verb body shape — the runtime rejected it with
+        // "no live run for the requested run id" and the chat panel
+        // could never send the first message. `user_message` mid-run
+        // injection is a V2 evolution; V1 is one-task-per-turn.
+        // TODO V2 — artifactIDs need a richer `start` payload (per-task
+        // input refs). V1 inlines them in the next-message override slot
+        // when the operator uploads via the composer attach control; the
+        // task body itself only carries `query` today.
+        void artifactIDs;
+        const resp = await c.control.start<{ task_id: string }>(text, {
+          description: `Playground turn · ${activeAgent}`
         });
-        return { taskID: sessionID };
+        // The runtime answers asynchronously over the event stream;
+        // the page tracks the task id so subsequent steering (cancel /
+        // approve / reject) targets the right run.
+        return { taskID: resp.task_id };
       },
       async setOverrides(overrides) {
         const payload: Record<string, unknown> = { session_id: sessionID };
@@ -212,11 +225,13 @@
         await c.control.dispatch('cancel', sessionID, { hard });
       },
       async restartRun() {
-        await c.control.dispatch('start', '', {
-          query: '',
+        // Round-6 F7 — same shape correction as sendMessage. `start` is
+        // not a steering verb; the typed `control.start` method ships
+        // the correct `{identity:triple, task:{query,kind}}` shape.
+        const resp = await c.control.start<{ task_id: string }>('', {
           description: `Playground restart · ${activeAgent}`
         });
-        return { taskID: sessionID };
+        return { taskID: resp.task_id };
       },
       async approveIntervention(runID) {
         await c.control.dispatch('approve', runID);
@@ -247,22 +262,29 @@
       // initial load proves the connection + Protocol surface are live
       // by fetching the topology snapshot (also feeds the trace toggle).
       await client.topology.snapshot<TopologyProjection>();
-      status = messages.length === 0 ? 'empty' : 'ready';
+      // Round-6 F6 — never route the Playground main column through
+      // PageState's `empty` branch. `<ChatPanel>` already renders its
+      // own "No messages yet" copy AND the composer below it. Going
+      // through PageState `empty` would hide the composer entirely
+      // (PageState renders snippets OR children, never both — see
+      // PageState.svelte CONVENTIONS.md §4 state 5), leaving the
+      // operator stranded on a "Send a message below" message with no
+      // input to send from.
+      status = 'ready';
     } catch (err) {
       // Phase 83w-F5 / D-164 — `topology.snapshot` returning
       // `unknown_method` is not an error: this Runtime is planner/
       // RunLoop-shaped and has no engine graph. The chat surface still
-      // works, so the page proceeds to its empty/ready state — the
-      // trace toggle is the surface that now surfaces the friendly
-      // "no topology" message when the operator toggles it on (see
-      // toggleTrace below).
+      // works, so the page proceeds to ready — the trace toggle is the
+      // surface that now surfaces the friendly "no topology" message
+      // when the operator toggles it on (see toggleTrace below).
       if (isUnknownMethod(err)) {
         pageInfo = {
           headline: 'Topology view not available on this Runtime',
           detail:
             'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
         };
-        status = messages.length === 0 ? 'empty' : 'ready';
+        status = 'ready';
       } else {
         pageError = toError(err);
         status = 'error';
@@ -372,7 +394,10 @@
       await chatClient.restartRun();
       messages = [];
       running = true;
-      status = 'empty';
+      // Round-6 F6 — keep status === 'ready' so ChatPanel renders the
+      // composer; ChatPanel owns the "No messages yet" copy on an
+      // empty stream.
+      status = 'ready';
     } catch (err) {
       const e = toError(err);
       messages = [
