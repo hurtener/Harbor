@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	stderrors "errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -534,4 +535,97 @@ func assertPostureCode(t *testing.T, err error, want protoerrors.Code) {
 	if perr.Code != want {
 		t.Fatalf("error code = %q, want %q (message: %s)", perr.Code, want, perr.Message)
 	}
+}
+
+// TestPostureSurface_Info_WiredCapabilities — round-8 F1 / phase 84a:
+// `runtime.info.capabilities` is the per-instance wired subset of the
+// canonical Protocol capability set. Always-on surfaces (task control,
+// events subscribe, runtime posture) appear unconditionally;
+// `topology_snapshot` appears iff the runtime advertised
+// `PostureDeps.TopologyAvailable=true`. The ordering is
+// lexicographic — pinned so the wire shape is deterministic across
+// future capability additions.
+func TestPostureSurface_Info_WiredCapabilities(t *testing.T) {
+	t.Parallel()
+
+	mkSurface := func(t *testing.T, topology bool) *protocol.PostureSurface {
+		t.Helper()
+		deps := protocol.PostureDeps{
+			Build:    types.RuntimeInfo{BuildVersion: "v0", BuildGoVersion: "go1.26"},
+			Clock:    fixedClock,
+			BootedAt: fixedClock(),
+			Health: func(_ context.Context) []types.SubsystemHealth {
+				return nil
+			},
+			Counters: func(_ context.Context, _ identity.Identity) types.RuntimeCounters {
+				return types.RuntimeCounters{}
+			},
+			Drivers: func() []types.SubsystemDriver { return nil },
+			Metrics: func(_ context.Context) types.MetricsSnapshot {
+				return types.MetricsSnapshot{}
+			},
+			Governance:        newPostureGovernance(),
+			LLM:               newPostureLLM(),
+			Redactor:          patterns.New(),
+			Bus:               newPostureBus(t),
+			DisplayName:       "wired-caps-test",
+			InstanceID:        "inst-wired-001",
+			TopologyAvailable: topology,
+		}
+		s, err := protocol.NewPostureSurface(deps)
+		if err != nil {
+			t.Fatalf("NewPostureSurface: %v", err)
+		}
+		return s
+	}
+
+	dispatch := func(t *testing.T, s *protocol.PostureSurface) *types.RuntimeInfo {
+		t.Helper()
+		ctx, _ := identity.With(context.Background(), identity.Identity{
+			TenantID:  "tenant-a",
+			UserID:    "user-1",
+			SessionID: "session-x",
+		})
+		resp, err := s.Dispatch(ctx, methods.MethodRuntimeInfo, validRequest())
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		ri, ok := resp.(*types.RuntimeInfo)
+		if !ok {
+			t.Fatalf("resp type = %T, want *RuntimeInfo", resp)
+		}
+		return ri
+	}
+
+	t.Run("topology-disabled-omits-cap", func(t *testing.T) {
+		t.Parallel()
+		ri := dispatch(t, mkSurface(t, false))
+		want := []types.Capability{
+			types.CapEventsSubscribe,
+			types.CapRuntimePosture,
+			types.CapTaskControl,
+		}
+		if !reflect.DeepEqual(ri.Capabilities, want) {
+			t.Fatalf("capabilities = %v, want %v", ri.Capabilities, want)
+		}
+		for _, c := range ri.Capabilities {
+			if c == types.CapTopologySnapshot {
+				t.Fatalf("topology_snapshot leaked into capabilities when TopologyAvailable=false")
+			}
+		}
+	})
+
+	t.Run("topology-enabled-includes-cap-lexicographically", func(t *testing.T) {
+		t.Parallel()
+		ri := dispatch(t, mkSurface(t, true))
+		want := []types.Capability{
+			types.CapEventsSubscribe,
+			types.CapRuntimePosture,
+			types.CapTaskControl,
+			types.CapTopologySnapshot,
+		}
+		if !reflect.DeepEqual(ri.Capabilities, want) {
+			t.Fatalf("capabilities = %v, want %v", ri.Capabilities, want)
+		}
+	})
 }

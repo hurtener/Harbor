@@ -147,7 +147,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 83w| Wire-surface gaps — friendly unknown_method info banner (F5) + mcp.servers.list (F6) | web/console + cmd/harbor + mcpconsole | §5, §6.4, §7 | 83g, 83m, 73k | n/a | Shipped |
 | 83x| Real-data layout polish — W4-W11 + N11-N14 (incl. W6 created_at + W8 session-row Go fixes) | web/console + cmd/harbor + internal/protocol/artifacts | §5, §6.4, §6.6, §6.10, §6.13 | 73m, 73p, 83i, 83m | n/a | Shipped |
 | 84 | Reflection / critique loop                    | planner              | §12         | 45                    | n/a  | Post-V1  |
-| 84a| Runtime-capability gate + session aggregates (round-8 F1+F8 closeout) | internal/protocol + web/console | §5.3, §6.4, §7 | 72f, 73c, 73d, 72b, 83w | 90% | Pending (V1.1) |
+| 84a| Runtime-capability gate + session aggregates (round-8 F1+F8 closeout) | internal/protocol + web/console | §5.3, §6.4, §7 | 72f, 73c, 73d, 72b, 83w | 90% | Shipped |
 | 84b| Bifrost extended multimodal (full SDK surface + streaming) — V1.3 | llm/drivers/bifrost + planner | §6.5, §11Q3 | 84a, 28, 32, 49, F11/D-166 | 88% | Pending (V1.3) |
 | 85a| MCP client core-compliance fixes              | tools/mcp            | §6.4        | 28                    | 85%  | Post-V1  |
 | 85b| MCP HTTP OAuth (RFC 9728 + 8707 + step-up)    | tools/mcp+auth       | §6.4, §3.3  | 28, 30, 50            | 85%  | Post-V1  |

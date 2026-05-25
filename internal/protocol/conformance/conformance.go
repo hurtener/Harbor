@@ -1607,17 +1607,20 @@ func runVersionHandshake(t *testing.T) {
 	}
 	caps := types.Capabilities()
 	// Phase 54 task-control + Wave 13 streaming-events + Phase 72f
-	// runtime-posture = 3 capabilities at Protocol 0.1.0. (The
-	// capability constants live in internal/protocol/types/version.go;
-	// a new capability is a new constant + a new entry in
-	// canonicalCapabilities.)
-	if len(caps) != 3 {
-		t.Fatalf("types.Capabilities() returned %d entries, expected 3 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture) at Protocol 0.1.0", len(caps))
+	// runtime-posture + phase 84a topology-snapshot = 4 capabilities
+	// at Protocol 0.1.0. (The capability constants live in
+	// internal/protocol/types/version.go; a new capability is a new
+	// constant + a new entry in canonicalCapabilities. Phase 84a / F1
+	// — `topology_snapshot` is in the canonical *registry*; per-instance
+	// advertisement is conditional via `PostureDeps.TopologyAvailable`.)
+	if len(caps) != 4 {
+		t.Fatalf("types.Capabilities() returned %d entries, expected 4 (CapTaskControl + CapEventsSubscribe + CapRuntimePosture + CapTopologySnapshot) at Protocol 0.1.0", len(caps))
 	}
 	wantCaps := map[types.Capability]struct{}{
-		types.CapTaskControl:     {},
-		types.CapEventsSubscribe: {},
-		types.CapRuntimePosture:  {},
+		types.CapTaskControl:      {},
+		types.CapEventsSubscribe:  {},
+		types.CapRuntimePosture:   {},
+		types.CapTopologySnapshot: {},
 	}
 	for _, c := range caps {
 		if _, ok := wantCaps[c]; !ok {
@@ -1640,6 +1643,9 @@ func runVersionHandshake(t *testing.T) {
 	}
 	if !h.Accepts(types.CapRuntimePosture) {
 		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the Wave 13 runtime-posture surface (Phase 72f) must be advertised")
+	}
+	if !h.Accepts(types.CapTopologySnapshot) {
+		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the Phase 74 topology-snapshot surface must appear in the canonical capability set (per-instance advertisement is conditional, but the handshake universe is unconditional)")
 	}
 
 	// The deprecation registry is empty at 0.1.0 — nothing has been

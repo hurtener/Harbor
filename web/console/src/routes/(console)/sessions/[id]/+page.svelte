@@ -51,8 +51,8 @@
 
   // ---- Connection + typed client (CONVENTIONS.md §6) ----
   const connection = resolveConnection();
-  const sessionsClient =
-    connection !== null ? new SessionsProtocol(new HarborClient({ connection })) : null;
+  const harborClient = connection !== null ? new HarborClient({ connection }) : null;
+  const sessionsClient = harborClient !== null ? new SessionsProtocol(harborClient) : null;
 
   const sessionID = $derived(page.params.id ?? '');
 
@@ -76,6 +76,16 @@
     loadError = null;
     try {
       snapshot = await sessionsClient.inspect(sessionID);
+      // Round-8 F8 / phase 84a — D-122 compliance: `sessions.inspect`
+      // returns zero for `tasks_count` / `events_count` / `total_cost_cents`
+      // / `total_tokens` by design (the registry doesn't model
+      // aggregates; the Console enriches from events). Fetch the
+      // per-session counters from the SHIPPED `tasks.list` +
+      // `events.aggregate` wires and merge into the snapshot. A
+      // failure on the enrichment leg leaves the wire's zeros in
+      // place rather than dropping the whole page — defensive: the
+      // operator still sees the session row.
+      await enrichSessionCounters();
       status = 'ready';
     } catch (err) {
       snapshot = null;
@@ -84,6 +94,71 @@
           ? err
           : new ProtocolError('runtime_error', String(err), 0);
       status = 'error';
+    }
+  }
+
+  /**
+   * Round-8 F8 / phase 84a — Console-side counter enrichment. After
+   * `sessions.inspect` returns, fold in:
+   *   - `tasks_count` from `tasks.list` filtered locally by the session id
+   *   - `events_count` from `events.aggregate` (sum of all event-type
+   *     bucket counts over a 30d window)
+   *
+   * `total_tokens` + `total_cost_cents` stay at the wire zero in V1.1
+   * — the existing `events.aggregate` only counts events by type and
+   * doesn't unpack `llm.cost.recorded` payload numerics. A
+   * dedicated `cost.aggregate` wire method (or an enriched
+   * `events.aggregate` that sums payload fields) is the V1.3
+   * evolution; phase 84b's scope (bifrost extended multimodal +
+   * adjacent observability) is the natural home. Leaving these zero
+   * is honest about what we can compute today; a TODO marker on the
+   * Sessions table calls out the V1.3 gap.
+   *
+   * D-122 stays intact: `sessions.inspect` remains a pure registry
+   * projection; the Console computes.
+   */
+  async function enrichSessionCounters(): Promise<void> {
+    if (harborClient === null || snapshot === null) return;
+    try {
+      const taskResp = await harborClient.tasks.list<{
+        rows: Array<{ identity: { session: string } }>;
+      }>({});
+      const tasks = (taskResp.rows ?? []).filter(
+        (r) => r.identity?.session === sessionID
+      );
+      snapshot = {
+        ...snapshot,
+        row: { ...snapshot.row, tasks_count: tasks.length }
+      };
+    } catch {
+      // Enrichment is best-effort; leave the wire zero on failure.
+    }
+    try {
+      // 30-day rolling window — bounded so an idle session doesn't
+      // walk an unbounded history. `bucket = window` gives one
+      // bucket spanning the whole window (sum across all event
+      // types). The aggregate is a single round-trip; never
+      // iterate per event.
+      const thirtyDaysNS = 30 * 24 * 60 * 60 * 1_000_000_000;
+      const evtResp = await harborClient.events.aggregate({
+        filter: { session_ids: [sessionID] },
+        window: thirtyDaysNS,
+        bucket: thirtyDaysNS
+      });
+      let totalEvents = 0;
+      for (const b of evtResp.buckets ?? []) {
+        for (const v of Object.values(b.counts ?? {})) {
+          totalEvents += v ?? 0;
+        }
+      }
+      if (snapshot !== null) {
+        snapshot = {
+          ...snapshot,
+          row: { ...snapshot.row, events_count: totalEvents }
+        };
+      }
+    } catch {
+      // Same best-effort posture as the tasks leg.
     }
   }
 
