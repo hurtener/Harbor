@@ -159,6 +159,28 @@
   // HarborClient and injects it into <ChatPanel>. The chat module
   // depends ONLY on this interface — it never touches HarborClient,
   // connection.ts, or fetch directly (CLAUDE.md §4.5 #11).
+  // Round-7 F12 — Bytes go to the artifact store base64-encoded per the
+  // wire shape (`ArtifactsPutRequest.Bytes` is `[]byte` on the Go side,
+  // JSON-encoded as a base64 string). The browser's `FileReader.readAsDataURL`
+  // yields a `data:<mime>;base64,<payload>` URL; we strip the prefix to
+  // get the raw base64 the server expects.
+  async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('FileReader error'));
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== 'string') {
+          reject(new Error('FileReader did not return a string'));
+          return;
+        }
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   function buildChatClient(c: ProtocolClient): ChatProtocolClient {
     return {
       async sendMessage(text, artifactIDs, mode) {
@@ -237,18 +259,38 @@
         await c.runs.setOverrides(payload);
       },
       async uploadArtifact(file) {
-        // `artifacts.put` — the Console upload pipeline. Heavy bytes go
-        // to the artifact store; the chat carries only the reference.
-        const resp = await c.artifacts.put<{ id: string }>({
-          filename: file.name,
-          mime: file.type || 'application/octet-stream',
-          size_bytes: file.size
+        // Round-7 F12 — the prior implementation shipped a flat
+        // `{filename, mime, size_bytes}` body and read `resp.id`. The
+        // wire's `ArtifactsPutRequest` actually expects
+        // `{scope, bytes, opts:{mime_type, filename}}` and returns
+        // `{ref:{id, mime_type, ...}, protocol_version}`. The result:
+        // the chat-attach flow always produced empty artifact ids
+        // (`InputArtifactIDs: ['']` on the spawned task) and the
+        // bytes never reached the store. Wire-shape correction here.
+        const bytesB64 = await fileToBase64(file);
+        const mime = file.type || 'application/octet-stream';
+        const resp = await c.artifacts.put<{
+          ref: { id: string; mime_type: string; size_bytes: number };
+        }>({
+          scope: {
+            TenantID: connection!.identity.tenant,
+            UserID: connection!.identity.user,
+            SessionID: connection!.identity.session
+          },
+          bytes: bytesB64,
+          opts: {
+            mime_type: mime,
+            filename: file.name
+          }
         });
+        if (!resp.ref || !resp.ref.id) {
+          throw new Error('artifacts.put returned no ref id');
+        }
         return {
-          id: resp.id,
-          mime: file.type || 'application/octet-stream',
+          id: resp.ref.id,
+          mime: resp.ref.mime_type || mime,
           filename: file.name,
-          sizeBytes: file.size
+          sizeBytes: resp.ref.size_bytes ?? file.size
         };
       },
       async resolveArtifact(id) {
