@@ -168,8 +168,11 @@ func buildPostureSurface(t *testing.T, stack *devstack.DevStack, metricsReg *tel
 		},
 		// PRODUCTION seam — reads the devstack's live task registry. The
 		// devstack assembles no session registry, so SessionLister is
-		// nil (SessionsActive then honestly reports 0).
-		Counters: runtimeposture.CountersProvider(stack.Tasks, nil),
+		// nil (SessionsActive then honestly reports 0). The MCP
+		// registry is passed through (it is nil when the fixture cfg
+		// has no MCP servers — MCPConnectionsHealthy then honestly
+		// reports 0; round-5 fix).
+		Counters: runtimeposture.CountersProvider(stack.Tasks, nil, stack.MCPRegistry),
 		Drivers: func() []types.SubsystemDriver {
 			return []types.SubsystemDriver{
 				{Subsystem: "state", Driver: cfg.State.Driver},

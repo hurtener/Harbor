@@ -90,6 +90,18 @@ type EventBucket struct {
 // identity-scope rules apply (a cross-tenant aggregate is gated on the
 // `auth.ScopeAdmin` OR `auth.ScopeConsoleFleet` claim per D-079).
 type EventAggregateRequest struct {
+	// Identity is the (tenant, user, session) scope envelope every
+	// Protocol client carries on the body. The aggregate handler pulls
+	// the authoritative identity from the JWT / X-Harbor-* edge headers
+	// (RFC §5.5) — this field is shape-only, declared so the body
+	// decode's `DisallowUnknownFields` accepts the Console's standard
+	// payload shape (`Transport.request` auto-injects `identity` on
+	// every request body). Optional in the wire schema; ignored by the
+	// handler. Round-5 walkthrough fix — pre-fix the request was the
+	// only typed request shape on the Console-facing surface that
+	// REFUSED the identity envelope, breaking every Events page
+	// `events.aggregate` call cross-origin.
+	Identity IdentityScope `json:"identity,omitempty"`
 	// Filter narrows the events the aggregator counts. The empty filter
 	// (zero EventFilter) is interpreted as "every event in the caller's
 	// own identity tuple" (per the EventFilter godoc).
