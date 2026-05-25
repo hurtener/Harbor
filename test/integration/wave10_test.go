@@ -335,9 +335,18 @@ func TestE2E_Wave10_VersionHandshake_ContractStable(t *testing.T) {
 	if !h.Accepts(types.CapRuntimePosture) {
 		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the Wave 13 runtime-posture surface (Phase 72f) must be advertised")
 	}
+	// Phase 84a / round-8 F1 added the topology-snapshot capability to
+	// the canonical registry (per-instance advertisement is conditional
+	// via PostureDeps.TopologyAvailable, but the handshake universe is
+	// unconditional). A future surface addition continues to extend
+	// this — adding a capability is a §17.6 paired update with this
+	// pin.
+	if !h.Accepts(types.CapTopologySnapshot) {
+		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the Phase 74 topology-snapshot surface (phase 84a) must appear in the canonical capability set")
+	}
 	caps := h.Capabilities
-	if len(caps) != 3 {
-		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture}", caps)
+	if len(caps) != 4 {
+		t.Fatalf("handshake.Capabilities = %v, want exactly {task_control, events_subscribe, runtime_posture, topology_snapshot}", caps)
 	}
 	deps := types.Deprecations()
 	if len(deps) != 0 {

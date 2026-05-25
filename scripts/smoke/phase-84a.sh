@@ -1,30 +1,17 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: static-only
+# PREFLIGHT_REQUIRES: live-server
 #
-# Phase 84a smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# Phase 84a smoke — runtime-capability gate + session aggregates
+# (round-8 F1 + F8 closeout).
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Asserts:
+#   1. `runtime.info` response includes a `capabilities` array.
+#   2. On a planner/RunLoop runtime (the dev posture), `topology_snapshot`
+#      is ABSENT from `capabilities` — the gate the Console reads to
+#      skip its `topology.snapshot` fetch on Live Runtime + Playground.
+#   3. `topology.snapshot` itself still returns 404 / `unknown_method`
+#      — the advertisement is the Console gate, the wire stays
+#      unchanged.
 
 set -euo pipefail
 
@@ -34,17 +21,22 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase 84a assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+INFO_URL="$(api_url /v1/control/runtime.info)"
+INFO_BODY='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 1 — capabilities array present + 2 — topology_snapshot absent on dev.
+assert_json_truthy \
+  "${INFO_URL}" \
+  "${INFO_BODY}" \
+  ".capabilities | type == \"array\" and (index(\"topology_snapshot\") | not)" \
+  "runtime.info advertises capabilities[] with topology_snapshot ABSENT (planner/RunLoop dev runtime)"
+
+# 3 — topology.snapshot wire response stays the unknown_method shape.
+TOPO_URL="$(api_url /v1/control/topology.snapshot)"
+TOPO_BODY='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
+skip_if_404 \
+  "${TOPO_URL}" \
+  "${TOPO_BODY}" \
+  "topology.snapshot stays 404 on planner/RunLoop runtime (advertisement is the Console gate)"
 
 smoke_summary

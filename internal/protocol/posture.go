@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
@@ -80,6 +81,14 @@ type PostureSurface struct {
 	bootedAt    time.Time
 	displayName string
 	instanceID  string
+	// wiredCaps is the per-instance subset of canonical Protocol
+	// capabilities this Runtime actually wires (Phase 84a F1 / round-8).
+	// `handleInfo` projects it as `RuntimeInfo.Capabilities`. The
+	// always-on capabilities (task_control, events_subscribe,
+	// runtime_posture) are added at construction; conditional ones
+	// (currently `topology_snapshot`) come in via the matching deps flag.
+	// Sorted lexicographically so the wire shape is deterministic.
+	wiredCaps []types.Capability
 }
 
 // PostureDeps bundles the runtime-side seams a PostureSurface reads
@@ -136,6 +145,16 @@ type PostureDeps struct {
 	// boot. Mandatory — a Console attached to multiple Runtimes keys
 	// each attachment by it.
 	InstanceID string
+	// TopologyAvailable indicates this Runtime hosts an engine-graph
+	// projection — when true, `runtime.info.capabilities` advertises
+	// `topology_snapshot` so Protocol clients gate their topology
+	// fetches at attach time (round-8 F1 / phase 84a). The
+	// `topology.snapshot` method itself stays gated by the matching
+	// `ControlSurface.topology` accessor; this flag is the *advertised*
+	// projection of that wiring decision. Optional — defaults false
+	// (planner/RunLoop runtimes like `harbor dev` against an agent
+	// yaml).
+	TopologyAvailable bool
 }
 
 // ErrPostureMisconfigured — NewPostureSurface was called with a missing
@@ -198,7 +217,28 @@ func NewPostureSurface(deps PostureDeps) (*PostureSurface, error) {
 		bootedAt:    bootedAt,
 		displayName: deps.DisplayName,
 		instanceID:  deps.InstanceID,
+		wiredCaps:   wiredCapabilitiesFor(deps.TopologyAvailable),
 	}, nil
+}
+
+// wiredCapabilitiesFor returns the lexicographically-sorted subset of
+// canonical Protocol capabilities this Runtime instance has actually
+// wired. Always-on surfaces (task control, events subscribe, runtime
+// posture) are unconditional in the dev binary; conditional ones come
+// in via the matching deps flag (round-8 F1 / phase 84a). Adding a new
+// conditional capability extends this function in tandem with the
+// matching `PostureDeps` field — pure projection, no global state.
+func wiredCapabilitiesFor(topologyAvailable bool) []types.Capability {
+	caps := []types.Capability{
+		types.CapTaskControl,
+		types.CapEventsSubscribe,
+		types.CapRuntimePosture,
+	}
+	if topologyAvailable {
+		caps = append(caps, types.CapTopologySnapshot)
+	}
+	sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
+	return caps
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
@@ -301,7 +341,12 @@ func (s *PostureSurface) handleInfo() *types.RuntimeInfo {
 	out.InstanceID = s.instanceID
 	out.DisplayName = s.displayName
 	out.ProtocolVersion = types.ProtocolVersion
-	out.Capabilities = types.Capabilities()
+	// Per-instance wired subset (round-8 F1 / phase 84a). Conditional
+	// surfaces (currently `topology_snapshot`) appear here only when
+	// the matching seam was wired at construction; the static
+	// `types.Capabilities()` is the handshake/registry surface, not
+	// the per-instance advertisement.
+	out.Capabilities = append([]types.Capability(nil), s.wiredCaps...)
 	uptime := s.clock().Sub(s.bootedAt)
 	if uptime < 0 {
 		uptime = 0
