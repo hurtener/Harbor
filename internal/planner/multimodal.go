@@ -1,5 +1,4 @@
-// Package planner — multimodal first-turn materialization (Round-7 F11
-// / D-166).
+// Multimodal first-turn materialization (Round-7 F11 / D-166).
 //
 // The Playground composer's chat-attach control uploads files via
 // `artifacts.put` and the operator clicks Send. The runtime carries
@@ -34,7 +33,6 @@
 // register an audio.transcribe tool with `HandlesMIME: ["audio/*"]`
 // once and the LLM gets an explicit "use this tool for this ref"
 // hint — no LLM-side guesswork.
-
 package planner
 
 import (
