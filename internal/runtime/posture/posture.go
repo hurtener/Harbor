@@ -15,11 +15,11 @@
 // fixture cannot drift from production.
 //
 // Counters reads the task registry's per-identity running / background
-// task counts and the session registry's active-session count.
-// EventsPerSecond and MCPConnectionsHealthy stay zero — the runtime
-// exposes no bus-rate meter or MCP health roll-up at V1; reporting zero
-// for a counter the runtime genuinely cannot measure is honest, not a
-// silent degradation of a known value.
+// task counts, the session registry's active-session count, and (when
+// supplied) the MCP registry's healthy-server count. EventsPerSecond
+// stays zero — the runtime exposes no bus-rate meter at V1; reporting
+// zero for a counter the runtime genuinely cannot measure is honest,
+// not a silent degradation of a known value.
 //
 // Metrics projects the Phase 56 telemetry.MetricsRegistry's bus-fed
 // counter snapshot onto the Protocol-shaped `types.MetricsSnapshot`.
@@ -35,21 +35,31 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
+	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
 )
 
 // CountersProvider returns a `protocol.PostureDeps.Counters` seam that
 // reads live runtime state. taskReg supplies the running / background
 // task counts for the caller's session; lister supplies the
-// active-session count scoped to the requested identity's tenant.
+// active-session count scoped to the requested identity's tenant;
+// mcpReg supplies the healthy-MCP-connection count (server-wide, not
+// per-identity — MCP servers are a runtime-shared resource).
 //
 // The returned func never panics: a registry read error degrades that
 // one counter to its zero value while the others still report — a
 // posture read is a best-effort observability snapshot, never a
 // load-bearing control path. A genuinely missing dependency (a nil
-// taskReg / lister) is a wiring bug the caller must catch at boot, so
-// CountersProvider returns a func that simply reports zeros for the
-// missing subsystem rather than nil-panicking on first request.
-func CountersProvider(taskReg tasks.TaskRegistry, lister sessions.SessionLister) func(context.Context, identity.Identity) types.RuntimeCounters {
+// taskReg / lister / mcpReg) is a wiring bug the caller must catch at
+// boot, so CountersProvider returns a func that simply reports zeros
+// for the missing subsystem rather than nil-panicking on first request.
+//
+// Round-5 walkthrough fix: pre-fix the MCP counter was hard-coded zero
+// (Phase 73i shipped before Phase 83w F6 wired the MCP registry into
+// the Console-facing surface). With the registry now reachable from
+// the dev boot path, threading it into CountersProvider makes the
+// Overview page's MCP CONNECTIONS pillar honest — it reports the
+// actual count of `state == Online` servers, not a placeholder zero.
+func CountersProvider(taskReg tasks.TaskRegistry, lister sessions.SessionLister, mcpReg *mcpdrv.Registry) func(context.Context, identity.Identity) types.RuntimeCounters {
 	return func(ctx context.Context, id identity.Identity) types.RuntimeCounters {
 		var c types.RuntimeCounters
 
@@ -76,6 +86,22 @@ func CountersProvider(taskReg tasks.TaskRegistry, lister sessions.SessionLister)
 			})
 			if err == nil {
 				c.SessionsActive = int64(len(snaps))
+			}
+		}
+
+		if mcpReg != nil {
+			// ListServers is identity-mandatory; the caller's identity is
+			// already in ctx via the request pipeline. The filter is
+			// empty (every server the caller can see). MCP servers are
+			// not isolation-scoped resources, but ListServers respects
+			// the identity gate, so we propagate the caller's ctx.
+			snaps, _, err := mcpReg.ListServers(ctx, mcpdrv.ListFilter{})
+			if err == nil {
+				for _, s := range snaps {
+					if s.State == mcpdrv.ServerStateOnline {
+						c.MCPConnectionsHealthy++
+					}
+				}
 			}
 		}
 

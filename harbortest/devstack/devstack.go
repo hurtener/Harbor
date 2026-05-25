@@ -935,7 +935,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			// SessionLister is nil — SessionsActive then reports 0
 			// (honest: the fixture runs no sessions), never a fabricated
 			// value. This tracks the production boot field-for-field.
-			Counters: runtimeposture.CountersProvider(taskReg, nil),
+			Counters: runtimeposture.CountersProvider(taskReg, nil, stack.MCPRegistry),
 			Drivers: func() []types.SubsystemDriver {
 				return runtimeposture.DriversFromConfig(cfg)
 			},
