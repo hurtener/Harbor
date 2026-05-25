@@ -22,7 +22,7 @@
   //     override presets via `PlaygroundSavedFilters`.
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
   import PageHeader from '$lib/components/ui/PageHeader.svelte';
   import FilterBar from '$lib/components/ui/FilterBar.svelte';
@@ -161,15 +161,43 @@
   // connection.ts, or fetch directly (CLAUDE.md §4.5 #11).
   function buildChatClient(c: ProtocolClient): ChatProtocolClient {
     return {
-      async sendMessage(text, artifactIDs) {
-        // The SHIPPED Phase 54 `user_message` control verb — NO parallel
-        // chat protocol. The override (set via `runs.set_overrides`) is
-        // consumed by the runtime on this message.
-        await c.control.dispatch('user_message', sessionID, {
-          text,
-          artifact_ids: artifactIDs
+      async sendMessage(text, artifactIDs, mode) {
+        // Round-6 F7 — the Playground V1 chat surface spawns a fresh
+        // foreground task per operator turn (no run in flight); session-
+        // scoped memory (D-149) carries the conversation across turns.
+        //
+        // Round-6 F10 — when a run is already in flight the operator
+        // picks between two paths via the composer's mode picker:
+        //   - 'steer' → inject the message into the running task via the
+        //     SHIPPED `user_message` control verb (Phase 54). The
+        //     runtime's run loop picks the message up on its next
+        //     planner turn.
+        //   - 'queue' → stash the message locally and dispatch via
+        //     `start` once the current task reaches a terminal state.
+        //     The lifecycle watcher below (subscribeTaskLifecycle)
+        //     auto-drains the queue when activeTaskID becomes null.
+        //
+        // TODO multimodal — artifactIDs need a richer wire payload
+        // (StartRequest.input_artifacts + the user_message payload
+        // gaining an `artifact_ids` slot). The runtime LLM layer already
+        // models multimodal Content.Parts; the planner first-turn
+        // assembly is the remaining seam. Tracked as the F11 follow-up.
+        void artifactIDs;
+        if (mode === 'steer' && activeTaskID !== null) {
+          await c.control.dispatch('user_message', activeTaskID, { message: text });
+          return { taskID: activeTaskID };
+        }
+        if (mode === 'queue' && activeTaskID !== null) {
+          // Stash for the lifecycle watcher to drain when the run
+          // terminates. Multiple queued sends are FIFO.
+          queuedSends = [...queuedSends, { text, artifactIDs }];
+          return { taskID: activeTaskID };
+        }
+        const resp = await c.control.start<{ task_id: string }>(text, {
+          description: `Playground turn · ${activeAgent}`
         });
-        return { taskID: sessionID };
+        activeTaskID = resp.task_id;
+        return { taskID: resp.task_id };
       },
       async setOverrides(overrides) {
         const payload: Record<string, unknown> = { session_id: sessionID };
@@ -212,11 +240,13 @@
         await c.control.dispatch('cancel', sessionID, { hard });
       },
       async restartRun() {
-        await c.control.dispatch('start', '', {
-          query: '',
+        // Round-6 F7 — same shape correction as sendMessage. `start` is
+        // not a steering verb; the typed `control.start` method ships
+        // the correct `{identity:triple, task:{query,kind}}` shape.
+        const resp = await c.control.start<{ task_id: string }>('', {
           description: `Playground restart · ${activeAgent}`
         });
-        return { taskID: sessionID };
+        return { taskID: resp.task_id };
       },
       async approveIntervention(runID) {
         await c.control.dispatch('approve', runID);
@@ -228,6 +258,108 @@
   }
 
   let chatClient = $state<ChatProtocolClient | null>(null);
+
+  /* ================================================================ */
+  /* Round-6 F10 — active-task lifecycle + queued-send drain           */
+  /* ================================================================ */
+
+  // The task id of the currently-running foreground run (null when no
+  // run is in flight). `<ChatComposer>` reads this via the `running`
+  // prop to decide whether to show the queue-vs-steer mode picker; the
+  // sendMessage adapter consults it to route the message correctly.
+  let activeTaskID = $state<string | null>(null);
+
+  // FIFO queue of "send when current run terminates" messages. The
+  // lifecycle watcher below drains the queue with `start` calls as
+  // soon as activeTaskID becomes null.
+  let queuedSends = $state<Array<{ text: string; artifactIDs: string[] }>>([]);
+
+  // Best-effort EventSource subscription for task lifecycle. Filters
+  // to the terminal task events scoped by this session's identity; the
+  // bus auto-scopes to the bearer's (tenant, user, session) so the
+  // page receives only its own session's events. The subscription is
+  // optional — if the runtime returns 404/unknown_method (a build
+  // without SSE wiring), the page degrades gracefully (the queue
+  // simply does not auto-drain; the operator can still send by
+  // pressing Send manually after the run completes).
+  let taskEvents = $state<EventSource | null>(null);
+
+  function subscribeTaskLifecycle(c: ProtocolClient): void {
+    try {
+      const url = c.events.subscribeURL({
+        eventTypes: ['task.completed', 'task.failed', 'task.cancelled']
+      });
+      const es = new EventSource(url);
+      // The bus envelope's `payload.TaskID` carries the task id for
+      // task.{spawned,started,completed,failed,cancelled} events; the
+      // top-level `run` carries the same id once the run loop is alive.
+      // Both are checked so the watcher works whether the lifecycle
+      // event lands in pre- or post-run-loop form.
+      type LifecycleEvent = {
+        type?: string;
+        run?: string;
+        payload?: { TaskID?: string };
+      };
+      const isTerminal = (t: string | undefined): boolean =>
+        t === 'task.completed' || t === 'task.failed' || t === 'task.cancelled';
+      es.addEventListener('task.completed', handleLifecycle);
+      es.addEventListener('task.failed', handleLifecycle);
+      es.addEventListener('task.cancelled', handleLifecycle);
+      es.onmessage = handleLifecycle;
+      function handleLifecycle(msg: MessageEvent): void {
+        let parsed: LifecycleEvent | null = null;
+        try {
+          parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
+        } catch {
+          return;
+        }
+        if (parsed === null) {
+          return;
+        }
+        // Default-channel onmessage may receive non-task events too;
+        // filter by event name. The named-listeners path implicitly
+        // pre-filters.
+        if (msg.type === 'message' && !isTerminal(parsed.type)) {
+          return;
+        }
+        const ranTaskID = parsed.payload?.TaskID ?? parsed.run ?? '';
+        if (ranTaskID === '' || ranTaskID !== activeTaskID) {
+          return;
+        }
+        activeTaskID = null;
+        void drainQueue();
+      }
+      es.onerror = () => {
+        // EventSource auto-reconnects on transient drops; only nullify
+        // on a permanent close to avoid resubscribe storms.
+        if (es.readyState === EventSource.CLOSED) {
+          taskEvents = null;
+        }
+      };
+      taskEvents = es;
+    } catch {
+      taskEvents = null;
+    }
+  }
+
+  async function drainQueue(): Promise<void> {
+    if (chatClient === null || queuedSends.length === 0) {
+      return;
+    }
+    const next = queuedSends[0];
+    queuedSends = queuedSends.slice(1);
+    try {
+      // The drained send replays through sendMessage so the same
+      // start-vs-steer routing applies (a queued message might land
+      // while a NEW run is already in flight — back to 'queue' it
+      // goes). The async push lands in the messages timeline via the
+      // page's existing sendMessage handler.
+      await sendMessage(next.text, next.artifactIDs);
+    } catch {
+      // Errors surface through the page's existing sendMessage error
+      // path; no retry here to avoid burying the operator's intent.
+    }
+  }
 
   /* ================================================================ */
   /* Loading                                                           */
@@ -247,22 +379,29 @@
       // initial load proves the connection + Protocol surface are live
       // by fetching the topology snapshot (also feeds the trace toggle).
       await client.topology.snapshot<TopologyProjection>();
-      status = messages.length === 0 ? 'empty' : 'ready';
+      // Round-6 F6 — never route the Playground main column through
+      // PageState's `empty` branch. `<ChatPanel>` already renders its
+      // own "No messages yet" copy AND the composer below it. Going
+      // through PageState `empty` would hide the composer entirely
+      // (PageState renders snippets OR children, never both — see
+      // PageState.svelte CONVENTIONS.md §4 state 5), leaving the
+      // operator stranded on a "Send a message below" message with no
+      // input to send from.
+      status = 'ready';
     } catch (err) {
       // Phase 83w-F5 / D-164 — `topology.snapshot` returning
       // `unknown_method` is not an error: this Runtime is planner/
       // RunLoop-shaped and has no engine graph. The chat surface still
-      // works, so the page proceeds to its empty/ready state — the
-      // trace toggle is the surface that now surfaces the friendly
-      // "no topology" message when the operator toggles it on (see
-      // toggleTrace below).
+      // works, so the page proceeds to ready — the trace toggle is the
+      // surface that now surfaces the friendly "no topology" message
+      // when the operator toggles it on (see toggleTrace below).
       if (isUnknownMethod(err)) {
         pageInfo = {
           headline: 'Topology view not available on this Runtime',
           detail:
             'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
         };
-        status = messages.length === 0 ? 'empty' : 'ready';
+        status = 'ready';
       } else {
         pageError = toError(err);
         status = 'error';
@@ -274,7 +413,11 @@
   /* Chat actions                                                      */
   /* ================================================================ */
 
-  async function sendMessage(text: string, artifactIDs: string[]): Promise<void> {
+  async function sendMessage(
+    text: string,
+    artifactIDs: string[],
+    mode?: 'queue' | 'steer'
+  ): Promise<void> {
     if (chatClient === null) {
       return;
     }
@@ -292,7 +435,7 @@
     messages = [...messages, userMsg];
     status = 'ready';
     try {
-      await chatClient.sendMessage(text, artifactIDs);
+      await chatClient.sendMessage(text, artifactIDs, mode);
       // The runtime answers asynchronously over the event stream; V1
       // surfaces an acknowledgement bubble. A live token stream is the
       // event-subscription wiring shared with the Live Runtime page.
@@ -372,7 +515,10 @@
       await chatClient.restartRun();
       messages = [];
       running = true;
-      status = 'empty';
+      // Round-6 F6 — keep status === 'ready' so ChatPanel renders the
+      // composer; ChatPanel owns the "No messages yet" copy on an
+      // empty stream.
+      status = 'ready';
     } catch (err) {
       const e = toError(err);
       messages = [
@@ -523,6 +669,7 @@
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
     chatClient = buildChatClient(client);
+    subscribeTaskLifecycle(client);
 
     void (async () => {
       try {
@@ -539,6 +686,13 @@
     })();
 
     void load();
+  });
+
+  onDestroy(() => {
+    if (taskEvents !== null) {
+      taskEvents.close();
+      taskEvents = null;
+    }
   });
 </script>
 
@@ -641,7 +795,8 @@
             messages={pagedMessages}
             client={chatClient}
             sending={sending}
-            onsend={(text, ids) => void sendMessage(text, ids)}
+            running={activeTaskID !== null}
+            onsend={(text, ids, mode) => void sendMessage(text, ids, mode)}
           />
         {/if}
       </PageState>

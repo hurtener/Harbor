@@ -152,10 +152,24 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 			return nil, fmt.Errorf("sessions: Open unmarshal: %w", uerr)
 		}
 		if stored.Closed {
+			// Reopen-after-close: still record the catalog mapping so
+			// ListSnapshots surfaces the closed row (operators audit
+			// closed sessions). Round-6 fix: P8 hydration gap — a
+			// reboot that finds an existing record in the StateStore
+			// previously returned the error without updating idIndex,
+			// leaving the Sessions page empty even when records exist.
+			r.idIndex[id] = ident
 			return nil, fmt.Errorf("%w: SessionID=%q closed at %s reason=%q",
 				ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339), stored.ClosedReason)
 		}
 		// Open record already exists for this exact triple → already open.
+		// Round-6 fix: hydrate idIndex + openSessions so the in-memory
+		// catalog reflects the persisted record. Without this, a reboot
+		// that finds an existing dev session would return the error and
+		// leave ListSnapshots reading an empty idIndex — exactly the P8
+		// symptom on the Sessions page after the first boot.
+		r.idIndex[id] = ident
+		r.openSessions[id] = q
 		return nil, fmt.Errorf("%w: SessionID=%q tenant=%q user=%q",
 			ErrSessionAlreadyOpen, id, ident.TenantID, ident.UserID)
 	}
