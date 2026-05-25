@@ -165,3 +165,36 @@ func names(ts []tools.Tool) []string {
 	}
 	return out
 }
+
+// TestTool_MatchesMIME exercises the per-MIME router round-7 F11 /
+// D-166 added to the tool descriptor. Exact-match wins; `type/*`
+// wildcard matches every subtype of `type/`; unrelated MIMEs miss.
+// Empty `HandlesMIME` slice + empty `mime` arg both return false
+// (the materializer treats "no advertised MIMEs" as "no auto-route";
+// the LLM still finds the tool via the catalog).
+func TestTool_MatchesMIME(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared []string
+		probe    string
+		want     bool
+	}{
+		{"empty-declared", nil, "image/png", false},
+		{"empty-probe", []string{"image/*"}, "", false},
+		{"exact-match", []string{"image/png", "application/pdf"}, "image/png", true},
+		{"wildcard-image-subtype", []string{"image/*"}, "image/webp", true},
+		{"wildcard-image-different-type", []string{"image/*"}, "audio/wav", false},
+		{"audio-wildcard", []string{"audio/*"}, "audio/mp3", true},
+		{"second-entry-wins", []string{"audio/*", "application/pdf"}, "application/pdf", true},
+		{"no-match", []string{"image/*", "audio/*"}, "application/json", false},
+		{"prefix-leak-rejected", []string{"image/*"}, "imageX/jpeg", false}, // not a wildcard match
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := tools.Tool{Name: "t", HandlesMIME: tc.declared}
+			if got := tool.MatchesMIME(tc.probe); got != tc.want {
+				t.Errorf("HandlesMIME=%v MIME=%q got %v want %v", tc.declared, tc.probe, got, tc.want)
+			}
+		})
+	}
+}

@@ -3939,3 +3939,49 @@ The bug is purely structural — `SettingsState.load()`'s own docstring already 
 **Findings I'm departing from.** None.
 
 **Protocol additions.** None — W6's `created_at` field already exists on `prototypes.Artifact`; the change is to populate it.
+
+---
+
+## D-166 — Round-7 F11: Playground multimodal artifact input — runtime inlines image bytes, per-MIME dispatcher routes the rest
+
+**Date:** 2026-05-25
+**Status:** Settled (shipping with round-7 F11)
+
+**Where it lives:**
+
+- **Wire types:** `internal/protocol/types/control.go::StartRequest.InputArtifactIDs` (new `[]string` field, `omitempty`); round-trip test in `internal/protocol/types/types_test.go`.
+- **Tasks subsystem:** `internal/tasks/tasks.go::SpawnRequest.InputArtifactIDs` + `tasks.Task.InputArtifactIDs` (persisted on the FSM record); `internal/tasks/drivers/inprocess/inprocess.go` folds the slice into `spawnRequestContentHash` + `spawnRequestsEqual` so idempotency keys still distinguish same-key/different-attachments correctly.
+- **Tool descriptor:** `internal/tools/tools.go::Tool.HandlesMIME` (new `[]string` field) + `Tool.MatchesMIME(mime string)` helper supporting `type/*` wildcards.
+- **Planner materialization layer:** `internal/planner/multimodal.go` — `MaterializeInputContent(goal, []InputArtifactView, ToolCatalogView) llm.Content`, the per-MIME dispatcher. `internal/planner/planner.go::RunContext.InputArtifacts` carries the pre-resolved views.
+- **ReAct integration:** `internal/planner/react/prompt.go` first-turn user message uses the materializer (replaces the unconditional `textContent(userContent)` wrap).
+- **Run loop:** `internal/runtime/steering/runloop.go` clears `spec.Base.InputArtifacts` after the first step so subsequent steps see an empty slice (no re-inlining of bytes across the run's planner loop).
+- **Pre-fetch wiring:** `cmd/harbor/cmd_dev_runloop.go::perTaskRunLoopDriver.resolveInputArtifacts` (reads `task.InputArtifactIDs`, calls `ArtifactStore.GetRef` for metadata + `Get` for image bytes); `cmd/harbor/cmd_dev.go::bootDevStack` plumbs the shared `artStore` into the driver; `harbortest/devstack/devstack.go` D-094 mirror.
+- **Console:** `web/console/src/lib/protocol/client.ts::ControlNamespace.start` gains `inputArtifactIDs?: string[]`; `web/console/src/routes/(console)/playground/[session_id]/+page.svelte::buildChatClient.sendMessage` plumbs the composer's chat-attach uploads through.
+- **Tests:** ten unit tests covering the materializer's per-MIME branches (image inline / pdf file-part / audio file-part / catch-all stub-text), nil-catalog defense, mixed-attachment ordering, empty-goal text-elision, and `handles_mime` Fetch.Tool population (`internal/planner/multimodal_test.go`); MIME-matcher test (`internal/tools/tools_test.go::TestTool_MatchesMIME`).
+
+**Decision.** When the Playground operator uploads a file alongside a chat message, the runtime materializes the multimodal `llm.Content` BEFORE handing the prompt to the planner. The per-MIME dispatcher routes:
+
+- `image/*` → `llm.ImagePart{DataURL: data:<mime>;base64,<bytes>}` — bytes inline so vision-capable providers actually see the image (Path 1 below).
+- `application/pdf` → `llm.FilePart{Artifact: &ArtifactStub{...}}` — providers with native PDF (Anthropic) translate the ref; providers without get the canonical ArtifactStub-JSON text description.
+- `audio/*` → `llm.AudioPart{Artifact: &ArtifactStub{...}}` — same graceful-degradation rule.
+- everything else → `ArtifactStub` text block on the user message — the LLM reads the stub JSON (ref + MIME + size + optional `Fetch.Tool` pointer) and routes to a matching tool via the catalog.
+
+The `Fetch.Tool` annotation on every emitted ArtifactStub is populated from the supplied `ToolCatalogView`: the first tool whose `HandlesMIME` matches the artifact's MIME wins. Operators register `audio.transcribe` once with `HandlesMIME: ["audio/*"]` and the LLM gets an explicit "use this tool for this ref" hint — no LLM-side catalog-discovery guesswork.
+
+**Three settled calls.**
+
+**1. Path 1 (runtime inlines image bytes) over Path 2 (driver-side resolution).** Path 1 keeps the LLM driver layer unchanged — bifrost's existing `translateImagePart` already forwards `ImagePart.DataURL` to the provider via its native image block. Path 2 would have required every driver to grow an `ArtifactStore` handle. The trade-off: Path 1 violates D-026 ("no inline bytes") in spirit FOR INPUTS. The carve-out is deliberate: D-026 was written for the heavy-output flood that returning a 50MB tool result inlined as text would cause; operator-uploaded inputs are explicit, single-shot, bounded by the upload size cap, and the bytes have to reach the provider one way or the other. The safety net's `materializeRequest` STILL fires when an input DataURL crosses the heavy-output threshold (32KB default) — large image inputs get rewritten back to ArtifactStub form, preserving the safety contract. The Path 1 carve-out is therefore: small inputs inline (the common case); large inputs round-trip through the existing materializer pass (graceful degradation to ref-as-text).
+
+**2. The per-MIME dispatcher lives in the planner package, not in the run loop or LLM driver.** Three reasons. (a) The planner is the unit that owns the prompt-assembly contract; routing a Content sum-type by MIME is a prompt concern. (b) The dispatcher is pure (`MaterializeInputContent` takes pre-resolved views; no I/O), so it stays inside the planner's synchronous prompt-assembly path. (c) Future planners (PlanExecute, Workflow, ...) reuse the same dispatcher; pushing it into the runloop would force per-planner duplication.
+
+**3. `HandlesMIME` is an opt-in descriptor field, not a registry mechanism.** Operators register the tool with the MIME(s) it consumes; the materializer reads the catalog at prompt-build time. No registry / no global map / no init-side hook. Wildcards are bounded (`type/*` only — no full-`*/*`, no subtype glob) so an operator typo can't accidentally claim every MIME on the planet. Empty `HandlesMIME` keeps the legacy V1 behaviour: the LLM finds the binding via the catalog description, the Fetch.Tool annotation stays nil.
+
+**The mid-run user_message gap (deliberate V1.1 scope).** The Round-6 F10 queue-vs-steer feature lets an operator inject a `user_message` mid-run. The `user_message` payload today carries only `{message: string}` — extending it to carry attachments would (a) require an addition to the steering verb's wire shape (`internal/runtime/steering/taxonomy.go`), (b) thread the artifact refs through `ControlSignals.UserMessages` (currently `[]string`), and (c) materialize on the appropriate planner turn (NOT the first turn — the carry-over is later). All three are tractable but they touch the steering inbox semantics which the V1.1 round-7 cut deliberately leaves alone. The Console's `sendMessage` throws a clear error when the operator selects 'steer' with attachments — no silent degradation.
+
+**Why now.** F11 was the deferred half of the round-6 Playground walkthrough (the F7 commit left a `TODO multimodal` marker in `sendMessage`). The user explicitly asked for it; the F10 queue-vs-steer feature shipped the composer's attach control surface; the architectural blocker (D-026 inline-bytes interpretation for inputs vs outputs) was the only design question, which Path 1 resolves cleanly.
+
+**Findings I'm departing from.** None.
+
+**Pre-existing limitation, not caused by F11.** The bifrost+OpenRouter+`anthropic/claude-haiku-4.5` vision path returns HTTP 400 from the upstream provider — the existing `bifrost/conformance_test.go::TestE2E_Bifrost_LiveSixProviderConformance/multimodal` subtest fails identically against this build, with or without F11's planner-side changes. The F11 materialization pipeline is verified correct via the unit-test branches AND by the live CSV round-trip (operator uploads `text/csv`; LLM sees the ArtifactStub correctly and responds about the attached file). Image-input via OpenRouter for the specific haiku-4.5 model is a separate provider/driver issue worth its own bug filing; image-input via a different vision-capable provider should work because the request shape is provider-canonical.
+
+**Protocol additions.** `StartRequest.InputArtifactIDs []string` (`json:"input_artifact_ids,omitempty"`) — opt-in; text-only starts elide the field from the wire body entirely (the `omitempty` tag honors the V1 wire shape).

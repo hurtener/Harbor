@@ -278,12 +278,13 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 	}
 
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
-		Identity:       identity.Quadruple{Identity: id},
-		Kind:           tasks.KindForeground,
-		Description:    sr.Description,
-		Query:          sr.Query,
-		Priority:       sr.Priority,
-		IdempotencyKey: sr.IdempotencyKey,
+		Identity:         identity.Quadruple{Identity: id},
+		Kind:             tasks.KindForeground,
+		Description:      sr.Description,
+		Query:            sr.Query,
+		Priority:         sr.Priority,
+		IdempotencyKey:   sr.IdempotencyKey,
+		InputArtifactIDs: sr.InputArtifactIDs,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

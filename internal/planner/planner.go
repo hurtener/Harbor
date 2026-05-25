@@ -174,6 +174,16 @@ type RunContext struct {
 	// LLM edge.
 	Artifacts artifacts.ArtifactStore
 
+	// InputArtifacts (Round-7 F11 / D-166) carry the operator-uploaded
+	// multimodal inputs the run consumes on its FIRST planner turn —
+	// pre-resolved by the run loop (no async I/O inside the planner).
+	// The planner's first-turn user-content builder routes each entry
+	// by MIME: `image/*` materializes as `llm.ImagePart{DataURL}` with
+	// inline base64 bytes (Path 1, D-166); everything else stays as
+	// an `ArtifactStub` the LLM routes through the tool catalog.
+	// Empty on text-only turns AND on every turn after the first.
+	InputArtifacts []InputArtifactView
+
 	// Control is the accumulated steering signals (control events
 	// observed since the last planner step). The Planner reads;
 	// the Runtime owns the inbox.
@@ -465,6 +475,37 @@ type Budget struct {
 	// D-055). Compression is a runtime concern; the planner sees only
 	// the compacted view via [RunContext.Trajectory.Summary].
 	TokenBudget int
+}
+
+// InputArtifactView is a pre-resolved multimodal input artifact the
+// planner consumes on its first turn. Round-7 F11 / D-166 — the run
+// loop reads the operator-supplied IDs from `tasks.Task.InputArtifactIDs`,
+// looks each one up in the ArtifactStore, and (for `image/*` MIMEs)
+// pre-fetches the bytes so the planner can construct `llm.ImagePart`
+// with `DataURL` inline without async I/O. For non-image MIMEs the
+// `Bytes` slot stays nil — the planner emits an `ArtifactStub` text
+// block instead, and the LLM routes to whichever tool advertises the
+// MIME via `tools.Tool.HandlesMIME`.
+//
+// The shape is intentionally narrow: the planner's prompt assembly
+// is synchronous, so every field it needs lives here. Future expansion
+// (e.g. summaries, audio waveform thumbnails) extends the struct
+// rather than reaching back into the artifact store.
+type InputArtifactView struct {
+	// ID is the content-addressed artifact identifier.
+	ID string
+	// MIME is the artifact's IANA media type. Drives the per-MIME
+	// dispatcher in the materializer.
+	MIME string
+	// SizeBytes is the artifact's byte length (metadata, not the bytes).
+	SizeBytes int64
+	// Filename is the operator-supplied original filename, if known.
+	// Surfaced to the LLM as a hint when the provider supports it.
+	Filename string
+	// Bytes is the materialized payload, populated by the run loop
+	// for `image/*` MIMEs (the Path 1 inline-bytes case). Nil for
+	// every other MIME (the LLM sees an ArtifactStub ref instead).
+	Bytes []byte
 }
 
 // PlanningNudges are caller-provided nudges the planner MAY honour.

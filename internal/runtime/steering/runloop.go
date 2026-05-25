@@ -477,6 +477,13 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// The carry-over has now been handed to the planner — clear it
 		// from the base so the NEXT step does not re-deliver it.
 		spec.Base.Control = planner.ControlSignals{}
+		// Round-7 F11 / D-166 — input artifacts attach to the FIRST
+		// planner turn only. The current step's rc copy carries them
+		// (set at run-loop wire-up time from `task.InputArtifactIDs`);
+		// clear them from the base so subsequent steps see an empty
+		// slice. Without this, every step's prompt would re-inline the
+		// uploaded image bytes — pure waste plus a context blow-up.
+		spec.Base.InputArtifacts = nil
 		if sc.goal != "" {
 			rc.Goal = sc.goal
 			// Persist the redirected goal into the run's base so a later

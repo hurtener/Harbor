@@ -147,6 +147,46 @@ type Tool struct {
 	// Policy is the reliability shell wrapping every invocation.
 	// Zero value → DefaultPolicy is applied at dispatch time.
 	Policy ToolPolicy
+	// HandlesMIME declares the MIME types this tool can consume from
+	// the artifact store (Round-7 F11 / D-166). Used by the runtime's
+	// multimodal materializer to populate `ArtifactStub.Fetch.Tool`
+	// when an operator-uploaded input artifact's MIME matches — giving
+	// the planner an explicit "use this tool for this ref" hint
+	// instead of forcing the LLM to discover the binding from the
+	// catalog. Wildcards are supported (`image/*`, `audio/*`); empty
+	// means the tool advertises no MIME affinity (the LLM still picks
+	// it from the catalog by description).
+	HandlesMIME []string
+}
+
+// MatchesMIME reports whether the tool's HandlesMIME declaration
+// covers the supplied MIME type. Wildcards on the type half are
+// supported (`image/*` matches `image/png`, `image/webp`, etc.).
+// Round-7 F11 / D-166 — used by the runtime materializer when
+// populating `ArtifactStub.Fetch.Tool`.
+func (t Tool) MatchesMIME(mime string) bool {
+	if mime == "" {
+		return false
+	}
+	for _, candidate := range t.HandlesMIME {
+		if candidate == "" {
+			continue
+		}
+		if candidate == mime {
+			return true
+		}
+		// Wildcard: only `type/*` is supported (no full-wildcard `*/*`
+		// or sub-type wildcards — keep the matcher predictable so
+		// operator-declared MIMEs don't accidentally route to the
+		// wrong tool).
+		if len(candidate) > 2 && candidate[len(candidate)-2:] == "/*" {
+			prefix := candidate[:len(candidate)-1] // keep the trailing slash
+			if len(mime) > len(prefix) && mime[:len(prefix)] == prefix {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ToolResult is the canonical result type returned by every

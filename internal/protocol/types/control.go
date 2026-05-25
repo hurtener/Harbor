@@ -107,6 +107,14 @@ type StartRequest struct {
 	// `start` with the same key (namespaced by session) returns the
 	// existing task handle with Reused=true. Empty disables dedup.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// InputArtifactIDs (Round-7 F11 / D-166) attach operator-uploaded
+	// artifacts as multimodal inputs the run consumes on its first
+	// planner turn. The runtime's per-MIME materializer routes each
+	// id: `image/*` bytes inline as `ImagePart.DataURL`; everything
+	// else stays an `ArtifactStub` the LLM routes through the tool
+	// catalog. The Playground composer's chat-attach control plumbs
+	// uploaded ids through this field. Empty is the text-only default.
+	InputArtifactIDs []string `json:"input_artifact_ids,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

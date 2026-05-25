@@ -819,6 +819,12 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// granted-scopes plumb-through so the devstack's
 				// catalog view sees the same operator-declared scopes.
 				grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
+				// Round-7 F11 / D-166 — D-094 mirror of the production
+				// cmd_dev wiring. The devstack's artifact store is the
+				// same shared instance the executor consumes; the
+				// runloop driver reuses it for multimodal input
+				// materialization.
+				artifactStore: stack.Artifacts,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1232,6 +1238,9 @@ type DevStackRunLoopDriver struct {
 	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
 	grantedScopes []string
 
+	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
+	artifactStore artifacts.ArtifactStore
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1265,6 +1274,9 @@ type devStackRunLoopDriverOpts struct {
 
 	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
 	grantedScopes []string
+
+	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
+	artifactStore artifacts.ArtifactStore
 }
 
 const devStackRuntimeSkillsContextMaxDefault = 5
@@ -1300,6 +1312,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		executor:         opts.executor,
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
+		artifactStore:    opts.artifactStore,
 	}, nil
 }
 
@@ -1504,6 +1517,10 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return nil
 	}
 
+	// Round-7 F11 / D-166 — mirror of the production cmd_dev wiring:
+	// resolve operator-uploaded input artifacts for the first turn.
+	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
@@ -1516,6 +1533,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			PlanningHints:  d.planningHints,
 			Catalog:        catalogView,
 			Trajectory:     traj,
+			InputArtifacts: inputArtifacts,
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,
@@ -1567,6 +1585,62 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			slog.String("task_id", string(taskID)),
 			slog.String("err", mErr.Error()))
 	}
+}
+
+// resolveInputArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go` —
+// pre-fetches metadata (+ bytes for `image/*`) for every operator-
+// uploaded artifact ID on a task, producing the `planner.InputArtifactView`
+// slice the run loop hands to the planner's first turn. Round-7
+// F11 / D-166 — D-094 mirror of the production resolver.
+func (d *DevStackRunLoopDriver) resolveInputArtifacts(
+	ctx context.Context, q identity.Quadruple, ids []string,
+) []planner.InputArtifactView {
+	if len(ids) == 0 {
+		return nil
+	}
+	if d.artifactStore == nil {
+		if d.logger != nil {
+			d.logger.Warn("devstack RunLoop driver: input artifacts ignored — no artifact store wired",
+				slog.String("run_id", q.RunID),
+				slog.Int("count", len(ids)))
+		}
+		return nil
+	}
+	scope := artifacts.ArtifactScope{
+		TenantID:  q.TenantID,
+		UserID:    q.UserID,
+		SessionID: q.SessionID,
+	}
+	out := make([]planner.InputArtifactView, 0, len(ids))
+	for _, id := range ids {
+		ref, found, gerr := d.artifactStore.GetRef(ctx, scope, id)
+		if gerr != nil || !found || ref == nil {
+			if d.logger != nil {
+				d.logger.Warn("devstack RunLoop driver: artifact GetRef miss; skipping",
+					slog.String("run_id", q.RunID),
+					slog.String("artifact_id", id))
+			}
+			continue
+		}
+		view := planner.InputArtifactView{
+			ID:        ref.ID,
+			MIME:      ref.MimeType,
+			SizeBytes: ref.SizeBytes,
+			Filename:  ref.Filename,
+		}
+		if strings.HasPrefix(ref.MimeType, "image/") {
+			bytesPayload, getFound, berr := d.artifactStore.Get(ctx, scope, id)
+			if berr == nil && getFound && len(bytesPayload) > 0 {
+				view.Bytes = bytesPayload
+			} else if d.logger != nil {
+				d.logger.Warn("devstack RunLoop driver: image bytes missing; ref-only fallback",
+					slog.String("run_id", q.RunID),
+					slog.String("artifact_id", id))
+			}
+		}
+		out = append(out, view)
+	}
+	return out
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {
