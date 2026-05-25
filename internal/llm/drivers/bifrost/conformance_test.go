@@ -236,16 +236,20 @@ func runLiveCancel(t *testing.T, client llm.LLMClient, model string) {
 func runLiveMultimodal(t *testing.T, client llm.LLMClient, model string) {
 	t.Helper()
 	ctx := liveCtx(t, "multimodal")
-	// A 1×1 transparent PNG (tiny, well under heavy-output threshold).
-	tinyPNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
-	text := "Describe the colour of this 1x1 pixel image briefly."
+	// A 64×64 solid red PNG — large enough for every vision provider
+	// (OpenAI's image API rejects pixels < 4×4 with a generic
+	// "image data is not a valid image" error that's easy to mistake
+	// for a wire-shape bug). 132 bytes raw → ~176 b64; well under
+	// the heavy-output threshold.
+	redPNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PQQkAAAgAsetfWiP4FgYrsKZeS0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDgsqnc8OJg6Ln3AAAAAElFTkSuQmCC"
+	text := "What colour is this image? Answer in one or two words."
 	resp, err := client.Complete(ctx, llm.CompleteRequest{
 		Model: model,
 		Messages: []llm.ChatMessage{
 			{Role: llm.RoleUser, Content: llm.Content{
 				Parts: []llm.ContentPart{
 					{Type: llm.PartText, Text: text},
-					{Type: llm.PartImage, Image: &llm.ImagePart{DataURL: tinyPNG, MIME: "image/png"}},
+					{Type: llm.PartImage, Image: &llm.ImagePart{DataURL: redPNG, MIME: "image/png"}},
 				},
 			}},
 		},
