@@ -16,9 +16,9 @@
       <div><dt>Output</dt><dd>{detail.cost.output_tokens}</dd></div>
       <div><dt>USD</dt><dd>${detail.cost.usd.toFixed(4)}</dd></div>
     </dl>
-    {#if detail.cost.per_step.length > 0}
+    {#if (detail.cost.per_step?.length ?? 0) > 0}
       <ul class="steps">
-        {#each detail.cost.per_step as step (step.step_index)}
+        {#each detail.cost.per_step ?? [] as step (step.step_index)}
           <li>
             <span>Step {step.step_index}</span>
             <span>{step.tokens} tok · ${step.usd.toFixed(4)}</span>
