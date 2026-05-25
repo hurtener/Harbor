@@ -159,6 +159,28 @@
   // HarborClient and injects it into <ChatPanel>. The chat module
   // depends ONLY on this interface — it never touches HarborClient,
   // connection.ts, or fetch directly (CLAUDE.md §4.5 #11).
+  // Round-7 F12 — Bytes go to the artifact store base64-encoded per the
+  // wire shape (`ArtifactsPutRequest.Bytes` is `[]byte` on the Go side,
+  // JSON-encoded as a base64 string). The browser's `FileReader.readAsDataURL`
+  // yields a `data:<mime>;base64,<payload>` URL; we strip the prefix to
+  // get the raw base64 the server expects.
+  async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('FileReader error'));
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== 'string') {
+          reject(new Error('FileReader did not return a string'));
+          return;
+        }
+        const comma = result.indexOf(',');
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   function buildChatClient(c: ProtocolClient): ChatProtocolClient {
     return {
       async sendMessage(text, artifactIDs, mode) {
@@ -177,13 +199,33 @@
         //     The lifecycle watcher below (subscribeTaskLifecycle)
         //     auto-drains the queue when activeTaskID becomes null.
         //
-        // TODO multimodal — artifactIDs need a richer wire payload
-        // (StartRequest.input_artifacts + the user_message payload
-        // gaining an `artifact_ids` slot). The runtime LLM layer already
-        // models multimodal Content.Parts; the planner first-turn
-        // assembly is the remaining seam. Tracked as the F11 follow-up.
-        void artifactIDs;
+        // Round-7 F11 / D-166 — multimodal artifact inputs. The
+        // composer's chat-attach uploads each File via `artifacts.put`
+        // and tracks the returned ids; sendMessage now plumbs them
+        // through `control.start` (or stashes them on the queue path).
+        // The runtime resolves each id to a `planner.InputArtifactView`
+        // and renders per MIME on the first planner turn: image/*
+        // inlines as `ImagePart.DataURL` (Path 1); everything else
+        // stays as an `ArtifactStub` ref the LLM routes via the tool
+        // catalog (operators register tools with `HandlesMIME` to
+        // get the routing hint baked into the stub).
+        //
+        // user_message steering today carries only `{message: string}`
+        // — mid-run artifact attachment is a separate seam (an
+        // extension to the user_message payload). V1.1 limits
+        // multimodal to start; mid-run inject stays text-only and we
+        // surface a brief notice to the operator when they pick
+        // 'steer' with attachments.
         if (mode === 'steer' && activeTaskID !== null) {
+          if (artifactIDs.length > 0) {
+            // No silent degradation — surface the gap and let the
+            // operator decide whether to re-send as Queue. The chat
+            // appears as a system bubble (the page-level error path
+            // catches the throw and renders it).
+            throw new Error(
+              'steering attachment not supported: V1.1 inject is text-only; queue or wait for the run to finish.'
+            );
+          }
           await c.control.dispatch('user_message', activeTaskID, { message: text });
           return { taskID: activeTaskID };
         }
@@ -194,7 +236,8 @@
           return { taskID: activeTaskID };
         }
         const resp = await c.control.start<{ task_id: string }>(text, {
-          description: `Playground turn · ${activeAgent}`
+          description: `Playground turn · ${activeAgent}`,
+          inputArtifactIDs: artifactIDs
         });
         activeTaskID = resp.task_id;
         return { taskID: resp.task_id };
@@ -216,18 +259,38 @@
         await c.runs.setOverrides(payload);
       },
       async uploadArtifact(file) {
-        // `artifacts.put` — the Console upload pipeline. Heavy bytes go
-        // to the artifact store; the chat carries only the reference.
-        const resp = await c.artifacts.put<{ id: string }>({
-          filename: file.name,
-          mime: file.type || 'application/octet-stream',
-          size_bytes: file.size
+        // Round-7 F12 — the prior implementation shipped a flat
+        // `{filename, mime, size_bytes}` body and read `resp.id`. The
+        // wire's `ArtifactsPutRequest` actually expects
+        // `{scope, bytes, opts:{mime_type, filename}}` and returns
+        // `{ref:{id, mime_type, ...}, protocol_version}`. The result:
+        // the chat-attach flow always produced empty artifact ids
+        // (`InputArtifactIDs: ['']` on the spawned task) and the
+        // bytes never reached the store. Wire-shape correction here.
+        const bytesB64 = await fileToBase64(file);
+        const mime = file.type || 'application/octet-stream';
+        const resp = await c.artifacts.put<{
+          ref: { id: string; mime_type: string; size_bytes: number };
+        }>({
+          scope: {
+            TenantID: connection!.identity.tenant,
+            UserID: connection!.identity.user,
+            SessionID: connection!.identity.session
+          },
+          bytes: bytesB64,
+          opts: {
+            mime_type: mime,
+            filename: file.name
+          }
         });
+        if (!resp.ref || !resp.ref.id) {
+          throw new Error('artifacts.put returned no ref id');
+        }
         return {
-          id: resp.id,
-          mime: file.type || 'application/octet-stream',
+          id: resp.ref.id,
+          mime: resp.ref.mime_type || mime,
           filename: file.name,
-          sizeBytes: file.size
+          sizeBytes: resp.ref.size_bytes ?? file.size
         };
       },
       async resolveArtifact(id) {

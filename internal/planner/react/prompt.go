@@ -202,9 +202,21 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 
 	// 2. User block: goal/query + optional summary.
 	userContent := buildUserContent(rc)
+	// Round-7 F11 / D-166 — when the run carries operator-uploaded
+	// input artifacts (first-turn only; the run loop nils the slice
+	// on subsequent turns so this block is a no-op once the planner
+	// is mid-trajectory), the materializer fans them out into typed
+	// `Content.Parts`: `image/*` inlines as `ImagePart.DataURL`;
+	// pdf/audio stay as `Artifact`-form parts the bifrost driver
+	// translates natively for capable providers and falls back to
+	// stub-JSON text for the rest; every other MIME emits an
+	// `ArtifactStub` text block the LLM routes via the tool catalog.
+	// Text-only turns fall through to the unchanged `textContent`
+	// wrap.
+	userMessageContent := planner.MaterializeInputContent(userContent, rc.InputArtifacts, rc.Catalog)
 	messages = append(messages, llm.ChatMessage{
 		Role:    llm.RoleUser,
-		Content: textContent(userContent),
+		Content: userMessageContent,
 	})
 
 	// 3. Trajectory rendering. Phase 46 contract (D-055): when
