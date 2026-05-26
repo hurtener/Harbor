@@ -615,9 +615,19 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Kind:       string(kind),
 			OccurredAt: time.Now(),
 		}
+		// Identity MUST land on the Event envelope (not just the
+		// payload) — the event bus validates the envelope before fan-out
+		// (CLAUDE.md §6 rule 5). Matching the `emit` closure pattern
+		// twenty lines up — the chunk path was missing this when the
+		// closure was first authored, and live testing surfaced 280+
+		// rejected chunks per task ("events: event identity missing
+		// one or more components: type=llm.completion.chunk").
+		now := time.Now()
 		if pubErr := d.bus.Publish(d.subCtx, events.Event{
-			Type:    llm.EventTypeCompletionChunk,
-			Payload: payload,
+			Type:       llm.EventTypeCompletionChunk,
+			Identity:   q,
+			OccurredAt: now,
+			Payload:    payload,
 		}); pubErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: chunk publish failed",
 				slog.String("task_id", string(taskID)),
