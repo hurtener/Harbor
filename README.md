@@ -137,6 +137,7 @@ example.
 |--|--|
 | [`RFC-001-Harbor.md`](RFC-001-Harbor.md) | The design RFC — product intent and every architectural decision. |
 | [`docs/plans/README.md`](docs/plans/README.md) | The master phase plan — how Harbor was built, phase by phase. |
+| [`docs/skills/INDEX.md`](docs/skills/INDEX.md) | Operator skills — Claude-Code-style playbooks for building agents with Harbor. Start at [`scaffold-a-harbor-agent`](docs/skills/scaffold-a-harbor-agent/SKILL.md). |
 | [`docs/recipes/`](docs/recipes/) | Practical how-to guides, grounded in current APIs. |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | Full operator-facing reference for every `harbor.yaml` knob. |
 | [`docs/decisions.md`](docs/decisions.md) | The append-only architectural decision log (D-001…). |

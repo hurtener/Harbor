@@ -44,7 +44,7 @@ None.
 ## Acceptance criteria
 
 - [ ] `docs/skills/` exists with one directory per shipped skill, each carrying a `SKILL.md` whose frontmatter matches the Dockyard convention exactly: `name`, `description` (one sentence starting or containing "Use when…"), `license: Apache-2.0`, `metadata.framework: harbor`, `metadata.surface` (one of `cli` / `agent-yaml` / `tools` / `mcp` / `llm` / `memory` / `playground` / `console` / `tasks`), `metadata.verbs` (the relevant `harbor` CLI verbs or the empty string).
-- [ ] The following 10 skills ship (one `SKILL.md` per directory):
+- [ ] The following 11 skills ship (one `SKILL.md` per directory):
   - `scaffold-a-harbor-agent` — `harbor init` (or equivalent) to start a new agent project. Lands a config + Console attach that works on first `harbor dev` invocation. Parallel to Dockyard's `scaffold-a-server`.
   - `define-the-agent-yaml` — the `harbor.yaml` contract end-to-end: identity, llm, planner, memory, skills, tools, state, events, artifacts. The "edit your config" playbook. Parallel to Dockyard's `define-contracts`.
   - `add-an-in-process-tool` — write a typed Go tool, register on the catalog, validate args, surface in the planner's prompt. Parallel to Dockyard's `add-a-tool`.
@@ -55,6 +55,7 @@ None.
   - `drive-the-playground` — operator chat flow end-to-end: send a message, attach an image (multimodal — V1.1 phase 84a `HandlesMIME` + the per-MIME dispatcher), queue vs steer while a run is in flight (V1.1 phase F10), inspect the right rails, restart a run. Parallel to Dockyard's `test-with-the-inspector`.
   - `observe-with-the-console` — 14-page tour: Sessions, Tasks, Events, MCP Connections, Memory, Artifacts, Live Runtime, Playground, Agents, Tools, Flows, Background Jobs, Settings, Overview. Where to look for what; the four-state `<PageState>` async contract (D-121) so an operator reads disconnected / loading / error / info / empty / ready correctly.
   - `validate-and-package` — `make preflight`-equivalent for operator projects, `harbor build` (CGo-free static binary stamped via ldflags), release posture (D-139). Parallel to Dockyard's `validate` + `package`.
+  - `use-the-harbor-protocol` — for FRONTEND BUILDERS shipping their own UI on top of Harbor's runtime (not the bundled Console). Documents the Protocol surface end-to-end: JWT bearer + identity-triple header convention, the per-instance capability advertisement, the wire shape of `start` / `tasks.*` / steering verbs, the `events.subscribe` SSE stream and the `event.payload.TaskID` capital-T gotcha, multimodal `input_artifact_ids` + the `artifacts.put` / `artifacts.get_ref` round-trip. Goal: a frontend developer ships a working chatbot UI against the Harbor Protocol in a day.
 - [ ] Each skill is bounded: 100–250 lines of markdown after the frontmatter; opens with a one-paragraph framing, then numbered steps; closes with a "Common failure modes" subsection.
 - [ ] `attach-an-mcp-server` explicitly cross-references Dockyard's `scaffold-a-server` + `add-a-tool` in a "See also" footer (the cross-reference chain is real, not aspirational).
 - [ ] `docs/skills/INDEX.md` lists every shipped skill with a one-line description, grouped by phase of the agent-author flow: **start** (scaffold / yaml / dev-loop), **build** (in-process tools / MCP servers / LLM provider / memory + skills), **drive** (Playground), **observe** (Console), **ship** (validate + package).
@@ -76,6 +77,7 @@ None.
 - `docs/skills/drive-the-playground/SKILL.md` (new).
 - `docs/skills/observe-with-the-console/SKILL.md` (new).
 - `docs/skills/validate-and-package/SKILL.md` (new).
+- `docs/skills/use-the-harbor-protocol/SKILL.md` (new) — for frontend builders shipping their own UI on top of the Harbor Protocol.
 - `scripts/drift-audit.sh` — new check verifying skill frontmatter shape.
 - `scripts/skills/check-frontmatter.sh` (new) — the extracted helper the drift-audit invokes.
 - `README.md` — add the "Operator skills" pointer to the existing docs section.

@@ -1,30 +1,16 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
 #
-# Phase 85k smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# Phase 85k smoke — Harbor operator skills (V1.1.5).
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
+# Static-only: asserts every required docs/skills/<slug>/SKILL.md exists,
+# the INDEX is present, the frontmatter helper is executable and passes,
+# and the §18 drift rule is present in CLAUDE.md (mirror invariant covers
+# AGENTS.md separately).
 #
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# The eleven slugs below are the V1.1.5 cut. `attach-an-mcp-server` is
+# deferred to V1.2 once Phase 85a's MCP wire shape stabilises — adding
+# it here later is the same PR that ships its surface (§18).
 
 set -euo pipefail
 
@@ -34,17 +20,75 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase 85k assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+REQUIRED_SLUGS=(
+    scaffold-a-harbor-agent
+    define-the-agent-yaml
+    add-an-in-process-tool
+    wire-the-llm-provider
+    configure-memory-and-skills
+    run-the-dev-loop
+    drive-the-playground
+    observe-with-the-console
+    validate-and-package
+    use-the-harbor-protocol
+)
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 1. Every required slug has a SKILL.md.
+for slug in "${REQUIRED_SLUGS[@]}"; do
+    path="docs/skills/${slug}/SKILL.md"
+    if [ -f "${path}" ]; then
+        ok "${path} exists"
+    else
+        fail "${path} missing — phase 85k acceptance criterion violated"
+    fi
+done
+
+# 2. The INDEX links every slug.
+if [ -f docs/skills/INDEX.md ]; then
+    ok 'docs/skills/INDEX.md present'
+    for slug in "${REQUIRED_SLUGS[@]}"; do
+        if grep -q "${slug}/SKILL.md" docs/skills/INDEX.md; then
+            ok "INDEX.md references ${slug}"
+        else
+            fail "INDEX.md does not reference ${slug}"
+        fi
+    done
+else
+    fail 'docs/skills/INDEX.md missing'
+fi
+
+# 3. The frontmatter helper is executable and passes.
+if [ -x scripts/skills/check-frontmatter.sh ]; then
+    ok 'scripts/skills/check-frontmatter.sh is executable'
+    if scripts/skills/check-frontmatter.sh >/dev/null 2>&1; then
+        ok 'frontmatter audit clean across all skills'
+    else
+        fail 'frontmatter audit failed — re-run scripts/skills/check-frontmatter.sh for details'
+    fi
+else
+    fail 'scripts/skills/check-frontmatter.sh missing or not executable'
+fi
+
+# 4. §18 drift rule is present in CLAUDE.md.
+if grep -qE '^## 18\. Operator-skill hygiene' CLAUDE.md; then
+    ok 'CLAUDE.md §18 operator-skill hygiene rule present'
+else
+    fail 'CLAUDE.md §18 operator-skill hygiene rule missing — restored by V1.1.5'
+fi
+
+# 5. Glossary distinguishes operator-skill vs runtime-skill.
+if grep -q '\*\*skill (operator)\*\*' docs/glossary.md && \
+   grep -q '\*\*skill (runtime)\*\*' docs/glossary.md; then
+    ok 'glossary distinguishes skill (operator) vs skill (runtime)'
+else
+    fail 'glossary missing the operator-vs-runtime skill clarification'
+fi
+
+# 6. README.md points at the operator skills INDEX.
+if grep -q 'docs/skills/INDEX.md' README.md; then
+    ok 'README.md references docs/skills/INDEX.md'
+else
+    fail 'README.md does not reference docs/skills/INDEX.md'
+fi
 
 smoke_summary
