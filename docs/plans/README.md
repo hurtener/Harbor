@@ -159,7 +159,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 85h| MCP Tasks wire types (hand-transcribed)       | tools/mcp            | §6.4        | 28                    | 90%  | Post-V1  |
 | 85i| MCP Tasks client                              | tools/mcp            | §6.4        | 85h, 28               | 85%  | Post-V1  |
 | 85j| MCP client conformance + compliance statement | tools/mcp + docs     | §6.4        | 85a–85i               | 85%  | Post-V1  |
-| 85k| MCP operator skills + Dockyard cross-reference docs | docs/skills + scripts | §6.4, §7   | 85a-85j, 84a, sibling Dockyard `skills/` | n/a | Pending (V1.2) |
+| 85k| Harbor agent-builder skills (adoption surface, ~10 SKILL.md playbooks; MCP wiring is one of them) | docs/skills + scripts | §1, §7, §6.4 | V1.1 closure, 85a (for the MCP skill), sibling Dockyard `skills/` | n/a | Pending (V1.2-or-sooner) |
 | 86 | Durable distributed bus driver                | distributed          | §6.12, §12  | 22                    | n/a  | Post-V1  |
 | 87 | Durable TaskService backend                   | tasks                | §12         | 20, 22                | n/a  | Post-V1  |
 | 88 | Episodic memory tier                          | memory               | §6.6, §11Q4 | 24, 25                | n/a  | Post-V1  |
