@@ -33,6 +33,7 @@
   // ((console)/+layout.svelte — CONVENTIONS.md §2). The per-page import was
   // duplicating the footer (post-83k walkthrough N2); removed.
   import SubNavRail from '$lib/components/settings/SubNavRail.svelte';
+  import AttachToLocalCard from '$lib/components/settings/AttachToLocalCard.svelte';
   import ConnectedRuntimesCard from '$lib/components/settings/ConnectedRuntimesCard.svelte';
   import PerRuntimeAuthCard from '$lib/components/settings/PerRuntimeAuthCard.svelte';
   import APITokensCard from '$lib/components/settings/APITokensCard.svelte';
@@ -210,10 +211,11 @@
           <div id="section-{section.id}" class="card-anchor" data-testid="settings-section-{section.id}">
             <RailCard title={section.label}>
               {#if section.id === 'connected-runtimes'}
+                <AttachToLocalCard />
                 <ConnectedRuntimesCard
                   runtimes={db.runtimes}
                   addWarning={db.addWarning}
-                  onadd={(name, url) => db.addRuntime(name, url)}
+                  onadd={(name, url, token, identity, scopes) => db.addRuntime(name, url, token, identity, scopes)}
                   onremove={(id) => db.removeRuntime(id)}
                   onaddsuccess={() => {
                     // Phase 83u / D-163 — the new connection only takes

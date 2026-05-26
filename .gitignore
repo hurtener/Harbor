@@ -77,3 +77,4 @@ tmp/
 # directories as gitlinks; this rule + the untracking in the same commit
 # (Wave 9 §17.5 audit) closes that.
 .claude/
+.commandcode/

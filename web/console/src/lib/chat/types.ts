@@ -79,6 +79,10 @@ export interface ChatMessage {
 	artifacts?: ChatArtifactRef[];
 	/** True while an agent message is still streaming tokens. */
 	streaming?: boolean;
+	/** The runtime task ID associated with this agent message (Phase 106). */
+	taskID?: string;
+	/** True while an agent message is pending — the task has been spawned but hasn't completed yet (Phase 106). */
+	pending?: boolean;
 }
 
 /**

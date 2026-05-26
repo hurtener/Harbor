@@ -263,6 +263,22 @@ type TaskSummary struct {
 // TaskResult carries the successful-completion payload. `Value` is
 // pre-redacted by the caller (D-020); the registry stores it
 // verbatim.
+//
+// Phase 106 (V1.2) pins the answer-envelope contract: when the
+// run-loop driver (cmd/harbor/cmd_dev_runloop.go::handleSpawn)
+// produces TaskResult from a planner.Finish, `Value` is the JSON
+// encoding of:
+//
+//	{
+//	  "answer":          string,  // the LLM's natural-language answer
+//	  "finish_reason":   string,  // planner.FinishReason as string
+//	  "tool_calls_seen": int      // len(traj.Steps) at finish
+//	}
+//
+// Consumers (Console Playground, CLI, third-party UIs) MAY rely on
+// this shape. Future planners that return richer answers (markdown
+// structure, multimodal) will EXTEND the shape with new keys, never
+// break existing ones (forward-compatible additive evolution).
 type TaskResult struct {
 	Value json.RawMessage
 }

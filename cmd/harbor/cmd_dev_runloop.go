@@ -77,6 +77,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -681,7 +682,24 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 		}
 
-		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
+		// Phase 106 (V1.2) — populate the answer envelope so Protocol
+		// consumers (Console Playground, CLI, third-party UIs) read the
+		// actual assistant response via tasks.get → result_inline.
+		// Pre-106, this was tasks.TaskResult{} — the projector had
+		// nothing to project and the Playground hardcoded a placeholder.
+		payload := map[string]any{
+			"answer":          extractAssistantAnswer(fin),
+			"finish_reason":   string(fin.Reason),
+			"tool_calls_seen": len(traj.Steps),
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: marshal TaskResult.Value failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", err.Error()))
+			raw = []byte("{}")
+		}
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),

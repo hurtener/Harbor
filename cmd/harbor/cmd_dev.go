@@ -115,6 +115,7 @@ import (
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
 	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
+	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -1302,6 +1303,29 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	draftMW := auth.Middleware(validator, auth.MWLogger(opts.logger))
 	router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
 
+	// Compute the bind address so the bootstrap handler knows which
+	// URL to put in the response envelope. HARBOR_BIND overrides the
+	// port-based default.
+	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
+	if opts.bindAddr != "" {
+		bindAddr = opts.bindAddr
+	}
+
+	// Phase 105 (V1.2) — dev-only bootstrap endpoint. Mints a fresh
+	// dev token + returns the full connection envelope the Console
+	// needs for a one-click "Attach to local Runtime" button.
+	// Loopback-gated; mounted WITHOUT auth middleware — the loopback
+	// gate is the security boundary. Mounted BEFORE the /v1/ catch-all
+	// so the exact method+path match wins.
+	bootstrapHandler := server.NewBootstrapHandler(
+		devSigner,
+		identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		[]string{string(auth.ScopeAdmin), string(auth.ScopeConsoleFleet)},
+		"http://"+bindAddr,
+		opts.logger,
+	)
+	router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
+
 	// Forward every other Protocol-prefixed path to the Phase 60 mux.
 	// The draft handler is registered above; this catch-all picks up
 	// everything else under /v1/.
@@ -1322,19 +1346,6 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			return nil, fmt.Errorf("console assets: %w", err)
 		}
 		router.Handle("/", consoleHandler)
-	}
-
-	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
-	if opts.bindAddr != "" {
-		// runDev's `HARBOR_BIND` parse threads the override here.
-		// bootDevStack itself does NOT read HARBOR_BIND from env —
-		// the read happens once in `runDev` and propagates via the
-		// explicit opts field (D-104). Reading the env directly here
-		// caused cmd/harbor tests that construct `devBootOptions`
-		// with `port: 0` to leak-inherit the preflight harness's
-		// HARBOR_BIND value and try to bind the preflight server's
-		// port under parallel-batch load.
-		bindAddr = opts.bindAddr
 	}
 
 	// Phase 83v (D-162) — CORS middleware. Default-deny: empty allowlist
