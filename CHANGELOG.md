@@ -24,6 +24,7 @@ The V1.2 backlog is scoped in `docs/plans/README.md` under the **101–104** ban
 - **103** — GitHub Pages docs site mirroring Dockyard's VitePress stack.
 - **104** — Composable resilient flows as a load-bearing value proposition (RFC §1 fourth headline prop, README framing modelled on eino's positioning, new `build-a-resilient-flow` operator skill).
 - **105** — Console first-attach UX. Fixes two adoption-blocking bugs: the `Settings → Connected Runtimes` card collects only `name` + `baseURL` (missing the four other fields the connection loader requires — silent no-op); first load with no attached runtime doesn't route to Settings. Also lands a co-resident `harbor console` "Attach to local Runtime" one-click via a loopback-gated `/v1/dev/bootstrap.json` endpoint.
+- **106** — Playground displays the real assistant response. Two bugs: `cmd/harbor/cmd_dev_runloop.go:684` calls `MarkComplete(... TaskResult{})` with an empty result, dropping the planner's answer on the floor; the Playground's chat panel hardcodes `'Message accepted by the Runtime.'` as the agent bubble text and never consumes the actual completion stream. Together: operators see their question + a placeholder, conclude the agent is broken. Surfaced during live YouTube-agent validation.
 
 Each lands as its own PR. No code under V1.2 is shipped in `[Unreleased]` itself — this section is a forward pointer to the phase plans.
 
