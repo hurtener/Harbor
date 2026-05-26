@@ -15,6 +15,52 @@ Two versions move independently in Harbor (RFC §5.3):
   `0.1.0`). A breaking Protocol change is an RFC change and carries its
   own deprecation window.
 
+## [1.1.6] — 2026-05-26
+
+A release-engineering hotfix that finishes what v1.1.5 started. v1.1.5
+trimmed the LICENSE but the trimmed text still carried three substantive
+deviations from the canonical Apache-2.0 — pkg.go.dev's license detector
+(google/licensecheck, ~75% confidence threshold) saw the deviations and
+kept reporting "License: UNKNOWN" + ✗ Redistributable. This release ships
+the byte-identical canonical text so the badge can finally flip.
+
+### Fixed
+
+- **LICENSE is now byte-identical to apache.org's canonical Apache-2.0
+  text** (`https://www.apache.org/licenses/LICENSE-2.0.txt`). The three
+  fixed deviations:
+  - Missing leading blank line at line 1.
+  - §6 "Trademarks" was missing the phrase "reasonable and customary
+    use in" — non-standard wording.
+  - §9 used the old "Accepting Warranty or Support" wording instead of
+    the canonical "Accepting Warranty or Additional Liability"
+    (both heading and body's closing phrase).
+- Effect: pkg.go.dev will detect `License: Apache-2.0` and flip the
+  Redistributable badge from ✗ to ✓ on its next module fetch.
+
+### Changed — release pipeline now ships the full cross-compile matrix
+
+- The release workflow (`.github/workflows/release.yml`) cross-compiles
+  six binaries per release (`linux`/`darwin`/`windows` × `amd64`/`arm64`)
+  via a matrix strategy, attests SLSA build provenance per binary, and
+  publishes them all in a single GitHub Release.
+- `scripts/release-build.sh` now appends the `.exe` suffix automatically
+  when `GOOS=windows` so the Windows artifact behaves like every other
+  Windows CLI a user might download.
+- Each release carries an aggregate `checksums.txt` alongside the
+  per-binary `.sha256` sidecars. Downloaders verify with the standard
+  `sha256sum -c checksums.txt` two-column form.
+- Pre-release tags (`-rc` / `-beta` / `-alpha`) keep the existing
+  pre-release marking; no behavior change there.
+
+### Notes
+
+- v1.1.5's binary attached to GitHub Releases is still valid and runs
+  fine; this release does not deprecate it. The pkg.go.dev license
+  display, however, is per-version cached — v1.1.5's UNKNOWN status
+  will not retroactively heal. v1.1.6 is the first version on which
+  pkg.go.dev's detector should succeed.
+
 ## [1.1.5] — 2026-05-25
 
 A pure docs-and-hygiene release — no Runtime, Console, or Protocol behavior changes. Adds Harbor's first cut of **operator skills**: ten Claude-Code-style playbooks covering the agent-builder loop end-to-end, plus a mechanical drift-prevention rule that keeps them honest.

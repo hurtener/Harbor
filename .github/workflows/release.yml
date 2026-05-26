@@ -1,21 +1,17 @@
 name: release
 
-# Phase 81 (RFC §12, D-139) — the release workflow.
+# The release workflow.
 #
 # Triggered two ways:
-#   - on a `v*` tag push — the real release path. Builds the
-#     version-stamped CGo-free static binary, generates a SHA-256
-#     checksum, attaches SLSA-style build provenance, and publishes a
-#     GitHub Release with the artifacts attached. This makes the
-#     Phase 81 acceptance criterion true: `git tag v1.0.0-rc.1` (pushed)
-#     produces a release artifact.
+#   - on a `v*` tag push — the real release path. Cross-compiles the
+#     version-stamped CGo-free static binary across the supported
+#     matrix (darwin/linux/windows × amd64/arm64), generates per-binary
+#     SHA-256 sidecars + an aggregate `checksums.txt`, attaches SLSA-style
+#     build provenance per binary, and publishes a single GitHub Release
+#     with every artifact attached.
 #   - via `workflow_dispatch` — the manual dry-run path. Runs the same
 #     `scripts/release-dryrun.sh` the `make release-dryrun` target runs,
 #     so the release build can be exercised without pushing a tag.
-#
-# The operator tags in Phase 82 (the v1.0.0 cut). This workflow is the
-# tooling that makes that tag produce an artifact; Phase 81 itself
-# creates no tag.
 
 on:
   push:
@@ -47,15 +43,38 @@ jobs:
         run: make release-dryrun
 
   # ---------------------------------------------------------------------
-  # release — the `v*` tag-push path. Builds the version-stamped static
-  # binary, attaches build provenance, and publishes a GitHub Release.
+  # build — the `v*` tag-push fan-out. One job per GOOS/GOARCH target;
+  # each cross-compiles via `scripts/release-build.sh` (which honours
+  # GOOS/GOARCH and appends `.exe` for windows), attests SLSA-style
+  # build provenance for the artifact it produced, and uploads the
+  # binary + .sha256 sidecar as a workflow artifact for the `release`
+  # job to gather.
   # ---------------------------------------------------------------------
-  release:
-    name: build + publish release
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    strategy:
+      # If one target's build breaks, surface every failing target — not
+      # just the first. A broken windows/arm64 build is independent from
+      # a broken darwin/amd64 build.
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
     permissions:
-      contents: write       # create the GitHub Release + upload assets
+      contents: read
       id-token: write       # SLSA provenance — OIDC token for the attestor
       attestations: write   # SLSA provenance — write the attestation
     steps:
@@ -67,16 +86,17 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
-      # The release version is the pushed tag ref (e.g. `v1.0.0-rc.1`).
-      # scripts/release-build.sh reads it from HARBOR_RELEASE_VERSION;
-      # this is the single point where the tag becomes the stamp.
+      # The release version is the pushed tag ref (e.g. `v1.1.6`).
+      # `scripts/release-build.sh` reads HARBOR_RELEASE_VERSION + the
+      # GOOS/GOARCH cross-build knobs; this is the single point where
+      # the tag becomes the stamp and the matrix becomes the targets.
       - name: Build the version-stamped static release artifact
         env:
           HARBOR_RELEASE_VERSION: ${{ github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: bash scripts/release-build.sh dist
 
-      # Discover the produced artifact path (os/arch baked into the
-      # name by release-build.sh) so the later steps don't re-derive it.
       - name: Locate the release artifact
         id: artifact
         run: |
@@ -86,21 +106,78 @@ jobs:
           echo "path=${bin}" >> "$GITHUB_OUTPUT"
           echo "name=$(basename "${bin}")" >> "$GITHUB_OUTPUT"
 
-      # SLSA-style build provenance — the master-plan stretch goal.
-      # actions/attest-build-provenance generates a signed, verifiable
-      # provenance attestation for the artifact (the build's source,
-      # workflow, and inputs). It is GitHub-native — no extra runtime
-      # dependency, no goreleaser — so the stretch lands cleanly here
-      # rather than being deferred (D-139).
+      # SLSA-style build provenance per binary. Each matrix target gets
+      # its own signed attestation tying the artifact to this workflow
+      # run, the commit, and the inputs.
       - name: Attach SLSA build provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ steps.artifact.outputs.path }}
 
-      # Publish the GitHub Release with the binary + checksum attached.
-      # gh is pre-installed on ubuntu-latest runners. A pre-release tag
-      # (one carrying a `-rc` / `-beta` / `-alpha` suffix) is marked as
-      # a GitHub pre-release so `v1.0.0-rc.1` is not surfaced as latest.
+      # Upload the binary + sidecar for the `release` job to gather.
+      # actions/upload-artifact@v4 requires unique names per job, so the
+      # GOOS/GOARCH pair is folded in.
+      - name: Upload artifact + checksum sidecar
+        uses: actions/upload-artifact@v4
+        with:
+          name: harbor-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/harbor-*
+          retention-days: 14
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # release — the `v*` tag-push gather + publish. Downloads every
+  # matrix artifact, recomputes an aggregate `checksums.txt` (one line
+  # per binary in `sha256sum -c` two-column format), re-verifies the
+  # downloads against it, and creates a single GitHub Release with
+  # every binary + every sidecar + the aggregate checksums attached.
+  # ---------------------------------------------------------------------
+  release:
+    name: publish GitHub Release
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the GitHub Release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          # Each matrix job uploaded into its own named bucket; flatten
+          # them all into dist/ so the rest of the pipeline sees a flat
+          # tree the gh release create command can attach in one call.
+          merge-multiple: true
+
+      - name: Compute aggregate checksums.txt
+        run: |
+          set -euo pipefail
+          cd dist
+          # Sort by filename so the aggregate is deterministic regardless
+          # of matrix-job ordering.
+          : > checksums.txt
+          for bin in $(ls harbor-* 2>/dev/null | grep -v '\.sha256$' | sort); do
+              sha256sum "${bin}" >> checksums.txt
+          done
+          echo "--- aggregate checksums.txt ---"
+          cat checksums.txt
+
+      - name: Re-verify checksums against downloaded binaries
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c checksums.txt
+          ls -la
+
+      # Publish the GitHub Release with every binary + sidecar +
+      # checksums.txt attached. A pre-release tag (one carrying a `-rc`
+      # / `-beta` / `-alpha` suffix) is marked as a GitHub pre-release
+      # so it is not surfaced as latest.
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -111,9 +188,17 @@ jobs:
           case "${TAG}" in
             *-rc*|*-beta*|*-alpha*) prerelease_flag="--prerelease" ;;
           esac
+          # Gather every artifact the release should carry. dist/
+          # contains the matrix binaries (with .exe on windows), their
+          # .sha256 sidecars, and the aggregate checksums.txt this job
+          # just produced.
+          mapfile -t files < <(find dist -maxdepth 1 -type f \
+              \( -name 'harbor-*' -o -name 'checksums.txt' \) | sort)
+          [ ${#files[@]} -gt 0 ] || { echo "no artifacts to publish in dist/" >&2; exit 1; }
+          echo "publishing artifacts:"
+          printf '  %s\n' "${files[@]}"
           gh release create "${TAG}" \
-            "${{ steps.artifact.outputs.path }}" \
-            "${{ steps.artifact.outputs.path }}.sha256" \
+            "${files[@]}" \
             --title "Harbor ${TAG}" \
             --notes "Automated release for ${TAG}. See CHANGELOG.md for the full change list." \
             ${prerelease_flag}
