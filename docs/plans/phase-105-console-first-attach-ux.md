@@ -58,6 +58,7 @@ The bullets below are mutually exclusive — every one must be satisfied:
   - `draftUser` (NEW) — non-empty string, no whitespace.
   - `draftSession` (NEW) — non-empty string, no whitespace.
 - [ ] **AC-2** The card's `onadd` callback signature widens to:
+
   ```ts
   onadd: (
     name: string,
@@ -67,11 +68,13 @@ The bullets below are mutually exclusive — every one must be satisfied:
     scopes?: string[]
   ) => Promise<void>
   ```
+
   Old `(name, baseURL)` callers fail TypeScript compilation. `scopes` is optional and defaults to `['admin', 'console:fleet']` at the Settings-page call site (the existing dev-token scope set).
 - [ ] **AC-3** `web/console/src/lib/settings/console_db.svelte.ts::addRuntime` widens to match the new signature and calls `attachConnection(baseURL, { token, identity, scopes })` — the existing `attachConnection` already accepts opts (lines 172-188 of `web/console/src/lib/connection.ts`); Phase 105 just uses every parameter.
 - [ ] **AC-4** Form-level validation: clicking Submit with any field empty / token failing the regex / URL un-parseable surfaces inline error text and does NOT call `onadd`. No silent no-op.
 - [ ] **AC-5** `web/console/src/routes/(console)/+layout.svelte` (the shell layout) gains a first-load redirect: when `resolveConnection() === null` AND the current pathname is NOT `/settings`, the layout calls `goto('/settings')` exactly once on mount (idempotent: subsequent layouts on `/settings` no-op).
 - [ ] **AC-6** New endpoint `POST /v1/dev/bootstrap.json` on `harbor dev` AND `harbor console` (and ONLY those two subcommands; `harbor serve` MUST NOT register it). Request body MAY be empty `{}`; response is:
+
   ```json
   {
     "base_url": "http://127.0.0.1:18080",
@@ -81,6 +84,7 @@ The bullets below are mutually exclusive — every one must be satisfied:
     "protocol_version": "0.1.0"
   }
   ```
+
   The token is freshly minted on every call (uses the existing ES256 dev signer in `cmd/harbor/devauth.go`; the EXISTING `harbor dev` token-minting code path is the source of truth — Phase 105 calls it again).
 - [ ] **AC-7** Loopback gate: the bootstrap endpoint reads `r.RemoteAddr` (NOT any request header), parses the host, and returns `403` from any non-loopback peer. Loopback netblocks: `127.0.0.0/8`, `::1/128`. Spoofed `X-Forwarded-For` / `Forwarded` headers are ignored. The 403 body carries `{"code":"forbidden","message":"bootstrap endpoint is loopback-only"}`.
 - [ ] **AC-8** Fail-loud posture: when both `HARBOR_DEV_ALLOW_MOCK=0` AND no dev identity is wired (the production-shaped `harbor serve` case), the endpoint is NOT registered at all — `404` from any peer. Verified by a smoke assertion that `harbor serve` does not advertise the route.
@@ -105,8 +109,8 @@ The bullets below are mutually exclusive — every one must be satisfied:
   - `BootstrapHandler` struct with deps `(devSigner *devauth.Signer, identity identity.Triple, scopes []string, baseURL string, logger *slog.Logger)`.
   - `func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)`:
     - 1) `loopback := isLoopback(r.RemoteAddr)`; if false → `http.Error(w, ..., 403)`.
-    - 2) Mint a fresh token via `h.devSigner.Sign(h.identity)` (24h TTL).
-    - 3) Marshal a `BootstrapResponse` struct + `w.Write(json)`.
+    - 1) Mint a fresh token via `h.devSigner.Sign(h.identity)` (24h TTL).
+    - 1) Marshal a `BootstrapResponse` struct + `w.Write(json)`.
   - `func isLoopback(remoteAddr string) bool` — parses host (strips `:port`), accepts `127.0.0.0/8` + `::1`. Uses `net.ParseIP` + `IsLoopback()`.
   - `type BootstrapResponse struct { ... }` matching AC-6 schema with json tags.
 - `internal/server/dev_bootstrap_test.go` — **NEW**. ~150 LOC. Tests:
@@ -124,18 +128,21 @@ The bullets below are mutually exclusive — every one must be satisfied:
 ### Console (Svelte)
 
 - `web/console/src/lib/components/settings/ConnectedRuntimesCard.svelte` — widen form. Add 4 `$state` declarations alongside the existing `draftName` + `draftURL`:
+
   ```ts
   let draftToken = $state('');
   let draftTenant = $state('');
   let draftUser = $state('');
   let draftSession = $state('');
   ```
+
   Extend `submitAdd()` to:
   - Validate all 6 fields per AC-1.
   - Call the widened `onadd(draftName.trim(), draftURL.trim(), draftToken.trim(), { tenant: draftTenant.trim(), user: draftUser.trim(), session: draftSession.trim() })`.
   - Clear all 6 drafts on success.
   Add 4 new `<input>` elements in the form (HTML order: name → URL → token (textarea) → tenant → user → session). Tag every input with `data-testid` for e2e: `add-runtime-token`, `add-runtime-tenant`, `add-runtime-user`, `add-runtime-session`.
 - `web/console/src/lib/settings/console_db.svelte.ts` — widen `addRuntime` (currently lines 183-214) to:
+
   ```ts
   async addRuntime(
     name: string,
@@ -149,11 +156,15 @@ The bullets below are mutually exclusive — every one must be satisfied:
     // ... rest of method unchanged ...
   }
   ```
+
 - `web/console/src/routes/(console)/settings/+page.svelte` — at the `<ConnectedRuntimesCard onadd={...}>` invocation (around current line 216), update the callback to pass all five fields:
+
   ```svelte
   onadd={(name, url, token, identity, scopes) => db.addRuntime(name, url, token, identity, scopes)}
   ```
+
 - `web/console/src/routes/(console)/+layout.svelte` — in the existing `onMount` (or equivalent), AFTER the connection resolve, branch on null and redirect:
+
   ```ts
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -165,6 +176,7 @@ The bullets below are mutually exclusive — every one must be satisfied:
     }
   });
   ```
+
 - `web/console/src/lib/components/settings/AttachToLocalCard.svelte` — **NEW**. ~80 LOC. Renders ONLY when `resolveConnection() === null`. Has one button "Attach to local Runtime" + a status region. On click implements AC-9 sequence. Tag the button `data-testid="attach-to-local-runtime"`.
 - `web/console/src/routes/(console)/settings/+page.svelte` — render `<AttachToLocalCard />` ABOVE the existing `<ConnectedRuntimesCard />` (it should be the first thing an operator sees in the empty state). The card's own `if connected` guard keeps it from rendering once attached.
 

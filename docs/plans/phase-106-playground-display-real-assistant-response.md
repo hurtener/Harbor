@@ -59,6 +59,7 @@ None.
 ## Acceptance criteria
 
 - [ ] **AC-1** `cmd/harbor/cmd_dev_runloop.go:684` no longer passes `tasks.TaskResult{}`. The exact new shape:
+
   ```go
   payload := map[string]any{
       "answer":         extractAssistantAnswer(fin),
@@ -80,6 +81,7 @@ None.
       ...
   }
   ```
+
 - [ ] **AC-2** `tasks.TaskResult.Value` carries a JSON object of EXACTLY the shape `{ "answer": string, "finish_reason": string, "tool_calls_seen": int }`. The shape is documented in:
   - `docs/glossary.md` under `TaskResult.Value (answer envelope)` (new entry).
   - `internal/tasks/tasks.go` godoc on the `TaskResult` struct (extending the existing comment with one paragraph documenting the envelope contract).
@@ -89,6 +91,7 @@ None.
 - [ ] **AC-6** Negative test `cmd/harbor/cmd_dev_runloop_test.go::TestPerTaskRunLoop_FinishGoal_EmptyAnswer_StillPopulatesShape`: drive a RunLoop returning `Finish{Reason: FinishGoal, Payload: nil}`; assert `MarkComplete` still gets a populated `TaskResult.Value` with `JSON-parse(Value).answer == ""` and the other fields present.
 - [ ] **AC-7** `web/console/src/routes/(console)/playground/[session_id]/+page.svelte` deletes the hardcoded placeholder line (current line 523). The agent bubble is created EMPTY when `sendMessage` resolves; populated by the `task.completed` handler.
 - [ ] **AC-8** The same file's SSE subscriber (currently registers `task.completed`, `task.failed`, `task.cancelled` handlers for the running-flag clear) gains a NEW responsibility: on `task.completed`, it invokes `client.tasks.get(taskID)` and reads `result.result_inline`. The handler parses the JSON envelope, extracts `.answer`, and replaces the agent bubble text. Pseudocode:
+
   ```ts
   async function onTaskCompleted(taskID: string) {
     const detail = await client.tasks.get({
@@ -113,6 +116,7 @@ None.
     activeTaskID = null;
   }
   ```
+
 - [ ] **AC-9** When `sendMessage` succeeds, the Playground IMMEDIATELY appends an empty agent bubble with `role: 'agent'`, `text: ''`, `taskID: <returned-id>`, `pending: true`. The bubble renders a loading indicator (existing CSS class `streaming-indicator` from the chat module). On `task.completed`, the bubble's `text` is replaced and `pending: false`.
 - [ ] **AC-10** `task.failed` and `task.cancelled` SSE handlers populate the agent bubble with an error-shaped message: `text: "Task ${state} — see Tasks page for details."`, `role: 'system'`, `pending: false`. The bubble is visually distinct (existing CSS variant `system` already supports this).
 - [ ] **AC-11** Reading `task.result_inline` from `tasks.get` works against the running YouTube validation agent end-to-end: a manual Playground send produces a non-empty agent bubble within 10 seconds (Phase 106's smoke verifies this).
@@ -129,6 +133,7 @@ None.
 - `cmd/harbor/cmd_dev_runloop.go` — apply AC-1 edit at line 684. ~15 LOC change. Imports `encoding/json` if not already present (it likely is).
 - `cmd/harbor/cmd_dev_runloop_test.go` — add tests AC-5, AC-6. ~80 LOC. Use the existing fake-RunLoop fixture (already present in this file's test suite).
 - `internal/tasks/tasks.go` — extend the godoc on `TaskResult` (line 263-268) with the envelope contract:
+
   ```go
   // TaskResult carries the successful-completion payload. `Value` is
   // pre-redacted by the caller (D-020); the registry stores it
@@ -166,6 +171,7 @@ None.
 
 - `scripts/smoke/phase-106.sh` — **NEW** (replaces the existing skeleton from PR #243). Detailed below.
 - `scripts/drift-audit.sh` — extend with the AC-16 grep. Add this block (after the existing skill frontmatter audit):
+
   ```bash
   # Phase 106 regression guard: the Playground placeholder bubble must not
   # come back. The literal text was load-bearing for the V1.1 bug where
@@ -180,6 +186,7 @@ None.
 ### Docs
 
 - `docs/glossary.md` — new entry alphabetised under "T":
+
   ```markdown
   **TaskResult.Value (answer envelope)** — the JSON shape `TaskResult.Value` carries when the run-loop driver completes a task from a `planner.Finish`. Pinned by Phase 106 (V1.2):
   `{"answer": "<llm text>", "finish_reason": "<planner.FinishReason>", "tool_calls_seen": <int>}`.
@@ -229,6 +236,7 @@ None.
 `scripts/smoke/phase-106.sh` — `PREFLIGHT_REQUIRES: live-server`. Assertions:
 
 1. **Send a question via Protocol** against the dev runtime (a fresh `harbor dev` boot the preflight gate provides):
+
    ```bash
    TOKEN=$(grep HARBOR_DEV_TOKEN "${HARBOR_DATA_DIR}/server.log" | head -1 | cut -d= -f2)
    RESP=$(curl -sS -X POST "$(api_url /v1/control/start)" \
@@ -239,7 +247,9 @@ None.
    TASK_ID=$(echo "$RESP" | jq -r '.task_id')
    assert_truthy "$TASK_ID" "start returned a task_id"
    ```
+
 2. **Poll until complete** (bounded 30s; fail on timeout):
+
    ```bash
    for i in $(seq 1 30); do
      STATUS=$(curl -sS -X POST "$(api_url /v1/tasks/get)" \
@@ -252,7 +262,9 @@ None.
    done
    assert_eq "$STATUS" "complete" "task reached complete within 30s"
    ```
+
 3. **Read `result_inline` + parse the envelope**:
+
    ```bash
    DETAIL=$(curl -sS -X POST "$(api_url /v1/tasks/get)" -H "Authorization: Bearer ${TOKEN}" ... -d "{...}")
    INLINE=$(echo "$DETAIL" | jq -r '.result_inline')
@@ -262,6 +274,7 @@ None.
    FINISH=$(echo "$INLINE" | jq -r '.finish_reason')
    assert_eq "$FINISH" "goal" "finish_reason is goal for a normal completion"
    ```
+
 4. **Static**: `grep -q "Message accepted by the Runtime" web/console/src/routes/(console)/playground/` returns NONZERO (zero hits — drift guard).
 5. **Static**: `grep -q "result_inline" web/console/src/routes/(console)/playground/\[session_id\]/+page.svelte` — the Playground reads the new field.
 
