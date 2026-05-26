@@ -82,6 +82,14 @@ HOST_GOARCH="$(env -u GOARCH go env GOARCH)"
 GOOS_VAL="${GOOS:-${HOST_GOOS}}"
 GOARCH_VAL="${GOARCH:-${HOST_GOARCH}}"
 ARTIFACT_NAME="harbor-${RELEASE_VERSION}-${GOOS_VAL}-${GOARCH_VAL}"
+# Windows binaries carry the `.exe` suffix by convention; Go's go build
+# does not append it automatically when -o is explicit. Without this, a
+# `harbor-vX.Y.Z-windows-amd64` artifact won't execute on Windows by
+# double-click; with it, the artifact behaves like every other Windows
+# CLI a user might download.
+if [ "${GOOS_VAL}" = "windows" ]; then
+    ARTIFACT_NAME="${ARTIFACT_NAME}.exe"
+fi
 
 echo "release-build: version=${RELEASE_VERSION} os=${GOOS_VAL} arch=${GOARCH_VAL}"
 echo "release-build: output dir=${OUT_DIR}"
