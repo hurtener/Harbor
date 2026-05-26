@@ -179,8 +179,9 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |102 | Godoc hygiene — strip internal phase jargon   | internal/ + cmd/     | §1, §12     | (none hard)           | n/a  | Pending (V1.2) |
 |103 | GitHub Pages docs site (Dockyard parity)      | docs/site + workflows| §1, §7, §12 | 102, 85k              | n/a  | Pending (V1.2) |
 |104 | Composable resilient flows — value proposition| RFC §1 + README + docs/skills | §1, §6.1 | 85k                   | n/a  | Pending (V1.2) |
+|105 | Console first-attach UX (zero-clicks-to-attached) | web/console + cmd/harbor + internal/server | §1, §7 | 85k, 73m | n/a | Pending (V1.2) |
 
-V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j (MCP client/host compliance — the prioritised first post-V1 work). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. V1.2 hygiene + positioning is 101–104: actions/godoc/docs-site/value-prop.
+V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j (MCP client/host compliance — the prioritised first post-V1 work). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. V1.2 hygiene + positioning + UX is 101–105: actions/godoc/docs-site/value-prop/first-attach.
 
 `Shipped*` (Phase 73): the phase was **dissolved** — its surface was decomposed across the Console page phases that consumed each slice; the methods with no V1 consumer are deferred post-V1. See the Phase 73 detail block and D-133.
 
