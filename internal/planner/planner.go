@@ -255,7 +255,27 @@ type RunContext struct {
 	// run on the runloop's stack; the planner reads it from rc, never
 	// from itself. N concurrent runs see N independent closures.
 	OnReasoning func(string)
+
+	// OnChunk is the per-step streaming callback the Planner invokes
+	// per token delta from the LLM provider (Phase 107). The Runtime
+	// sets it on each per-step RunContext so the runloop publishes
+	// `llm.completion.chunk` events. May be nil — a planner without
+	// streaming wired skips the emission silently.
+	//
+	// Concurrent-reuse (D-025): same pattern as OnReasoning — per-run
+	// closure on the stack, never on the shared planner artifact.
+	OnChunk func(delta string, done bool, kind ChunkKind)
 }
+
+// ChunkKind is a sealed enum for the streaming-chunk kind (Phase 107).
+// Values: ChunkContent (model output text), ChunkReasoning (thinking
+// trace — Phase 107a renders).
+type ChunkKind string
+
+const (
+	ChunkContent   ChunkKind = "content"
+	ChunkReasoning ChunkKind = "reasoning"
+)
 
 // MemoryBlocks carries the two memory tiers the ReAct planner injects
 // into its system prompt with UNTRUSTED anti-prompt-injection framing

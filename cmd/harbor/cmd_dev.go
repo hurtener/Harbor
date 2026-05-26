@@ -993,7 +993,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// + redactor are wired so a cross-tenant `tasks.list` fan-in's
 	// `audit.admin_scope_used` event reaches the bus (CLAUDE.md §13 —
 	// the admin path is never a silent no-op).
-	tasksProjector, err := tasksprotocol.NewRegistryProjector(taskReg)
+	tasksProjector, err := tasksprotocol.NewRegistryProjector(taskReg,
+		tasksprotocol.WithEnricher(&devEnricher{
+			trajectoryFn: runLoopDriver.TrajectoryByTaskID,
+		}),
+	)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tasks/protocol projector: %w", err)

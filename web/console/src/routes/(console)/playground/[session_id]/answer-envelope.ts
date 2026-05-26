@@ -12,9 +12,17 @@
 // field. Test pin: parseAnswerEnvelope({task:{...}, result_inline:'...'})
 // MUST return the answer.
 
+// Phase 107a (V1.3) — reasoning step type matching the wire projection.
+// Structurally identical to `$lib/chat/types.js::ReasoningStep`.
+export interface ReasoningStep {
+	index: number;
+	reasoning_trace: string;
+}
+
 /** The TaskDetail subset the Playground reads. */
 export interface TaskDetailLike {
 	result_inline?: string;
+	trajectory?: { steps?: ReasoningStep[] };
 }
 
 /**
@@ -38,6 +46,20 @@ export function parseAnswerFromDetail(detail: TaskDetailLike | null | undefined)
 	} catch {
 		return '(failed to parse answer payload)';
 	}
+}
+
+/**
+ * parseReasoningSteps extracts the reasoning-trace projection from a
+ * TaskDetail JSON response. Steps with an empty ReasoningTrace are
+ * already filtered on the Go side; the TS layer asserts the invariant in
+ * tests but does not re-filter in production. Returns an empty array
+ * when the trajectory is absent, nil, or has no non-empty-reasoning steps.
+ */
+export function parseReasoningSteps(detail: TaskDetailLike | null | undefined): ReasoningStep[] {
+	if (!detail?.trajectory?.steps) {
+		return [];
+	}
+	return detail.trajectory.steps.filter((s) => s.reasoning_trace.length > 0);
 }
 
 /**

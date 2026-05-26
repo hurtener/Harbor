@@ -246,6 +246,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 
 **Encrypted-at-rest auth profile** — Phase 72h Console-DB row whose `encrypted_jwt_blob` (or `pat_store.encrypted_token_blob`) carries an AES-GCM ciphertext over the operator's plaintext JWT / PAT. The key-encryption key (KEK) is derived once per operator session via PBKDF2 from a passphrase the operator enters at first runtime-attach (min 100,000 iterations, SHA-256, 16-byte salt persisted on `profiles.kdf_salt`); the data-encryption envelope is AES-GCM with a 12-byte random IV and 16-byte auth tag per row. Decryption with the wrong key raises `ErrAuthDecryption` loudly — no silent `null` returns. Loss of the operator's passphrase invalidates stored tokens but does NOT corrupt other Console-DB state. Brief 12 auth-storage threat model, D-091, RFC §7.
 
+**`Enricher.Trajectory`** — Phase 107a addition to the `tasks.get` Enricher interface (Phase 73d). Returns a `*TaskTrajectoryRef` for a given task id, or nil when the trajectory is unavailable (evicted or not captured).
+
 **Engine** — Harbor's runtime container — the typed, async, queue-backed graph executor. One in-memory implementation in V1 (`internal/runtime/engine`). Owns the worker loop (one goroutine per `Node`), bounded per-adjacency channels, the always-on egress dispatcher, cycle detection at construction, the reliability shell (`NodePolicy`), the streaming primitive (`EmitChunk`), per-run cancellation. Distinct from `events.EventBus` (the cross-subsystem event bus); the engine is the runtime kernel. RFC §6.1.
 
 **Engine-graph canvas** — the shared SvelteKit component at `web/console/src/lib/components/graph/` (introduced by Phase 73i; consumed by Phase 73b) that renders a runtime topology as a directed graph with auto-layout, status pills, edge bundles, and a typed `node-click` event. Reusable across the Console pages that visualise an engine graph (Live Runtime, Flows). The canvas takes a typed `topology.snapshot` payload as its input and never reads internal Runtime objects directly (D-002, D-093). RFC §7.1.
@@ -423,6 +425,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 **Live Runtime** — the Console page that is the present-tense interactive execution workbench: initiate, observe, and steer live Harbor executions through the same Protocol surfaces used in production. The chat/testing interface is one panel among many (live topology, planner steps, tool calls, streaming response, event stream, runtime controls). It is the spiritual replacement of the predecessor's Playground, upgraded. Distinct from **Sessions**, which are the past-and-active *durable execution records* (replay / continue / clone / convert-to-eval) — Live Runtime is present-tense and interactive, Sessions are investigative. RFC §7, D-062.
 
 **LLMClient** — Harbor's interface for talking to an LLM provider. **One method**: `Complete(ctx, req) (resp, error)`. Tool dispatch is runtime-side. The single V1 driver wraps `bifrost`. RFC §6.5.
+
+**`llm.completion.chunk`** — Phase 107 event type carrying per-token deltas from the LLM provider to subscribers, scoped to the originating run's identity quadruple. Payload: `{TaskID, RunID, Delta string, Done bool, Kind string}`. The `Done=true` chunk fires once per stream as the terminator marker. SafePayload — deltas are per-session operator-visible content (the LLM's own output).
 
 **`llm.posture`** — Protocol method (read-only) returning the runtime's bound LLM provider posture: provider name, model id, region/endpoint, and a `MockMode` boolean. `MockMode == true` iff the runtime booted with `HARBOR_DEV_ALLOW_MOCK=1` (D-089) — the structural signal the Console's LLM-Provider Posture card renders alongside the canonical `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` banner. Identity-mandatory; cross-tenant reads require the `auth.ScopeAdmin` claim (D-079). Phase 72g.
 
@@ -651,6 +655,8 @@ When in doubt, the RFC wins (AGENTS.md §15).
 ## R
 
 **Rate limit** — Identity-scoped token-bucket throttle on LLM calls keyed by `(identity, model)`. Bucket state persisted in StateStore so it survives runtime restart. PreCall check; emits `governance.rate_limited`; fails with `ErrRateLimited`. Phase 36b's `RateLimiter` Subsystem ships the token-bucket math; `governance.RateLimitConfig` carries `Capacity` / `RefillTokens` / `RefillInterval`. Latent default: `Capacity == 0` → no enforcement. RFC §6.15, D-044.
+
+**`ReasoningAccordion`** — Phase 107a Console component (`web/console/src/lib/chat/ReasoningAccordion.svelte`) rendering a collapsible per-bubble list of the model's reasoning-trace strings from the `TaskDetail.Trajectory` projection. Collapsed by default per bubble; the operator opts in. Design-token-only per CONVENTIONS.md §1.
 
 **Repair guidance** — a per-turn ReAct system-prompt augmentation emitted by the planner when an across-step failure counter trips. Tiered: `reminder` (count 1) → `warning` (count 2) → `critical` (count ≥ 3). Phase 83a establishes the `<additional_guidance>` / `<planning_constraints>` section anchors repair guidance merges into; Phase 83c ships the failure counters (on `RunContext`, per the D-025 concurrent-reuse contract) and the escalating-tier rendering. Brief 13 §2.2 + §10, RFC §6.2.
 
@@ -984,6 +990,8 @@ Additions to this set are RFC PRs.
 **`TaskCostRollup`** — `tasks.get` enrichment field (Phase 73d) aggregating `llm.cost.recorded` events scoped to the task: total tokens (prompt + output), USD cost, and a per-planner-step breakdown. Heavy per-event payloads stay on the event bus; the rollup carries only sums + step indices — never inlined event payloads (D-026).
 
 **`TaskPlannerSnapshotRef`** — `tasks.get` enrichment field (Phase 73d) pointing at the planner checkpoint that existed at task spawn time. Carries the checkpoint id (resolvable via the existing Phase 73 `state.load_planner_checkpoint`) and a pre-truncated summary. Heavy checkpoint content is fetched on demand, never inlined in the `tasks.get` response. RFC §5.2.
+
+**`TaskTrajectoryRef`** — Phase 107a Protocol type carrying the projected planner trajectory's reasoning trace per task on `TaskDetail.Trajectory`. The projection is narrow: per-step index + `ReasoningTrace` string; full action/observation projection is a later expansion. Steps with an empty reasoning trace are filtered out before the wire.
 
 **`tasks.list` `type=background` filter** — Phase 73h extension of the `TasksListFilter` wire shape introduced in Phase 73d: setting `Kind = "background"` restricts the returned rows to background tasks only (the canonical filter the Console Background Jobs page binds). Pairs with `Kind = "foreground"` and `Kind = ""` (empty — all kinds). Identity-scope is enforced at the Protocol edge before the filter applies; cross-tenant fan-in requires the `admin` claim per D-066. Wire-stable JSON contract; the runtime-side translator (`tasks.ListFilterFromWire`) maps the wire filter onto the Phase 20 `tasks.TaskFilter` consumed by `TaskRegistry.List`. RFC §6.8, D-114.
 

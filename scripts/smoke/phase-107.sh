@@ -46,10 +46,13 @@ assert_or_skip 'OnChunk' \
     "internal/planner/planner.go" \
     "static: planner.RunContext exposes OnChunk callback"
 
-# 3. RepairLoop wires the streaming callback through to req.Stream.
-assert_or_skip 'req\.Stream' \
+# 3. RepairLoop wires the streaming callback through to the request's
+#    Stream field. The local variable is `current` (a per-iteration copy
+#    of `req`), so the pattern matches either spelling — `current.Stream`
+#    in the shipped implementation, or `req.Stream` in a future refactor.
+assert_or_skip '(current|req)\.Stream\s*=\s*true' \
     "internal/planner/repair/repair.go" \
-    "static: repair loop sets req.Stream when streaming"
+    "static: repair loop sets Stream=true when streaming"
 
 # 4. Playground subscribes to llm.completion.chunk on its SSE stream.
 assert_or_skip 'llm\.completion\.chunk' \

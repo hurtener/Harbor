@@ -52,7 +52,9 @@
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
-  import { parseAnswerFromDetail, normalizeLifecycleType } from './answer-envelope.js';
+  import { parseAnswerFromDetail, parseReasoningSteps, normalizeLifecycleType } from './answer-envelope.js';
+  import type { ReasoningStep } from '$lib/chat/types.js';
+  import { applyChunk, finalizeStream } from './chunk-stream.js';
   import {
     PlaygroundSavedFilters,
     type PlaygroundViewSpec
@@ -351,7 +353,7 @@
   function subscribeTaskLifecycle(c: ProtocolClient): void {
     try {
       const url = c.events.subscribeURL({
-        eventTypes: ['task.completed', 'task.failed', 'task.cancelled']
+        eventTypes: ['task.completed', 'task.failed', 'task.cancelled', 'llm.completion.chunk']
       });
       const es = new EventSource(url);
       // The bus envelope's `payload.TaskID` carries the task id for
@@ -375,14 +377,22 @@
       es.addEventListener('task.cancelled', (msg: MessageEvent) => {
         handleLifecycle(msg, 'cancelled');
       });
+      // Phase 107 — per-token streaming listener. Appends `delta` to
+      // the pending agent bubble and sets `streaming: true`.
+      es.addEventListener('llm.completion.chunk', (msg: MessageEvent) => {
+        handleChunkEvent(msg);
+      });
       es.onmessage = (msg: MessageEvent) => {
         let parsed: LifecycleEvent | null = null;
         try {
           parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
         } catch {
+          // Try the chunk shape.
+          tryHandleChunkMessage(msg);
           return;
         }
         if (parsed === null || !isTerminal(parsed.type)) {
+          tryHandleChunkMessage(msg);
           return;
         }
         // Normalize 'task.<x>' → '<x>' so the handler's eventType branches
@@ -391,6 +401,37 @@
         // the error branch.
         handleLifecycle(msg, normalizeLifecycleType(parsed.type as string));
       };
+
+      // Phase 107 — chunk event handlers.
+
+      function handleChunkEvent(msg: MessageEvent): void {
+        let parsed: { task_id?: string; delta?: string; done?: boolean; kind?: string } | null = null;
+        try {
+          parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean; kind?: string };
+        } catch {
+          return;
+        }
+        if (!parsed || !parsed.task_id || !parsed.delta) return;
+        const tid = parsed.task_id;
+        if (tid !== activeTaskID) return;
+
+        messages = applyChunk(messages, tid, parsed.delta);
+        if (parsed.done) {
+          messages = finalizeStream(messages, tid);
+        }
+      }
+
+      function tryHandleChunkMessage(msg: MessageEvent): void {
+        try {
+          const parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean };
+          if (parsed && parsed.task_id) {
+            handleChunkEvent(msg);
+          }
+        } catch {
+          // Not a chunk event either — silently ignore.
+        }
+      }
+
       async function handleLifecycle(msg: MessageEvent, eventType: string): Promise<void> {
         let parsed: LifecycleEvent | null = null;
         try {
@@ -414,11 +455,14 @@
         // (that's the compact TaskRow projection).
         if (eventType === 'completed' && client !== null) {
           try {
-            const detail = await client.tasks.get<{ result_inline?: string }>(taskID);
+            const detail = await client.tasks.get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(taskID);
             const answer = parseAnswerFromDetail(detail);
+            // Phase 107a (V1.3) — extract reasoning steps from the
+            // trajectory projection and populate the accordion.
+            const reasoningSteps = parseReasoningSteps(detail);
             messages = messages.map((m) =>
               m.taskID === taskID && m.role === 'agent'
-                ? { ...m, text: answer, pending: false }
+                ? { ...m, text: answer, reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined, pending: false }
                 : m
             );
           } catch {

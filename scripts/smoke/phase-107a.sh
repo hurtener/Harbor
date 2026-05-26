@@ -60,9 +60,17 @@ assert_or_skip 'parseReasoningSteps' \
     "web/console/src/routes/(console)/playground/[session_id]/answer-envelope.ts" \
     "static: parseReasoningSteps helper declared"
 
-assert_or_skip 'ReasoningAccordion' \
+# The Playground page populates `reasoningSteps` on the agent bubble;
+# the actual <ReasoningAccordion> mount lives inside MessageBubble.svelte
+# (the chat module owns the rendering surface, the page owns the data
+# wiring). Assert both halves.
+assert_or_skip 'reasoningSteps' \
     "web/console/src/routes/(console)/playground/[session_id]/+page.svelte" \
-    "static: Playground page mounts ReasoningAccordion"
+    "static: Playground page populates reasoningSteps on the bubble"
+
+assert_or_skip 'ReasoningAccordion' \
+    "web/console/src/lib/chat/MessageBubble.svelte" \
+    "static: MessageBubble mounts ReasoningAccordion"
 
 # ----------------------------------------------------------------------------
 # Live-server assertions — gated on (a) the projection surface having

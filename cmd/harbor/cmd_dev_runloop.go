@@ -89,6 +89,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -183,6 +184,13 @@ type perTaskRunLoopDriver struct {
 	// materializer.
 	artifactStore artifacts.ArtifactStore
 
+	// Phase 107a — per-task trajectory map for the Enricher seam.
+	// Trajectories are stored before RunLoop.Run and retained after
+	// completion for tasks.get enrichment. Reads are safe under RLock;
+	// writes acquire the full mutex. An evicted task returns nil.
+	trajMu      sync.RWMutex
+	trajectories map[tasks.TaskID]*planner.Trajectory
+
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
 	// every in-flight RunLoop goroutine before Close returns.
@@ -241,6 +249,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 		artifactStore:    opts.artifactStore,
+		trajectories:     make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -592,6 +601,31 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return nil
 	}
 
+	// Phase 107 — per-run OnChunk closure. Translates bifrost streaming
+	// deltas into `llm.completion.chunk` bus events under the run's
+	// identity quadruple. Per D-025: the closure is per-run on the
+	// stack; N concurrent runs see N independent closures.
+	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
+		payload := llm.CompletionChunkPayload{
+			Identity:   q,
+			TaskID:     string(taskID),
+			RunID:      q.RunID,
+			Delta:      delta,
+			Done:       done,
+			Kind:       string(kind),
+			OccurredAt: time.Now(),
+		}
+		if pubErr := d.bus.Publish(d.subCtx, events.Event{
+			Type:    llm.EventTypeCompletionChunk,
+			Payload: payload,
+		}); pubErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: chunk publish failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", pubErr.Error()))
+		}
+	}
+
 	// Round-7 F11 / D-166 — pre-resolve operator-uploaded input
 	// artifacts so the planner's first-turn materializer renders them
 	// as multimodal Content.Parts. The runloop clears
@@ -613,6 +647,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Catalog:        catalogView,     // Phase 83i (D-152) — populates <available_tools>
 			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
 			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
+			OnChunk:        onChunk,         // Phase 107 — per-token streaming to bus
 			InputArtifacts: inputArtifacts,  // Round-7 F11 / D-166 — first-turn multimodal inputs
 		},
 		TaskID:           taskID,
@@ -620,6 +655,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
 	}
+	// Phase 107a — save the trajectory ref before Run so the Enricher
+	// can read it post-completion (including concurrently — the map is
+	// mutex-guarded per D-025).
+	d.trajMu.Lock()
+	d.trajectories[taskID] = traj
+	d.trajMu.Unlock()
+
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
@@ -842,6 +884,15 @@ func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 		d.runsWG.Wait()
 	})
 	return nil
+}
+
+// TrajectoryByTaskID returns the planner trajectory for a completed run,
+// or nil when the task's trajectory has been evicted or never existed.
+// Reads are safe under concurrent access (RLock / D-025).
+func (d *perTaskRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
+	d.trajMu.RLock()
+	defer d.trajMu.RUnlock()
+	return d.trajectories[taskID]
 }
 
 // projectMemoryBlocks shapes a memory.LLMContextPatch into the

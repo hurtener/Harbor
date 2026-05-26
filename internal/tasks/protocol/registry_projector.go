@@ -64,6 +64,10 @@ type Enricher interface {
 	// PlannerSnapshot returns the planner-checkpoint reference at task
 	// spawn time, or nil when no checkpoint exists.
 	PlannerSnapshot(ctx context.Context, id identity.Identity, taskID string) *prototypes.TaskPlannerSnapshotRef
+	// Trajectory returns the projected reasoning-trace snapshot for the
+	// task, or nil when the trajectory is unavailable (evicted, not
+	// captured, or the run-loop has not wired a trajectory source).
+	Trajectory(ctx context.Context, id identity.Identity, taskID string) *prototypes.TaskTrajectoryRef
 }
 
 // RegistryProjectorOption configures NewRegistryProjector.
@@ -181,17 +185,27 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	detail := prototypes.TaskDetail{
 		Task: projectRow(task),
 	}
+	// The parent-session card always carries the session ID from the task
+	// identity — it is the one field that is always known regardless of
+	// whether an enricher is wired. The enricher overlays AgentName +
+	// Status when it returns them non-zero.
+	detail.ParentSession = prototypes.TaskParentSessionRef{
+		SessionID: task.Identity.SessionID,
+	}
 	if p.enricher != nil {
-		detail.ParentSession = p.enricher.ParentSession(ctx, id, taskID)
+		enriched := p.enricher.ParentSession(ctx, id, taskID)
+		if enriched.AgentName != "" {
+			detail.ParentSession.AgentName = enriched.AgentName
+		}
+		if enriched.Status != "" {
+			detail.ParentSession.Status = enriched.Status
+		}
 		detail.Cost = p.enricher.Cost(ctx, id, taskID)
 		detail.PlannerSnapshot = p.enricher.PlannerSnapshot(ctx, id, taskID)
+		detail.Trajectory = p.enricher.Trajectory(ctx, id, taskID)
 	} else {
-		// No enricher — the parent-session card carries the session ID
-		// the task runs within (always known from the task identity);
-		// the cost rollup + planner snapshot stay zero-valued.
-		detail.ParentSession = prototypes.TaskParentSessionRef{
-			SessionID: task.Identity.SessionID,
-		}
+		// No enricher — cost rollup + planner snapshot stay zero-valued.
+		// The parent-session baseline (SessionID from identity) was set above.
 	}
 	// Round-6 fix: the TS contract declares cost.per_step as a non-null
 	// array (TaskCostStep[]); a Go nil slice JSON-marshals to `null` and

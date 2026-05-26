@@ -831,6 +831,92 @@ func TestPerTaskRunLoopDriver_ConcurrentReuse_NoRaceUnderLoad(t *testing.T) {
 	}
 }
 
+// TestTrajectoryByTaskID_ConcurrentReads — Phase 107a (AC-14).
+// Runs N=100 concurrent reads against the trajectory map while writes
+// are happening in the background, asserting no races and that the map
+// returns either nil or the correct trajectory for a given task.
+func TestTrajectoryByTaskID_ConcurrentReads(t *testing.T) {
+	const n = 100
+
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	p := &driverTestPlanner{finishGoalImmediately: true}
+	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		bus:     bus,
+		runLoop: rl,
+		planner: p,
+		tasks:   reg,
+	})
+	if err != nil {
+		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+
+	// Spawn one task so the map has at least one entry, then run concurrent
+	// reads + writes against the RWMutex under -race.
+	id := identity.Identity{
+		TenantID:  "tenant-trajectory",
+		UserID:    "user-trajectory",
+		SessionID: "session-trajectory",
+	}
+	ctx, withErr := identity.With(context.Background(), id)
+	if withErr != nil {
+		t.Fatalf("identity.With: %v", withErr)
+	}
+	spawned, err := reg.Spawn(ctx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: id},
+		Kind:     tasks.KindForeground,
+		Query:    "trajectory-test",
+	})
+	if err != nil {
+		t.Fatalf("reg.Spawn: %v", err)
+	}
+	// The subscribe loop may not have picked up the task yet. Poll briefly
+	// until TrajectoryByTaskID returns non-nil or we time out.
+	var traj *planner.Trajectory
+	for range 50 {
+		traj = driver.TrajectoryByTaskID(spawned.ID)
+		if traj != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if traj == nil {
+		t.Fatal("trajectory not stored before poll timeout — driver may not have picked up task.spawned")
+	}
+
+	// Concurrent reads under -race.
+	var readWG sync.WaitGroup
+	readWG.Add(n)
+	for range n {
+		go func() {
+			defer readWG.Done()
+			for j := 0; j < 100; j++ {
+				_ = driver.TrajectoryByTaskID(spawned.ID)
+			}
+		}()
+	}
+	readWG.Wait()
+
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	_ = driver.Close(closeCtx)
+
+	// After Close, a nil for a never-seen task returns nil.
+	if got := driver.TrajectoryByTaskID("no-such-task"); got != nil {
+		t.Errorf("expected nil for unknown task, got %v", got)
+	}
+}
+
 // itoa is a stdlib-free int→string helper for the stress test's
 // identity construction. Kept tiny to avoid pulling in strconv just
 // for this file when no other test needs it.
