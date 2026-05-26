@@ -210,6 +210,21 @@ if [ "${classify_drift_count}" -eq 0 ]; then
     ok 'PREFLIGHT_REQUIRES header present + recognised on every phase smoke (D-104)'
 fi
 
+# -----------------------------------------------------------------------------
+# Operator-skill frontmatter audit (phase 85k / V1.1.5 — see §18 of CLAUDE.md).
+# Every docs/skills/<slug>/SKILL.md MUST carry a well-formed Dockyard-style
+# frontmatter (`name` / `description` containing "Use when" / `license:
+# Apache-2.0` / `metadata.framework: harbor` / `metadata.surface` in the
+# canonical set / `metadata.verbs`). A skill with malformed frontmatter fails
+# the gate. The helper is extracted to its own script so phase-85k.sh's smoke
+# can re-run the same check on the live build.
+# -----------------------------------------------------------------------------
+if [ -x scripts/skills/check-frontmatter.sh ]; then
+    if ! scripts/skills/check-frontmatter.sh; then
+        fail 'one or more docs/skills/<slug>/SKILL.md files have malformed frontmatter — see §18 of CLAUDE.md'
+    fi
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

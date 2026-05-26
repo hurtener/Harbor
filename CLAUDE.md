@@ -143,7 +143,8 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 └── docs/
     ├── plans/                  # phase implementation plans
     ├── rfc/                    # merged RFCs
-    └── research/               # phase-planning research briefs
+    ├── research/               # phase-planning research briefs
+    └── skills/                 # operator skills — Claude-Code-style playbooks for building agents (V1.1.5+; see §18 drift rule)
 ```
 
 The Console (a separate product in the Harbor ecosystem) lives in its own repo. If it later monorepos into `web/console/`, the binding rules in §4.5 still apply.
@@ -680,7 +681,33 @@ Harbor is built in **waves** — a wave is ~3–8 phases that form a coherent su
 
 ---
 
-## 18. Mirroring
+## 18. Operator-skill hygiene — same-PR drift prevention (effective V1.1.5)
+
+`docs/skills/<slug>/SKILL.md` is Harbor's operator-facing adoption surface — Claude-Code-style playbooks for the activities Harbor's CLI / Console / Protocol expose. The skills only earn operator trust when they STAY in sync with the surface they document. Effective V1.1.5 (the first cut that ships the skills), the §17.6-style "fix what the test finds" rule extends here:
+
+**A change that mutates a documented surface MUST update the matching skill in the SAME PR.** "Documented surface" includes any of:
+
+- A `harbor` CLI verb (its flags, output, exit codes, posture). Skills tying to that verb live by it.
+- A Harbor Protocol method, wire-shape field, capability advertisement, or event payload key — the `use-the-harbor-protocol` skill (and any skill that demonstrates a Protocol call) consumes them.
+- A Console route, page, or `<PageState>` branch the operator reads.
+- A `harbor.yaml` config field (added, renamed, removed, semantically changed).
+- A canonical artifact a skill quotes verbatim (e.g. the `harbor init` template's structure).
+
+**How to know which skill is affected.** Every skill carries a frontmatter `metadata.surface` value (`cli` / `agent-yaml` / `tools` / `mcp` / `llm` / `memory` / `playground` / `console` / `tasks` / `protocol`). When a PR touches one of these surfaces, grep `docs/skills/` for matching `surface:` lines and read the SKILL.md bodies — the affected skill is usually obvious in <60 seconds.
+
+**Failure mode this closes.** Without this rule, skills drift silently: the surface evolves, the skill doesn't, an operator follows a stale step, hits a wall, and abandons Harbor. The first-five-minutes adoption guarantee (`scaffold-a-harbor-agent` → `run-the-dev-loop` → `drive-the-playground` in <5 min) is only meaningful if every operator who follows it today gets the same five-minute experience tomorrow.
+
+**What the drift-audit catches mechanically.** `scripts/skills/check-frontmatter.sh` (invoked by `make drift-audit`) verifies every `SKILL.md` has a well-formed frontmatter (`name` / `description` / `license` / `metadata.framework: harbor` / `metadata.surface` in the recognised set / `metadata.verbs`). A skill with a removed-from-the-codebase surface keyword in its `verbs:` still passes the audit — drift-audit cannot read prose. The human-review side of this rule is therefore the LOAD-BEARING gate; the audit is the trip-wire for the trivial regressions.
+
+**When a surface change genuinely doesn't require a skill update.** Internal refactors, perf optimisations, lint cleanups, test-only changes — these don't touch operator surfaces by definition and are exempt. The rule is "if you change the surface AN OPERATOR FOLLOWS, update the playbook." If you're unsure: grep the skills, then read the body of the closest match; if no skill mentions the surface you're changing, you're exempt.
+
+**When two surfaces compete for one skill update.** A change that affects two skills (e.g. a `harbor.yaml` config field renamed AND a CLI flag that reads it) updates BOTH in the same PR. The skill-frontmatter helper lists every `SKILL.md` that names the affected surface; touch them all.
+
+**Dockyard precedent.** Dockyard's sibling skills (`~/Repos/Dockyard/skills/`) carry the same drift discipline. The cross-references between Harbor and Dockyard skills work because both repos enforce same-PR updates on their respective surfaces.
+
+---
+
+## 19. Mirroring
 
 `AGENTS.md` and `CLAUDE.md` are kept verbatim identical. After any edit, run:
 
