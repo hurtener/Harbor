@@ -15,6 +15,17 @@ Two versions move independently in Harbor (RFC §5.3):
   `0.1.0`). A breaking Protocol change is an RFC change and carries its
   own deprecation window.
 
+## [Unreleased]
+
+The V1.2 backlog is scoped in `docs/plans/README.md` under the **101–104** band. Tracking:
+
+- **101** — GitHub Actions Node 24 modernisation (`actions/checkout@v4` → `@v6` etc., before GitHub's 2026-09-16 cutoff).
+- **102** — Godoc hygiene: strip internal phase jargon from godoc-visible Go source under `internal/` and `cmd/` (2,343 occurrences across 360 files at v1.1.6); add a drift-audit hook so the cleanup doesn't decay.
+- **103** — GitHub Pages docs site mirroring Dockyard's VitePress stack.
+- **104** — Composable resilient flows as a load-bearing value proposition (RFC §1 fourth headline prop, README framing modelled on eino's positioning, new `build-a-resilient-flow` operator skill).
+
+Each lands as its own PR. No code under V1.2 is shipped in `[Unreleased]` itself — this section is a forward pointer to the phase plans.
+
 ## [1.1.6] — 2026-05-26
 
 A release-engineering hotfix that finishes what v1.1.5 started. v1.1.5
