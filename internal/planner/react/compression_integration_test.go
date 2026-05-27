@@ -2,6 +2,7 @@ package react_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -171,7 +172,11 @@ func TestE2E_ReactCompression_OverBudgetTriggersCompaction_PlannerSeesCompactedV
 	// turns from the step loop.
 	cap := &capturingClient{
 		response: llm.CompleteResponse{
-			Content: `{"tool":"_finish","args":{"answer":"all done"},"reasoning":"compacted view sufficient"}`,
+			ToolCalls: []llm.ToolCallStructured{{
+				ID:   "call_done",
+				Name: "_finish",
+				Args: json.RawMessage(`{"answer":"all done"}`),
+			}},
 		},
 	}
 	p := react.New(cap)
@@ -344,7 +349,11 @@ func TestE2E_ReactCompression_UnderBudget_NoCompaction_PlannerSeesRawHistory(t *
 	// Now invoke the planner; it MUST render the raw step history.
 	cap := &capturingClient{
 		response: llm.CompleteResponse{
-			Content: `{"tool":"_finish","args":{"answer":"ok"},"reasoning":"raw history sufficient"}`,
+			ToolCalls: []llm.ToolCallStructured{{
+				ID:   "call_ok",
+				Name: "_finish",
+				Args: json.RawMessage(`{"answer":"ok"}`),
+			}},
 		},
 	}
 	p := react.New(cap)

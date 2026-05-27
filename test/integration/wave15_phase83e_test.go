@@ -27,6 +27,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -49,13 +50,22 @@ import (
 // CompleteResponse whose `Reasoning` field carries a per-call trace —
 // the production bifrost driver populates this from the provider's
 // normalised `reasoning_details[]`. Safe for concurrent use.
+//
+// Phase 107c (D-167) — the legacy `content` field still works for
+// natural-language terminal answers (the projector maps non-empty
+// Content + no ToolCalls to Finish{Goal}), but tests that need a
+// CallTool emission must set `toolCallName` + `toolCallArgs` so the
+// projector reads native ToolCalls.
 type reasoningLLM struct {
-	mu      sync.Mutex
-	content string
-	reason  string
-	calls   atomic.Int64
-	seenIDs []identity.Quadruple
-	prompts []string // last user/assistant content seen, for replay assertions
+	mu            sync.Mutex
+	content       string
+	toolCallID    string
+	toolCallName  string
+	toolCallArgs  string
+	reason        string
+	calls         atomic.Int64
+	seenIDs       []identity.Quadruple
+	prompts       []string // last user/assistant content seen, for replay assertions
 }
 
 func (c *reasoningLLM) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -69,7 +79,15 @@ func (c *reasoningLLM) Complete(ctx context.Context, req llm.CompleteRequest) (l
 		}
 	}
 	c.mu.Unlock()
-	return llm.CompleteResponse{Content: c.content, Reasoning: c.reason}, nil
+	resp := llm.CompleteResponse{Content: c.content, Reasoning: c.reason}
+	if c.toolCallName != "" {
+		resp.ToolCalls = []llm.ToolCallStructured{{
+			ID:   c.toolCallID,
+			Name: c.toolCallName,
+			Args: json.RawMessage(c.toolCallArgs),
+		}}
+	}
+	return resp, nil
 }
 
 func (c *reasoningLLM) Close(_ context.Context) error { return nil }
@@ -124,8 +142,10 @@ func TestE2E_Phase83e_ReasoningCaptured(t *testing.T) {
 
 	const trace = "I should call the search tool because the user asked about the weather."
 	client := &reasoningLLM{
-		content: `{"tool":"search","args":{"q":"weather"}}`,
-		reason:  trace,
+		toolCallID:   "call_search",
+		toolCallName: "search",
+		toolCallArgs: `{"q":"weather"}`,
+		reason:       trace,
 	}
 
 	// Subscribe to the bus BEFORE the run so the planner.decision emit
@@ -240,8 +260,10 @@ func TestE2E_Phase83e_ReplayHonoursMode(t *testing.T) {
 				t.Fatalf("identity.WithRun: %v", err)
 			}
 			client := &reasoningLLM{
-				content: `{"tool":"_finish","args":{"answer":"done"}}`,
-				reason:  "second-step reasoning",
+				toolCallID:   "call_finish",
+				toolCallName: "_finish",
+				toolCallArgs: `{"answer":"done"}`,
+				reason:       "second-step reasoning",
 			}
 			p := react.New(client, react.WithReasoningReplay(tc.configured))
 
@@ -277,7 +299,7 @@ func TestE2E_Phase83e_ReplayHonoursMode(t *testing.T) {
 // mode: a RunContext with an incomplete identity quadruple fails loud
 // rather than silently degrading (§13).
 func TestE2E_Phase83e_MissingIdentityFailsLoud(t *testing.T) {
-	client := &reasoningLLM{content: `{"tool":"search","args":{}}`, reason: "x"}
+	client := &reasoningLLM{toolCallID: "call_x", toolCallName: "search", toolCallArgs: `{}`, reason: "x"}
 	p := react.New(client)
 	// RunContext with an empty RunID — identity is incomplete.
 	rc := planner.RunContext{
@@ -390,7 +412,11 @@ func (c *perRunReasoningLLM) Complete(ctx context.Context, req llm.CompleteReque
 	}
 	c.mu.Unlock()
 	return llm.CompleteResponse{
-		Content:   `{"tool":"_finish","args":{"answer":"done"}}`,
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   "call_done",
+			Name: "_finish",
+			Args: json.RawMessage(`{"answer":"done"}`),
+		}},
 		Reasoning: "step reasoning for " + id.RunID,
 	}, nil
 }

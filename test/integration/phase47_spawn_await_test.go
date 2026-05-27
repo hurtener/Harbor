@@ -132,12 +132,15 @@ func openPhase47(t *testing.T) (*phase47Deps, func()) {
 }
 
 // scriptedLLM is a tiny llm.LLMClient that emits a scripted sequence
-// of CompleteResponse contents. Re-used across the Phase 47 tests.
+// of full llm.CompleteResponse values. Phase 107c (D-167) rewrote the
+// shape from `[]string` (Content-only) to `[]llm.CompleteResponse` so
+// the reserved-name native ToolCalls (`_spawn_task`, `_await_task`)
+// drive the projector path. Re-used across the Phase 47 tests.
 type scriptedLLM struct {
-	mu       sync.Mutex
-	contents []string
-	cursor   int
-	seen     []string // raw user-prompts (best-effort, last-message-content)
+	mu        sync.Mutex
+	responses []llm.CompleteResponse
+	cursor    int
+	seen      []string // raw user-prompts (best-effort, last-message-content)
 }
 
 func (s *scriptedLLM) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
@@ -149,15 +152,33 @@ func (s *scriptedLLM) Complete(_ context.Context, req llm.CompleteRequest) (llm.
 			s.seen = append(s.seen, *last.Content.Text)
 		}
 	}
-	if s.cursor >= len(s.contents) {
-		return llm.CompleteResponse{Content: s.contents[len(s.contents)-1]}, nil
+	if s.cursor >= len(s.responses) {
+		if len(s.responses) == 0 {
+			return llm.CompleteResponse{}, nil
+		}
+		return s.responses[len(s.responses)-1], nil
 	}
-	out := s.contents[s.cursor]
+	out := s.responses[s.cursor]
 	s.cursor++
-	return llm.CompleteResponse{Content: out}, nil
+	return out, nil
 }
 
 func (s *scriptedLLM) Close(_ context.Context) error { return nil }
+
+// nativeReservedToolCallResp shapes a scripted LLM response that
+// emits one of the reserved meta-tool names (`_spawn_task`,
+// `_await_task`, `_finish`) as a native ToolCall. The projector
+// translates these to SpawnTask/AwaitTask/Finish Decisions
+// (Phase 107c — D-167).
+func nativeReservedToolCallResp(callID, name, argsJSON string) llm.CompleteResponse {
+	return llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   callID,
+			Name: name,
+			Args: json.RawMessage(argsJSON),
+		}},
+	}
+}
 
 // fixedQ47 builds a populated identity quadruple for the Phase 47
 // integration tests.
@@ -193,11 +214,12 @@ func TestE2E_Phase47_ReactSpawnTaskWakeRoundTrip(t *testing.T) {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
 
-	// Step 1 LLM response: emit `_spawn_task`.
+	// Step 1 LLM response: emit `_spawn_task` as a native ToolCall.
 	// Step 2 LLM response (after group resolves): emit `_finish`.
-	client := &scriptedLLM{contents: []string{
-		`{"tool":"_spawn_task","args":{"kind":"background","spec":{"description":"summarise document X","query":"summarise X","priority":0,"retain_turn":false}},"reasoning":"need a side channel"}`,
-		`{"tool":"_finish","args":{"answer":"all done, saw background result"},"reasoning":"wake observed"}`,
+	client := &scriptedLLM{responses: []llm.CompleteResponse{
+		nativeReservedToolCallResp("call_spawn", "_spawn_task",
+			`{"kind":"background","spec":{"description":"summarise document X","query":"summarise X","priority":0,"retain_turn":false}}`),
+		nativeReservedToolCallResp("call_finish", "_finish", `{"answer":"all done, saw background result"}`),
 	}}
 	p := react.New(client)
 
@@ -331,8 +353,8 @@ func TestE2E_Phase47_ReactAwaitTaskEmits(t *testing.T) {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
 
-	client := &scriptedLLM{contents: []string{
-		`{"tool":"_await_task","args":{"task_id":"task-77"},"reasoning":"block until done"}`,
+	client := &scriptedLLM{responses: []llm.CompleteResponse{
+		nativeReservedToolCallResp("call_await", "_await_task", `{"task_id":"task-77"}`),
 	}}
 	p := react.New(client)
 	dec, err := p.Next(ctx, planner.RunContext{Quadruple: q, Goal: "block on task-77"})
@@ -394,20 +416,24 @@ func TestE2E_Phase47_ReactCallParallelEndToEnd(t *testing.T) {
 		}
 	}
 
-	client := &scriptedLLM{contents: []string{
-		`[{"tool":"a","args":{"x":1}},{"tool":"b","args":{"x":2}},{"tool":"c","args":{"x":3}}]`,
-	}}
-	p := react.New(client)
-	dec, err := p.Next(ctx, planner.RunContext{Quadruple: q, Goal: "fan-out across a/b/c"})
-	if err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	par, ok := dec.(planner.CallParallel)
-	if !ok {
-		t.Fatalf("decision = %T, want planner.CallParallel (Phase 47 pass-through)", dec)
-	}
-	if got := len(par.Branches); got != 3 {
-		t.Fatalf("len(Branches) = %d, want 3", got)
+	// Phase 107c (D-167) — the React planner's default V1.3 path
+	// SERIALIZES multi-ToolCall responses through rc.PendingToolCalls
+	// (AC-19 serialization fallback); CallParallel emission is gated
+	// on a future operator-yaml knob (`planner.react.parallel_tool_calls`
+	// = true) that ships post-V1.3 alongside the runloop executor's
+	// CallParallel-dispatch capability flag. The parallel EXECUTOR
+	// (internal/runtime/parallel) is the load-bearing surface this
+	// test exercises; bypass the planner and construct the
+	// CallParallel directly so the executor's atomic dispatch path
+	// stays covered until the planner emission re-lands.
+	_ = ctx // identity ctx already established above
+	par := planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "a", Args: json.RawMessage(`{"x":1}`), CallID: "call_a"},
+			{Tool: "b", Args: json.RawMessage(`{"x":2}`), CallID: "call_b"},
+			{Tool: "c", Args: json.RawMessage(`{"x":3}`), CallID: "call_c"},
+		},
+		Join: &planner.JoinSpec{Kind: planner.JoinAll},
 	}
 
 	// Dispatch through the real parallel executor.

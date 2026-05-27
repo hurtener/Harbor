@@ -250,6 +250,17 @@ type ChatMessage struct {
 	// the provider supports it; falls back to user-role rendering
 	// on providers without native tool-result roles.
 	ToolCallID *string
+	// ToolCalls (Phase 107c / D-167) is the per-message structured
+	// tool-call slice carried on RoleAssistant messages that replay
+	// a prior planner step's CallTool emission into the next turn's
+	// thread. When non-empty, the bifrost translator emits an
+	// assistant message with the provider-native `tool_calls`
+	// block (OpenAI / Anthropic / Gemini all consume this shape).
+	// The matching tool result is threaded back via a sibling
+	// RoleTool message whose `ToolCallID` matches `ToolCalls[i].ID`.
+	// Empty for every non-assistant message and for assistant
+	// messages whose content is the model's final answer.
+	ToolCalls []ToolCallStructured
 }
 
 // Content is the multimodal sum-type. Exactly one of `Text` or

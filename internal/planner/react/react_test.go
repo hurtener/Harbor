@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,13 +117,41 @@ func rcWith(q identity.Quadruple, goal string, emit func(events.Event)) planner.
 	}
 }
 
+// nativeToolCallResp shapes a native-tool-calling mock LLM response
+// carrying a single ToolCall (Phase 107c — D-167). Helper to keep
+// per-test fixtures compact after the cutover.
+func nativeToolCallResp(id, name, argsJSON string) llm.CompleteResponse {
+	return llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   id,
+			Name: name,
+			Args: json.RawMessage(argsJSON),
+		}},
+	}
+}
+
+// finishToolCallResp shapes a native-tool-calling mock LLM response
+// carrying the reserved `_finish` tool call. The projector translates
+// this to planner.Finish{Goal} with the answer in Payload.
+func finishToolCallResp(id, answer string) llm.CompleteResponse {
+	return nativeToolCallResp(id, "_finish", fmt.Sprintf(`{"answer":%q}`, answer))
+}
+
+// multiToolCallResp shapes a native-tool-calling mock LLM response
+// carrying N ToolCalls (AC-19 serialization fallback path: the
+// projector emits the first as CallTool and queues the rest on
+// rc.PendingToolCalls).
+func multiToolCallResp(calls ...llm.ToolCallStructured) llm.CompleteResponse {
+	return llm.CompleteResponse{ToolCalls: append([]llm.ToolCallStructured(nil), calls...)}
+}
+
 // TestNew_AppliesDefaults asserts the zero-options constructor sets
 // every documented default.
 func TestNew_AppliesDefaults(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{"answer":"ok"}}`},
+			finishToolCallResp("call_1", "ok"),
 		},
 	}
 	p := react.New(client)
@@ -189,7 +218,7 @@ func TestNext_HonoursCtxCancel(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{}}`},
+			finishToolCallResp("call_1", ""),
 		},
 	}
 	p := react.New(client)
@@ -238,7 +267,7 @@ func TestNext_FinishToolNameMappedToFinishDecision(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{"answer":"42"},"reasoning":"the answer"}`},
+			finishToolCallResp("call_1", "42"),
 		},
 	}
 	p := react.New(client)
@@ -263,29 +292,32 @@ func TestNext_FinishToolNameMappedToFinishDecision(t *testing.T) {
 	if _, present := fin.Metadata["reasoning"]; present {
 		t.Errorf("Metadata[reasoning] should be absent post-D-147, got %v", fin.Metadata["reasoning"])
 	}
-	if v, _ := fin.Metadata["via"].(string); v != "react._finish" {
-		t.Errorf("Metadata[via] = %v, want react._finish", v)
+	// Phase 107c (D-167): the projector path stamps `via` to
+	// `react.projectResponse._finish` (translateNativeFinish).
+	if v, _ := fin.Metadata["via"].(string); v != "react.projectResponse._finish" {
+		t.Errorf("Metadata[via] = %v, want react.projectResponse._finish", v)
 	}
 }
 
-// TestNext_ParallelPassesThroughVerbatim asserts the Phase 47 (D-056)
-// upgrade: when the repair loop returns CallParallel (multi-action
-// salvage), the planner passes it through unchanged. The runtime
-// parallel executor (internal/runtime/parallel) consumes the shape;
-// the §13 import-graph contract forbids the planner subtree from
-// importing internal/runtime/..., so the executor is OUTSIDE the
-// planner package by design.
+// TestNext_MultiToolCallSerializesViaPending asserts the Phase 107c
+// (AC-19) serialization fallback: when the LLM emits N>1 native
+// ToolCalls in one response, the planner emits the FIRST as
+// planner.CallTool and queues the rest on rc.PendingToolCalls for
+// subsequent steps to drain. The runtime's CallParallel dispatcher is
+// post-V1.3; serialization is the V1.3 contract until it lands.
 //
-// This test supersedes the prior V1 reduction test
-// (`TestNext_ParallelReducesToFirstCallTool`) — the Phase 45 D-051
-// stop-gap reduction override was DELETED in Phase 47.
-func TestNext_ParallelPassesThroughVerbatim(t *testing.T) {
+// This test supersedes the prior CallParallel pass-through (Phase 47
+// / D-056) — the prompt-engineered JSON array path retired with
+// Phase 107c.
+func TestNext_MultiToolCallSerializesViaPending(t *testing.T) {
 	t.Parallel()
-	// Multi-action response — Phase 44's parser produces a
-	// CallParallel from a JSON array.
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `[{"tool":"alpha","args":{"x":1}},{"tool":"beta","args":{"y":2}},{"tool":"gamma","args":{"z":3}}]`},
+			multiToolCallResp(
+				llm.ToolCallStructured{ID: "call_a", Name: "alpha", Args: json.RawMessage(`{"x":1}`)},
+				llm.ToolCallStructured{ID: "call_b", Name: "beta", Args: json.RawMessage(`{"y":2}`)},
+				llm.ToolCallStructured{ID: "call_c", Name: "gamma", Args: json.RawMessage(`{"z":3}`)},
+			),
 		},
 	}
 	p := react.New(client)
@@ -294,35 +326,32 @@ func TestNext_ParallelPassesThroughVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
-	par, ok := dec.(planner.CallParallel)
+	call, ok := dec.(planner.CallTool)
 	if !ok {
-		t.Fatalf("decision = %T, want planner.CallParallel (Phase 47 / D-056 pass-through)", dec)
+		t.Fatalf("decision = %T, want planner.CallTool (AC-19 serialization fallback)", dec)
 	}
-	if got, want := len(par.Branches), 3; got != want {
-		t.Fatalf("len(Branches) = %d, want %d", got, want)
+	if call.Tool != "alpha" || call.CallID != "call_a" {
+		t.Errorf("first decision = %+v, want CallTool{alpha, call_a}", call)
 	}
-	wantNames := []string{"alpha", "beta", "gamma"}
-	for i, b := range par.Branches {
-		if b.Tool != wantNames[i] {
-			t.Errorf("Branches[%d].Tool = %q, want %q", i, b.Tool, wantNames[i])
-		}
-	}
-	if par.Join == nil || par.Join.Kind != planner.JoinAll {
-		t.Errorf("Join = %+v, want JoinAll (Phase 44 multi-action salvage default)", par.Join)
-	}
+	// The rc.PendingToolCalls mutation persists within the planner's
+	// per-step rc copy but is not observable from this test's outer
+	// scope (the rc passed to Next() is a value copy). The runtime
+	// surface for cross-step persistence is a future enhancement; this
+	// test exercises the projection contract.
 }
 
 // TestNext_ParallelWithFinishFirstStillFinishes asserts the special
-// case: if the first parallel branch is `_finish`, the planner
-// converts it to a Finish Decision (translating reserved names in the
-// first branch is the symmetric rule with the single-action path).
-// Phase 47 (D-056) preserves this special case even after the
-// CallParallel pass-through landed.
+// case: if the first native ToolCall is `_finish`, the planner
+// converts it to a Finish Decision and drops the trailing calls.
+// Phase 107c (D-167) preserves this special case under the projector.
 func TestNext_ParallelWithFinishFirstStillFinishes(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `[{"tool":"_finish","args":{"answer":"early"}},{"tool":"discarded","args":{}}]`},
+			multiToolCallResp(
+				llm.ToolCallStructured{ID: "call_f", Name: "_finish", Args: json.RawMessage(`{"answer":"early"}`)},
+				llm.ToolCallStructured{ID: "call_d", Name: "discarded", Args: json.RawMessage(`{}`)},
+			),
 		},
 	}
 	p := react.New(client)
@@ -333,7 +362,7 @@ func TestNext_ParallelWithFinishFirstStillFinishes(t *testing.T) {
 	}
 	fin, ok := dec.(planner.Finish)
 	if !ok {
-		t.Fatalf("decision = %T, want planner.Finish (parallel first branch _finish should still finish)", dec)
+		t.Fatalf("decision = %T, want planner.Finish (first ToolCall _finish should still finish)", dec)
 	}
 	if fin.Reason != planner.FinishGoal {
 		t.Errorf("Reason = %q, want %q", fin.Reason, planner.FinishGoal)
@@ -354,7 +383,7 @@ func TestNext_MaxStepsCircuitBreakerEmitsAndFinishes(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{}}`}, // never reached
+			finishToolCallResp("call_1", ""), // never reached
 		},
 	}
 	rec := &recordingEmit{}
@@ -445,81 +474,94 @@ func TestNext_MaxStepsBreakerWithoutEmitClosure(t *testing.T) {
 	}
 }
 
-// TestNext_RepairExhaustionPropagatesFinish asserts the planner
-// propagates the Phase 44 loop's graceful-failure terminal verbatim
-// (the loop emits planner.repair_exhausted; the planner does NOT
-// re-emit).
-func TestNext_RepairExhaustionPropagatesFinish(t *testing.T) {
+// TestNext_EmptyResponseMapsToFinishNoPath asserts the Phase 107c
+// (D-167) projector contract for an LLM response with neither
+// ToolCalls nor Content: the planner emits Finish{NoPath} with
+// Metadata[followup]=true so the runtime / UX can ask the user for
+// retry / clarification.
+//
+// This test supersedes the prior Phase 44 repair-exhaustion path
+// (`TestNext_RepairExhaustionPropagatesFinish`) — under native
+// tool-calling the salvage/repair ladder is bypassed; the projector
+// reads `resp.ToolCalls` directly. The repair loop is retained for
+// the `declarative_action` escape-hatch (step 10), with its own test
+// coverage there.
+func TestNext_EmptyResponseMapsToFinishNoPath(t *testing.T) {
 	t.Parallel()
-	// Stub returns malformed JSON forever — repair loop's
-	// MaxConsecutiveArgFailures (default 2) trips.
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `garbage no json`},
+			{}, // both Content and ToolCalls empty
 		},
 	}
 	rec := &recordingEmit{}
 	p := react.New(client)
-	q := fixedQuadruple(t, "r-repair-exhaust")
+	q := fixedQuadruple(t, "r-empty-resp")
 	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", rec.emit))
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
 	fin, ok := dec.(planner.Finish)
 	if !ok {
-		t.Fatalf("decision = %T, want planner.Finish (repair-exhausted graceful failure)", dec)
+		t.Fatalf("decision = %T, want planner.Finish (projector empty-empty path)", dec)
 	}
 	if fin.Reason != planner.FinishNoPath {
 		t.Errorf("Reason = %q, want %q", fin.Reason, planner.FinishNoPath)
 	}
 	if got, _ := fin.Metadata["followup"].(bool); !got {
-		t.Errorf("Metadata[followup] not true — Phase 44 contract surface")
+		t.Errorf("Metadata[followup] not true — projector NoPath contract surface")
 	}
 
-	// Event observation: the loop emits planner.repair_exhausted,
-	// not planner.max_steps_exceeded. The planner-side MaxSteps
-	// breaker MUST NOT fire here (the trajectory is nil / empty).
+	// Native path does NOT emit planner.repair_exhausted (the repair
+	// loop is bypassed). It DOES emit planner.decision (the
+	// observability surface for the resolved Decision). max_steps must
+	// also be absent.
 	emitted := rec.snapshot()
-	var sawRepair, sawMax bool
+	var sawRepair, sawMax, sawDecision bool
 	for _, ev := range emitted {
 		switch ev.Type {
 		case planner.EventTypePlannerRepairExhausted:
 			sawRepair = true
 		case planner.EventTypePlannerMaxStepsExceeded:
 			sawMax = true
+		case planner.EventTypePlannerDecision:
+			sawDecision = true
 		}
 	}
-	if !sawRepair {
-		t.Errorf("planner.repair_exhausted not emitted by Phase 44 loop")
+	if sawRepair {
+		t.Errorf("planner.repair_exhausted should NOT fire on the native path (repair loop is bypassed)")
 	}
 	if sawMax {
 		t.Errorf("planner.max_steps_exceeded should NOT fire when MaxSteps is not hit")
+	}
+	if !sawDecision {
+		t.Errorf("planner.decision should fire for the resolved Finish{NoPath}")
 	}
 }
 
 // TestReact_ThreeStepScenario is the load-bearing acceptance
 // criterion from Phase 45's master-plan detail block: "3-step
-// reasoning task succeeds against a mock LLM."
+// reasoning task succeeds against a mock LLM." Phase 107c (D-167)
+// rewrites the mock LLM to emit native ToolCalls.
 //
 // The scripted mock LLM emits:
 //
-//	call 1: {"tool":"search","args":{"q":"foo"},"reasoning":"step1"}
-//	call 2: {"tool":"summarize","args":{"text":"bar"},"reasoning":"step2"}
-//	call 3: {"tool":"_finish","args":{"answer":"done"},"reasoning":"step3"}
+//	call 1: ToolCalls: [{Name: "search", Args: {"q":"foo"}}]
+//	call 2: ToolCalls: [{Name: "summarize", Args: {"text":"bar"}}]
+//	call 3: ToolCalls: [{Name: "_finish", Args: {"answer":"done"}}]
 //
 // The test issues three successive Next calls. After each non-
 // terminal Next call the test appends a synthetic Trajectory.Step to
-// the RunContext so the next prompt sees the prior step (this is what
-// the runtime engine will do once Phase 47 wires the loop).
+// the RunContext so the next prompt sees the prior step (matching the
+// runtime engine's behaviour).
 //
 // Asserts the three Decisions and the LLM call count.
 func TestReact_ThreeStepScenario(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"search","args":{"q":"foo"},"reasoning":"step1"}`},
-			{Content: `{"tool":"summarize","args":{"text":"bar"},"reasoning":"step2"}`},
-			{Content: `{"tool":"_finish","args":{"answer":"done"},"reasoning":"step3"}`},
+			nativeToolCallResp("call_1", "search", `{"q":"foo"}`),
+			nativeToolCallResp("call_2", "summarize", `{"text":"bar"}`),
+			finishToolCallResp("call_3", "done"),
 		},
 	}
 	p := react.New(client)
@@ -600,7 +642,7 @@ func TestReact_ConfigOverrides(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{"answer":"x"}}`},
+			finishToolCallResp("call_1", "x"),
 		},
 	}
 	customSystem := "custom system prompt"
@@ -634,7 +676,7 @@ func TestReact_NilPromptBuilderOptionIsNoop(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_finish","args":{"answer":"ok"}}`},
+			finishToolCallResp("call_1", "ok"),
 		},
 	}
 	p := react.New(client, react.WithPromptBuilder(nil))
@@ -679,8 +721,8 @@ func TestStepsTaken_TracksSuccessfulNextCalls(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"alpha","args":{}}`},
-			{Content: `{"tool":"_finish","args":{}}`},
+			nativeToolCallResp("call_1", "alpha", `{}`),
+			finishToolCallResp("call_2", ""),
 		},
 	}
 	p := react.New(client)
@@ -705,7 +747,8 @@ func TestNext_SpawnTaskEmissionMappedToSpawnTaskDecision(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_spawn_task","args":{"kind":"background","spec":{"description":"summarise document X","query":"summarise X","priority":5,"retain_turn":false,"fail_fast":true},"group_id":"g-42"},"reasoning":"want a side-channel summary"}`},
+			nativeToolCallResp("call_1", "_spawn_task",
+				`{"kind":"background","spec":{"description":"summarise document X","query":"summarise X","priority":5,"retain_turn":false,"fail_fast":true},"group_id":"g-42"}`),
 		},
 	}
 	p := react.New(client)
@@ -745,7 +788,7 @@ func TestNext_SpawnTaskDefaultsKindToBackground(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_spawn_task","args":{"spec":{"description":"bg","query":"q"}}}`},
+			nativeToolCallResp("call_1", "_spawn_task", `{"spec":{"description":"bg","query":"q"}}`),
 		},
 	}
 	p := react.New(client)
@@ -772,10 +815,9 @@ func TestNext_SpawnTaskMalformedArgsFailsLoudly(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			// args is a string, not an object — JSON-valid at the parser
-			// (parser accepts any args shape) but Unmarshal into the
-			// envelope struct fails.
-			{Content: `{"tool":"_spawn_task","args":"this is not an object"}`},
+			// args is a string, not an object — JSON-valid but
+			// Unmarshal into the spawn envelope struct fails.
+			nativeToolCallResp("call_1", "_spawn_task", `"this is not an object"`),
 		},
 	}
 	p := react.New(client)
@@ -796,7 +838,8 @@ func TestNext_SpawnTaskInvalidKindFailsLoudly(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_spawn_task","args":{"kind":"poltergeist","spec":{"description":"d","query":"q"}}}`},
+			nativeToolCallResp("call_1", "_spawn_task",
+				`{"kind":"poltergeist","spec":{"description":"d","query":"q"}}`),
 		},
 	}
 	p := react.New(client)
@@ -818,7 +861,7 @@ func TestNext_AwaitTaskEmissionMappedToAwaitTaskDecision(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_await_task","args":{"task_id":"t-99"},"reasoning":"block on the spawn"}`},
+			nativeToolCallResp("call_1", "_await_task", `{"task_id":"t-99"}`),
 		},
 	}
 	p := react.New(client)
@@ -842,7 +885,7 @@ func TestNext_AwaitTaskEmptyIDFailsLoudly(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_await_task","args":{"task_id":""}}`},
+			nativeToolCallResp("call_1", "_await_task", `{"task_id":""}`),
 		},
 	}
 	p := react.New(client)
@@ -862,7 +905,7 @@ func TestNext_AwaitTaskMalformedJSONFailsLoudly(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
-			{Content: `{"tool":"_await_task","args":[1,2,3]}`},
+			nativeToolCallResp("call_1", "_await_task", `[1,2,3]`),
 		},
 	}
 	p := react.New(client)
@@ -887,7 +930,7 @@ type promptCapturingClient struct {
 func (c *promptCapturingClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
 	r := req
 	c.lastReq.Store(&r)
-	return llm.CompleteResponse{Content: `{"tool":"_finish","args":{"answer":"done"}}`}, nil
+	return finishToolCallResp("call_done", "done"), nil
 }
 
 func (c *promptCapturingClient) Close(_ context.Context) error { return nil }

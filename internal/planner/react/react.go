@@ -2,6 +2,17 @@
 // (Phase 45 — RFC §6.2 + RFC §3.2 — the first concrete sitting on the
 // `internal/planner.Planner` seam).
 //
+// Phase 107c (D-167) cut the planner over to provider-native tool-
+// calling: each per-step [llm.CompleteRequest] carries the visible
+// catalog in `req.Tools`, and the response's typed
+// [llm.CompleteResponse.ToolCalls] slice drives [planner.Decision]
+// directly via [projectResponse]. The Phase 44 [repair.RepairLoop]
+// remains in-tree for the `declarative_action` escape-hatch meta-tool
+// (step 10 wires the dispatch); the main React path no longer parses
+// JSON envelopes out of `resp.Content` and no longer runs the
+// salvage / schema-repair / multi-action-salvage ladder for native
+// responses (AC-15 / AC-19 / AC-20c).
+//
 // Each [ReActPlanner.Next] call:
 //
 //  1. Honours ctx.Err() and the run's identity quadruple
@@ -15,44 +26,69 @@
 //  3. Observes [planner.RunContext.Control.Cancelled]; returns
 //     [planner.Finish]{Reason: [planner.FinishCancelled]} on a CANCEL
 //     observation (the planner's step-boundary contract per RFC §6.3).
-//  4. Builds the [llm.CompleteRequest] via the configured
-//     [PromptBuilder]. The default builder (Phase 83a — brief 13
-//     §2.1) assembles the twelve XML-tagged structured sections and
-//     asks the LLM for a JSON envelope `{"tool":"<name>","args":{...}}`
-//     per step OR `{"tool":"_finish","args":{"answer":"..."}}` to
-//     signal completion. The envelope carries NO `reasoning` field —
-//     reasoning is captured from the provider channel, never required
-//     in the structured output (brief 13 §2.6).
-//  5. Delegates the response → [planner.Decision] mapping to Phase
-//     44's [repair.RepairLoop.Run] (salvage → schema repair →
-//     graceful failure → multi-action salvage). The repair loop is
-//     OUTSIDE the LLM call; the Phase 36 retry-with-feedback wrapper
-//     is INSIDE — composition stays at the registry edge (D-043 +
-//     D-050).
-//  6. Maps the repair loop's [planner.Decision] to the planner's
-//     final shape:
-//     - `Finish{NoPath}` from the loop → propagate verbatim
-//     ([planner.EventTypePlannerRepairExhausted] already emitted
-//     by the loop's [repair.RepairLoop.gracefulFailure]).
-//     - `CallTool` with `Tool == "_finish"` → translate to
-//     `Finish{Reason: FinishGoal, Payload: <args.answer>}`. The
-//     reserved name is a prompt-time convention, NOT a magic-
-//     string opcode in the Decision sum (D-047 + D-051; the
-//     predecessor's `next_node` anti-pattern is rejected).
-//     - `CallTool` with `Tool == "_spawn_task"` → translate to
-//     [planner.SpawnTask] with the args decoded into [planner.SpawnSpec]
-//     (Phase 47, D-056). Wake mode is push: a non-retain-turn
-//     SpawnTask returns control to the runtime; on
-//     [tasks.GroupCompletion] the runtime re-enters Next with the
-//     resolved MemberOutcome surfaced through `RunContext.Trajectory.Background`.
-//     - `CallTool` with `Tool == "_await_task"` → translate to
-//     [planner.AwaitTask] keyed on the args' `task_id` (Phase 47, D-056).
-//     - `CallTool` with another tool name → return verbatim.
-//     - `CallParallel` (multi-action salvage from Phase 44) → pass
-//     through verbatim. Phase 47 (D-056) ships the runtime parallel
-//     executor that consumes this shape; the V1 single-tool-call-
-//     per-step collapse override (the Phase 45 D-051 stop-gap) is
-//     DELETED — Harbor's V1 ceiling lifts here.
+//  4. Drains [planner.RunContext.PendingToolCalls] (AC-19a). When the
+//     prior step's projection accumulated extra ToolCalls (the multi-
+//     ToolCall serialization fallback per AC-19), the planner emits
+//     them one at a time BEFORE consulting the LLM again.
+//  5. Derives the per-run discovered-tools set (AC-18) by walking
+//     prior `tool_search` results in [planner.RunContext.Trajectory],
+//     stamps the union into [planner.RunContext.DiscoveredTools] for
+//     observability, and uses it as the deferred-loading surface for
+//     this turn's `req.Tools`.
+//  6. Builds the [llm.CompleteRequest] via the configured
+//     [PromptBuilder]. The default builder (Phase 83a, reshaped by
+//     Phase 107c) assembles the nine XML-tagged structured sections
+//     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
+//     `<reasoning>`, `<tone>`, `<error_handling>`,
+//     `<available_tools>` (name + description quick-reference;
+//     schemas live in `req.Tools`), and the optional
+//     `<additional_guidance>` / `<planning_constraints>` injection
+//     surfaces. The prompt asks for a final answer as plain
+//     `resp.Content` and tool steps as native `resp.ToolCalls`; the
+//     Phase 83e `{tool, args}` JSON envelope is RETIRED on the main
+//     path (declarative_action keeps it for backward compat).
+//  7. Stamps `req.Tools` from `rc.Catalog.List()` (which already
+//     filters by the run's identity scope + `LoadingAlways` per
+//     [runtimeCatalogView]) plus per-run discovered tools resolved
+//     through `rc.Catalog.Resolve` (AC-17). Sets
+//     `req.ParallelToolCalls = true` so native parallel tool-call
+//     emission is enabled per turn.
+//  8. Wires the per-step streaming callbacks
+//     ([planner.RunContext.OnChunk]) into `req.Stream` /
+//     `req.OnContent` / `req.OnReasoning` (Phase 107). The wiring
+//     formerly lived inside the repair loop; under the cutover the
+//     planner owns it (the repair loop is no longer called on the
+//     native path).
+//  9. Issues exactly ONE [llm.LLMClient.Complete] call. On error,
+//     surfaces it verbatim (§13 fail-loudly).
+//  10. Routes the response through [projectResponse] (AC-15 / AC-19):
+//      - `len(resp.ToolCalls) == 1` → [planner.CallTool] (or
+//        reserved-name translation to [planner.Finish] /
+//        [planner.SpawnTask] / [planner.AwaitTask]).
+//      - `len(resp.ToolCalls) > 1` → first call becomes [planner.CallTool];
+//        remainder accumulates on `rc.PendingToolCalls` for serialised
+//        dispatch on subsequent steps (AC-19 serialization fallback).
+//      - `len(resp.ToolCalls) == 0 && resp.Content != ""` →
+//        [planner.Finish]{Reason: [planner.FinishGoal], Payload: resp.Content}
+//        (terminal answer as plain content).
+//      - `len(resp.ToolCalls) == 0 && resp.Content == ""` →
+//        [planner.Finish]{Reason: [planner.FinishNoPath]}.
+//  11. Threads the captured `resp.Reasoning` through
+//      [planner.RunContext.OnReasoning] (Phase 83m item 8) so the
+//      runloop's trajectory-append path stamps
+//      `trajectory.Step.ReasoningTrace` (Phase 83e — D-148 replay).
+//  12. Emits [planner.EventTypePlannerDecision] carrying the resolved
+//      Decision shape + the captured reasoning trace.
+//  13. Resets `rc.RepairCounters` for the step (a clean native step
+//      clears any prior turn's repair guidance — the declarative_action
+//      path in step 10 is the only producer that will increment them).
+//
+// **Pause/resume.** Native tool-calling does not change the
+// [planner.RequestPause] contract; ReAct still doesn't emit
+// RequestPause directly in V1.3 (the unified pause primitive's first
+// React consumer lands with the HITL-approval wave). Pause requests
+// arrive via [planner.RunContext.Control] and are honoured at step
+// boundary by the planner concrete that emits them.
 //
 // **Wake-on-resolution (D-032).** [ReActPlanner] implements
 // [planner.WakeAware] returning [planner.WakePush]. Phase 47 wires the
@@ -425,6 +461,15 @@ func (p *ReActPlanner) StepsTaken() int64 {
 
 // Next implements [planner.Planner]. The flow is documented in the
 // package godoc.
+//
+// **Native tool-calling path (Phase 107c — D-167).** Next issues
+// exactly ONE [llm.LLMClient.Complete] and routes the response through
+// [projectResponse]. The Phase 44 [repair.RepairLoop] is not called on
+// the main path; the declarative_action escape-hatch (step 10) is the
+// only consumer that re-enters the loop. A response with no
+// ToolCalls and no Content maps to [planner.Finish]{NoPath}; non-empty
+// Content with no ToolCalls is a natural-language terminal answer
+// ([planner.Finish]{Goal, Payload: resp.Content}).
 func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner.Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -453,6 +498,35 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return p.maxStepsExceeded(ctx, rc), nil
 	}
 
+	// AC-19a: drain any PendingToolCalls accumulated by the prior
+	// step's projection (the multi-ToolCall serialization fallback per
+	// AC-19) BEFORE consulting the LLM again. Each Next call dispatches
+	// at most one CallTool from the pending queue. When the runtime
+	// later wires cross-step persistence of `rc.PendingToolCalls`, this
+	// drain becomes the primary mechanism for serialising native
+	// parallel tool-call responses; today's per-Next-call rc-value
+	// copy limits persistence to within a single planner step.
+	if pending := drainPending(&rc); pending != nil {
+		// Emit planner.decision and bump the step counter so the
+		// drain path looks identical to a normal CallTool emission
+		// from the observer's perspective.
+		final := *pending
+		p.emitDecision(rc, final, "")
+		updateRepairCounters(rc, final, repair.RepairOutcome{})
+		p.stepsTaken.Add(1)
+		return final, nil
+	}
+
+	// AC-18: derive the per-run discovered-tools set from the prior
+	// `tool_search` results in the trajectory. The runtime pre-clears
+	// `rc.DiscoveredTools` at run start; the planner re-derives the
+	// union per step (cross-step persistence via rc-by-value is the
+	// runtime's concern — re-derivation is the V1.3 mechanism that
+	// keeps the planner stateless per D-025). The stamped slice is
+	// informational on `rc.DiscoveredTools`; the same set drives this
+	// turn's `req.Tools` construction.
+	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
+
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
 	//
@@ -476,49 +550,68 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		req = p.builder.Build(rc, p.systemPrompt)
 	}
 
-	// Phase 44's loop owns the salvage / repair / graceful-failure /
-	// multi-action-salvage ladder. The loop calls
-	// llm.LLMClient.Complete internally; the planner does NOT call
-	// Complete directly (composition stays clean — §13 + D-050).
-	//
-	// validateTool is nil for Phase 45 V1: the planner does NOT have a
-	// descriptor-bound validator surface at this point (the runtime
-	// engine wires the Phase 42 ToolCatalogView in later phases). The
-	// loop short-circuits the schema-repair path with a nil validator
-	// (Phase 44 contract) and surfaces the parser's first action(s)
-	// verbatim; the dispatcher rejects misshaped args downstream.
-	loop := repair.New(p.repairCfg)
-	result, err := loop.Run(ctx, rc, p.client, req, nil)
+	// AC-17: populate the per-turn native tool-calling surface.
+	// `rc.Catalog.List()` already returns the always-loaded subset
+	// filtered by the run's identity + GrantedScopes (the
+	// runtimeCatalogView's filter defaults to LoadingAlways when
+	// `LoadingModes` is empty). Meta-tools registered with
+	// LoadingAlways flow through this path naturally. Per-run
+	// discovered tools (AC-18) are resolved by name and appended
+	// without duplication.
+	req.Tools = buildToolDeclarations(rc, rc.DiscoveredTools)
+	// V1.3 default: enable provider-side parallel tool-calling. The
+	// runtime executor's CallParallel dispatch is post-V1.3, so the
+	// projector's serialization fallback (AC-19) handles N>1 ToolCalls
+	// by emitting the first and queueing the rest on rc.PendingToolCalls.
+	req.ParallelToolCalls = true
+
+	// Phase 107 streaming wiring. Under the Phase 44 era the repair
+	// loop owned the OnContent/OnReasoning fan-out; the Phase 107c
+	// cutover moved the Complete call into the planner, so the
+	// streaming hooks are wired here. A nil rc.OnChunk skips the
+	// streaming path (the LLM driver returns the full response on
+	// unary Complete). Per D-025, the closures capture rc (per-run
+	// stack value), never planner state.
+	if rc.OnChunk != nil {
+		req.Stream = true
+		req.OnContent = func(delta string, done bool) {
+			rc.OnChunk(delta, done, planner.ChunkContent)
+		}
+		req.OnReasoning = func(delta string, done bool) {
+			rc.OnChunk(delta, done, planner.ChunkReasoning)
+		}
+	}
+
+	// Single LLM call — the Phase 44 salvage/repair ladder is BYPASSED
+	// on the native path (AC-20c). The projector reads `resp.ToolCalls`
+	// directly; `resp.Content` is treated as the model's preamble (when
+	// ToolCalls are present) or its terminal answer (when ToolCalls are
+	// empty). LLM-call errors propagate verbatim (§13 fail-loudly).
+	resp, err := p.client.Complete(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	// Map the loop's Decision to the planner's final Decision shape.
-	// The mapper may surface a typed error when translating reserved
-	// names (`_spawn_task`, `_await_task`) whose args are malformed —
-	// silent degradation is forbidden per §13.
-	final, mapErr := p.mapDecision(result.Decision)
-	if mapErr != nil {
-		return nil, mapErr
+	final, projErr := projectResponse(resp, &rc)
+	if projErr != nil {
+		return nil, projErr
 	}
 
-	// Phase 83c (D-145): update the per-run RepairCounters from this
-	// step's outcome so the NEXT turn's prompt builder can escalate
-	// repair guidance. The counters live on rc (the per-run scope),
-	// never on the planner struct — D-145 + D-025. A nil
-	// rc.RepairCounters means the runtime opted out of augmentation;
-	// the update is then a no-op.
-	updateRepairCounters(rc, final, result.Repair)
+	// Phase 83c (D-145): clear the per-run RepairCounters on a clean
+	// native step. The native path bypasses the schema-repair pipeline
+	// entirely, so an empty RepairOutcome reflects what actually
+	// happened — no parser/args failures, no multi-action salvage. The
+	// declarative_action escape hatch (step 10) is the only producer
+	// that will set ArgsRepaired/MultiAction going forward.
+	updateRepairCounters(rc, final, repair.RepairOutcome{})
 
 	// Phase 83e (D-147): emit planner.decision carrying the captured
-	// provider-side reasoning trace. The runtime's trajectory-append
-	// path stamps `trajectory.Step.ReasoningTrace` from the same
-	// `RunResult.Reasoning`; the event is the observability surface
-	// `harbor inspect-runs` replays to reconstruct the reasoning
-	// channel. Reasoning is captured content — it is NOT replayed into
-	// the next prompt unless the agent's ReasoningReplay mode is `text`
-	// (D-148; the trajectory renderer enforces this).
-	p.emitDecision(rc, final, result.Reasoning)
+	// provider-side reasoning trace. The event is the observability
+	// surface `harbor inspect-runs` replays to reconstruct a run's
+	// reasoning channel; the audit redactor processes the payload on
+	// the bus before any sink persists it (§7 — reasoning can be
+	// sensitive).
+	p.emitDecision(rc, final, resp.Reasoning)
 
 	// Phase 83m item 8: hand the captured reasoning trace to the
 	// runloop via the per-step `RunContext.OnReasoning` callback. The
@@ -529,7 +622,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// observability) is a no-op; an empty reasoning string is still
 	// delivered so the runloop's append is consistent.
 	if rc.OnReasoning != nil {
-		rc.OnReasoning(result.Reasoning)
+		rc.OnReasoning(resp.Reasoning)
 	}
 
 	p.stepsTaken.Add(1)

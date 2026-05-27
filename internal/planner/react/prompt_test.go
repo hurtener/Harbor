@@ -117,9 +117,12 @@ func TestDefaultBuilder_UserMessagePrefersGoalOverQuery(t *testing.T) {
 }
 
 // TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs
-// asserts the brief 07 §5 shape: each completed Step renders as
-// [assistant: action JSON] + [user: observation].
-func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T) {
+// asserts the Phase 107c (D-167) native tool-calling replay: each
+// completed CallTool Step renders as an assistant message carrying a
+// `ToolCalls` block + a RoleTool message carrying the matching
+// `ToolCallID` and the observation as Content. The brief-07 user-role
+// observation string convention is REPLACED on the native path.
+func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantToolPairs(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{
 		Goal: "find stuff",
@@ -127,8 +130,9 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 			Steps: []planner.Step{
 				{
 					Action: planner.CallTool{
-						Tool: "search",
-						Args: json.RawMessage(`{"q":"foo"}`),
+						Tool:   "search",
+						Args:   json.RawMessage(`{"q":"foo"}`),
+						CallID: "call_aaa",
 					},
 					LLMObservation: "found 3 hits",
 				},
@@ -140,8 +144,9 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Expect: system, user (goal), assistant (step1), user (obs1),
-	// assistant (step2), user (obs2) → 6 messages.
+	// Expect: system, user (goal), assistant (step1 ToolCalls),
+	// tool (step1 ToolCallID + observation), assistant (step2 ToolCalls),
+	// tool (step2 ToolCallID + observation) → 6 messages.
 	if len(req.Messages) != 6 {
 		t.Fatalf("len(Messages) = %d, want 6 — messages: %+v", len(req.Messages), summariseRoles(req.Messages))
 	}
@@ -149,20 +154,36 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 		llm.RoleSystem,
 		llm.RoleUser,
 		llm.RoleAssistant,
-		llm.RoleUser,
+		llm.RoleTool,
 		llm.RoleAssistant,
-		llm.RoleUser,
+		llm.RoleTool,
 	}
 	for i, w := range wantRoles {
 		if req.Messages[i].Role != w {
 			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
 		}
 	}
-	if !strings.Contains(*req.Messages[2].Content.Text, `"tool":"search"`) {
-		t.Errorf("step-1 assistant message missing tool envelope: %s", *req.Messages[2].Content.Text)
+	// Step 1 assistant carries the provider-supplied call id verbatim.
+	asst1 := req.Messages[2]
+	if len(asst1.ToolCalls) != 1 || asst1.ToolCalls[0].ID != "call_aaa" || asst1.ToolCalls[0].Name != "search" {
+		t.Errorf("step-1 assistant ToolCalls = %+v, want [{ID: call_aaa, Name: search}]", asst1.ToolCalls)
 	}
-	if !strings.Contains(*req.Messages[3].Content.Text, "found 3 hits") {
-		t.Errorf("step-1 user observation missing: %s", *req.Messages[3].Content.Text)
+	tool1 := req.Messages[3]
+	if tool1.ToolCallID == nil || *tool1.ToolCallID != "call_aaa" {
+		t.Errorf("step-1 tool ToolCallID = %v, want call_aaa", tool1.ToolCallID)
+	}
+	if !strings.Contains(*tool1.Content.Text, "found 3 hits") {
+		t.Errorf("step-1 tool observation missing: %s", *tool1.Content.Text)
+	}
+	// Step 2 has no provider CallID — the renderer synthesises
+	// `react.callid.<idx>` and stamps it on both messages.
+	asst2 := req.Messages[4]
+	if len(asst2.ToolCalls) != 1 || asst2.ToolCalls[0].ID != "react.callid.1" || asst2.ToolCalls[0].Name != "summarize" {
+		t.Errorf("step-2 assistant ToolCalls = %+v, want synthetic id react.callid.1", asst2.ToolCalls)
+	}
+	tool2 := req.Messages[5]
+	if tool2.ToolCallID == nil || *tool2.ToolCallID != "react.callid.1" {
+		t.Errorf("step-2 tool ToolCallID = %v, want react.callid.1", tool2.ToolCallID)
 	}
 }
 
@@ -185,10 +206,10 @@ func TestDefaultBuilder_PrefersLLMObservationOverRawObservation(t *testing.T) {
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Last message is the observation user-message.
+	// Last message is the RoleTool tool-result message (Phase 107c).
 	last := req.Messages[len(req.Messages)-1]
-	if last.Role != llm.RoleUser {
-		t.Fatalf("last role = %q, want user", last.Role)
+	if last.Role != llm.RoleTool {
+		t.Fatalf("last role = %q, want tool", last.Role)
 	}
 	body := *last.Content.Text
 	if !strings.Contains(body, "compressed text") {
@@ -223,11 +244,12 @@ func TestDefaultBuilder_RendersErrorAndFailureFirst(t *testing.T) {
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Step1 obs at index 3, step2 obs at index 5.
-	if !strings.Contains(*req.Messages[3].Content.Text, "Observation (error): boom") {
+	// Step1 obs at index 3, step2 obs at index 5 — RoleTool messages
+	// under the Phase 107c native renderer.
+	if !strings.Contains(*req.Messages[3].Content.Text, "Tool error: boom") {
 		t.Errorf("step1 obs missing error: %s", *req.Messages[3].Content.Text)
 	}
-	if !strings.Contains(*req.Messages[5].Content.Text, "Observation (failure): schema_repair_exhausted") {
+	if !strings.Contains(*req.Messages[5].Content.Text, "Tool failure: schema_repair_exhausted") {
 		t.Errorf("step2 obs missing failure: %s", *req.Messages[5].Content.Text)
 	}
 }

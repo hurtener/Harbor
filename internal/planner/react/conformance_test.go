@@ -1,9 +1,13 @@
 package react_test
 
 import (
+	"context"
+	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/llm/mock"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/conformance"
@@ -45,25 +49,34 @@ func TestReact_Conformance(t *testing.T) {
 			// ScenarioFactory shapes the LLM envelope per scenario.
 			// Each invocation returns a fresh ReAct + fresh mock so
 			// per-subtest state can't bleed.
+			//
+			// Phase 107c (D-167) — under native tool-calling, the
+			// content-string-only `mock.Options.SyntheticContent` does
+			// NOT exercise the projector's ToolCalls path; scenarios
+			// that need a reserved-name emission (`_spawn_task`,
+			// `_await_task`) must drive a custom LLM that returns
+			// native `resp.ToolCalls`. The wake-round-trip case wires
+			// a scripted ToolCalls client directly.
 			ScenarioFactory: func(s conformance.ScenarioName) planner.Planner {
 				switch s {
 				case conformance.ScenarioWakeRoundTrip:
 					// Push-mode round-trip: first response is the
 					// SpawnTask emission; second is the Finish that
 					// observes the resolved background result.
-					driver := mock.New(mock.Options{
-						SyntheticContent: contentMap[s],
-					})
-					p := react.New(driver)
-					// We need a SECOND response after the wake. The
-					// mock driver's SyntheticContent override is
-					// constant per-invocation; wrap the driver to
-					// surface a different response on the second
-					// call.
-					return reactWithScriptedResponses(p, []string{
-						contentMap[s],
-						conformance.SecondStepContent(),
-					})
+					return react.New(newScriptedNativeToolCallsLLM([]llm.CompleteResponse{
+						// Turn 1: native _spawn_task ToolCall.
+						{ToolCalls: []llm.ToolCallStructured{{
+							ID:   "call_spawn",
+							Name: "_spawn_task",
+							Args: json.RawMessage(`{"kind":"background","spec":{"description":"conformance bg task","query":"do the thing","priority":0,"retain_turn":false}}`),
+						}}},
+						// Turn 2: native _finish ToolCall (post-resolve).
+						{ToolCalls: []llm.ToolCallStructured{{
+							ID:   "call_finish",
+							Name: "_finish",
+							Args: json.RawMessage(`{"answer":"wake-round-trip resolved"}`),
+						}}},
+					}))
 				default:
 					content, ok := contentMap[s]
 					if !ok || content == "" {
@@ -95,15 +108,40 @@ func TestReact_Conformance(t *testing.T) {
 	})
 }
 
-// reactWithScriptedResponses returns a planner that uses a scripted
-// LLM client with the supplied content sequence. Built on top of the
-// existing `react.New` shape so the planner's full repair + emission
-// pipeline runs; the only swap is the LLM driver.
-//
-// Each Complete call returns the next content; once the script is
-// exhausted the last content repeats forever (so a runaway-loop bug
-// surfaces as Finish{NoPath} rather than a panic).
-func reactWithScriptedResponses(_ planner.Planner, contents []string) planner.Planner {
-	client := newScriptedLLMForConformance(contents)
-	return react.New(client)
+// scriptedNativeToolCallsLLM serves a fixed list of native-shaped
+// `llm.CompleteResponse` values. Phase 107c (D-167) — the conformance
+// pack's WakeMode_RoundTrip scenario needs the React planner to emit
+// SpawnTask from the FIRST response and Finish from the second; the
+// mock driver's `SyntheticContent` field carries only a Content
+// string, so it cannot drive the projector's reserved-name ToolCalls
+// path. This client wraps a slice of full responses and advances per
+// Complete call. Once exhausted the last response repeats (so a
+// runaway-loop bug surfaces as Finish{NoPath} via Phase 45's MaxSteps
+// breaker rather than a panic).
+type scriptedNativeToolCallsLLM struct {
+	mu        sync.Mutex
+	responses []llm.CompleteResponse
+	cursor    int
+}
+
+func newScriptedNativeToolCallsLLM(responses []llm.CompleteResponse) *scriptedNativeToolCallsLLM {
+	return &scriptedNativeToolCallsLLM{responses: responses}
+}
+
+func (s *scriptedNativeToolCallsLLM) Complete(_ context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursor >= len(s.responses) {
+		if len(s.responses) == 0 {
+			return llm.CompleteResponse{}, nil
+		}
+		return s.responses[len(s.responses)-1], nil
+	}
+	out := s.responses[s.cursor]
+	s.cursor++
+	return out, nil
+}
+
+func (s *scriptedNativeToolCallsLLM) Close(_ context.Context) error {
+	return nil
 }

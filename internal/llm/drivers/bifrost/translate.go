@@ -99,6 +99,20 @@ func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 				ToolCallID: &tid,
 			}
 		}
+		// Phase 107c / D-167 — native tool-call replay on the
+		// assistant side. The React planner's trajectory renderer
+		// emits a RoleAssistant message with `ToolCalls` set for
+		// every prior CallTool step, paired with a RoleTool message
+		// carrying the matching `ToolCallID` + observation. Without
+		// this branch the provider would see an assistant turn with
+		// no `tool_calls` block but a sibling tool-result message
+		// referencing a missing call id — every provider rejects
+		// that shape.
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			msg.ChatAssistantMessage = &bfschemas.ChatAssistantMessage{
+				ToolCalls: translateAssistantToolCalls(m.ToolCalls),
+			}
+		}
 		out = append(out, msg)
 	}
 	return out, nil
@@ -640,6 +654,48 @@ func translateToolDeclaration(td llm.ToolDeclaration) (bfschemas.ChatTool, error
 func translateToolChoice(tc string) bfschemas.ChatToolChoice {
 	val := tc
 	return bfschemas.ChatToolChoice{ChatToolChoiceStr: &val}
+}
+
+// translateAssistantToolCalls projects Harbor's `[]llm.ToolCallStructured`
+// onto bifrost's `[]ChatAssistantMessageToolCall`, which the wire format
+// renders as the assistant message's `tool_calls` block. Phase 107c
+// (D-167) — the trajectory renderer uses this to replay prior planner
+// CallTool emissions into the next turn's thread.
+//
+// `Index` is set sequentially (provider-side parsers accept either the
+// sequential or the original index; sequential keeps the replay
+// deterministic). `Type` is left nil — bifrost defaults to "function"
+// at provider-translation time, the only type V1.3 supports.
+func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAssistantMessageToolCall {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]bfschemas.ChatAssistantMessageToolCall, 0, len(in))
+	for i, tc := range in {
+		var id *string
+		if tc.ID != "" {
+			s := tc.ID
+			id = &s
+		}
+		var name *string
+		if tc.Name != "" {
+			s := tc.Name
+			name = &s
+		}
+		args := ""
+		if len(tc.Args) > 0 {
+			args = string(tc.Args)
+		}
+		out = append(out, bfschemas.ChatAssistantMessageToolCall{
+			Index: uint16(i), //nolint:gosec // i is bounded by tool-call count per turn (caller-side guards keep it well within uint16)
+			ID:    id,
+			Function: bfschemas.ChatAssistantMessageToolCallFunction{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	return out
 }
 
 func extractToolCalls(resp *bfschemas.BifrostChatResponse) []llm.ToolCallStructured {

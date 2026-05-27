@@ -223,10 +223,43 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	// digest replaces the raw step history in subsequent prompt
 	// builds."). When Summary is nil, render the raw step history as
 	// before (the Phase 45 V1 minimum-viable shape).
+	//
+	// Phase 107c (D-167) — native tool-calling replay (AC-20a / AC-20b).
+	// A trajectory Step whose Action is a `planner.CallTool` now renders
+	// as a pair of native chat messages:
+	//
+	//   - a RoleAssistant message whose `ToolCalls` slice carries the
+	//     prior CallTool's ID + Name + Args (the bifrost translator
+	//     emits this as a `tool_calls` block — OpenAI / Anthropic /
+	//     Gemini all consume it).
+	//   - a RoleTool message whose `ToolCallID` matches the assistant
+	//     entry's ID; its Content is the rendered observation.
+	//
+	// When the prior CallTool has an empty CallID (legacy trajectory or
+	// a planner-emitted CallTool that pre-dates a provider-supplied ID),
+	// a deterministic `react.callid.<step-index>` is synthesised and
+	// stamped on BOTH the assistant ToolCalls entry AND the RoleTool
+	// ToolCallID so the round-trip is well-formed regardless. The
+	// projector's reserved-name path emits Finish/SpawnTask/AwaitTask
+	// directly (no trajectory Step), so this renderer's only CallTool-
+	// shaped input is a normal tool dispatch.
+	//
+	// Non-CallTool action shapes (a defensive prior Finish, an unknown
+	// shape) fall through to the legacy assistant-text rendering so
+	// observability is preserved even in malformed trajectories.
 	if rc.Trajectory != nil {
 		if rc.Trajectory.Summary == nil {
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
-			for _, step := range rc.Trajectory.Steps {
+			for i, step := range rc.Trajectory.Steps {
+				asstMsg, toolMsg, native := renderNativeStepPair(step, replayMode, i)
+				if native {
+					messages = append(messages, asstMsg)
+					if toolMsg != nil {
+						messages = append(messages, *toolMsg)
+					}
+					continue
+				}
+				// Legacy fallback for non-CallTool actions.
 				asst := renderAssistantTurn(step, replayMode)
 				obs := renderObservationForLLM(step)
 				if asst != "" {
@@ -480,6 +513,13 @@ func renderIdentitySection() string {
 // side_effects, and examples live in the provider's native Tools[]
 // declaration. `maxToolExamples` is ignored (kept for backward compat
 // with react.go — step 9 deletes it).
+//
+// The section lists BOTH the always-loaded catalog subset (returned
+// by `rc.Catalog.List()`) AND the per-run discovered tools (resolved
+// by name from `rc.DiscoveredTools`). Discovered tools that already
+// appear in the always-loaded set are not duplicated. This mirrors
+// the `req.Tools` construction in `react.Next` (AC-17) so the LLM's
+// prompt and its native tool surface stay in sync.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
 	// Phase 107c (D-167): `maxToolExamples` is ignored — schemas live
 	// in req.Tools[]; the prompt renders name+description only.
@@ -489,6 +529,28 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 	b.WriteString("<available_tools>\n")
 
 	catalog := listTools(rc)
+	// Append discovered tools (resolved by name) that aren't already
+	// in the always-loaded set. Mirrors buildToolDeclarations() — the
+	// section stays consistent with the per-turn req.Tools slice.
+	seen := make(map[string]struct{}, len(catalog))
+	for _, t := range catalog {
+		seen[t.Name] = struct{}{}
+	}
+	if rc.Catalog != nil {
+		for _, name := range rc.DiscoveredTools {
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			if t, ok := rc.Catalog.Resolve(name); ok {
+				catalog = append(catalog, t)
+				seen[name] = struct{}{}
+			}
+		}
+	}
+
 	if len(catalog) == 0 {
 		b.WriteString("(no tools registered for this run)\n")
 	} else {
@@ -710,6 +772,98 @@ func listTools(rc planner.RunContext) []tools.Tool {
 	return rc.Catalog.List()
 }
 
+// renderNativeStepPair projects a single trajectory step into a pair
+// of native chat messages — an assistant `tool_calls` block + a
+// matching `tool` role observation — per the Phase 107c contract
+// (D-167 / AC-20a / AC-20b). Returns (assistantMsg, *toolMsg, true)
+// when the step's Action is a `planner.CallTool`; the third return is
+// false for any other Action shape (the caller falls back to the
+// legacy assistant-text + user-observation pair so observability
+// survives malformed trajectories).
+//
+// The assistant message carries one ToolCalls entry whose ID +
+// Name + Args mirror the prior CallTool. When the CallTool's CallID
+// is empty (legacy trajectory shape, or a planner-emitted call that
+// pre-dates a provider-supplied ID), a deterministic synthetic ID
+// `react.callid.<step-index>` is generated and stamped on BOTH the
+// assistant tool-call entry AND the RoleTool ToolCallID so the
+// round-trip stays well-formed.
+//
+// When the step has no observation, error, or failure surface yet
+// (the runtime appended the Action but the dispatch hasn't completed
+// — an unusual state outside tests), the returned `toolMsg` is nil so
+// the caller emits only the assistant turn. The provider will see an
+// outstanding tool_call awaiting a tool result; the planner's next
+// step will append the matching RoleTool message when the observation
+// lands.
+//
+// `replayMode` controls reasoning replay (Phase 83e — D-148). When
+// set to [planner.ReasoningReplayText] AND the step carries a
+// non-empty `ReasoningTrace`, the captured reasoning is prepended as
+// a text block in the assistant message's Content body (above the
+// tool_calls block from the provider's perspective).
+func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, *llm.ChatMessage, bool) {
+	call, ok := step.Action.(planner.CallTool)
+	if !ok {
+		return llm.ChatMessage{}, nil, false
+	}
+	callID := call.CallID
+	if callID == "" {
+		callID = fmt.Sprintf("react.callid.%d", stepIdx)
+	}
+	// Assistant content: empty by default (the provider reads the
+	// tool_calls block; no text needed). When reasoning replay is on
+	// AND the step has a trace, prepend it as the assistant text body.
+	assistantText := ""
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		assistantText = "Reasoning:\n" + step.ReasoningTrace
+	}
+	asst := llm.ChatMessage{
+		Role:    llm.RoleAssistant,
+		Content: textContent(assistantText),
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   callID,
+			Name: call.Tool,
+			Args: json.RawMessage(safeArgs(call.Args)),
+		}},
+	}
+	observation := renderNativeObservation(step)
+	if observation == "" {
+		return asst, nil, true
+	}
+	id := callID
+	tool := &llm.ChatMessage{
+		Role:       llm.RoleTool,
+		Content:    textContent(observation),
+		ToolCallID: &id,
+	}
+	return asst, tool, true
+}
+
+// renderNativeObservation returns the tool-result content body for the
+// native RoleTool message. Failures + errors surface first (the
+// planner needs to see them to course-correct); otherwise the
+// LLMObservation projection is preferred over the raw Observation per
+// D-026 heavy-content discipline. Returns the empty string when no
+// observation is available yet (the runtime appended the Action but
+// dispatch hasn't completed).
+func renderNativeObservation(step planner.Step) string {
+	if step.Failure != nil {
+		return fmt.Sprintf("Tool failure: %s — %s",
+			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if step.Error != "" {
+		return "Tool error: " + oneLine(step.Error)
+	}
+	if step.LLMObservation != nil {
+		return renderAny(step.LLMObservation)
+	}
+	if step.Observation != nil {
+		return renderAny(step.Observation)
+	}
+	return ""
+}
+
 // renderAssistantTurn renders one prior trajectory step as the
 // assistant turn for the next prompt. It is the Phase 83e (D-148)
 // replay-aware wrapper around [renderActionForLLM]: when `replayMode`
@@ -720,6 +874,11 @@ func listTools(rc planner.RunContext) []tools.Tool {
 //
 // Returns the empty string when the action itself is unrenderable
 // (the prompt builder skips empty messages).
+//
+// Phase 107c (D-167): this function is retained for the legacy
+// non-CallTool action fallback path in [defaultBuilder.baseRequest]
+// — CallTool actions now route through [renderNativeStepPair] and
+// emit native assistant `tool_calls` + RoleTool ChatMessage pairs.
 func renderAssistantTurn(step planner.Step, replayMode planner.ReasoningReplayMode) string {
 	action := renderActionForLLM(step.Action)
 	if action == "" {

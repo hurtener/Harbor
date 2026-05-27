@@ -42,7 +42,16 @@ func (c *promptRecorderLLM) Complete(_ context.Context, req llm.CompleteRequest)
 		}
 	}
 	c.mu.Unlock()
-	return llm.CompleteResponse{Content: `{"tool":"_finish","args":{"answer":"done"}}`}, nil
+	// Phase 107c (D-167) — native `_finish` ToolCall replaces the
+	// prompt-engineered JSON envelope. The projector translates the
+	// reserved name to Finish{Goal, Payload: <answer>}.
+	return llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   "call_done",
+			Name: "_finish",
+			Args: json.RawMessage(`{"answer":"done"}`),
+		}},
+	}, nil
 }
 
 func (c *promptRecorderLLM) Close(_ context.Context) error { return nil }
