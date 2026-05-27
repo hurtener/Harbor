@@ -503,6 +503,28 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		var stepReasoning string
 		rc.OnReasoning = func(s string) { stepReasoning = s }
 
+		// Phase 107c / D-167 (AC-19 + AC-19a) — wire the per-run
+		// native-tool-calling queue callback. The planner receives rc
+		// by VALUE, so any mutations the projector makes to
+		// `rc.PendingToolCalls` inside Next die with the planner's
+		// stack frame. The callback bridges the boundary the same way
+		// `rc.OnReasoning` does: a function pointer set on the
+		// runloop's local rc, captured by the planner's closure when
+		// Next returns. The runloop reads `stepPending` after Next
+		// returns and writes it into `spec.Base` so the next
+		// iteration's value-copy carries the queue forward.
+		//
+		// `rc.DiscoveredTools` does NOT need this bridge — the
+		// projector re-derives it from the trajectory pointer each
+		// step (mergeDiscovered walks `*Trajectory` which the runloop
+		// appends to). Keeping this callback narrow to
+		// PendingToolCalls preserves rc-as-read-only for every field
+		// that has another persistence channel.
+		var stepPending []planner.ToolCallDeferred
+		rc.OnPendingToolCalls = func(pending []planner.ToolCallDeferred) {
+			stepPending = pending
+		}
+
 		// --- NEXT: the planner contributes exactly this. ---
 		decision, nerr := spec.Planner.Next(runCtx, rc)
 		if nerr != nil {
@@ -511,6 +533,14 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		if decision == nil {
 			// (nil, nil) is the silent-degradation shape §13 forbids.
 			return planner.Finish{}, fmt.Errorf("steering: planner step %d returned a nil Decision (silent degradation forbidden — CLAUDE.md §13)", step)
+		}
+
+		// Write the post-step pending queue into spec.Base so the
+		// next iteration's `rc := spec.Base` value-copy sees it.
+		// stepPending is nil when the planner did not invoke the
+		// callback (drain-only step, no projector run).
+		if stepPending != nil {
+			spec.Base.PendingToolCalls = stepPending
 		}
 
 		// --- EXECUTE the decision. ---

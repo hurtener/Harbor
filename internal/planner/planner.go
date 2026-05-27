@@ -280,6 +280,22 @@ type RunContext struct {
 	// consumes PendingToolCalls before consulting the LLM again.
 	// Stack-local-per-run (D-025).
 	PendingToolCalls []ToolCallDeferred
+
+	// OnPendingToolCalls (Phase 107c / D-167 — AC-19 + AC-19a) is the
+	// per-step callback the planner invokes BEFORE returning a
+	// Decision to surface the post-step `PendingToolCalls` queue back
+	// to the runloop. rc is passed BY VALUE to Next; without this
+	// bridge any append to `rc.PendingToolCalls` inside Next dies
+	// with the planner's stack frame, and the AC-19 multi-ToolCall
+	// serialisation fallback becomes dead code. The runloop captures
+	// a stack-local slice via the closure (D-025: per-run, never on
+	// the planner artifact) and writes it back into `spec.Base` so
+	// the next iteration's value-copy carries the queue forward.
+	//
+	// Nil callback is a no-op (tests that exercise Next directly
+	// without a runloop). Operators should never set it; the
+	// runloop owns the closure.
+	OnPendingToolCalls func([]ToolCallDeferred)
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will

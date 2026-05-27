@@ -513,6 +513,12 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		final := *pending
 		p.emitDecision(rc, final, "")
 		updateRepairCounters(rc, final, repair.RepairOutcome{})
+		// AC-19a: surface the shrunken queue to the runloop so the
+		// next step's value-copy sees one fewer entry. drainPending
+		// removed the head; the tail is what survives.
+		if rc.OnPendingToolCalls != nil {
+			rc.OnPendingToolCalls(rc.PendingToolCalls)
+		}
 		p.stepsTaken.Add(1)
 		return final, nil
 	}
@@ -595,6 +601,15 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	final, projErr := projectResponse(resp, &rc)
 	if projErr != nil {
 		return nil, projErr
+	}
+
+	// AC-19 + AC-19a: when the projector saw N>1 ToolCalls, it
+	// appended the remainder to rc.PendingToolCalls. Surface the
+	// updated queue to the runloop so the next step's value-copy
+	// drains it (the projector's append on the local rc value would
+	// otherwise be dead — see the OnPendingToolCalls godoc).
+	if rc.OnPendingToolCalls != nil {
+		rc.OnPendingToolCalls(rc.PendingToolCalls)
 	}
 
 	// Phase 83c (D-145): clear the per-run RepairCounters on a clean
