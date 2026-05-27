@@ -948,14 +948,27 @@ func (c *promptCapturingClient) systemPromptText() string {
 	return *req.Messages[0].Content.Text
 }
 
-// TestDefaultSystemPrompt_DocumentsAllThreeReservedNames asserts the
-// rendered default system prompt still documents `_finish` (it appears
-// in `<tool_discovery>`, `<tone>`, and `<reasoning>`) so the LLM
-// understands the terminal condition. Phase 107c (D-167) deletes the
-// `<action_schema>` section — `_spawn_task` and `_await_task` are no
-// longer in the prompt text (those opcodes were specific to the
-// prompt-engineered JSON-action format).
-func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
+// TestDefaultSystemPrompt_OmitsReservedNames asserts the rendered
+// default system prompt does NOT mention any of `_finish`,
+// `_spawn_task`, or `_await_task` — Phase 107c (D-167) + the
+// step-10/11 audit revision retired these tokens from the prompt
+// entirely. Live testing showed mentioning `_finish` (even to say it
+// is "RETIRED") primed RLHF-trained models to wrap their terminal in
+// the legacy `{"tool":"_finish",...}` envelope, defeating the
+// streaming-UX guarantee Phase 107c was designed to deliver. The
+// negative-instruction prompt-engineering anti-pattern: naming the
+// forbidden shape activates the prior. The fix is silence —
+// `_finish` never appears in the prompt text, so the model has no
+// surface to pattern-match against.
+//
+// `_spawn_task` / `_await_task` ARE still declared (as native
+// `req.Tools` entries) for live providers to dispatch — but their
+// schemas live in the declaration block, not the prompt text body.
+// `<available_tools>` would render their names only when the
+// catalog's `List()` surfaces them, which it does NOT because the
+// projector / `react.go` constants are the source of truth (not the
+// catalog).
+func TestDefaultSystemPrompt_OmitsReservedNames(t *testing.T) {
 	t.Parallel()
 	client := &promptCapturingClient{}
 	p := react.New(client)
@@ -971,11 +984,11 @@ func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	body := client.systemPromptText()
-	if !strings.Contains(body, "_finish") {
-		t.Errorf("rendered default prompt missing _finish")
+	for _, forbidden := range []string{"_finish", "_spawn_task", "_await_task"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("rendered default prompt mentions reserved name %q — the negative-instruction anti-pattern primes the legacy JSON-envelope shape (Phase 107c step 10/11 audit)", forbidden)
+		}
 	}
-	// Phase 107c (D-167): _spawn_task and _await_task were in the
-	// deleted <action_schema> — they are not expected in the prompt.
 }
 
 // capturingBuilder is a PromptBuilder used to verify

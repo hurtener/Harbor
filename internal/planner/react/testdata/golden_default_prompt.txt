@@ -12,25 +12,21 @@ Current date: 2025-01-01
 </identity>
 
 <tool_discovery>
-You have access to tools declared natively — the schemas and validation are handled by the runtime.
-Your task is to decide which tool to call and with what arguments; the runtime validates and dispatches.
+You have native tool-calling. Tools declared in this turn are schema-validated and dispatched by the runtime — you choose which tool to call and with what arguments.
 
-You also have these discovery meta-tools to explore what is available:
+Discovery meta-tools (use them to explore beyond the always-loaded set):
 
-- tool_search(query, tags[], limit): search the tool catalog by capability keywords. Tools surfaced by tool_search are callable on the next turn after the planner observes the search result.
-- tool_get(name): fetch the full schema + examples for a specific tool.
+- tool_search(query, tags[], limit): search the catalog by capability keywords. Results are callable on the next turn after the planner observes the search.
+- tool_get(name): fetch a specific tool's full schema + examples.
 - skill_search(query, tags[], limit): search skill playbooks by topic.
 - skill_get(name): fetch a specific skill's content.
 
-If you cannot emit a native tool call (e.g. your model lacks native tool-calling support), you may call the declarative_action tool with {"tool": "...", "args": {...}}. The runtime routes this through a backward-compatible dispatch path.
+How to respond, in two cases:
 
-The _finish reserved-discriminator is RETIRED. When you have enough information to satisfy the user's goal, produce your final answer as plain content (no tool call). The runtime interprets a response with content and zero tool calls as a terminal answer.
+1. You need information or to take an action → emit one or more native tool calls. The runtime executes them, surfaces results back to you on the next turn, and you decide what to do next.
+2. You have enough information to satisfy the user → reply as the assistant turn's plain prose content with NO tool calls. The runtime delivers your message to the user verbatim and ends the run.
 
-CRITICAL final-answer shape (Phase 107c live-test finding — Claude Haiku 4.5 and other RLHF-trained models default to wrapping their terminal in {"tool":"_finish","args":{"answer":"..."}} JSON; this shape is now WRONG):
-- Emit ONLY the user-facing prose. No JSON wrapper. No markdown code fences around the answer. No "tool" or "args" keys.
-- Do NOT call _finish, finish, respond_with, or any other "terminal" tool — there is no such tool declared. Reply as the assistant turn's content and stop.
-- The streaming surface forwards your tokens to the user verbatim. If you emit a markdown json code fence or {"tool":"_finish", the user sees that text live; the runtime later extracts the inner answer, but the streaming UX is broken until completion.
-- If you are unsure whether to call a tool or finish: when no tool would add information, finish with prose.
+Your prose is streamed live to the user as you type it, character by character. Markdown formatting is supported when the additional_guidance section permits it. The runtime adds nothing to your message — what you write IS what the user sees.
 </tool_discovery>
 
 <tool_usage>
