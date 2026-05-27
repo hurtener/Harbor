@@ -316,6 +316,10 @@ type ToolCatalog interface {
 	// filter. The slice is owned by the caller; mutations on it do
 	// not affect the catalog.
 	List(filter CatalogFilter) []Tool
+	// Search (Phase 107c / D-167) runs a full-text + tag-filter scan
+	// over the catalog's search index. Returns an empty slice when no
+	// SearchCache is attached (honest "discovery unavailable").
+	Search(ctx context.Context, query string, tags []string, limit int) []Tool
 }
 
 // CatalogReplacer is the optional surface a ToolCatalog exposes when

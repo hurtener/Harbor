@@ -35,14 +35,16 @@ else
 fi
 
 # Static guard: extend Phase 32's no-tools-symbol grep to the bifrost
-# driver path. RFC §6.4 / brief 07: Harbor's runtime owns tool
-# dispatch — bifrost's `Tools` / `ToolChoice` / `FunctionCall` /
-# `ToolUse` types MUST NOT appear in `internal/llm/drivers/bifrost/`.
-# This guard pins the boundary at the driver edge.
-if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(ToolChoice|FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/drivers/bifrost/ 2>/dev/null | grep -q .; then
-    fail 'phase 33: provider-native tool-calling symbol leak detected in internal/llm/drivers/bifrost/ (RFC §6.4 boundary violation)'
+# driver path. Phase 107c / D-167 reversed the brief-07 stance for the
+# React planner; bifrost now translates Harbor's `Tools[]` +
+# `ToolChoice` surface into the per-provider wire shape. The legacy
+# provider-private discriminators (`FunctionCall`, `ToolUse`,
+# `ToolCallSpec`) remain forbidden — bifrost reaches them via its own
+# `ChatTool*` types instead.
+if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/drivers/bifrost/ 2>/dev/null | grep -q .; then
+    fail 'phase 33: legacy provider-native tool-calling symbol leak detected in internal/llm/drivers/bifrost/ (use bifrost ChatTool types instead)'
 else
-    ok 'phase 33: no provider-native tool-calling symbol leak in internal/llm/drivers/bifrost/ (RFC §6.4 boundary preserved)'
+    ok 'phase 33: no legacy provider-native tool-calling symbol leak in internal/llm/drivers/bifrost/ (107c surface uses bifrost ChatTool* types)'
 fi
 
 # Document the live-conformance gate so operators know how to

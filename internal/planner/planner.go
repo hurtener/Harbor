@@ -44,6 +44,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -265,6 +266,28 @@ type RunContext struct {
 	// Concurrent-reuse (D-025): same pattern as OnReasoning — per-run
 	// closure on the stack, never on the shared planner artifact.
 	OnChunk func(delta string, done bool, kind ChunkKind)
+
+	// DiscoveredTools (Phase 107c / D-167) is the per-run list of
+	// tool names the LLM discovered via meta-tools during this run.
+	// The React planner reads this to add discovered tools to
+	// subsequent turns' Tools[] declarations. Stack-local-per-run
+	// (D-025) — never on the planner struct.
+	DiscoveredTools []string
+
+	// PendingToolCalls (Phase 107c / D-167) carries remaining
+	// serialized native ToolCalls when the LLM emits N>1 calls in
+	// one response (AC-19 serialization fallback). The planner
+	// consumes PendingToolCalls before consulting the LLM again.
+	// Stack-local-per-run (D-025).
+	PendingToolCalls []ToolCallDeferred
+}
+
+// ToolCallDeferred is a pending native tool-call the planner will
+// dispatch on the next step (AC-19 serialization fallback).
+type ToolCallDeferred struct {
+	Name    string
+	Args    json.RawMessage
+	CallID  string
 }
 
 // ChunkKind is a sealed enum for the streaming-chunk kind (Phase 107).

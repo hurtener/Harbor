@@ -50,11 +50,11 @@ assert_file_or_skip() {
 
 # LLM client extension
 assert_or_skip 'ToolCalls\s+\[\]' \
-    "internal/llm/types.go" \
+    "internal/llm/llm.go" \
     "static: llm.CompleteResponse exposes ToolCalls field"
 
 assert_or_skip 'Tools\s+\[\]ToolDeclaration|ParallelToolCalls' \
-    "internal/llm/types.go" \
+    "internal/llm/llm.go" \
     "static: llm.CompleteRequest exposes Tools + ParallelToolCalls fields"
 
 # tools.LoadingMode
@@ -99,7 +99,7 @@ assert_or_skip 'DiscoveredTools' \
     "static: RunContext exposes DiscoveredTools field"
 
 # Phase 107b filter MUST be gone if 107c shipped (per AC-22)
-if [ -f "internal/llm/types.go" ] && grep -qE 'ToolCalls' "internal/llm/types.go" 2>/dev/null; then
+if grep -qE 'ToolCalls' "internal/llm/llm.go" 2>/dev/null; then
     if [ -f "internal/planner/react/stream_filter.go" ]; then
         fail "phase-107c AC-22: stream_filter.go still present — must be deleted when native tool-calling ships"
     else
@@ -112,7 +112,7 @@ fi
 # real LLM provider key in env.
 # ----------------------------------------------------------------------------
 
-if [ ! -f "internal/llm/types.go" ] || ! grep -qE 'ToolCalls' "internal/llm/types.go" 2>/dev/null; then
+if ! grep -qE 'ToolCalls' "internal/llm/llm.go" 2>/dev/null; then
     skip "live discovery-cycle probe: skipped — Phase 107c not yet implemented"
     smoke_summary
     exit 0

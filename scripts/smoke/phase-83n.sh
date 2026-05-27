@@ -111,9 +111,12 @@ assert_grep_present 'KnownBuiltInTools' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 # Wiring into dev binary + devstack mirror (D-094).
 # ----------------------------------------------------------------------------
-assert_grep_present 'builtin\.Register\(toolCat, cfg\.Tools\.BuiltIn\)' \
+assert_grep_present 'builtin\.Register(With)?\(' \
     "cmd/harbor/cmd_dev.go" \
-    "bootDevStack registers opt-in built-in tools"
+    "bootDevStack invokes builtin.Register / RegisterWith"
+assert_grep_present 'cfg\.Tools\.BuiltIn' \
+    "cmd/harbor/cmd_dev.go" \
+    "bootDevStack passes cfg.Tools.BuiltIn into the registrar"
 assert_grep_present 'builtin\.Register\(cat, cfg\.Tools\.BuiltIn\)' \
     "harbortest/devstack/devstack.go" \
     "devstack mirrors built-in registration (D-094)"

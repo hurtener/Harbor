@@ -647,6 +647,14 @@ type ToolsConfig struct {
 	// Restart-required (no `reload:"live"` tag — scope changes
 	// trigger a re-evaluation of every catalog descriptor).
 	GrantedScopes []string `yaml:"granted_scopes,omitempty"`
+
+	// SearchCacheDSN is the SQLite DSN backing the Phase 107c tool
+	// SearchCache (FTS5 + regex fallback). Empty means the dev binary
+	// uses an in-memory cache (the V1 default — discovery state lives
+	// for the process lifetime). Operators can point at an on-disk
+	// path (`file:./harbor-tools.db?_pragma=...`) to persist the
+	// cache across reboots. Restart-required.
+	SearchCacheDSN string `yaml:"search_cache_dsn,omitempty"`
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go
@@ -775,6 +783,11 @@ type ToolEntryConfig struct {
 	// The catalog builder fails closed when no tool registered with
 	// this name resolves at boot.
 	Name string `yaml:"name"`
+	// LoadingMode controls when this tool appears in the planner's
+	// prompt-time catalog. "" or "always" = every turn (default).
+	// "deferred" = hidden by default; the LLM discovers via meta-tools.
+	// Phase 107c / D-167.
+	LoadingMode string `yaml:"loading_mode,omitempty"`
 	// Approval declares an approval-gate wiring for this tool. Omit
 	// for tools that need no gating. When present, `Approval.Policy`
 	// MUST be one of the canonical policy names; an unknown value

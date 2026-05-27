@@ -141,6 +141,22 @@ type CompleteRequest struct {
 	// concurrent invocation against the same compiled artifact (the
 	// wrapper itself enforces D-025; the validator runs once per call).
 	Validator func(CompleteResponse) error
+
+	// Tools (Phase 107c / D-167) is the per-turn tool catalog. When
+	// nil the driver calls the provider without the tool-calling
+	// block (text-only completion — preserves non-React planner
+	// behavior).
+	Tools []ToolDeclaration
+	// ToolChoice (Phase 107c / D-167) is the per-provider tool-choice
+	// passthrough. "" means "do not emit a tool_choice field"; "auto"
+	// lets the provider decide; "required" forces the model to emit at
+	// least one tool call; "none" suppresses tool calls entirely.
+	ToolChoice string
+	// ParallelToolCalls (Phase 107c / D-167) is the per-turn knob for
+	// parallel function-calling (default true for supporting providers;
+	// bifrost maps it per provider). The planner sets this per the
+	// operator's yaml knob + the runloop executor's capability signal.
+	ParallelToolCalls bool
 }
 
 // CompleteResponse is the LLM-call return shape.
@@ -150,6 +166,12 @@ type CompleteRequest struct {
 // before returning. The runtime parses `Content` into a
 // `PlannerAction` per brief 07; the LLM never emits provider-native
 // tool calls.
+//
+// `ToolCalls` (Phase 107c / D-167) carries provider-validated
+// structured tool-call entries. When non-empty, the planner reads
+// ToolCalls as its primary decision discriminator (native tool-calling
+// path). Empty for text-only responses and for providers without
+// native tool-calling support.
 //
 // `Reasoning` carries the provider-side thinking trace (Anthropic
 // extended thinking, OpenAI o-series, DeepSeek native, Gemini
@@ -168,9 +190,30 @@ type CompleteRequest struct {
 // re-stamps these shapes.
 type CompleteResponse struct {
 	Content   string
+	ToolCalls []ToolCallStructured
 	Reasoning string
 	Cost      Cost
 	Usage     Usage
+}
+
+// ToolCallStructured is a provider-validated tool-call entry (Phase
+// 107c / D-167). Carries the provider-assigned call ID (round-trips
+// on `ChatMessage.ToolCallID` when the result is threaded back into
+// the next turn), the tool name (matches `tools.Tool.Name`), and
+// provider-validated JSON args.
+type ToolCallStructured struct {
+	ID   string
+	Name string
+	Args json.RawMessage
+}
+
+// ToolDeclaration is the per-turn tool declarator the LLM sees (Phase
+// 107c / D-167). Carries the tool name, operator-facing description,
+// and the args JSON Schema.
+type ToolDeclaration struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage
 }
 
 // Role is the chat-message role. Settled at the four canonical
@@ -198,9 +241,15 @@ const (
 // when the message carries multimodal content. `Name` is optional —
 // used by some providers for participant naming.
 type ChatMessage struct {
-	Role    Role
-	Content Content
-	Name    *string
+	Role       Role
+	Content    Content
+	Name       *string
+	// ToolCallID (Phase 107c / D-167) is the provider-assigned
+	// tool-call identifier carried on RoleTool messages. Rendered
+	// as the native tool-result role with matching call ID when
+	// the provider supports it; falls back to user-role rendering
+	// on providers without native tool-result roles.
+	ToolCallID *string
 }
 
 // Content is the multimodal sum-type. Exactly one of `Text` or

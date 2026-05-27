@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -170,6 +171,7 @@ func (d *Driver) streamComplete(
 		contentB     strings.Builder
 		reasoningB   strings.Builder
 		finalDetails []bfschemas.ChatReasoningDetails
+		finalToolCalls []llm.ToolCallStructured
 		finalUsage   llm.Usage
 		finalCost    llm.Cost
 		streamErr    error
@@ -200,7 +202,7 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
-				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
+				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
 	}
@@ -235,6 +237,7 @@ readLoop:
 	}
 	out := llm.CompleteResponse{
 		Content:   contentB.String(),
+		ToolCalls: finalToolCalls,
 		Reasoning: reasoning,
 		Usage:     finalUsage,
 		Cost:      finalCost,
@@ -254,6 +257,7 @@ func processStreamChunk(
 	contentB *strings.Builder,
 	reasoningB *strings.Builder,
 	details *[]bfschemas.ChatReasoningDetails,
+	toolCalls *[]llm.ToolCallStructured,
 	usage *llm.Usage,
 	cost *llm.Cost,
 	onContent func(string, bool),
@@ -286,6 +290,35 @@ func processStreamChunk(
 		// over the per-delta `delta.Reasoning` accumulator.
 		if len(delta.ReasoningDetails) > 0 {
 			*details = append(*details, delta.ReasoningDetails...)
+		}
+		// Phase 107c / D-167 — accumulate streamed tool-call deltas.
+		// Most providers send the full ToolCalls struct at end-of-
+		// stream, but some (notably OpenAI for long arg payloads)
+		// stream tool-call args progressively across deltas. Merge by
+		// ID: a second delta carrying the same ID with longer args
+		// overwrites the earlier partial args (the last delta wins;
+		// providers stream cumulative-not-incremental args today, so
+		// this matches the wire contract). Empty-ID deltas append by
+		// index — defensive fallback when a provider streams unnamed
+		// per-call args before the terminal ID-bearing struct.
+		for _, tc := range delta.ToolCalls {
+			var args json.RawMessage
+			if tc.Function.Arguments != "" {
+				args = json.RawMessage(tc.Function.Arguments)
+			}
+			callID := ""
+			if tc.ID != nil {
+				callID = *tc.ID
+			}
+			name := ""
+			if tc.Function.Name != nil {
+				name = *tc.Function.Name
+			}
+			mergeStreamedToolCall(toolCalls, llm.ToolCallStructured{
+				ID:   callID,
+				Name: name,
+				Args: args,
+			})
 		}
 	}
 	// Backfill usage / cost when bifrost reports it (typically on
@@ -333,4 +366,30 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 	}
 	id, _ := identity.From(ctx)
 	return identity.Quadruple{Identity: id}
+}
+
+// mergeStreamedToolCall merges one streamed tool-call delta into the
+// accumulator. The merge is last-wins on `Name` + `Args` for the same
+// `ID` (providers stream cumulative-not-incremental args today), and
+// position-based for empty-ID deltas. Phase 107c / D-167.
+func mergeStreamedToolCall(acc *[]llm.ToolCallStructured, delta llm.ToolCallStructured) {
+	if delta.ID != "" {
+		for i, existing := range *acc {
+			if existing.ID == delta.ID {
+				if delta.Name != "" {
+					(*acc)[i].Name = delta.Name
+				}
+				if len(delta.Args) > 0 {
+					(*acc)[i].Args = delta.Args
+				}
+				return
+			}
+		}
+		*acc = append(*acc, delta)
+		return
+	}
+	// Empty-ID delta — append. Providers that stream unnamed per-call
+	// args rarely emit more than one such delta before the terminal
+	// ID-bearing struct; this is a defensive fallback.
+	*acc = append(*acc, delta)
 }

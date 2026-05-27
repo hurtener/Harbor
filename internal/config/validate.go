@@ -977,9 +977,20 @@ func (c *Config) validateTools() error {
 				fmt.Sprintf("duplicate entry for tool %q (must be unique)", e.Name))
 		}
 		seenEntries[e.Name] = struct{}{}
-		if e.Approval == nil && e.OAuth == nil {
+		// Phase 107c / D-167 — `loading_mode` is the third configurable
+		// surface on a `tools.entries[]` row (alongside `approval` and
+		// `oauth`). Valid values: "" (use registrar default), "always",
+		// "deferred". Unknown values fail loud pre-boot per CLAUDE.md
+		// §13 (a silent default would hide an operator typo).
+		switch e.LoadingMode {
+		case "", "always", "deferred":
+		default:
+			return fieldError(prefix+".loading_mode",
+				fmt.Sprintf("must be one of [\"always\", \"deferred\"] or empty, got %q", e.LoadingMode))
+		}
+		if e.Approval == nil && e.OAuth == nil && e.LoadingMode == "" {
 			return fieldError(prefix,
-				"at least one of `approval` or `oauth` must be set (an entry with no middleware is a configuration typo)")
+				"at least one of `approval`, `oauth`, or `loading_mode` must be set (an entry with no fields is a configuration typo)")
 		}
 		if e.Approval != nil {
 			if _, ok := allowedApprovalPolicies[e.Approval.Policy]; !ok {
@@ -1055,8 +1066,14 @@ func KnownCustomToolTypes() []string {
 // `internal/tools/builtin/builtin_test.go`. New built-ins land here
 // in the same PR as their addition to the registry.
 var allowedBuiltInTools = map[string]struct{}{
-	"clock.now": {},
-	"text.echo": {},
+	"clock.now":          {},
+	"text.echo":          {},
+	// Phase 107c / D-167 — meta-tools for discovery + escape-hatch.
+	"tool_search":        {},
+	"tool_get":           {},
+	"skill_search":       {},
+	"skill_get":          {},
+	"declarative_action": {},
 }
 
 // KnownBuiltInTools returns the sorted built-in allowlist as a slice.

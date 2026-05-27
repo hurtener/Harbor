@@ -130,6 +130,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
+	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -629,13 +630,41 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// for OAuth or approval read this same Coordinator from
 	// `devStack.coordinator` — there is NEVER a second Coordinator
 	// instance (CLAUDE.md §13).
-	toolCat := tools.NewCatalog()
-	// Phase 83n / D-153 — register opt-in built-in tools (clock.now,
-	// text.echo) BEFORE the catalog-wiring step so any `tools.entries[]`
-	// middleware that names a built-in resolves cleanly. Empty list is
-	// a no-op; an unknown name fails loud at this boundary (the config
-	// validator also rejects pre-boot, this is the runtime sanity gate).
-	if err := builtin.Register(toolCat, cfg.Tools.BuiltIn); err != nil {
+	// Phase 107c / D-167 — construct the tool SearchCache + attach it to
+	// the catalog so deferred-tool discovery + the `tool_search` /
+	// `tool_get` meta-tools work. In-memory DSN by default; operators
+	// can override via `tools.search_cache_dsn`. A failure here is
+	// non-fatal: discovery degrades to empty (the meta-tools return
+	// "no results") rather than wedging the boot.
+	searchCacheDSN := ":memory:"
+	if cfg.Tools.SearchCacheDSN != "" {
+		searchCacheDSN = cfg.Tools.SearchCacheDSN
+	}
+	searchCache, scErr := searchcache.New(searchcache.Config{DSN: searchCacheDSN})
+	if scErr != nil {
+		opts.logger.Warn("tools/searchcache: disabled — discovery meta-tools will return empty",
+			"err", scErr.Error(),
+			"dsn", searchCacheDSN)
+		searchCache = nil
+	} else {
+		closers = append(closers, func(_ context.Context) error { return searchCache.Close() })
+	}
+	var catOpts []tools.CatalogOption
+	if searchCache != nil {
+		catOpts = append(catOpts, tools.WithSearchCache(searchCache))
+	}
+	toolCat := tools.NewCatalog(catOpts...)
+	// Phase 83n / D-153 + 107c / D-167 — register opt-in built-in tools
+	// (clock.now, text.echo, plus the 107c meta-tools) BEFORE the
+	// catalog-wiring step so any `tools.entries[]` middleware that names
+	// a built-in resolves cleanly. Empty list is a no-op; an unknown
+	// name fails loud at this boundary. RegisterWith threads the
+	// `skills.SkillStore` so `skill_search` / `skill_get` reach their
+	// backing store instead of nil-derefing on first invocation.
+	if err := builtin.RegisterWith(builtin.RegistryContext{
+		Catalog:    toolCat,
+		SkillStore: skillStore,
+	}, cfg.Tools.BuiltIn); err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tools/builtin: %w", err)
 	}

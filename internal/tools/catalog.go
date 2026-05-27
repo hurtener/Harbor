@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"context"
+	"log/slog"
 	"sort"
 	"sync"
+	"time"
 )
 
 // catalog is the canonical in-memory ToolCatalog implementation.
@@ -13,13 +16,35 @@ import (
 type catalog struct {
 	mu     sync.RWMutex
 	byName map[string]ToolDescriptor
+
+	// searchCache (Phase 107c / D-167) is the optional FTS5-backed
+	// search index. nil means Search returns empty (honest "discovery
+	// unavailable"). Set via WithSearchCache option at construction.
+	searchCache ToolSearchCache
+}
+
+// ToolSearchCache is the tool search index surface the catalog
+// delegates to. Defined here to avoid import cycles between
+// internal/tools and internal/tools/drivers/searchcache.
+type ToolSearchCache interface {
+	Search(ctx context.Context, query string, tags []string, limit int) ([]Tool, error)
+	Sync(ctx context.Context, tools []Tool) error
+	Close() error
+}
+
+type catalogConfig struct {
+	searchCache ToolSearchCache
 }
 
 // CatalogOption configures a catalog at construction.
 type CatalogOption func(*catalogConfig)
 
-type catalogConfig struct {
-	// reserved for future config knobs (e.g. capacity caps).
+// WithSearchCache attaches a search index to the catalog (Phase
+// 107c / D-167).
+func WithSearchCache(sc ToolSearchCache) CatalogOption {
+	return func(cfg *catalogConfig) {
+		cfg.searchCache = sc
+	}
 }
 
 // NewCatalog constructs the canonical in-memory ToolCatalog. Safe
@@ -35,7 +60,8 @@ func NewCatalog(opts ...CatalogOption) ToolCatalog {
 		opt(&cfg)
 	}
 	return &catalog{
-		byName: make(map[string]ToolDescriptor),
+		byName:      make(map[string]ToolDescriptor),
+		searchCache: cfg.searchCache,
 	}
 }
 
@@ -53,11 +79,28 @@ func (c *catalog) Register(d ToolDescriptor) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, exists := c.byName[d.Tool.Name]; exists {
+		c.mu.Unlock()
 		return wrap(ErrToolDuplicateName, "name=%q", d.Tool.Name)
 	}
 	c.byName[d.Tool.Name] = d
+	sc := c.searchCache
+	c.mu.Unlock()
+
+	// Phase 107c / D-167 — propagate registration to the SearchCache
+	// (AC-9 sync hook). Use Background ctx with a brief timeout so
+	// registration latency on the FTS5 path stays bounded; an error
+	// here is logged at warn (the registration itself succeeded; a
+	// missing cache row only degrades discovery, not dispatch).
+	if sc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sc.Sync(ctx, []Tool{d.Tool}); err != nil {
+			slog.Warn("tools/catalog: searchCache.Sync failed",
+				slog.String("tool", d.Tool.Name),
+				slog.String("err", err.Error()))
+		}
+	}
 	return nil
 }
 
@@ -115,4 +158,31 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 		c.byName[d.Tool.Name] = d
 	}
 	return nil
+}
+
+// Search implements ToolCatalog (Phase 107c / D-167). Delegates to
+// the attached SearchCache when present; returns an empty slice when
+// no cache is configured (honest "discovery unavailable" — no panic).
+//
+// A cache error logs at warn and returns an empty slice — the
+// signature can't propagate (planners pass through `RunContext.Catalog`,
+// which is also error-free by design). Operators watch
+// `tools.search_cache_error` log entries to detect cache health.
+func (c *catalog) Search(ctx context.Context, query string, tags []string, limit int) []Tool {
+	c.mu.RLock()
+	sc := c.searchCache
+	c.mu.RUnlock()
+	if sc == nil {
+		return nil
+	}
+	results, err := sc.Search(ctx, query, tags, limit)
+	if err != nil {
+		slog.Warn("tools/catalog: search cache returned an error",
+			slog.String("query", query),
+			slog.Any("tags", tags),
+			slog.Int("limit", limit),
+			slog.String("err", err.Error()))
+		return nil
+	}
+	return results
 }
