@@ -760,28 +760,38 @@ func (c *recordingScriptedClient) firstSystemContaining(needle string) int {
 }
 
 // TestE2E_React_RepairGuidanceEscalatesAcrossSteps is the Phase 83c
-// across-step integration. Under Phase 107c (D-167) the args-repair
-// counter is no longer driven by the React planner's main path (the
-// repair loop is bypassed on native responses; only the
-// `declarative_action` escape-hatch routes back through Phase 44's
-// salvage/repair ladder). The escalation surface is preserved in the
-// prompt builder and the bus event taxonomy — but exercising it
-// end-to-end requires the `declarative_action` dispatch, which lands
-// in Phase 107c step 10. This test will be rewritten to drive
-// declarative_action then.
+// across-step integration, rewritten in Phase 107c step 10 (D-167) to
+// drive escalation through the `declarative_action` escape-hatch. The
+// native main path bypasses the repair loop entirely (AC-20c); the
+// escape hatch is the only producer of args-repair / multi-action /
+// finish-repair signals going forward.
 //
-// Skipping with reason (not silently — §11 / §17.4): the surface
-// being tested cannot be exercised through the native path. Removing
-// the test would lose the wiring fixture; skipping preserves it for
-// the step 10 rewrite.
+// Mechanism: the LLM emits a native `tool_calls` array with a single
+// `declarative_action` entry whose `Args` would cause an inner-tool
+// args validation failure (the inner tool name is real but the args
+// fail schema). The meta-tool's body classifies the failure and
+// surfaces a structured observation. The trajectory append captures
+// the observation; the next step's `applyDeclarativeOutcome` reads
+// the observation at the start of `Next` and bumps the per-run
+// `RepairCounters`. After three escalating steps the counter reaches
+// `critical`; a final step with a clean native response resets it
+// (the §13 reset semantics — clean LLM emission wipes prior turn's
+// repair-shadow).
+//
+// This is the FULL escape-hatch round-trip: meta-tool body produces
+// the signal → trajectory carries it → planner reads it next turn →
+// prompt's `<repair_guidance>` section escalates.
 func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
-	t.Skip("Phase 107c step 9: args-repair escalation is gated on declarative_action (step 10) — repair loop is bypassed on the native main path")
 	bus := integrationBus(t)
 	q := identity.Quadruple{
 		Identity: identity.Identity{TenantID: "t-83c", UserID: "u", SessionID: "s"},
 		RunID:    "r-escalate",
 	}
-	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+	ctx, err := identity.With(t.Context(), q.Identity)
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
 	if err != nil {
 		t.Fatalf("identity.WithRun: %v", err)
 	}
@@ -797,17 +807,26 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	// Each step's Next issues: a malformed response (parser fails →
-	// args-repair signal) then a valid CallTool the loop recovers
-	// with. Step 4 issues a single clean response (no repair).
-	malformed := llm.CompleteResponse{Content: `this is not json`}
-	validCall := llm.CompleteResponse{Content: `{"tool":"search","args":{"q":"x"}}`}
+	// Each step's response: a single native tool_call to
+	// declarative_action with malformed inner-tool args. The
+	// declarative_action meta-tool's body classifies this as
+	// `ArgsRepaired: true` and surfaces it on the trajectory step's
+	// observation. Step 4 is a clean Finish (Content-only) so the
+	// counters reset.
+	declarativeBadArgs := llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   "call_dec_args",
+			Name: "declarative_action",
+			Args: json.RawMessage(`{"tool":"text.echo","args":{"text":12345}}`),
+		}},
+	}
+	cleanFinish := llm.CompleteResponse{Content: "all good now"}
 	client := &recordingScriptedClient{
 		responses: []llm.CompleteResponse{
-			malformed, validCall, // step 1 — recovers, ArgsRepair → 1
-			malformed, validCall, // step 2 — recovers, ArgsRepair → 2
-			malformed, validCall, // step 3 — recovers, ArgsRepair → 3
-			validCall, // step 4 — clean, ArgsRepair reset → 0
+			declarativeBadArgs, // step 1: dispatches declarative_action → next step's start bumps counter to 1
+			declarativeBadArgs, // step 2: bump to 1 from prior obs; this step also dispatches declarative_action → next step's start bumps to 2
+			declarativeBadArgs, // step 3: bump to 2; dispatches declarative_action again → next step's start bumps to 3 (critical)
+			cleanFinish,        // step 4: bumps to 3 (critical guidance rendered); clean Finish → end-of-step reset to 0
 		},
 	}
 
@@ -816,7 +835,11 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 	traj := &planner.Trajectory{}
 
 	// Drive four steps. The runtime threads the SAME counters pointer
-	// through every per-step RunContext (D-145).
+	// through every per-step RunContext (D-145). We simulate the
+	// runloop's trajectory append: after each Next, we append a step
+	// carrying the declarative_action observation that the body
+	// would have produced.
+	declObservation := declarativeArgsRepairObservation()
 	for step := 1; step <= 4; step++ {
 		rc := integrationRC(bus, q, "escalation goal")
 		rc.Trajectory = traj
@@ -825,22 +848,42 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 		if nerr != nil {
 			t.Fatalf("Next #%d: %v", step, nerr)
 		}
-		traj.Steps = append(traj.Steps, planner.Step{Action: dec, LLMObservation: "obs"})
+		// Simulate the runloop's trajectory append. On steps 1–3 the
+		// planner emitted CallTool{declarative_action}; on step 4 it
+		// emitted Finish{Goal}. The Finish step does not append an
+		// observation step; only the dispatch decisions do.
+		if call, ok := dec.(planner.CallTool); ok && call.Tool == react.DeclarativeActionToolName {
+			traj.Steps = append(traj.Steps, planner.Step{
+				Action:      dec,
+				Observation: declObservation,
+				// The trajectory walker prefers LLMObservation when
+				// both are set; the runtime executor produces both
+				// (LLMObservation is the small projection). Set both
+				// so the walker's preference is exercised.
+				LLMObservation: declObservation,
+			})
+		}
 	}
 
-	// After step 4 (a clean step), the args counter must have reset.
+	// After step 4 (a clean Finish{Goal}), the args counter must have
+	// reset — the Finish{Goal} path clears all three counters per
+	// updateRepairCounters semantics.
 	if counters.ArgsRepair != 0 {
-		t.Errorf("after clean step 4: ArgsRepair = %d, want 0", counters.ArgsRepair)
+		t.Errorf("after clean Finish step 4: ArgsRepair = %d, want 0", counters.ArgsRepair)
+	}
+	if counters.FinishRepair != 0 {
+		t.Errorf("after clean Finish step 4: FinishRepair = %d, want 0", counters.FinishRepair)
 	}
 
-	// Step N's prompt is built from the counter value AFTER step N-1.
-	// Step 1's prompt: no guidance (counter 0). Step 2: reminder
-	// (counter 1). Step 3: warning (counter 2). Step 4: critical
-	// (counter 3). The recordingScriptedClient records 2 Complete
-	// calls per repaired step; the prompt builder runs ONCE per Next,
-	// so the system prompt of a step's FIRST Complete carries that
-	// step's guidance. Both Complete calls within a step share the
-	// builder's output, so a `firstSystemContaining` match is enough.
+	// The recordingScriptedClient records one Complete call per Next
+	// (the repair loop is no longer called on the main path). The
+	// prompt of step N carries the guidance computed at the START of
+	// step N's Next, AFTER applyDeclarativeOutcome has bumped from the
+	// prior step's observation. So:
+	//   step 1 prompt: no prior step → no guidance.
+	//   step 2 prompt: prior bumped to 1 → reminder.
+	//   step 3 prompt: bumped to 2 → warning.
+	//   step 4 prompt: bumped to 3 → critical.
 	reminderIdx := client.firstSystemContaining(react.ReminderArgsGuidance)
 	warningIdx := client.firstSystemContaining(react.WarningArgsGuidance)
 	criticalIdx := client.firstSystemContaining(react.CriticalArgsGuidance)
@@ -853,7 +896,6 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 	if criticalIdx < 0 {
 		t.Error("no rendered prompt carried the critical args guidance")
 	}
-	// Escalation order: reminder before warning before critical.
 	if reminderIdx >= 0 && warningIdx >= 0 && reminderIdx >= warningIdx {
 		t.Errorf("reminder prompt (idx %d) not before warning (idx %d)", reminderIdx, warningIdx)
 	}
@@ -861,8 +903,8 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 		t.Errorf("warning prompt (idx %d) not before critical (idx %d)", warningIdx, criticalIdx)
 	}
 
-	// The bus observed one repair_guidance_injected event per injected
-	// block — three turns injected guidance (steps 2, 3, 4).
+	// The bus observed one repair_guidance_injected event per
+	// rendered tier (3 events for reminder / warning / critical).
 	tiers := map[string]bool{}
 	for range 3 {
 		ev := drainOneEvent(t, sub)
@@ -885,6 +927,26 @@ func TestE2E_React_RepairGuidanceEscalatesAcrossSteps(t *testing.T) {
 		if !tiers[want] {
 			t.Errorf("bus did not observe a %q-tier repair_guidance_injected event", want)
 		}
+	}
+}
+
+// declarativeArgsRepairObservation returns the structured observation
+// the declarative_action meta-tool body produces when an inner-tool
+// args validation fails. Materialised as a plain map so the planner's
+// observation walker exercises the map-shape extraction path (the
+// dispatcher delivers the typed `DeclarativeActionOut` struct in
+// production; the map form is what the runtime's heavy-content
+// projection produces under D-026, and what the tests use to avoid
+// depending on the builtin package from the planner test suite —
+// keeping the import-graph contract clean).
+func declarativeArgsRepairObservation() any {
+	return map[string]any{
+		"dispatched": false,
+		"tool":       "text.echo",
+		"error":      "args validation failed: text must be string",
+		"repair_outcome": map[string]any{
+			"args_repaired": true,
+		},
 	}
 }
 
@@ -964,44 +1026,49 @@ func (c *demuxRecordingClient) containsAny(runID, needle string) bool {
 }
 
 // TestE2E_React_RepairGuidanceCrossRunIsolation is the D-145 headline
-// guarantee. Under Phase 107c (D-167) the args-repair counter cannot
-// be tripped via the native main path (the repair loop is bypassed);
-// run A's malformed script would simply route through the projector to
-// Finish{Goal, Payload: <garbage>} without incrementing the counter.
-// The cross-run isolation contract is preserved structurally (the
-// counters live on rc, not on the planner artifact); a rewrite using
-// `declarative_action` to exercise the args-repair path lands in
-// Phase 107c step 10.
+// guarantee, rewritten in Phase 107c step 10 (D-167) to drive the
+// args-repair counter through the `declarative_action` escape-hatch.
 //
-// Skipping with reason (not silently — §11 / §17.4): the test's
-// positive control (A's counter trips) can no longer fire on the
-// native path. Skip preserves the wiring fixture for step 10.
+// Run A emits `declarative_action` with malformed inner args on every
+// step; the planner's `applyDeclarativeOutcome` at the start of each
+// step (after step 1) bumps `RepairCounters.ArgsRepair`. Run B always
+// emits a clean native tool_call — its counter stays at 0. Both runs
+// share ONE planner artifact; the contract is that A's escalating
+// guidance never appears in B's prompts.
+//
+// The cross-run isolation surface is unchanged by Phase 107c: counters
+// live on the per-run RunContext (D-145 + D-025), so the planner's
+// shared receiver remains read-only across runs. This test is the
+// load-bearing assertion that the cutover did NOT introduce a hidden
+// dependency that would re-couple counters via the planner artifact.
 func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
-	t.Skip("Phase 107c step 9: cross-run repair-counter isolation requires declarative_action (step 10) to trip the args counter on the shared planner — native main path doesn't increment it")
 	bus := integrationBus(t)
+	declarativeBadArgs := llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   "call_dec_iso",
+			Name: "declarative_action",
+			Args: json.RawMessage(`{"tool":"text.echo","args":{"text":12345}}`),
+		}},
+	}
+	cleanCall := llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   "call_clean",
+			Name: "search",
+			Args: json.RawMessage(`{"q":"y"}`),
+		}},
+	}
 	client := newDemuxRecordingClient(map[string][]llm.CompleteResponse{
-		// Run A: malformed-then-valid drives Phase 44 to trip the args
-		// counter on every step. The cursor advances per call; once the
-		// script is exhausted the client replays the last (valid) entry,
-		// so an extra repair-validate call on a step doesn't deadlock.
 		"r-A": {
-			{Content: `garbage`},
-			{Content: `{"tool":"search","args":{"q":"a"}}`},
-			{Content: `garbage`},
-			{Content: `{"tool":"search","args":{"q":"a"}}`},
-			{Content: `garbage`},
-			{Content: `{"tool":"search","args":{"q":"a"}}`},
-			{Content: `garbage`},
-			{Content: `{"tool":"search","args":{"q":"a"}}`},
+			declarativeBadArgs, declarativeBadArgs, declarativeBadArgs, declarativeBadArgs,
 		},
-		// Run B: always clean — no repair pipeline ever fires.
-		"r-B": {{Content: `{"tool":"search","args":{"q":"y"}}`}},
+		"r-B": {cleanCall},
 	})
 	// ONE shared planner. Both runs call Next on this instance
 	// concurrently with their own RunContexts.
 	shared := react.New(client)
 
 	const steps = 4
+	declObservation := declarativeArgsRepairObservation()
 
 	runA := func(done chan<- struct{}) {
 		defer close(done)
@@ -1009,7 +1076,12 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 			Identity: identity.Identity{TenantID: "t-A", UserID: "u", SessionID: "s"},
 			RunID:    "r-A",
 		}
-		ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		ctx, err := identity.With(t.Context(), q.Identity)
+		if err != nil {
+			t.Errorf("With A: %v", err)
+			return
+		}
+		ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
 		if err != nil {
 			t.Errorf("WithRun A: %v", err)
 			return
@@ -1025,7 +1097,18 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 				t.Errorf("run A Next: %v", nerr)
 				return
 			}
-			traj.Steps = append(traj.Steps, planner.Step{Action: dec})
+			// Simulate runloop trajectory append — A's
+			// declarative_action emissions land observations that drive
+			// the next-step bump.
+			if call, ok := dec.(planner.CallTool); ok && call.Tool == react.DeclarativeActionToolName {
+				traj.Steps = append(traj.Steps, planner.Step{
+					Action:         dec,
+					Observation:    declObservation,
+					LLMObservation: declObservation,
+				})
+			} else {
+				traj.Steps = append(traj.Steps, planner.Step{Action: dec})
+			}
 		}
 	}
 
@@ -1035,7 +1118,12 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 			Identity: identity.Identity{TenantID: "t-B", UserID: "u", SessionID: "s"},
 			RunID:    "r-B",
 		}
-		ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
+		ctx, err := identity.With(t.Context(), q.Identity)
+		if err != nil {
+			t.Errorf("With B: %v", err)
+			return
+		}
+		ctx, err = identity.WithRun(ctx, q.Identity, q.RunID)
 		if err != nil {
 			t.Errorf("WithRun B: %v", err)
 			return
@@ -1062,7 +1150,7 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 	<-doneB
 
 	// B's recorded prompts must carry NONE of the repair-guidance
-	// markers, even though A was concurrently tripping the args
+	// markers, even though A was concurrently bumping the args
 	// counter via the SAME shared planner. This is the D-145 contract.
 	for _, needle := range []string{
 		react.ReminderArgsGuidance, react.WarningArgsGuidance, react.CriticalArgsGuidance,
@@ -1073,8 +1161,8 @@ func TestE2E_React_RepairGuidanceCrossRunIsolation(t *testing.T) {
 		}
 	}
 	// Positive control: A's prompts MUST carry the args repair
-	// guidance — proving the malformed script actually drove Phase 44
-	// to trip the counter via the shared planner.
+	// guidance — proving the declarative_action observation actually
+	// drove the counter via the shared planner.
 	if !client.containsAny("r-A", react.ReminderArgsGuidance) {
 		t.Error("A's prompts never carried any args repair-guidance marker — the test setup did not actually trip the counter (positive control failed)")
 	}

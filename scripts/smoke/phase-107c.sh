@@ -108,6 +108,50 @@ if grep -qE 'ToolCalls' "internal/llm/llm.go" 2>/dev/null; then
 fi
 
 # ----------------------------------------------------------------------------
+# Phase 107c step 10 / AC-13 — declarative_action escape-hatch wiring.
+# These static checks ALWAYS run (no provider-key gate) so the step 10
+# wiring is verified even without a live LLM. The live-side probe of
+# declarative_action requires a provider WITHOUT native tool-calling
+# AND an opt-in agent yaml — operator-driven, not a smoke concern.
+# ----------------------------------------------------------------------------
+
+# Static assertion — declarative_action body has the real dispatch
+# path (ErrDeclarativeActionNotWired removed from the body's return
+# path).
+if grep -qE 'ErrDeclarativeActionNotWired' "internal/tools/builtin/declarative_action.go" 2>/dev/null; then
+    fail "static: declarative_action still returns ErrDeclarativeActionNotWired — step 10 dispatch path not wired"
+else
+    ok "static: declarative_action body has real dispatch (no ErrDeclarativeActionNotWired stub)"
+fi
+
+# Static assertion — declarative_action surfaces a structured
+# RepairOutcome for ArgsRepair / MultiAction / FinishRepair so the
+# React planner can drive across-step escalation.
+if grep -qE 'DeclarativeRepairOutcome' "internal/tools/builtin/declarative_action.go" 2>/dev/null; then
+    ok "static: declarative_action returns DeclarativeRepairOutcome for repair-counter escalation"
+else
+    fail "static: declarative_action missing DeclarativeRepairOutcome — repair-counter escalation not wired"
+fi
+
+# Static assertion — operator-facing example yaml documents the
+# declarative_action enable toggle.
+if grep -qE 'declarative_action' "examples/dev.yaml" 2>/dev/null; then
+    ok "static: examples/dev.yaml documents declarative_action (operator opt-in surface)"
+else
+    skip "static: examples/dev.yaml missing declarative_action documentation"
+fi
+
+# Static assertion (AC-20a Path 1) — the React planner declares the
+# reserved planner-control names (`_spawn_task` / `_await_task`) as
+# native tool declarations so providers don't reject the projector's
+# reserved-name interception under live LLM workloads.
+if grep -qE 'reservedPlannerControlDeclarations' "internal/planner/react/discovered_tools.go" 2>/dev/null; then
+    ok "static: React planner declares _spawn_task + _await_task natively (AC-20a Path 1)"
+else
+    fail "static: React planner missing native declarations for _spawn_task / _await_task"
+fi
+
+# ----------------------------------------------------------------------------
 # Live-server probe — gated on (a) Phase 107c having shipped AND (b) a
 # real LLM provider key in env.
 # ----------------------------------------------------------------------------
@@ -196,6 +240,71 @@ elif [ "${FIRST_CHAR}" = "{" ]; then
     fail "live: chunk stream begins with '{' — native tool-calling didn't gate the JSON wrapper (first 40 bytes: ${CHUNKS:0:40})"
 else
     ok "live: chunk stream is clean prose by structural construction (no JSON wrapper byte)"
+fi
+
+# Assertion 3 (Phase 107c step 11) — native tool_call evidence on the
+# bus. The runtime emits `tool.invoked` events when the executor
+# dispatches a CallTool decision; the LLM-emitting-tool-calls path is
+# upstream of that event. We assert at least one `tool.invoked` event
+# carries the task_id, proving the SSE stream surfaces native tool
+# calls end-to-end (not just trajectory-only).
+TOOL_INVOKED_COUNT="$(grep -cE '"type":"tool\.invoked"' "${EV_FILE}" 2>/dev/null || true)"
+if [ "${TOOL_INVOKED_COUNT}" -ge 1 ]; then
+    ok "live: SSE stream carries ≥1 tool.invoked event — native tool-call dispatch end-to-end"
+else
+    skip "live: no tool.invoked events observed (LLM answered without invoking tools — provider-dependent)"
+fi
+
+# Assertion 4 (Phase 107c step 11) — at least one trajectory step
+# carries a native tool-call action (Action: CallTool with non-empty
+# CallID). The CallID is the load-bearing wire-shape proof: the
+# projector populates it from `resp.ToolCalls[i].ID`, which only
+# exists under native tool-calling.
+TRAJ_TOOL_STEPS="$(echo "${DETAIL}" | jq -r '
+    .task.trajectory.steps // []
+    | map(select(.action.tool != null and .action.tool != ""))
+    | length' 2>/dev/null || echo 0)"
+if [ "${TRAJ_TOOL_STEPS}" -ge 1 ]; then
+    ok "live: tasks.get trajectory carries ≥1 native CallTool step (resp.ToolCalls round-trip)"
+else
+    skip "live: trajectory has no native CallTool steps (LLM answered without tools — provider-dependent)"
+fi
+
+# ----------------------------------------------------------------------------
+# declarative_action escape-hatch — static assertions.
+# A full live probe (boot a model without native tool-calling, opt in
+# to declarative_action, dispatch through the escape-hatch end-to-end)
+# is operator-driven post-step 11 because it requires a non-native
+# provider key. The static checks here guard the wiring:
+#   - The example yaml documents the toggle.
+#   - The body returns a structured DeclarativeActionOut (no
+#     ErrDeclarativeActionNotWired left over).
+# ----------------------------------------------------------------------------
+
+# Static assertion 5 — declarative_action body has the real dispatch
+# path (ErrDeclarativeActionNotWired removed from the body's return
+# path).
+if grep -qE 'ErrDeclarativeActionNotWired' "internal/tools/builtin/declarative_action.go" 2>/dev/null; then
+    fail "static: declarative_action still returns ErrDeclarativeActionNotWired — step 10 dispatch path not wired"
+else
+    ok "static: declarative_action body has real dispatch (no ErrDeclarativeActionNotWired stub)"
+fi
+
+# Static assertion 6 — declarative_action surfaces a structured
+# RepairOutcome for ArgsRepair / MultiAction / FinishRepair so the
+# React planner can drive across-step escalation.
+if grep -qE 'DeclarativeRepairOutcome' "internal/tools/builtin/declarative_action.go" 2>/dev/null; then
+    ok "static: declarative_action returns DeclarativeRepairOutcome for repair-counter escalation"
+else
+    fail "static: declarative_action missing DeclarativeRepairOutcome — repair-counter escalation not wired"
+fi
+
+# Static assertion 7 — operator-facing example yaml documents the
+# declarative_action enable toggle.
+if grep -qE 'declarative_action' "examples/dev.yaml" 2>/dev/null; then
+    ok "static: examples/dev.yaml documents declarative_action (operator opt-in surface)"
+else
+    skip "static: examples/dev.yaml missing declarative_action documentation"
 fi
 
 smoke_summary

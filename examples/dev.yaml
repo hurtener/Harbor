@@ -144,6 +144,42 @@ tools:
   http_manifests: []
   mcp_servers: []
 
+  # Phase 83n / D-153 + Phase 107c / D-167 — opt in to the small set
+  # of built-in tools shipped in the Harbor binary. Empty list (the
+  # default) registers nothing. Available names mirror
+  # `internal/tools/builtin.KnownNames()` and are validated pre-boot
+  # by `internal/config` — a typo fails closed at config load.
+  #
+  # Default-recommended set (lights up the discovery loop end-to-end):
+  #
+  #   built_in:
+  #     - clock.now      # heartbeat / sanity-check
+  #     - text.echo      # smoke-test action
+  #     - tool_search    # LLM discovers deferred tools by capability
+  #     - tool_get       # LLM fetches a tool's full schema
+  #     - skill_search   # LLM discovers skills (Phase 37 SkillStore)
+  #     - skill_get      # LLM fetches a skill body
+  #
+  # Optional escape-hatch (Phase 107c step 10 — D-167):
+  #
+  #   built_in:
+  #     # ...the discovery set...
+  #     - declarative_action
+  #
+  # The `declarative_action` meta-tool lets the LLM dispatch any
+  # catalog tool through a typed `{tool, args}` envelope (or a free-
+  # text `body` parsed via `repair.ActionParser`). Use ONLY when your
+  # provider lacks reliable native tool-calling — local Llama / Mistral
+  # / weaker fine-tunes that emit prompt-engineered JSON instead of
+  # provider-native tool_calls. Modern providers (OpenAI / Anthropic /
+  # Gemini, including OpenRouter routes through them) emit native
+  # tool_calls and the escape hatch is unnecessary noise. The meta-
+  # tool registers with `loading_mode: deferred` so it stays out of
+  # every-turn declarations until `tool_search("structured action
+  # format")` surfaces it — keeping the prompt budget clean when
+  # operators opt in but the LLM doesn't actually need it.
+  # built_in: []
+
   # D-095 — Operator-config-driven OAuth provider declarations (closes
   # issue #116 + D-090's deferred construction gap). Uncomment and
   # populate to attach OAuth-bound tools to a real authorization

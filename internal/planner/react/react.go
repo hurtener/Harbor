@@ -498,6 +498,25 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return p.maxStepsExceeded(ctx, rc), nil
 	}
 
+	// AC-13 / AC-20c (Phase 107c step 10 — D-167). When the previous
+	// step dispatched `declarative_action`, the meta-tool's structured
+	// observation carries a `repair_outcome` field classifying the
+	// dispatch's failure mode (args validation, multi-action,
+	// finish-via-wrong-channel). Bump the per-run RepairCounters BEFORE
+	// the prompt is built so this turn's `<repair_guidance>` section
+	// escalates the matching tier. The bump fires at most once per
+	// declarative_action observation (the trajectory step is
+	// timestamp-stable; subsequent steps that don't follow a
+	// declarative_action call are no-ops).
+	//
+	// The signal is observation-driven (not decision-driven) because
+	// the meta-tool's outcome only materialises AFTER the runloop
+	// dispatches it — the planner's prior step's `updateRepairCounters`
+	// fired with an empty outcome (correct at that moment; no
+	// information about the dispatch yet). Here we close the loop by
+	// reading the dispatch result that the runloop captured.
+	declarativeBumped := applyDeclarativeOutcome(rc)
+
 	// AC-19a: drain any PendingToolCalls accumulated by the prior
 	// step's projection (the multi-ToolCall serialization fallback per
 	// AC-19) BEFORE consulting the LLM again. Each Next call dispatches
@@ -512,7 +531,13 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		// from the observer's perspective.
 		final := *pending
 		p.emitDecision(rc, final, "")
-		updateRepairCounters(rc, final, repair.RepairOutcome{})
+		// Same suppression rule as the main path below: a drained
+		// declarative_action call that follows an outcome-bump in the
+		// prior step must preserve the bump for the next step to
+		// compound. Drains of other tool names reset as usual.
+		if !(declarativeBumped && isDeclarativeActionDispatch(final)) {
+			updateRepairCounters(rc, final, repair.RepairOutcome{})
+		}
 		// AC-19a: surface the shrunken queue to the runloop so the
 		// next step's value-copy sees one fewer entry. drainPending
 		// removed the head; the tail is what survives.
@@ -612,13 +637,24 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		rc.OnPendingToolCalls(rc.PendingToolCalls)
 	}
 
-	// Phase 83c (D-145): clear the per-run RepairCounters on a clean
-	// native step. The native path bypasses the schema-repair pipeline
-	// entirely, so an empty RepairOutcome reflects what actually
-	// happened — no parser/args failures, no multi-action salvage. The
-	// declarative_action escape hatch (step 10) is the only producer
-	// that will set ArgsRepaired/MultiAction going forward.
-	updateRepairCounters(rc, final, repair.RepairOutcome{})
+	// Phase 83c (D-145) + Phase 107c step 10 (D-167): clear the per-run
+	// RepairCounters on a clean native step. The native path bypasses
+	// the schema-repair pipeline entirely, so an empty RepairOutcome
+	// reflects what actually happened — no parser/args failures, no
+	// multi-action salvage. The declarative_action escape hatch is the
+	// only producer that sets ArgsRepaired / MultiAction / FinishRepair;
+	// its signals arrive on the NEXT step (via applyDeclarativeOutcome
+	// at top-of-Next reading the trajectory). When THIS step's decision
+	// is a `CallTool{declarative_action}` dispatch AND a prior-step
+	// bump already landed via applyDeclarativeOutcome, suppress the
+	// reset: the bump must persist so the next step's outcome can
+	// compound the escalation on repeated failures. Without this
+	// suppression, every consecutive declarative_action call would
+	// zero the counters here and the next-step bump would only ever
+	// reach tier 1 (reminder).
+	if !(declarativeBumped && isDeclarativeActionDispatch(final)) {
+		updateRepairCounters(rc, final, repair.RepairOutcome{})
+	}
 
 	// Phase 83e (D-147): emit planner.decision carrying the captured
 	// provider-side reasoning trace. The event is the observability

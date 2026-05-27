@@ -205,10 +205,21 @@ func mergeDiscovered(existing, derived []string) []string {
 // declarations carry name + description + the args schema; the LLM
 // uses them to emit native ToolCalls.
 //
-// Ordering is insertion-order: always-loaded tools first (in catalog
-// registration order), then discovered tools (in discovery order). A
-// discovered name that already exists in the always-loaded set is
-// skipped — duplicates would confuse provider-side dispatch.
+// Ordering is insertion-order, with the reserved-name planner controls
+// (`_spawn_task` / `_await_task`) at the FRONT so the LLM always sees
+// them regardless of catalog size (Phase 107c step 10 follow-up to
+// AC-20a — Path 1 from the planner reserved-name native declaration
+// gap). Then always-loaded tools (in catalog registration order),
+// then discovered tools (in discovery order). A discovered name that
+// already exists in the always-loaded set is skipped — duplicates would
+// confuse provider-side dispatch.
+//
+// The `_finish` discriminator is INTENTIONALLY NOT declared: AC-20
+// retires `_finish` from the prompt + the parser; models that emit a
+// finish under the new shape simply produce a non-tool-calling response
+// (`Content: "answer"`, `ToolCalls: []`). Declaring `_finish` would
+// re-introduce a dual finish path and confuse providers' tool-choice
+// heuristics.
 //
 // A nil `rc.Catalog` returns an empty slice; the LLM still receives
 // the prompt and can emit a tool-free response (the projector then
@@ -219,10 +230,18 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	}
 	always := rc.Catalog.List()
 	if len(always) == 0 && len(discovered) == 0 {
-		return nil
+		// Even an empty catalog still gets the planner-reserved
+		// controls — they're how the LLM signals "spawn a side task"
+		// or "await a previously-spawned task" under native tool-calling.
+		return reservedPlannerControlDeclarations()
 	}
-	decls := make([]llm.ToolDeclaration, 0, len(always)+len(discovered))
-	seen := make(map[string]struct{}, len(always)+len(discovered))
+	reserved := reservedPlannerControlDeclarations()
+	decls := make([]llm.ToolDeclaration, 0, len(reserved)+len(always)+len(discovered))
+	seen := make(map[string]struct{}, len(reserved)+len(always)+len(discovered))
+	for _, r := range reserved {
+		seen[r.Name] = struct{}{}
+		decls = append(decls, r)
+	}
 	for _, t := range always {
 		if t.Name == "" {
 			continue
@@ -249,6 +268,99 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 	}
 	return decls
 }
+
+// reservedPlannerControlDeclarations returns the synthetic
+// `llm.ToolDeclaration` entries for the React planner's reserved
+// control names (`_spawn_task` / `_await_task`). The schemas mirror
+// the projector's `translateNativeSpawn` / `translateNativeAwait`
+// args envelopes verbatim.
+//
+// Background — the AC-20a follow-up. Step 9 of Phase 107c shipped the
+// React projector's reserved-name interception (`_finish` /
+// `_spawn_task` / `_await_task` in `resp.ToolCalls[0].Name` are
+// translated to planner.Finish / SpawnTask / AwaitTask). The projector
+// works under scripted mocks because mocks bypass provider validation;
+// real providers (OpenAI / Anthropic / Gemini) REJECT undeclared
+// tool_call names. Without these synthetic declarations the
+// conformance pack was mocks-only and any task-spawning agent would
+// fail on the next live workload.
+//
+// Path 1 from the step 10 plan: declare them. `_finish` stays
+// undeclared (AC-20 retired finish as a tool-call shape).
+//
+// The descriptions deliberately frame these as "planner controls" so
+// the LLM doesn't confuse them with operator-supplied catalog tools.
+func reservedPlannerControlDeclarations() []llm.ToolDeclaration {
+	return []llm.ToolDeclaration{
+		{
+			Name:        SpawnTaskToolName,
+			Description: "Planner control — spawn a background task. Use to launch parallel work that the foreground turn does not need to wait on. The runtime returns a task_id you can later observe via _await_task.",
+			Schema:      jsonSchemaRawSpawnTask,
+		},
+		{
+			Name:        AwaitTaskToolName,
+			Description: "Planner control — block the foreground turn on a previously-spawned task's completion. Pass the task_id returned by _spawn_task. The runtime resumes the planner with the task's resolved outcome.",
+			Schema:      jsonSchemaRawAwaitTask,
+		},
+	}
+}
+
+// jsonSchemaRawSpawnTask / jsonSchemaRawAwaitTask are the JSON-Schema
+// representations of the `_spawn_task` / `_await_task` args envelopes
+// the projector accepts (see translateNativeSpawn / translateNativeAwait).
+//
+// Provider-compatibility considerations:
+//   - OpenAI strict-mode tool-calling rejects schemas missing
+//     `additionalProperties: false` at every object level. Both
+//     schemas pin it explicitly.
+//   - Anthropic accepts looser schemas; the explicit
+//     `additionalProperties: false` is harmless there.
+//   - Gemini follows OpenAPI 3.0; the JSON-Schema dialect maps cleanly.
+//
+// Bytes literals (not Go-side maps) so the schema is opaque to the
+// bifrost translator — the wire bytes pass through verbatim, matching
+// the inproc-driver deriver's output shape (which also emits raw
+// JSON-Schema bytes via `json.Marshal(schema)`).
+var (
+	jsonSchemaRawSpawnTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["foreground", "background"],
+      "description": "foreground holds the planner's turn until completion; background returns control immediately (default)."
+    },
+    "group_id": {
+      "type": "string",
+      "description": "Optional logical group id. Tasks sharing a group_id can be joined as a unit via the runtime's group-completion delivery."
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string"},
+        "query": {"type": "string"},
+        "priority": {"type": "integer"},
+        "retain_turn": {"type": "boolean"},
+        "fail_fast": {"type": "boolean"}
+      }
+    }
+  },
+  "required": ["spec"]
+}`)
+	jsonSchemaRawAwaitTask = []byte(`{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "description": "The id returned by a prior _spawn_task call."
+    }
+  },
+  "required": ["task_id"]
+}`)
+)
 
 // toolToDeclaration projects a `tools.Tool` view onto the wire-facing
 // `llm.ToolDeclaration`. Carries name + description + the args JSON
