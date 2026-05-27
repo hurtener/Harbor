@@ -201,10 +201,23 @@ type CompleteResponse struct {
 // on `ChatMessage.ToolCallID` when the result is threaded back into
 // the next turn), the tool name (matches `tools.Tool.Name`), and
 // provider-validated JSON args.
+//
+// `Index` is the per-response position of this tool call (0-based) and
+// is the load-bearing discriminator for streaming-delta assembly: per
+// the OpenAI streaming spec, tool-call args arrive across multiple
+// SSE chunks. The first delta carries `ID + Name`; subsequent deltas
+// for the SAME tool call carry empty ID + null Name and an args
+// FRAGMENT to be concatenated onto the prior args. The drivers key
+// on Index to merge fragments correctly; without it, providers like
+// Amazon Bedrock (which streams args one short fragment at a time)
+// produce a trajectory full of half-built ToolCalls. Defaults to 0
+// for non-streaming responses + tests; the driver layer is the
+// source of truth.
 type ToolCallStructured struct {
-	ID   string
-	Name string
-	Args json.RawMessage
+	ID    string
+	Name  string
+	Args  json.RawMessage
+	Index uint16
 }
 
 // ToolDeclaration is the per-turn tool declarator the LLM sees (Phase

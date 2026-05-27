@@ -292,15 +292,17 @@ func processStreamChunk(
 			*details = append(*details, delta.ReasoningDetails...)
 		}
 		// Phase 107c / D-167 — accumulate streamed tool-call deltas.
-		// Most providers send the full ToolCalls struct at end-of-
-		// stream, but some (notably OpenAI for long arg payloads)
-		// stream tool-call args progressively across deltas. Merge by
-		// ID: a second delta carrying the same ID with longer args
-		// overwrites the earlier partial args (the last delta wins;
-		// providers stream cumulative-not-incremental args today, so
-		// this matches the wire contract). Empty-ID deltas append by
-		// index — defensive fallback when a provider streams unnamed
-		// per-call args before the terminal ID-bearing struct.
+		// Per the OpenAI streaming spec (also followed by Anthropic via
+		// Bedrock, Gemini's OpenAI-compat surface, and OpenRouter): the
+		// FIRST delta for a tool call carries `id + name`; subsequent
+		// deltas carry empty id + null name + an args FRAGMENT to be
+		// concatenated onto the prior args. The `index` field is the
+		// load-bearing discriminator — it's stable across all fragments
+		// of the same tool call. Without index-keyed merge, providers
+		// that stream args incrementally (Bedrock streams ~1-byte
+		// fragments) produce N broken half-built ToolCalls; the
+		// trajectory replay then sends a bogus assistant turn to the
+		// next request and the LLM gets stuck in a repair loop.
 		for _, tc := range delta.ToolCalls {
 			var args json.RawMessage
 			if tc.Function.Arguments != "" {
@@ -315,9 +317,10 @@ func processStreamChunk(
 				name = *tc.Function.Name
 			}
 			mergeStreamedToolCall(toolCalls, llm.ToolCallStructured{
-				ID:   callID,
-				Name: name,
-				Args: args,
+				ID:    callID,
+				Name:  name,
+				Args:  args,
+				Index: tc.Index,
 			})
 		}
 	}
@@ -369,10 +372,53 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 }
 
 // mergeStreamedToolCall merges one streamed tool-call delta into the
-// accumulator. The merge is last-wins on `Name` + `Args` for the same
-// `ID` (providers stream cumulative-not-incremental args today), and
-// position-based for empty-ID deltas. Phase 107c / D-167.
+// accumulator (Phase 107c / D-167; step 10/11 audit revision).
+//
+// Per the OpenAI streaming spec, tool-call deltas use `index` as the
+// stable per-tool-call discriminator across SSE chunks. The first
+// delta for a given index carries `id + name`; subsequent deltas for
+// the SAME index carry empty id, null name, and an args FRAGMENT to
+// be appended (string concatenation) onto the prior args. Bedrock
+// (Anthropic via OpenRouter) streams args in 1-byte-ish fragments,
+// so without correct incremental merge the LLM thread fills with
+// half-built ToolCalls.
+//
+// Merge rules:
+//   - Look up by Index FIRST (always present on streaming deltas).
+//   - If the existing entry has an empty `ID` and the delta carries
+//     one, adopt the delta's ID (the first non-empty wins).
+//   - Same for `Name`: keep the first non-empty (subsequent deltas
+//     report Name: null).
+//   - For `Args`: concatenate fragments. Empty fragments are no-ops.
+//
+// Fallback (no Index found AND no matching ID): append. This handles
+// pre-streaming providers + the unary path's full-shape entries.
 func mergeStreamedToolCall(acc *[]llm.ToolCallStructured, delta llm.ToolCallStructured) {
+	// Index-keyed merge for streaming deltas.
+	for i, existing := range *acc {
+		if existing.Index == delta.Index && (existing.ID != "" || delta.ID != "" || existing.Name != "" || delta.Name != "" || len(existing.Args) > 0) {
+			// Same-position match. Adopt first-non-empty ID + Name;
+			// concatenate args fragments.
+			if (*acc)[i].ID == "" && delta.ID != "" {
+				(*acc)[i].ID = delta.ID
+			}
+			if (*acc)[i].Name == "" && delta.Name != "" {
+				(*acc)[i].Name = delta.Name
+			}
+			if len(delta.Args) > 0 {
+				if len(existing.Args) == 0 {
+					(*acc)[i].Args = delta.Args
+				} else {
+					// Args are stringified JSON fragments to concatenate.
+					(*acc)[i].Args = append([]byte{}, existing.Args...)
+					(*acc)[i].Args = append((*acc)[i].Args, delta.Args...)
+				}
+			}
+			return
+		}
+	}
+	// Defensive ID-keyed fallback (unary path / provider that fills
+	// `id` on every delta without using index).
 	if delta.ID != "" {
 		for i, existing := range *acc {
 			if existing.ID == delta.ID {
@@ -385,11 +431,6 @@ func mergeStreamedToolCall(acc *[]llm.ToolCallStructured, delta llm.ToolCallStru
 				return
 			}
 		}
-		*acc = append(*acc, delta)
-		return
 	}
-	// Empty-ID delta — append. Providers that stream unnamed per-call
-	// args rarely emit more than one such delta before the terminal
-	// ID-bearing struct; this is a defensive fallback.
 	*acc = append(*acc, delta)
 }

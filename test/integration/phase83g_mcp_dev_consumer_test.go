@@ -123,10 +123,12 @@ func TestE2E_Phase83g_MCPServerToolsReachTheCatalog(t *testing.T) {
 	}
 
 	// Phase 28 stamps registered tools with the source-id (server
-	// name) as their tool-name prefix — `<source>.<remote_name>`.
-	// The `echo` tool from `harbor-mcptest-stdio` lands as
-	// `mcptest.echo`.
-	wantName := "mcptest.echo"
+	// name) as their tool-name prefix. Phase 107c step 10/11 audit
+	// changed the separator from `.` to `_` so the wire-side name
+	// matches OpenAI's `^[a-zA-Z0-9_-]{1,128}$` spec (OpenRouter →
+	// Bedrock rejects dots in tool names). The `echo` tool from
+	// `harbor-mcptest-stdio` now lands as `mcptest_echo`.
+	wantName := "mcptest_echo"
 	d, ok := stack.Catalog.Resolve(wantName)
 	if !ok {
 		t.Fatalf("catalog: tool %q not registered — MCP discovery did not reach the catalog. Configured server name=%q, command=%v",
