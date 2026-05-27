@@ -17,18 +17,20 @@ import (
 // conversation whose shape depends on whether the trajectory has been
 // compacted (Phase 46):
 //
-//  1. System message: the eleven XML-tagged sections (brief 13 §2.1,
+//  1. System message: the nine XML-tagged sections (brief 13 §2.1,
 //     reshaped by Phase 107c — D-167) assembled by [buildSystemContent]
 //     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
-//     `<parallel_execution>`, `<reasoning>`, `<tone>`,
-//     `<error_handling>`, `<available_tools>`,
-//     `<additional_guidance>`, `<planning_constraints>` — in that
-//     fixed order, separated by `\n\n`. Optional sections
-//     (`<additional_guidance>`, `<planning_constraints>`) are omitted
-//     entirely when empty. Phase 107c deletes `<output_format>`,
-//     `<action_schema>`, and `<finishing>` (the prompt-engineered
-//     JSON-action instruction block) and replaces them with a single
-//     `<tool_discovery>` section describing native tool-calling
+//     `<reasoning>`, `<tone>`, `<error_handling>`,
+//     `<available_tools>`, `<additional_guidance>`,
+//     `<planning_constraints>` — in that fixed order, separated by
+//     `\n\n`. Optional sections (`<additional_guidance>`,
+//     `<planning_constraints>`) are omitted entirely when empty.
+//     Phase 107c deletes `<output_format>`, `<action_schema>`,
+//     `<finishing>`, and `<parallel_execution>` (the prompt-engineered
+//     JSON-action shapes — parallel emission is now a native-side
+//     property: the runtime accepts multiple `ToolCalls` in one
+//     response and serialises them per the AC-19 fallback). A single
+//     `<tool_discovery>` section instructs on native tool-calling
 //     semantics + deferred-loading meta-tools.
 //  2. User message: the run's Goal (or Query when Goal is empty),
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
@@ -325,48 +327,13 @@ Rules for using tools:
 5. If a tool fails, consider alternative approaches before giving up
 </tool_usage>`
 
-	sectionParallelExecution = `<parallel_execution>
-For tasks that benefit from concurrent execution, use parallel plans:
-
-{
-  "tool": "parallel",
-  "args": {
-    "steps": [
-      {"tool": "tool_a", "args": {...}},
-      {"tool": "tool_b", "args": {...}}
-    ],
-    "join": {
-      "tool": "aggregator_tool",
-      "args": {},
-      "inject": {"results": "$results", "count": "$success_count"}
-    }
-  }
-}
-
-Available injection sources for args.join.inject:
-- $results: List of successful outputs
-- $branches: Full branch details with tool names
-- $failures: List of failed branches with errors
-- $success_count: Number of successful branches
-- $failure_count: Number of failed branches
-- $expect: Expected number of branches
-
-Use parallel execution when:
-- Multiple independent data sources need to be queried
-- Multiple independent queries can be made to the same source in parallel
-- Breakdown of multiple independent queries is more efficient than sequential calls
-- A single query seems too difficult to answer directly and several simpler queries can help
-- Tasks can be decomposed into non-dependent subtasks
-- Speed matters and tools don't have ordering dependencies
-</parallel_execution>`
-
 	sectionReasoning = `<reasoning>
 Approach problems systematically:
 
 1. Understand first: Parse the query to identify what's actually being asked
 2. Plan before acting: Consider which tools will help and in what order
 3. Gather evidence: Use tools to collect relevant information
-4. Synthesize: Combine observations into a coherent answer (in args.answer when done)
+4. Synthesize: Combine observations into a coherent answer
 5. Verify: Check if your answer actually addresses the query
 
 When uncertain:
@@ -379,12 +346,12 @@ Avoid:
 - Making up information not supported by tool observations
 - Calling the same tool repeatedly with identical arguments
 - Ignoring errors or unexpected results
-- Writing user-facing text during intermediate steps (save it for args.answer)
+- Writing user-facing text during intermediate steps (save it for the terminal answer message)
 - Generating "preview" answers before you're done gathering information
 </reasoning>`
 
 	sectionTone = `<tone>
-In your answer (ONLY when tool is "_finish"):
+When delivering your final answer to the user:
 - Be direct and informative — get to the point
 - Use clear, professional language
 - Acknowledge limitations honestly rather than hedging excessively
@@ -394,11 +361,9 @@ In your answer (ONLY when tool is "_finish"):
 - These are safe defaults. Your tone or voice can be changed in the additional_guidance section.
 - You can use markdown formatting if suggested in additional_guidance.
 
-CRITICAL:
-- During intermediate steps, produce ONLY the JSON action object. Do not add commentary.
-- Do not include a 'thought' or 'reasoning' field in the JSON. Internal reasoning is captured
-  by the runtime through provider-side channels when the provider exposes one; you do not need
-  to echo it as part of your structured output.
+During intermediate steps (when you're calling tools, not yet answering):
+- Emit only tool calls — keep any narration to the final answer turn.
+- Internal reasoning is captured automatically by the runtime through provider-side channels when the provider exposes one; you do not need to echo it.
 </tone>`
 
 	sectionErrorHandling = `<error_handling>
@@ -411,30 +376,31 @@ Ambiguous query: Make reasonable assumptions and note them, or ask for clarifica
 Conflicting information: Acknowledge the conflict and explain your reasoning
 
 If you cannot complete the task after reasonable attempts:
-- Explain what you tried and why it didn't work in args.answer
+- Explain what you tried and why it didn't work in your final answer
 - Suggest what additional information or tools would help
-- If you need clarification from the user before you can proceed, ask for it directly in args.answer
+- If you need clarification from the user before you can proceed, ask for it directly in your final answer
   (Harbor surfaces your answer as the next user-visible turn; a follow-up question is a valid finish)
 </error_handling>`
 )
 
-// buildSystemContent assembles the ten XML-tagged sections (Phase 107c
+// buildSystemContent assembles the nine XML-tagged sections (Phase 107c
 // D-167) in their fixed order, separated by `\n\n`.
 //
 //  1. <identity>             — role framing + current date.
 //  2. <tool_discovery>       — native tool-calling instructions +
 //     deferred-loading meta-tools (Phase 107c — D-167).
 //  3. <tool_usage>           — side_effects taxonomy + invocation rules.
-//  4. <parallel_execution>   — parallel plan schema + injection sources.
-//  5. <reasoning>            — 5-step systematic approach.
-//  6. <tone>                 — voice defaults + the CRITICAL clamp.
-//  7. <error_handling>       — recovery framing; no requires_followup.
-//  8. <available_tools>      — name + description quick reference
+//  4. <reasoning>            — 5-step systematic approach.
+//  5. <tone>                 — voice defaults + intermediate-step
+//     guidance (no JSON-action shape — native tool-calling owns
+//     the wire form).
+//  6. <error_handling>       — recovery framing; no requires_followup.
+//  7. <available_tools>      — name + description quick reference
 //     (schemas live in the provider's native Tools[] declaration —
 //     Phase 107c — D-167).
-//  9. <additional_guidance>  — operator-supplied content + Phase 83c
+//  8. <additional_guidance>  — operator-supplied content + Phase 83c
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-//  10. <planning_constraints> — runtime-supplied PlanningHints
+//  9. <planning_constraints> — runtime-supplied PlanningHints
 //     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
@@ -463,7 +429,6 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 			renderIdentitySection(),
 			sectionToolDiscovery,
 			sectionToolUsage,
-			sectionParallelExecution,
 			sectionReasoning,
 			sectionTone,
 			sectionErrorHandling,

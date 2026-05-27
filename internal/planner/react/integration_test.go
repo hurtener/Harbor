@@ -381,26 +381,37 @@ func TestE2E_React_StructuredPromptAssemblesThroughRegistry(t *testing.T) {
 	}
 	// Every always-on structured section is present. Phase 107c (D-167)
 	// replaces <output_format>/<action_schema>/<finishing> with
-	// <tool_discovery>.
+	// <tool_discovery> and deletes <parallel_execution> (parallel
+	// emission is now native — the runtime accepts multiple ToolCalls
+	// in one response).
 	for _, tag := range []string{
 		"<identity>", "<tool_discovery>",
-		"<tool_usage>", "<parallel_execution>", "<reasoning>", "<tone>",
+		"<tool_usage>", "<reasoning>", "<tone>",
 		"<error_handling>", "<available_tools>",
 	} {
 		if !strings.Contains(body, tag) {
 			t.Errorf("rendered prompt missing structured section %s", tag)
 		}
 	}
+	// <parallel_execution> must be ABSENT — Phase 107c deleted it.
+	if strings.Contains(body, "<parallel_execution>") {
+		t.Errorf("rendered prompt still contains deleted <parallel_execution> section")
+	}
 	// The config key flowed through to <additional_guidance>.
 	if !strings.Contains(body, "<additional_guidance>\ndomain rule: cite every source\n</additional_guidance>") {
 		t.Errorf("planner.extra_guidance did not flow to <additional_guidance>. Body:\n%s", body)
 	}
-	// The CRITICAL clamp and the no-reasoning-field discipline hold.
+	// Phase 107c replaces the brief-13 "JSON action object" CRITICAL
+	// clamp with a native tool-calling intermediate-step rule: emit
+	// only tool calls + no echoed reasoning field.
 	if strings.Contains(body, `"reasoning":`) {
 		t.Errorf("rendered prompt leaked a `\"reasoning\":` field")
 	}
-	if !strings.Contains(body, "Do not include a 'thought' or 'reasoning' field in the JSON.") {
-		t.Errorf("rendered prompt missing the <tone> CRITICAL clamp")
+	if !strings.Contains(body, "Emit only tool calls — keep any narration to the final answer turn.") {
+		t.Errorf("rendered prompt missing the <tone> native-tool-calling intermediate-step clamp")
+	}
+	if strings.Contains(body, "produce ONLY the JSON action object") {
+		t.Errorf("rendered prompt still references the deleted JSON-action-object clamp")
 	}
 }
 

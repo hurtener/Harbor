@@ -457,15 +457,17 @@ func TestRenderAny_HandlesShapesSafely(t *testing.T) {
 // Phase 83a — twelve-section structured prompt (brief 13 §2.1).
 // ----------------------------------------------------------------------------
 
-// the ten XML section tags in their Phase 107c (D-167) fixed order.
-// `<output_format>`, `<action_schema>`, and `<finishing>` are deleted;
-// `<tool_discovery>` replaces them. `<available_tools>` now renders
-// name+description only — schemas live in req.Tools[].
+// the nine XML section tags in their Phase 107c (D-167) fixed order.
+// `<output_format>`, `<action_schema>`, `<finishing>`, and
+// `<parallel_execution>` are deleted; `<tool_discovery>` replaces
+// them. `<available_tools>` now renders name+description only —
+// schemas live in req.Tools[]. Parallel emission is a native-side
+// property: the runtime accepts multiple ToolCalls in one response
+// and serialises them per the AC-19 fallback.
 var section83aTags = []string{
 	"identity",
 	"tool_discovery",
 	"tool_usage",
-	"parallel_execution",
 	"reasoning",
 	"tone",
 	"error_handling",
@@ -485,15 +487,16 @@ func renderDefaultSystem(t *testing.T, b defaultBuilder, rc planner.RunContext) 
 	return *req.Messages[0].Content.Text
 }
 
-// TestBuildSystemContent_TenSectionsAlwaysPresentInOrder asserts the
-// ten always-on sections render exactly once each, in the Phase 107c
-// (D-167) fixed order, separated by a blank line.
-func TestBuildSystemContent_TenSectionsAlwaysPresentInOrder(t *testing.T) {
+// TestBuildSystemContent_NineSectionsAlwaysPresentInOrder asserts the
+// seven always-on sections render exactly once each, in the Phase 107c
+// (D-167) fixed order, separated by a blank line. The remaining two
+// (additional_guidance, planning_constraints) are conditional.
+func TestBuildSystemContent_NineSectionsAlwaysPresentInOrder(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
 
-	// The ten always-on sections (9 + 10 are conditional).
-	alwaysOn := section83aTags[:8]
+	// The seven always-on sections (8 + 9 are conditional).
+	alwaysOn := section83aTags[:7]
 	lastIdx := -1
 	for _, tag := range alwaysOn {
 		opener := "<" + tag + ">"
@@ -601,19 +604,21 @@ func TestBuildSystemContent_NoReasoningFieldInActionSchema(t *testing.T) {
 	}
 }
 
-// TestBuildSystemContent_ToneCarriesCriticalClamp asserts the <tone>
-// section ports the predecessor's CRITICAL clamp verbatim (brief 13
-// §2.6 — both lines, case-sensitive).
-func TestBuildSystemContent_ToneCarriesCriticalClamp(t *testing.T) {
+// TestBuildSystemContent_ToneIntermediateStepClamp asserts the <tone>
+// section's intermediate-step clamp matches the Phase 107c native
+// tool-calling contract: emit only tool calls during intermediate
+// steps; reasoning is captured automatically via provider channels.
+// The legacy "produce ONLY the JSON action object" + "thought/reasoning
+// in the JSON" clamps were retired in Phase 107c (D-167 AC-20) — the
+// new wire shape is native ToolCalls, not a JSON action envelope.
+func TestBuildSystemContent_ToneIntermediateStepClamp(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
-	clampA := "During intermediate steps, produce ONLY the JSON action object. Do not add commentary."
-	clampB := "Do not include a 'thought' or 'reasoning' field in the JSON."
-	if !strings.Contains(body, clampA) {
-		t.Errorf("<tone> missing CRITICAL clamp line A: %q", clampA)
+	if !strings.Contains(body, "Emit only tool calls — keep any narration to the final answer turn.") {
+		t.Errorf("<tone> missing intermediate-step clamp ('Emit only tool calls')")
 	}
-	if !strings.Contains(body, clampB) {
-		t.Errorf("<tone> missing CRITICAL clamp line B: %q", clampB)
+	if strings.Contains(body, "produce ONLY the JSON action object") {
+		t.Errorf("<tone> still references the deleted JSON-action clamp — Phase 107c retired it")
 	}
 }
 
@@ -634,10 +639,13 @@ func TestBuildSystemContent_FinishingCarriesOnlyAnswer(t *testing.T) {
 	}
 }
 
-// TestBuildSystemContent_ErrorHandlingNoRequiresFollowup asserts the
-// <error_handling> block guides clarification via args.answer, not a
-// `requires_followup` flag (acceptance criterion).
-func TestBuildSystemContent_ErrorHandlingNoRequiresFollowup(t *testing.T) {
+// TestBuildSystemContent_ErrorHandlingNoLegacyShape asserts the
+// <error_handling> block (a) avoids the legacy `requires_followup`
+// schema field that brief 13 §5 deleted, AND (b) avoids the deleted
+// `_finish` / `args.answer` discriminator pair that Phase 107c (D-167
+// AC-20) retired. Operators clarify via the terminal answer message
+// under the native tool-calling contract.
+func TestBuildSystemContent_ErrorHandlingNoLegacyShape(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
 	// Isolate the <error_handling> section body.
@@ -648,10 +656,18 @@ func TestBuildSystemContent_ErrorHandlingNoRequiresFollowup(t *testing.T) {
 	}
 	section := body[start:end]
 	if strings.Contains(section, "requires_followup") {
-		t.Errorf("<error_handling> references requires_followup — must guide via args.answer instead")
+		t.Errorf("<error_handling> references requires_followup — brief 13 §5 deleted the field")
 	}
-	if !strings.Contains(section, "args.answer") {
-		t.Errorf("<error_handling> should guide clarification via args.answer")
+	// The deleted Phase 107c shape — operator should guide via the
+	// terminal answer message, NOT a JSON args.answer field.
+	if strings.Contains(section, "args.answer") {
+		t.Errorf("<error_handling> still references args.answer — Phase 107c AC-20 retired the field; use 'final answer' wording")
+	}
+	if strings.Contains(section, "_finish") {
+		t.Errorf("<error_handling> still references _finish — Phase 107c AC-20 retired the discriminator")
+	}
+	if !strings.Contains(section, "final answer") {
+		t.Errorf("<error_handling> should guide clarification via the user-visible final answer")
 	}
 }
 
@@ -724,17 +740,25 @@ func TestBuildSystemContent_NoUnresolvedTemplateMarkers(t *testing.T) {
 func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
 	t.Parallel()
 	const goldenPath = "testdata/golden_default_prompt.txt"
-	want, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden fixture: %v", err)
-	}
 	got := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
 	// Normalise the volatile date line to the fixture's sentinel.
 	dateRE := regexp.MustCompile(`Current date: \d{4}-\d{2}-\d{2}`)
 	gotNorm := dateRE.ReplaceAllString(got, "Current date: 2025-01-01")
+	if os.Getenv("HARBOR_UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, []byte(gotNorm), 0o644); err != nil {
+			t.Fatalf("update golden fixture: %v", err)
+		}
+		t.Logf("regenerated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
 	if gotNorm != string(want) {
 		t.Errorf("rendered default prompt diverged from %s.\n"+
-			"If this change is intentional, regenerate the fixture.\n"+
+			"If this change is intentional, regenerate the fixture with "+
+			"HARBOR_UPDATE_GOLDEN=1 go test ./internal/planner/react/...\n"+
 			"--- got ---\n%s\n--- want ---\n%s", goldenPath, gotNorm, string(want))
 	}
 }
