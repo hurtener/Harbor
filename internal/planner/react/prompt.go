@@ -17,14 +17,19 @@ import (
 // conversation whose shape depends on whether the trajectory has been
 // compacted (Phase 46):
 //
-//  1. System message: the twelve XML-tagged sections (brief 13 §2.1)
-//     assembled by [buildSystemContent] — `<identity>`,
-//     `<output_format>`, `<action_schema>`, `<finishing>`,
-//     `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`,
-//     `<error_handling>`, `<available_tools>`, `<additional_guidance>`,
-//     `<planning_constraints>` — in that fixed order, separated by
-//     `\n\n`. Optional sections (`<additional_guidance>`,
-//     `<planning_constraints>`) are omitted entirely when empty.
+//  1. System message: the eleven XML-tagged sections (brief 13 §2.1,
+//     reshaped by Phase 107c — D-167) assembled by [buildSystemContent]
+//     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
+//     `<parallel_execution>`, `<reasoning>`, `<tone>`,
+//     `<error_handling>`, `<available_tools>`,
+//     `<additional_guidance>`, `<planning_constraints>` — in that
+//     fixed order, separated by `\n\n`. Optional sections
+//     (`<additional_guidance>`, `<planning_constraints>`) are omitted
+//     entirely when empty. Phase 107c deletes `<output_format>`,
+//     `<action_schema>`, and `<finishing>` (the prompt-engineered
+//     JSON-action instruction block) and replaces them with a single
+//     `<tool_discovery>` section describing native tool-calling
+//     semantics + deferred-loading meta-tools.
 //  2. User message: the run's Goal (or Query when Goal is empty),
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
@@ -97,24 +102,13 @@ type defaultBuilder struct {
 	// RunContext.ReasoningReplay override wins over it at render time.
 	// Zero value ("" → resolves to never) is the safe default.
 	configuredReplay planner.ReasoningReplayMode
-	// maxToolExamples caps how many curated examples each tool renders
-	// in the <available_tools> section (Phase 83b — D-144). Zero
-	// resolves to defaultMaxToolExamples (3) at render time. Set once
-	// at construction by [New]; read-only thereafter (D-025).
+	// maxToolExamples is retained for backward compatibility with
+	// react.go's constructor (Phase 107c step 8 does not touch
+	// react.go). Under native tool-calling (Phase 107c — D-167) the
+	// <available_tools> prompt section renders name+description only
+	// (schemas live in req.Tools[]), so renderTool no longer reads
+	// this field. It will be deleted when step 9 wires the projector.
 	maxToolExamples int
-}
-
-// defaultMaxToolExamples is the per-tool example cap applied when the
-// operator leaves `PlannerConfig.MaxToolExamplesPerTool` at its zero
-// value (Phase 83b — D-144, brief 13 §2.4).
-const defaultMaxToolExamples = 3
-
-// toolRenderConfig carries the per-render knobs [renderTool] consults.
-// It is a value type — [renderTool] is pure with respect to it, which
-// keeps the helper trivially safe for concurrent reuse (D-025).
-type toolRenderConfig struct {
-	// maxExamples is the resolved (non-zero) per-tool example cap.
-	maxExamples int
 }
 
 // Build implements [PromptBuilder].
@@ -270,17 +264,14 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	}
 }
 
-// The twelve static section bodies. Brief 13 §4 carries the verbatim
-// adapted copy; the constants below are that copy, split at the XML
-// tag boundaries so each section is independently editable (brief 13
-// §2.1 design property 1). Phases 83b/c/d extend these section anchors:
-//
-//   - 83b replaces sectionAvailableToolsTag's body with per-tool
-//     `args_schema` + curated examples.
-//   - 83c populates the <planning_constraints> section from
-//     `RunContext.PlanningHints` and merges per-turn repair guidance
-//     into <additional_guidance> (D-145 — done).
-//   - 83d injects `<read_only_*_memory>` UNTRUSTED-framed blocks.
+// The ten static section bodies (Phase 107c — D-167 resizes from
+// twelve). Brief 13 §4 carries the verbatim adapted copy; the constants
+// below are that copy, split at the XML tag boundaries so each section
+// is independently editable (brief 13 §2.1 design property 1).
+// Phases 83b/c/d extend these section anchors; Phase 107c deletes
+// `<output_format>`, `<action_schema>`, and `<finishing>` (the
+// prompt-engineered JSON-action instruction block) and replaces them
+// with `<tool_discovery>`.
 //
 // The `{{current_date}}` placeholder in <identity> is the ONLY
 // template marker the builder resolves at Build time; everything else
@@ -304,98 +295,21 @@ Your role is to:
 Current date: {{current_date}}
 </identity>`
 
-	sectionOutputFormat = `<output_format>
-Think briefly (internally), then respond with a single JSON object that matches the action schema.
-If a tool would help, set "tool" to the tool name and provide "args".
-Write your JSON inside one markdown code block (` + "```json ... ```" + `).
-Do not emit multiple JSON objects or extra commentary after the code block.
+	sectionToolDiscovery = `<tool_discovery>
+You have access to tools declared natively — the schemas and validation are handled by the runtime.
+Your task is to decide which tool to call and with what arguments; the runtime validates and dispatches.
 
-Important:
-- Emit keys in this order for stability: tool, args.
-- User-facing answers go ONLY in args.answer when tool is "_finish" (finished).
-- During intermediate steps (when calling tools), the user sees nothing; only tool outputs are recorded internally.
-</output_format>`
+You also have these discovery meta-tools to explore what is available:
 
-	sectionActionSchema = `<action_schema>
-Every response follows this structure:
+- tool_search(query, tags[], limit): search the tool catalog by capability keywords. Tools surfaced by tool_search are callable on the next turn after the planner observes the search result.
+- tool_get(name): fetch the full schema + examples for a specific tool.
+- skill_search(query, tags[], limit): search skill playbooks by topic.
+- skill_get(name): fetch a specific skill's content.
 
-{
-  "tool": "tool_name" | "parallel" | "_spawn_task" | "_await_task" | "_finish",
-  "args": { ... }
-}
+If you cannot emit a native tool call (e.g. your model lacks native tool-calling support), you may call the declarative_action tool with {"tool": "...", "args": {...}}. The runtime routes this through a backward-compatible dispatch path.
 
-Field meanings:
-- tool:
-  - Tool call: a tool name from the catalog. If a tool was returned by ` + "`skill_search`" + ` but is deferred/hidden,
-    you may still call it by name; the runtime will activate it on first call.
-  - Parallel: "parallel" (executes tools concurrently)
-  - Background tasks: "_spawn_task" or "_await_task" (spawns or joins a task)
-  - Terminal: "_finish" (streams args.answer to the user)
-- args:
-  - Tool call: tool arguments matching args_schema
-  - Parallel: {"steps": [{"tool": "...", "args": {...}}, ...], "join": {...} | null}
-  - Task: see examples below
-  - Final: {"answer": "..."} — plain text only; no metadata fields.
-
-Background task examples (use only when task management is enabled):
-
-Example - _spawn_task (for complex reasoning tasks):
-{
-  "tool": "_spawn_task",
-  "args": {
-    "name": "Research market trends",
-    "query": "Analyze Q4 2024 market trends and provide a summary",
-    "merge_strategy": "HUMAN_GATED",
-    "group": "analysis",
-    "retain_turn": false
-  }
-}
-
-Example - _await_task (join a previously-spawned task):
-{
-  "tool": "_await_task",
-  "args": { "task_id": "tsk_abc123" }
-}
-
-Args schema for task actions:
-- name: Human-readable task name (for _spawn_task)
-- query: The task instruction (for _spawn_task)
-- merge_strategy: "HUMAN_GATED" (default), "APPEND", or "REPLACE"
-- group: Optional group name for coordinated tasks
-- group_sealed: true to seal the group (no more tasks can join)
-- retain_turn: true to wait for result (requires APPEND/REPLACE merge)
-
-Remember: The ONLY place for user-facing text is args.answer when tool is "_finish".
-</action_schema>`
-
-	sectionFinishing = `<finishing>
-When you have gathered enough information to answer the query:
-
-1. Set "tool" to "_finish"
-2. Provide "args" with this structure:
-
-{
-  "answer": "Your complete, human-readable answer to the user's query"
-}
-
-The answer field is REQUIRED and is the ONLY field. Write a full, helpful response — not a summary or fragment.
-Focus on solving the user query, going to the point of answering what they asked.
-
-` + "`answer`" + ` is plain text. Do NOT include structured metadata, status flags, confidence scores, or
-classification routes — Harbor's renderer is responsible for any structured presentation, not the planner.
-If rich UI is needed (cards, charts, structured layouts), call the appropriate MCP-Apps rendering tool
-BEFORE you finish, and reference the rendered artifact in ` + "`answer`" + ` as ordinary prose.
-
-Do NOT include heavy data (charts, files, large JSON) in args — artifacts from tool outputs are collected automatically.
-
-Example finish:
-{
-  "tool": "_finish",
-  "args": {
-    "answer": "Q4 2024 revenue increased 15% YoY to $1.2M. December was strongest."
-  }
-}
-</finishing>`
+The _finish reserved-discriminator is RETIRED. When you have enough information to satisfy the user's goal, produce your final answer as plain content (no tool call). The runtime interprets a response with content and zero tool calls as a terminal answer.
+</tool_discovery>`
 
 	sectionToolUsage = `<tool_usage>
 Rules for using tools:
@@ -504,35 +418,37 @@ If you cannot complete the task after reasonable attempts:
 </error_handling>`
 )
 
-// buildSystemContent assembles the twelve XML-tagged sections (brief
-// 13 §2.1) in their fixed order, separated by `\n\n`.
+// buildSystemContent assembles the ten XML-tagged sections (Phase 107c
+// D-167) in their fixed order, separated by `\n\n`.
 //
 //  1. <identity>             — role framing + current date.
-//  2. <output_format>        — one JSON object, one code block.
-//  3. <action_schema>        — the {tool, args} envelope.
-//  4. <finishing>            — terminal condition; only args.answer.
-//  5. <tool_usage>           — side_effects taxonomy + invocation rules.
-//  6. <parallel_execution>   — parallel plan schema + injection sources.
-//  7. <reasoning>            — 5-step systematic approach.
-//  8. <tone>                 — voice defaults + the CRITICAL clamp.
-//  9. <error_handling>       — recovery framing; no requires_followup.
-//  10. <available_tools>      — rendered tool catalog (per-tool).
-//  11. <additional_guidance>  — operator-supplied content + Phase 83c
+//  2. <tool_discovery>       — native tool-calling instructions +
+//     deferred-loading meta-tools (Phase 107c — D-167).
+//  3. <tool_usage>           — side_effects taxonomy + invocation rules.
+//  4. <parallel_execution>   — parallel plan schema + injection sources.
+//  5. <reasoning>            — 5-step systematic approach.
+//  6. <tone>                 — voice defaults + the CRITICAL clamp.
+//  7. <error_handling>       — recovery framing; no requires_followup.
+//  8. <available_tools>      — name + description quick reference
+//     (schemas live in the provider's native Tools[] declaration —
+//     Phase 107c — D-167).
+//  9. <additional_guidance>  — operator-supplied content + Phase 83c
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-//  12. <planning_constraints> — runtime-supplied PlanningHints
+//  10. <planning_constraints> — runtime-supplied PlanningHints
 //     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
 // when an operator passes a non-default string it REPLACES the entire
-// twelve-section structure (the structured sections are
+// ten-section structure (the structured sections are
 // [DefaultSystemPrompt]'s content). `extraGuidance` flows into section
-// 11. Sections 11 and 12 are omitted entirely — not emitted as empty
-// tag pairs — when their content is absent.
+// 9. Sections 9 and 10 are omitted entirely — not emitted as empty tag
+// pairs — when their content is absent.
 //
-// `maxToolExamples` is the per-tool curated-example cap (Phase 83b —
-// D-144); zero resolves to [defaultMaxToolExamples].
-//
-// Phase 83a establishes the section anchors; 83b/c/d build on them.
+// `maxToolExamples` is retained for backward compatibility with the
+// builder field (react.go still sets it — step 9 deletes). Under
+// Phase 107c native tool-calling, `renderAvailableToolsSection`
+// ignores it and renders name+description only. The param will be
+// removed when step 9 lands.
 func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
@@ -545,9 +461,7 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 	if systemPrompt == DefaultSystemPrompt {
 		sections = []string{
 			renderIdentitySection(),
-			sectionOutputFormat,
-			sectionActionSchema,
-			sectionFinishing,
+			sectionToolDiscovery,
 			sectionToolUsage,
 			sectionParallelExecution,
 			sectionReasoning,
@@ -596,18 +510,15 @@ func renderIdentitySection() string {
 }
 
 // renderAvailableToolsSection renders the <available_tools> section
-// (brief 13 §2.1 section 10). Phase 83b upgrades the Phase 45
-// name+description-only shape: each tool now renders `name`,
-// `description`, `args_schema` (compact one-line JSON), `side_effects`,
-// and up to `maxToolExamples` curated examples — closing the
-// args-validation-failure cascade caused by the LLM guessing argument
-// shapes (brief 13 §2.4 + §3, D-144). `maxToolExamples` ≤ 0 resolves
-// to [defaultMaxToolExamples].
+// (Phase 107c — D-167). Under native tool-calling, the prompt-side
+// catalog is a name+description quick-reference only — schemas,
+// side_effects, and examples live in the provider's native Tools[]
+// declaration. `maxToolExamples` is ignored (kept for backward compat
+// with react.go — step 9 deletes it).
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
-	cfg := toolRenderConfig{maxExamples: maxToolExamples}
-	if cfg.maxExamples <= 0 {
-		cfg.maxExamples = defaultMaxToolExamples
-	}
+	// Phase 107c (D-167): `maxToolExamples` is ignored — schemas live
+	// in req.Tools[]; the prompt renders name+description only.
+	_ = maxToolExamples
 
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
@@ -620,7 +531,7 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 			if i > 0 {
 				b.WriteString("\n")
 			}
-			b.WriteString(renderTool(t, cfg))
+			b.WriteString(renderToolNameDesc(t))
 		}
 	}
 	b.WriteString("</available_tools>")
@@ -648,28 +559,11 @@ func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string
 	}
 }
 
-// renderTool emits the per-tool block for the <available_tools>
-// section (Phase 83b — D-144). The block is:
-//
-//   - <name>: <description>
-//     args_schema: <compact one-line JSON>
-//     side_effects: <class>
-//     examples:
-//   - <description> → <compact args JSON>
-//
-// The `args_schema` and `examples:` lines are omitted entirely when
-// the tool declares no schema / no examples — a no-examples tool
-// renders exactly through the `side_effects` line, so existing tool
-// registrations need no code change (the new fields are opt-in on
-// `tools.Tool`). `side_effects` always renders, defaulting to `pure`
-// when the tool leaves the field unset.
-//
-// renderTool is a pure function: it reads only its arguments, holds no
-// shared state, and is therefore trivially safe for concurrent reuse
-// (D-025). The compact-JSON discipline (one line, deterministic key
-// order via `encoding/json`'s sorted map marshalling) maximises the
-// KV-cache hit rate across turns (brief 13 §5).
-func renderTool(t tools.Tool, cfg toolRenderConfig) string {
+// renderToolNameDesc renders a tool as name + description only for the
+// prompt-side <available_tools> quick reference (Phase 107c — D-167).
+// Schemas, side_effects, and examples live in the provider's native
+// Tools[] declaration; the prompt duplicates none of them.
+func renderToolNameDesc(t tools.Tool) string {
 	var b strings.Builder
 	b.WriteString("- ")
 	b.WriteString(t.Name)
@@ -678,30 +572,6 @@ func renderTool(t tools.Tool, cfg toolRenderConfig) string {
 		b.WriteString(oneLine(t.Description))
 	}
 	b.WriteString("\n")
-
-	if schema := compactJSON(t.ArgsSchema); schema != "" {
-		b.WriteString("  args_schema: ")
-		b.WriteString(schema)
-		b.WriteString("\n")
-	}
-
-	b.WriteString("  side_effects: ")
-	b.WriteString(sideEffectOf(t))
-	b.WriteString("\n")
-
-	examples := rankedExamples(t.Examples, cfg.maxExamples)
-	if len(examples) > 0 {
-		b.WriteString("  examples:\n")
-		for _, ex := range examples {
-			b.WriteString("    - ")
-			if d := oneLine(ex.Description); d != "" {
-				b.WriteString(d)
-				b.WriteString(" → ")
-			}
-			b.WriteString(compactArgs(ex.Args))
-			b.WriteString("\n")
-		}
-	}
 	return b.String()
 }
 

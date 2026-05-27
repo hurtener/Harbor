@@ -260,14 +260,14 @@ func TestE2E_Wave15_PromptBand_ComposesAllFiveSurfaces(t *testing.T) {
 		t.Fatalf("system-message count = %d, want 4 (base + external/conversation/skills wrappers); roles=%v", sysCount, roles)
 	}
 
-	// --- 83a: the twelve XML-tagged sections render in the base system
-	// message. Spot-check several anchors + the operator-supplied
-	// <additional_guidance>.
+	// --- 83a: the ten XML-tagged sections render in the base system
+	// message (Phase 107c D-167 deletes <output_format>, <action_schema>,
+	// <finishing>; adds <tool_discovery>). Spot-check several anchors
+	// + the operator-supplied <additional_guidance>.
 	base := *req.Messages[0].Content.Text
 	for _, want := range []string{
 		"<identity>",
-		"<output_format>",
-		"<action_schema>",
+		"<tool_discovery>",
 		"<tool_usage>",
 		"<reasoning>",
 		"<available_tools>",
@@ -280,22 +280,21 @@ func TestE2E_Wave15_PromptBand_ComposesAllFiveSurfaces(t *testing.T) {
 		}
 	}
 
-	// --- 83b: <available_tools> renders args_schema, side_effects, and
-	// the curated examples (tag-ranked: minimal before common).
+	// --- 83b: <available_tools> renders name+description only
+	// (Phase 107c — D-167 narrows prompt-side rendering; schemas live
+	// in req.Tools[]).
 	for _, want := range []string{
 		"kb_search",
-		"args_schema:",
-		"side_effects: read",
-		"examples:",
-		"broadest search",
-		"bounded result set",
+		"Search the knowledge base",
 	} {
 		if !strings.Contains(base, want) {
-			t.Errorf("83b enriched <available_tools> missing %q", want)
+			t.Errorf("83b <available_tools> missing %q", want)
 		}
 	}
-	if mi, ci := strings.Index(base, "broadest search"), strings.Index(base, "bounded result set"); mi == -1 || ci == -1 || mi > ci {
-		t.Errorf("83b tag ranking broken: minimal must render before common (mi=%d, ci=%d)", mi, ci)
+	for _, forbidden := range []string{"args_schema:", "side_effects:", "examples:"} {
+		if strings.Contains(base, forbidden) {
+			t.Errorf("83b Phase 107c: <available_tools> leaks %q (should be name+desc only)", forbidden)
+		}
 	}
 
 	// --- 83c: tripped FinishRepair counter renders the escalating

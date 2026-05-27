@@ -332,8 +332,10 @@ func (c *promptRecordingClient) Close(_ context.Context) error { return nil }
 
 // TestE2E_React_StructuredPromptAssemblesThroughRegistry is the Phase
 // 83a integration test (§17.1 — this phase consumes the Phase 45
-// planner surface AND the D-103 planner registry). It proves the
-// structured twelve-section prompt + the `planner.extra_guidance`
+// planner surface AND the D-103 planner registry). Phase 107c (D-167)
+// deletes `<output_format>`, `<action_schema>`, `<finishing>` and
+// replaces them with `<tool_discovery>`.
+// It proves the structured ten-section prompt + the `planner.extra_guidance`
 // config key assemble end-to-end: a `planner.PlannerConfig` carrying
 // `ExtraGuidance` flows through `planner.Resolve` → the react driver's
 // factory → `react.New` with `WithSystemPromptExtra` → a real `Next`
@@ -377,9 +379,11 @@ func TestE2E_React_StructuredPromptAssemblesThroughRegistry(t *testing.T) {
 	if body == "" {
 		t.Fatal("no system prompt was rendered")
 	}
-	// Every always-on structured section is present.
+	// Every always-on structured section is present. Phase 107c (D-167)
+	// replaces <output_format>/<action_schema>/<finishing> with
+	// <tool_discovery>.
 	for _, tag := range []string{
-		"<identity>", "<output_format>", "<action_schema>", "<finishing>",
+		"<identity>", "<tool_discovery>",
 		"<tool_usage>", "<parallel_execution>", "<reasoning>", "<tone>",
 		"<error_handling>", "<available_tools>",
 	} {

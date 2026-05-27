@@ -1,31 +1,12 @@
 // Package integration — Phase 83b wave-15 integration test.
 //
 // Phase 83b enriches the ReAct system prompt's `<available_tools>`
-// section: each tool now renders its `args_schema`, `side_effects`,
-// and curated examples instead of just `name + description`. This test
-// proves the enriched rendering composes end-to-end against the real
-// stack `cmd/harbor` boots:
-//
-//  1. A real Phase 26 `tools.ToolCatalog` (the in-memory production
-//     catalog) populated through real `inproc.RegisterFunc` so the
-//     `args_schema` is the driver-derived JSON-Schema, not a hand-
-//     written fixture.
-//  2. The real Phase 45 ReAct planner + Phase 83a structured prompt
-//     builder — the planner's `Next` builds the system prompt.
-//  3. A recording `llm.LLMClient` that captures the system message so
-//     the test can assert the enriched catalog block reached the model.
-//
-// It asserts:
-//   - The system prompt the planner sends carries `args_schema:`,
-//     `side_effects:`, and the curated example for the registered tool.
-//   - Tag ranking is honoured: a `minimal`-tagged example renders
-//     before a `common`-tagged one.
-//   - The `MaxToolExamplesPerTool` knob bounds the rendered examples.
-//   - Identity propagates through the catalog view (multi-isolation).
-//   - A failure mode: an example whose arg key is absent from the
-//     tool's schema fails catalog registration loudly.
-//   - N≥10 concurrent runs against ONE shared planner show no prompt
-//     bleed (cross-package D-025 stress).
+// section with per-tool `args_schema`, `side_effects`, and curated
+// examples. Phase 107c (D-167) NARROWS the prompt-side rendering to
+// name+description only — schemas now live in the provider's native
+// `Tools[]` declaration. The integration tests below were broadened
+// to cover both shapes: registration + examples validation (still
+// relevant), prompt-side name+description rendering (updated).
 package integration
 
 import (
@@ -131,9 +112,11 @@ func registerKBSearch83b(t *testing.T) tools.ToolCatalog {
 	return cat
 }
 
-// TestE2E_Phase83b_EnrichedCatalogReachesPrompt proves the enriched
-// <available_tools> block — args_schema + side_effects + curated
-// examples — reaches the LLM through a real catalog + real planner.
+// TestE2E_Phase83b_EnrichedCatalogReachesPrompt proves the name+
+// description <available_tools> block reaches the LLM through a real
+// catalog + real planner. Phase 107c (D-167) narrows prompt-side
+// rendering; args_schema / side_effects / examples are NOT rendered
+// (they live in req.Tools[]).
 func TestE2E_Phase83b_EnrichedCatalogReachesPrompt(t *testing.T) {
 	t.Parallel()
 	cat := registerKBSearch83b(t)
@@ -166,36 +149,26 @@ func TestE2E_Phase83b_EnrichedCatalogReachesPrompt(t *testing.T) {
 	for _, want := range []string{
 		"<available_tools>",
 		"kb_search",
-		"args_schema: ",
-		"side_effects: read",
-		"examples:",
-		"broadest search",
-		"bounded result set",
+		"Search the knowledge base",
 	} {
 		if !strings.Contains(sys, want) {
 			t.Errorf("system prompt missing %q.\nPrompt:\n%s", want, sys)
 		}
 	}
-	// args_schema is the driver-derived JSON-Schema — it must mention
-	// both typed fields, on a single compact line.
-	schemaLine := ""
-	for _, ln := range strings.Split(sys, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "args_schema:") {
-			schemaLine = ln
+	// Phase 107c (D-167): these are NOT rendered in the prompt.
+	for _, forbidden := range []string{"args_schema:", "side_effects:", "examples:"} {
+		if strings.Contains(sys, forbidden) {
+			t.Errorf("Phase 107c: system prompt leaks %q (should be name+desc only).\nPrompt:\n%s", forbidden, sys)
 		}
-	}
-	if !strings.Contains(schemaLine, "query") || !strings.Contains(schemaLine, "limit") {
-		t.Errorf("args_schema line missing derived fields: %q", schemaLine)
-	}
-	// Tag ranking: the `minimal` example outranks the `common` one.
-	if mi, ci := strings.Index(sys, "broadest search"), strings.Index(sys, "bounded result set"); mi > ci {
-		t.Errorf("minimal-tagged example did not render before common-tagged (mi=%d ci=%d)", mi, ci)
 	}
 }
 
 // TestE2E_Phase83b_MaxExamplesKnobBounds proves the
-// MaxToolExamplesPerTool knob (via WithMaxToolExamplesPerTool) bounds
-// the rendered example count end-to-end.
+// MaxToolExamplesPerTool knob does not break registration or planner
+// boot. Phase 107c (D-167) ignores the knob at render time (prompt-side
+// rendering is name+description only); the knob is kept for the
+// req.Tools[]-side (step 9). This test verifies the planner still boots
+// and renders a valid prompt with the knob set.
 func TestE2E_Phase83b_MaxExamplesKnobBounds(t *testing.T) {
 	t.Parallel()
 	cat := registerKBSearch83b(t)
@@ -221,12 +194,8 @@ func TestE2E_Phase83b_MaxExamplesKnobBounds(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	sys := rec.lastSystem()
-	// Only the top-ranked (minimal) example renders.
-	if !strings.Contains(sys, "broadest search") {
-		t.Errorf("cap=1 dropped the minimal example.\nPrompt:\n%s", sys)
-	}
-	if strings.Contains(sys, "bounded result set") {
-		t.Errorf("cap=1 should have dropped the common example.\nPrompt:\n%s", sys)
+	if !strings.Contains(sys, "kb_search") {
+		t.Errorf("prompt missing kb_search.\nPrompt:\n%s", sys)
 	}
 }
 
@@ -256,8 +225,9 @@ func TestE2E_Phase83b_InvalidExampleFailsRegistration(t *testing.T) {
 
 // TestE2E_Phase83b_ConcurrentRunsNoPromptBleed runs N≥10 concurrent
 // Next calls against ONE shared planner with disjoint identities and
-// asserts each run's system prompt carries the enriched catalog block
-// — no cross-run bleed under -race (cross-package D-025 stress).
+// asserts each run's system prompt carries the tool name — no cross-run
+// bleed under -race (cross-package D-025 stress). Phase 107c (D-167)
+// narrows to name+description only; args_schema is no longer asserted.
 func TestE2E_Phase83b_ConcurrentRunsNoPromptBleed(t *testing.T) {
 	t.Parallel()
 	const N = 16
@@ -287,8 +257,6 @@ func TestE2E_Phase83b_ConcurrentRunsNoPromptBleed(t *testing.T) {
 				atomic.AddInt64(&fails, 1)
 				return
 			}
-			// Per-run planner so each goroutine has its own recorder;
-			// the catalog + prompt-builder code is the shared surface.
 			rp := react.New(rec)
 			rc := planner.RunContext{
 				Quadruple: q,
@@ -301,7 +269,7 @@ func TestE2E_Phase83b_ConcurrentRunsNoPromptBleed(t *testing.T) {
 				atomic.AddInt64(&fails, 1)
 				return
 			}
-			if !strings.Contains(rec.lastSystem(), "args_schema: ") {
+			if !strings.Contains(rec.lastSystem(), "kb_search") {
 				atomic.AddInt64(&fails, 1)
 			}
 		}()
@@ -309,7 +277,7 @@ func TestE2E_Phase83b_ConcurrentRunsNoPromptBleed(t *testing.T) {
 	wg.Wait()
 	_ = p
 	if fails != 0 {
-		t.Errorf("%d concurrent runs failed the enriched-catalog assertion", fails)
+		t.Errorf("%d concurrent runs failed the name+description assertion", fails)
 	}
 }
 

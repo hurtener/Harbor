@@ -906,12 +906,12 @@ func (c *promptCapturingClient) systemPromptText() string {
 }
 
 // TestDefaultSystemPrompt_DocumentsAllThreeReservedNames asserts the
-// rendered default system prompt documents `_finish`, `_spawn_task`,
-// `_await_task` so the LLM can emit them without prompt-engineering at
-// the call site. Phase 83a (brief 13 §2.1) made the default prompt a
-// rendered twelve-section structure; the reserved names live in the
-// `<action_schema>` section. The string-grep is intentionally brittle
-// — drift in the prompt surfaces here at test time.
+// rendered default system prompt still documents `_finish` (it appears
+// in `<tool_discovery>`, `<tone>`, and `<reasoning>`) so the LLM
+// understands the terminal condition. Phase 107c (D-167) deletes the
+// `<action_schema>` section — `_spawn_task` and `_await_task` are no
+// longer in the prompt text (those opcodes were specific to the
+// prompt-engineered JSON-action format).
 func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
 	t.Parallel()
 	client := &promptCapturingClient{}
@@ -928,11 +928,11 @@ func TestDefaultSystemPrompt_DocumentsAllThreeReservedNames(t *testing.T) {
 		t.Fatalf("Next: %v", err)
 	}
 	body := client.systemPromptText()
-	for _, name := range []string{"_finish", "_spawn_task", "_await_task"} {
-		if !strings.Contains(body, name) {
-			t.Errorf("rendered default prompt missing %s (D-056 reserved names)", name)
-		}
+	if !strings.Contains(body, "_finish") {
+		t.Errorf("rendered default prompt missing _finish")
 	}
+	// Phase 107c (D-167): _spawn_task and _await_task were in the
+	// deleted <action_schema> — they are not expected in the prompt.
 }
 
 // capturingBuilder is a PromptBuilder used to verify
