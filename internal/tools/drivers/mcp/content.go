@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -63,6 +64,63 @@ type MCPToolValue struct {
 	// servers that support typed JSON output (mcpsdk.ToolHandlerFor).
 	// nil when absent.
 	StructuredContent any
+}
+
+// MarshalJSON renders the value LLM-edge-friendly. The text-only
+// degenerate case (Parts + StructuredContent both empty) emits just
+// the raw Text — most MCP tools return their result as a TextContent
+// block carrying JSON-as-string, and the default struct marshal
+// produces a `{"Text": "<escaped JSON>"}` wrapper that doubles the
+// encoding and confuses LLMs (the Phase 107c step 10/11+follow-up
+// live test pinned this: the YouTube agent looped re-emitting the
+// same `youtube_get_metadata` because Claude Haiku 4.5 couldn't
+// reliably parse the doubly-encoded wrapper). When Text is itself
+// well-formed JSON, MarshalJSON emits the JSON value directly so the
+// LLM reads a clean structure; otherwise the text rides as a JSON
+// string. Audit / observability consumers that need the typed shape
+// can re-derive it from the underlying CallToolResult on the bus.
+//
+// When StructuredContent is set, it wins (it's the MCP-server-typed
+// projection). When Parts are non-empty, the wrapper carries the
+// non-text shape verbatim — there is no clean unwrap for mixed-
+// content responses, so the default struct render applies.
+func (v MCPToolValue) MarshalJSON() ([]byte, error) {
+	hasParts := len(v.Parts) > 0
+	hasStructured := v.StructuredContent != nil
+
+	// Mixed content with non-text parts (image / audio / link / embedded)
+	// keeps the full wrapper — there is no clean unwrap. Use a type alias
+	// to dodge recursive MarshalJSON.
+	if hasParts {
+		type alias MCPToolValue
+		return json.Marshal(alias(v))
+	}
+
+	// Pure structured-content (or text+structured where the structured
+	// projection is the canonical typed view — typical for MCP tools that
+	// quote their JSON body in a TextContent block AND also surface it as
+	// StructuredContent for typed clients). The structured projection is
+	// the LLM-friendly shape; the duplicated Text is the brief-07-era
+	// fallback for non-tool-calling readers and is dropped on the wire to
+	// avoid the doubly-encoded {"Text":"<escaped JSON>"} shape that
+	// confuses native-tool-calling models.
+	if hasStructured {
+		return json.Marshal(v.StructuredContent)
+	}
+
+	// Text-only response. Prefer emitting the Text as a parsed JSON value
+	// when it is well-formed JSON; fall back to a JSON string render.
+	if v.Text == "" {
+		return []byte("null"), nil
+	}
+	trimmed := strings.TrimSpace(v.Text)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		var probe any
+		if err := json.Unmarshal([]byte(trimmed), &probe); err == nil {
+			return json.Marshal(probe)
+		}
+	}
+	return json.Marshal(v.Text)
 }
 
 // ContentPart is the discriminated union of non-text content
