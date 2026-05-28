@@ -1,11 +1,9 @@
 package react
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
@@ -461,7 +459,7 @@ If you cannot complete the task after reasonable attempts:
 //     Phase 107c — D-167).
 //  9. <additional_guidance>  — operator-supplied content + Phase 83c
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-// 10. <planning_constraints> — runtime-supplied PlanningHints
+//  10. <planning_constraints> — runtime-supplied PlanningHints
 //     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
@@ -631,110 +629,10 @@ func renderToolNameDesc(t tools.Tool) string {
 	return b.String()
 }
 
-// sideEffectOf returns the tool's declared side-effect class, defaulting
-// to "pure" when the field is unset — a tool that makes no claim is
-// treated as the safest class so the planner's <tool_usage> guidance
-// reads consistently.
-func sideEffectOf(t tools.Tool) string {
-	if t.SideEffects == "" {
-		return string(tools.SideEffectPure)
-	}
-	return string(t.SideEffects)
-}
-
-// exampleTagRank maps a [tools.ToolExample]'s tag set to a sort rank:
-// `minimal` (0) > `common` (1) > `edge-case` (2) > untagged (3). The
-// lowest-numbered (highest-priority) tag on the example wins — an
-// example tagged both `common` and `edge-case` ranks as `common`.
-func exampleTagRank(tags []string) int {
-	rank := 3 // untagged
-	for _, tag := range tags {
-		switch tag {
-		case "minimal":
-			return 0 // highest priority — short-circuit
-		case "common":
-			if rank > 1 {
-				rank = 1
-			}
-		case "edge-case":
-			if rank > 2 {
-				rank = 2
-			}
-		}
-	}
-	return rank
-}
-
-// rankedExamples returns up to `limit` examples from `in`, ordered by
-// tag priority (`minimal` > `common` > `edge-case` > untagged). The
-// sort is stable on `(rank, originalIndex)` so equal-rank examples
-// keep their registration order. A non-positive `limit` yields no
-// examples; the input slice is never mutated (the helper copies).
-func rankedExamples(in []tools.ToolExample, limit int) []tools.ToolExample {
-	if limit <= 0 || len(in) == 0 {
-		return nil
-	}
-	ranked := make([]tools.ToolExample, len(in))
-	copy(ranked, in)
-	sort.SliceStable(ranked, func(i, j int) bool {
-		return exampleTagRank(ranked[i].Tags) < exampleTagRank(ranked[j].Tags)
-	})
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
-	}
-	return ranked
-}
-
-// compactJSON re-marshals a JSON-Schema document to a single-line
-// compact form (no insignificant whitespace, deterministic map-key
-// order via `encoding/json`). Returns the empty string when the input
-// is empty or not valid JSON — a tool with no schema simply omits the
-// `args_schema:` line. Brief 13 §5: compact JSON keeps the prompt
-// stable across turns for KV-cache hit rates. HTML escaping is
-// disabled so `<`, `>`, `&` survive verbatim in tool-schema
-// descriptions like `"value < 100"`; the schema renders inside an
-// XML-ish wrapper the model reads as data and the un-escaped form is
-// both smaller and more readable.
-//
-// **Distinct contract from [compactValueJSON] (memory_wrappers.go).**
-// `compactJSON` is lossy on error (returns "" so a malformed
-// tool-schema simply omits the args_schema line); `compactValueJSON`
-// is fail-loud (returns an error so a malformed memory tier raises
-// `planner.ErrMemoryBlockUnserializable`). The split is deliberate
-// per D-144 (lenient schema renderer) and D-146 (loud memory render).
-// Do not unify the two without changing both decisions.
-func compactJSON(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return ""
-	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return ""
-	}
-	return string(bytes.TrimRight(buf.Bytes(), "\n"))
-}
-
-// compactArgs marshals an example's `Args` map to single-line compact
-// JSON. A nil / empty map renders as `{}` — matching the parser's
-// normalisation for an argument-free call. Marshalling failure (an
-// unserialisable value the example author placed in the map) yields
-// `{}` rather than leaking a Go `%v` rendering into the prompt.
-func compactArgs(args map[string]any) string {
-	if len(args) == 0 {
-		return "{}"
-	}
-	out, err := json.Marshal(args)
-	if err != nil {
-		return "{}"
-	}
-	return string(out)
-}
+// The `<available_tools>` section renders only `{name, description}`
+// as a quick-reference; the typed schemas live in `req.Tools[]`. The
+// example-ranking and schema-rendering helpers that fed the
+// prompt-engineered shape are not needed and have been removed.
 
 // renderPlanningConstraints renders the <planning_constraints> section
 // (brief 13 §2.1 section 12) from `RunContext.PlanningHints`
@@ -993,6 +891,16 @@ func renderArtifactStubObservation(stub *llm.ArtifactStub) string {
 	return preview + " " + artifactFetchFooter(stub.Ref, stub.MIME, stub.SizeBytes)
 }
 
+// asString returns v as a string, or "" when v is absent or not a
+// string. Centralises the best-effort `any → string` extraction the
+// heavy-content projection does over untyped observation maps.
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // renderHeavyContentMap detects the runtime tool-executor's
 // `heavyTruncationSummary` shape and projects it for the LLM.
 // Returns (body, true) when the wrapper map carries a usable
@@ -1005,12 +913,12 @@ func renderHeavyContentMap(m map[string]any) (string, bool) {
 	if !hasPreview && !hasRef {
 		return "", false
 	}
-	preview, _ := previewRaw.(string)
-	ref, _ := refRaw.(string)
+	preview := asString(previewRaw)
+	ref := asString(refRaw)
 	if ref == "" && preview == "" {
 		return "", false
 	}
-	mime, _ := m["mime"].(string)
+	mime := asString(m["mime"])
 	var size int64
 	switch v := m["size_bytes"].(type) {
 	case int:
@@ -1068,7 +976,7 @@ func artifactFetchFooterFieldAware(ref, mime string, size int64) string {
 	b.WriteString(ref)
 	b.WriteString(`") to retrieve the full payload`)
 	if size > 0 {
-		b.WriteString(fmt.Sprintf(" (size: %d bytes", size))
+		fmt.Fprintf(&b, " (size: %d bytes", size)
 		if mime != "" {
 			b.WriteString(", mime: " + mime)
 		}

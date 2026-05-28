@@ -1066,8 +1066,8 @@ func KnownCustomToolTypes() []string {
 // `internal/tools/builtin/builtin_test.go`. New built-ins land here
 // in the same PR as their addition to the registry.
 var allowedBuiltInTools = map[string]struct{}{
-	"clock.now":          {},
-	"text.echo":          {},
+	"clock.now": {},
+	"text.echo": {},
 	// Phase 107c / D-167 — meta-tools for discovery + escape-hatch.
 	"tool_search":        {},
 	"tool_get":           {},

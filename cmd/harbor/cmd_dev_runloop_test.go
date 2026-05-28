@@ -114,6 +114,8 @@ func spawnDriverTestTask(t *testing.T, reg tasks.TaskRegistry) tasks.TaskID {
 // waitForTaskStatus polls reg.Get until the task reaches `want` or
 // the bounded timeout fires. Returns the observed status (so the
 // caller's failure message can name what the FSM stuck at).
+//
+//nolint:unparam // `timeout` is the gate's tuning knob; callers happen to share the V1 default but the parameter documents intent and lets a slow case raise the bound without re-plumbing
 func waitForTaskStatus(t *testing.T, reg tasks.TaskRegistry, id tasks.TaskID, want tasks.TaskStatus, timeout time.Duration) tasks.TaskStatus {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), runLoopDriverTestID)
@@ -900,7 +902,7 @@ func TestTrajectoryByTaskID_ConcurrentReads(t *testing.T) {
 	for range n {
 		go func() {
 			defer readWG.Done()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				_ = driver.TrajectoryByTaskID(spawned.ID)
 			}
 		}()

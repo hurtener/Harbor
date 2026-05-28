@@ -219,7 +219,7 @@ func TestApplyDeclarativeOutcome_BytesObservation(t *testing.T) {
 	rc := planner.RunContext{
 		RepairCounters: c,
 		Trajectory: &planner.Trajectory{Steps: []planner.Step{{
-			Action: planner.CallTool{Tool: DeclarativeActionToolName},
+			Action:      planner.CallTool{Tool: DeclarativeActionToolName},
 			Observation: json.RawMessage(`{"dispatched":false,"repair_outcome":{"args_repaired":true}}`),
 		}}},
 	}

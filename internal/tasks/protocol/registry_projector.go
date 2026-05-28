@@ -203,10 +203,9 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 		detail.Cost = p.enricher.Cost(ctx, id, taskID)
 		detail.PlannerSnapshot = p.enricher.PlannerSnapshot(ctx, id, taskID)
 		detail.Trajectory = p.enricher.Trajectory(ctx, id, taskID)
-	} else {
-		// No enricher — cost rollup + planner snapshot stay zero-valued.
-		// The parent-session baseline (SessionID from identity) was set above.
 	}
+	// No enricher → cost rollup + planner snapshot stay zero-valued; the
+	// parent-session baseline (SessionID from identity) was set above.
 	// Round-6 fix: the TS contract declares cost.per_step as a non-null
 	// array (TaskCostStep[]); a Go nil slice JSON-marshals to `null` and
 	// the Console null-derefs on `.length`. Normalize to an empty slice

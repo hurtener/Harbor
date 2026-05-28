@@ -674,8 +674,8 @@ func TestRun_ReasoningSurfacedOnResult(t *testing.T) {
 // driver. The contentDeltas / reasoningDeltas slices each carry pairs of
 // (delta, done). The final response Content is what the parser sees.
 type streamingStubClient struct {
-	mu               sync.Mutex
-	contentDeltas    []struct {
+	mu            sync.Mutex
+	contentDeltas []struct {
 		delta string
 		done  bool
 	}
@@ -711,10 +711,11 @@ func (c *streamingStubClient) Close(_ context.Context) error { return nil }
 // TestStreamingCallbacks_ForwardToRunContext — Phase 107 AC-10.
 //
 // When rc.OnChunk is set, the repair loop MUST:
-//   (a) flip req.Stream to true,
-//   (b) supply req.OnContent + req.OnReasoning closures, and
-//   (c) forward every OnContent / OnReasoning callback fired by the driver
-//       through rc.OnChunk, tagging Content vs Reasoning.
+//
+//	(a) flip req.Stream to true,
+//	(b) supply req.OnContent + req.OnReasoning closures, and
+//	(c) forward every OnContent / OnReasoning callback fired by the driver
+//	    through rc.OnChunk, tagging Content vs Reasoning.
 //
 // The client below fires two content deltas (one with done=true) and two
 // reasoning deltas (one with done=true); the test asserts rc.OnChunk
@@ -729,9 +730,9 @@ func TestStreamingCallbacks_ForwardToRunContext(t *testing.T) {
 		kind  planner.ChunkKind
 	}
 	var (
-		mu    sync.Mutex
-		seen  []chunkObservation
-		onCh  = func(delta string, done bool, kind planner.ChunkKind) {
+		mu   sync.Mutex
+		seen []chunkObservation
+		onCh = func(delta string, done bool, kind planner.ChunkKind) {
 			mu.Lock()
 			defer mu.Unlock()
 			seen = append(seen, chunkObservation{delta, done, kind})

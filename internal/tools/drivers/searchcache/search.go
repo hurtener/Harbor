@@ -60,7 +60,11 @@ func (d *driver) materializeRows(ctx context.Context, rowIDs []int64, filterTags
 		ids[i] = rid
 		placeholders[i] = "?"
 	}
-	sel := `SELECT name, description, tags, args_schema FROM tool_cache WHERE rowid IN (` + strings.Join(placeholders, ",") + `)`
+	// gosec G202: the `placeholders` slice is constructed from a fixed
+	// `?` token per rowID; the row IDs themselves are bound via
+	// parameter substitution (ids...). There is no caller-controlled
+	// string ever concatenated into the SQL.
+	sel := `SELECT name, description, tags, args_schema FROM tool_cache WHERE rowid IN (` + strings.Join(placeholders, ",") + `)` //nolint:gosec // see comment above; placeholders are literal `?` tokens, values bind through ids...
 	rows, err := d.db.QueryContext(ctx, sel, ids...)
 	if err != nil {
 		return nil, fmt.Errorf("searchcache: materialize: %w", err)

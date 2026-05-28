@@ -319,9 +319,9 @@ type RunContext struct {
 // ToolCallDeferred is a pending native tool-call the planner will
 // dispatch on the next step (AC-19 serialization fallback).
 type ToolCallDeferred struct {
-	Name    string
-	Args    json.RawMessage
-	CallID  string
+	Name   string
+	Args   json.RawMessage
+	CallID string
 }
 
 // ChunkKind is a sealed enum for the streaming-chunk kind (Phase 107).

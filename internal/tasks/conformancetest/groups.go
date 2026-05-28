@@ -125,7 +125,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		defer cancelWaiter()
 
 		// Spawn 3 members; mark each running; mark each complete.
-		var members []tasks.TaskID
+		members := make([]tasks.TaskID, 0, 3)
 		for i := range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
@@ -184,7 +184,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var members []tasks.TaskID
+		members := make([]tasks.TaskID, 0, 3)
 		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
@@ -245,7 +245,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var members []tasks.TaskID
+		members := make([]tasks.TaskID, 0, 3)
 		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
@@ -282,7 +282,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var members []tasks.TaskID
+		members := make([]tasks.TaskID, 0, 3)
 		for range 2 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
@@ -320,7 +320,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var members []tasks.TaskID
+		members := make([]tasks.TaskID, 0, 3)
 		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.GroupID = g.ID
@@ -869,7 +869,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 		r, cleanup := factory()
 		defer cleanup()
 		ctx := ctxA()
-		var ids []tasks.TaskID
+		ids := make([]tasks.TaskID, 0, 3)
 		for range 3 {
 			req := freshSpawnReq(tripleA())
 			req.Kind = tasks.KindBackground

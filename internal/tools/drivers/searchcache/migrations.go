@@ -55,7 +55,7 @@ func listMigrations() ([]migrationFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("searchcache: read migrations dir: %w", err)
 	}
-	var out []migrationFile
+	out := make([]migrationFile, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue

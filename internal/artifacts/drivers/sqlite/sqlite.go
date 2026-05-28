@@ -531,7 +531,7 @@ func (d *driver) List(ctx context.Context, filter artifacts.ArtifactScope) ([]ar
                mime_type, size_bytes, filename, sha256, source_json
         FROM artifacts_blobs`
 	if len(conds) > 0 {
-		q += " WHERE " + strings.Join(conds, " AND ")
+		q += " WHERE " + strings.Join(conds, " AND ") //nolint:gosec // G202: conds are static column predicates ("col = ?"); every value is bound via args (parameterised), no user input is concatenated into SQL
 	}
 
 	rows, err := d.db.QueryContext(ctx, q, args...)

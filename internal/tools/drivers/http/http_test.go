@@ -92,7 +92,7 @@ func newFlakeServer(t *testing.T, failures int64, status int) *flakeServer {
 		n := fs.attemptCount.Add(1)
 		if n <= fs.failures {
 			w.WriteHeader(fs.failureStatus)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"failure":%d}`, n)))
+			_, _ = fmt.Fprintf(w, `{"failure":%d}`, n)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -188,7 +188,7 @@ type perTaskRunLoopDriver struct {
 	// Trajectories are stored before RunLoop.Run and retained after
 	// completion for tasks.get enrichment. Reads are safe under RLock;
 	// writes acquire the full mutex. An evicted task returns nil.
-	trajMu      sync.RWMutex
+	trajMu       sync.RWMutex
 	trajectories map[tasks.TaskID]*planner.Trajectory
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
@@ -576,7 +576,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// quadruple on every event and publishes under the driver's bus
 	// context so a bus-close mid-run logs Warn rather than races.
 	emit := func(ev events.Event) {
-		if ev.Identity.Identity.TenantID == "" {
+		if ev.Identity.TenantID == "" {
 			ev.Identity = q
 		}
 		if pubErr := d.bus.Publish(d.subCtx, ev); pubErr != nil {

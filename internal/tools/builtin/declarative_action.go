@@ -178,6 +178,7 @@ func declarativeAction(ctx context.Context, cat tools.ToolCatalog, args Declarat
 
 	envelope, salvageOutcome, err := resolveEnvelope(args)
 	if err != nil {
+		//nolint:nilerr // intentional: a malformed envelope is surfaced in-band as a structured repair outcome (Error + RepairOutcome) so the planner repairs on the observation, not as a hard Go error
 		return DeclarativeActionOut{
 			Dispatched:    false,
 			Error:         err.Error(),

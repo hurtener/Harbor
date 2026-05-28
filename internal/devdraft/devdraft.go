@@ -286,7 +286,7 @@ func (s *Store) Get(ctx context.Context, draftID string) (*Draft, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := os.Stat(draftRoot)
+	st, err := os.Stat(draftRoot) //nolint:gosec // G703: draftRoot = filepath.Join(identityRoot, draftID); draftID is validated by validateDraftID (rejects /\, .., alnum+-_ only) and identityRoot is contained under s.root
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, draftID)
@@ -328,7 +328,7 @@ func (s *Store) WriteFile(ctx context.Context, draftID, relPath string, content 
 	if err != nil {
 		return err
 	}
-	if _, statErr := os.Stat(draftRoot); statErr != nil {
+	if _, statErr := os.Stat(draftRoot); statErr != nil { //nolint:gosec // G703: draftRoot = filepath.Join(identityRoot, draftID); draftID is validated by validateDraftID (rejects /\, .., alnum+-_ only) and identityRoot is contained under s.root
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return fmt.Errorf("%w: %s", ErrNotFound, draftID)
 		}
@@ -390,14 +390,14 @@ func (s *Store) Preview(ctx context.Context, draftID string) (*PreviewResult, er
 	if err != nil {
 		return nil, err
 	}
-	if _, statErr := os.Stat(draftRoot); statErr != nil {
+	if _, statErr := os.Stat(draftRoot); statErr != nil { //nolint:gosec // G703: draftRoot = filepath.Join(identityRoot, draftID); draftID is validated by validateDraftID (rejects /\, .., alnum+-_ only) and identityRoot is contained under s.root
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, draftID)
 		}
 		return nil, fmt.Errorf("%w: stat draft %q: %w", ErrIO, draftID, statErr)
 	}
 	yamlPath := filepath.Join(draftRoot, "harbor.yaml")
-	if _, statErr := os.Stat(yamlPath); statErr != nil {
+	if _, statErr := os.Stat(yamlPath); statErr != nil { //nolint:gosec // G703: yamlPath = filepath.Join(draftRoot, "harbor.yaml") with draftRoot validated/contained (validateDraftID + identityRoot under s.root) and a literal filename
 		if errors.Is(statErr, fs.ErrNotExist) {
 			res := &PreviewResult{OK: false, Errors: []string{
 				"draft is missing harbor.yaml — preview cannot validate the config",
@@ -476,7 +476,7 @@ func (s *Store) Save(ctx context.Context, draftID string, opts SaveOptions) (*Sa
 	if err != nil {
 		return nil, err
 	}
-	if _, statErr := os.Stat(draftRoot); statErr != nil {
+	if _, statErr := os.Stat(draftRoot); statErr != nil { //nolint:gosec // G703: draftRoot = filepath.Join(identityRoot, draftID); draftID is validated by validateDraftID (rejects /\, .., alnum+-_ only) and identityRoot is contained under s.root
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, draftID)
 		}
@@ -484,7 +484,7 @@ func (s *Store) Save(ctx context.Context, draftID string, opts SaveOptions) (*Sa
 	}
 
 	yamlPath := filepath.Join(draftRoot, "harbor.yaml")
-	if _, statErr := os.Stat(yamlPath); statErr != nil {
+	if _, statErr := os.Stat(yamlPath); statErr != nil { //nolint:gosec // G703: yamlPath = filepath.Join(draftRoot, "harbor.yaml") with draftRoot validated/contained (validateDraftID + identityRoot under s.root) and a literal filename
 		return nil, fmt.Errorf("%w: draft is missing harbor.yaml: %w", ErrValidationFailed, statErr)
 	}
 	if _, loadErr := config.Load(ctx, yamlPath); loadErr != nil {
@@ -541,14 +541,14 @@ func (s *Store) Discard(ctx context.Context, draftID string) error {
 	if err != nil {
 		return err
 	}
-	if _, statErr := os.Stat(draftRoot); statErr != nil {
+	if _, statErr := os.Stat(draftRoot); statErr != nil { //nolint:gosec // G703: draftRoot = filepath.Join(identityRoot, draftID); draftID is validated by validateDraftID (rejects /\, .., alnum+-_ only) and identityRoot is contained under s.root
 		if errors.Is(statErr, fs.ErrNotExist) {
 			s.publish(ctx, id, EventTypeDraftDiscarded, DraftDiscardedPayload{DraftID: draftID})
 			return nil
 		}
 		return fmt.Errorf("%w: stat draft %q: %w", ErrIO, draftID, statErr)
 	}
-	if err := os.RemoveAll(draftRoot); err != nil {
+	if err := os.RemoveAll(draftRoot); err != nil { //nolint:gosec // G703: draftRoot is validated/contained (validateDraftID + identityRoot under s.root); deletes only the draft's own directory
 		return fmt.Errorf("%w: remove draft %q: %w", ErrIO, draftID, err)
 	}
 	s.publish(ctx, id, EventTypeDraftDiscarded, DraftDiscardedPayload{DraftID: draftID})
@@ -698,7 +698,7 @@ func validateDraftID(id string) error {
 		return fmt.Errorf("%w: draft id contains path separators or parent tokens: %q", ErrUnsafePath, id)
 	}
 	for _, r := range id {
-		if !((r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '-' || r == '_') {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && r != '-' && r != '_' {
 			return fmt.Errorf("%w: draft id contains illegal character %q", ErrUnsafePath, r)
 		}
 	}
@@ -721,7 +721,7 @@ func templateRegistered(name string) bool {
 func walkDraft(draftRoot string, maxFileLen int) ([]DraftFile, time.Time, error) {
 	var files []DraftFile
 	latest := time.Time{}
-	walkErr := filepath.WalkDir(draftRoot, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(draftRoot, func(path string, d fs.DirEntry, walkErr error) error { //nolint:gosec // G703: draftRoot is validated/contained (validateDraftID + identityRoot under s.root)
 		if walkErr != nil {
 			return walkErr
 		}
@@ -738,7 +738,7 @@ func walkDraft(draftRoot string, maxFileLen int) ([]DraftFile, time.Time, error)
 		if mt := info.ModTime().UTC(); mt.After(latest) {
 			latest = mt
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // G122: walk is rooted at draftRoot (contained under the operator data dir; draftID validated by validateDraftID), not attacker-controlled
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
@@ -769,7 +769,7 @@ func copyTree(srcRoot, dstRoot string, maxFileLen int) ([]string, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", dstRoot, err)
 	}
 	var written []string
-	walkErr := filepath.WalkDir(srcRoot, func(path string, d fs.DirEntry, walkErr error) error {
+	walkErr := filepath.WalkDir(srcRoot, func(path string, d fs.DirEntry, walkErr error) error { //nolint:gosec // G703: srcRoot is a caller-supplied draft root, itself validated/contained (validateDraftID + identityRoot under s.root)
 		if walkErr != nil {
 			return walkErr
 		}
@@ -797,7 +797,7 @@ func copyTree(srcRoot, dstRoot string, maxFileLen int) ([]string, error) {
 		if int(info.Size()) > maxFileLen {
 			return fmt.Errorf("file %q exceeds per-file cap (%d bytes > %d)", path, info.Size(), maxFileLen)
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // G122: path comes from WalkDir over srcRoot (a validated/contained draft root), not attacker-controlled
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}

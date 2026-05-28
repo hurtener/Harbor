@@ -146,7 +146,8 @@ func extractNamesFromMap(m map[string]any) []string {
 		out := make([]string, 0, len(v))
 		for _, entry := range v {
 			if em, ok := entry.(map[string]any); ok {
-				if name, _ := em["name"].(string); name != "" {
+				name, _ := em["name"].(string) //nolint:errcheck // a non-string `name` is treated as "" — the empty-string guard below skips it
+				if name != "" {
 					out = append(out, name)
 				}
 			}
@@ -155,7 +156,8 @@ func extractNamesFromMap(m map[string]any) []string {
 	case []map[string]any:
 		out := make([]string, 0, len(v))
 		for _, entry := range v {
-			if name, _ := entry["name"].(string); name != "" {
+			name, _ := entry["name"].(string) //nolint:errcheck // a non-string `name` is treated as "" — the empty-string guard below skips it
+			if name != "" {
 				out = append(out, name)
 			}
 		}

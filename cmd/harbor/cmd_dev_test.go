@@ -134,7 +134,7 @@ func TestNewDevSigner_GeneratesDistinctKeysAcrossCalls(t *testing.T) {
 	// The X coordinates of the two public keys MUST differ — the
 	// generator is sourced from crypto/rand, so a collision is
 	// vanishingly unlikely (lottery-ticket math).
-	if a.priv.PublicKey.X.Cmp(b.priv.PublicKey.X) == 0 {
+	if a.priv.X.Cmp(b.priv.X) == 0 {
 		t.Error("two newDevSigner() calls produced the same public-key X — generator looks deterministic")
 	}
 }
@@ -481,10 +481,10 @@ func TestBootDevStack_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
 		t.Fatalf("expected 200 from bootstrap on harbor dev, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		BaseURL  string   `json:"base_url"`
-		Token    string   `json:"token"`
+		BaseURL  string                                 `json:"base_url"`
+		Token    string                                 `json:"token"`
 		Identity struct{ Tenant, User, Session string } `json:"identity"`
-		Scopes   []string `json:"scopes"`
+		Scopes   []string                               `json:"scopes"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode bootstrap response: %v\nbody=%s", err, rec.Body.String())

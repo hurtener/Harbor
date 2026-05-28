@@ -184,7 +184,7 @@ func TestBootstrap_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	wg.Add(n)
 
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", nil)
@@ -207,4 +207,3 @@ func TestBootstrap_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 		t.Error(e)
 	}
 }
-

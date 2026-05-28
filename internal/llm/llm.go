@@ -254,9 +254,9 @@ const (
 // when the message carries multimodal content. `Name` is optional —
 // used by some providers for participant naming.
 type ChatMessage struct {
-	Role       Role
-	Content    Content
-	Name       *string
+	Role    Role
+	Content Content
+	Name    *string
 	// ToolCallID (Phase 107c / D-167) is the provider-assigned
 	// tool-call identifier carried on RoleTool messages. Rendered
 	// as the native tool-result role with matching call ID when

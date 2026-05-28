@@ -331,7 +331,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		// Spawn 3 children, each cascade.
-		var childIDs []tasks.TaskID
+		childIDs := make([]tasks.TaskID, 0, 3)
 		for i := range 3 {
 			req := freshSpawnReq(tripleA())
 			parentID := parent.ID
@@ -388,7 +388,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal(err)
 		}
 		// 3 children, each cascade. Isolate is on the parent's policy.
-		var childIDs []tasks.TaskID
+		childIDs := make([]tasks.TaskID, 0, 3)
 		for range 3 {
 			cReq := freshSpawnReq(tripleA())
 			pid := parent.ID
@@ -837,7 +837,7 @@ func Run(t *testing.T, factory Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var childIDs []tasks.TaskID
+		childIDs := make([]tasks.TaskID, 0, 3)
 		for range 2 {
 			req := freshSpawnReq(tripleA())
 			pid := parent.ID

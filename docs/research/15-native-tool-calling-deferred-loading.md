@@ -79,6 +79,7 @@ Declare all tools every turn. Works fine for <50 tools, which is most agent yaml
 Mark each tool with a loading mode (`always` / `deferred`). Always-tools are declared every turn alongside two built-in meta-tools: `tool_search` (free-text query + optional tag filter → returns matching tool names + descriptions) and `tool_get` (fetch the full schema + examples for a named tool). The LLM uses the meta-tools to discover deferred tools, then the planner re-builds the LLM request with the discovered tool ADDED to the declared list for the next turn. Two LLM calls per discovery cycle, but the per-call declaration cost stays bounded.
 
 The predecessor implements this with:
+
 - `ToolLoadingMode` enum (`ALWAYS` / `DEFERRED`) per `NodeSpec`.
 - `ToolSearchCache` — SQLite FTS5-backed search index over tool name + description + tags, with `always_loaded_patterns` (glob patterns the operator can mark as "always visible regardless of mode").
 - Prompt section `<tool_discovery>` instructs the LLM: "use `tool_search` to find capabilities; the runtime will activate deferred tools on first call."
@@ -114,6 +115,7 @@ The pattern decouples the LLM's visible-catalog size from the runtime's catalog 
 Reading our existing primitives:
 
 **Have (today):**
+
 - `tools.Tool.Tags []string` — operator-facing capability tags. Already declared on every tool.
 - `tools.Tool.AuthScopes []string` + Phase 83m's `GrantedScopes` filter — visibility gated by identity/scope (orthogonal to deferred loading; both layers compose).
 - `tools.Tool.HandlesMIME []string` — MIME-routing hint for the multimodal materializer.
@@ -122,6 +124,7 @@ Reading our existing primitives:
 - `planner.ToolCatalogView` interface — the planner-facing read view (Phase 83i wires the production projection). The view today exposes `Resolve(name) (Tool, bool)` + `List() []Tool` — no per-tag filter method.
 
 **Missing (gaps for B2):**
+
 - A `ToolLoadingMode` field on `tools.Tool` — every tool is implicitly `ALWAYS` today.
 - A `tool_search` / `tool_get` built-in tool pair (Phase 83n shipped `clock.now` + `text.echo` builtins via `internal/tools/builtin`; the discovery meta-tools would land alongside).
 - A `tools.SearchCache` analogue — FTS5 over tool name + description + tags, with cache-fingerprint invalidation on catalog change. The skills package's SQLite FTS5 driver is a viable template.
@@ -130,6 +133,7 @@ Reading our existing primitives:
 - A prompt-template instruction explaining deferred semantics. Phase 83b's `<available_tools>` becomes either fully populated (B1) or partially populated + a `<tool_discovery>` instruction (B2).
 
 **Missing (gaps for native tool-calling more broadly):**
+
 - `llm.CompleteResponse.ToolCalls []ToolCallStructured` — bifrost gets this from upstream providers; we don't surface it.
 - `llm.CompleteRequest.Tools []ToolDeclaration` + `ParallelToolCalls bool` — bifrost accepts these in its request shape; we'd thread them through `ConfigSnapshot` → `Complete` call site.
 - A `react-native` planner concrete (vs today's `react`) — the prompt builder swaps `{tool, args}` JSON instructions for "use the provided tools" + the native ToolCalls path in the response parser. Both modes coexist behind the planner driver registry (Phase 42 / D-103); operators opt in via `planner.driver: react-native` in `harbor.yaml`.

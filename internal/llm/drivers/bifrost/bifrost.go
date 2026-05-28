@@ -168,14 +168,14 @@ func (d *Driver) streamComplete(
 	}
 
 	var (
-		contentB     strings.Builder
-		reasoningB   strings.Builder
-		finalDetails []bfschemas.ChatReasoningDetails
+		contentB       strings.Builder
+		reasoningB     strings.Builder
+		finalDetails   []bfschemas.ChatReasoningDetails
 		finalToolCalls []llm.ToolCallStructured
-		finalUsage   llm.Usage
-		finalCost    llm.Cost
-		streamErr    error
-		gotAnyChunk  bool
+		finalUsage     llm.Usage
+		finalCost      llm.Cost
+		streamErr      error
+		gotAnyChunk    bool
 	)
 
 readLoop:
@@ -267,10 +267,10 @@ func processStreamChunk(
 		return
 	}
 	for _, choice := range resp.Choices {
-		if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+		if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
 			continue
 		}
-		delta := choice.ChatStreamResponseChoice.Delta
+		delta := choice.Delta
 		if delta.Content != nil && *delta.Content != "" {
 			contentB.WriteString(*delta.Content)
 			if onContent != nil {

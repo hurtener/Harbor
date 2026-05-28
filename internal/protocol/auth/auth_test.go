@@ -567,11 +567,11 @@ func TestAllowedAlgorithms_ExactlySixEntries(t *testing.T) {
 // mistakes early.
 func TestTestData_KeypairsValid(t *testing.T) {
 	rsaPriv, rsaPub := loadTestRS256(t)
-	if rsaPriv.PublicKey.N.Cmp(rsaPub.N) != 0 {
+	if rsaPriv.N.Cmp(rsaPub.N) != 0 {
 		t.Errorf("RS256 testdata keypair mismatched")
 	}
 	ecPriv, ecPub := loadTestES256(t)
-	if ecPriv.PublicKey.X.Cmp(ecPub.X) != 0 {
+	if !ecPriv.PublicKey.Equal(ecPub) {
 		t.Errorf("ES256 testdata keypair mismatched")
 	}
 	if ecPub.Curve != elliptic.P256() {

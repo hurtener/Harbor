@@ -57,15 +57,15 @@ import (
 // CallTool emission must set `toolCallName` + `toolCallArgs` so the
 // projector reads native ToolCalls.
 type reasoningLLM struct {
-	mu            sync.Mutex
-	content       string
-	toolCallID    string
-	toolCallName  string
-	toolCallArgs  string
-	reason        string
-	calls         atomic.Int64
-	seenIDs       []identity.Quadruple
-	prompts       []string // last user/assistant content seen, for replay assertions
+	mu           sync.Mutex
+	content      string
+	toolCallID   string
+	toolCallName string
+	toolCallArgs string
+	reason       string
+	calls        atomic.Int64
+	seenIDs      []identity.Quadruple
+	prompts      []string // last user/assistant content seen, for replay assertions
 }
 
 func (c *reasoningLLM) Complete(ctx context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {

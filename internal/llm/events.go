@@ -186,11 +186,11 @@ type RetryWithFeedbackPayload struct {
 // secret. Kind is "content" or "reasoning".
 type CompletionChunkPayload struct {
 	events.SafePayload
-	Identity identity.Quadruple
-	TaskID   string
-	RunID    string
-	Delta    string
-	Done     bool
-	Kind     string
+	Identity   identity.Quadruple
+	TaskID     string
+	RunID      string
+	Delta      string
+	Done       bool
+	Kind       string
 	OccurredAt time.Time
 }

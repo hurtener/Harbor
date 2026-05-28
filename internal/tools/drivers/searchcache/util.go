@@ -63,7 +63,7 @@ func marshalStrings(ss []string) string {
 	if len(ss) == 0 {
 		return "[]"
 	}
-	b, _ := json.Marshal(ss)
+	b, _ := json.Marshal(ss) //nolint:errcheck // []string is always serialisable; a Marshal failure is unreachable
 	return string(b)
 }
 

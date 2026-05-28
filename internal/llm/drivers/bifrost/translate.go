@@ -562,7 +562,7 @@ func extractReasoning(resp *bfschemas.BifrostChatResponse) string {
 	if choice.ChatNonStreamResponseChoice == nil {
 		return ""
 	}
-	return reasoningFromMessage(choice.ChatNonStreamResponseChoice.Message)
+	return reasoningFromMessage(choice.Message)
 }
 
 // extractContent pulls the assistant-message text from the first
@@ -575,19 +575,19 @@ func extractContent(resp *bfschemas.BifrostChatResponse) string {
 	}
 	choice := resp.Choices[0]
 	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
-		return *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr
+		choice.Message != nil &&
+		choice.Message.Content != nil &&
+		choice.Message.Content.ContentStr != nil {
+		return *choice.Message.Content.ContentStr
 	}
 	// Some providers return the content as blocks even for non-
 	// streaming responses; concatenate the text-typed blocks.
 	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks != nil {
+		choice.Message != nil &&
+		choice.Message.Content != nil &&
+		choice.Message.Content.ContentBlocks != nil {
 		var sb strings.Builder
-		for _, b := range choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks {
+		for _, b := range choice.Message.Content.ContentBlocks {
 			if b.Type == bfschemas.ChatContentBlockTypeText && b.Text != nil {
 				sb.WriteString(*b.Text)
 			}
@@ -714,7 +714,7 @@ func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAs
 			args = string(tc.Args)
 		}
 		out = append(out, bfschemas.ChatAssistantMessageToolCall{
-			Index: uint16(i), //nolint:gosec // i is bounded by tool-call count per turn (caller-side guards keep it well within uint16)
+			Index: uint16(i),
 			Type:  &functionType,
 			ID:    id,
 			Function: bfschemas.ChatAssistantMessageToolCallFunction{
@@ -734,7 +734,7 @@ func extractToolCalls(resp *bfschemas.BifrostChatResponse) []llm.ToolCallStructu
 	if choice.ChatNonStreamResponseChoice == nil {
 		return nil
 	}
-	msg := choice.ChatNonStreamResponseChoice.Message
+	msg := choice.Message
 	// bifrost's `ChatMessage` embeds `*ChatAssistantMessage` as a
 	// pointer (see bfschemas/chatcompletions.go); `msg.ToolCalls` is
 	// promoted through that pointer and nil-derefs when the response
@@ -742,7 +742,7 @@ func extractToolCalls(resp *bfschemas.BifrostChatResponse) []llm.ToolCallStructu
 	if msg == nil || msg.ChatAssistantMessage == nil {
 		return nil
 	}
-	calls := msg.ChatAssistantMessage.ToolCalls
+	calls := msg.ToolCalls
 	if len(calls) == 0 {
 		return nil
 	}

@@ -25,9 +25,9 @@ func requireIdentity(ctx context.Context) (identity.Quadruple, error) {
 	if !ok {
 		return identity.Quadruple{}, ErrIdentityRequired
 	}
-	if q.Identity.TenantID == "" || q.Identity.UserID == "" || q.Identity.SessionID == "" {
+	if q.TenantID == "" || q.UserID == "" || q.SessionID == "" {
 		return identity.Quadruple{}, fmt.Errorf("%w: triple=%q/%q/%q",
-			ErrIdentityRequired, q.Identity.TenantID, q.Identity.UserID, q.Identity.SessionID)
+			ErrIdentityRequired, q.TenantID, q.UserID, q.SessionID)
 	}
 	return q, nil
 }

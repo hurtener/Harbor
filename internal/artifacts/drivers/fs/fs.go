@@ -417,7 +417,7 @@ func (d *driver) rebuildIndex() error {
 		if strings.HasPrefix(entry.Name(), tmpPrefix) {
 			return nil
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // G122: path comes from WalkDir over d.root, the operator-configured artifact dir (not attacker-controlled); entries are filtered to the meta suffix
 		if err != nil {
 			return fmt.Errorf("artifacts/fs: read meta %q: %w", path, err)
 		}
@@ -441,7 +441,7 @@ func (d *driver) cleanupTmp() error {
 			return nil
 		}
 		if strings.HasPrefix(entry.Name(), tmpPrefix) {
-			_ = os.Remove(path)
+			_ = os.Remove(path) //nolint:gosec // G122: path comes from WalkDir over d.root, the operator-configured artifact dir (not attacker-controlled); only tmp-prefixed entries are removed
 		}
 		return nil
 	})

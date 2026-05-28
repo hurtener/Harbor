@@ -45,6 +45,7 @@ func skillGet(ctx context.Context, store skills.SkillStore, args SkillGetArgs) (
 	}
 	s, err := store.Get(ctx, id, args.Name)
 	if err != nil {
+		//nolint:nilerr // intentional: a store miss/error is surfaced in-band as {Found:false, Error} so the LLM gets a structured observation, not a hard tool error
 		return SkillGetOut{Name: args.Name, Found: false, Error: err.Error()}, nil
 	}
 	return SkillGetOut{

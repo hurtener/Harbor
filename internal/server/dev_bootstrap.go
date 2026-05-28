@@ -52,11 +52,11 @@ type BootstrapSigner interface {
 
 // BootstrapHandler serves POST /v1/dev/bootstrap.json.
 type BootstrapHandler struct {
-	signer BootstrapSigner
-	id     identity.Identity
-	scopes []string
+	signer  BootstrapSigner
+	id      identity.Identity
+	scopes  []string
 	baseURL string
-	logger *slog.Logger
+	logger  *slog.Logger
 }
 
 // NewBootstrapHandler returns a handler wired for the dev identity
@@ -82,7 +82,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; the operator's already getting a 405 status code, an Encode failure here is unrecoverable and noise on the log
 			"code":    "method_not_allowed",
 			"message": "bootstrap endpoint is POST-only",
 		})
@@ -92,7 +92,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !isLoopback(r.RemoteAddr) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; 403 status code is the contract, body is informational
 			"code":    "forbidden",
 			"message": "bootstrap endpoint is loopback-only",
 		})
@@ -106,7 +106,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck // best-effort response on error path; the underlying token-signing failure is already logged at Error severity
 			"code":    "internal",
 			"message": "token minting failed",
 		})
@@ -127,7 +127,12 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		// Status + headers are already committed; the client gets a
+		// truncated body. Log it (the response can't be un-sent).
+		h.logger.ErrorContext(r.Context(), "bootstrap: encode response failed",
+			slog.String("err", err.Error()))
+	}
 }
 
 // isLoopback parses the host from the remoteAddr (stripping the port)

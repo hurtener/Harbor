@@ -139,7 +139,7 @@ The bullets below are binding.
   - `PlaygroundStatusBar.spec.ts` — the four indicators render; absent connection routes all four to `neutral`.
   - Existing `MessageBubble.spec.ts` (or its addition) — extends to cover the avatar + markdown path.
 - [ ] **AC-26** Integration (Playwright):
-  - `web/console/tests/playground-polish.spec.ts` — open the Playground against a fixture-injected `ProtocolClient`, send a message whose mock response is `**By topic:** music, *games*, and \`code\`.`, assert the rendered DOM contains a `<strong>` with text `By topic:` (not the literal `**By topic:**`).
+  - `web/console/tests/playground-polish.spec.ts` — open the Playground against a fixture-injected `ProtocolClient`, send a message whose mock response is the markdown string `**By topic:** music, *games*, and inline-code`, assert the rendered DOM contains a strong element with text `By topic:` (not the literal `**By topic:**`).
   - Same spec asserts the KPI strip's four tiles render with the right numeric formatting + sparkline SVG present.
   - Same spec asserts the bottom status bar's four indicators are present (the protocol version chip's text === the same version the breadcrumb reads).
 - [ ] **AC-27** Shell no-regression spec `shell-no-regression.spec.ts` (new) loads each of the 13 non-Playground pages against the same fixture client; asserts no horizontal overflow, no double-scrollbars, and that the AC-1 layout reshape did not break their content padding.
@@ -321,4 +321,3 @@ Phase 108 confirms the Playground page:
 15. **Glossary** (three entries).
 16. **`make drift-audit && make preflight`** — both green.
 17. Open PR.
-

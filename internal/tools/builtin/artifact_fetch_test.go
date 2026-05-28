@@ -43,15 +43,16 @@ func artifactFetchTestCtx(t *testing.T, tenant, user, session, run string) conte
 	return ctx
 }
 
-// seedArtifact writes a payload under the supplied (tenant, user,
-// session) scope and returns the stable ref. The runtime tool-
-// executor leaves `TaskID` empty when projecting heavy results;
-// the test mirrors that so the meta-tool reads back through the
-// same scope shape.
-func seedArtifact(t *testing.T, store artifacts.ArtifactStore, tenant, user, session string, payload []byte) artifacts.ArtifactRef {
+// seedArtifact writes a payload under the canonical test (tenant,
+// user, session) scope ("tA"/"uA"/"sA") and returns the stable ref.
+// The runtime tool-executor leaves `TaskID` empty when projecting
+// heavy results; the test mirrors that so the meta-tool reads back
+// through the same scope shape. Cross-identity cases vary the FETCH
+// scope, not the seed scope, so the seed identity is fixed here.
+func seedArtifact(t *testing.T, store artifacts.ArtifactStore, payload []byte) artifacts.ArtifactRef {
 	t.Helper()
 	ref, err := store.PutBytes(t.Context(),
-		artifacts.ArtifactScope{TenantID: tenant, UserID: user, SessionID: session},
+		artifacts.ArtifactScope{TenantID: "tA", UserID: "uA", SessionID: "sA"},
 		payload,
 		artifacts.PutOpts{
 			Namespace: "test.fixture",
@@ -70,7 +71,7 @@ func TestArtifactFetch_HappyPath_ReturnsContent(t *testing.T) {
 	t.Parallel()
 	store := artifactFetchTestStore(t)
 	payload := []byte(`{"hello":"world","n":42}`)
-	ref := seedArtifact(t, store, "tA", "uA", "sA", payload)
+	ref := seedArtifact(t, store, payload)
 
 	ctx := artifactFetchTestCtx(t, "tA", "uA", "sA", "r1")
 	out, err := artifactFetch(ctx, store, ArtifactFetchArgs{Ref: ref.ID})
@@ -103,7 +104,7 @@ func TestArtifactFetch_Truncates_WhenPayloadExceedsMaxBytes(t *testing.T) {
 	t.Parallel()
 	store := artifactFetchTestStore(t)
 	payload := bytes.Repeat([]byte("A"), 4096)
-	ref := seedArtifact(t, store, "tA", "uA", "sA", payload)
+	ref := seedArtifact(t, store, payload)
 
 	ctx := artifactFetchTestCtx(t, "tA", "uA", "sA", "r1")
 	out, err := artifactFetch(ctx, store, ArtifactFetchArgs{Ref: ref.ID, MaxBytes: 100})
@@ -168,7 +169,7 @@ func TestArtifactFetch_CrossIdentity_RejectedByStore(t *testing.T) {
 	t.Parallel()
 	store := artifactFetchTestStore(t)
 	payload := []byte(`{"secret":"only-for-tenant-A"}`)
-	refA := seedArtifact(t, store, "tA", "uA", "sA", payload)
+	refA := seedArtifact(t, store, payload)
 
 	// Tenant B attempts to fetch tenant A's ref.
 	ctxB := artifactFetchTestCtx(t, "tB", "uB", "sB", "r1")
@@ -240,7 +241,7 @@ func TestArtifactFetch_HardMaxBytes_ClampsTo1MiB(t *testing.T) {
 	store := artifactFetchTestStore(t)
 	// Seed a 2 MiB payload so the clamp visibly truncates.
 	payload := bytes.Repeat([]byte("B"), 2*1024*1024)
-	ref := seedArtifact(t, store, "tA", "uA", "sA", payload)
+	ref := seedArtifact(t, store, payload)
 
 	ctx := artifactFetchTestCtx(t, "tA", "uA", "sA", "r1")
 	out, err := artifactFetch(ctx, store, ArtifactFetchArgs{

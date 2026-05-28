@@ -21,13 +21,13 @@ func TestFieldAwarePreview_PreservesScalarsAndPrunesNested(t *testing.T) {
 	t.Parallel()
 
 	bigNested := make(map[string]any, 200)
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		bigNested[string(rune('a'+i%26))+string(rune('a'+(i/26)%26))] = strings.Repeat("https://www.youtube.com/api/timedtext?long=url&with=many&query=params ", 5)
 	}
 	m := map[string]any{
 		"automatic_captions": bigNested, // ~70 KB
 		"abr":                134.009,
-		"acodec":              "opus",
+		"acodec":             "opus",
 		"age_limit":          0,
 		"duration":           6821,
 		"title":              "World Cup 2026 Funky House Music Mix",
@@ -71,7 +71,7 @@ func TestFieldAwarePreview_RespectsTotalBudget(t *testing.T) {
 	t.Parallel()
 
 	m := make(map[string]any, 500)
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		key := "field_" + strings.Repeat("x", i%20)
 		m[key] = strings.Repeat("v", 50) // each field ~70 bytes serialised
 	}
@@ -100,9 +100,9 @@ func TestBuildPreview_UnwrapsSingleKeyResultWrapper(t *testing.T) {
 	t.Parallel()
 
 	inner := map[string]any{
-		"duration":   6821,
-		"title":      "World Cup 2026 Funky House Music Mix",
-		"view_count": 276253,
+		"duration":           6821,
+		"title":              "World Cup 2026 Funky House Music Mix",
+		"view_count":         276253,
 		"automatic_captions": strings.Repeat("x", 50_000), // heavy
 	}
 	raw := map[string]any{
@@ -155,7 +155,7 @@ func TestBuildPreview_NonObjectFallsBackToByteTrunc(t *testing.T) {
 
 	// Top-level array.
 	arr := make([]any, 0, 1000)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		arr = append(arr, "item-"+strings.Repeat("x", 50))
 	}
 	encoded, _ := json.Marshal(arr)

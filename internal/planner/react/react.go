@@ -62,26 +62,26 @@
 //  9. Issues exactly ONE [llm.LLMClient.Complete] call. On error,
 //     surfaces it verbatim (§13 fail-loudly).
 //  10. Routes the response through [projectResponse] (AC-15 / AC-19):
-//      - `len(resp.ToolCalls) == 1` → [planner.CallTool] (or
-//        reserved-name translation to [planner.Finish] /
-//        [planner.SpawnTask] / [planner.AwaitTask]).
-//      - `len(resp.ToolCalls) > 1` → first call becomes [planner.CallTool];
-//        remainder accumulates on `rc.PendingToolCalls` for serialised
-//        dispatch on subsequent steps (AC-19 serialization fallback).
-//      - `len(resp.ToolCalls) == 0 && resp.Content != ""` →
-//        [planner.Finish]{Reason: [planner.FinishGoal], Payload: resp.Content}
-//        (terminal answer as plain content).
-//      - `len(resp.ToolCalls) == 0 && resp.Content == ""` →
-//        [planner.Finish]{Reason: [planner.FinishNoPath]}.
+//     - `len(resp.ToolCalls) == 1` → [planner.CallTool] (or
+//     reserved-name translation to [planner.Finish] /
+//     [planner.SpawnTask] / [planner.AwaitTask]).
+//     - `len(resp.ToolCalls) > 1` → first call becomes [planner.CallTool];
+//     remainder accumulates on `rc.PendingToolCalls` for serialised
+//     dispatch on subsequent steps (AC-19 serialization fallback).
+//     - `len(resp.ToolCalls) == 0 && resp.Content != ""` →
+//     [planner.Finish]{Reason: [planner.FinishGoal], Payload: resp.Content}
+//     (terminal answer as plain content).
+//     - `len(resp.ToolCalls) == 0 && resp.Content == ""` →
+//     [planner.Finish]{Reason: [planner.FinishNoPath]}.
 //  11. Threads the captured `resp.Reasoning` through
-//      [planner.RunContext.OnReasoning] (Phase 83m item 8) so the
-//      runloop's trajectory-append path stamps
-//      `trajectory.Step.ReasoningTrace` (Phase 83e — D-148 replay).
+//     [planner.RunContext.OnReasoning] (Phase 83m item 8) so the
+//     runloop's trajectory-append path stamps
+//     `trajectory.Step.ReasoningTrace` (Phase 83e — D-148 replay).
 //  12. Emits [planner.EventTypePlannerDecision] carrying the resolved
-//      Decision shape + the captured reasoning trace.
+//     Decision shape + the captured reasoning trace.
 //  13. Resets `rc.RepairCounters` for the step (a clean native step
-//      clears any prior turn's repair guidance — the declarative_action
-//      path in step 10 is the only producer that will increment them).
+//     clears any prior turn's repair guidance — the declarative_action
+//     path in step 10 is the only producer that will increment them).
 //
 // **Pause/resume.** Native tool-calling does not change the
 // [planner.RequestPause] contract; ReAct still doesn't emit
@@ -117,7 +117,6 @@ package react
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -126,7 +125,6 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/repair"
-	"github.com/hurtener/Harbor/internal/tasks"
 )
 
 // FinishToolName is the reserved tool name the LLM emits to signal
@@ -138,16 +136,15 @@ import (
 const FinishToolName = "_finish"
 
 // SpawnTaskToolName is the reserved tool name the LLM emits to spawn
-// a background task. The planner intercepts this in mapDecision and
-// translates it to a typed [planner.SpawnTask] Decision before
-// returning — the runtime never sees `"_spawn_task"` as a real tool
-// call. D-056 — Phase 47 adds the third reserved emission shape.
+// a background task. The projector translates the native ToolCall
+// carrying this name directly to a typed [planner.SpawnTask] Decision
+// — the runtime never sees `"_spawn_task"` as a real tool call.
 const SpawnTaskToolName = "_spawn_task"
 
 // AwaitTaskToolName is the reserved tool name the LLM emits to block
-// the foreground turn on a previously-spawned task. The planner
-// intercepts this in mapDecision and translates it to a typed
-// [planner.AwaitTask] Decision. D-056 — Phase 47.
+// the foreground turn on a previously-spawned task. The projector
+// translates the native ToolCall directly to a typed [planner.AwaitTask]
+// Decision.
 const AwaitTaskToolName = "_await_task"
 
 // DefaultMaxSteps is the planner-side circuit-breaker default for the
@@ -535,7 +532,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		// declarative_action call that follows an outcome-bump in the
 		// prior step must preserve the bump for the next step to
 		// compound. Drains of other tool names reset as usual.
-		if !(declarativeBumped && isDeclarativeActionDispatch(final)) {
+		if !declarativeBumped || !isDeclarativeActionDispatch(final) {
 			updateRepairCounters(rc, final, repair.RepairOutcome{})
 		}
 		// AC-19a: surface the shrunken queue to the runloop so the
@@ -652,7 +649,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// suppression, every consecutive declarative_action call would
 	// zero the counters here and the next-step bump would only ever
 	// reach tier 1 (reminder).
-	if !(declarativeBumped && isDeclarativeActionDispatch(final)) {
+	if !declarativeBumped || !isDeclarativeActionDispatch(final) {
 		updateRepairCounters(rc, final, repair.RepairOutcome{})
 	}
 
@@ -736,209 +733,11 @@ func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
 	}
 }
 
-// mapDecision converts the repair loop's Decision into the planner's
-// final Decision. Five transforms (Phase 47, D-056):
-//
-//   - [planner.Finish] (graceful failure from the loop) → verbatim.
-//   - [planner.CallTool] with Tool == [FinishToolName] → translate
-//     to [planner.Finish]{Reason: [planner.FinishGoal], Payload: ...}.
-//   - [planner.CallTool] with Tool == [SpawnTaskToolName] → translate
-//     to [planner.SpawnTask]{Kind, Spec} (Phase 47, D-056). Malformed
-//     args fail the call with a wrapped error — silent degradation
-//     is forbidden per §13.
-//   - [planner.CallTool] with Tool == [AwaitTaskToolName] → translate
-//     to [planner.AwaitTask]{TaskID} (Phase 47, D-056).
-//   - [planner.CallTool] with another name → verbatim.
-//   - [planner.CallParallel] → verbatim. Phase 47 (D-056) ships the
-//     runtime parallel executor; the V1 single-tool-call-per-step
-//     collapse override is DELETED.
-//
-// Returns (Decision, error). The error path covers translation
-// failures on the reserved names: malformed args, missing required
-// fields. Fail-loudly per §13 — the planner refuses to dispatch a
-// reserved-name shape with broken args (rather than silently emitting
-// a literal CallTool that the dispatcher would reject downstream).
-func (p *ReActPlanner) mapDecision(dec planner.Decision) (planner.Decision, error) {
-	switch d := dec.(type) {
-	case planner.Finish:
-		// Graceful-failure terminal from the loop — pass through.
-		// (planner.repair_exhausted already emitted by the loop's
-		// gracefulFailure; the planner does NOT re-emit.)
-		return d, nil
-	case planner.CallTool:
-		switch d.Tool {
-		case FinishToolName:
-			return p.translateFinishCall(d), nil
-		case SpawnTaskToolName:
-			return p.translateSpawnCall(d)
-		case AwaitTaskToolName:
-			return p.translateAwaitCall(d)
-		default:
-			return d, nil
-		}
-	case planner.CallParallel:
-		// Phase 47 (D-056): pass CallParallel through unchanged.
-		// The runtime parallel executor (internal/runtime/parallel)
-		// validates branch count vs. absolute_max_parallel + atomic
-		// setup before dispatching any branch. The planner's job is
-		// emission — it does NOT reduce, validate caps, or call
-		// branches itself (the planner subtree cannot import
-		// internal/runtime/... per the §13 import-graph contract).
-		//
-		// Defensive: even though we pass CallParallel through, we
-		// translate _finish/_spawn/_await reserved names embedded in
-		// the FIRST branch so a multi-action emission whose first
-		// shape is a completion marker still terminates cleanly. The
-		// pattern is rare (the LLM emitted a multi-action array whose
-		// first entry is _finish); the planner-side translation
-		// matches the single-action semantics. Branches after the
-		// first are left verbatim — the executor enforces the
-		// atomic-setup-validation contract.
-		if len(d.Branches) > 0 {
-			first := d.Branches[0]
-			switch first.Tool {
-			case FinishToolName:
-				return p.translateFinishCall(first), nil
-			case SpawnTaskToolName:
-				return p.translateSpawnCall(first)
-			case AwaitTaskToolName:
-				return p.translateAwaitCall(first)
-			}
-		}
-		return d, nil
-	default:
-		// Unreachable in V1 — the repair loop only ever returns
-		// CallTool / CallParallel / Finish. A future planner concrete
-		// that swaps in a richer loop MUST extend the mapping; for V1
-		// surface the Decision verbatim and let the runtime executor
-		// reject via planner.ErrInvalidDecision (§13 fail-loudly).
-		return d, nil
-	}
-}
-
-// translateFinishCall converts a `_finish` reserved-name CallTool
-// into a [planner.Finish]{Reason: [planner.FinishGoal]} Decision.
-// The args' "answer" field becomes the Payload; the reasoning + the
-// raw args end up in Metadata for observability.
-func (p *ReActPlanner) translateFinishCall(call planner.CallTool) planner.Finish {
-	type finishArgs struct {
-		Answer any `json:"answer"`
-	}
-	var args finishArgs
-	// Best-effort decode: the parser already validated this is JSON;
-	// missing/non-string answer surfaces as a nil Payload (the runtime
-	// executor's task.completed payload will carry the same nil).
-	if len(call.Args) > 0 {
-		_ = json.Unmarshal(call.Args, &args) //nolint:errcheck // best-effort decode; a missing answer surfaces as nil Payload (see doc above)
-	}
-	metadata := map[string]any{
-		"raw_args":   string(call.Args),
-		"via":        "react._finish",
-		"tool":       FinishToolName,
-		"goal_reach": true,
-	}
-	return planner.Finish{
-		Reason:   planner.FinishGoal,
-		Payload:  args.Answer,
-		Metadata: metadata,
-	}
-}
-
-// translateSpawnCall converts a `_spawn_task` reserved-name CallTool
-// into a typed [planner.SpawnTask] Decision (Phase 47, D-056).
-//
-// Expected args envelope:
-//
-//	{"kind":"background"|"foreground", "spec":{<SpawnSpec fields>}, "group_id":"<optional>"}
-//
-// Missing fields fall back to documented defaults:
-//   - `kind` defaults to `tasks.KindBackground` (the typical spawn-and-resume use).
-//   - `spec.priority` defaults to 0.
-//   - `spec.retain_turn` defaults to false (push wake-on-resolution per D-032).
-//   - `spec.fail_fast` defaults to false.
-//
-// Malformed JSON in `args` returns a wrapped [planner.ErrInvalidDecision]
-// — silent degradation is forbidden per §13. The Reasoning is preserved
-// on the Decision's Spec.Description so audit + observability sinks see
-// it.
-func (p *ReActPlanner) translateSpawnCall(call planner.CallTool) (planner.SpawnTask, error) {
-	type spawnArgsEnvelope struct {
-		Kind    string `json:"kind"`
-		GroupID string `json:"group_id"`
-		Spec    struct {
-			Description string `json:"description"`
-			Query       string `json:"query"`
-			Priority    int    `json:"priority"`
-			RetainTurn  bool   `json:"retain_turn"`
-			FailFast    bool   `json:"fail_fast"`
-		} `json:"spec"`
-	}
-	var env spawnArgsEnvelope
-	if len(call.Args) > 0 {
-		if err := json.Unmarshal(call.Args, &env); err != nil {
-			return planner.SpawnTask{}, fmt.Errorf(
-				"%w: react._spawn_task args malformed JSON: %w (raw=%q)",
-				planner.ErrInvalidDecision, err, string(call.Args),
-			)
-		}
-	}
-	kind := tasks.TaskKind(env.Kind)
-	switch kind {
-	case "":
-		// Default to background — the typical wake-on-resolution shape
-		// per D-032 + Phase 47 spec (RunContext.Trajectory.Background
-		// surfaces the resolved MemberOutcome on the planner's next
-		// step).
-		kind = tasks.KindBackground
-	case tasks.KindForeground, tasks.KindBackground:
-		// Valid.
-	default:
-		return planner.SpawnTask{}, fmt.Errorf(
-			"%w: react._spawn_task kind %q not in {foreground, background}",
-			planner.ErrInvalidDecision, env.Kind,
-		)
-	}
-	return planner.SpawnTask{
-		Kind: kind,
-		Spec: planner.SpawnSpec{
-			Description: env.Spec.Description,
-			Query:       env.Spec.Query,
-			Priority:    env.Spec.Priority,
-			RetainTurn:  env.Spec.RetainTurn,
-			FailFast:    env.Spec.FailFast,
-		},
-		GroupID: tasks.TaskGroupID(env.GroupID),
-	}, nil
-}
-
-// translateAwaitCall converts a `_await_task` reserved-name CallTool
-// into a typed [planner.AwaitTask] Decision (Phase 47, D-056).
-//
-// Expected args envelope: `{"task_id":"<id>"}`. Empty task_id fails
-// loudly with [planner.ErrInvalidDecision] — the planner refuses to
-// dispatch an empty-id Await (the runtime executor would reject
-// downstream anyway; we surface the error at translation time).
-func (p *ReActPlanner) translateAwaitCall(call planner.CallTool) (planner.AwaitTask, error) {
-	type awaitArgs struct {
-		TaskID string `json:"task_id"`
-	}
-	var args awaitArgs
-	if len(call.Args) > 0 {
-		if err := json.Unmarshal(call.Args, &args); err != nil {
-			return planner.AwaitTask{}, fmt.Errorf(
-				"%w: react._await_task args malformed JSON: %w (raw=%q)",
-				planner.ErrInvalidDecision, err, string(call.Args),
-			)
-		}
-	}
-	if args.TaskID == "" {
-		return planner.AwaitTask{}, fmt.Errorf(
-			"%w: react._await_task requires non-empty task_id (raw=%q)",
-			planner.ErrInvalidDecision, string(call.Args),
-		)
-	}
-	return planner.AwaitTask{TaskID: tasks.TaskID(args.TaskID)}, nil
-}
+// The reserved-name shapes (`_finish` / `_spawn_task` / `_await_task`)
+// arrive as native `llm.ToolCallStructured` entries declared in
+// `req.Tools[]` and are projected directly to typed Decisions inside
+// `projector.go` (see `projector.translateReservedCall`). There is no
+// repair-loop-side Decision translation step.
 
 // maxStepsExceeded builds the terminal [planner.Finish] AND emits the
 // [planner.EventTypePlannerMaxStepsExceeded] event. Same fail-loudly

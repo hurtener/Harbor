@@ -179,7 +179,7 @@ func TestSearchCache_ConcurrentReuse(t *testing.T) {
 	ctx := context.Background()
 	// Seed.
 	seed := make([]tools.Tool, 0, 25)
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		seed = append(seed, tools.Tool{
 			Name:        nameFor(i),
 			Description: "Tool number " + nameFor(i),
@@ -194,7 +194,7 @@ func TestSearchCache_ConcurrentReuse(t *testing.T) {
 	const N = 128
 	var wg sync.WaitGroup
 	wg.Add(N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			if _, err := sc.Search(ctx, "Tool", []string{"concurrent"}, 5); err != nil {

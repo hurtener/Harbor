@@ -76,7 +76,7 @@ func translateNativeFinish(tc llm.ToolCallStructured) planner.Finish {
 	}
 	var args finishArgs
 	if len(tc.Args) > 0 {
-		_ = json.Unmarshal(tc.Args, &args)
+		_ = json.Unmarshal(tc.Args, &args) //nolint:errcheck // best-effort decode; a missing/non-string answer surfaces as nil Payload (the metadata carries raw_args for observability)
 	}
 	return planner.Finish{
 		Reason:  planner.FinishGoal,

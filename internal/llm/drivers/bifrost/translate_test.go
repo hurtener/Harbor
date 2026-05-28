@@ -89,7 +89,7 @@ func TestTranslateRequest_AssistantWithToolCallsEmitsNilContent(t *testing.T) {
 		if asst.Content != nil {
 			t.Errorf("Content must be nil for assistant-with-tool_calls + no preamble, got %+v", asst.Content)
 		}
-		if asst.ChatAssistantMessage == nil || len(asst.ChatAssistantMessage.ToolCalls) != 1 {
+		if asst.ChatAssistantMessage == nil || len(asst.ToolCalls) != 1 {
 			t.Errorf("tool_calls block missing or wrong size: %+v", asst.ChatAssistantMessage)
 		}
 	})
@@ -124,7 +124,7 @@ func TestTranslateRequest_AssistantWithToolCallsEmitsNilContent(t *testing.T) {
 		if asst.Content != nil {
 			t.Errorf("Content must be flattened to nil for assistant-with-tool_calls + empty preamble, got %+v", asst.Content)
 		}
-		if asst.ChatAssistantMessage == nil || len(asst.ChatAssistantMessage.ToolCalls) != 1 {
+		if asst.ChatAssistantMessage == nil || len(asst.ToolCalls) != 1 {
 			t.Errorf("tool_calls block missing or wrong size")
 		}
 	})
@@ -191,10 +191,10 @@ func TestTranslateRequest_AssistantToolCallsCarryTypeFunction(t *testing.T) {
 	if asst.ChatAssistantMessage == nil {
 		t.Fatal("ChatAssistantMessage is nil")
 	}
-	if len(asst.ChatAssistantMessage.ToolCalls) != 2 {
-		t.Fatalf("want 2 tool_calls, got %d", len(asst.ChatAssistantMessage.ToolCalls))
+	if len(asst.ToolCalls) != 2 {
+		t.Fatalf("want 2 tool_calls, got %d", len(asst.ToolCalls))
 	}
-	for i, tc := range asst.ChatAssistantMessage.ToolCalls {
+	for i, tc := range asst.ToolCalls {
 		if tc.Type == nil {
 			t.Errorf("tool_calls[%d].Type is nil — OpenAI wire spec requires `type: \"function\"`", i)
 			continue

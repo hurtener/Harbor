@@ -65,4 +65,7 @@ func TestEvents_CompletionChunkPayload_Shape(t *testing.T) {
 	if p.Done {
 		t.Errorf("Done default expected false, got true")
 	}
+	if p.Kind != "content" {
+		t.Errorf("Kind = %q, want %q", p.Kind, "content")
+	}
 }

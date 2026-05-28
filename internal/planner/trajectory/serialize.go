@@ -156,7 +156,7 @@ func walkEncodable(v reflect.Value, fieldPath string, visited map[uintptr]struct
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
 		return ErrUnserializable{Field: fieldPath}
 
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if v.IsNil() {
 			return nil // nil pointer encodes as JSON null
 		}

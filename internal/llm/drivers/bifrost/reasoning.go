@@ -66,7 +66,7 @@ func reasoningFromMessage(msg *bfschemas.ChatMessage) string {
 	if msg == nil || msg.ChatAssistantMessage == nil {
 		return ""
 	}
-	return joinReasoningDetails(msg.ChatAssistantMessage.ReasoningDetails)
+	return joinReasoningDetails(msg.ReasoningDetails)
 }
 
 // joinReasoningDetails concatenates the plain-text entries of a
