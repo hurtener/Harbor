@@ -127,7 +127,6 @@ test.describe("Console e2e harness baseline", () => {
 
   test("the Playground route renders a capital-P breadcrumb (N1)", async ({
     page,
-    runtime,
     helpers,
   }) => {
     // Closes walkthrough N1 (Phase 83q): the pre-83q breadcrumb derived
@@ -136,7 +135,11 @@ test.describe("Console e2e harness baseline", () => {
     // `crumbLabel` lookup returns the Title-Case label. The fix is
     // structural — adding a NAV entry — so the breadcrumb assertion
     // belongs in the same baseline that asserts the NAV entry exists.
-    await helpers.seedAuth(runtime.token);
+    //
+    // Seed a live connection (not just auth): Phase 105 (V1.2) redirects
+    // a DISCONNECTED Console to /settings, which would render a "Settings"
+    // breadcrumb. The breadcrumb-label fix is a connected-state concern.
+    await helpers.seedConnection();
     await helpers.gotoPage("playground");
     await expect(
       page.locator("[data-testid='console-hydrated']"),

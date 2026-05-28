@@ -40,6 +40,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/parallel"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/tools"
 )
@@ -60,6 +61,15 @@ type devToolExecutor struct {
 	artifacts      artifacts.ArtifactStore
 	heavyThreshold int
 	logger         *slog.Logger
+
+	// parallel dispatches CallParallel decisions (Phase 107d — D-169).
+	// Constructed once over the same catalog (which satisfies
+	// parallel.Resolver via Resolve); immutable after construction
+	// (D-025). The native React path drives it in non-atomic mode so a
+	// single bad-args branch becomes that branch's error result rather
+	// than aborting the whole call (every provider tool_call_id must be
+	// answered).
+	parallel *parallel.Executor
 }
 
 // newDevToolExecutor binds the catalog + artifact store the runloop
@@ -80,6 +90,10 @@ func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore,
 		artifacts:      artStore,
 		heavyThreshold: heavyThreshold,
 		logger:         logger,
+		// AC-1: the catalog already satisfies parallel.Resolver via
+		// Resolve(name); reuse it as the dispatcher's resolver. No second
+		// fanout engine (§13).
+		parallel: parallel.New(cat),
 	}
 }
 
@@ -91,16 +105,20 @@ func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore,
 //     the typed ToolResult.Value; the `llmObservation` is the same
 //     value unless the encoded result exceeds `heavyThreshold`, in
 //     which case it gets promoted to an artifact-backed summary.
-//   - CallParallel / SpawnTask / AwaitTask: ErrDecisionShapeUnsupported.
-//     The runloop wraps this as the step's observation; the planner
-//     re-plans (typically repairs to a serial CallTool).
+//   - CallParallel: dispatch the branches concurrently via the shared
+//     parallel.Executor in non-atomic mode (Phase 107d — D-169), then
+//     assemble a per-branch aggregate observation (raw + D-026
+//     projected) so the prompt builder can round-trip N RoleTool
+//     messages.
+//   - SpawnTask / AwaitTask: ErrDecisionShapeUnsupported. The runloop
+//     wraps this as the step's observation; the planner re-plans
+//     (typically repairs to a serial CallTool).
 func (e *devToolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
 		return e.callTool(ctx, rc, d)
 	case planner.CallParallel:
-		return nil, nil, fmt.Errorf("%w: CallParallel (parallel-execution dispatcher lands post-V1.1)",
-			steering.ErrDecisionShapeUnsupported)
+		return e.callParallel(ctx, rc, d)
 	case planner.SpawnTask:
 		return nil, nil, fmt.Errorf("%w: SpawnTask (background-task dispatcher lands post-V1.1)",
 			steering.ErrDecisionShapeUnsupported)
@@ -141,6 +159,75 @@ func (e *devToolExecutor) callTool(ctx context.Context, rc planner.RunContext, d
 	}
 	llmObs := e.projectForLLM(ctx, rc, d.Tool, raw)
 	return raw, llmObs, nil
+}
+
+// callParallel dispatches a CallParallel decision (Phase 107d — D-169 /
+// AC-1..AC-4). The branches fan out concurrently through the shared
+// parallel.Executor in NON-ATOMIC mode (AC-2): a branch whose tool fails
+// to resolve or whose args fail Validate surfaces as that branch's error
+// result, NOT a whole-call abort — so every provider tool_call_id can be
+// answered. dispatchAll returns one Result per branch in branch-index
+// order; this method assembles two aggregates:
+//
+//   - raw observation: the untruncated per-branch tool values, what the
+//     trajectory persists as Step.Observation.
+//   - llmObservation: each branch's value run through the same D-026
+//     projectForLLM discipline as the single-CallTool path (AC-3), so a
+//     parallel observation with several heavy branches never trips the
+//     LLM-edge ErrContextLeak guard. The prompt builder decomposes this
+//     into N RoleTool messages (AC-9).
+//
+// Whole-call aborts that survive non-atomic mode — branch-count cap
+// exceeded, missing identity, empty branch set, malformed join — come
+// back as the Execute error and are surfaced verbatim (fail-loud per
+// §13); the runloop wraps them as the step's error observation and the
+// planner re-plans.
+func (e *devToolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
+	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup())
+	if err != nil {
+		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
+	}
+	raw := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
+	llmAgg := planner.ParallelObservation{Branches: make([]planner.ParallelBranchObservation, 0, len(results))}
+	for _, r := range results {
+		callID := ""
+		if r.Index >= 0 && r.Index < len(d.Branches) {
+			callID = d.Branches[r.Index].CallID
+		}
+		if r.Err != nil {
+			branchErr := planner.ParallelBranchObservation{
+				CallID: callID,
+				Tool:   r.Tool,
+				Index:  r.Index,
+				Error:  r.Err.Error(),
+			}
+			raw.Branches = append(raw.Branches, branchErr)
+			llmAgg.Branches = append(llmAgg.Branches, branchErr)
+			continue
+		}
+		var rawVal any
+		if r.Result != nil {
+			rawVal = r.Result.Value
+			if rawVal == nil && len(r.Result.Meta) > 0 {
+				rawVal = map[string]any{"meta": r.Result.Meta}
+			}
+		}
+		raw.Branches = append(raw.Branches, planner.ParallelBranchObservation{
+			CallID: callID,
+			Tool:   r.Tool,
+			Index:  r.Index,
+			Value:  rawVal,
+		})
+		// AC-3: per-branch D-026 projection — heavy branch values get
+		// promoted to an artifact-stub summary independently.
+		llmAgg.Branches = append(llmAgg.Branches, planner.ParallelBranchObservation{
+			CallID: callID,
+			Tool:   r.Tool,
+			Index:  r.Index,
+			Value:  e.projectForLLM(ctx, rc, r.Tool, rawVal),
+		})
+	}
+	return raw, llmAgg, nil
 }
 
 // projectForLLM applies D-026 heavy-content discipline to the tool

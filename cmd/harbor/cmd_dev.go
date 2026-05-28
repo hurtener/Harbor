@@ -1748,7 +1748,11 @@ func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
 		ExtraGuidance:          cfg.ExtraGuidance,
 		ReasoningReplay:        planner.ReasoningReplayMode(cfg.ReasoningReplay),
 		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
-		Extra:                  extra,
+		// Phase 107d (D-169): pass the *bool through verbatim so the
+		// react factory distinguishes "unset" (nil → default true) from
+		// an explicit false (107c serialization opt-out).
+		ParallelToolCalls: cfg.ParallelToolCalls,
+		Extra:             extra,
 	}
 }
 

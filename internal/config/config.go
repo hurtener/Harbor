@@ -1021,6 +1021,16 @@ const (
 // to 3 inside the react driver. The validator rejects negative values
 // loudly pre-boot. Other drivers ignore it.
 //
+// `ParallelToolCalls` toggles native parallel tool-call emission
+// (Phase 107d — D-169). Pointer-bool so an omitted key (nil) resolves
+// to `true` — the React planner emits a native `CallParallel` when the
+// LLM returns N>1 tool-calls in one response, and the dev `ToolExecutor`
+// dispatches the branches concurrently. An explicit `false` selects the
+// Phase 107c serialization fallback (one `CallTool` per step via
+// `RunContext.PendingToolCalls`). It flows to the react driver's
+// `WithParallelToolCalls` Option only when non-nil; other drivers ignore
+// it. No validator rule beyond "bool" — both states are correct.
+//
 // `SkillsContextMax` caps how many skill bodies the dev run loop
 // fetches from `skills.SkillStore.Search` and hands the planner via
 // `RunContext.SkillsContext` (Phase 83f — D-149). Zero (the default)
@@ -1050,9 +1060,21 @@ type PlannerConfig struct {
 	ExtraGuidance          string                  `yaml:"extra_guidance,omitempty"`
 	ReasoningReplay        string                  `yaml:"reasoning_replay,omitempty"`
 	MaxToolExamplesPerTool int                     `yaml:"max_tool_examples_per_tool,omitempty"`
+	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
+}
+
+// ParallelToolCallsEnabled resolves the optional `parallel_tool_calls`
+// knob (Phase 107d — D-169). Nil (unset) resolves to `true` — native
+// parallel tool-call emission is the default. A non-nil value is
+// honoured verbatim. The dev stack reads this when no driver-boundary
+// passthrough is wanted; the `*bool` itself flows through the planner
+// boundary so the react factory can distinguish "unset" from an
+// explicit `false`.
+func (p PlannerConfig) ParallelToolCallsEnabled() bool {
+	return p.ParallelToolCalls == nil || *p.ParallelToolCalls
 }
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's

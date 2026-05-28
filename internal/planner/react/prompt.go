@@ -253,6 +253,17 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 		if rc.Trajectory.Summary == nil {
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
 			for i, step := range rc.Trajectory.Steps {
+				// Phase 107d (D-169): a CallParallel step renders as ONE
+				// assistant message carrying N tool_calls + N RoleTool
+				// messages, one per branch, each ToolCallID matched to the
+				// branch's CallID (AC-9). Decomposed from the AC-4
+				// aggregate observation.
+				if pcall, ok := step.Action.(planner.CallParallel); ok {
+					asstMsg, toolMsgs := renderNativeParallelStep(step, pcall, replayMode, i)
+					messages = append(messages, asstMsg)
+					messages = append(messages, toolMsgs...)
+					continue
+				}
 				asstMsg, toolMsg, native := renderNativeStepPair(step, replayMode, i)
 				if native {
 					messages = append(messages, asstMsg)
@@ -797,6 +808,174 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 		ToolCallID: &id,
 	}
 	return asst, tool, true
+}
+
+// renderNativeParallelStep projects a trajectory step whose Action is a
+// [planner.CallParallel] into the native multi-tool-call wire shape
+// (Phase 107d — D-169 / AC-9): ONE assistant [llm.ChatMessage] whose
+// `ToolCalls` slice carries every branch's `{ID, Name, Args}`, followed
+// by N `RoleTool` messages — one per branch — each `ToolCallID` matched
+// to its branch and `Content` set to that branch's projected
+// observation. Every `tool_call_id` declared on the assistant message
+// has exactly one matching `RoleTool` answer (the provider wire-contract
+// invariant); the messages are emitted in branch-index order (JoinAll
+// semantics).
+//
+// Branch CallIDs that are empty (a programmatic CallParallel, or a
+// provider that omitted IDs) get a deterministic synthetic
+// `react.callid.<step-index>.<branch-index>` stamped on BOTH the
+// assistant tool-call entry AND the matching RoleTool message so the
+// pairing stays well-formed.
+//
+// Per-branch observations are decomposed from the AC-4 aggregate
+// ([planner.ParallelObservation]) carried on `step.LLMObservation`
+// (preferred — the D-026 projected forms) or `step.Observation`. The
+// aggregate's branches are matched to assistant tool-calls by their
+// `Index` (the deterministic merge key — robust to empty/duplicate
+// CallIDs). When no aggregate is present (e.g. the runloop wrapped a
+// whole-call executor abort as a flat error map), the fallback body is
+// rendered once and reused for every branch so the N-answers invariant
+// still holds.
+func renderNativeParallelStep(step planner.Step, call planner.CallParallel, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, []llm.ChatMessage) {
+	toolCalls := make([]llm.ToolCallStructured, len(call.Branches))
+	for bi, b := range call.Branches {
+		cid := b.CallID
+		if cid == "" {
+			cid = fmt.Sprintf("react.callid.%d.%d", stepIdx, bi)
+		}
+		toolCalls[bi] = llm.ToolCallStructured{
+			ID:   cid,
+			Name: b.Tool,
+			Args: json.RawMessage(safeArgs(b.Args)),
+		}
+	}
+
+	// Assistant preamble + reasoning replay — same shape as the single
+	// CallTool path (renderNativeStepPair).
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:      llm.RoleAssistant,
+		Content:   asstContent,
+		ToolCalls: toolCalls,
+	}
+
+	// Decompose the aggregate observation, indexed by branch Index.
+	byIndex, hasAgg := parallelBranchBodiesByIndex(step)
+	var fallbackBody string
+	if !hasAgg {
+		fallbackBody = renderParallelFallbackBody(step)
+		if fallbackBody == "" {
+			fallbackBody = "(tool returned no observation)"
+		}
+	}
+
+	toolMsgs := make([]llm.ChatMessage, len(call.Branches))
+	for bi := range call.Branches {
+		body := fallbackBody
+		if hasAgg {
+			if b, ok := byIndex[bi]; ok {
+				body = renderParallelBranchBody(b)
+			} else {
+				body = ""
+			}
+		}
+		if body == "" {
+			slog.Warn("react.renderNativeParallelStep: empty branch observation — emitting placeholder to preserve wire contract",
+				"step_idx", stepIdx,
+				"branch_idx", bi,
+				"tool", call.Branches[bi].Tool,
+				"call_id", toolCalls[bi].ID,
+			)
+			body = "(tool returned no observation)"
+		}
+		id := toolCalls[bi].ID
+		toolMsgs[bi] = llm.ChatMessage{
+			Role:       llm.RoleTool,
+			Content:    textContent(body),
+			ToolCallID: &id,
+		}
+	}
+	return asst, toolMsgs
+}
+
+// parallelBranchBodiesByIndex extracts the AC-4 aggregate observation
+// from a CallParallel step and returns a map keyed by branch Index.
+// Prefers `step.LLMObservation` (the D-026 projected forms) over the raw
+// `step.Observation`. Returns (nil, false) when neither slot carries a
+// [planner.ParallelObservation].
+func parallelBranchBodiesByIndex(step planner.Step) (map[int]planner.ParallelBranchObservation, bool) {
+	for _, obs := range []any{step.LLMObservation, step.Observation} {
+		var agg planner.ParallelObservation
+		switch v := obs.(type) {
+		case planner.ParallelObservation:
+			agg = v
+		case *planner.ParallelObservation:
+			if v == nil {
+				continue
+			}
+			agg = *v
+		default:
+			continue
+		}
+		out := make(map[int]planner.ParallelBranchObservation, len(agg.Branches))
+		for _, b := range agg.Branches {
+			out[b.Index] = b
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// renderParallelBranchBody renders one branch's observation body for its
+// RoleTool message. Errors surface first (the planner needs to see
+// them); otherwise heavy-content wrappers project through the existing
+// inlined-preview path (D-026), falling back to the generic renderer.
+func renderParallelBranchBody(b planner.ParallelBranchObservation) string {
+	if b.Error != "" {
+		return "Tool error: " + oneLine(b.Error)
+	}
+	if body, ok := renderHeavyContentObservation(b.Value); ok {
+		return body
+	}
+	if b.Value != nil {
+		return renderAny(b.Value)
+	}
+	return ""
+}
+
+// renderParallelFallbackBody renders a body for the degenerate case
+// where a CallParallel step carries no per-branch aggregate (a
+// whole-call executor abort the runloop wrapped as a flat error map, or
+// a malformed trajectory). Surfaces failures / errors first, then any
+// heavy-content wrapper, then the generic projection.
+func renderParallelFallbackBody(step planner.Step) string {
+	if step.Failure != nil {
+		return fmt.Sprintf("Tool failure: %s — %s",
+			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if step.Error != "" {
+		return "Tool error: " + oneLine(step.Error)
+	}
+	for _, obs := range []any{step.LLMObservation, step.Observation} {
+		if body, ok := renderHeavyContentObservation(obs); ok {
+			return body
+		}
+		if obs != nil {
+			return renderAny(obs)
+		}
+	}
+	return ""
 }
 
 // renderNativeObservation returns the tool-result content body for the

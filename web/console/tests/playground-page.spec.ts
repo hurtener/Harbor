@@ -242,20 +242,20 @@ test.describe("Console Playground page", () => {
     ).toBeVisible();
   });
 
-  test("(j) the Disconnected PageState renders without a connection", async ({
+  test("(j) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     runtime,
     helpers,
   }) => {
-    // Seed auth but NOT the runtime connection — the page resolves a
-    // null connection and renders PageState's Disconnected branch.
+    // Seed auth but NOT the runtime connection. Phase 105 (V1.2): the
+    // app shell redirects a disconnected Console to /settings (the
+    // connect surface) rather than stranding the operator on a dead page.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
-    await expect(
-      page.locator("[data-testid='page-state-disconnected']"),
-      "the Disconnected PageState branch renders without a Runtime",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

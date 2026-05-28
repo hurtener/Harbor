@@ -139,6 +139,10 @@ planner:
   driver: react
   # max_steps: 12
   # reasoning_replay: never   # never (default, all models) | text — see harbor.yaml
+  # parallel_tool_calls: true # Phase 107d / D-169. Default true: when the
+  #                           # LLM returns several tool-calls in one turn,
+  #                           # the runtime dispatches them concurrently.
+  #                           # false → serialise one per step (107c fallback).
 
 tools:
   http_manifests: []

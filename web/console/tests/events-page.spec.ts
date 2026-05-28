@@ -257,17 +257,17 @@ test.describe("Events page", () => {
     ).toBeVisible();
   });
 
-  test("the Disconnected state renders when no Runtime is attached", async ({
+  test("a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     runtime,
   }) => {
-    // Deliberately do NOT seed the connection — the page must render the
-    // Disconnected PageState, never the Error state (CONVENTIONS.md §4).
+    // Deliberately do NOT seed the connection. Phase 105 (V1.2): the app
+    // shell redirects a disconnected Console to /settings (the connect
+    // surface) rather than stranding the operator on a dead page.
     await page.goto(new URL("/events", runtime.baseURL).toString());
     await page.waitForLoadState("load");
-    await expect(
-      page.locator("[data-testid='page-state-disconnected']"),
-      "the Disconnected state renders, not an error",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

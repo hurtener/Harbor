@@ -80,8 +80,20 @@ test.describe("Console first-attach UX (Phase 105)", () => {
     );
     expect(baseURLBefore, "no Runtime attached before the click").toBeNull();
 
-    // Click triggers a fetch + page reload on success.
-    await Promise.all([page.waitForLoadState("load"), attachBtn.click()]);
+    // Click triggers a bootstrap fetch, then writes the connection
+    // envelope to localStorage, then reloads. `waitForLoadState("load")`
+    // resolves on the ALREADY-loaded page (the reload navigation hasn't
+    // started yet), so polling localStorage is the race-free wait: it
+    // retries across the fetch round-trip + reload until the connection
+    // is seeded (Execution-context-destroyed mid-reload is swallowed by
+    // the poll and retried).
+    await attachBtn.click();
+    await expect
+      .poll(
+        () => page.evaluate((k) => window.localStorage.getItem(k), STORAGE_BASE_URL),
+        { timeout: 10_000 },
+      )
+      .toBeTruthy();
 
     // After the reload the connection envelope is seeded.
     const seeded = await page.evaluate(

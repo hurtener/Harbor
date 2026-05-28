@@ -28,8 +28,9 @@ source "scripts/smoke/common.sh"
 
 # AC-1: the CallParallel reject is gone; the dev executor consumes the
 # runtime parallel executor.
-if [[ -f "cmd/harbor/cmd_dev_executor.go" ]]; then
-  if grep -q "runtime/parallel" "cmd/harbor/cmd_dev_executor.go"; then
+EXEC_FILE="cmd/harbor/cmd_dev_executor.go"
+if [[ -f "${EXEC_FILE}" ]]; then
+  if grep -q "runtime/parallel" "${EXEC_FILE}"; then
     ok "dev executor imports internal/runtime/parallel (CallParallel dispatch wired)"
   else
     skip "phase 107d: dev executor does not yet wire parallel.Executor — surface not shipped"
@@ -37,9 +38,47 @@ if [[ -f "cmd/harbor/cmd_dev_executor.go" ]]; then
     exit 0
   fi
 else
-  skip "phase 107d: cmd/harbor/cmd_dev_executor.go absent — pre-83i build"
+  skip "phase 107d: ${EXEC_FILE} absent — pre-83i build"
   smoke_summary
   exit 0
+fi
+
+# AC-1: the CallParallel branch no longer returns ErrDecisionShapeUnsupported.
+# (The SpawnTask / AwaitTask rejects survive — so we check the CallParallel
+# case specifically resolves to a dispatch method.)
+if grep -qE "case planner\.CallParallel:\s*$" "${EXEC_FILE}" && \
+   grep -q "e.callParallel(ctx, rc, d)" "${EXEC_FILE}"; then
+  ok "AC-1: CallParallel dispatches via callParallel (reject removed)"
+else
+  skip "AC-1: CallParallel dispatch method not found — surface not shipped"
+fi
+
+# AC-7: the parallel executor exposes the non-atomic per-call option.
+if grep -q "WithNonAtomicSetup" "internal/runtime/parallel/parallel.go"; then
+  ok "AC-7: parallel.Executor exposes WithNonAtomicSetup (non-atomic native mode)"
+else
+  skip "AC-7: WithNonAtomicSetup absent — non-atomic mode not shipped"
+fi
+
+# AC-8: the React projector emits a native CallParallel for N>1 tool-calls.
+if grep -q "planner.CallParallel{Branches" "internal/planner/react/projector.go"; then
+  ok "AC-8: react projector emits native CallParallel for N>1 tool-calls"
+else
+  skip "AC-8: projector CallParallel emission absent — surface not shipped"
+fi
+
+# AC-21: reserved-name co-occurrence is rejected (carried-over 107c fix).
+if grep -q "isReservedControlName" "internal/planner/react/projector.go"; then
+  ok "AC-21: projector rejects reserved-control-name co-occurrence (silent tail-drop closed)"
+else
+  skip "AC-21: reserved-name guard absent — carried-over fix not shipped"
+fi
+
+# AC-11: the parallel_tool_calls config knob exists.
+if grep -q "parallel_tool_calls" "internal/config/config.go"; then
+  ok "AC-11: config exposes planner.parallel_tool_calls"
+else
+  skip "AC-11: parallel_tool_calls config field absent — surface not shipped"
 fi
 
 # ----------------------------------------------------------------------------

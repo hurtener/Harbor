@@ -669,6 +669,17 @@ Cap on curated examples rendered per tool in the planner's
 `<available_tools>` section (Phase 83b / D-144). Default: `0` →
 driver default of 3. Validation: >= 0.
 
+### planner.parallel_tool_calls
+
+Toggles native parallel tool-call emission (Phase 107d / D-169).
+When the LLM returns N>1 tool-calls in one response, `true` makes the
+React planner emit a native `CallParallel` and the dev `ToolExecutor`
+dispatch the branches concurrently; `false` selects the Phase 107c
+serialization fallback (one `CallTool` per step via
+`RunContext.PendingToolCalls`). Pointer-bool: an omitted key resolves
+to `true` (the native-parallel default). Validation: none (both states
+are correct).
+
 ### planner.skills_context_max
 
 Cap on skill bodies the dev run loop fetches from

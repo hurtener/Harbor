@@ -140,6 +140,8 @@ func TestWeatherTool_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 
 Run with `go test -race`. The race detector + the per-run identity assertion is what makes the test load-bearing.
 
+**Your tool can be invoked in parallel WITHIN a single turn (Phase 107d).** The LLM may call several tools at once; with `planner.parallel_tool_calls: true` (the default) the runtime dispatches those branches concurrently against the *same* shared catalog. The concurrent-reuse contract above is exactly what makes this safe — two branches of one turn are no different from two separate runs. Set `planner.parallel_tool_calls: false` to fall back to one-tool-call-per-step if you need strictly serial dispatch.
+
 ## 4. Heavy outputs — the artifact-stub seam
 
 A tool that returns >32KB (the default `artifacts.heavy_output_threshold_bytes`) MUST NOT return the raw bytes in `Result`. Doing so leaks into the LLM context window — Harbor's LLM-edge guard fires `ErrContextLeak` and emits a `llm.context_leak` event (RFC §6.5).

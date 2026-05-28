@@ -160,6 +160,138 @@ func TestExecute_JoinAll_RejectsInvalidArgsBranchAtomically(t *testing.T) {
 	}
 }
 
+// TestExecute_NonAtomicSetup_BadArgsBranchSurfacesPerBranch pins the
+// Phase 107d (D-169 / AC-7 / AC-14) non-atomic mode: a branch whose
+// args fail Validate (and one whose tool fails to resolve) surface as
+// that branch's Result.Err while the VALID branches still dispatch and
+// succeed. One Result per branch, branch-index order — so every
+// provider tool_call_id can be answered.
+func TestExecute_NonAtomicSetup_BadArgsBranchSurfacesPerBranch(t *testing.T) {
+	t.Parallel()
+	resolver := newStub()
+	resolver.Register("good", echoTool("good"), nil)
+	// bad-args tool — validator rejects everything; its Invoke must
+	// never fire in non-atomic mode (the branch is skipped at dispatch).
+	var badInvoked atomic.Int64
+	resolver.Register("bad", func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+		badInvoked.Add(1)
+		return tools.ToolResult{}, nil
+	}, func(_ json.RawMessage) error {
+		return fmt.Errorf("test-validator-rejects-everything")
+	})
+	// "missing" is intentionally not registered → resolve miss.
+
+	exec := parallel.New(resolver)
+	q := fixedQ(t, "r-nonatomic")
+	call := planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "good", Args: json.RawMessage(`{"x":1}`)},
+			{Tool: "bad", Args: json.RawMessage(`{}`)},
+			{Tool: "missing", Args: json.RawMessage(`{}`)},
+			{Tool: "good", Args: json.RawMessage(`{"x":2}`)},
+		},
+		Join: &planner.JoinSpec{Kind: planner.JoinAll},
+	}
+	results, err := exec.Execute(ctxWithQ(t, q), call, parallel.WithNonAtomicSetup())
+	if err != nil {
+		t.Fatalf("Execute (non-atomic): unexpected whole-call err: %v", err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("len(results) = %d, want 4 (one per branch)", len(results))
+	}
+	// branch 0 + 3: success.
+	for _, i := range []int{0, 3} {
+		if results[i].Err != nil {
+			t.Errorf("results[%d].Err = %v, want nil (valid branch)", i, results[i].Err)
+		}
+		if results[i].Result == nil {
+			t.Errorf("results[%d].Result = nil, want a value", i)
+		}
+	}
+	// branch 1: bad args → Result.Err, Invoke never fired.
+	if results[1].Err == nil || !errors.Is(results[1].Err, planner.ErrParallelBranchInvalidArgs) {
+		t.Errorf("results[1].Err = %v, want ErrParallelBranchInvalidArgs", results[1].Err)
+	}
+	if badInvoked.Load() != 0 {
+		t.Errorf("bad tool Invoke fired %d times, want 0 (skipped at dispatch)", badInvoked.Load())
+	}
+	// branch 2: resolve miss → Result.Err.
+	if results[2].Err == nil || !errors.Is(results[2].Err, tools.ErrToolNotFound) {
+		t.Errorf("results[2].Err = %v, want ErrToolNotFound", results[2].Err)
+	}
+	if results[2].Index != 2 || results[2].Tool != "missing" {
+		t.Errorf("results[2] merge key mismatch: %+v", results[2])
+	}
+}
+
+// TestExecute_AtomicDefaultStillAborts_AfterNonAtomicAdded re-pins the
+// atomic default (AC-14): WITHOUT WithNonAtomicSetup, a single bad-args
+// branch still aborts the whole call with ErrParallelBranchInvalidArgs
+// before any branch dispatches — the D-056 contract is byte-for-byte
+// unchanged for existing callers.
+func TestExecute_AtomicDefaultStillAborts_AfterNonAtomicAdded(t *testing.T) {
+	t.Parallel()
+	resolver := newStub()
+	resolver.Register("good", echoTool("good"), nil)
+	var badInvoked atomic.Int64
+	resolver.Register("bad", func(_ context.Context, _ json.RawMessage) (tools.ToolResult, error) {
+		badInvoked.Add(1)
+		return tools.ToolResult{}, nil
+	}, func(_ json.RawMessage) error { return fmt.Errorf("reject") })
+
+	exec := parallel.New(resolver)
+	q := fixedQ(t, "r-atomic-default")
+	results, err := exec.Execute(ctxWithQ(t, q), planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "good", Args: json.RawMessage(`{}`)},
+			{Tool: "bad", Args: json.RawMessage(`{}`)},
+		},
+		Join: &planner.JoinSpec{Kind: planner.JoinAll},
+	})
+	if err == nil || !errors.Is(err, planner.ErrParallelBranchInvalidArgs) {
+		t.Fatalf("err = %v, want ErrParallelBranchInvalidArgs (atomic default)", err)
+	}
+	if results != nil {
+		t.Errorf("results = %v, want nil (atomic abort before dispatch)", results)
+	}
+	if badInvoked.Load() != 0 {
+		t.Errorf("bad invoked %d, want 0", badInvoked.Load())
+	}
+}
+
+// TestExecute_NonAtomicSetup_CapAndIdentityStillFailLoud pins AC-7: the
+// branch-count cap and the missing-identity reject stay whole-call
+// fail-loud aborts even in non-atomic mode — non-atomic relaxes only
+// per-branch setup, never the system-level guards.
+func TestExecute_NonAtomicSetup_CapAndIdentityStillFailLoud(t *testing.T) {
+	t.Parallel()
+	resolver := newStub()
+	resolver.Register("tool", echoTool("tool"), nil)
+	exec := parallel.New(resolver)
+
+	// Cap: 51 branches under non-atomic still aborts.
+	branches := make([]planner.CallTool, planner.AbsoluteMaxParallel+1)
+	for i := range branches {
+		branches[i] = planner.CallTool{Tool: "tool", Args: json.RawMessage(`{}`)}
+	}
+	q := fixedQ(t, "r-nonatomic-cap")
+	_, err := exec.Execute(ctxWithQ(t, q), planner.CallParallel{
+		Branches: branches, Join: &planner.JoinSpec{Kind: planner.JoinAll},
+	}, parallel.WithNonAtomicSetup())
+	if err == nil || !errors.Is(err, planner.ErrParallelCapExceeded) {
+		t.Errorf("cap err = %v, want ErrParallelCapExceeded (non-atomic)", err)
+	}
+
+	// Identity: missing-identity ctx under non-atomic still aborts.
+	_, err = exec.Execute(context.Background(), planner.CallParallel{
+		Branches: []planner.CallTool{{Tool: "tool", Args: json.RawMessage(`{}`)}},
+		Join:     &planner.JoinSpec{Kind: planner.JoinAll},
+	}, parallel.WithNonAtomicSetup())
+	if err == nil || !errors.Is(err, identity.ErrIdentityMissing) {
+		t.Errorf("identity err = %v, want ErrIdentityMissing (non-atomic)", err)
+	}
+}
+
 // TestExecute_JoinFirstSuccess_CancelsRemainder pins the
 // first-success cancellation semantics: when one branch succeeds, the
 // remaining branches are cancelled via a derived ctx.

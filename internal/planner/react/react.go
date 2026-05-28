@@ -287,6 +287,24 @@ func WithMaxToolExamplesPerTool(n int) Option {
 	}
 }
 
+// WithParallelToolCalls toggles native parallel tool-call emission
+// (Phase 107d — D-169). Default `true`: when the LLM returns N>1
+// tool-calls in one response, the projector emits a native
+// [planner.CallParallel] and the runtime executor dispatches the
+// branches concurrently. `false`: the Phase 107c serialization fallback
+// fires instead — the head becomes a [planner.CallTool] and the tail is
+// queued on [planner.RunContext.PendingToolCalls], one dispatch per
+// step. The reserved-name co-occurrence guard (AC-21) is independent of
+// this knob and fires in both modes.
+//
+// The runtime wires this from `config.PlannerConfig.ParallelToolCalls`
+// (nil → true). Read-only after construction (D-025).
+func WithParallelToolCalls(b bool) Option {
+	return func(p *ReActPlanner) {
+		p.parallelToolCalls = b
+	}
+}
+
 // WithSystemPrompt overrides the [DefaultSystemPrompt]. An empty
 // string falls back to [DefaultSystemPrompt].
 //
@@ -372,6 +390,15 @@ type ReActPlanner struct {
 	// render time.
 	reasoningReplay planner.ReasoningReplayMode
 
+	// parallelToolCalls toggles native parallel tool-call emission
+	// (Phase 107d — D-169). Set via [WithParallelToolCalls]; defaults to
+	// `true` in [New]. When true, an N>1-ToolCall response projects to a
+	// native [planner.CallParallel]; when false, the Phase 107c
+	// serialization fallback (head CallTool + PendingToolCalls tail)
+	// fires. Also gates the per-turn `req.ParallelToolCalls` provider
+	// hint. Read-only after construction (D-025).
+	parallelToolCalls bool
+
 	// maxToolExamples is the agent-configured per-tool curated-example
 	// cap for the rendered <available_tools> section (Phase 83b —
 	// D-144). Set via [WithMaxToolExamplesPerTool] from
@@ -405,11 +432,12 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 		panic("react.New: nil llm.LLMClient")
 	}
 	p := &ReActPlanner{
-		client:          client,
-		maxSteps:        DefaultMaxSteps,
-		builder:         defaultBuilder{},
-		systemPrompt:    DefaultSystemPrompt,
-		reasoningReplay: planner.ReasoningReplayNever,
+		client:            client,
+		maxSteps:          DefaultMaxSteps,
+		builder:           defaultBuilder{},
+		systemPrompt:      DefaultSystemPrompt,
+		reasoningReplay:   planner.ReasoningReplayNever,
+		parallelToolCalls: true, // Phase 107d (D-169): native parallel is the default.
 		repairCfg: repair.Config{
 			ArgFillEnabled:            true,
 			RepairAttempts:            repair.DefaultRepairAttempts,
@@ -587,11 +615,14 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// discovered tools (AC-18) are resolved by name and appended
 	// without duplication.
 	req.Tools = buildToolDeclarations(rc, rc.DiscoveredTools)
-	// V1.3 default: enable provider-side parallel tool-calling. The
-	// runtime executor's CallParallel dispatch is post-V1.3, so the
-	// projector's serialization fallback (AC-19) handles N>1 ToolCalls
-	// by emitting the first and queueing the rest on rc.PendingToolCalls.
-	req.ParallelToolCalls = true
+	// Phase 107d (D-169): the provider-side parallel hint tracks the
+	// `parallel_tool_calls` knob. When ON (the default), the projector
+	// maps an N>1-ToolCall response to a native [planner.CallParallel]
+	// the dev executor dispatches concurrently. When OFF, the hint is
+	// cleared so the provider emits one tool-call at a time and the
+	// Phase 107c serialization fallback (head + PendingToolCalls tail)
+	// stays the path of record.
+	req.ParallelToolCalls = p.parallelToolCalls
 
 	// Phase 107 streaming wiring. Under the Phase 44 era the repair
 	// loop owned the OnContent/OnReasoning fan-out; the Phase 107c
@@ -620,7 +651,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return nil, err
 	}
 
-	final, projErr := projectResponse(resp, &rc)
+	final, projErr := projectResponse(resp, &rc, p.parallelToolCalls)
 	if projErr != nil {
 		return nil, projErr
 	}

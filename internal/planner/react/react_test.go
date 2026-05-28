@@ -300,15 +300,13 @@ func TestNext_FinishToolNameMappedToFinishDecision(t *testing.T) {
 }
 
 // TestNext_MultiToolCallSerializesViaPending asserts the Phase 107c
-// (AC-19) serialization fallback: when the LLM emits N>1 native
-// ToolCalls in one response, the planner emits the FIRST as
-// planner.CallTool and queues the rest on rc.PendingToolCalls for
-// subsequent steps to drain. The runtime's CallParallel dispatcher is
-// post-V1.3; serialization is the V1.3 contract until it lands.
-//
-// This test supersedes the prior CallParallel pass-through (Phase 47
-// / D-056) — the prompt-engineered JSON array path retired with
-// Phase 107c.
+// (AC-19) serialization fallback, now the OPT-OUT path (Phase 107d —
+// D-169): with `parallel_tool_calls: false` (react.WithParallelToolCalls
+// (false)), when the LLM emits N>1 native ToolCalls in one response the
+// planner emits the FIRST as planner.CallTool and queues the rest on
+// rc.PendingToolCalls for subsequent steps to drain. The default path
+// (knob ON) now emits a native CallParallel — see
+// TestNext_MultiToolCallNativeParallel.
 func TestNext_MultiToolCallSerializesViaPending(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
@@ -320,7 +318,7 @@ func TestNext_MultiToolCallSerializesViaPending(t *testing.T) {
 			),
 		},
 	}
-	p := react.New(client)
+	p := react.New(client, react.WithParallelToolCalls(false))
 	q := fixedQuadruple(t, "r-par")
 	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
 	if err != nil {
@@ -340,11 +338,14 @@ func TestNext_MultiToolCallSerializesViaPending(t *testing.T) {
 	// test exercises the projection contract.
 }
 
-// TestNext_ParallelWithFinishFirstStillFinishes asserts the special
-// case: if the first native ToolCall is `_finish`, the planner
-// converts it to a Finish Decision and drops the trailing calls.
-// Phase 107c (D-167) preserves this special case under the projector.
-func TestNext_ParallelWithFinishFirstStillFinishes(t *testing.T) {
+// TestNext_ParallelWithFinishFirstRejected asserts the AC-21
+// carried-over fix (Phase 107d — D-169): a reserved planner-control name
+// (`_finish`) co-occurring with another tool-call in one response is
+// rejected loudly with planner.ErrInvalidDecision rather than silently
+// honouring the head and DROPPING the trailing call (the §13-forbidden
+// silent tail-drop this phase closes). The error names the offending
+// control tool.
+func TestNext_ParallelWithFinishFirstRejected(t *testing.T) {
 	t.Parallel()
 	client := &scriptedClient{
 		responses: []llm.CompleteResponse{
@@ -356,19 +357,50 @@ func TestNext_ParallelWithFinishFirstStillFinishes(t *testing.T) {
 	}
 	p := react.New(client)
 	q := fixedQuadruple(t, "r-par-finish")
+	_, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
+	if err == nil {
+		t.Fatalf("Next: expected ErrInvalidDecision, got nil")
+	}
+	if !errors.Is(err, planner.ErrInvalidDecision) {
+		t.Fatalf("Next err = %v, want ErrInvalidDecision", err)
+	}
+	if !strings.Contains(err.Error(), react.FinishToolName) {
+		t.Errorf("error %q should name the offending control tool %q", err.Error(), react.FinishToolName)
+	}
+}
+
+// TestNext_MultiToolCallNativeParallel asserts the Phase 107d default
+// (D-169): with native parallel ON (the New default), N>1 regular
+// ToolCalls in one response project to a planner.CallParallel carrying
+// one branch per call.
+func TestNext_MultiToolCallNativeParallel(t *testing.T) {
+	t.Parallel()
+	client := &scriptedClient{
+		responses: []llm.CompleteResponse{
+			multiToolCallResp(
+				llm.ToolCallStructured{ID: "call_a", Name: "alpha", Args: json.RawMessage(`{"x":1}`)},
+				llm.ToolCallStructured{ID: "call_b", Name: "beta", Args: json.RawMessage(`{"y":2}`)},
+			),
+		},
+	}
+	p := react.New(client) // default: parallel ON
+	q := fixedQuadruple(t, "r-par-native")
 	dec, err := p.Next(ctxWith(t, q), rcWith(q, "g", nil))
 	if err != nil {
 		t.Fatalf("Next: %v", err)
 	}
-	fin, ok := dec.(planner.Finish)
+	par, ok := dec.(planner.CallParallel)
 	if !ok {
-		t.Fatalf("decision = %T, want planner.Finish (first ToolCall _finish should still finish)", dec)
+		t.Fatalf("decision = %T, want planner.CallParallel (native default)", dec)
 	}
-	if fin.Reason != planner.FinishGoal {
-		t.Errorf("Reason = %q, want %q", fin.Reason, planner.FinishGoal)
+	if len(par.Branches) != 2 {
+		t.Fatalf("Branches = %d, want 2", len(par.Branches))
 	}
-	if fin.Payload != "early" {
-		t.Errorf("Payload = %v, want %q", fin.Payload, "early")
+	if par.Branches[0].Tool != "alpha" || par.Branches[0].CallID != "call_a" {
+		t.Errorf("branch[0] = %+v, want {alpha, call_a}", par.Branches[0])
+	}
+	if par.Branches[1].Tool != "beta" || par.Branches[1].CallID != "call_b" {
+		t.Errorf("branch[1] = %+v, want {beta, call_b}", par.Branches[1])
 	}
 }
 

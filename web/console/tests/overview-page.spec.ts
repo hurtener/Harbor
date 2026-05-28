@@ -236,24 +236,21 @@ test.describe("Overview page", () => {
     await expect(page).toHaveURL(/\/playground(\/[^/]+)?$/);
   });
 
-  test("the Disconnected PageState renders when no Runtime is attached", async ({
+  test("a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     runtime,
     helpers,
   }) => {
     // Seed only the harness token — NOT the connection.ts storage
-    // convention — so `resolveConnection()` returns null and the page
-    // renders the Disconnected state (never conflated with Error).
+    // convention — so `resolveConnection()` returns null. Phase 105
+    // (V1.2): the app shell redirects a disconnected Console to
+    // /settings (the connect surface) rather than stranding the operator
+    // on a dead page.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("overview");
 
-    await expect(
-      page.locator("[data-testid='page-state-disconnected']").first(),
-      "the Disconnected PageState renders, distinct from Error",
-    ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='page-state-error']"),
-      "the Error PageState is NOT shown for an unattached Console",
-    ).toHaveCount(0);
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

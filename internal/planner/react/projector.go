@@ -9,7 +9,26 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 )
 
-func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext) (planner.Decision, error) {
+// projectResponse maps an [llm.CompleteResponse] onto a
+// [planner.Decision] (brief 15 §6 "Decision-sum invariance"):
+//
+//   - 0 ToolCalls + Content  → Finish{Goal}
+//   - 0 ToolCalls + no content → Finish{NoPath}
+//   - 1 ToolCall              → CallTool (or reserved-name translation
+//     to Finish / SpawnTask / AwaitTask)
+//   - N>1 ToolCalls           → CallParallel{Branches, Join: nil}
+//     when `parallelEnabled` (Phase 107d — D-169, the default), else the
+//     Phase 107c serialization fallback (head CallTool + tail queued on
+//     `rc.PendingToolCalls`).
+//
+// AC-21 (carried-over 107c silent tail-drop fix): a reserved
+// planner-control name (`_finish` / `_spawn_task` / `_await_task`)
+// co-occurring with ANY other tool-call in one response is rejected
+// loudly with [planner.ErrInvalidDecision] — reserved control meta-tools
+// are standalone, never batchable / parallelisable branches. The guard
+// runs BEFORE the head switch so it fires whether the reserved name is
+// the head or in the tail, and independent of `parallelEnabled`.
+func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallelEnabled bool) (planner.Decision, error) {
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
 			return planner.Finish{
@@ -27,6 +46,23 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext) (planner
 		}, nil
 	}
 
+	// AC-21: a reserved planner-control meta-tool is standalone. When it
+	// co-occurs with one or more other tool-calls, fail loudly rather
+	// than silently honour the head and drop the rest (the §13-forbidden
+	// silent-degradation pattern this fix closes). Fires for head OR
+	// tail position, on BOTH the native-parallel path and the
+	// serialization opt-out.
+	if len(resp.ToolCalls) > 1 {
+		for _, tc := range resp.ToolCalls {
+			if isReservedControlName(tc.Name) {
+				return nil, fmt.Errorf(
+					"%w: planner-control meta-tool %q is standalone and cannot co-occur with other tool-calls (got %d tool-calls in one response — control meta-tools are not batchable or parallelisable branches)",
+					planner.ErrInvalidDecision, tc.Name, len(resp.ToolCalls),
+				)
+			}
+		}
+	}
+
 	first := resp.ToolCalls[0]
 	switch first.Name {
 	case FinishToolName:
@@ -38,23 +74,59 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext) (planner
 	default:
 	}
 
+	// Single regular tool-call.
+	if len(resp.ToolCalls) == 1 {
+		return planner.CallTool{
+			Tool:   first.Name,
+			Args:   first.Args,
+			CallID: first.ID,
+		}, nil
+	}
+
+	// N>1 regular tool-calls. AC-21 guard above already guaranteed none
+	// is a reserved control name.
+	if parallelEnabled {
+		// AC-8: emit a native CallParallel. Join stays nil → the
+		// executor's normaliseJoin collapses it to JoinAll (AC-5).
+		branches := make([]planner.CallTool, len(resp.ToolCalls))
+		for i, tc := range resp.ToolCalls {
+			branches[i] = planner.CallTool{
+				Tool:   tc.Name,
+				Args:   tc.Args,
+				CallID: tc.ID,
+			}
+		}
+		return planner.CallParallel{Branches: branches, Join: nil}, nil
+	}
+
+	// Serialization fallback (Phase 107c — parallel_tool_calls: false):
+	// dispatch the head, queue the tail on rc.PendingToolCalls.
 	call := planner.CallTool{
 		Tool:   first.Name,
 		Args:   first.Args,
 		CallID: first.ID,
 	}
-
-	if len(resp.ToolCalls) > 1 {
-		for _, tc := range resp.ToolCalls[1:] {
-			rc.PendingToolCalls = append(rc.PendingToolCalls, planner.ToolCallDeferred{
-				Name:   tc.Name,
-				Args:   tc.Args,
-				CallID: tc.ID,
-			})
-		}
+	for _, tc := range resp.ToolCalls[1:] {
+		rc.PendingToolCalls = append(rc.PendingToolCalls, planner.ToolCallDeferred{
+			Name:   tc.Name,
+			Args:   tc.Args,
+			CallID: tc.ID,
+		})
 	}
-
 	return call, nil
+}
+
+// isReservedControlName reports whether name is one of the reserved
+// planner-control meta-tools the projector translates to a terminal /
+// standalone Decision (Finish / SpawnTask / AwaitTask). These are never
+// catalog tools and never parallelisable branches (AC-21).
+func isReservedControlName(name string) bool {
+	switch name {
+	case FinishToolName, SpawnTaskToolName, AwaitTaskToolName:
+		return true
+	default:
+		return false
+	}
 }
 
 func drainPending(rc *planner.RunContext) *planner.CallTool {
