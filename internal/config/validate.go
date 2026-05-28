@@ -1074,6 +1074,8 @@ var allowedBuiltInTools = map[string]struct{}{
 	"skill_search":       {},
 	"skill_get":          {},
 	"declarative_action": {},
+	// Phase 107c follow-up — heavy-content artifact recovery hatch.
+	"artifact_fetch":     {},
 }
 
 // KnownBuiltInTools returns the sorted built-in allowlist as a slice.

@@ -849,6 +849,29 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 // D-026 heavy-content discipline. Returns the empty string when no
 // observation is available yet (the runtime appended the Action but
 // dispatch hasn't completed).
+//
+// Phase 107c follow-up (B): when the projected observation is a
+// heavy-content wrapper — either an `*llm.ArtifactStub` (the multimodal
+// materialiser shape) OR the runtime tool-executor's truncation map
+// `{"preview": ..., "artifact_ref": ..., "size_bytes": ...}` — the
+// preview text is inlined as the message body INSTEAD of the wrapper
+// JSON. A single-line positional footer mentions the `artifact_fetch`
+// builtin + the ref + size so a model that needs the full payload knows
+// which tool to call. The wrapper JSON ride-along was the load-bearing
+// bug surfaced by the live YouTube test: the LLM saw
+// `{"artifact_ref":"...","preview":"{...}"}` on a RoleTool message,
+// couldn't decode the wrapper shape, and loop-re-dispatched the same
+// tool call until max_steps. The trajectory step's full structured
+// observation is preserved for inspect-runs + Phase 106 `result_inline`;
+// only the LLM-facing projection changes.
+//
+// **No wrapper terminology in the LLM-facing footer.** Naming the
+// shape ("ArtifactStub", "artifact_ref", "preview") in the prompt
+// activates the model's prior on the legacy shape — the same trap
+// commit c12e309 closed for `_finish`. The footer is positional
+// (after the data, not before), names only the tool and the ref, and
+// leaves the LLM to learn the tool's semantics from its own
+// description in `<available_tools>`.
 func renderNativeObservation(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Tool failure: %s — %s",
@@ -857,6 +880,12 @@ func renderNativeObservation(step planner.Step) string {
 	if step.Error != "" {
 		return "Tool error: " + oneLine(step.Error)
 	}
+	if body, ok := renderHeavyContentObservation(step.LLMObservation); ok {
+		return body
+	}
+	if body, ok := renderHeavyContentObservation(step.Observation); ok {
+		return body
+	}
 	if step.LLMObservation != nil {
 		return renderAny(step.LLMObservation)
 	}
@@ -864,6 +893,145 @@ func renderNativeObservation(step planner.Step) string {
 		return renderAny(step.Observation)
 	}
 	return ""
+}
+
+// renderHeavyContentObservation detects the two known heavy-content
+// wrapper shapes and returns the inlined preview text + a positional
+// fetch-hint footer when the payload is truncated. Returns
+// (body, true) when the input matched a wrapper shape; (body, false)
+// otherwise (the caller falls through to the standard renderAny path).
+//
+// Recognised shapes (D-026 heavy-content boundary):
+//
+//  1. `*llm.ArtifactStub` — the multimodal materialiser shape from
+//     `internal/llm/materialize.go`. `Summary` is treated as the
+//     preview text; when empty (the common case for tool-result
+//     materialisation), the body is a minimal "(no preview)" marker
+//     plus the fetch hint so the LLM still sees the ref.
+//
+//  2. `map[string]any` carrying both `preview` and `artifact_ref`
+//     keys — the runtime tool-executor's `heavyTruncationSummary`
+//     shape (`cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`).
+//     `preview` is the head bytes of the JSON-encoded payload;
+//     `truncated: true` is the executor's explicit signal that the
+//     full bytes live in the artifact store under `artifact_ref`.
+//
+// Adopted convention (no new ArtifactStub field): if the observation
+// matched one of the two wrapper shapes, the preview MAY be
+// truncated → always emit the fetch-hint footer. Callers that need
+// to suppress the hint pass a non-wrapper observation. Documented
+// here so the choice doesn't drift.
+func renderHeavyContentObservation(obs any) (string, bool) {
+	if obs == nil {
+		return "", false
+	}
+	if stub, ok := obs.(*llm.ArtifactStub); ok && stub != nil {
+		return renderArtifactStubObservation(stub), true
+	}
+	if m, ok := obs.(map[string]any); ok {
+		if body, matched := renderHeavyContentMap(m); matched {
+			return body, true
+		}
+	}
+	return "", false
+}
+
+// renderArtifactStubObservation projects an `*llm.ArtifactStub` into
+// the inlined-preview-plus-footer body shape. Uses `Summary` as the
+// preview text (the materialiser's operator-overridable per-producer
+// description; D-026); empty Summary falls back to a minimal marker
+// so the LLM still sees the ref + the fetch hint.
+func renderArtifactStubObservation(stub *llm.ArtifactStub) string {
+	preview := oneLine(stub.Summary)
+	if preview == "" {
+		preview = "(no preview available)"
+	}
+	return preview + " " + artifactFetchFooter(stub.Ref, stub.MIME, stub.SizeBytes)
+}
+
+// renderHeavyContentMap detects the runtime tool-executor's
+// `heavyTruncationSummary` shape and projects it the same way.
+// Returns (body, true) when both `preview` and `artifact_ref` keys
+// are present + string-typed; (body, false) otherwise.
+func renderHeavyContentMap(m map[string]any) (string, bool) {
+	previewRaw, hasPreview := m["preview"]
+	refRaw, hasRef := m["artifact_ref"]
+	if !hasPreview && !hasRef {
+		return "", false
+	}
+	preview, _ := previewRaw.(string)
+	ref, _ := refRaw.(string)
+	if ref == "" && preview == "" {
+		return "", false
+	}
+	mime, _ := m["mime"].(string)
+	var size int64
+	switch v := m["size_bytes"].(type) {
+	case int:
+		size = int64(v)
+	case int64:
+		size = v
+	case float64:
+		size = int64(v)
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			size = parsed
+		}
+	}
+	preview = oneLine(preview)
+	if preview == "" {
+		preview = "(no preview available)"
+	}
+	if ref == "" {
+		// preview-only — no fetch hint possible. Returning matched=true
+		// still routes through the inlined-preview path so the LLM
+		// doesn't see the wrapper JSON; the absence of the footer is
+		// the operator-visible signal that the artifact ref was lost
+		// during projection.
+		return preview, true
+	}
+	return preview + " " + artifactFetchFooter(ref, mime, size), true
+}
+
+// artifactFetchFooter renders the positional fetch-hint footer the LLM
+// reads after the inlined preview. Names only the tool + the ref +
+// optional MIME + optional size. Avoids the wrapper-shape terminology
+// that activated the negative-instruction trap commit c12e309 closed
+// for `_finish`.
+//
+// The footer wording is deliberately operator-readable too — when the
+// LLM emits the next-turn trajectory step the operator can grep for
+// "artifact_fetch" in audit logs to find calls that exceeded the
+// runtime size cap.
+func artifactFetchFooter(ref, mime string, size int64) string {
+	var b strings.Builder
+	b.WriteString("[Full payload available")
+	first := true
+	writeKV := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if first {
+			b.WriteString(" (")
+			first = false
+		} else {
+			b.WriteString(", ")
+		}
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(v)
+	}
+	if size > 0 {
+		writeKV("size", fmt.Sprintf("%d bytes", size))
+	}
+	writeKV("mime", mime)
+	if !first {
+		b.WriteString(")")
+	}
+	b.WriteString(` — call artifact_fetch(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`") to retrieve it.]`)
+	return b.String()
 }
 
 // renderAssistantTurn renders one prior trajectory step as the

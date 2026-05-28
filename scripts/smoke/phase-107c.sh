@@ -152,6 +152,48 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# Phase 107c follow-up — heavy-content boundary: RoleTool projection
+# inlines the preview + `artifact_fetch` builtin gives the LLM a
+# recovery path. The live YouTube test surfaced the bug these two
+# fixes close (the loop-on-wrapper-JSON failure).
+# ----------------------------------------------------------------------------
+
+assert_file_or_skip \
+    "internal/tools/builtin/artifact_fetch.go" \
+    "static: artifact_fetch builtin (heavy-content recovery hatch)"
+
+# RegistryContext must thread ArtifactStore so the builtin reaches it.
+if grep -qE 'ArtifactStore\s+artifacts\.ArtifactStore' "internal/tools/builtin/builtin.go" 2>/dev/null; then
+    ok "static: builtin.RegistryContext threads ArtifactStore (artifact_fetch dependency)"
+else
+    fail "static: builtin.RegistryContext missing ArtifactStore field — artifact_fetch will nil-deref at invoke"
+fi
+
+# Dev binary wires the store into the builtin RegistryContext.
+if grep -qE 'ArtifactStore:\s*artStore' "cmd/harbor/cmd_dev.go" 2>/dev/null; then
+    ok "static: cmd_dev.go threads artStore into builtin.RegistryContext"
+else
+    fail "static: cmd_dev.go does not thread artStore into builtin.RegistryContext — artifact_fetch will fail at invoke"
+fi
+
+# Validator allowlist mirrors the new builtin (otherwise yaml validation rejects).
+if grep -qE '"artifact_fetch":\s*\{\}' "internal/config/validate.go" 2>/dev/null; then
+    ok "static: config validator allowlist includes artifact_fetch"
+else
+    fail "static: config validator allowlist missing artifact_fetch — yaml validation will reject operators that enable it"
+fi
+
+# Prompt builder inlines heavy-content observations instead of leaking
+# wrapper JSON onto the RoleTool message body. The function name is
+# the load-bearing surface; the unit test pins the negative-
+# instruction-trap regression gate.
+if grep -qE 'renderHeavyContentObservation' "internal/planner/react/prompt.go" 2>/dev/null; then
+    ok "static: react/prompt.go inlines heavy-content observations (RoleTool wrapper-JSON loop closed)"
+else
+    fail "static: react/prompt.go missing renderHeavyContentObservation — heavy tool results will reach LLM as wrapper JSON"
+fi
+
+# ----------------------------------------------------------------------------
 # Live-server probe — gated on (a) Phase 107c having shipped AND (b) a
 # real LLM provider key in env.
 # ----------------------------------------------------------------------------

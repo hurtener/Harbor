@@ -884,3 +884,208 @@ func TestWithSystemPromptExtra_FlowsToAdditionalGuidance(t *testing.T) {
 		t.Errorf("WithSystemPromptExtra content not in <additional_guidance>. Body:\n%s", body)
 	}
 }
+
+// TestRenderNativeObservation_ArtifactStubInlinesPreview pins the
+// Phase 107c follow-up (B). When the runtime tool-executor's
+// heavy-content projection lands on a trajectory step (either as the
+// `*llm.ArtifactStub` shape from the multimodal materialiser or as
+// the `heavyTruncationSummary` map from the dev tool executor), the
+// RoleTool message Content body is the inlined preview text + a
+// positional `artifact_fetch` footer — NEVER the wrapper JSON the
+// live YouTube test surfaced as the loop-trigger bug. Includes the
+// negative-instruction-trap regression gate: no wrapper terminology
+// ("ArtifactStub", "artifact_ref", "preview") appears in the
+// LLM-facing body, mirroring the c12e309 fix for `_finish`.
+func TestRenderNativeObservation_ArtifactStubInlinesPreview(t *testing.T) {
+	t.Parallel()
+
+	// Sub-test 1: the runtime tool-executor's map shape. This is what
+	// `cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`
+	// returns and what the live YouTube test exposed as the bug
+	// trigger. The renderer MUST inline `preview` as the body.
+	t.Run("executor_map_shape", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "fetch metadata",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{
+						Tool:   "youtube_get_metadata",
+						Args:   json.RawMessage(`{"url":"https://example.com/x"}`),
+						CallID: "call_y1",
+					},
+					LLMObservation: map[string]any{
+						"tool":         "youtube_get_metadata",
+						"size_bytes":   8192,
+						"truncated":    true,
+						"preview":      `{"title":"Example","duration":"3:42"`,
+						"artifact_ref": "youtube_meta_abc123",
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != llm.RoleTool {
+			t.Fatalf("last role = %q, want tool", last.Role)
+		}
+		body := *last.Content.Text
+		// The preview text MUST be the body.
+		if !strings.Contains(body, `{"title":"Example"`) {
+			t.Errorf("body missing preview text: %s", body)
+		}
+		// The fetch hint MUST name artifact_fetch + the ref + the size.
+		if !strings.Contains(body, "artifact_fetch") {
+			t.Errorf("body missing artifact_fetch footer: %s", body)
+		}
+		if !strings.Contains(body, "youtube_meta_abc123") {
+			t.Errorf("body missing ref in footer: %s", body)
+		}
+		if !strings.Contains(body, "8192") {
+			t.Errorf("body missing size in footer: %s", body)
+		}
+		// REGRESSION GATE — no wrapper terminology. The negative-
+		// instruction trap commit c12e309 closed for `_finish` applies
+		// here too: naming the wrapper shape primes the model on the
+		// wrong pattern. The tool's own description (in
+		// <available_tools>) teaches what artifact_fetch does; the
+		// footer signals when to call it.
+		forbidden := []string{
+			"ArtifactStub",
+			"artifact_ref",
+			`"preview"`, // quoted to avoid matching the operator-facing footer's literal
+		}
+		for _, term := range forbidden {
+			if strings.Contains(body, term) {
+				t.Errorf("body leaks wrapper terminology %q (negative-instruction trap regression). Body:\n%s", term, body)
+			}
+		}
+	})
+
+	// Sub-test 2: the *llm.ArtifactStub shape from the multimodal
+	// materialiser. Same projection rules apply.
+	t.Run("artifact_stub_shape", func(t *testing.T) {
+		t.Parallel()
+		stub := &llm.ArtifactStub{
+			Ref:       "img_xyz789",
+			MIME:      "image/png",
+			SizeBytes: 65536,
+			Summary:   "User-uploaded screenshot at turn 3",
+		}
+		rc := planner.RunContext{
+			Goal: "describe image",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{
+						Tool:   "vision.describe",
+						Args:   json.RawMessage(`{}`),
+						CallID: "call_v1",
+					},
+					LLMObservation: stub,
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		body := *last.Content.Text
+		if !strings.Contains(body, "User-uploaded screenshot at turn 3") {
+			t.Errorf("body missing Summary as preview: %s", body)
+		}
+		if !strings.Contains(body, "artifact_fetch") {
+			t.Errorf("body missing artifact_fetch footer: %s", body)
+		}
+		if !strings.Contains(body, "img_xyz789") {
+			t.Errorf("body missing ref in footer: %s", body)
+		}
+		if !strings.Contains(body, "image/png") {
+			t.Errorf("body missing mime in footer: %s", body)
+		}
+		// No wrapper JSON in the body — Summary inline, not the
+		// MarshalJSON output.
+		if strings.Contains(body, `"artifact_ref"`) {
+			t.Errorf("body contains wrapper JSON: %s", body)
+		}
+	})
+
+	// Sub-test 3: non-wrapper observation preserved verbatim. The
+	// renderer's fast-path is unchanged for the common case.
+	t.Run("non_wrapper_observation_unchanged", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action:         planner.CallTool{Tool: "echo"},
+					LLMObservation: "small result",
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		body := *last.Content.Text
+		if body != "small result" {
+			t.Errorf("non-wrapper observation body = %q, want %q", body, "small result")
+		}
+		if strings.Contains(body, "artifact_fetch") {
+			t.Errorf("footer leaked into non-wrapper observation: %s", body)
+		}
+	})
+
+	// Sub-test 4: map shape WITHOUT artifact_ref still inlines preview
+	// — defensive behaviour for a partial wrapper (preview-only) that
+	// could arise from a degraded artifact-store path. No footer is
+	// emitted in that case (no ref to fetch).
+	t.Run("preview_only_map_inlines_without_footer", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{Tool: "t"},
+					LLMObservation: map[string]any{
+						"tool":      "t",
+						"preview":   "first 100 chars of payload",
+						"truncated": true,
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		body := *req.Messages[len(req.Messages)-1].Content.Text
+		if !strings.Contains(body, "first 100 chars of payload") {
+			t.Errorf("preview not inlined: %s", body)
+		}
+		if strings.Contains(body, "artifact_fetch") {
+			t.Errorf("footer leaked for ref-less projection: %s", body)
+		}
+	})
+
+	// Sub-test 5: Error / Failure precedence is preserved — the
+	// renderer's existing fast-path for error states stays in front
+	// of the heavy-content detection.
+	t.Run("error_precedence_preserved", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{Tool: "t"},
+					Error:  "tool dispatch failed",
+					// LLMObservation set to a wrapper, but Error wins.
+					LLMObservation: map[string]any{
+						"preview":      "should not be rendered",
+						"artifact_ref": "nope",
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		body := *req.Messages[len(req.Messages)-1].Content.Text
+		if !strings.Contains(body, "tool dispatch failed") {
+			t.Errorf("Error precedence broken: %s", body)
+		}
+		if strings.Contains(body, "should not be rendered") {
+			t.Errorf("wrapper leaked through error precedence: %s", body)
+		}
+	})
+}

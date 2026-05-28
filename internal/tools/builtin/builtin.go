@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
@@ -95,6 +96,13 @@ var registry = map[string]registrar{
 	"declarative_action": func(rc RegistryContext) error {
 		return registerDeclarativeAction(rc.Catalog)
 	},
+	// Phase 107c follow-up (slice-of-C) — the escape hatch the LLM
+	// uses to pull the full bytes of a heavy-content artifact ref the
+	// prompt-builder inlined as a truncated preview. Always-loaded so
+	// the LLM has the recovery path without needing tool_search.
+	"artifact_fetch": func(rc RegistryContext) error {
+		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore)
+	},
 }
 
 // KnownNames returns the sorted list of built-in tool names the
@@ -112,10 +120,14 @@ func KnownNames() []string {
 
 // RegistryContext carries the dependencies builtins may need at
 // registration time. All fields are optional — a builtin that
-// doesn't use a field ignores it.
+// doesn't use a field ignores it. Builtins that REQUIRE a field
+// (e.g. `skill_search` needs `SkillStore`; `artifact_fetch` needs
+// `ArtifactStore`) fail loud at invoke time with an operator-readable
+// message when the dependency is nil.
 type RegistryContext struct {
-	Catalog    tools.ToolCatalog
-	SkillStore skills.SkillStore
+	Catalog       tools.ToolCatalog
+	SkillStore    skills.SkillStore
+	ArtifactStore artifacts.ArtifactStore
 }
 
 // Register attaches each named built-in to the catalog. Equivalent to
