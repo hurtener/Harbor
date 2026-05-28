@@ -1,29 +1,22 @@
-// internal/tools/builtin/artifact_fetch.go — Phase 107c follow-up
-// (slice-of-C escape hatch). Lets the LLM pull the full bytes of an
-// artifact ref the runtime surfaced inline as a truncated preview.
+// Package-level: artifact_fetch is the LLM-facing recovery path for
+// heavy-content artifacts. The runtime tool-executor materialises
+// tool results above the heavy-output threshold (D-026) to the
+// artifact store and projects the LLM-facing observation as a small
+// preview + a fetch hint; this builtin lets the LLM pull the full
+// bytes of the referenced artifact when the preview doesn't carry
+// what it needs.
 //
-// Why the tool exists. The runtime tool-executor materialises tool
-// results above the heavy-output threshold (D-026) to the artifact
-// store, then projects the LLM-facing observation as a small preview
-// plus a fetch hint. Before this commit the LLM saw the wrapper JSON
-// shape directly and could not act on it — the live YouTube test loop-
-// re-dispatched the same `youtube_get_metadata` call until max_steps
-// because the metadata exceeded the threshold and the model didn't
-// know how to read the wrapper. The same prompt-builder commit that
-// inlines the preview also documents this tool to the LLM via the
-// catalog's `<available_tools>` rendering; the model now has a
-// concrete recovery path when it needs the full payload.
+// Identity is mandatory (CLAUDE.md §6 rule 9). Cross-tenant
+// rejection is the artifact store's responsibility — the store keys
+// storage on `(tenant,user,session,task)` and an out-of-scope read
+// returns found-false, which we surface as `{error}` (NOT exposed
+// bytes). The builtin's test pins this with a deliberate
+// cross-identity write + read.
 //
-// Identity is mandatory (CLAUDE.md §6 rule 9). Cross-tenant rejection
-// is the artifact store's responsibility — the store keys storage on
-// `(tenant,user,session,task)` and an out-of-scope read returns
-// found-false, which we surface as `{error}` (NOT exposed bytes).
-// The builtin's test pins this with a deliberate cross-identity write
-// + read so the boundary stays intact.
-//
-// Concurrent reuse (D-025). The builtin is stateless; the only shared
-// resource is the `ArtifactStore`, whose D-025 contract lives in its
-// own conformance suite. No per-invocation state crosses runs.
+// Concurrent reuse (D-025). The builtin is stateless; the only
+// shared resource is the `ArtifactStore`, whose D-025 contract
+// lives in its own conformance suite. No per-invocation state
+// crosses runs.
 
 package builtin
 

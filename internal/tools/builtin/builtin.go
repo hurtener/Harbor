@@ -96,10 +96,10 @@ var registry = map[string]registrar{
 	"declarative_action": func(rc RegistryContext) error {
 		return registerDeclarativeAction(rc.Catalog)
 	},
-	// Phase 107c follow-up (slice-of-C) — the escape hatch the LLM
-	// uses to pull the full bytes of a heavy-content artifact ref the
-	// prompt-builder inlined as a truncated preview. Always-loaded so
-	// the LLM has the recovery path without needing tool_search.
+	// The escape hatch the LLM uses to pull the full bytes of a
+	// heavy-content artifact ref the prompt builder inlined as a
+	// truncated preview. Always-loaded so the LLM has the recovery
+	// path without needing tool_search.
 	"artifact_fetch": func(rc RegistryContext) error {
 		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore)
 	},

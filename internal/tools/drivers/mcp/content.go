@@ -71,14 +71,11 @@ type MCPToolValue struct {
 // the raw Text — most MCP tools return their result as a TextContent
 // block carrying JSON-as-string, and the default struct marshal
 // produces a `{"Text": "<escaped JSON>"}` wrapper that doubles the
-// encoding and confuses LLMs (the Phase 107c step 10/11+follow-up
-// live test pinned this: the YouTube agent looped re-emitting the
-// same `youtube_get_metadata` because Claude Haiku 4.5 couldn't
-// reliably parse the doubly-encoded wrapper). When Text is itself
-// well-formed JSON, MarshalJSON emits the JSON value directly so the
-// LLM reads a clean structure; otherwise the text rides as a JSON
-// string. Audit / observability consumers that need the typed shape
-// can re-derive it from the underlying CallToolResult on the bus.
+// encoding. When Text is itself well-formed JSON, MarshalJSON emits
+// the JSON value directly so the LLM reads a clean structure;
+// otherwise the text rides as a JSON string. Audit / observability
+// consumers that need the typed shape can re-derive it from the
+// underlying CallToolResult on the bus.
 //
 // When StructuredContent is set, it wins (it's the MCP-server-typed
 // projection). When Parts are non-empty, the wrapper carries the

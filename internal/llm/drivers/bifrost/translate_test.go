@@ -44,6 +44,167 @@ func TestTranslateRequest_TextOnly(t *testing.T) {
 	}
 }
 
+// TestTranslateRequest_AssistantWithToolCallsEmitsNilContent asserts
+// that an assistant message with `ToolCalls` set and no `Content`
+// (the trajectory-replay shape for a prior CallTool step with no
+// preamble) translates to a bifrost message with NIL content — not
+// an empty-string ContentStr. OpenAI's API returns 400 when
+// `tool_calls` is paired with `content: ""`; the wire-correct
+// shape is `content: null` / omitted.
+//
+// Pins both the zero-value Content path AND the defense-in-depth
+// path where the renderer accidentally produces an empty-string
+// Content.
+func TestTranslateRequest_AssistantWithToolCallsEmitsNilContent(t *testing.T) {
+	// Path 1: zero-value Content (the post-fix renderer shape).
+	t.Run("zero_value_content", func(t *testing.T) {
+		text := "what is the duration"
+		toolCallID := "call_xyz"
+		req := llm.CompleteRequest{
+			Model: "openai/gpt-4o",
+			Messages: []llm.ChatMessage{
+				{Role: llm.RoleUser, Content: llm.Content{Text: &text}},
+				{
+					Role: llm.RoleAssistant,
+					// Content intentionally zero value — no Text, no Parts.
+					ToolCalls: []llm.ToolCallStructured{{
+						ID:   toolCallID,
+						Name: "youtube_get_metadata",
+						Args: []byte(`{"url":"https://example.com"}`),
+					}},
+				},
+			},
+		}
+		bfReq, err := translateRequest(bfschemas.OpenRouter, req)
+		if err != nil {
+			t.Fatalf("translateRequest: %v", err)
+		}
+		if len(bfReq.Input) != 2 {
+			t.Fatalf("Input len = %d want 2", len(bfReq.Input))
+		}
+		asst := bfReq.Input[1]
+		if asst.Role != bfschemas.ChatMessageRoleAssistant {
+			t.Errorf("role = %q want assistant", asst.Role)
+		}
+		if asst.Content != nil {
+			t.Errorf("Content must be nil for assistant-with-tool_calls + no preamble, got %+v", asst.Content)
+		}
+		if asst.ChatAssistantMessage == nil || len(asst.ChatAssistantMessage.ToolCalls) != 1 {
+			t.Errorf("tool_calls block missing or wrong size: %+v", asst.ChatAssistantMessage)
+		}
+	})
+
+	// Path 2: pointer-to-empty-string Content (defense-in-depth for
+	// a renderer that hasn't been updated yet). Translator must
+	// flatten this to nil too.
+	t.Run("pointer_to_empty_string_content", func(t *testing.T) {
+		text := "what is the duration"
+		empty := ""
+		toolCallID := "call_xyz"
+		req := llm.CompleteRequest{
+			Model: "openai/gpt-4o",
+			Messages: []llm.ChatMessage{
+				{Role: llm.RoleUser, Content: llm.Content{Text: &text}},
+				{
+					Role:    llm.RoleAssistant,
+					Content: llm.Content{Text: &empty},
+					ToolCalls: []llm.ToolCallStructured{{
+						ID:   toolCallID,
+						Name: "youtube_get_metadata",
+						Args: []byte(`{"url":"https://example.com"}`),
+					}},
+				},
+			},
+		}
+		bfReq, err := translateRequest(bfschemas.OpenRouter, req)
+		if err != nil {
+			t.Fatalf("translateRequest: %v", err)
+		}
+		asst := bfReq.Input[1]
+		if asst.Content != nil {
+			t.Errorf("Content must be flattened to nil for assistant-with-tool_calls + empty preamble, got %+v", asst.Content)
+		}
+		if asst.ChatAssistantMessage == nil || len(asst.ChatAssistantMessage.ToolCalls) != 1 {
+			t.Errorf("tool_calls block missing or wrong size")
+		}
+	})
+
+	// Path 3: non-empty Content (the model emitted a real preamble).
+	// This MUST still pass through verbatim — the carve-out only
+	// applies when content is empty.
+	t.Run("nonempty_content_preserved", func(t *testing.T) {
+		text := "what is the duration"
+		preamble := "I'll look up the metadata."
+		toolCallID := "call_xyz"
+		req := llm.CompleteRequest{
+			Model: "openai/gpt-4o",
+			Messages: []llm.ChatMessage{
+				{Role: llm.RoleUser, Content: llm.Content{Text: &text}},
+				{
+					Role:    llm.RoleAssistant,
+					Content: llm.Content{Text: &preamble},
+					ToolCalls: []llm.ToolCallStructured{{
+						ID:   toolCallID,
+						Name: "youtube_get_metadata",
+						Args: []byte(`{"url":"https://example.com"}`),
+					}},
+				},
+			},
+		}
+		bfReq, err := translateRequest(bfschemas.OpenRouter, req)
+		if err != nil {
+			t.Fatalf("translateRequest: %v", err)
+		}
+		asst := bfReq.Input[1]
+		if asst.Content == nil || asst.Content.ContentStr == nil || *asst.Content.ContentStr != preamble {
+			t.Errorf("non-empty preamble lost: %+v", asst.Content)
+		}
+	})
+}
+
+// TestTranslateRequest_AssistantToolCallsCarryTypeFunction asserts
+// every assistant tool_call carries Type="function" after
+// translation. OpenAI's wire spec requires the field; bifrost tags
+// it `omitempty` so a nil pointer drops it from the wire and the
+// upstream provider either rejects or silently malforms the
+// request.
+func TestTranslateRequest_AssistantToolCallsCarryTypeFunction(t *testing.T) {
+	text := "do the thing"
+	req := llm.CompleteRequest{
+		Model: "openai/gpt-4o",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &text}},
+			{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCallStructured{
+					{ID: "call_a", Name: "foo", Args: []byte(`{}`)},
+					{ID: "call_b", Name: "bar", Args: []byte(`{"x":1}`)},
+				},
+			},
+		},
+	}
+	bfReq, err := translateRequest(bfschemas.OpenRouter, req)
+	if err != nil {
+		t.Fatalf("translateRequest: %v", err)
+	}
+	asst := bfReq.Input[1]
+	if asst.ChatAssistantMessage == nil {
+		t.Fatal("ChatAssistantMessage is nil")
+	}
+	if len(asst.ChatAssistantMessage.ToolCalls) != 2 {
+		t.Fatalf("want 2 tool_calls, got %d", len(asst.ChatAssistantMessage.ToolCalls))
+	}
+	for i, tc := range asst.ChatAssistantMessage.ToolCalls {
+		if tc.Type == nil {
+			t.Errorf("tool_calls[%d].Type is nil — OpenAI wire spec requires `type: \"function\"`", i)
+			continue
+		}
+		if *tc.Type != "function" {
+			t.Errorf("tool_calls[%d].Type = %q, want %q", i, *tc.Type, "function")
+		}
+	}
+}
+
 // TestTranslateRequest_RoleMapping — system, user, assistant roles.
 // RoleTool deliberately maps to user (Harbor's tool-observation
 // convention; brief 07 §5).

@@ -257,6 +257,24 @@ type RunContext struct {
 	// from itself. N concurrent runs see N independent closures.
 	OnReasoning func(string)
 
+	// OnAssistantContent is a per-step callback the Planner invokes
+	// with the natural-language content the assistant emitted
+	// alongside its tool_call on this step. The Runtime sets it on
+	// each per-step RunContext so the runloop copies the preamble
+	// onto `trajectory.Step.AssistantPreamble` when it appends the
+	// step; the prompt builder then replays it as the assistant
+	// message's content on subsequent turns so the model retains
+	// its narrative thread.
+	//
+	// Under native tool-calling the response carries both a
+	// `tool_calls` block AND a natural-language `content` field.
+	// The Decision sum only encodes the tool_call; this callback
+	// is the side-channel that ferries `content` onto the step.
+	//
+	// Same shape as OnReasoning: nil-safe, per-run closure (D-025),
+	// invoked by the planner after each LLM call.
+	OnAssistantContent func(string)
+
 	// OnChunk is the per-step streaming callback the Planner invokes
 	// per token delta from the LLM provider (Phase 107). The Runtime
 	// sets it on each per-step RunContext so the runloop publishes

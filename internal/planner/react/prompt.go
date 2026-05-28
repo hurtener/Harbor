@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -17,10 +18,11 @@ import (
 // conversation whose shape depends on whether the trajectory has been
 // compacted (Phase 46):
 //
-//  1. System message: the nine XML-tagged sections (brief 13 §2.1,
-//     reshaped by Phase 107c — D-167) assembled by [buildSystemContent]
-//     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
-//     `<reasoning>`, `<tone>`, `<error_handling>`,
+//  1. System message: the ten XML-tagged sections (brief 13 §2.1,
+//     reshaped by Phase 107c — D-167) assembled by
+//     [buildSystemContent] —
+//     `<identity>`, `<tool_discovery>`, `<heavy_results>`,
+//     `<tool_usage>`, `<reasoning>`, `<tone>`, `<error_handling>`,
 //     `<available_tools>`, `<additional_guidance>`,
 //     `<planning_constraints>` — in that fixed order, separated by
 //     `\n\n`. Optional sections (`<additional_guidance>`,
@@ -31,7 +33,9 @@ import (
 //     property: the runtime accepts multiple `ToolCalls` in one
 //     response and serialises them per the AC-19 fallback). A single
 //     `<tool_discovery>` section instructs on native tool-calling
-//     semantics + deferred-loading meta-tools.
+//     semantics + deferred-loading meta-tools; `<heavy_results>`
+//     teaches the out-of-context artifact-store pattern + the
+//     `artifact_fetch` meta-tool.
 //  2. User message: the run's Goal (or Query when Goal is empty),
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
@@ -299,14 +303,16 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	}
 }
 
-// The ten static section bodies (Phase 107c — D-167 resizes from
-// twelve). Brief 13 §4 carries the verbatim adapted copy; the constants
-// below are that copy, split at the XML tag boundaries so each section
-// is independently editable (brief 13 §2.1 design property 1).
-// Phases 83b/c/d extend these section anchors; Phase 107c deletes
-// `<output_format>`, `<action_schema>`, and `<finishing>` (the
-// prompt-engineered JSON-action instruction block) and replaces them
-// with `<tool_discovery>`.
+// The eleven static section bodies (Phase 107c — D-167 resizes from
+// twelve). Brief 13 §4 carries the verbatim adapted copy; the
+// constants below are that copy, split at the XML tag boundaries so
+// each section is independently editable (brief 13 §2.1 design
+// property 1). Phases 83b/c/d extend these section anchors; Phase
+// 107c deletes `<output_format>`, `<action_schema>`, and
+// `<finishing>` (the prompt-engineered JSON-action instruction
+// block) and replaces them with `<tool_discovery>` + the
+// `<heavy_results>` explainer for the out-of-context artifact
+// store.
 //
 // The `{{current_date}}` placeholder in <identity> is the ONLY
 // template marker the builder resolves at Build time; everything else
@@ -347,6 +353,25 @@ How to respond, in two cases:
 
 Your prose is streamed live to the user as you type it, character by character. Markdown formatting is supported when the additional_guidance section permits it. The runtime adds nothing to your message — what you write IS what the user sees.
 </tool_discovery>`
+
+	// sectionHeavyResults is the factual explainer for the runtime's
+	// out-of-context storage of large tool results plus the
+	// meta-tools that operate on the resulting reference handles.
+	// The wording is deliberately descriptive — it states the
+	// mechanism, names a reference shape, lists the meta-tools, and
+	// notes that re-calling the upstream tool produces another
+	// stored copy rather than bypassing the threshold. New
+	// meta-tools that act on stored references extend the bullet
+	// list in this section as they land.
+	sectionHeavyResults = `<heavy_results>
+Some tools return payloads larger than fit cleanly in your context (multimedia metadata, file contents, query dumps). The runtime stores any tool result above its size threshold in an out-of-context artifact store and surfaces you a short preview plus a reference handle. Each reference looks like ref="abc123def456" and is unique per stored payload.
+
+Meta-tools for working with stored references:
+
+- artifact_fetch(ref, max_bytes?): retrieve the full payload of a stored result. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes lets you bound the returned slice; the runtime defaults to a safe size when omitted.
+
+The preview is the head of the payload only — fields further into the result live in the stored copy and require artifact_fetch to inspect. Re-calling the upstream tool produces a fresh stored copy of the same kind of payload; it does not bypass the threshold.
+</heavy_results>`
 
 	sectionToolUsage = `<tool_usage>
 Rules for using tools:
@@ -397,7 +422,6 @@ When delivering your final answer to the user:
 - You can use markdown formatting if suggested in additional_guidance.
 
 During intermediate steps (when you're calling tools, not yet answering):
-- Emit only tool calls — keep any narration to the final answer turn.
 - Internal reasoning is captured automatically by the runtime through provider-side channels when the provider exposes one; you do not need to echo it.
 </tone>`
 
@@ -424,18 +448,20 @@ If you cannot complete the task after reasonable attempts:
 //  1. <identity>             — role framing + current date.
 //  2. <tool_discovery>       — native tool-calling instructions +
 //     deferred-loading meta-tools (Phase 107c — D-167).
-//  3. <tool_usage>           — side_effects taxonomy + invocation rules.
-//  4. <reasoning>            — 5-step systematic approach.
-//  5. <tone>                 — voice defaults + intermediate-step
+//  3. <heavy_results>        — factual explainer for out-of-context
+//     storage of large tool results + the artifact_fetch meta-tool.
+//  4. <tool_usage>           — side_effects taxonomy + invocation rules.
+//  5. <reasoning>            — 5-step systematic approach.
+//  6. <tone>                 — voice defaults + intermediate-step
 //     guidance (no JSON-action shape — native tool-calling owns
 //     the wire form).
-//  6. <error_handling>       — recovery framing; no requires_followup.
-//  7. <available_tools>      — name + description quick reference
+//  7. <error_handling>       — recovery framing; no requires_followup.
+//  8. <available_tools>      — name + description quick reference
 //     (schemas live in the provider's native Tools[] declaration —
 //     Phase 107c — D-167).
-//  8. <additional_guidance>  — operator-supplied content + Phase 83c
+//  9. <additional_guidance>  — operator-supplied content + Phase 83c
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-//  9. <planning_constraints> — runtime-supplied PlanningHints
+// 10. <planning_constraints> — runtime-supplied PlanningHints
 //     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
@@ -463,6 +489,7 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 		sections = []string{
 			renderIdentitySection(),
 			sectionToolDiscovery,
+			sectionHeavyResults,
 			sectionToolUsage,
 			sectionReasoning,
 			sectionTone,
@@ -813,16 +840,30 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 	if callID == "" {
 		callID = fmt.Sprintf("react.callid.%d", stepIdx)
 	}
-	// Assistant content: empty by default (the provider reads the
-	// tool_calls block; no text needed). When reasoning replay is on
-	// AND the step has a trace, prepend it as the assistant text body.
-	assistantText := ""
+	// Replay the model's prior preamble prose so the assistant turn
+	// retains its narrative thread. Reasoning-replay (D-148) layers
+	// on top: when `ReasoningReplay=text` AND the step has a
+	// provider-side ReasoningTrace, the trace is appended below the
+	// preamble.
+	assistantText := step.AssistantPreamble
 	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
-		assistantText = "Reasoning:\n" + step.ReasoningTrace
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	// Leave Content at zero value when the preamble is empty.
+	// OpenAI's wire spec requires `content: null` (not `""`) when
+	// tool_calls is present; the safety pass + translator carve-out
+	// emit the null shape from the zero-value Content here.
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
 	}
 	asst := llm.ChatMessage{
 		Role:    llm.RoleAssistant,
-		Content: textContent(assistantText),
+		Content: asstContent,
 		ToolCalls: []llm.ToolCallStructured{{
 			ID:   callID,
 			Name: call.Tool,
@@ -831,7 +872,25 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 	}
 	observation := renderNativeObservation(step)
 	if observation == "" {
-		return asst, nil, true
+		// OpenAI's native tool-calling wire spec requires every
+		// assistant `tool_calls[i]` to be paired with a
+		// `role:"tool"` message carrying the matching
+		// `tool_call_id`. Emitting the assistant half without its
+		// sibling produces a 400 on OpenAI and is non-recoverable
+		// on Anthropic. Synthesise a placeholder tool body so the
+		// pair is always complete; the slog.Warn surfaces the
+		// underlying gap (a tool returned nil / empty without an
+		// error) so an operator can fix the upstream producer.
+		slog.Warn("react.renderNativeStepPair: empty observation — emitting placeholder tool message to preserve wire contract",
+			"step_idx", stepIdx,
+			"tool", call.Tool,
+			"call_id", callID,
+			"observation_nil", step.Observation == nil,
+			"llm_observation_nil", step.LLMObservation == nil,
+			"failure_nil", step.Failure == nil,
+			"error_empty", step.Error == "",
+		)
+		observation = "(tool returned no observation)"
 	}
 	id := callID
 	tool := &llm.ChatMessage{
@@ -850,28 +909,13 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 // observation is available yet (the runtime appended the Action but
 // dispatch hasn't completed).
 //
-// Phase 107c follow-up (B): when the projected observation is a
-// heavy-content wrapper — either an `*llm.ArtifactStub` (the multimodal
-// materialiser shape) OR the runtime tool-executor's truncation map
-// `{"preview": ..., "artifact_ref": ..., "size_bytes": ...}` — the
-// preview text is inlined as the message body INSTEAD of the wrapper
-// JSON. A single-line positional footer mentions the `artifact_fetch`
-// builtin + the ref + size so a model that needs the full payload knows
-// which tool to call. The wrapper JSON ride-along was the load-bearing
-// bug surfaced by the live YouTube test: the LLM saw
-// `{"artifact_ref":"...","preview":"{...}"}` on a RoleTool message,
-// couldn't decode the wrapper shape, and loop-re-dispatched the same
-// tool call until max_steps. The trajectory step's full structured
-// observation is preserved for inspect-runs + Phase 106 `result_inline`;
-// only the LLM-facing projection changes.
-//
-// **No wrapper terminology in the LLM-facing footer.** Naming the
-// shape ("ArtifactStub", "artifact_ref", "preview") in the prompt
-// activates the model's prior on the legacy shape — the same trap
-// commit c12e309 closed for `_finish`. The footer is positional
-// (after the data, not before), names only the tool and the ref, and
-// leaves the LLM to learn the tool's semantics from its own
-// description in `<available_tools>`.
+// Heavy-content wrappers — `*llm.ArtifactStub` (multimodal
+// materialiser) or the executor's truncation map (`{"preview":...,
+// "artifact_ref":...}`) — are projected as the inlined preview text
+// plus a positional [artifact_fetch] footer carrying the ref + size.
+// The wrapper JSON never reaches the LLM. The footer wording avoids
+// wrapper terminology so the LLM doesn't acquire a prior on the
+// internal shape.
 func renderNativeObservation(step planner.Step) string {
 	if step.Failure != nil {
 		return fmt.Sprintf("Tool failure: %s — %s",
@@ -950,9 +994,11 @@ func renderArtifactStubObservation(stub *llm.ArtifactStub) string {
 }
 
 // renderHeavyContentMap detects the runtime tool-executor's
-// `heavyTruncationSummary` shape and projects it the same way.
-// Returns (body, true) when both `preview` and `artifact_ref` keys
-// are present + string-typed; (body, false) otherwise.
+// `heavyTruncationSummary` shape and projects it for the LLM.
+// Returns (body, true) when the wrapper map carries a usable
+// `preview` and/or `artifact_ref`; (body, false) otherwise. Picks
+// the field-aware vs byte-truncation footer variant via
+// [isFieldAwarePreview].
 func renderHeavyContentMap(m map[string]any) (string, bool) {
 	previewRaw, hasPreview := m["preview"]
 	refRaw, hasRef := m["artifact_ref"]
@@ -985,24 +1031,56 @@ func renderHeavyContentMap(m map[string]any) (string, bool) {
 	if ref == "" {
 		// preview-only — no fetch hint possible. Returning matched=true
 		// still routes through the inlined-preview path so the LLM
-		// doesn't see the wrapper JSON; the absence of the footer is
-		// the operator-visible signal that the artifact ref was lost
-		// during projection.
+		// doesn't see the wrapper JSON.
 		return preview, true
+	}
+	// Two footer variants — the field-aware variant names the
+	// omitted-field sentinels as the unit artifact_fetch retrieves;
+	// the byte-truncation variant says "full payload available."
+	if isFieldAwarePreview(preview) {
+		return preview + "\n\n" + artifactFetchFooterFieldAware(ref, mime, size), true
 	}
 	return preview + " " + artifactFetchFooter(ref, mime, size), true
 }
 
-// artifactFetchFooter renders the positional fetch-hint footer the LLM
-// reads after the inlined preview. Names only the tool + the ref +
-// optional MIME + optional size. Avoids the wrapper-shape terminology
-// that activated the negative-instruction trap commit c12e309 closed
-// for `_finish`.
-//
-// The footer wording is deliberately operator-readable too — when the
-// LLM emits the next-turn trajectory step the operator can grep for
-// "artifact_fetch" in audit logs to find calls that exceeded the
-// runtime size cap.
+// isFieldAwarePreview returns true when `s` parses as JSON AND
+// contains the `[omitted: N bytes]` sentinel pattern that the
+// field-aware preview emits for pruned fields. Used to pick the
+// matching artifactFetchFooter* variant.
+func isFieldAwarePreview(s string) bool {
+	if !strings.Contains(s, `"[omitted:`) {
+		return false
+	}
+	var probe any
+	return json.Unmarshal([]byte(s), &probe) == nil
+}
+
+// artifactFetchFooterFieldAware is the footer variant for field-aware
+// previews. The preview above already shows every scalar field; the
+// only thing artifact_fetch retrieves is the specific fields marked
+// `[omitted: N bytes]`. The wording names those sentinels as the
+// retrieval unit and explicitly tells the model not to re-call the
+// upstream tool (which would produce the same preview with the same
+// omissions).
+func artifactFetchFooterFieldAware(ref, mime string, size int64) string {
+	var b strings.Builder
+	b.WriteString(`[Fields marked "[omitted: N bytes]" above were pruned to fit context — call artifact_fetch(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`") to retrieve the full payload`)
+	if size > 0 {
+		b.WriteString(fmt.Sprintf(" (size: %d bytes", size))
+		if mime != "" {
+			b.WriteString(", mime: " + mime)
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(". The scalar fields above are complete; do not re-call the upstream tool — it will return the same preview with the same omissions.]")
+	return b.String()
+}
+
+// artifactFetchFooter renders the positional fetch-hint footer for
+// byte-truncated previews (non-JSON or non-field-aware). Names the
+// ref + optional MIME + optional size; no wrapper-shape terminology.
 func artifactFetchFooter(ref, mime string, size int64) string {
 	var b strings.Builder
 	b.WriteString("[Full payload available")

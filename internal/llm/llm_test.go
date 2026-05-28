@@ -240,6 +240,124 @@ func TestComplete_CloseIdempotentAndPostClose(t *testing.T) {
 	}
 }
 
+// TestComplete_RejectsOrphanToolCall asserts the safety-pass orphan
+// validator: every assistant message with ToolCalls MUST be
+// followed by RoleTool messages whose ToolCallIDs match each
+// ToolCalls[i].ID per OpenAI's wire spec. The safety pass rejects
+// loudly with ErrOrphanToolCall so any producer-side regression
+// fails at the LLM-client edge.
+func TestComplete_RejectsOrphanToolCall(t *testing.T) {
+	deps, cleanup := makeDeps(t)
+	defer cleanup()
+	client, err := llm.Open(context.Background(), makeSnapshot("m", 1000), deps)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+	ctx := withIdentity(t, context.Background())
+
+	userText := "find a video"
+	asstContent := llm.Content{} // zero-value (already-valid for the with-tool_calls carve-out)
+
+	// Case 1: assistant tool_call with NO following RoleTool message.
+	orphan := llm.CompleteRequest{
+		Model: "m",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+			{
+				Role:      llm.RoleAssistant,
+				Content:   asstContent,
+				ToolCalls: []llm.ToolCallStructured{{ID: "call_x1", Name: "foo"}},
+			},
+			// MISSING: tool message with ToolCallID="call_x1"
+		},
+	}
+	if _, err := client.Complete(ctx, orphan); !errors.Is(err, llm.ErrOrphanToolCall) {
+		t.Fatalf("orphan tool_call: err=%v, want ErrOrphanToolCall", err)
+	}
+
+	// Case 2: tool message ToolCallID does not match assistant's.
+	mismatchID := "call_other"
+	mismatchToolText := "result"
+	mismatch := llm.CompleteRequest{
+		Model: "m",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+			{
+				Role:      llm.RoleAssistant,
+				Content:   asstContent,
+				ToolCalls: []llm.ToolCallStructured{{ID: "call_x2", Name: "foo"}},
+			},
+			{
+				Role:       llm.RoleTool,
+				Content:    llm.Content{Text: &mismatchToolText},
+				ToolCallID: &mismatchID,
+			},
+		},
+	}
+	if _, err := client.Complete(ctx, mismatch); !errors.Is(err, llm.ErrOrphanToolCall) {
+		t.Fatalf("mismatched ToolCallID: err=%v, want ErrOrphanToolCall", err)
+	}
+
+	// Case 3: RoleTool message with missing ToolCallID.
+	toolText := "r"
+	missingID := llm.CompleteRequest{
+		Model: "m",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+			{
+				Role:      llm.RoleAssistant,
+				Content:   asstContent,
+				ToolCalls: []llm.ToolCallStructured{{ID: "call_x3", Name: "foo"}},
+			},
+			{Role: llm.RoleTool, Content: llm.Content{Text: &toolText}}, // ToolCallID nil
+		},
+	}
+	if _, err := client.Complete(ctx, missingID); !errors.Is(err, llm.ErrOrphanToolCall) {
+		t.Fatalf("missing ToolCallID: err=%v, want ErrOrphanToolCall", err)
+	}
+}
+
+// TestComplete_AcceptsPairedToolCall confirms the canonical paired
+// sequence passes validation: assistant tool_call followed by
+// matching RoleTool message → safety pass goes through.
+func TestComplete_AcceptsPairedToolCall(t *testing.T) {
+	deps, cleanup := makeDeps(t)
+	defer cleanup()
+	client, err := llm.Open(context.Background(), makeSnapshot("m", 1000), deps)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+	ctx := withIdentity(t, context.Background())
+
+	userText := "find a video"
+	toolText := "result"
+	callID := "call_paired"
+	paired := llm.CompleteRequest{
+		Model: "m",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &userText}},
+			{
+				Role:      llm.RoleAssistant,
+				Content:   llm.Content{}, // empty content allowed when ToolCalls present
+				ToolCalls: []llm.ToolCallStructured{{ID: callID, Name: "foo"}},
+			},
+			{
+				Role:       llm.RoleTool,
+				Content:    llm.Content{Text: &toolText},
+				ToolCallID: &callID,
+			},
+		},
+	}
+	// The mock driver echoes; we only care that the safety pass does
+	// NOT reject with ErrOrphanToolCall.
+	if _, err := client.Complete(ctx, paired); errors.Is(err, llm.ErrOrphanToolCall) {
+		t.Fatalf("paired tool_call rejected as orphan: %v", err)
+	}
+	_ = strings.TrimSpace // keep import in case the file is trimmed
+}
+
 func TestRegisteredDrivers_IncludesMock(t *testing.T) {
 	found := false
 	for _, n := range llm.RegisteredDrivers() {

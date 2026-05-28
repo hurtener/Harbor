@@ -428,14 +428,16 @@ func TestE2E_React_StructuredPromptAssemblesThroughRegistry(t *testing.T) {
 	if !strings.Contains(body, "<additional_guidance>\ndomain rule: cite every source\n</additional_guidance>") {
 		t.Errorf("planner.extra_guidance did not flow to <additional_guidance>. Body:\n%s", body)
 	}
-	// Phase 107c replaces the brief-13 "JSON action object" CRITICAL
-	// clamp with a native tool-calling intermediate-step rule: emit
-	// only tool calls + no echoed reasoning field.
+	// Phase 107c (D-167) replaces the brief-13 "JSON action object"
+	// clamp with a native tool-calling intermediate-step rule: no
+	// echoed reasoning field. See the godoc on
+	// [TestBuildSystemContent_ToneIntermediateStepClamp] for the
+	// "Emit only tool calls" bullet removal.
 	if strings.Contains(body, `"reasoning":`) {
 		t.Errorf("rendered prompt leaked a `\"reasoning\":` field")
 	}
-	if !strings.Contains(body, "Emit only tool calls — keep any narration to the final answer turn.") {
-		t.Errorf("rendered prompt missing the <tone> native-tool-calling intermediate-step clamp")
+	if strings.Contains(body, "Emit only tool calls — keep any narration to the final answer turn.") {
+		t.Errorf("rendered prompt regressed: re-introduced the 'Emit only tool calls' bullet")
 	}
 	if strings.Contains(body, "produce ONLY the JSON action object") {
 		t.Errorf("rendered prompt still references the deleted JSON-action-object clamp")

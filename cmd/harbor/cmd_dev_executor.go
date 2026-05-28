@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -178,7 +179,7 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 		e.logger.Warn("devToolExecutor: heavy tool result without artifact store; truncating",
 			slog.String("tool", tool),
 			slog.Int("size_bytes", size))
-		return heavyTruncationSummary(tool, encoded, size, "")
+		return heavyTruncationSummary(tool, raw, encoded, size, "")
 	}
 	scope := artifacts.ArtifactScope{
 		TenantID:  rc.Quadruple.TenantID,
@@ -205,21 +206,42 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 			slog.String("tool", tool),
 			slog.Int("size_bytes", size),
 			slog.String("err", putErr.Error()))
-		return heavyTruncationSummary(tool, encoded, size, "")
+		return heavyTruncationSummary(tool, raw, encoded, size, "")
 	}
-	return heavyTruncationSummary(tool, encoded, size, ref.ID)
+	return heavyTruncationSummary(tool, raw, encoded, size, ref.ID)
 }
 
-// heavyTruncationSummary builds the small llmObservation the planner
-// renders for a heavy tool result. Carries: the tool name, the byte
-// size of the full result, a short preview (first ~512 chars of the
-// JSON-encoded result), and the artifact ID when available.
-func heavyTruncationSummary(tool string, encoded []byte, size int, artifactID string) any {
-	const previewBytes = 512
-	prev := string(encoded)
-	if len(prev) > previewBytes {
-		prev = prev[:previewBytes] + "...(truncated)"
-	}
+// previewFieldMaxBytes caps each top-level field's serialized form in
+// the field-aware preview. Fields whose serialized value exceeds this
+// budget are replaced with a `[omitted: N bytes]` sentinel so they
+// still appear as keys (the model sees what's available) but don't
+// blow the preview budget. 1 KiB is chosen as the threshold because
+// it captures normal scalar fields (numbers, short strings, small
+// arrays of tags/categories) but prunes nested heavy objects like
+// yt-dlp's `automatic_captions`, `formats`, `subtitles` (each
+// hundreds of KB).
+const previewFieldMaxBytes = 1024
+
+// previewTotalMaxBytes is the hard cap on the entire field-aware
+// preview's serialized size. Even with per-field pruning a result
+// with hundreds of small scalar fields could still grow large; this
+// is the back-stop.
+const previewTotalMaxBytes = 16384
+
+// heavyTruncationSummary builds the small llmObservation the
+// planner renders for a heavy tool result. For JSON-object results
+// it emits a field-aware preview that preserves every top-level
+// scalar / small field verbatim and replaces oversized nested
+// values with a `[omitted: N bytes]` sentinel — so the model sees
+// both what's available and what was pruned. For non-object
+// results (arrays, scalars at top level) it falls back to
+// byte-truncation at `previewTotalMaxBytes`.
+//
+// Carries: the tool name, byte size of the full result, the
+// preview, the `truncated: true` signal, and the artifact ID
+// when available.
+func heavyTruncationSummary(tool string, raw any, encoded []byte, size int, artifactID string) any {
+	prev := buildPreview(raw, encoded)
 	out := map[string]any{
 		"tool":       tool,
 		"size_bytes": size,
@@ -230,6 +252,105 @@ func heavyTruncationSummary(tool string, encoded []byte, size int, artifactID st
 		out["artifact_ref"] = artifactID
 	}
 	return out
+}
+
+// buildPreview renders the field-aware preview when the result is a
+// JSON object (after unwrapping common single-key wrappers like
+// `{"result": {...}}` that MCP tools and Go structs produce), or
+// falls back to byte-truncation for non-object shapes (arrays,
+// scalars at top). Returns a string so the existing `preview` key
+// shape on the observation map is preserved.
+//
+// Why the unmarshal step: `raw` here may be a typed Go struct (the
+// MCP driver returns its own value type), not a `map[string]any`.
+// A type assertion against `map[string]any` would miss those. The
+// encoded bytes are guaranteed JSON, so we re-derive the generic
+// shape from them.
+//
+// Why the unwrap step: MCP tools (and many in-process tools)
+// wrap their payload in `{"result": <value>}` so the top-level has
+// exactly one key whose value is the real data. Applying
+// field-aware preview to the outer wrapper would prune `result`
+// itself as oversized — defeating the whole point. The unwrap is
+// bounded to one level and only fires when the outer has exactly
+// one key AND that key's value is itself a map.
+func buildPreview(raw any, encoded []byte) string {
+	var m map[string]any
+	if asMap, ok := raw.(map[string]any); ok {
+		m = asMap
+	} else if err := json.Unmarshal(encoded, &m); err != nil || m == nil {
+		// Top-level is an array or scalar (not a JSON object) —
+		// fall back to byte truncation.
+		prev := string(encoded)
+		if len(prev) > previewTotalMaxBytes {
+			prev = prev[:previewTotalMaxBytes] + "...(truncated)"
+		}
+		return prev
+	}
+
+	// Unwrap a single-key wrapper one level when its value is itself
+	// a map. Captures the `{"result": {<actual metadata>}}` shape MCP
+	// tools emit.
+	if len(m) == 1 {
+		for _, v := range m {
+			if inner, ok := v.(map[string]any); ok && len(inner) > 1 {
+				m = inner
+			}
+		}
+	}
+
+	if s, ok := fieldAwarePreview(m); ok {
+		return s
+	}
+	// Field-aware build failed — fall back to byte truncation.
+	prev := string(encoded)
+	if len(prev) > previewTotalMaxBytes {
+		prev = prev[:previewTotalMaxBytes] + "...(truncated)"
+	}
+	return prev
+}
+
+// fieldAwarePreview emits a JSON object where each top-level key from
+// `m` is included verbatim when its serialized form is under
+// `previewFieldMaxBytes`, OR replaced with a `[omitted: N bytes]`
+// sentinel string otherwise. Returns (preview, true) on success; the
+// false return signals the caller to fall back to byte-truncation
+// (e.g. the marshal of the assembled preview failed somehow).
+func fieldAwarePreview(m map[string]any) (string, bool) {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make(map[string]any, len(m))
+	for _, k := range keys {
+		v := m[k]
+		vBytes, err := json.Marshal(v)
+		if err != nil {
+			out[k] = fmt.Sprintf("[unrenderable: %v]", err)
+			continue
+		}
+		if len(vBytes) > previewFieldMaxBytes {
+			out[k] = fmt.Sprintf("[omitted: %d bytes]", len(vBytes))
+			continue
+		}
+		// Embed the parsed value (not the raw bytes) so the assembled
+		// preview is one JSON document, not a JSON-string of JSON.
+		out[k] = v
+	}
+
+	prevBytes, err := json.Marshal(out)
+	if err != nil {
+		return "", false
+	}
+	if len(prevBytes) > previewTotalMaxBytes {
+		// Even after per-field pruning the assembled doc is too big
+		// — most often happens when there are hundreds of small
+		// scalar fields. Truncate the assembled doc but signal it.
+		return string(prevBytes[:previewTotalMaxBytes]) + "...(truncated)", true
+	}
+	return string(prevBytes), true
 }
 
 // _ avoids the "identity imported but not used" warning when callers

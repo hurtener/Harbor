@@ -661,11 +661,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// name fails loud at this boundary. RegisterWith threads the
 	// `skills.SkillStore` so `skill_search` / `skill_get` reach their
 	// backing store instead of nil-derefing on first invocation. The
-	// `artifacts.ArtifactStore` is threaded so the Phase 107c follow-up
-	// `artifact_fetch` builtin can resolve refs the runtime tool-executor
-	// surfaced as truncated previews — without this the meta-tool fails
-	// loud at first invocation with the operator-readable nil-store
-	// message.
+	// `artifacts.ArtifactStore` is threaded so the `artifact_fetch`
+	// builtin can resolve refs the runtime tool-executor surfaced as
+	// truncated previews; without this the meta-tool fails loud at
+	// first invocation with the operator-readable nil-store message.
 	if err := builtin.RegisterWith(builtin.RegistryContext{
 		Catalog:       toolCat,
 		SkillStore:    skillStore,

@@ -675,6 +675,12 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	if rc.OnReasoning != nil {
 		rc.OnReasoning(resp.Reasoning)
 	}
+	// Preserve the assistant's preamble prose across trajectory
+	// replay so the model retains its narrative thread. See
+	// RunContext.OnAssistantContent + trajectory.Step.AssistantPreamble.
+	if rc.OnAssistantContent != nil {
+		rc.OnAssistantContent(resp.Content)
+	}
 
 	p.stepsTaken.Add(1)
 	return final, nil

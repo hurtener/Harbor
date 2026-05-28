@@ -149,17 +149,94 @@ func (c *safetyClient) Close(ctx context.Context) error {
 
 // validateRequest checks structural invariants the safety pass relies
 // on before doing real work. Returns ErrInvalidContent on malformed
-// Content; ErrInvalidConfig for empty Model.
+// Content; ErrInvalidConfig for empty Model; ErrOrphanToolCall when
+// an assistant `tool_calls` block is not followed by matching
+// `RoleTool` messages.
+//
+// An assistant message with `len(ToolCalls) > 0` is permitted to
+// have both `Content.Text` and `Content.Parts` nil — OpenAI's wire
+// spec requires `content: null` when `tool_calls` is present, and
+// `content: ""` is a 400. The translator emits `content: null` from
+// the zero-value Content shape.
 func validateRequest(req CompleteRequest) error {
 	if req.Model == "" {
 		return fmt.Errorf("%w: CompleteRequest.Model is empty", ErrInvalidConfig)
 	}
 	for mi, m := range req.Messages {
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 &&
+			m.Content.Text == nil && m.Content.Parts == nil {
+			continue
+		}
 		if err := validateContent(m.Content); err != nil {
 			return fmt.Errorf("messages[%d]: %w", mi, err)
 		}
 	}
+	if err := validateToolCallPairing(req.Messages); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateToolCallPairing enforces the OpenAI-spec wire contract:
+// every assistant message that carries `ToolCalls` MUST be followed
+// by `RoleTool` messages whose `ToolCallID` matches each
+// `ToolCalls[i].ID` (consumed in order, no reuse). A RoleTool
+// message not preceded by a matching assistant tool_call, or whose
+// `ToolCallID` matches no pending id, is also a violation.
+// ToolCallID-less RoleTool messages and assistant messages without
+// ToolCalls are inert for this check.
+//
+// The safety pass is the defense-in-depth gate so any producer that
+// violates the pairing contract is rejected loudly here rather than
+// silently malforming the upstream request.
+func validateToolCallPairing(messages []ChatMessage) error {
+	var pendingIDs []string
+	pendingAsstIdx := -1
+	flush := func() error {
+		if len(pendingIDs) == 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: messages[%d] assistant ToolCalls %v had no matching RoleTool messages following",
+			ErrOrphanToolCall, pendingAsstIdx, pendingIDs)
+	}
+	for mi, m := range messages {
+		switch m.Role {
+		case RoleAssistant:
+			if err := flush(); err != nil {
+				return err
+			}
+			if len(m.ToolCalls) > 0 {
+				pendingIDs = pendingIDs[:0]
+				for _, tc := range m.ToolCalls {
+					pendingIDs = append(pendingIDs, tc.ID)
+				}
+				pendingAsstIdx = mi
+			}
+		case RoleTool:
+			if m.ToolCallID == nil || *m.ToolCallID == "" {
+				return fmt.Errorf("%w: messages[%d] RoleTool message is missing ToolCallID",
+					ErrOrphanToolCall, mi)
+			}
+			tid := *m.ToolCallID
+			matched := -1
+			for i, pid := range pendingIDs {
+				if pid == tid {
+					matched = i
+					break
+				}
+			}
+			if matched < 0 {
+				return fmt.Errorf("%w: messages[%d] RoleTool ToolCallID=%q does not match any pending assistant tool_calls (pending=%v)",
+					ErrOrphanToolCall, mi, tid, pendingIDs)
+			}
+			pendingIDs = append(pendingIDs[:matched], pendingIDs[matched+1:]...)
+		default:
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return flush()
 }
 
 // validateContent enforces the Content sum-type invariant: exactly

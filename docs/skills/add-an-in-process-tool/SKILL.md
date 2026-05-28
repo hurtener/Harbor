@@ -82,6 +82,33 @@ func main() {
 
 The catalog is the planner's tool index. `Register` validates the spec (unique name, valid schema, sensible cost) at boot — a duplicate name or a broken `jsonschema` tag fails LOUDLY at startup.
 
+### Always-loaded vs deferred — picking a `loading_mode` (Phase 107c)
+
+After 107c the React planner runs on native provider tool-calling and the operator gets a per-tool knob: should this tool appear in the LLM's catalog EVERY turn (`always`) or stay hidden until the LLM searches for it (`deferred`)?
+
+- **`always` (default)** — the tool's `{name, description, args_schema}` lands in `req.Tools[]` on every turn. Best for high-value, frequently-used tools (your domain APIs, the everyday operations the agent is built around).
+- **`deferred`** — the tool is absent from `req.Tools[]` until the LLM finds it via the `tool_search` built-in meta-tool. Once discovered, the planner appends the name to `RunContext.DiscoveredTools` and the tool joins the NEXT turn's declaration. Best for large catalogs (50+ tools) where rendering every schema each turn blows the prompt budget — typically MCP-server-imported tools, niche utilities, and the long tail.
+
+Opt in via `harbor.yaml`:
+
+```yaml
+tools:
+  entries:
+    - name: weather.get_current
+      loading_mode: always       # the default — explicit here for clarity
+    - name: niche.compute_orbital_elements
+      loading_mode: deferred     # only loaded when tool_search surfaces it
+
+  built_in:
+    - tool_search                # the LLM's discovery surface for deferred tools
+    - tool_get                   # full schema for one named tool
+    - artifact_fetch             # recovery path for heavy outputs above the threshold
+```
+
+The two-turn rule is structural: turn N the LLM calls `tool_search`, turn N+1 the planner has appended the discovered tool to `Tools[]` and the LLM can call it. Same-turn race (search + call in one response) is naturally guarded by the AC-19 serialisation fallback — only the head of N>1 ToolCalls dispatches per turn.
+
+Operators who don't care about prompt-budget pressure leave every tool at the default `always` and never see the difference. Operators with sprawling catalogs flip the long tail to `deferred` and the LLM finds them on demand.
+
 ## 3. The concurrency contract — non-negotiable (D-025)
 
 In-process tools are compiled artifacts: built once, called many times, **across many concurrent runs**. They MUST be safe for concurrent reuse:

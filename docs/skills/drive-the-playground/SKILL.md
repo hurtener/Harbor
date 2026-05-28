@@ -68,8 +68,8 @@ The unified pause/resume primitive (RFC §6.10) is what makes this work — `Req
 
 The chat history surfaces several event types inline:
 
-- **Assistant text** — the streamed LLM response.
-- **Tool calls** — collapsed by default; click to expand the args/result panel.
+- **Assistant text** — the streamed LLM response. Starts from byte 0: Phase 107c moved the React planner onto native provider tool-calling, so `Content` deltas are the user-facing prose by structural construction (no JSON wrapper / no `{tool, args}` envelope buffering — the LLM no longer emits one). Chunks flow straight from bifrost's `OnContent` callback through to the Console with no extractor in the middle.
+- **Tool calls** — collapsed by default; click to expand the args/result panel. Tool calls arrive on their own structured channel (`resp.ToolCalls []ToolCallStructured`) and are rendered as cards rather than inlined into the prose stream.
 - **Thoughts/reasoning** — click the "Reasoning (N steps)" toggle on any agent bubble to see the model's intermediate thinking trace from the planner trajectory. The accordion shows the per-step reasoning the model produced; collapsed by default, one click expands it. Phase 107a.
 - **Pause events** — yellow inline cards with reason ("oauth_required", "approval_pending", "user_steer", etc.). The card has a Resume button when applicable.
 - **Errors** — red inline cards with the wrapped error chain. Click to expand stack/audit details.

@@ -503,6 +503,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		var stepReasoning string
 		rc.OnReasoning = func(s string) { stepReasoning = s }
 
+		// Capture the assistant's preamble prose (the model's
+		// natural-language `content` field on the response, emitted
+		// alongside any `tool_calls`) so the prompt builder can replay
+		// it on the next turn's assistant message and the model
+		// retains its narrative thread. Same closure shape as
+		// OnReasoning: per-run stack-local (D-025), nil-safe.
+		var stepAssistantContent string
+		rc.OnAssistantContent = func(s string) { stepAssistantContent = s }
+
 		// Phase 107c / D-167 (AC-19 + AC-19a) — wire the per-run
 		// native-tool-calling queue callback. The planner receives rc
 		// by VALUE, so any mutations the projector makes to
@@ -633,10 +642,11 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// an empty string on every prior step.
 			if spec.Base.Trajectory != nil {
 				spec.Base.Trajectory.Steps = append(spec.Base.Trajectory.Steps, planner.Step{
-					Action:         decision,
-					Observation:    observation,
-					LLMObservation: llmObservation,
-					ReasoningTrace: stepReasoning,
+					Action:            decision,
+					Observation:       observation,
+					LLMObservation:    llmObservation,
+					ReasoningTrace:    stepReasoning,
+					AssistantPreamble: stepAssistantContent,
 				})
 			}
 		}

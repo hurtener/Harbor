@@ -71,9 +71,32 @@ func translateRequest(provider bfschemas.ModelProvider, req llm.CompleteRequest)
 func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 	out := make([]bfschemas.ChatMessage, 0, len(in))
 	for i, m := range in {
-		content, err := translateContent(m.Content)
-		if err != nil {
-			return nil, fmt.Errorf("messages[%d]: %w", i, err)
+		// An assistant message with `ToolCalls` and no `Content` —
+		// the trajectory-replay shape for a prior CallTool step
+		// with no preamble — translates with no content field on
+		// the wire. OpenAI's spec requires `content: null` (not
+		// `""`) when `tool_calls` is present; translateContent
+		// would otherwise reject the nil/nil shape.
+		var (
+			content *bfschemas.ChatMessageContent
+			err     error
+		)
+		isAsstWithToolCalls := m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0
+		if isAsstWithToolCalls && m.Content.Text == nil && m.Content.Parts == nil {
+			content = nil
+		} else {
+			content, err = translateContent(m.Content)
+			if err != nil {
+				return nil, fmt.Errorf("messages[%d]: %w", i, err)
+			}
+		}
+		// Defense in depth: when the renderer set Content.Text to a
+		// pointer to "", flatten that to nil on the wire. OpenAI
+		// rejects `content: ""` with tool_calls present.
+		if isAsstWithToolCalls && content != nil &&
+			content.ContentStr != nil && *content.ContentStr == "" &&
+			len(content.ContentBlocks) == 0 {
+			content = nil
 		}
 		// Phase 107c / D-167 — native tool-result routing.
 		//
@@ -657,19 +680,23 @@ func translateToolChoice(tc string) bfschemas.ChatToolChoice {
 }
 
 // translateAssistantToolCalls projects Harbor's `[]llm.ToolCallStructured`
-// onto bifrost's `[]ChatAssistantMessageToolCall`, which the wire format
-// renders as the assistant message's `tool_calls` block. Phase 107c
-// (D-167) — the trajectory renderer uses this to replay prior planner
-// CallTool emissions into the next turn's thread.
+// onto bifrost's `[]ChatAssistantMessageToolCall`, which the wire
+// format renders as the assistant message's `tool_calls` block.
 //
-// `Index` is set sequentially (provider-side parsers accept either the
-// sequential or the original index; sequential keeps the replay
-// deterministic). `Type` is left nil — bifrost defaults to "function"
-// at provider-translation time, the only type V1.3 supports.
+// `Type` is set to "function" explicitly. OpenAI's wire spec for
+// chat-completions `tool_calls` requires `"type": "function"` on
+// every entry; bifrost's struct tags the field `omitempty`, so a
+// nil pointer drops it from the wire and the upstream provider
+// either rejects the request or silently malforms it.
+//
+// `Index` is set sequentially. Provider-side parsers accept either
+// the sequential or the original index; sequential keeps the
+// replay deterministic.
 func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAssistantMessageToolCall {
 	if len(in) == 0 {
 		return nil
 	}
+	functionType := "function"
 	out := make([]bfschemas.ChatAssistantMessageToolCall, 0, len(in))
 	for i, tc := range in {
 		var id *string
@@ -688,6 +715,7 @@ func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAs
 		}
 		out = append(out, bfschemas.ChatAssistantMessageToolCall{
 			Index: uint16(i), //nolint:gosec // i is bounded by tool-call count per turn (caller-side guards keep it well within uint16)
+			Type:  &functionType,
 			ID:    id,
 			Function: bfschemas.ChatAssistantMessageToolCallFunction{
 				Name:      name,
