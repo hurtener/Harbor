@@ -77,7 +77,7 @@ func TestDoExport_CanonicalSectionOrder(t *testing.T) {
 	if stepsIdx < 0 || preIdx < 0 || failIdx < 0 {
 		t.Fatalf("missing one of the canonical sections in %q", s)
 	}
-	if !(stepsIdx < preIdx && preIdx < failIdx) {
+	if stepsIdx >= preIdx || preIdx >= failIdx {
 		t.Errorf("section order wrong: Steps@%d Pre@%d Fail@%d", stepsIdx, preIdx, failIdx)
 	}
 }

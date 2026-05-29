@@ -660,7 +660,7 @@ func TestE2E_Wave7a_Concurrent_MultiTenant_ToolsAndMemory(t *testing.T) {
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 drain:
-	for !(gotInvoked && gotCompleted) {
+	for !gotInvoked || !gotCompleted {
 		select {
 		case ev, ok := <-sub.Events():
 			if !ok {

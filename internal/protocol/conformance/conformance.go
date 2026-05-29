@@ -219,7 +219,7 @@ func buildDefaultStack(t *testing.T, testdataRoot string) *Stack {
 	// `cleanup` runs every prior Close in LIFO order. The
 	// happy-path return resets cleanup to nil so the t.Helper
 	// idiom does not double-close.
-	var rollback []func()
+	rollback := make([]func(), 0, 3)
 	cleanup := func() {
 		for i := len(rollback) - 1; i >= 0; i-- {
 			rollback[i]()

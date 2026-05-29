@@ -5,13 +5,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -68,9 +67,11 @@ func TestDefaultBuilder_EmitsSystemPromptAndCatalog(t *testing.T) {
 	}
 }
 
-// TestDefaultBuilder_FallsBackToDefaultSystemPrompt asserts that an
+// TestBuildSystemContent_FallsBackToDefaultSystemPrompt asserts that an
 // empty system prompt argument substitutes the canonical default —
-// i.e. the rendered twelve-section structured prompt (Phase 83a).
+// i.e. the rendered ten-section structured prompt (Phase 107c — D-167
+// deletes <output_format>, <action_schema>, <finishing>; adds
+// <tool_discovery>).
 func TestDefaultBuilder_FallsBackToDefaultSystemPrompt(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{Goal: "g"}
@@ -80,7 +81,7 @@ func TestDefaultBuilder_FallsBackToDefaultSystemPrompt(t *testing.T) {
 	}
 	body := *req.Messages[0].Content.Text
 	// The structured default opens with the <identity> section.
-	if !strings.Contains(body, "<identity>") || !strings.Contains(body, "<action_schema>") {
+	if !strings.Contains(body, "<identity>") || !strings.Contains(body, "<tool_discovery>") {
 		t.Errorf("structured default system prompt not used. Body: %s", body)
 	}
 }
@@ -117,9 +118,12 @@ func TestDefaultBuilder_UserMessagePrefersGoalOverQuery(t *testing.T) {
 }
 
 // TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs
-// asserts the brief 07 §5 shape: each completed Step renders as
-// [assistant: action JSON] + [user: observation].
-func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T) {
+// asserts the Phase 107c (D-167) native tool-calling replay: each
+// completed CallTool Step renders as an assistant message carrying a
+// `ToolCalls` block + a RoleTool message carrying the matching
+// `ToolCallID` and the observation as Content. The brief-07 user-role
+// observation string convention is REPLACED on the native path.
+func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantToolPairs(t *testing.T) {
 	t.Parallel()
 	rc := planner.RunContext{
 		Goal: "find stuff",
@@ -127,8 +131,9 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 			Steps: []planner.Step{
 				{
 					Action: planner.CallTool{
-						Tool: "search",
-						Args: json.RawMessage(`{"q":"foo"}`),
+						Tool:   "search",
+						Args:   json.RawMessage(`{"q":"foo"}`),
+						CallID: "call_aaa",
 					},
 					LLMObservation: "found 3 hits",
 				},
@@ -140,8 +145,9 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Expect: system, user (goal), assistant (step1), user (obs1),
-	// assistant (step2), user (obs2) → 6 messages.
+	// Expect: system, user (goal), assistant (step1 ToolCalls),
+	// tool (step1 ToolCallID + observation), assistant (step2 ToolCalls),
+	// tool (step2 ToolCallID + observation) → 6 messages.
 	if len(req.Messages) != 6 {
 		t.Fatalf("len(Messages) = %d, want 6 — messages: %+v", len(req.Messages), summariseRoles(req.Messages))
 	}
@@ -149,20 +155,111 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantUserPairs(t *testing.T)
 		llm.RoleSystem,
 		llm.RoleUser,
 		llm.RoleAssistant,
-		llm.RoleUser,
+		llm.RoleTool,
 		llm.RoleAssistant,
-		llm.RoleUser,
+		llm.RoleTool,
 	}
 	for i, w := range wantRoles {
 		if req.Messages[i].Role != w {
 			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
 		}
 	}
-	if !strings.Contains(*req.Messages[2].Content.Text, `"tool":"search"`) {
-		t.Errorf("step-1 assistant message missing tool envelope: %s", *req.Messages[2].Content.Text)
+	// Step 1 assistant carries the provider-supplied call id verbatim.
+	asst1 := req.Messages[2]
+	if len(asst1.ToolCalls) != 1 || asst1.ToolCalls[0].ID != "call_aaa" || asst1.ToolCalls[0].Name != "search" {
+		t.Errorf("step-1 assistant ToolCalls = %+v, want [{ID: call_aaa, Name: search}]", asst1.ToolCalls)
 	}
-	if !strings.Contains(*req.Messages[3].Content.Text, "found 3 hits") {
-		t.Errorf("step-1 user observation missing: %s", *req.Messages[3].Content.Text)
+	tool1 := req.Messages[3]
+	if tool1.ToolCallID == nil || *tool1.ToolCallID != "call_aaa" {
+		t.Errorf("step-1 tool ToolCallID = %v, want call_aaa", tool1.ToolCallID)
+	}
+	if !strings.Contains(*tool1.Content.Text, "found 3 hits") {
+		t.Errorf("step-1 tool observation missing: %s", *tool1.Content.Text)
+	}
+	// Step 2 has no provider CallID — the renderer synthesises
+	// `react.callid.<idx>` and stamps it on both messages.
+	asst2 := req.Messages[4]
+	if len(asst2.ToolCalls) != 1 || asst2.ToolCalls[0].ID != "react.callid.1" || asst2.ToolCalls[0].Name != "summarize" {
+		t.Errorf("step-2 assistant ToolCalls = %+v, want synthetic id react.callid.1", asst2.ToolCalls)
+	}
+	tool2 := req.Messages[5]
+	if tool2.ToolCallID == nil || *tool2.ToolCallID != "react.callid.1" {
+		t.Errorf("step-2 tool ToolCallID = %v, want react.callid.1", tool2.ToolCallID)
+	}
+}
+
+// TestDefaultBuilder_RendersSpawnAwaitStepsAsNativeToolPairs — Phase
+// 107e (D-170): a SpawnTask / AwaitTask trajectory step replays as a
+// native tool_call (`_spawn_task` / `_await_task`) + a matching RoleTool
+// message, consistent with the CallTool path — NOT the legacy
+// `{"action":"planner.SpawnTask"}` text marker that dropped the args.
+// The spawn's args (the sub-goal query) survive the round-trip so the
+// model can correlate a returned task_id with what it spawned.
+func TestDefaultBuilder_RendersSpawnAwaitStepsAsNativeToolPairs(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "coordinate sub-goals",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{
+				{
+					Action: planner.SpawnTask{
+						Kind: tasks.KindBackground,
+						Spec: planner.SpawnSpec{Query: "research sub-question A"},
+					},
+					LLMObservation: map[string]any{"task_id": "task-A", "kind": "background", "status": "spawned"},
+				},
+				{
+					Action:         planner.AwaitTask{TaskID: tasks.TaskID("task-A")},
+					LLMObservation: map[string]any{"task_id": "task-A", "status": "complete", "result": map[string]any{"answer": "A done"}},
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	// system, user (goal), assistant (spawn tool_call), tool (spawn obs),
+	// assistant (await tool_call), tool (await obs) → 6 messages.
+	wantRoles := []llm.Role{
+		llm.RoleSystem, llm.RoleUser,
+		llm.RoleAssistant, llm.RoleTool,
+		llm.RoleAssistant, llm.RoleTool,
+	}
+	if len(req.Messages) != len(wantRoles) {
+		t.Fatalf("len(Messages) = %d, want %d — roles: %+v", len(req.Messages), len(wantRoles), summariseRoles(req.Messages))
+	}
+	for i, w := range wantRoles {
+		if req.Messages[i].Role != w {
+			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
+		}
+	}
+
+	// Spawn step: assistant emits a native _spawn_task tool_call whose
+	// args preserve the sub-goal query; the RoleTool carries the task_id.
+	spawnAsst := req.Messages[2]
+	if len(spawnAsst.ToolCalls) != 1 || spawnAsst.ToolCalls[0].Name != SpawnTaskToolName {
+		t.Fatalf("spawn assistant ToolCalls = %+v, want one %q call", spawnAsst.ToolCalls, SpawnTaskToolName)
+	}
+	if !strings.Contains(string(spawnAsst.ToolCalls[0].Args), "research sub-question A") {
+		t.Errorf("spawn replay dropped the sub-goal query: args = %s", spawnAsst.ToolCalls[0].Args)
+	}
+	spawnTool := req.Messages[3]
+	if spawnTool.ToolCallID == nil || *spawnTool.ToolCallID != spawnAsst.ToolCalls[0].ID {
+		t.Errorf("spawn tool ToolCallID = %v, want match to assistant id %q", spawnTool.ToolCallID, spawnAsst.ToolCalls[0].ID)
+	}
+	if spawnTool.Content.Text == nil || !strings.Contains(*spawnTool.Content.Text, "task-A") {
+		t.Errorf("spawn observation missing task_id: %v", spawnTool.Content.Text)
+	}
+
+	// Await step: native _await_task tool_call + matching RoleTool.
+	awaitAsst := req.Messages[4]
+	if len(awaitAsst.ToolCalls) != 1 || awaitAsst.ToolCalls[0].Name != AwaitTaskToolName {
+		t.Fatalf("await assistant ToolCalls = %+v, want one %q call", awaitAsst.ToolCalls, AwaitTaskToolName)
+	}
+	if !strings.Contains(string(awaitAsst.ToolCalls[0].Args), "task-A") {
+		t.Errorf("await replay dropped the task_id: args = %s", awaitAsst.ToolCalls[0].Args)
+	}
+	awaitTool := req.Messages[5]
+	if awaitTool.ToolCallID == nil || *awaitTool.ToolCallID != awaitAsst.ToolCalls[0].ID {
+		t.Errorf("await tool ToolCallID = %v, want match to assistant id %q", awaitTool.ToolCallID, awaitAsst.ToolCalls[0].ID)
 	}
 }
 
@@ -185,10 +282,10 @@ func TestDefaultBuilder_PrefersLLMObservationOverRawObservation(t *testing.T) {
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Last message is the observation user-message.
+	// Last message is the RoleTool tool-result message (Phase 107c).
 	last := req.Messages[len(req.Messages)-1]
-	if last.Role != llm.RoleUser {
-		t.Fatalf("last role = %q, want user", last.Role)
+	if last.Role != llm.RoleTool {
+		t.Fatalf("last role = %q, want tool", last.Role)
 	}
 	body := *last.Content.Text
 	if !strings.Contains(body, "compressed text") {
@@ -223,11 +320,12 @@ func TestDefaultBuilder_RendersErrorAndFailureFirst(t *testing.T) {
 		},
 	}
 	req := defaultBuilder{}.Build(rc, "sys")
-	// Step1 obs at index 3, step2 obs at index 5.
-	if !strings.Contains(*req.Messages[3].Content.Text, "Observation (error): boom") {
+	// Step1 obs at index 3, step2 obs at index 5 — RoleTool messages
+	// under the Phase 107c native renderer.
+	if !strings.Contains(*req.Messages[3].Content.Text, "Tool error: boom") {
 		t.Errorf("step1 obs missing error: %s", *req.Messages[3].Content.Text)
 	}
-	if !strings.Contains(*req.Messages[5].Content.Text, "Observation (failure): schema_repair_exhausted") {
+	if !strings.Contains(*req.Messages[5].Content.Text, "Tool failure: schema_repair_exhausted") {
 		t.Errorf("step2 obs missing failure: %s", *req.Messages[5].Content.Text)
 	}
 }
@@ -457,14 +555,16 @@ func TestRenderAny_HandlesShapesSafely(t *testing.T) {
 // Phase 83a — twelve-section structured prompt (brief 13 §2.1).
 // ----------------------------------------------------------------------------
 
-// the twelve XML section tags in their fixed brief-13 §2.1 order.
+// The ten XML section tags in their Phase 107c (D-167) fixed order.
+// `<output_format>`, `<action_schema>`, `<finishing>`, and
+// `<parallel_execution>` are deleted; `<tool_discovery>` +
+// `<heavy_results>` replace them. `<available_tools>` renders
+// name+description only — schemas live in req.Tools[].
 var section83aTags = []string{
 	"identity",
-	"output_format",
-	"action_schema",
-	"finishing",
+	"tool_discovery",
+	"heavy_results",
 	"tool_usage",
-	"parallel_execution",
 	"reasoning",
 	"tone",
 	"error_handling",
@@ -484,15 +584,16 @@ func renderDefaultSystem(t *testing.T, b defaultBuilder, rc planner.RunContext) 
 	return *req.Messages[0].Content.Text
 }
 
-// TestBuildSystemContent_TenSectionsAlwaysPresentInOrder asserts the
-// ten always-on sections render exactly once each, in the brief 13
-// §2.1 fixed order, separated by a blank line.
-func TestBuildSystemContent_TenSectionsAlwaysPresentInOrder(t *testing.T) {
+// TestBuildSystemContent_NineSectionsAlwaysPresentInOrder asserts the
+// eight always-on sections render exactly once each, in the Phase
+// 107c (D-167) fixed order, separated by a blank line. The remaining
+// two (additional_guidance, planning_constraints) are conditional.
+func TestBuildSystemContent_NineSectionsAlwaysPresentInOrder(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
 
-	// The ten always-on sections (11 + 12 are conditional).
-	alwaysOn := section83aTags[:10]
+	// The eight always-on sections (9 + 10 are conditional).
+	alwaysOn := section83aTags[:8]
 	lastIdx := -1
 	for _, tag := range alwaysOn {
 		opener := "<" + tag + ">"
@@ -515,7 +616,7 @@ func TestBuildSystemContent_TenSectionsAlwaysPresentInOrder(t *testing.T) {
 func TestBuildSystemContent_SectionsSeparatedByBlankLine(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
-	if !strings.Contains(body, "</identity>\n\n<output_format>") {
+	if !strings.Contains(body, "</identity>\n\n<tool_discovery>") {
 		t.Errorf("sections not separated by a blank line. Body:\n%s", body)
 	}
 }
@@ -530,6 +631,46 @@ func TestBuildSystemContent_OmitsEmptyOptionalSections(t *testing.T) {
 	for _, tag := range []string{"additional_guidance", "planning_constraints"} {
 		if strings.Contains(body, "<"+tag+">") {
 			t.Errorf("empty optional section <%s> should be omitted, but it is present", tag)
+		}
+	}
+}
+
+// TestBuildSystemContent_HeavyResultsTeachesArtifactFetch asserts the
+// always-on <heavy_results> section names `artifact_fetch` + the
+// reference-handle shape + the re-call anti-pattern pre-emption, and
+// does NOT leak wrapper-shape terminology (which would prime the
+// model on the internal projection).
+func TestBuildSystemContent_HeavyResultsTeachesArtifactFetch(t *testing.T) {
+	t.Parallel()
+	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
+
+	start := strings.Index(body, "<heavy_results>")
+	end := strings.Index(body, "</heavy_results>")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("<heavy_results> section missing or malformed. Body:\n%s", body)
+	}
+	section := body[start:end]
+
+	// The section MUST name the meta-tool, the reference-handle shape,
+	// and the re-call anti-pattern pre-emption.
+	for _, want := range []string{
+		"artifact_fetch",
+		`ref="`,
+		"Re-calling the upstream tool",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("<heavy_results> missing %q. Section:\n%s", want, section)
+		}
+	}
+
+	// No wrapper-shape terminology leaks into the section copy.
+	for _, forbidden := range []string{
+		`"artifact_ref"`,
+		`"preview"`,
+		"ArtifactStub",
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Errorf("<heavy_results> leaks wrapper terminology %q. Section:\n%s", forbidden, section)
 		}
 	}
 }
@@ -600,19 +741,28 @@ func TestBuildSystemContent_NoReasoningFieldInActionSchema(t *testing.T) {
 	}
 }
 
-// TestBuildSystemContent_ToneCarriesCriticalClamp asserts the <tone>
-// section ports the predecessor's CRITICAL clamp verbatim (brief 13
-// §2.6 — both lines, case-sensitive).
-func TestBuildSystemContent_ToneCarriesCriticalClamp(t *testing.T) {
+// TestBuildSystemContent_ToneIntermediateStepClamp asserts the <tone>
+// section's intermediate-step clamp matches the Phase 107c native
+// tool-calling contract. The legacy "produce ONLY the JSON action
+// object" + "thought/reasoning in the JSON" clamps were retired in
+// Phase 107c (D-167 AC-20) — the new wire shape is native ToolCalls,
+// not a JSON action envelope. The "Emit only tool calls" sibling
+// bullet was also dropped: in native tool-calling, tool_calls and
+// content live in separate channels and don't need a prompt clamp
+// to keep them separate. The reasoning-channel guidance stays
+// because Anthropic's `thinking` channel exists separately and the
+// model shouldn't echo it.
+func TestBuildSystemContent_ToneIntermediateStepClamp(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
-	clampA := "During intermediate steps, produce ONLY the JSON action object. Do not add commentary."
-	clampB := "Do not include a 'thought' or 'reasoning' field in the JSON."
-	if !strings.Contains(body, clampA) {
-		t.Errorf("<tone> missing CRITICAL clamp line A: %q", clampA)
+	if strings.Contains(body, "Emit only tool calls — keep any narration to the final answer turn.") {
+		t.Errorf("<tone> regressed: re-introduced the 'Emit only tool calls' bullet")
 	}
-	if !strings.Contains(body, clampB) {
-		t.Errorf("<tone> missing CRITICAL clamp line B: %q", clampB)
+	if strings.Contains(body, "produce ONLY the JSON action object") {
+		t.Errorf("<tone> still references the deleted JSON-action clamp — Phase 107c retired it")
+	}
+	if !strings.Contains(body, "Internal reasoning is captured automatically") {
+		t.Errorf("<tone> missing intermediate-step reasoning guidance")
 	}
 }
 
@@ -633,10 +783,13 @@ func TestBuildSystemContent_FinishingCarriesOnlyAnswer(t *testing.T) {
 	}
 }
 
-// TestBuildSystemContent_ErrorHandlingNoRequiresFollowup asserts the
-// <error_handling> block guides clarification via args.answer, not a
-// `requires_followup` flag (acceptance criterion).
-func TestBuildSystemContent_ErrorHandlingNoRequiresFollowup(t *testing.T) {
+// TestBuildSystemContent_ErrorHandlingNoLegacyShape asserts the
+// <error_handling> block (a) avoids the legacy `requires_followup`
+// schema field that brief 13 §5 deleted, AND (b) avoids the deleted
+// `_finish` / `args.answer` discriminator pair that Phase 107c (D-167
+// AC-20) retired. Operators clarify via the terminal answer message
+// under the native tool-calling contract.
+func TestBuildSystemContent_ErrorHandlingNoLegacyShape(t *testing.T) {
 	t.Parallel()
 	body := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{Goal: "g"})
 	// Isolate the <error_handling> section body.
@@ -647,10 +800,18 @@ func TestBuildSystemContent_ErrorHandlingNoRequiresFollowup(t *testing.T) {
 	}
 	section := body[start:end]
 	if strings.Contains(section, "requires_followup") {
-		t.Errorf("<error_handling> references requires_followup — must guide via args.answer instead")
+		t.Errorf("<error_handling> references requires_followup — brief 13 §5 deleted the field")
 	}
-	if !strings.Contains(section, "args.answer") {
-		t.Errorf("<error_handling> should guide clarification via args.answer")
+	// The deleted Phase 107c shape — operator should guide via the
+	// terminal answer message, NOT a JSON args.answer field.
+	if strings.Contains(section, "args.answer") {
+		t.Errorf("<error_handling> still references args.answer — Phase 107c AC-20 retired the field; use 'final answer' wording")
+	}
+	if strings.Contains(section, "_finish") {
+		t.Errorf("<error_handling> still references _finish — Phase 107c AC-20 retired the discriminator")
+	}
+	if !strings.Contains(section, "final answer") {
+		t.Errorf("<error_handling> should guide clarification via the user-visible final answer")
 	}
 }
 
@@ -723,29 +884,39 @@ func TestBuildSystemContent_NoUnresolvedTemplateMarkers(t *testing.T) {
 func TestDefaultBuilder_GoldenDefaultPrompt(t *testing.T) {
 	t.Parallel()
 	const goldenPath = "testdata/golden_default_prompt.txt"
-	want, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden fixture: %v", err)
-	}
 	got := renderDefaultSystem(t, defaultBuilder{}, planner.RunContext{})
 	// Normalise the volatile date line to the fixture's sentinel.
 	dateRE := regexp.MustCompile(`Current date: \d{4}-\d{2}-\d{2}`)
 	gotNorm := dateRE.ReplaceAllString(got, "Current date: 2025-01-01")
+	if os.Getenv("HARBOR_UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, []byte(gotNorm), 0o644); err != nil {
+			t.Fatalf("update golden fixture: %v", err)
+		}
+		t.Logf("regenerated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
 	if gotNorm != string(want) {
 		t.Errorf("rendered default prompt diverged from %s.\n"+
-			"If this change is intentional, regenerate the fixture.\n"+
+			"If this change is intentional, regenerate the fixture with "+
+			"HARBOR_UPDATE_GOLDEN=1 go test ./internal/planner/react/...\n"+
 			"--- got ---\n%s\n--- want ---\n%s", goldenPath, gotNorm, string(want))
 	}
 }
 
-// --- Phase 83b — tool schema injection (D-144) ----------------------
+// --- Phase 83b — tool schema injection (D-144) — NARROWED by
+// Phase 107c (D-167) to name+description only; schemas live in the
+// provider's native Tools[] declaration.
+// -------------------------------------------------------------------
 
 // fixtureCatalog returns the canonical two-tool catalog the Phase 83b
-// golden fixture documents: one tool with a non-trivial args_schema
-// plus curated examples, one bare tool with neither. The bare tool
-// proves the no-examples / no-schema path renders without an
-// `examples:` or `args_schema:` line — backward-compatible with
-// pre-83b registrations.
+// golden fixture documents. Phase 107c (D-167) narrows the prompt-side
+// rendering to name+description only — args_schema, side_effects, and
+// examples are suppressed (they live in req.Tools[]). The fixture still
+// carries the full Tool data so tests can assert the narrow rendering.
 func fixtureCatalog() *stubCatalog {
 	return &stubCatalog{tools: []tools.Tool{
 		{
@@ -770,162 +941,56 @@ func fixtureCatalog() *stubCatalog {
 		{
 			Name:        "ping",
 			Description: "Health-check the upstream service.",
-			// No ArgsSchema, no Examples — the pre-83b bare shape.
 		},
 	}}
 }
 
-// TestRenderTool_TagRankingOrdersExamples asserts examples render in
-// `minimal > common > edge-case` order regardless of registration
-// order (acceptance criterion).
-func TestRenderTool_TagRankingOrdersExamples(t *testing.T) {
+// TestRenderToolNameDesc_RendersNameAndDescriptionOnly asserts
+// Phase 107c (D-167) narrows the prompt-side tool block to name +
+// description only — no args_schema, side_effects, or examples.
+func TestRenderToolNameDesc_RendersNameAndDescriptionOnly(t *testing.T) {
 	t.Parallel()
-	tool := tools.Tool{
-		Name:        "t",
-		ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
-		SideEffects: tools.SideEffectPure,
-		Examples: []tools.ToolExample{
-			{Description: "edge", Args: map[string]any{"x": "e"}, Tags: []string{"edge-case"}},
-			{Description: "common", Args: map[string]any{"x": "c"}, Tags: []string{"common"}},
-			{Description: "minimal", Args: map[string]any{"x": "m"}, Tags: []string{"minimal"}},
-		},
+	out := renderToolNameDesc(tools.Tool{
+		Name:        "search",
+		Description: "find things",
+		ArgsSchema:  json.RawMessage(`{"type":"object"}`),
+		SideEffects: tools.SideEffectRead,
+		Examples:    []tools.ToolExample{{Description: "ex", Args: map[string]any{"q": "x"}}},
+	})
+	if !strings.Contains(out, "search") || !strings.Contains(out, "find things") {
+		t.Errorf("tool block missing name/description: %s", out)
 	}
-	out := renderTool(tool, toolRenderConfig{maxExamples: 3})
-	mi := strings.Index(out, "minimal")
-	ci := strings.Index(out, "common")
-	ei := strings.Index(out, "edge")
-	if !(mi < ci && ci < ei) || mi < 0 {
-		t.Errorf("examples not in minimal<common<edge order. Output:\n%s", out)
+	if strings.Contains(out, "args_schema") || strings.Contains(out, "side_effects") || strings.Contains(out, "examples:") {
+		t.Errorf("Phase 107c: tool block leaks schema/side_effects/examples. Output:\n%s", out)
 	}
 }
 
-// TestRenderTool_LimitKeepsTopRanked asserts that with maxExamples=1
-// only the highest-priority (minimal) example renders.
-func TestRenderTool_LimitKeepsTopRanked(t *testing.T) {
+// TestRenderToolNameDesc_NoDescriptionRendersNameOnly asserts a tool
+// without description renders name only.
+func TestRenderToolNameDesc_NoDescriptionRendersNameOnly(t *testing.T) {
 	t.Parallel()
-	tool := tools.Tool{
-		Name:        "t",
-		ArgsSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
-		SideEffects: tools.SideEffectPure,
-		Examples: []tools.ToolExample{
-			{Description: "common", Args: map[string]any{"x": "c"}, Tags: []string{"common"}},
-			{Description: "minimal", Args: map[string]any{"x": "m"}, Tags: []string{"minimal"}},
-		},
-	}
-	out := renderTool(tool, toolRenderConfig{maxExamples: 1})
-	if !strings.Contains(out, "minimal") || strings.Contains(out, "common") {
-		t.Errorf("maxExamples=1 should keep only the minimal example. Output:\n%s", out)
-	}
-	if strings.Count(out, "    - ") != 1 {
-		t.Errorf("expected exactly 1 rendered example line. Output:\n%s", out)
+	out := renderToolNameDesc(tools.Tool{Name: "ping"})
+	want := "- ping\n"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
 	}
 }
 
-// TestRenderTool_NoExamplesOmitsExamplesLine asserts a tool without
-// examples renders no `examples:` line at all — not `examples: []`
-// (acceptance criterion).
-func TestRenderTool_NoExamplesOmitsExamplesLine(t *testing.T) {
-	t.Parallel()
-	out := renderTool(tools.Tool{Name: "ping", Description: "health check"},
-		toolRenderConfig{maxExamples: 3})
-	if strings.Contains(out, "examples:") {
-		t.Errorf("no-examples tool rendered an examples: line. Output:\n%s", out)
-	}
-	if strings.Contains(out, "args_schema:") {
-		t.Errorf("no-schema tool rendered an args_schema: line. Output:\n%s", out)
-	}
-	// side_effects always renders, defaulting to pure.
-	if !strings.Contains(out, "side_effects: pure") {
-		t.Errorf("no-side-effects tool should default to pure. Output:\n%s", out)
-	}
-}
-
-// TestRenderTool_SchemaRendersCompactSingleLine asserts the args_schema
-// renders as compact (whitespace-free) JSON on one line.
-func TestRenderTool_SchemaRendersCompactSingleLine(t *testing.T) {
-	t.Parallel()
-	tool := tools.Tool{
-		Name: "t",
-		ArgsSchema: json.RawMessage(
-			"{\n  \"type\": \"object\",\n  \"properties\": { \"a\": { \"type\": \"string\" } }\n}"),
-		SideEffects: tools.SideEffectPure,
-	}
-	out := renderTool(tool, toolRenderConfig{maxExamples: 3})
-	var schemaLine string
-	for _, ln := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "args_schema:") {
-			schemaLine = ln
-		}
-	}
-	if schemaLine == "" {
-		t.Fatalf("no args_schema line rendered. Output:\n%s", out)
-	}
-	payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(schemaLine), "args_schema:"))
-	if strings.ContainsAny(payload, "\n") {
-		t.Errorf("args_schema JSON spans multiple lines: %q", payload)
-	}
-	if strings.Contains(payload, ": ") || strings.Contains(payload, ", ") {
-		t.Errorf("args_schema JSON is not compact (has insignificant whitespace): %q", payload)
-	}
-}
-
-// TestRenderAvailableTools_DefaultExampleCap asserts a zero maxExamples
-// resolves to defaultMaxToolExamples rather than rendering no examples.
-func TestRenderAvailableTools_DefaultExampleCap(t *testing.T) {
+// TestRenderAvailableToolsSection_NameDescOnly asserts Phase 107c
+// (D-167) — the section renders name+description per tool, no
+// schemas/side_effects/examples.
+func TestRenderAvailableToolsSection_NameDescOnly(t *testing.T) {
 	t.Parallel()
 	body := renderAvailableToolsSection(planner.RunContext{Catalog: fixtureCatalog()}, 0)
-	if !strings.Contains(body, "examples:") {
-		t.Errorf("zero cap should resolve to default (3), not suppress examples. Body:\n%s", body)
+	for _, want := range []string{"search", "Search the knowledge base", "ping", "Health-check"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("<available_tools> missing %q. Body:\n%s", want, body)
+		}
 	}
-}
-
-// TestDefaultBuilder_GoldenToolsPrompt is the fixture-driven golden for
-// the enriched <available_tools> rendering (acceptance criterion). The
-// fixture is the normative spec for the per-tool block shape.
-func TestDefaultBuilder_GoldenToolsPrompt(t *testing.T) {
-	t.Parallel()
-	const goldenPath = "testdata/golden_tools_prompt.txt"
-	want, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden fixture: %v", err)
-	}
-	got := renderAvailableToolsSection(planner.RunContext{Catalog: fixtureCatalog()}, 3)
-	if got != string(want) {
-		t.Errorf("rendered <available_tools> diverged from %s.\n"+
-			"If this change is intentional, regenerate the fixture.\n"+
-			"--- got ---\n%s\n--- want ---\n%s", goldenPath, got, string(want))
-	}
-}
-
-// TestRenderTool_ConcurrentReuse_D025 is the Phase 83b (D-144)
-// concurrent-reuse gate for the tool-catalog renderer. renderTool and
-// renderAvailableToolsSection are pure functions — no shared state, no
-// receiver — so N≥100 concurrent invocations against the SAME fixture
-// catalog produce byte-identical output under -race: no data races,
-// no cross-call bleed. N=128 (above the D-025 floor of 100).
-func TestRenderTool_ConcurrentReuse_D025(t *testing.T) {
-	t.Parallel()
-	const N = 128
-	cat := fixtureCatalog()
-	want := renderAvailableToolsSection(planner.RunContext{Catalog: cat}, 3)
-
-	var (
-		wg       sync.WaitGroup
-		mismatch int64
-	)
-	wg.Add(N)
-	for range N {
-		go func() {
-			defer wg.Done()
-			got := renderAvailableToolsSection(planner.RunContext{Catalog: cat}, 3)
-			if got != want {
-				atomic.AddInt64(&mismatch, 1)
-			}
-		}()
-	}
-	wg.Wait()
-	if mismatch != 0 {
-		t.Errorf("D-025: %d concurrent catalog renders diverged from the reference", mismatch)
+	for _, forbidden := range []string{"args_schema", "side_effects", "examples:"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("Phase 107c: <available_tools> leaks %q (should render name+desc only). Body:\n%s", forbidden, body)
+		}
 	}
 }
 
@@ -939,5 +1004,635 @@ func TestWithSystemPromptExtra_FlowsToAdditionalGuidance(t *testing.T) {
 	body := renderDefaultSystem(t, b, planner.RunContext{Goal: "g"})
 	if !strings.Contains(body, "<additional_guidance>\ndomain rule: always cite sources\n</additional_guidance>") {
 		t.Errorf("WithSystemPromptExtra content not in <additional_guidance>. Body:\n%s", body)
+	}
+}
+
+// TestRenderNativeStepPair_AssistantPreambleReplayed asserts that
+// the assistant message on trajectory replay carries the model's
+// prior `AssistantPreamble` prose as its content, preserving the
+// narrative thread across steps. The wiring: planner stamps
+// `Step.AssistantPreamble` from `llm.CompleteResponse.Content`,
+// runloop appends it on the Step, renderer reads it here.
+func TestRenderNativeStepPair_AssistantPreambleReplayed(t *testing.T) {
+	t.Parallel()
+
+	step := planner.Step{
+		Action: planner.CallTool{
+			Tool:   "youtube_get_metadata",
+			Args:   json.RawMessage(`{"url":"https://example.com"}`),
+			CallID: "call_abc",
+		},
+		AssistantPreamble: "I'll fetch the metadata for that YouTube video to get its duration.",
+	}
+	asst, _, native := renderNativeStepPair(step, planner.ReasoningReplayNever, 0)
+	if !native {
+		t.Fatal("renderNativeStepPair returned native=false for a CallTool step")
+	}
+	if asst.Content.Text == nil {
+		t.Fatal("assistant message has nil Content.Text")
+	}
+	got := *asst.Content.Text
+	if got != "I'll fetch the metadata for that YouTube video to get its duration." {
+		t.Errorf("assistant content lost preamble. got=%q", got)
+	}
+	if len(asst.ToolCalls) != 1 || asst.ToolCalls[0].Name != "youtube_get_metadata" {
+		t.Errorf("tool_call lost or mangled: %+v", asst.ToolCalls)
+	}
+}
+
+// TestRenderNativeStepPair_EmptyPreambleEmitsNoContent asserts that
+// when the model emitted a tool_call with no preamble, the renderer
+// produces an assistant message with zero-value Content (both Text
+// and Parts nil) — NOT a pointer-to-empty-string. The bifrost
+// translator emits `content: null` on the wire from this shape, per
+// OpenAI's spec (which rejects `content: ""` with tool_calls
+// present).
+func TestRenderNativeStepPair_EmptyPreambleEmitsNoContent(t *testing.T) {
+	t.Parallel()
+
+	step := planner.Step{
+		Action: planner.CallTool{
+			Tool:   "youtube_get_metadata",
+			Args:   json.RawMessage(`{"url":"https://example.com"}`),
+			CallID: "call_xyz",
+		},
+		// AssistantPreamble intentionally empty.
+	}
+	asst, _, native := renderNativeStepPair(step, planner.ReasoningReplayNever, 0)
+	if !native {
+		t.Fatal("renderNativeStepPair returned native=false")
+	}
+	if asst.Content.Text != nil {
+		t.Errorf("empty preamble should yield zero-value Content (Text=nil), got Text=%q", *asst.Content.Text)
+	}
+	if asst.Content.Parts != nil {
+		t.Errorf("empty preamble should yield zero-value Content (Parts=nil), got %d parts", len(asst.Content.Parts))
+	}
+	if len(asst.ToolCalls) != 1 {
+		t.Errorf("tool_call lost on empty-preamble path: %+v", asst.ToolCalls)
+	}
+}
+
+// TestRenderNativeStepPair_ReasoningReplayLayersBelowPreamble asserts
+// the reasoning-replay text mode (D-148) layers BELOW the preamble
+// when both are present, so the natural-language intent reads first
+// and the structured provider trace below.
+func TestRenderNativeStepPair_ReasoningReplayLayersBelowPreamble(t *testing.T) {
+	t.Parallel()
+
+	step := planner.Step{
+		Action: planner.CallTool{
+			Tool:   "youtube_get_metadata",
+			Args:   json.RawMessage(`{}`),
+			CallID: "call_xyz",
+		},
+		AssistantPreamble: "I'll fetch the metadata.",
+		ReasoningTrace:    "Step 1: identify the right tool. Step 2: dispatch.",
+	}
+	asst, _, _ := renderNativeStepPair(step, planner.ReasoningReplayText, 0)
+	if asst.Content.Text == nil {
+		t.Fatal("nil Content.Text")
+	}
+	got := *asst.Content.Text
+	if !strings.Contains(got, "I'll fetch the metadata.") {
+		t.Errorf("preamble missing: %q", got)
+	}
+	if !strings.Contains(got, "Reasoning:\nStep 1") {
+		t.Errorf("reasoning trace missing: %q", got)
+	}
+	// Order: preamble FIRST, reasoning AFTER.
+	if strings.Index(got, "I'll fetch") > strings.Index(got, "Reasoning:") {
+		t.Errorf("order wrong — preamble should precede reasoning: %q", got)
+	}
+}
+
+// TestRenderNativeObservation_ArtifactStubInlinesPreview asserts the
+// heavy-content projection: when the trajectory step's observation
+// is either an `*llm.ArtifactStub` or the runtime tool-executor's
+// `heavyTruncationSummary` map, the RoleTool message body is the
+// inlined preview text + a positional `artifact_fetch` footer —
+// NEVER the wrapper JSON. No wrapper terminology leaks into the
+// LLM-facing body.
+func TestRenderNativeObservation_ArtifactStubInlinesPreview(t *testing.T) {
+	t.Parallel()
+
+	// Sub-test 1: the runtime tool-executor's map shape. This is what
+	// `cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`
+	// returns. The renderer MUST inline `preview` as the body.
+	t.Run("executor_map_shape", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "fetch metadata",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{
+						Tool:   "youtube_get_metadata",
+						Args:   json.RawMessage(`{"url":"https://example.com/x"}`),
+						CallID: "call_y1",
+					},
+					LLMObservation: map[string]any{
+						"tool":         "youtube_get_metadata",
+						"size_bytes":   8192,
+						"truncated":    true,
+						"preview":      `{"title":"Example","duration":"3:42"`,
+						"artifact_ref": "youtube_meta_abc123",
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role != llm.RoleTool {
+			t.Fatalf("last role = %q, want tool", last.Role)
+		}
+		body := *last.Content.Text
+		// The preview text MUST be the body.
+		if !strings.Contains(body, `{"title":"Example"`) {
+			t.Errorf("body missing preview text: %s", body)
+		}
+		// The fetch hint MUST name artifact_fetch + the ref + the size.
+		if !strings.Contains(body, "artifact_fetch") {
+			t.Errorf("body missing artifact_fetch footer: %s", body)
+		}
+		if !strings.Contains(body, "youtube_meta_abc123") {
+			t.Errorf("body missing ref in footer: %s", body)
+		}
+		if !strings.Contains(body, "8192") {
+			t.Errorf("body missing size in footer: %s", body)
+		}
+		// No wrapper terminology — naming the internal shape primes
+		// the model on the wrong pattern.
+		forbidden := []string{
+			"ArtifactStub",
+			"artifact_ref",
+			`"preview"`, // quoted to avoid matching the operator-facing footer's literal
+		}
+		for _, term := range forbidden {
+			if strings.Contains(body, term) {
+				t.Errorf("body leaks wrapper terminology %q. Body:\n%s", term, body)
+			}
+		}
+	})
+
+	// Sub-test 2: the *llm.ArtifactStub shape from the multimodal
+	// materialiser. Same projection rules apply.
+	t.Run("artifact_stub_shape", func(t *testing.T) {
+		t.Parallel()
+		stub := &llm.ArtifactStub{
+			Ref:       "img_xyz789",
+			MIME:      "image/png",
+			SizeBytes: 65536,
+			Summary:   "User-uploaded screenshot at turn 3",
+		}
+		rc := planner.RunContext{
+			Goal: "describe image",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{
+						Tool:   "vision.describe",
+						Args:   json.RawMessage(`{}`),
+						CallID: "call_v1",
+					},
+					LLMObservation: stub,
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		body := *last.Content.Text
+		if !strings.Contains(body, "User-uploaded screenshot at turn 3") {
+			t.Errorf("body missing Summary as preview: %s", body)
+		}
+		if !strings.Contains(body, "artifact_fetch") {
+			t.Errorf("body missing artifact_fetch footer: %s", body)
+		}
+		if !strings.Contains(body, "img_xyz789") {
+			t.Errorf("body missing ref in footer: %s", body)
+		}
+		if !strings.Contains(body, "image/png") {
+			t.Errorf("body missing mime in footer: %s", body)
+		}
+		// No wrapper JSON in the body — Summary inline, not the
+		// MarshalJSON output.
+		if strings.Contains(body, `"artifact_ref"`) {
+			t.Errorf("body contains wrapper JSON: %s", body)
+		}
+	})
+
+	// Sub-test 3: non-wrapper observation preserved verbatim. The
+	// renderer's fast-path is unchanged for the common case.
+	t.Run("non_wrapper_observation_unchanged", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action:         planner.CallTool{Tool: "echo"},
+					LLMObservation: "small result",
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		last := req.Messages[len(req.Messages)-1]
+		body := *last.Content.Text
+		if body != "small result" {
+			t.Errorf("non-wrapper observation body = %q, want %q", body, "small result")
+		}
+		if strings.Contains(body, "artifact_fetch") {
+			t.Errorf("footer leaked into non-wrapper observation: %s", body)
+		}
+	})
+
+	// Sub-test 4: map shape WITHOUT artifact_ref still inlines preview
+	// — defensive behaviour for a partial wrapper (preview-only) that
+	// could arise from a degraded artifact-store path. No footer is
+	// emitted in that case (no ref to fetch).
+	t.Run("preview_only_map_inlines_without_footer", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{Tool: "t"},
+					LLMObservation: map[string]any{
+						"tool":      "t",
+						"preview":   "first 100 chars of payload",
+						"truncated": true,
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		body := *req.Messages[len(req.Messages)-1].Content.Text
+		if !strings.Contains(body, "first 100 chars of payload") {
+			t.Errorf("preview not inlined: %s", body)
+		}
+		if strings.Contains(body, "artifact_fetch") {
+			t.Errorf("footer leaked for ref-less projection: %s", body)
+		}
+	})
+
+	// Sub-test 5: Error / Failure precedence is preserved — the
+	// renderer's existing fast-path for error states stays in front
+	// of the heavy-content detection.
+	t.Run("error_precedence_preserved", func(t *testing.T) {
+		t.Parallel()
+		rc := planner.RunContext{
+			Goal: "g",
+			Trajectory: &planner.Trajectory{
+				Steps: []planner.Step{{
+					Action: planner.CallTool{Tool: "t"},
+					Error:  "tool dispatch failed",
+					// LLMObservation set to a wrapper, but Error wins.
+					LLMObservation: map[string]any{
+						"preview":      "should not be rendered",
+						"artifact_ref": "nope",
+					},
+				}},
+			},
+		}
+		req := defaultBuilder{}.Build(rc, "sys")
+		body := *req.Messages[len(req.Messages)-1].Content.Text
+		if !strings.Contains(body, "tool dispatch failed") {
+			t.Errorf("Error precedence broken: %s", body)
+		}
+		if strings.Contains(body, "should not be rendered") {
+			t.Errorf("wrapper leaked through error precedence: %s", body)
+		}
+	})
+}
+
+// TestRenderNativeStepPair_EmptyObservationEmitsPlaceholderToolMsg
+// asserts the contract-preservation behaviour: when a CallTool step
+// lands with Observation=nil, LLMObservation=nil, and no Failure /
+// Error, the renderer MUST still emit a `RoleTool` sibling message
+// with the matching `ToolCallID` — synthesised with a placeholder
+// body — rather than returning nil and orphaning the assistant
+// tool_call on the wire. OpenAI's spec requires the pairing.
+func TestRenderNativeStepPair_EmptyObservationEmitsPlaceholderToolMsg(t *testing.T) {
+	t.Parallel()
+
+	step := planner.Step{
+		Action: planner.CallTool{
+			Tool:   "youtube_get_metadata",
+			Args:   json.RawMessage(`{"url":"https://example.com"}`),
+			CallID: "call_orphan_repro",
+		},
+		// Observation, LLMObservation, Failure, Error all intentionally zero.
+	}
+	asst, tool, native := renderNativeStepPair(step, planner.ReasoningReplayNever, 0)
+	if !native {
+		t.Fatal("renderNativeStepPair returned native=false for a CallTool step")
+	}
+	if tool == nil {
+		t.Fatal("orphan regression: tool message is nil — assistant tool_call would be unpaired on the wire")
+	}
+	if tool.Role != llm.RoleTool {
+		t.Errorf("tool.Role = %q, want %q", tool.Role, llm.RoleTool)
+	}
+	if tool.ToolCallID == nil || *tool.ToolCallID != "call_orphan_repro" {
+		t.Errorf("tool.ToolCallID must match assistant tool_call id (asst=%q, tool=%v)",
+			"call_orphan_repro", tool.ToolCallID)
+	}
+	if tool.Content.Text == nil || *tool.Content.Text == "" {
+		t.Error("placeholder tool message has empty Content — must carry a sentinel body the model can read")
+	}
+	// Assistant half retains the tool_call (orphan-fix must not lose the call).
+	if len(asst.ToolCalls) != 1 || asst.ToolCalls[0].ID != "call_orphan_repro" {
+		t.Errorf("assistant tool_call lost: %+v", asst.ToolCalls)
+	}
+}
+
+// TestRenderHeavyContentMap_FieldAwarePreviewSurfacesRef asserts
+// that when the executor's heavyTruncationSummary lands with a
+// field-aware preview (well-formed JSON containing `[omitted: N
+// bytes]` sentinels) AND an artifact_ref, the renderer surfaces
+// BOTH the preview body AND the artifact_fetch ref. Without the
+// ref the model has no callable path to retrieve the omitted
+// fields.
+func TestRenderHeavyContentMap_FieldAwarePreviewSurfacesRef(t *testing.T) {
+	t.Parallel()
+
+	// The renderer must:
+	//   1. Inline the preview body verbatim
+	//   2. Append the field-aware footer naming the ref
+	//   3. Use language that names what artifact_fetch retrieves
+	//      (the OMITTED fields) and tells the model not to re-call
+	//      the upstream tool
+	fieldAwareJSON := `{"title":"Example Video","duration":213,"description":"[omitted: 2492 bytes]","subtitles":"[omitted: 17697 bytes]"}`
+	wrapper := map[string]any{
+		"tool":         "youtube_get_metadata",
+		"size_bytes":   720000,
+		"truncated":    true,
+		"preview":      fieldAwareJSON,
+		"artifact_ref": "yt_meta_ref_xyz",
+	}
+	body, matched := renderHeavyContentMap(wrapper)
+	if !matched {
+		t.Fatal("renderHeavyContentMap did not match a wrapper with field-aware preview + ref")
+	}
+
+	// The preview body must be inlined.
+	if !strings.Contains(body, `"title":"Example Video"`) {
+		t.Errorf("body missing preview content: %s", body)
+	}
+	if !strings.Contains(body, `"[omitted: 2492 bytes]"`) {
+		t.Errorf("body missing in-band omission sentinel: %s", body)
+	}
+
+	// The artifact_fetch ref MUST be surfaced (the bug-#2 regression).
+	if !strings.Contains(body, "artifact_fetch") {
+		t.Fatalf("FIELD-AWARE PREVIEW BUG REGRESSED: artifact_fetch ref dropped — model has no callable path to retrieve omitted fields, will loop on upstream tool. Body:\n%s", body)
+	}
+	if !strings.Contains(body, "yt_meta_ref_xyz") {
+		t.Errorf("body missing ref value: %s", body)
+	}
+
+	// The footer wording must name artifact_fetch as the retrieval
+	// path for the OMITTED fields and tell the model not to re-call
+	// the upstream tool.
+	if !strings.Contains(body, "do not re-call the upstream tool") {
+		t.Errorf("footer missing upstream-retry pre-emption: %s", body)
+	}
+}
+
+// TestDefaultBuilder_EmptyObservationProducesPairedWireSlice asserts
+// the builder-level invariant: when a trajectory step has
+// Observation=nil and LLMObservation=nil, the assembled
+// `req.Messages` slice still contains the matching RoleTool message
+// after the assistant message. The translator preserves the
+// pairing; if it's unpaired here, OpenAI rejects.
+func TestDefaultBuilder_EmptyObservationProducesPairedWireSlice(t *testing.T) {
+	t.Parallel()
+
+	rc := planner.RunContext{
+		Goal: "fetch metadata",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{{
+				Action: planner.CallTool{
+					Tool:   "youtube_get_metadata",
+					Args:   json.RawMessage(`{"url":"https://x"}`),
+					CallID: "call_pair_repro",
+				},
+				// All observation fields zero — the orphan trigger.
+			}},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+
+	// Walk the message slice and assert every assistant message with
+	// ToolCalls is followed by a RoleTool message with matching
+	// ToolCallID — the same invariant validateToolCallPairing
+	// enforces, checked from the producer side.
+	var pending []string
+	for i, m := range req.Messages {
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			if len(pending) != 0 {
+				t.Fatalf("messages[%d]: new assistant ToolCalls turn arrived with %d unanswered prior IDs %v",
+					i, len(pending), pending)
+			}
+			for _, tc := range m.ToolCalls {
+				pending = append(pending, tc.ID)
+			}
+		}
+		if m.Role == llm.RoleTool {
+			if m.ToolCallID == nil {
+				t.Fatalf("messages[%d]: RoleTool message missing ToolCallID", i)
+			}
+			found := false
+			for j, pid := range pending {
+				if pid == *m.ToolCallID {
+					pending = append(pending[:j], pending[j+1:]...)
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("messages[%d]: RoleTool ToolCallID=%q matched no pending assistant ToolCalls (pending=%v)",
+					i, *m.ToolCallID, pending)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatalf("builder produced orphan assistant tool_calls: %v", pending)
+	}
+}
+
+// TestRenderNativeParallelStep_RoundTrip — AC-15: a trajectory step
+// whose Action is a CallParallel with N branches renders ONE assistant
+// message carrying N tool_calls + N RoleTool messages, one per branch,
+// each ToolCallID matched to its branch CallID, in branch-index order.
+// One branch carries an error → its RoleTool body surfaces the error.
+func TestRenderNativeParallelStep_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	call := planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{"a":1}`), CallID: "c_a"},
+			{Tool: "beta", Args: json.RawMessage(`{"b":2}`), CallID: "c_b"},
+			{Tool: "gamma", Args: json.RawMessage(`{"c":3}`), CallID: "c_c"},
+		},
+	}
+	step := planner.Step{
+		Action: call,
+		// LLMObservation carries the AC-4 aggregate (out of branch order
+		// on purpose — the renderer must key by Index, not slice order).
+		LLMObservation: planner.ParallelObservation{
+			Branches: []planner.ParallelBranchObservation{
+				{CallID: "c_b", Tool: "beta", Index: 1, Value: map[string]any{"ok": "beta-result"}},
+				{CallID: "c_a", Tool: "alpha", Index: 0, Value: "alpha-result"},
+				{CallID: "c_c", Tool: "gamma", Index: 2, Error: "boom"},
+			},
+		},
+	}
+
+	asst, toolMsgs := renderNativeParallelStep(step, call, planner.ReasoningReplayNever, 0)
+
+	// ONE assistant message with N tool_calls, branch-index order.
+	if len(asst.ToolCalls) != 3 {
+		t.Fatalf("assistant ToolCalls = %d, want 3", len(asst.ToolCalls))
+	}
+	wantIDs := []string{"c_a", "c_b", "c_c"}
+	wantNames := []string{"alpha", "beta", "gamma"}
+	for i, tc := range asst.ToolCalls {
+		if tc.ID != wantIDs[i] || tc.Name != wantNames[i] {
+			t.Errorf("assistant tool_call[%d] = {%q,%q}, want {%q,%q}", i, tc.ID, tc.Name, wantIDs[i], wantNames[i])
+		}
+	}
+
+	// N RoleTool messages, each ToolCallID matched in branch-index order.
+	if len(toolMsgs) != 3 {
+		t.Fatalf("tool messages = %d, want 3", len(toolMsgs))
+	}
+	for i, tm := range toolMsgs {
+		if tm.Role != llm.RoleTool {
+			t.Errorf("toolMsgs[%d].Role = %q, want RoleTool", i, tm.Role)
+		}
+		if tm.ToolCallID == nil || *tm.ToolCallID != wantIDs[i] {
+			t.Errorf("toolMsgs[%d].ToolCallID = %v, want %q", i, tm.ToolCallID, wantIDs[i])
+		}
+		if tm.Content.Text == nil || *tm.Content.Text == "" {
+			t.Errorf("toolMsgs[%d] empty content", i)
+		}
+	}
+	// branch 0 (alpha) success body.
+	if body := *toolMsgs[0].Content.Text; !strings.Contains(body, "alpha-result") {
+		t.Errorf("alpha body = %q, want it to carry alpha-result", body)
+	}
+	// branch 2 (gamma) error body.
+	if body := *toolMsgs[2].Content.Text; !strings.Contains(body, "boom") {
+		t.Errorf("gamma body = %q, want it to surface the error", body)
+	}
+
+	// Every tool_call_id has exactly one matching RoleTool (wire invariant).
+	pending := map[string]int{}
+	for _, tc := range asst.ToolCalls {
+		pending[tc.ID]++
+	}
+	for _, tm := range toolMsgs {
+		pending[*tm.ToolCallID]--
+	}
+	for id, n := range pending {
+		if n != 0 {
+			t.Errorf("tool_call_id %q unbalanced: %d", id, n)
+		}
+	}
+}
+
+// TestRenderNativeParallelStep_EmptyCallIDsSynthesised — AC-9: branches
+// with empty CallIDs get a deterministic synthetic ID stamped on BOTH
+// the assistant tool_call AND its RoleTool answer so the pairing stays
+// well-formed; lookup is by Index, robust to the empty IDs.
+func TestRenderNativeParallelStep_EmptyCallIDsSynthesised(t *testing.T) {
+	t.Parallel()
+	call := planner.CallParallel{
+		Branches: []planner.CallTool{
+			{Tool: "alpha", Args: json.RawMessage(`{}`)}, // no CallID
+			{Tool: "beta", Args: json.RawMessage(`{}`)},  // no CallID
+		},
+	}
+	step := planner.Step{
+		Action: call,
+		LLMObservation: planner.ParallelObservation{
+			Branches: []planner.ParallelBranchObservation{
+				{Tool: "alpha", Index: 0, Value: "a"},
+				{Tool: "beta", Index: 1, Value: "b"},
+			},
+		},
+	}
+	asst, toolMsgs := renderNativeParallelStep(step, call, planner.ReasoningReplayNever, 4)
+	if len(asst.ToolCalls) != 2 || len(toolMsgs) != 2 {
+		t.Fatalf("got %d tool_calls / %d tool msgs, want 2/2", len(asst.ToolCalls), len(toolMsgs))
+	}
+	for i := range asst.ToolCalls {
+		id := asst.ToolCalls[i].ID
+		if id == "" {
+			t.Fatalf("tool_call[%d] has empty synthetic ID", i)
+		}
+		if toolMsgs[i].ToolCallID == nil || *toolMsgs[i].ToolCallID != id {
+			t.Errorf("tool msg[%d] ID %v does not match synthetic assistant ID %q", i, toolMsgs[i].ToolCallID, id)
+		}
+	}
+	// Deterministic shape: react.callid.<step>.<branch>.
+	if asst.ToolCalls[0].ID != "react.callid.4.0" || asst.ToolCalls[1].ID != "react.callid.4.1" {
+		t.Errorf("synthetic IDs = %q,%q, want react.callid.4.0/.1", asst.ToolCalls[0].ID, asst.ToolCalls[1].ID)
+	}
+}
+
+// TestDefaultBuilder_CallParallelStepRoundTripsThroughMessages — AC-15
+// at the builder level: a CallParallel step assembled through Build
+// produces a paired wire slice (one assistant tool_calls turn, N
+// matching RoleTool answers, no orphans).
+func TestDefaultBuilder_CallParallelStepRoundTripsThroughMessages(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "fan out",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{{
+				Action: planner.CallParallel{
+					Branches: []planner.CallTool{
+						{Tool: "alpha", Args: json.RawMessage(`{}`), CallID: "p1"},
+						{Tool: "beta", Args: json.RawMessage(`{}`), CallID: "p2"},
+					},
+				},
+				LLMObservation: planner.ParallelObservation{
+					Branches: []planner.ParallelBranchObservation{
+						{CallID: "p1", Tool: "alpha", Index: 0, Value: "ra"},
+						{CallID: "p2", Tool: "beta", Index: 1, Value: "rb"},
+					},
+				},
+			}},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	var pending []string
+	for i, m := range req.Messages {
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			if len(pending) != 0 {
+				t.Fatalf("messages[%d]: new assistant ToolCalls turn with %d unanswered IDs %v", i, len(pending), pending)
+			}
+			for _, tc := range m.ToolCalls {
+				pending = append(pending, tc.ID)
+			}
+		}
+		if m.Role == llm.RoleTool {
+			if m.ToolCallID == nil {
+				t.Fatalf("messages[%d]: RoleTool missing ToolCallID", i)
+			}
+			found := false
+			for j, pid := range pending {
+				if pid == *m.ToolCallID {
+					pending = append(pending[:j], pending[j+1:]...)
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("messages[%d]: RoleTool ToolCallID=%q matched no pending (pending=%v)", i, *m.ToolCallID, pending)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatalf("CallParallel step produced orphan assistant tool_calls: %v", pending)
 	}
 }

@@ -77,6 +77,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -88,6 +89,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -113,7 +115,14 @@ type perTaskRunLoopDriverOpts struct {
 	runLoop  *steering.RunLoop
 	planner  planner.Planner
 	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit (D-098)
-	taskKind tasks.TaskKind     // KindForeground at V1; the driver only spawns RunLoops for matching kinds
+	taskKind tasks.TaskKind     // KindForeground at V1; the driver spawns RunLoops for this kind
+
+	// driveBackground (Phase 107e — D-170) widens the driver to ALSO
+	// drive KindBackground tasks — the ones a planner-emitted SpawnTask
+	// creates. False (the default / legacy test path) keeps the
+	// foreground-only behaviour. Recursion is bounded at the spawn site
+	// by the dev executor's absolute_max_spawn_depth cap, not here.
+	driveBackground bool
 
 	// Phase 83f (D-149) — RunContext consumer wiring. All three of
 	// memory / skills / planningHints are OPTIONAL: a dev stack that
@@ -157,12 +166,13 @@ type perTaskRunLoopDriverOpts struct {
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
 type perTaskRunLoopDriver struct {
-	logger   *slog.Logger
-	bus      events.EventBus
-	runLoop  *steering.RunLoop
-	planner  planner.Planner
-	tasks    tasks.TaskRegistry
-	taskKind tasks.TaskKind
+	logger          *slog.Logger
+	bus             events.EventBus
+	runLoop         *steering.RunLoop
+	planner         planner.Planner
+	tasks           tasks.TaskRegistry
+	taskKind        tasks.TaskKind
+	driveBackground bool // Phase 107e (D-170) — also drive KindBackground tasks
 
 	// Phase 83f (D-149) per-run consumer wiring. See driver opts godoc.
 	memory           memory.MemoryStore
@@ -181,6 +191,13 @@ type perTaskRunLoopDriver struct {
 	// Round-7 F11 / D-166 — artifact store handle for the multimodal
 	// materializer.
 	artifactStore artifacts.ArtifactStore
+
+	// Phase 107a — per-task trajectory map for the Enricher seam.
+	// Trajectories are stored before RunLoop.Run and retained after
+	// completion for tasks.get enrichment. Reads are safe under RLock;
+	// writes acquire the full mutex. An evicted task returns nil.
+	trajMu       sync.RWMutex
+	trajectories map[tasks.TaskID]*planner.Trajectory
 
 	// subCtx scopes the subscription's lifetime. Cancel cancels the
 	// subscription; the subscribe-loop returns; the WaitGroup drains
@@ -231,6 +248,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		planner:          opts.planner,
 		tasks:            opts.tasks,
 		taskKind:         opts.taskKind,
+		driveBackground:  opts.driveBackground,
 		memory:           opts.memory,
 		skills:           opts.skills,
 		skillsContextMax: skillsCap,
@@ -240,6 +258,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 		artifactStore:    opts.artifactStore,
+		trajectories:     make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -297,12 +316,26 @@ func (d *perTaskRunLoopDriver) subscribeLoop() {
 	}
 }
 
-// handleEvent dispatches one `task.spawned` event. The driver only
-// drives foreground tasks; background tasks are emitted by the
-// planner itself (SpawnTask Decision) and run on the runtime
-// dispatch executor (a later phase). A malformed payload (wrong
-// type) is logged and skipped — the event registration guarantees
-// the shape, so a mismatch here is a programmer error.
+// drivesKind reports whether the driver runs a planner sub-run for a
+// task of the given kind. It always drives its configured taskKind; with
+// driveBackground set (Phase 107e — D-170) it additionally drives
+// KindBackground.
+func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
+	if kind == d.taskKind {
+		return true
+	}
+	return d.driveBackground && kind == tasks.KindBackground
+}
+
+// handleEvent dispatches one `task.spawned` event. The driver drives
+// its configured `taskKind` (KindForeground) and — when driveBackground
+// is set (Phase 107e — D-170) — KindBackground tasks too, the ones a
+// planner-emitted SpawnTask creates. A KindBackground task is driven
+// identically to a foreground one (a planner sub-run against its Query);
+// recursion is bounded at the spawn site by the dev executor's
+// absolute_max_spawn_depth cap. A malformed payload (wrong type) is
+// logged and skipped — the event registration guarantees the shape, so a
+// mismatch here is a programmer error.
 func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 	payload, ok := ev.Payload.(tasks.TaskSpawnedPayload)
 	if !ok {
@@ -310,10 +343,10 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 			slog.String("got", fmt.Sprintf("%T", ev.Payload)))
 		return
 	}
-	if payload.Kind != d.taskKind {
-		// Background task — the planner itself spawned it via
-		// SpawnTask. The runtime dispatch executor (later phase)
-		// drives those; the dev driver stays out.
+	if !d.drivesKind(payload.Kind) {
+		// A kind this driver does not drive (e.g. a background task on a
+		// foreground-only driver). The runtime dispatch executor / a
+		// background-enabled driver owns those; this driver stays out.
 		return
 	}
 
@@ -566,7 +599,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// quadruple on every event and publishes under the driver's bus
 	// context so a bus-close mid-run logs Warn rather than races.
 	emit := func(ev events.Event) {
-		if ev.Identity.Identity.TenantID == "" {
+		if ev.Identity.TenantID == "" {
 			ev.Identity = q
 		}
 		if pubErr := d.bus.Publish(d.subCtx, ev); pubErr != nil {
@@ -591,6 +624,41 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return nil
 	}
 
+	// Phase 107 — per-run OnChunk closure. Translates bifrost streaming
+	// deltas into `llm.completion.chunk` bus events under the run's
+	// identity quadruple. Per D-025: the closure is per-run on the
+	// stack; N concurrent runs see N independent closures.
+	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
+		payload := llm.CompletionChunkPayload{
+			Identity:   q,
+			TaskID:     string(taskID),
+			RunID:      q.RunID,
+			Delta:      delta,
+			Done:       done,
+			Kind:       string(kind),
+			OccurredAt: time.Now(),
+		}
+		// Identity MUST land on the Event envelope (not just the
+		// payload) — the event bus validates the envelope before fan-out
+		// (CLAUDE.md §6 rule 5). Matching the `emit` closure pattern
+		// twenty lines up — the chunk path was missing this when the
+		// closure was first authored, and live testing surfaced 280+
+		// rejected chunks per task ("events: event identity missing
+		// one or more components: type=llm.completion.chunk").
+		now := time.Now()
+		if pubErr := d.bus.Publish(d.subCtx, events.Event{
+			Type:       llm.EventTypeCompletionChunk,
+			Identity:   q,
+			OccurredAt: now,
+			Payload:    payload,
+		}); pubErr != nil {
+			d.logger.Warn("perTaskRunLoopDriver: chunk publish failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("run_id", q.RunID),
+				slog.String("err", pubErr.Error()))
+		}
+	}
+
 	// Round-7 F11 / D-166 — pre-resolve operator-uploaded input
 	// artifacts so the planner's first-turn materializer renders them
 	// as multimodal Content.Parts. The runloop clears
@@ -612,6 +680,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			Catalog:        catalogView,     // Phase 83i (D-152) — populates <available_tools>
 			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
 			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
+			OnChunk:        onChunk,         // Phase 107 — per-token streaming to bus
 			InputArtifacts: inputArtifacts,  // Round-7 F11 / D-166 — first-turn multimodal inputs
 		},
 		TaskID:           taskID,
@@ -619,6 +688,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
 	}
+	// Phase 107a — save the trajectory ref before Run so the Enricher
+	// can read it post-completion (including concurrently — the map is
+	// mutex-guarded per D-025).
+	d.trajMu.Lock()
+	d.trajectories[taskID] = traj
+	d.trajMu.Unlock()
+
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
 		// Cancellation-shaped errors map to MarkFailed{code=cancelled}.
@@ -681,7 +757,24 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 		}
 
-		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
+		// Phase 106 (V1.2) — populate the answer envelope so Protocol
+		// consumers (Console Playground, CLI, third-party UIs) read the
+		// actual assistant response via tasks.get → result_inline.
+		// Pre-106, this was tasks.TaskResult{} — the projector had
+		// nothing to project and the Playground hardcoded a placeholder.
+		payload := map[string]any{
+			"answer":          extractAssistantAnswer(fin),
+			"finish_reason":   string(fin.Reason),
+			"tool_calls_seen": len(traj.Steps),
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			d.logger.ErrorContext(taskCtx, "perTaskRunLoopDriver: marshal TaskResult.Value failed",
+				slog.String("task_id", string(taskID)),
+				slog.String("err", err.Error()))
+			raw = []byte("{}")
+		}
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil {
 			d.logger.Warn("perTaskRunLoopDriver: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
@@ -824,6 +917,15 @@ func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 		d.runsWG.Wait()
 	})
 	return nil
+}
+
+// TrajectoryByTaskID returns the planner trajectory for a completed run,
+// or nil when the task's trajectory has been evicted or never existed.
+// Reads are safe under concurrent access (RLock / D-025).
+func (d *perTaskRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
+	d.trajMu.RLock()
+	defer d.trajMu.RUnlock()
+	return d.trajectories[taskID]
 }
 
 // projectMemoryBlocks shapes a memory.LLMContextPatch into the

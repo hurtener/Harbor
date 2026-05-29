@@ -213,7 +213,7 @@ func stubSummary(a InputArtifactView) string {
 	}
 	b.WriteString(" input")
 	if a.SizeBytes > 0 {
-		b.WriteString(fmt.Sprintf(" (%d bytes)", a.SizeBytes))
+		fmt.Fprintf(&b, " (%d bytes)", a.SizeBytes)
 	}
 	if a.Filename != "" {
 		b.WriteString(" [")

@@ -1,14 +1,21 @@
-// Harbor Console e2e — Phase 83r + 83s disconnected-state hygiene.
+// Harbor Console e2e — disconnected-state contract.
 //
-// One spec covers the cross-page disconnected contract — the
-// post-83k visual walkthrough pinned eight bug shapes (W1/W2/W3 +
-// N2/N4/N5/N8/N9/N10) that each page handled inconsistently. The
-// hygiene pass standardises them: action buttons disable, the Cost
-// Rollup card stops rendering `$0.00`, the Tools page shows ONE empty
-// state (not two), the Live Runtime composer disables, the MCP status
-// chips desaturate, the Artifacts subtitle reads "no Runtime
-// attached", and every page surfaces a single ConnectionFooter
-// (rendered by the app shell only — N2).
+// Phase 83r + 83s built per-page disconnected hygiene (disabled action
+// buttons, desaturated chips, no synthetic `$0.00`). Phase 105 (V1.2)
+// then reframed the disconnected contract at the product level: rather
+// than strand the operator on a dead page full of disabled controls,
+// the app shell ((console)/+layout.svelte) redirects ANY disconnected
+// navigation to /settings — the one surface where they can attach a
+// Runtime. "When disconnected, take them to where they connect" — so
+// they get a working Console, not a guessing game.
+//
+// This spec pins that redirect across the page catalog. The pre-105
+// per-page disabled-control assertions are superseded: those controls
+// are no longer reachable by navigation (you are redirected before you
+// can see them), so testing them via navigation is no longer
+// meaningful. The disabled-control CODE still ships for the brief
+// pre-redirect frame and for defence in depth; its unit-level coverage
+// lives with the components.
 //
 // SKIP semantics (mirrors `harness.spec.ts`): the `harbor console`
 // subcommand lands in Phase 73m. When absent the whole describe block
@@ -18,234 +25,84 @@ import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-test.describe("Console disconnected-state hygiene (Phase 83r + 83s)", () => {
+test.describe("Console disconnected-state contract (Phase 83r/83s + Phase 105 redirect)", () => {
   test.skip(
     !CONSOLE_AVAILABLE,
     "harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built",
   );
 
-  test("(W2) Live Runtime composer disables in the disconnected state", async ({
+  // The pages that redirect to /settings when no Runtime is attached.
+  // (Settings itself is excluded — it is the redirect TARGET.)
+  const REDIRECTING_PAGES = [
+    "overview",
+    "live-runtime",
+    "sessions",
+    "tasks",
+    "agents",
+    "tools",
+    "events",
+    "background-jobs",
+    "flows",
+    "memory",
+    "mcp-connections",
+    "artifacts",
+  ] as const;
+
+  for (const slug of REDIRECTING_PAGES) {
+    test(`disconnected navigation to /${slug} redirects to /settings (connect, don't strand)`, async ({
+      page,
+      runtime,
+      helpers,
+    }) => {
+      // Seed auth ONLY — no Runtime triple, so resolveConnection() is
+      // null and the layout redirect fires.
+      await helpers.seedAuth(runtime.token);
+      const path = slug === "overview" ? "/overview" : `/${slug}`;
+      await page.goto(new URL(path, runtime.baseURL).toString());
+      await page.waitForLoadState("load");
+
+      // The shell's first-load redirect lands the operator on /settings,
+      // where the AttachToLocalCard + Add Runtime form let them connect.
+      await expect
+        .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+        .toMatch(/^\/settings(\/.*)?$/);
+    });
+  }
+
+  test("(N2) the disconnected /settings landing renders exactly ONE ConnectionFooter", async ({
     page,
     runtime,
     helpers,
   }) => {
-    // Seed auth ONLY — connection.ts returns null, so the page is
-    // disconnected. The composer textarea + every verb must disable;
-    // hovering any of them carries the shared tooltip.
+    // A disconnected cold load redirects to /settings; the app shell
+    // renders exactly one ConnectionFooter (the pre-83s pages duplicated
+    // it via per-page imports).
     await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("live-runtime");
-
-    const textarea = page.locator("[data-testid='composer-textarea']");
+    await page.goto(new URL("/overview", runtime.baseURL).toString());
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
     await expect(
-      textarea,
-      "the composer textarea disables when no Runtime is attached",
-    ).toBeDisabled();
-
-    for (const verb of [
-      "composer-start",
-      "composer-user-message",
-      "composer-redirect",
-      "composer-inject",
-      "composer-pause",
-      "composer-resume",
-      "composer-cancel",
-    ]) {
-      await expect(
-        page.locator(`[data-testid='${verb}']`),
-        `${verb} disables when no Runtime is attached`,
-      ).toBeDisabled();
-    }
-
-    // The Refresh button in the page header also disables.
-    await expect(
-      page.locator("[data-testid='live-runtime-refresh']"),
-      "the page-header Refresh button disables in the disconnected state",
-    ).toBeDisabled();
-  });
-
-  test("(W3) Tools page disables action + filter controls in the disconnected state", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("tools");
-
-    for (const id of [
-      "tools-refresh",
-      "tools-search",
-      "tools-search-apply",
-      "tools-filter-clear",
-      "tools-save-filter",
-    ]) {
-      await expect(
-        page.locator(`[data-testid='${id}']`),
-        `${id} disables when no Runtime is attached`,
-      ).toBeDisabled();
-    }
-  });
-
-  test("(N5) Tools page renders ONE empty-state message when disconnected, not two", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("tools");
-
-    // The PageState disconnected branch is visible.
-    await expect(
-      page.locator("[data-testid='page-state-disconnected']"),
-      "the Disconnected PageState renders",
-    ).toBeVisible();
-
-    // The secondary `tools-detail-empty` MUST NOT also render — the
-    // pre-83r page stacked both and showed two empty messages.
-    await expect(
-      page.locator("[data-testid='tools-detail-empty']"),
-      "the secondary ToolDetailTabs empty does NOT also render (N5)",
-    ).toHaveCount(0);
-  });
-
-  test("(W1) Overview Cost Rollup card does not render synthetic data when disconnected", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("overview");
-
-    // The disconnected branch renders the consolidated placeholder.
-    await expect(
-      page.locator("[data-testid='cost-rollup-disconnected']"),
-      "the Cost Rollup card renders the disconnected placeholder (W1)",
-    ).toBeVisible();
-
-    // The synthetic `$0.00` total + the "No cost recorded" empty row
-    // are absent — the pre-83r card rendered both even when there was
-    // no Runtime to source data from.
-    await expect(
-      page.locator("[data-testid='cost-rollup-total']"),
-      "no synthetic $0.00 total when disconnected (W1)",
-    ).toHaveCount(0);
-    await expect(
-      page.locator("[data-testid='cost-rollup-empty']"),
-      "no 'No cost recorded' line when disconnected (W1)",
-    ).toHaveCount(0);
-
-    // The Overview Refresh button is also disabled in the header.
-    await expect(
-      page.locator("[data-testid='overview-refresh']"),
-      "Refresh disables in the disconnected state",
-    ).toBeDisabled();
-  });
-
-  test("(N8) MCP Connections status chips desaturate in the disconnected state", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("mcp-connections");
-
-    // The State facet chip row is the most reliable site to assert
-    // chip desaturation — it renders the fixed 6-element STATE_FACETS
-    // even with no Runtime in scope. The desaturated chip has
-    // `data-kind="neutral"` and `data-desaturated="true"` regardless
-    // of its semantic kind.
-    const onlineFacet = page.locator(
-      "[data-testid='filter-online'] .status-chip",
-    );
-    await expect(
-      onlineFacet,
-      "the Online facet chip is rendered",
-    ).toBeVisible();
-    await expect(
-      onlineFacet,
-      "the Online facet chip is desaturated when disconnected (N8)",
-    ).toHaveAttribute("data-desaturated", "true");
-    await expect(
-      onlineFacet,
-      "the desaturated chip resolves to the neutral kind (N8)",
-    ).toHaveAttribute("data-kind", "neutral");
-
-    // The Save view button is also disabled.
-    await expect(
-      page.locator("[data-testid='save-view']"),
-      "Save view disables when disconnected",
-    ).toBeDisabled();
-  });
-
-  test("(N9) Artifacts subtitle reads 'no Runtime attached' when disconnected", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await helpers.gotoPage("artifacts");
-
-    // The page subtitle (inside PageHeader) carries the
-    // disconnected-aware copy — no synthetic "0 artifacts" claim.
-    await expect(
-      page.locator("[data-testid='artifacts-page']"),
-      "the Artifacts page root renders",
-    ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='artifacts-page']"),
-      "the subtitle reads 'no Runtime attached' when disconnected (N9)",
-    ).toContainText("no Runtime attached");
-
-    // Upload + Export are also disabled.
-    await expect(
-      page.locator("[data-testid='upload-artifact']").first(),
-      "Upload artifact disables when disconnected",
-    ).toBeDisabled();
-  });
-
-  test("(N2) every page renders exactly ONE ConnectionFooter", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    // Walk the catalog of top-level pages and assert each lands with
-    // exactly one ConnectionFooter (rendered by the app shell). The
-    // pre-83s pages duplicated the footer via per-page imports.
-    await helpers.seedAuth(runtime.token);
-
-    for (const slug of [
-      "overview",
-      "live-runtime",
-      "sessions",
-      "tasks",
-      "agents",
-      "tools",
-      "events",
-      "background-jobs",
-      "flows",
-      "memory",
-      "mcp-connections",
-      "artifacts",
-      "settings",
-    ] as const) {
-      await helpers.gotoPage(slug);
-      await expect(
-        page.locator("[data-testid='connection-footer']"),
-        `${slug}: exactly one ConnectionFooter (N2)`,
-      ).toHaveCount(1);
-    }
+      page.locator("[data-testid='connection-footer']"),
+      "the app shell renders exactly one ConnectionFooter (N2)",
+    ).toHaveCount(1);
   });
 
   test("(N7) the saved-view button label is 'Save view' on every page", async ({
     page,
-    runtime,
     helpers,
   }) => {
-    // The label drift across pages — "Save filter" / "Save snapshot" /
-    // "Save preset" / bare "Save" — is collapsed onto one verb. Walk
-    // the saved-view sites and assert the literal button text.
-    await helpers.seedAuth(runtime.token);
+    // Save-view label consistency is a CONNECTED-state concern — a
+    // disconnected Console redirects to /settings, where most saved-view
+    // sites do not exist. Seed a live connection so the pages render and
+    // the label drift ("Save filter" / "Save snapshot" / "Save preset" /
+    // bare "Save") is collapsed onto one verb across the catalog.
+    await helpers.seedConnection();
 
-    const sites: Array<{ slug: Parameters<typeof helpers.gotoPage>[0]; testid: string }> = [
+    const sites: Array<{
+      slug: Parameters<typeof helpers.gotoPage>[0];
+      testid: string;
+    }> = [
       { slug: "overview", testid: "overview-save-view" },
       { slug: "live-runtime", testid: "live-runtime-save-view" },
       { slug: "sessions", testid: "sessions-save-view" },

@@ -545,6 +545,7 @@ func BridgeBusToMetrics(ctx context.Context, bus events.EventBus, reg *MetricsRe
 		return nil, fmt.Errorf("telemetry: bridge subscribe failed: %w", err)
 	}
 	done := make(chan struct{})
+	//nolint:gosec // G118: the bridge goroutine outlives any single request and must keep draining metrics during shutdown; the subscribe ctx already governs the loop lifetime (sub.Events() closes on cancel), so RegisterEvent uses a non-cancellable ctx so a final drain is never dropped mid-record
 	go func() {
 		defer close(done)
 		for ev := range sub.Events() {

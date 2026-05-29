@@ -102,6 +102,44 @@ func New(resolver Resolver) *Executor {
 	return &Executor{resolver: resolver}
 }
 
+// ExecuteOption configures a single [Executor.Execute] call. Options
+// are per-call (NOT stored on the immutable [Executor] — D-025), so a
+// shared executor instance can serve atomic programmatic callers and
+// non-atomic native callers concurrently without cross-talk.
+type ExecuteOption func(*executeOptions)
+
+// executeOptions carries the resolved per-call knobs.
+type executeOptions struct {
+	// nonAtomicSetup selects the Phase 107d native-path setup posture:
+	// a branch's resolve-miss / args-validation failure becomes that
+	// branch's Result.Err instead of aborting the whole call. Default
+	// false = the Phase 47 / D-056 atomic posture.
+	nonAtomicSetup bool
+}
+
+// WithNonAtomicSetup selects non-atomic setup validation (Phase 107d —
+// D-169). In non-atomic mode a branch whose tool fails to resolve, or
+// whose args fail the descriptor's Validate, surfaces as that branch's
+// [Result.Err] and is skipped at dispatch; the remaining valid branches
+// still fan out. The result slice carries exactly one [Result] per
+// branch, so every provider `tool_call_id` can be answered — the
+// wire-contract requirement the native React path depends on.
+//
+// The atomic default (a single invalid-args branch fails the whole call
+// with [planner.ErrParallelBranchInvalidArgs] before ANY branch
+// dispatches) is unchanged for existing callers. The branch-count cap
+// ([planner.AbsoluteMaxParallel]) and the missing-identity reject
+// ([identity.ErrIdentityMissing]) stay fail-loud whole-call aborts in
+// BOTH modes — non-atomic relaxes only per-branch setup, never the
+// system-level guards.
+//
+// Non-atomic setup is honoured only on the [planner.JoinAll] path (the
+// native React surface); the other join kinds are programmatic-planner
+// surface and keep the atomic posture.
+func WithNonAtomicSetup() ExecuteOption {
+	return func(o *executeOptions) { o.nonAtomicSetup = true }
+}
+
 // Result is the per-branch outcome the executor produces. Each entry
 // carries the branch's input index + tool name (the deterministic
 // merge key), the [tools.ToolResult] on success, and the error on
@@ -163,10 +201,16 @@ type Result struct {
 // branch met the threshold). Per-branch failures land on
 // Result.Err — the caller (planner step adapter) decides how to
 // surface mixed-success-and-failure observations.
-func (e *Executor) Execute(ctx context.Context, call planner.CallParallel) ([]Result, error) {
+func (e *Executor) Execute(ctx context.Context, call planner.CallParallel, opts ...ExecuteOption) ([]Result, error) {
+	var eo executeOptions
+	for _, opt := range opts {
+		opt(&eo)
+	}
+
 	// Identity (§6 rule 9). The executor reads ctx for the run's
 	// identity quadruple; missing identity rejects fail-closed
-	// BEFORE any branch dispatches.
+	// BEFORE any branch dispatches. Stays fail-loud in BOTH atomic and
+	// non-atomic modes — a system-level guard, not per-branch setup.
 	if _, ok := identity.QuadrupleFrom(ctx); !ok {
 		return nil, fmt.Errorf("%w: parallel executor refuses missing-identity ctx", identity.ErrIdentityMissing)
 	}
@@ -199,24 +243,43 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel) ([]Re
 	}
 
 	// Step 1 (c) + (d): resolve every descriptor + validate every
-	// args. The two checks are bundled in one pass — a single
-	// invalid-args branch fails the whole call.
+	// args. In the atomic default (Phase 47 / D-056) a single
+	// resolve-miss or invalid-args branch fails the whole call before
+	// ANY branch dispatches. In non-atomic mode (Phase 107d — D-169 —
+	// the native React path) the failing branch's setup error is
+	// recorded in `setupErrs[i]` and that branch is skipped at dispatch;
+	// the valid branches still fan out so every `tool_call_id` is
+	// answered.
 	descriptors := make([]tools.ToolDescriptor, len(branches))
+	var setupErrs []error // nil in atomic mode; one slot per branch in non-atomic
+	if eo.nonAtomicSetup {
+		setupErrs = make([]error, len(branches))
+	}
 	for i, b := range branches {
 		desc, ok := e.resolver.Resolve(b.Tool)
 		if !ok {
-			return nil, fmt.Errorf(
+			err := fmt.Errorf(
 				"%w: parallel branch[%d] tool %q not registered",
 				tools.ErrToolNotFound, i, b.Tool,
 			)
+			if eo.nonAtomicSetup {
+				setupErrs[i] = err
+				continue
+			}
+			return nil, err
 		}
 		descriptors[i] = desc
 		if desc.Validate != nil {
-			if err := desc.Validate(b.Args); err != nil {
-				return nil, fmt.Errorf(
+			if verr := desc.Validate(b.Args); verr != nil {
+				err := fmt.Errorf(
 					"%w: branch[%d] tool=%q: %w",
-					planner.ErrParallelBranchInvalidArgs, i, b.Tool, err,
+					planner.ErrParallelBranchInvalidArgs, i, b.Tool, verr,
 				)
+				if eo.nonAtomicSetup {
+					setupErrs[i] = err
+					continue
+				}
+				return nil, err
 			}
 		}
 	}
@@ -224,7 +287,7 @@ func (e *Executor) Execute(ctx context.Context, call planner.CallParallel) ([]Re
 	// Step 2: dispatch.
 	switch join.Kind {
 	case planner.JoinAll:
-		return e.dispatchAll(ctx, branches, descriptors)
+		return e.dispatchAll(ctx, branches, descriptors, setupErrs)
 	case planner.JoinFirstSuccess:
 		return e.dispatchFirstSuccess(ctx, branches, descriptors)
 	case planner.JoinN:
@@ -293,14 +356,26 @@ func validateJoin(j planner.JoinSpec, branchCount int) error {
 // cancels mid-flight, branches that honour ctx exit promptly; the
 // returned slice still carries one Result per branch (the cancelled
 // branches surface Err = context.Canceled or the upstream wrap).
+// `setupErrs` is nil in the atomic path; in non-atomic mode it carries
+// one slot per branch where a non-nil entry is a branch that failed
+// resolve / args-validation at setup. Pre-failed branches surface their
+// recorded setup error as `Result.Err` and are NOT dispatched; the
+// valid branches fan out exactly as before. This keeps the goroutine
+// fanout itself unchanged (§13 — no second dispatcher) while honouring
+// the per-branch non-atomic contract on the native JoinAll path.
 func (e *Executor) dispatchAll(
 	ctx context.Context,
 	branches []planner.CallTool,
 	descriptors []tools.ToolDescriptor,
+	setupErrs []error,
 ) ([]Result, error) {
 	results := make([]Result, len(branches))
 	var wg sync.WaitGroup
 	for i := range branches {
+		if setupErrs != nil && setupErrs[i] != nil {
+			results[i] = Result{Index: i, Tool: branches[i].Tool, Err: setupErrs[i]}
+			continue
+		}
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

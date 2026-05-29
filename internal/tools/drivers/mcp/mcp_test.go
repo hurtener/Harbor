@@ -170,9 +170,9 @@ func TestProvider_Discover_TextTool_RoundTrip(t *testing.T) {
 		t.Fatalf("expected at least one descriptor, got 0")
 	}
 
-	echo := findByName(descs, "mock.echo")
+	echo := findByName(descs, "mock_echo")
 	if echo == nil {
-		t.Fatalf("expected mock.echo, got names: %s", names(descs))
+		t.Fatalf("expected mock_echo, got names: %s", names(descs))
 	}
 	if echo.Tool.Transport != tools.TransportMCP {
 		t.Errorf("expected Transport=mcp, got %q", echo.Tool.Transport)
@@ -270,7 +270,7 @@ func TestProvider_IdentityPropagation_StampedOnMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	d := findByName(descs, "mock.echo")
+	d := findByName(descs, "mock_echo")
 	if d == nil {
 		t.Fatalf("missing echo")
 	}
@@ -294,7 +294,7 @@ func TestProvider_PolicyRetry_OnIsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	d := findByName(descs, "mock.flaky")
+	d := findByName(descs, "mock_flaky")
 	if d == nil {
 		t.Fatalf("missing flaky")
 	}
@@ -322,7 +322,7 @@ func TestProvider_PolicyRetry_GivesUpOnExhaustion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	d := findByName(descs, "mock.flaky")
+	d := findByName(descs, "mock_flaky")
 	_, err = d.Invoke(ctx, []byte(`{}`))
 	if err == nil {
 		t.Fatalf("expected exhaustion, got nil")
@@ -507,7 +507,7 @@ func TestProvider_ConcurrentReuse_D025(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	d := findByName(descs, "mock.echo")
+	d := findByName(descs, "mock_echo")
 	if d == nil {
 		t.Fatalf("missing echo")
 	}

@@ -295,20 +295,20 @@ test.describe("Console Agents page", () => {
     }
   });
 
-  test("(g) the Disconnected PageState renders without a connection", async ({
+  test("(g) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     runtime,
     helpers,
   }) => {
     // Seed ONLY the auth token — no connection triple. `connection.ts`
-    // returns null; `<PageState>` must render Disconnected, NEVER the
-    // Error UI (CONVENTIONS.md §4 — the two states are distinct).
+    // returns null. Phase 105 (V1.2): the app shell redirects a
+    // disconnected Console to /settings (the connect surface) rather than
+    // stranding the operator on a dead page.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("agents");
 
-    await expect(
-      page.locator("[data-testid='agents-page']"),
-      "the Agents page root still mounts when disconnected",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

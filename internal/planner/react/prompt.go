@@ -1,10 +1,9 @@
 package react
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,14 +16,24 @@ import (
 // conversation whose shape depends on whether the trajectory has been
 // compacted (Phase 46):
 //
-//  1. System message: the twelve XML-tagged sections (brief 13 §2.1)
-//     assembled by [buildSystemContent] — `<identity>`,
-//     `<output_format>`, `<action_schema>`, `<finishing>`,
-//     `<tool_usage>`, `<parallel_execution>`, `<reasoning>`, `<tone>`,
-//     `<error_handling>`, `<available_tools>`, `<additional_guidance>`,
+//  1. System message: the ten XML-tagged sections (brief 13 §2.1,
+//     reshaped by Phase 107c — D-167) assembled by
+//     [buildSystemContent] —
+//     `<identity>`, `<tool_discovery>`, `<heavy_results>`,
+//     `<tool_usage>`, `<reasoning>`, `<tone>`, `<error_handling>`,
+//     `<available_tools>`, `<additional_guidance>`,
 //     `<planning_constraints>` — in that fixed order, separated by
 //     `\n\n`. Optional sections (`<additional_guidance>`,
 //     `<planning_constraints>`) are omitted entirely when empty.
+//     Phase 107c deletes `<output_format>`, `<action_schema>`,
+//     `<finishing>`, and `<parallel_execution>` (the prompt-engineered
+//     JSON-action shapes — parallel emission is now a native-side
+//     property: the runtime accepts multiple `ToolCalls` in one
+//     response and serialises them per the AC-19 fallback). A single
+//     `<tool_discovery>` section instructs on native tool-calling
+//     semantics + deferred-loading meta-tools; `<heavy_results>`
+//     teaches the out-of-context artifact-store pattern + the
+//     `artifact_fetch` meta-tool.
 //  2. User message: the run's Goal (or Query when Goal is empty),
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
@@ -97,24 +106,13 @@ type defaultBuilder struct {
 	// RunContext.ReasoningReplay override wins over it at render time.
 	// Zero value ("" → resolves to never) is the safe default.
 	configuredReplay planner.ReasoningReplayMode
-	// maxToolExamples caps how many curated examples each tool renders
-	// in the <available_tools> section (Phase 83b — D-144). Zero
-	// resolves to defaultMaxToolExamples (3) at render time. Set once
-	// at construction by [New]; read-only thereafter (D-025).
+	// maxToolExamples is retained for backward compatibility with
+	// react.go's constructor (Phase 107c step 8 does not touch
+	// react.go). Under native tool-calling (Phase 107c — D-167) the
+	// <available_tools> prompt section renders name+description only
+	// (schemas live in req.Tools[]), so renderTool no longer reads
+	// this field. It will be deleted when step 9 wires the projector.
 	maxToolExamples int
-}
-
-// defaultMaxToolExamples is the per-tool example cap applied when the
-// operator leaves `PlannerConfig.MaxToolExamplesPerTool` at its zero
-// value (Phase 83b — D-144, brief 13 §2.4).
-const defaultMaxToolExamples = 3
-
-// toolRenderConfig carries the per-render knobs [renderTool] consults.
-// It is a value type — [renderTool] is pure with respect to it, which
-// keeps the helper trivially safe for concurrent reuse (D-025).
-type toolRenderConfig struct {
-	// maxExamples is the resolved (non-zero) per-tool example cap.
-	maxExamples int
 }
 
 // Build implements [PromptBuilder].
@@ -227,10 +225,72 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	// digest replaces the raw step history in subsequent prompt
 	// builds."). When Summary is nil, render the raw step history as
 	// before (the Phase 45 V1 minimum-viable shape).
+	//
+	// Phase 107c (D-167) — native tool-calling replay (AC-20a / AC-20b).
+	// A trajectory Step whose Action is a `planner.CallTool` now renders
+	// as a pair of native chat messages:
+	//
+	//   - a RoleAssistant message whose `ToolCalls` slice carries the
+	//     prior CallTool's ID + Name + Args (the bifrost translator
+	//     emits this as a `tool_calls` block — OpenAI / Anthropic /
+	//     Gemini all consume it).
+	//   - a RoleTool message whose `ToolCallID` matches the assistant
+	//     entry's ID; its Content is the rendered observation.
+	//
+	// When the prior CallTool has an empty CallID (legacy trajectory or
+	// a planner-emitted CallTool that pre-dates a provider-supplied ID),
+	// a deterministic `react.callid.<step-index>` is synthesised and
+	// stamped on BOTH the assistant ToolCalls entry AND the RoleTool
+	// ToolCallID so the round-trip is well-formed regardless.
+	//
+	// A `_finish` reserved-name call terminates the run, so it never
+	// reaches the trajectory as a completed Step. But `_spawn_task` /
+	// `_await_task` are NON-terminal control meta-tools: the runloop
+	// dispatches them through the ToolExecutor (Phase 107e — D-170) and
+	// appends a trajectory Step exactly like a CallTool. Those steps
+	// replay through [renderNativeControlStep] as native tool_call +
+	// RoleTool pairs (consistent with how the model emitted them, and —
+	// for multi-spawn coordination — preserving which `task_id` maps to
+	// which spawned sub-goal). Remaining non-native shapes (a defensive
+	// prior Finish, an unknown shape) fall through to the legacy
+	// assistant-text rendering so observability is preserved even in
+	// malformed trajectories.
 	if rc.Trajectory != nil {
 		if rc.Trajectory.Summary == nil {
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
-			for _, step := range rc.Trajectory.Steps {
+			for i, step := range rc.Trajectory.Steps {
+				// Phase 107d (D-169): a CallParallel step renders as ONE
+				// assistant message carrying N tool_calls + N RoleTool
+				// messages, one per branch, each ToolCallID matched to the
+				// branch's CallID (AC-9). Decomposed from the AC-4
+				// aggregate observation.
+				if pcall, ok := step.Action.(planner.CallParallel); ok {
+					asstMsg, toolMsgs := renderNativeParallelStep(step, pcall, replayMode, i)
+					messages = append(messages, asstMsg)
+					messages = append(messages, toolMsgs...)
+					continue
+				}
+				asstMsg, toolMsg, native := renderNativeStepPair(step, replayMode, i)
+				if native {
+					messages = append(messages, asstMsg)
+					if toolMsg != nil {
+						messages = append(messages, *toolMsg)
+					}
+					continue
+				}
+				// Phase 107e (D-170): a SpawnTask / AwaitTask step (the
+				// `_spawn_task` / `_await_task` control meta-tools the model
+				// emits natively) replays as a native tool_call + RoleTool
+				// pair, consistent with the CallTool path above.
+				if cMsg, cToolMsg, control := renderNativeControlStep(step, replayMode, i); control {
+					messages = append(messages, cMsg)
+					if cToolMsg != nil {
+						messages = append(messages, *cToolMsg)
+					}
+					continue
+				}
+				// Legacy fallback for remaining non-native actions
+				// (defensive prior Finish, unknown shape).
 				asst := renderAssistantTurn(step, replayMode)
 				obs := renderObservationForLLM(step)
 				if asst != "" {
@@ -270,17 +330,16 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	}
 }
 
-// The twelve static section bodies. Brief 13 §4 carries the verbatim
-// adapted copy; the constants below are that copy, split at the XML
-// tag boundaries so each section is independently editable (brief 13
-// §2.1 design property 1). Phases 83b/c/d extend these section anchors:
-//
-//   - 83b replaces sectionAvailableToolsTag's body with per-tool
-//     `args_schema` + curated examples.
-//   - 83c populates the <planning_constraints> section from
-//     `RunContext.PlanningHints` and merges per-turn repair guidance
-//     into <additional_guidance> (D-145 — done).
-//   - 83d injects `<read_only_*_memory>` UNTRUSTED-framed blocks.
+// The eleven static section bodies (Phase 107c — D-167 resizes from
+// twelve). Brief 13 §4 carries the verbatim adapted copy; the
+// constants below are that copy, split at the XML tag boundaries so
+// each section is independently editable (brief 13 §2.1 design
+// property 1). Phases 83b/c/d extend these section anchors; Phase
+// 107c deletes `<output_format>`, `<action_schema>`, and
+// `<finishing>` (the prompt-engineered JSON-action instruction
+// block) and replaces them with `<tool_discovery>` + the
+// `<heavy_results>` explainer for the out-of-context artifact
+// store.
 //
 // The `{{current_date}}` placeholder in <identity> is the ONLY
 // template marker the builder resolves at Build time; everything else
@@ -304,98 +363,42 @@ Your role is to:
 Current date: {{current_date}}
 </identity>`
 
-	sectionOutputFormat = `<output_format>
-Think briefly (internally), then respond with a single JSON object that matches the action schema.
-If a tool would help, set "tool" to the tool name and provide "args".
-Write your JSON inside one markdown code block (` + "```json ... ```" + `).
-Do not emit multiple JSON objects or extra commentary after the code block.
+	sectionToolDiscovery = `<tool_discovery>
+You have native tool-calling. Tools declared in this turn are schema-validated and dispatched by the runtime — you choose which tool to call and with what arguments.
 
-Important:
-- Emit keys in this order for stability: tool, args.
-- User-facing answers go ONLY in args.answer when tool is "_finish" (finished).
-- During intermediate steps (when calling tools), the user sees nothing; only tool outputs are recorded internally.
-</output_format>`
+Discovery meta-tools (use them to explore beyond the always-loaded set):
 
-	sectionActionSchema = `<action_schema>
-Every response follows this structure:
+- tool_search(query, tags[], limit): search the catalog by capability keywords. Results are callable on the next turn after the planner observes the search.
+- tool_get(name): fetch a specific tool's full schema + examples.
+- skill_search(query, tags[], limit): search skill playbooks by topic.
+- skill_get(name): fetch a specific skill's content.
 
-{
-  "tool": "tool_name" | "parallel" | "_spawn_task" | "_await_task" | "_finish",
-  "args": { ... }
-}
+How to respond, in two cases:
 
-Field meanings:
-- tool:
-  - Tool call: a tool name from the catalog. If a tool was returned by ` + "`skill_search`" + ` but is deferred/hidden,
-    you may still call it by name; the runtime will activate it on first call.
-  - Parallel: "parallel" (executes tools concurrently)
-  - Background tasks: "_spawn_task" or "_await_task" (spawns or joins a task)
-  - Terminal: "_finish" (streams args.answer to the user)
-- args:
-  - Tool call: tool arguments matching args_schema
-  - Parallel: {"steps": [{"tool": "...", "args": {...}}, ...], "join": {...} | null}
-  - Task: see examples below
-  - Final: {"answer": "..."} — plain text only; no metadata fields.
+1. You need information or to take an action → emit one or more native tool calls. The runtime executes them, surfaces results back to you on the next turn, and you decide what to do next.
+2. You have enough information to satisfy the user → reply as the assistant turn's plain prose content with NO tool calls. The runtime delivers your message to the user verbatim and ends the run.
 
-Background task examples (use only when task management is enabled):
+Your prose is streamed live to the user as you type it, character by character. Markdown formatting is supported when the additional_guidance section permits it. The runtime adds nothing to your message — what you write IS what the user sees.
+</tool_discovery>`
 
-Example - _spawn_task (for complex reasoning tasks):
-{
-  "tool": "_spawn_task",
-  "args": {
-    "name": "Research market trends",
-    "query": "Analyze Q4 2024 market trends and provide a summary",
-    "merge_strategy": "HUMAN_GATED",
-    "group": "analysis",
-    "retain_turn": false
-  }
-}
+	// sectionHeavyResults is the factual explainer for the runtime's
+	// out-of-context storage of large tool results plus the
+	// meta-tools that operate on the resulting reference handles.
+	// The wording is deliberately descriptive — it states the
+	// mechanism, names a reference shape, lists the meta-tools, and
+	// notes that re-calling the upstream tool produces another
+	// stored copy rather than bypassing the threshold. New
+	// meta-tools that act on stored references extend the bullet
+	// list in this section as they land.
+	sectionHeavyResults = `<heavy_results>
+Some tools return payloads larger than fit cleanly in your context (multimedia metadata, file contents, query dumps). The runtime stores any tool result above its size threshold in an out-of-context artifact store and surfaces you a short preview plus a reference handle. Each reference looks like ref="abc123def456" and is unique per stored payload.
 
-Example - _await_task (join a previously-spawned task):
-{
-  "tool": "_await_task",
-  "args": { "task_id": "tsk_abc123" }
-}
+Meta-tools for working with stored references:
 
-Args schema for task actions:
-- name: Human-readable task name (for _spawn_task)
-- query: The task instruction (for _spawn_task)
-- merge_strategy: "HUMAN_GATED" (default), "APPEND", or "REPLACE"
-- group: Optional group name for coordinated tasks
-- group_sealed: true to seal the group (no more tasks can join)
-- retain_turn: true to wait for result (requires APPEND/REPLACE merge)
+- artifact_fetch(ref, max_bytes?): retrieve the full payload of a stored result. Use it when the preview does not carry the field, value, or section you need to answer the user. max_bytes lets you bound the returned slice; the runtime defaults to a safe size when omitted.
 
-Remember: The ONLY place for user-facing text is args.answer when tool is "_finish".
-</action_schema>`
-
-	sectionFinishing = `<finishing>
-When you have gathered enough information to answer the query:
-
-1. Set "tool" to "_finish"
-2. Provide "args" with this structure:
-
-{
-  "answer": "Your complete, human-readable answer to the user's query"
-}
-
-The answer field is REQUIRED and is the ONLY field. Write a full, helpful response — not a summary or fragment.
-Focus on solving the user query, going to the point of answering what they asked.
-
-` + "`answer`" + ` is plain text. Do NOT include structured metadata, status flags, confidence scores, or
-classification routes — Harbor's renderer is responsible for any structured presentation, not the planner.
-If rich UI is needed (cards, charts, structured layouts), call the appropriate MCP-Apps rendering tool
-BEFORE you finish, and reference the rendered artifact in ` + "`answer`" + ` as ordinary prose.
-
-Do NOT include heavy data (charts, files, large JSON) in args — artifacts from tool outputs are collected automatically.
-
-Example finish:
-{
-  "tool": "_finish",
-  "args": {
-    "answer": "Q4 2024 revenue increased 15% YoY to $1.2M. December was strongest."
-  }
-}
-</finishing>`
+The preview is the head of the payload only — fields further into the result live in the stored copy and require artifact_fetch to inspect. Re-calling the upstream tool produces a fresh stored copy of the same kind of payload; it does not bypass the threshold.
+</heavy_results>`
 
 	sectionToolUsage = `<tool_usage>
 Rules for using tools:
@@ -411,48 +414,13 @@ Rules for using tools:
 5. If a tool fails, consider alternative approaches before giving up
 </tool_usage>`
 
-	sectionParallelExecution = `<parallel_execution>
-For tasks that benefit from concurrent execution, use parallel plans:
-
-{
-  "tool": "parallel",
-  "args": {
-    "steps": [
-      {"tool": "tool_a", "args": {...}},
-      {"tool": "tool_b", "args": {...}}
-    ],
-    "join": {
-      "tool": "aggregator_tool",
-      "args": {},
-      "inject": {"results": "$results", "count": "$success_count"}
-    }
-  }
-}
-
-Available injection sources for args.join.inject:
-- $results: List of successful outputs
-- $branches: Full branch details with tool names
-- $failures: List of failed branches with errors
-- $success_count: Number of successful branches
-- $failure_count: Number of failed branches
-- $expect: Expected number of branches
-
-Use parallel execution when:
-- Multiple independent data sources need to be queried
-- Multiple independent queries can be made to the same source in parallel
-- Breakdown of multiple independent queries is more efficient than sequential calls
-- A single query seems too difficult to answer directly and several simpler queries can help
-- Tasks can be decomposed into non-dependent subtasks
-- Speed matters and tools don't have ordering dependencies
-</parallel_execution>`
-
 	sectionReasoning = `<reasoning>
 Approach problems systematically:
 
 1. Understand first: Parse the query to identify what's actually being asked
 2. Plan before acting: Consider which tools will help and in what order
 3. Gather evidence: Use tools to collect relevant information
-4. Synthesize: Combine observations into a coherent answer (in args.answer when done)
+4. Synthesize: Combine observations into a coherent answer
 5. Verify: Check if your answer actually addresses the query
 
 When uncertain:
@@ -465,12 +433,12 @@ Avoid:
 - Making up information not supported by tool observations
 - Calling the same tool repeatedly with identical arguments
 - Ignoring errors or unexpected results
-- Writing user-facing text during intermediate steps (save it for args.answer)
+- Writing user-facing text during intermediate steps (save it for the terminal answer message)
 - Generating "preview" answers before you're done gathering information
 </reasoning>`
 
 	sectionTone = `<tone>
-In your answer (ONLY when tool is "_finish"):
+When delivering your final answer to the user:
 - Be direct and informative — get to the point
 - Use clear, professional language
 - Acknowledge limitations honestly rather than hedging excessively
@@ -480,11 +448,8 @@ In your answer (ONLY when tool is "_finish"):
 - These are safe defaults. Your tone or voice can be changed in the additional_guidance section.
 - You can use markdown formatting if suggested in additional_guidance.
 
-CRITICAL:
-- During intermediate steps, produce ONLY the JSON action object. Do not add commentary.
-- Do not include a 'thought' or 'reasoning' field in the JSON. Internal reasoning is captured
-  by the runtime through provider-side channels when the provider exposes one; you do not need
-  to echo it as part of your structured output.
+During intermediate steps (when you're calling tools, not yet answering):
+- Internal reasoning is captured automatically by the runtime through provider-side channels when the provider exposes one; you do not need to echo it.
 </tone>`
 
 	sectionErrorHandling = `<error_handling>
@@ -497,42 +462,47 @@ Ambiguous query: Make reasonable assumptions and note them, or ask for clarifica
 Conflicting information: Acknowledge the conflict and explain your reasoning
 
 If you cannot complete the task after reasonable attempts:
-- Explain what you tried and why it didn't work in args.answer
+- Explain what you tried and why it didn't work in your final answer
 - Suggest what additional information or tools would help
-- If you need clarification from the user before you can proceed, ask for it directly in args.answer
+- If you need clarification from the user before you can proceed, ask for it directly in your final answer
   (Harbor surfaces your answer as the next user-visible turn; a follow-up question is a valid finish)
 </error_handling>`
 )
 
-// buildSystemContent assembles the twelve XML-tagged sections (brief
-// 13 §2.1) in their fixed order, separated by `\n\n`.
+// buildSystemContent assembles the nine XML-tagged sections (Phase 107c
+// D-167) in their fixed order, separated by `\n\n`.
 //
 //  1. <identity>             — role framing + current date.
-//  2. <output_format>        — one JSON object, one code block.
-//  3. <action_schema>        — the {tool, args} envelope.
-//  4. <finishing>            — terminal condition; only args.answer.
-//  5. <tool_usage>           — side_effects taxonomy + invocation rules.
-//  6. <parallel_execution>   — parallel plan schema + injection sources.
-//  7. <reasoning>            — 5-step systematic approach.
-//  8. <tone>                 — voice defaults + the CRITICAL clamp.
-//  9. <error_handling>       — recovery framing; no requires_followup.
-//  10. <available_tools>      — rendered tool catalog (per-tool).
-//  11. <additional_guidance>  — operator-supplied content + Phase 83c
+//  2. <tool_discovery>       — native tool-calling instructions +
+//     deferred-loading meta-tools (Phase 107c — D-167).
+//  3. <heavy_results>        — factual explainer for out-of-context
+//     storage of large tool results + the artifact_fetch meta-tool.
+//  4. <tool_usage>           — side_effects taxonomy + invocation rules.
+//  5. <reasoning>            — 5-step systematic approach.
+//  6. <tone>                 — voice defaults + intermediate-step
+//     guidance (no JSON-action shape — native tool-calling owns
+//     the wire form).
+//  7. <error_handling>       — recovery framing; no requires_followup.
+//  8. <available_tools>      — name + description quick reference
+//     (schemas live in the provider's native Tools[] declaration —
+//     Phase 107c — D-167).
+//  9. <additional_guidance>  — operator-supplied content + Phase 83c
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-//  12. <planning_constraints> — runtime-supplied PlanningHints
+//  10. <planning_constraints> — runtime-supplied PlanningHints
 //     (Phase 83c). OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
 // when an operator passes a non-default string it REPLACES the entire
-// twelve-section structure (the structured sections are
+// ten-section structure (the structured sections are
 // [DefaultSystemPrompt]'s content). `extraGuidance` flows into section
-// 11. Sections 11 and 12 are omitted entirely — not emitted as empty
-// tag pairs — when their content is absent.
+// 9. Sections 9 and 10 are omitted entirely — not emitted as empty tag
+// pairs — when their content is absent.
 //
-// `maxToolExamples` is the per-tool curated-example cap (Phase 83b —
-// D-144); zero resolves to [defaultMaxToolExamples].
-//
-// Phase 83a establishes the section anchors; 83b/c/d build on them.
+// `maxToolExamples` is retained for backward compatibility with the
+// builder field (react.go still sets it — step 9 deletes). Under
+// Phase 107c native tool-calling, `renderAvailableToolsSection`
+// ignores it and renders name+description only. The param will be
+// removed when step 9 lands.
 func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
 	// When the operator overrode the prompt via WithSystemPrompt with a
 	// non-default string, honour the override verbatim as the leading
@@ -545,11 +515,9 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 	if systemPrompt == DefaultSystemPrompt {
 		sections = []string{
 			renderIdentitySection(),
-			sectionOutputFormat,
-			sectionActionSchema,
-			sectionFinishing,
+			sectionToolDiscovery,
+			sectionHeavyResults,
 			sectionToolUsage,
-			sectionParallelExecution,
 			sectionReasoning,
 			sectionTone,
 			sectionErrorHandling,
@@ -596,23 +564,49 @@ func renderIdentitySection() string {
 }
 
 // renderAvailableToolsSection renders the <available_tools> section
-// (brief 13 §2.1 section 10). Phase 83b upgrades the Phase 45
-// name+description-only shape: each tool now renders `name`,
-// `description`, `args_schema` (compact one-line JSON), `side_effects`,
-// and up to `maxToolExamples` curated examples — closing the
-// args-validation-failure cascade caused by the LLM guessing argument
-// shapes (brief 13 §2.4 + §3, D-144). `maxToolExamples` ≤ 0 resolves
-// to [defaultMaxToolExamples].
+// (Phase 107c — D-167). Under native tool-calling, the prompt-side
+// catalog is a name+description quick-reference only — schemas,
+// side_effects, and examples live in the provider's native Tools[]
+// declaration. `maxToolExamples` is ignored (kept for backward compat
+// with react.go — step 9 deletes it).
+//
+// The section lists BOTH the always-loaded catalog subset (returned
+// by `rc.Catalog.List()`) AND the per-run discovered tools (resolved
+// by name from `rc.DiscoveredTools`). Discovered tools that already
+// appear in the always-loaded set are not duplicated. This mirrors
+// the `req.Tools` construction in `react.Next` (AC-17) so the LLM's
+// prompt and its native tool surface stay in sync.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
-	cfg := toolRenderConfig{maxExamples: maxToolExamples}
-	if cfg.maxExamples <= 0 {
-		cfg.maxExamples = defaultMaxToolExamples
-	}
+	// Phase 107c (D-167): `maxToolExamples` is ignored — schemas live
+	// in req.Tools[]; the prompt renders name+description only.
+	_ = maxToolExamples
 
 	var b strings.Builder
 	b.WriteString("<available_tools>\n")
 
 	catalog := listTools(rc)
+	// Append discovered tools (resolved by name) that aren't already
+	// in the always-loaded set. Mirrors buildToolDeclarations() — the
+	// section stays consistent with the per-turn req.Tools slice.
+	seen := make(map[string]struct{}, len(catalog))
+	for _, t := range catalog {
+		seen[t.Name] = struct{}{}
+	}
+	if rc.Catalog != nil {
+		for _, name := range rc.DiscoveredTools {
+			if name == "" {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			if t, ok := rc.Catalog.Resolve(name); ok {
+				catalog = append(catalog, t)
+				seen[name] = struct{}{}
+			}
+		}
+	}
+
 	if len(catalog) == 0 {
 		b.WriteString("(no tools registered for this run)\n")
 	} else {
@@ -620,7 +614,7 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 			if i > 0 {
 				b.WriteString("\n")
 			}
-			b.WriteString(renderTool(t, cfg))
+			b.WriteString(renderToolNameDesc(t))
 		}
 	}
 	b.WriteString("</available_tools>")
@@ -648,28 +642,11 @@ func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string
 	}
 }
 
-// renderTool emits the per-tool block for the <available_tools>
-// section (Phase 83b — D-144). The block is:
-//
-//   - <name>: <description>
-//     args_schema: <compact one-line JSON>
-//     side_effects: <class>
-//     examples:
-//   - <description> → <compact args JSON>
-//
-// The `args_schema` and `examples:` lines are omitted entirely when
-// the tool declares no schema / no examples — a no-examples tool
-// renders exactly through the `side_effects` line, so existing tool
-// registrations need no code change (the new fields are opt-in on
-// `tools.Tool`). `side_effects` always renders, defaulting to `pure`
-// when the tool leaves the field unset.
-//
-// renderTool is a pure function: it reads only its arguments, holds no
-// shared state, and is therefore trivially safe for concurrent reuse
-// (D-025). The compact-JSON discipline (one line, deterministic key
-// order via `encoding/json`'s sorted map marshalling) maximises the
-// KV-cache hit rate across turns (brief 13 §5).
-func renderTool(t tools.Tool, cfg toolRenderConfig) string {
+// renderToolNameDesc renders a tool as name + description only for the
+// prompt-side <available_tools> quick reference (Phase 107c — D-167).
+// Schemas, side_effects, and examples live in the provider's native
+// Tools[] declaration; the prompt duplicates none of them.
+func renderToolNameDesc(t tools.Tool) string {
 	var b strings.Builder
 	b.WriteString("- ")
 	b.WriteString(t.Name)
@@ -678,137 +655,13 @@ func renderTool(t tools.Tool, cfg toolRenderConfig) string {
 		b.WriteString(oneLine(t.Description))
 	}
 	b.WriteString("\n")
-
-	if schema := compactJSON(t.ArgsSchema); schema != "" {
-		b.WriteString("  args_schema: ")
-		b.WriteString(schema)
-		b.WriteString("\n")
-	}
-
-	b.WriteString("  side_effects: ")
-	b.WriteString(sideEffectOf(t))
-	b.WriteString("\n")
-
-	examples := rankedExamples(t.Examples, cfg.maxExamples)
-	if len(examples) > 0 {
-		b.WriteString("  examples:\n")
-		for _, ex := range examples {
-			b.WriteString("    - ")
-			if d := oneLine(ex.Description); d != "" {
-				b.WriteString(d)
-				b.WriteString(" → ")
-			}
-			b.WriteString(compactArgs(ex.Args))
-			b.WriteString("\n")
-		}
-	}
 	return b.String()
 }
 
-// sideEffectOf returns the tool's declared side-effect class, defaulting
-// to "pure" when the field is unset — a tool that makes no claim is
-// treated as the safest class so the planner's <tool_usage> guidance
-// reads consistently.
-func sideEffectOf(t tools.Tool) string {
-	if t.SideEffects == "" {
-		return string(tools.SideEffectPure)
-	}
-	return string(t.SideEffects)
-}
-
-// exampleTagRank maps a [tools.ToolExample]'s tag set to a sort rank:
-// `minimal` (0) > `common` (1) > `edge-case` (2) > untagged (3). The
-// lowest-numbered (highest-priority) tag on the example wins — an
-// example tagged both `common` and `edge-case` ranks as `common`.
-func exampleTagRank(tags []string) int {
-	rank := 3 // untagged
-	for _, tag := range tags {
-		switch tag {
-		case "minimal":
-			return 0 // highest priority — short-circuit
-		case "common":
-			if rank > 1 {
-				rank = 1
-			}
-		case "edge-case":
-			if rank > 2 {
-				rank = 2
-			}
-		}
-	}
-	return rank
-}
-
-// rankedExamples returns up to `limit` examples from `in`, ordered by
-// tag priority (`minimal` > `common` > `edge-case` > untagged). The
-// sort is stable on `(rank, originalIndex)` so equal-rank examples
-// keep their registration order. A non-positive `limit` yields no
-// examples; the input slice is never mutated (the helper copies).
-func rankedExamples(in []tools.ToolExample, limit int) []tools.ToolExample {
-	if limit <= 0 || len(in) == 0 {
-		return nil
-	}
-	ranked := make([]tools.ToolExample, len(in))
-	copy(ranked, in)
-	sort.SliceStable(ranked, func(i, j int) bool {
-		return exampleTagRank(ranked[i].Tags) < exampleTagRank(ranked[j].Tags)
-	})
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
-	}
-	return ranked
-}
-
-// compactJSON re-marshals a JSON-Schema document to a single-line
-// compact form (no insignificant whitespace, deterministic map-key
-// order via `encoding/json`). Returns the empty string when the input
-// is empty or not valid JSON — a tool with no schema simply omits the
-// `args_schema:` line. Brief 13 §5: compact JSON keeps the prompt
-// stable across turns for KV-cache hit rates. HTML escaping is
-// disabled so `<`, `>`, `&` survive verbatim in tool-schema
-// descriptions like `"value < 100"`; the schema renders inside an
-// XML-ish wrapper the model reads as data and the un-escaped form is
-// both smaller and more readable.
-//
-// **Distinct contract from [compactValueJSON] (memory_wrappers.go).**
-// `compactJSON` is lossy on error (returns "" so a malformed
-// tool-schema simply omits the args_schema line); `compactValueJSON`
-// is fail-loud (returns an error so a malformed memory tier raises
-// `planner.ErrMemoryBlockUnserializable`). The split is deliberate
-// per D-144 (lenient schema renderer) and D-146 (loud memory render).
-// Do not unify the two without changing both decisions.
-func compactJSON(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return ""
-	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return ""
-	}
-	return string(bytes.TrimRight(buf.Bytes(), "\n"))
-}
-
-// compactArgs marshals an example's `Args` map to single-line compact
-// JSON. A nil / empty map renders as `{}` — matching the parser's
-// normalisation for an argument-free call. Marshalling failure (an
-// unserialisable value the example author placed in the map) yields
-// `{}` rather than leaking a Go `%v` rendering into the prompt.
-func compactArgs(args map[string]any) string {
-	if len(args) == 0 {
-		return "{}"
-	}
-	out, err := json.Marshal(args)
-	if err != nil {
-		return "{}"
-	}
-	return string(out)
-}
+// The `<available_tools>` section renders only `{name, description}`
+// as a quick-reference; the typed schemas live in `req.Tools[]`. The
+// example-ranking and schema-rendering helpers that fed the
+// prompt-engineered shape are not needed and have been removed.
 
 // renderPlanningConstraints renders the <planning_constraints> section
 // (brief 13 §2.1 section 12) from `RunContext.PlanningHints`
@@ -875,6 +728,606 @@ func listTools(rc planner.RunContext) []tools.Tool {
 	return rc.Catalog.List()
 }
 
+// renderNativeStepPair projects a single trajectory step into a pair
+// of native chat messages — an assistant `tool_calls` block + a
+// matching `tool` role observation — per the Phase 107c contract
+// (D-167 / AC-20a / AC-20b). Returns (assistantMsg, *toolMsg, true)
+// when the step's Action is a `planner.CallTool`; the third return is
+// false for any other Action shape (the caller falls back to the
+// legacy assistant-text + user-observation pair so observability
+// survives malformed trajectories).
+//
+// The assistant message carries one ToolCalls entry whose ID +
+// Name + Args mirror the prior CallTool. When the CallTool's CallID
+// is empty (legacy trajectory shape, or a planner-emitted call that
+// pre-dates a provider-supplied ID), a deterministic synthetic ID
+// `react.callid.<step-index>` is generated and stamped on BOTH the
+// assistant tool-call entry AND the RoleTool ToolCallID so the
+// round-trip stays well-formed.
+//
+// When the step has no observation, error, or failure surface yet
+// (the runtime appended the Action but the dispatch hasn't completed
+// — an unusual state outside tests), the returned `toolMsg` is nil so
+// the caller emits only the assistant turn. The provider will see an
+// outstanding tool_call awaiting a tool result; the planner's next
+// step will append the matching RoleTool message when the observation
+// lands.
+//
+// `replayMode` controls reasoning replay (Phase 83e — D-148). When
+// set to [planner.ReasoningReplayText] AND the step carries a
+// non-empty `ReasoningTrace`, the captured reasoning is prepended as
+// a text block in the assistant message's Content body (above the
+// tool_calls block from the provider's perspective).
+func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, *llm.ChatMessage, bool) {
+	call, ok := step.Action.(planner.CallTool)
+	if !ok {
+		return llm.ChatMessage{}, nil, false
+	}
+	callID := call.CallID
+	if callID == "" {
+		callID = fmt.Sprintf("react.callid.%d", stepIdx)
+	}
+	// Replay the model's prior preamble prose so the assistant turn
+	// retains its narrative thread. Reasoning-replay (D-148) layers
+	// on top: when `ReasoningReplay=text` AND the step has a
+	// provider-side ReasoningTrace, the trace is appended below the
+	// preamble.
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	// Leave Content at zero value when the preamble is empty.
+	// OpenAI's wire spec requires `content: null` (not `""`) when
+	// tool_calls is present; the safety pass + translator carve-out
+	// emit the null shape from the zero-value Content here.
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:    llm.RoleAssistant,
+		Content: asstContent,
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   callID,
+			Name: call.Tool,
+			Args: json.RawMessage(safeArgs(call.Args)),
+		}},
+	}
+	observation := renderNativeObservation(step)
+	if observation == "" {
+		// OpenAI's native tool-calling wire spec requires every
+		// assistant `tool_calls[i]` to be paired with a
+		// `role:"tool"` message carrying the matching
+		// `tool_call_id`. Emitting the assistant half without its
+		// sibling produces a 400 on OpenAI and is non-recoverable
+		// on Anthropic. Synthesise a placeholder tool body so the
+		// pair is always complete; the slog.Warn surfaces the
+		// underlying gap (a tool returned nil / empty without an
+		// error) so an operator can fix the upstream producer.
+		slog.Warn("react.renderNativeStepPair: empty observation — emitting placeholder tool message to preserve wire contract",
+			"step_idx", stepIdx,
+			"tool", call.Tool,
+			"call_id", callID,
+			"observation_nil", step.Observation == nil,
+			"llm_observation_nil", step.LLMObservation == nil,
+			"failure_nil", step.Failure == nil,
+			"error_empty", step.Error == "",
+		)
+		observation = "(tool returned no observation)"
+	}
+	id := callID
+	tool := &llm.ChatMessage{
+		Role:       llm.RoleTool,
+		Content:    textContent(observation),
+		ToolCallID: &id,
+	}
+	return asst, tool, true
+}
+
+// renderNativeControlStep projects a trajectory step whose Action is a
+// [planner.SpawnTask] or [planner.AwaitTask] — the two NON-terminal
+// planner-control meta-tools the model emits as native tool-calls
+// (`_spawn_task` / `_await_task`; Phase 47 / D-056, declared natively
+// since Phase 107c, first dispatched on the dev path by Phase 107e /
+// D-170) — back into the native tool-call wire shape, mirroring
+// [renderNativeStepPair] for CallTool: ONE assistant message carrying the
+// reserved tool name + reconstructed args, paired with ONE RoleTool
+// message carrying the dispatch observation. Returns
+// (assistant, *toolMsg, true) for those two shapes; (zero, nil, false)
+// for any other Action so the caller falls through to the legacy
+// assistant-text rendering (a defensive prior Finish / unknown shape).
+//
+// Why native (not the legacy `{"action":...}` text marker): the model
+// invoked these as native tools, so replaying them as native tool-calls
+// keeps the rebuilt conversation consistent with how it was emitted, and
+// — critically for multi-spawn coordination — preserves each spawn's args
+// so the model can tell which returned `task_id` corresponds to which
+// sub-goal. The text marker dropped the args entirely.
+//
+// CallID: the projector translates the native call into a typed Decision
+// that does not retain the provider tool-call id, so a deterministic
+// `react.callid.<step-index>` is synthesised and stamped on BOTH the
+// assistant tool-call entry and the RoleTool ToolCallID — the same
+// synthesis the CallTool path uses for empty CallIDs — so the pairing is
+// well-formed.
+func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, *llm.ChatMessage, bool) {
+	var toolName string
+	var args json.RawMessage
+	switch a := step.Action.(type) {
+	case planner.SpawnTask:
+		toolName = SpawnTaskToolName
+		args = spawnTaskReplayArgs(a)
+	case planner.AwaitTask:
+		toolName = AwaitTaskToolName
+		args = awaitTaskReplayArgs(a)
+	default:
+		return llm.ChatMessage{}, nil, false
+	}
+
+	callID := fmt.Sprintf("react.callid.%d", stepIdx)
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:    llm.RoleAssistant,
+		Content: asstContent,
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   callID,
+			Name: toolName,
+			Args: args,
+		}},
+	}
+
+	observation := renderNativeObservation(step)
+	if observation == "" {
+		observation = "(control tool returned no observation)"
+	}
+	id := callID
+	tool := &llm.ChatMessage{
+		Role:       llm.RoleTool,
+		Content:    textContent(observation),
+		ToolCallID: &id,
+	}
+	return asst, tool, true
+}
+
+// spawnTaskReplayArgs reconstructs the `_spawn_task` args envelope from a
+// typed [planner.SpawnTask] for trajectory replay. The shape mirrors the
+// envelope [translateNativeSpawn] parses; it is rendered for the model's
+// eyes (not re-parsed), so it carries every field the model set.
+func spawnTaskReplayArgs(d planner.SpawnTask) json.RawMessage {
+	env := map[string]any{
+		"kind": string(d.Kind),
+		"spec": map[string]any{
+			"description": d.Spec.Description,
+			"query":       d.Spec.Query,
+			"priority":    d.Spec.Priority,
+			"retain_turn": d.Spec.RetainTurn,
+			"fail_fast":   d.Spec.FailFast,
+		},
+	}
+	if d.GroupID != "" {
+		env["group_id"] = string(d.GroupID)
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// awaitTaskReplayArgs reconstructs the `_await_task` args envelope from a
+// typed [planner.AwaitTask] for trajectory replay.
+func awaitTaskReplayArgs(d planner.AwaitTask) json.RawMessage {
+	out, err := json.Marshal(map[string]any{"task_id": string(d.TaskID)})
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// renderNativeParallelStep projects a trajectory step whose Action is a
+// [planner.CallParallel] into the native multi-tool-call wire shape
+// (Phase 107d — D-169 / AC-9): ONE assistant [llm.ChatMessage] whose
+// `ToolCalls` slice carries every branch's `{ID, Name, Args}`, followed
+// by N `RoleTool` messages — one per branch — each `ToolCallID` matched
+// to its branch and `Content` set to that branch's projected
+// observation. Every `tool_call_id` declared on the assistant message
+// has exactly one matching `RoleTool` answer (the provider wire-contract
+// invariant); the messages are emitted in branch-index order (JoinAll
+// semantics).
+//
+// Branch CallIDs that are empty (a programmatic CallParallel, or a
+// provider that omitted IDs) get a deterministic synthetic
+// `react.callid.<step-index>.<branch-index>` stamped on BOTH the
+// assistant tool-call entry AND the matching RoleTool message so the
+// pairing stays well-formed.
+//
+// Per-branch observations are decomposed from the AC-4 aggregate
+// ([planner.ParallelObservation]) carried on `step.LLMObservation`
+// (preferred — the D-026 projected forms) or `step.Observation`. The
+// aggregate's branches are matched to assistant tool-calls by their
+// `Index` (the deterministic merge key — robust to empty/duplicate
+// CallIDs). When no aggregate is present (e.g. the runloop wrapped a
+// whole-call executor abort as a flat error map), the fallback body is
+// rendered once and reused for every branch so the N-answers invariant
+// still holds.
+func renderNativeParallelStep(step planner.Step, call planner.CallParallel, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, []llm.ChatMessage) {
+	toolCalls := make([]llm.ToolCallStructured, len(call.Branches))
+	for bi, b := range call.Branches {
+		cid := b.CallID
+		if cid == "" {
+			cid = fmt.Sprintf("react.callid.%d.%d", stepIdx, bi)
+		}
+		toolCalls[bi] = llm.ToolCallStructured{
+			ID:   cid,
+			Name: b.Tool,
+			Args: json.RawMessage(safeArgs(b.Args)),
+		}
+	}
+
+	// Assistant preamble + reasoning replay — same shape as the single
+	// CallTool path (renderNativeStepPair).
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:      llm.RoleAssistant,
+		Content:   asstContent,
+		ToolCalls: toolCalls,
+	}
+
+	// Decompose the aggregate observation, indexed by branch Index.
+	byIndex, hasAgg := parallelBranchBodiesByIndex(step)
+	var fallbackBody string
+	if !hasAgg {
+		fallbackBody = renderParallelFallbackBody(step)
+		if fallbackBody == "" {
+			fallbackBody = "(tool returned no observation)"
+		}
+	}
+
+	toolMsgs := make([]llm.ChatMessage, len(call.Branches))
+	for bi := range call.Branches {
+		body := fallbackBody
+		if hasAgg {
+			if b, ok := byIndex[bi]; ok {
+				body = renderParallelBranchBody(b)
+			} else {
+				body = ""
+			}
+		}
+		if body == "" {
+			slog.Warn("react.renderNativeParallelStep: empty branch observation — emitting placeholder to preserve wire contract",
+				"step_idx", stepIdx,
+				"branch_idx", bi,
+				"tool", call.Branches[bi].Tool,
+				"call_id", toolCalls[bi].ID,
+			)
+			body = "(tool returned no observation)"
+		}
+		id := toolCalls[bi].ID
+		toolMsgs[bi] = llm.ChatMessage{
+			Role:       llm.RoleTool,
+			Content:    textContent(body),
+			ToolCallID: &id,
+		}
+	}
+	return asst, toolMsgs
+}
+
+// parallelBranchBodiesByIndex extracts the AC-4 aggregate observation
+// from a CallParallel step and returns a map keyed by branch Index.
+// Prefers `step.LLMObservation` (the D-026 projected forms) over the raw
+// `step.Observation`. Returns (nil, false) when neither slot carries a
+// [planner.ParallelObservation].
+func parallelBranchBodiesByIndex(step planner.Step) (map[int]planner.ParallelBranchObservation, bool) {
+	for _, obs := range []any{step.LLMObservation, step.Observation} {
+		var agg planner.ParallelObservation
+		switch v := obs.(type) {
+		case planner.ParallelObservation:
+			agg = v
+		case *planner.ParallelObservation:
+			if v == nil {
+				continue
+			}
+			agg = *v
+		default:
+			continue
+		}
+		out := make(map[int]planner.ParallelBranchObservation, len(agg.Branches))
+		for _, b := range agg.Branches {
+			out[b.Index] = b
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// renderParallelBranchBody renders one branch's observation body for its
+// RoleTool message. Errors surface first (the planner needs to see
+// them); otherwise heavy-content wrappers project through the existing
+// inlined-preview path (D-026), falling back to the generic renderer.
+func renderParallelBranchBody(b planner.ParallelBranchObservation) string {
+	if b.Error != "" {
+		return "Tool error: " + oneLine(b.Error)
+	}
+	if body, ok := renderHeavyContentObservation(b.Value); ok {
+		return body
+	}
+	if b.Value != nil {
+		return renderAny(b.Value)
+	}
+	return ""
+}
+
+// renderParallelFallbackBody renders a body for the degenerate case
+// where a CallParallel step carries no per-branch aggregate (a
+// whole-call executor abort the runloop wrapped as a flat error map, or
+// a malformed trajectory). Surfaces failures / errors first, then any
+// heavy-content wrapper, then the generic projection.
+func renderParallelFallbackBody(step planner.Step) string {
+	if step.Failure != nil {
+		return fmt.Sprintf("Tool failure: %s — %s",
+			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if step.Error != "" {
+		return "Tool error: " + oneLine(step.Error)
+	}
+	for _, obs := range []any{step.LLMObservation, step.Observation} {
+		if body, ok := renderHeavyContentObservation(obs); ok {
+			return body
+		}
+		if obs != nil {
+			return renderAny(obs)
+		}
+	}
+	return ""
+}
+
+// renderNativeObservation returns the tool-result content body for the
+// native RoleTool message. Failures + errors surface first (the
+// planner needs to see them to course-correct); otherwise the
+// LLMObservation projection is preferred over the raw Observation per
+// D-026 heavy-content discipline. Returns the empty string when no
+// observation is available yet (the runtime appended the Action but
+// dispatch hasn't completed).
+//
+// Heavy-content wrappers — `*llm.ArtifactStub` (multimodal
+// materialiser) or the executor's truncation map (`{"preview":...,
+// "artifact_ref":...}`) — are projected as the inlined preview text
+// plus a positional [artifact_fetch] footer carrying the ref + size.
+// The wrapper JSON never reaches the LLM. The footer wording avoids
+// wrapper terminology so the LLM doesn't acquire a prior on the
+// internal shape.
+func renderNativeObservation(step planner.Step) string {
+	if step.Failure != nil {
+		return fmt.Sprintf("Tool failure: %s — %s",
+			step.Failure.Code, oneLine(step.Failure.Message))
+	}
+	if step.Error != "" {
+		return "Tool error: " + oneLine(step.Error)
+	}
+	if body, ok := renderHeavyContentObservation(step.LLMObservation); ok {
+		return body
+	}
+	if body, ok := renderHeavyContentObservation(step.Observation); ok {
+		return body
+	}
+	if step.LLMObservation != nil {
+		return renderAny(step.LLMObservation)
+	}
+	if step.Observation != nil {
+		return renderAny(step.Observation)
+	}
+	return ""
+}
+
+// renderHeavyContentObservation detects the two known heavy-content
+// wrapper shapes and returns the inlined preview text + a positional
+// fetch-hint footer when the payload is truncated. Returns
+// (body, true) when the input matched a wrapper shape; (body, false)
+// otherwise (the caller falls through to the standard renderAny path).
+//
+// Recognised shapes (D-026 heavy-content boundary):
+//
+//  1. `*llm.ArtifactStub` — the multimodal materialiser shape from
+//     `internal/llm/materialize.go`. `Summary` is treated as the
+//     preview text; when empty (the common case for tool-result
+//     materialisation), the body is a minimal "(no preview)" marker
+//     plus the fetch hint so the LLM still sees the ref.
+//
+//  2. `map[string]any` carrying both `preview` and `artifact_ref`
+//     keys — the runtime tool-executor's `heavyTruncationSummary`
+//     shape (`cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`).
+//     `preview` is the head bytes of the JSON-encoded payload;
+//     `truncated: true` is the executor's explicit signal that the
+//     full bytes live in the artifact store under `artifact_ref`.
+//
+// Adopted convention (no new ArtifactStub field): if the observation
+// matched one of the two wrapper shapes, the preview MAY be
+// truncated → always emit the fetch-hint footer. Callers that need
+// to suppress the hint pass a non-wrapper observation. Documented
+// here so the choice doesn't drift.
+func renderHeavyContentObservation(obs any) (string, bool) {
+	if obs == nil {
+		return "", false
+	}
+	if stub, ok := obs.(*llm.ArtifactStub); ok && stub != nil {
+		return renderArtifactStubObservation(stub), true
+	}
+	if m, ok := obs.(map[string]any); ok {
+		if body, matched := renderHeavyContentMap(m); matched {
+			return body, true
+		}
+	}
+	return "", false
+}
+
+// renderArtifactStubObservation projects an `*llm.ArtifactStub` into
+// the inlined-preview-plus-footer body shape. Uses `Summary` as the
+// preview text (the materialiser's operator-overridable per-producer
+// description; D-026); empty Summary falls back to a minimal marker
+// so the LLM still sees the ref + the fetch hint.
+func renderArtifactStubObservation(stub *llm.ArtifactStub) string {
+	preview := oneLine(stub.Summary)
+	if preview == "" {
+		preview = "(no preview available)"
+	}
+	return preview + " " + artifactFetchFooter(stub.Ref, stub.MIME, stub.SizeBytes)
+}
+
+// asString returns v as a string, or "" when v is absent or not a
+// string. Centralises the best-effort `any → string` extraction the
+// heavy-content projection does over untyped observation maps.
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// renderHeavyContentMap detects the runtime tool-executor's
+// `heavyTruncationSummary` shape and projects it for the LLM.
+// Returns (body, true) when the wrapper map carries a usable
+// `preview` and/or `artifact_ref`; (body, false) otherwise. Picks
+// the field-aware vs byte-truncation footer variant via
+// [isFieldAwarePreview].
+func renderHeavyContentMap(m map[string]any) (string, bool) {
+	previewRaw, hasPreview := m["preview"]
+	refRaw, hasRef := m["artifact_ref"]
+	if !hasPreview && !hasRef {
+		return "", false
+	}
+	preview := asString(previewRaw)
+	ref := asString(refRaw)
+	if ref == "" && preview == "" {
+		return "", false
+	}
+	mime := asString(m["mime"])
+	var size int64
+	switch v := m["size_bytes"].(type) {
+	case int:
+		size = int64(v)
+	case int64:
+		size = v
+	case float64:
+		size = int64(v)
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			size = parsed
+		}
+	}
+	preview = oneLine(preview)
+	if preview == "" {
+		preview = "(no preview available)"
+	}
+	if ref == "" {
+		// preview-only — no fetch hint possible. Returning matched=true
+		// still routes through the inlined-preview path so the LLM
+		// doesn't see the wrapper JSON.
+		return preview, true
+	}
+	// Two footer variants — the field-aware variant names the
+	// omitted-field sentinels as the unit artifact_fetch retrieves;
+	// the byte-truncation variant says "full payload available."
+	if isFieldAwarePreview(preview) {
+		return preview + "\n\n" + artifactFetchFooterFieldAware(ref, mime, size), true
+	}
+	return preview + " " + artifactFetchFooter(ref, mime, size), true
+}
+
+// isFieldAwarePreview returns true when `s` parses as JSON AND
+// contains the `[omitted: N bytes]` sentinel pattern that the
+// field-aware preview emits for pruned fields. Used to pick the
+// matching artifactFetchFooter* variant.
+func isFieldAwarePreview(s string) bool {
+	if !strings.Contains(s, `"[omitted:`) {
+		return false
+	}
+	var probe any
+	return json.Unmarshal([]byte(s), &probe) == nil
+}
+
+// artifactFetchFooterFieldAware is the footer variant for field-aware
+// previews. The preview above already shows every scalar field; the
+// only thing artifact_fetch retrieves is the specific fields marked
+// `[omitted: N bytes]`. The wording names those sentinels as the
+// retrieval unit and explicitly tells the model not to re-call the
+// upstream tool (which would produce the same preview with the same
+// omissions).
+func artifactFetchFooterFieldAware(ref, mime string, size int64) string {
+	var b strings.Builder
+	b.WriteString(`[Fields marked "[omitted: N bytes]" above were pruned to fit context — call artifact_fetch(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`") to retrieve the full payload`)
+	if size > 0 {
+		fmt.Fprintf(&b, " (size: %d bytes", size)
+		if mime != "" {
+			b.WriteString(", mime: " + mime)
+		}
+		b.WriteString(")")
+	}
+	b.WriteString(". The scalar fields above are complete; do not re-call the upstream tool — it will return the same preview with the same omissions.]")
+	return b.String()
+}
+
+// artifactFetchFooter renders the positional fetch-hint footer for
+// byte-truncated previews (non-JSON or non-field-aware). Names the
+// ref + optional MIME + optional size; no wrapper-shape terminology.
+func artifactFetchFooter(ref, mime string, size int64) string {
+	var b strings.Builder
+	b.WriteString("[Full payload available")
+	first := true
+	writeKV := func(k, v string) {
+		if v == "" {
+			return
+		}
+		if first {
+			b.WriteString(" (")
+			first = false
+		} else {
+			b.WriteString(", ")
+		}
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(v)
+	}
+	if size > 0 {
+		writeKV("size", fmt.Sprintf("%d bytes", size))
+	}
+	writeKV("mime", mime)
+	if !first {
+		b.WriteString(")")
+	}
+	b.WriteString(` — call artifact_fetch(ref="`)
+	b.WriteString(ref)
+	b.WriteString(`") to retrieve it.]`)
+	return b.String()
+}
+
 // renderAssistantTurn renders one prior trajectory step as the
 // assistant turn for the next prompt. It is the Phase 83e (D-148)
 // replay-aware wrapper around [renderActionForLLM]: when `replayMode`
@@ -885,6 +1338,11 @@ func listTools(rc planner.RunContext) []tools.Tool {
 //
 // Returns the empty string when the action itself is unrenderable
 // (the prompt builder skips empty messages).
+//
+// Phase 107c (D-167): this function is retained for the legacy
+// non-CallTool action fallback path in [defaultBuilder.baseRequest]
+// — CallTool actions now route through [renderNativeStepPair] and
+// emit native assistant `tool_calls` + RoleTool ChatMessage pairs.
 func renderAssistantTurn(step planner.Step, replayMode planner.ReasoningReplayMode) string {
 	action := renderActionForLLM(step.Action)
 	if action == "" {

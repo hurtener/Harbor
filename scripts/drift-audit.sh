@@ -225,6 +225,17 @@ if [ -x scripts/skills/check-frontmatter.sh ]; then
     fi
 fi
 
+# -----------------------------------------------------------------------------
+# Phase 106 regression guard — the Playground placeholder bubble must not
+# come back. The literal text was load-bearing for the V1.1 bug where
+# operators saw no model output.
+# -----------------------------------------------------------------------------
+if grep -rq "Message accepted by the Runtime" web/console/src/routes/\(console\)/playground/ 2>/dev/null; then
+    fail "Phase 106 regression guard: playground placeholder text 'Message accepted by the Runtime.' is forbidden — see phase 106"
+else
+    ok 'Phase 106 regression guard: no playground placeholder text'
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

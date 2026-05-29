@@ -616,6 +616,29 @@ tools:
 
 ---
 
+### tools.search_cache_dsn
+
+SQLite DSN backing the Phase 107c / D-167 tool **SearchCache** (FTS5 +
+regex fallback). The discovery meta-tools (`tool_search`, `tool_get`)
+delegate to this index; an empty value selects the in-memory default,
+which is suitable for development (discovery state lives for the
+process lifetime).
+
+Operators that want the cache to persist across reboots set a `file:`
+URI; the driver layers `journal_mode(WAL)` + `busy_timeout(5000)`
+automatically when the URI does not already declare them.
+
+Default: empty (in-memory cache). Restart-required.
+
+Example:
+
+```yaml
+tools:
+  search_cache_dsn: file:./harbor-tools.db
+```
+
+---
+
 ## Planner
 
 ### planner.driver
@@ -645,6 +668,28 @@ Validation: `never` / `text` (no `provider_native` in V1.1).
 Cap on curated examples rendered per tool in the planner's
 `<available_tools>` section (Phase 83b / D-144). Default: `0` →
 driver default of 3. Validation: >= 0.
+
+### planner.parallel_tool_calls
+
+Toggles native parallel tool-call emission (Phase 107d / D-169).
+When the LLM returns N>1 tool-calls in one response, `true` makes the
+React planner emit a native `CallParallel` and the dev `ToolExecutor`
+dispatch the branches concurrently; `false` selects the Phase 107c
+serialization fallback (one `CallTool` per step via
+`RunContext.PendingToolCalls`). Pointer-bool: an omitted key resolves
+to `true` (the native-parallel default). Validation: none (both states
+are correct).
+
+### planner.absolute_max_spawn_depth
+
+Caps the `ParentTaskID`-chain depth of planner-spawned background
+tasks (Phase 107e / D-170). When a planner emits `_spawn_task`, the
+dev `ToolExecutor` reads the parent chain depth and rejects loudly —
+an error observation the planner re-plans against, never a silent
+drop — any spawn whose child would exceed this depth, so a background
+sub-agent that itself emits `_spawn_task` cannot recurse without
+bound. The cap bounds depth, not breadth. Default: `0` → dev-runtime
+default of 4. Validation: >= 0.
 
 ### planner.skills_context_max
 

@@ -53,6 +53,8 @@ The Playground's chat input drives FOREGROUND tasks — synchronous, the chat pa
 
 For a chat agent, foreground is what you want — you're in conversation. But the planner CAN spawn background tasks mid-run (e.g. "I'll fetch the data in the background while we keep talking"). Those show up in the Tasks page; the foreground chat reflects them with a small "background task spawned" event in the chat history.
 
+As of Phase 107e the dev runtime actually RUNS those spawned background tasks (each gets its own planner sub-run) and the agent can join one to read its result. A background sub-task can itself spawn further sub-tasks; `planner.absolute_max_spawn_depth` (default 4) caps how deeply that nests, so a runaway agent can't recurse without bound — a spawn past the cap surfaces as an error the planner re-plans against.
+
 ### Steer vs queue — input during a running foreground task
 
 When a foreground task is running and you type into the chat input, you get a CHOICE:
@@ -68,9 +70,9 @@ The unified pause/resume primitive (RFC §6.10) is what makes this work — `Req
 
 The chat history surfaces several event types inline:
 
-- **Assistant text** — the streamed LLM response.
-- **Tool calls** — collapsed by default; click to expand the args/result panel.
-- **Thoughts/reasoning** — gated by `planner.reasoning_replay`; visible when enabled.
+- **Assistant text** — the streamed LLM response. Starts from byte 0: Phase 107c moved the React planner onto native provider tool-calling, so `Content` deltas are the user-facing prose by structural construction (no JSON wrapper / no `{tool, args}` envelope buffering — the LLM no longer emits one). Chunks flow straight from bifrost's `OnContent` callback through to the Console with no extractor in the middle.
+- **Tool calls** — collapsed by default; click to expand the args/result panel. Tool calls arrive on their own structured channel (`resp.ToolCalls []ToolCallStructured`) and are rendered as cards rather than inlined into the prose stream. **The agent can call several tools at once in a single turn (Phase 107d):** when it does, the runtime dispatches them concurrently and you'll see multiple tool-call cards for the same assistant turn, each with its own result. Concurrent dispatch is on by default; set `planner.parallel_tool_calls: false` in `harbor.yaml` to make the runtime run them one per step instead.
+- **Thoughts/reasoning** — click the "Reasoning (N steps)" toggle on any agent bubble to see the model's intermediate thinking trace from the planner trajectory. The accordion shows the per-step reasoning the model produced; collapsed by default, one click expands it. Phase 107a.
 - **Pause events** — yellow inline cards with reason ("oauth_required", "approval_pending", "user_steer", etc.). The card has a Resume button when applicable.
 - **Errors** — red inline cards with the wrapped error chain. Click to expand stack/audit details.
 

@@ -39,9 +39,14 @@ assert_grep_present 'STORAGE_KEYS\.baseURL' \
 assert_grep_present "import \{ attachConnection, resolveConnection \}" \
     "web/console/src/lib/settings/console_db.svelte.ts" \
     "SettingsDBController imports attachConnection"
-assert_grep_present 'attachConnection\(baseURL\)' \
+# Phase 105 widened the call to `attachConnection(baseURL, { token, identity, scopes })`
+# (the connection resolver requires all five fields). The 83u invariant —
+# that the active-connection write happens BEFORE the address-book write —
+# is still expressed by calling attachConnection at the head of addRuntime;
+# the grep just accepts either signature shape.
+assert_grep_present 'attachConnection\(baseURL[,)]' \
     "web/console/src/lib/settings/console_db.svelte.ts" \
-    "addRuntime calls attachConnection(baseURL) before attempting the DB write"
+    "addRuntime calls attachConnection(baseURL, ...) before attempting the DB write"
 assert_grep_present 'addWarning' \
     "web/console/src/lib/settings/console_db.svelte.ts" \
     "addRuntime surfaces a non-fatal warning instead of throwing on DB-write deferral"

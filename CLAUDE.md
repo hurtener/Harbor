@@ -166,7 +166,7 @@ make test
 
 # Static analysis
 make vet
-make lint            # requires golangci-lint v1.61+
+make lint            # requires golangci-lint v2.x (config is v2 schema)
 
 # Mirror check: AGENTS.md ↔ CLAUDE.md verbatim
 make check-mirror

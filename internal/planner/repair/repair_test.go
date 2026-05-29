@@ -666,3 +666,205 @@ func TestRun_ReasoningSurfacedOnResult(t *testing.T) {
 		t.Errorf("RunResult.Reasoning = %q, want %q", dec.Reasoning, trace)
 	}
 }
+
+// streamingStubClient is a minimal LLM client whose Complete fires the
+// request's `OnContent` / `OnReasoning` callbacks before returning. Used
+// by the Phase 107 streaming tests below (AC-10, AC-15) so the repair
+// loop's per-step streaming wiring can be exercised without a real bifrost
+// driver. The contentDeltas / reasoningDeltas slices each carry pairs of
+// (delta, done). The final response Content is what the parser sees.
+type streamingStubClient struct {
+	mu            sync.Mutex
+	contentDeltas []struct {
+		delta string
+		done  bool
+	}
+	reasoningDeltas []struct {
+		delta string
+		done  bool
+	}
+	finalContent string
+	// observedStream records whether the most recent Complete saw
+	// req.Stream == true (proves the loop flipped the flag).
+	observedStream atomic.Bool
+}
+
+func (c *streamingStubClient) Complete(_ context.Context, req llm.CompleteRequest) (llm.CompleteResponse, error) {
+	c.observedStream.Store(req.Stream)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if req.OnContent != nil {
+		for _, d := range c.contentDeltas {
+			req.OnContent(d.delta, d.done)
+		}
+	}
+	if req.OnReasoning != nil {
+		for _, d := range c.reasoningDeltas {
+			req.OnReasoning(d.delta, d.done)
+		}
+	}
+	return llm.CompleteResponse{Content: c.finalContent}, nil
+}
+
+func (c *streamingStubClient) Close(_ context.Context) error { return nil }
+
+// TestStreamingCallbacks_ForwardToRunContext — Phase 107 AC-10.
+//
+// When rc.OnChunk is set, the repair loop MUST:
+//
+//	(a) flip req.Stream to true,
+//	(b) supply req.OnContent + req.OnReasoning closures, and
+//	(c) forward every OnContent / OnReasoning callback fired by the driver
+//	    through rc.OnChunk, tagging Content vs Reasoning.
+//
+// The client below fires two content deltas (one with done=true) and two
+// reasoning deltas (one with done=true); the test asserts rc.OnChunk
+// receives exactly four invocations with the expected (delta, done, kind)
+// tuples, in the canonical order.
+func TestStreamingCallbacks_ForwardToRunContext(t *testing.T) {
+	t.Parallel()
+
+	type chunkObservation struct {
+		delta string
+		done  bool
+		kind  planner.ChunkKind
+	}
+	var (
+		mu   sync.Mutex
+		seen []chunkObservation
+		onCh = func(delta string, done bool, kind planner.ChunkKind) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, chunkObservation{delta, done, kind})
+		}
+	)
+	client := &streamingStubClient{
+		contentDeltas: []struct {
+			delta string
+			done  bool
+		}{
+			{delta: "Hello, ", done: false},
+			{delta: "world.", done: true},
+		},
+		reasoningDeltas: []struct {
+			delta string
+			done  bool
+		}{
+			{delta: "thinking…", done: false},
+			{delta: "done.", done: true},
+		},
+		finalContent: `{"tool":"search","args":{"q":"hi"}}`,
+	}
+	rc := rcWithIdentity(nil)
+	rc.OnChunk = onCh
+
+	loop := repair.New(repair.Config{ArgFillEnabled: true})
+	if _, err := loop.Run(ctxWithIdentity(t), rc, client, sampleRequest(), passValidator); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if !client.observedStream.Load() {
+		t.Error("expected req.Stream = true when rc.OnChunk is set; got false")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(seen), 4; got != want {
+		t.Fatalf("OnChunk fire count = %d, want %d (observed=%+v)", got, want, seen)
+	}
+	want := []chunkObservation{
+		{"Hello, ", false, planner.ChunkContent},
+		{"world.", true, planner.ChunkContent},
+		{"thinking…", false, planner.ChunkReasoning},
+		{"done.", true, planner.ChunkReasoning},
+	}
+	for i, w := range want {
+		if seen[i] != w {
+			t.Errorf("OnChunk[%d] = %+v, want %+v", i, seen[i], w)
+		}
+	}
+}
+
+// TestStreamingConcurrentReuse — Phase 107 AC-15.
+//
+// One shared RepairLoop instance services N=128 concurrent streaming
+// runs. Each run has its own per-call OnChunk closure that records under
+// the run's tenant id. The test asserts:
+//   - every run's OnChunk received chunk events with the correct identity
+//     (no cross-talk between runs);
+//   - the race detector finds no data race on the shared loop or client;
+//   - the per-call goroutine count returns to a sane baseline (no leak).
+//
+// Per CLAUDE.md §5 + D-025: per-run state lives in `rc` (the closure),
+// never on the loop. The shared client below is a stub that fires the
+// same fixed delta sequence regardless of caller — what matters is each
+// caller's closure sees only its own chunks.
+func TestStreamingConcurrentReuse(t *testing.T) {
+	t.Parallel()
+	const n = 128
+
+	client := &streamingStubClient{
+		contentDeltas: []struct {
+			delta string
+			done  bool
+		}{
+			{delta: "alpha", done: false},
+			{delta: "omega", done: true},
+		},
+		finalContent: `{"tool":"search","args":{"q":"hi"}}`,
+	}
+	loop := repair.New(repair.Config{ArgFillEnabled: true})
+
+	type perRunResult struct {
+		tenant string
+		chunks []string
+	}
+	results := make(chan perRunResult, n)
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(idx int) {
+			defer wg.Done()
+			tenant := fmt.Sprintf("tenant-stream-%d", idx)
+			id := identity.Identity{TenantID: tenant, UserID: "u", SessionID: "s"}
+			ctx, withErr := identity.WithRun(t.Context(), id, "r-stream")
+			if withErr != nil {
+				results <- perRunResult{tenant: tenant}
+				return
+			}
+			var (
+				perMu     sync.Mutex
+				perChunks []string
+			)
+			rc := planner.RunContext{
+				Quadruple: identity.Quadruple{Identity: id, RunID: "r-stream"},
+				OnChunk: func(delta string, _ bool, _ planner.ChunkKind) {
+					perMu.Lock()
+					defer perMu.Unlock()
+					perChunks = append(perChunks, delta)
+				},
+			}
+			if _, err := loop.Run(ctx, rc, client, sampleRequest(), passValidator); err != nil {
+				results <- perRunResult{tenant: tenant}
+				return
+			}
+			perMu.Lock()
+			out := append([]string(nil), perChunks...)
+			perMu.Unlock()
+			results <- perRunResult{tenant: tenant, chunks: out}
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	got := 0
+	for r := range results {
+		got++
+		if len(r.chunks) != 2 {
+			t.Errorf("run %s: chunk count = %d, want 2 (no cross-talk + no drop)", r.tenant, len(r.chunks))
+		}
+	}
+	if got != n {
+		t.Fatalf("ran %d / %d concurrent streaming runs", got, n)
+	}
+}

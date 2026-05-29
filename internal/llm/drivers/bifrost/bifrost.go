@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -167,13 +168,14 @@ func (d *Driver) streamComplete(
 	}
 
 	var (
-		contentB     strings.Builder
-		reasoningB   strings.Builder
-		finalDetails []bfschemas.ChatReasoningDetails
-		finalUsage   llm.Usage
-		finalCost    llm.Cost
-		streamErr    error
-		gotAnyChunk  bool
+		contentB       strings.Builder
+		reasoningB     strings.Builder
+		finalDetails   []bfschemas.ChatReasoningDetails
+		finalToolCalls []llm.ToolCallStructured
+		finalUsage     llm.Usage
+		finalCost      llm.Cost
+		streamErr      error
+		gotAnyChunk    bool
 	)
 
 readLoop:
@@ -200,7 +202,7 @@ readLoop:
 				break readLoop
 			}
 			if chunk.BifrostChatResponse != nil {
-				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
+				processStreamChunk(chunk.BifrostChatResponse, &contentB, &reasoningB, &finalDetails, &finalToolCalls, &finalUsage, &finalCost, req.OnContent, req.OnReasoning)
 			}
 		}
 	}
@@ -235,6 +237,7 @@ readLoop:
 	}
 	out := llm.CompleteResponse{
 		Content:   contentB.String(),
+		ToolCalls: finalToolCalls,
 		Reasoning: reasoning,
 		Usage:     finalUsage,
 		Cost:      finalCost,
@@ -254,6 +257,7 @@ func processStreamChunk(
 	contentB *strings.Builder,
 	reasoningB *strings.Builder,
 	details *[]bfschemas.ChatReasoningDetails,
+	toolCalls *[]llm.ToolCallStructured,
 	usage *llm.Usage,
 	cost *llm.Cost,
 	onContent func(string, bool),
@@ -263,10 +267,10 @@ func processStreamChunk(
 		return
 	}
 	for _, choice := range resp.Choices {
-		if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+		if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
 			continue
 		}
-		delta := choice.ChatStreamResponseChoice.Delta
+		delta := choice.Delta
 		if delta.Content != nil && *delta.Content != "" {
 			contentB.WriteString(*delta.Content)
 			if onContent != nil {
@@ -286,6 +290,38 @@ func processStreamChunk(
 		// over the per-delta `delta.Reasoning` accumulator.
 		if len(delta.ReasoningDetails) > 0 {
 			*details = append(*details, delta.ReasoningDetails...)
+		}
+		// Phase 107c / D-167 — accumulate streamed tool-call deltas.
+		// Per the OpenAI streaming spec (also followed by Anthropic via
+		// Bedrock, Gemini's OpenAI-compat surface, and OpenRouter): the
+		// FIRST delta for a tool call carries `id + name`; subsequent
+		// deltas carry empty id + null name + an args FRAGMENT to be
+		// concatenated onto the prior args. The `index` field is the
+		// load-bearing discriminator — it's stable across all fragments
+		// of the same tool call. Without index-keyed merge, providers
+		// that stream args incrementally (Bedrock streams ~1-byte
+		// fragments) produce N broken half-built ToolCalls; the
+		// trajectory replay then sends a bogus assistant turn to the
+		// next request and the LLM gets stuck in a repair loop.
+		for _, tc := range delta.ToolCalls {
+			var args json.RawMessage
+			if tc.Function.Arguments != "" {
+				args = json.RawMessage(tc.Function.Arguments)
+			}
+			callID := ""
+			if tc.ID != nil {
+				callID = *tc.ID
+			}
+			name := ""
+			if tc.Function.Name != nil {
+				name = *tc.Function.Name
+			}
+			mergeStreamedToolCall(toolCalls, llm.ToolCallStructured{
+				ID:    callID,
+				Name:  name,
+				Args:  args,
+				Index: tc.Index,
+			})
 		}
 	}
 	// Backfill usage / cost when bifrost reports it (typically on
@@ -333,4 +369,68 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 	}
 	id, _ := identity.From(ctx)
 	return identity.Quadruple{Identity: id}
+}
+
+// mergeStreamedToolCall merges one streamed tool-call delta into the
+// accumulator (Phase 107c / D-167; step 10/11 audit revision).
+//
+// Per the OpenAI streaming spec, tool-call deltas use `index` as the
+// stable per-tool-call discriminator across SSE chunks. The first
+// delta for a given index carries `id + name`; subsequent deltas for
+// the SAME index carry empty id, null name, and an args FRAGMENT to
+// be appended (string concatenation) onto the prior args. Bedrock
+// (Anthropic via OpenRouter) streams args in 1-byte-ish fragments,
+// so without correct incremental merge the LLM thread fills with
+// half-built ToolCalls.
+//
+// Merge rules:
+//   - Look up by Index FIRST (always present on streaming deltas).
+//   - If the existing entry has an empty `ID` and the delta carries
+//     one, adopt the delta's ID (the first non-empty wins).
+//   - Same for `Name`: keep the first non-empty (subsequent deltas
+//     report Name: null).
+//   - For `Args`: concatenate fragments. Empty fragments are no-ops.
+//
+// Fallback (no Index found AND no matching ID): append. This handles
+// pre-streaming providers + the unary path's full-shape entries.
+func mergeStreamedToolCall(acc *[]llm.ToolCallStructured, delta llm.ToolCallStructured) {
+	// Index-keyed merge for streaming deltas.
+	for i, existing := range *acc {
+		if existing.Index == delta.Index && (existing.ID != "" || delta.ID != "" || existing.Name != "" || delta.Name != "" || len(existing.Args) > 0) {
+			// Same-position match. Adopt first-non-empty ID + Name;
+			// concatenate args fragments.
+			if (*acc)[i].ID == "" && delta.ID != "" {
+				(*acc)[i].ID = delta.ID
+			}
+			if (*acc)[i].Name == "" && delta.Name != "" {
+				(*acc)[i].Name = delta.Name
+			}
+			if len(delta.Args) > 0 {
+				if len(existing.Args) == 0 {
+					(*acc)[i].Args = delta.Args
+				} else {
+					// Args are stringified JSON fragments to concatenate.
+					(*acc)[i].Args = append([]byte{}, existing.Args...)
+					(*acc)[i].Args = append((*acc)[i].Args, delta.Args...)
+				}
+			}
+			return
+		}
+	}
+	// Defensive ID-keyed fallback (unary path / provider that fills
+	// `id` on every delta without using index).
+	if delta.ID != "" {
+		for i, existing := range *acc {
+			if existing.ID == delta.ID {
+				if delta.Name != "" {
+					(*acc)[i].Name = delta.Name
+				}
+				if len(delta.Args) > 0 {
+					(*acc)[i].Args = delta.Args
+				}
+				return
+			}
+		}
+	}
+	*acc = append(*acc, delta)
 }

@@ -44,6 +44,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
@@ -255,7 +256,83 @@ type RunContext struct {
 	// run on the runloop's stack; the planner reads it from rc, never
 	// from itself. N concurrent runs see N independent closures.
 	OnReasoning func(string)
+
+	// OnAssistantContent is a per-step callback the Planner invokes
+	// with the natural-language content the assistant emitted
+	// alongside its tool_call on this step. The Runtime sets it on
+	// each per-step RunContext so the runloop copies the preamble
+	// onto `trajectory.Step.AssistantPreamble` when it appends the
+	// step; the prompt builder then replays it as the assistant
+	// message's content on subsequent turns so the model retains
+	// its narrative thread.
+	//
+	// Under native tool-calling the response carries both a
+	// `tool_calls` block AND a natural-language `content` field.
+	// The Decision sum only encodes the tool_call; this callback
+	// is the side-channel that ferries `content` onto the step.
+	//
+	// Same shape as OnReasoning: nil-safe, per-run closure (D-025),
+	// invoked by the planner after each LLM call.
+	OnAssistantContent func(string)
+
+	// OnChunk is the per-step streaming callback the Planner invokes
+	// per token delta from the LLM provider (Phase 107). The Runtime
+	// sets it on each per-step RunContext so the runloop publishes
+	// `llm.completion.chunk` events. May be nil — a planner without
+	// streaming wired skips the emission silently.
+	//
+	// Concurrent-reuse (D-025): same pattern as OnReasoning — per-run
+	// closure on the stack, never on the shared planner artifact.
+	OnChunk func(delta string, done bool, kind ChunkKind)
+
+	// DiscoveredTools (Phase 107c / D-167) is the per-run list of
+	// tool names the LLM discovered via meta-tools during this run.
+	// The React planner reads this to add discovered tools to
+	// subsequent turns' Tools[] declarations. Stack-local-per-run
+	// (D-025) — never on the planner struct.
+	DiscoveredTools []string
+
+	// PendingToolCalls (Phase 107c / D-167) carries remaining
+	// serialized native ToolCalls when the LLM emits N>1 calls in
+	// one response (AC-19 serialization fallback). The planner
+	// consumes PendingToolCalls before consulting the LLM again.
+	// Stack-local-per-run (D-025).
+	PendingToolCalls []ToolCallDeferred
+
+	// OnPendingToolCalls (Phase 107c / D-167 — AC-19 + AC-19a) is the
+	// per-step callback the planner invokes BEFORE returning a
+	// Decision to surface the post-step `PendingToolCalls` queue back
+	// to the runloop. rc is passed BY VALUE to Next; without this
+	// bridge any append to `rc.PendingToolCalls` inside Next dies
+	// with the planner's stack frame, and the AC-19 multi-ToolCall
+	// serialisation fallback becomes dead code. The runloop captures
+	// a stack-local slice via the closure (D-025: per-run, never on
+	// the planner artifact) and writes it back into `spec.Base` so
+	// the next iteration's value-copy carries the queue forward.
+	//
+	// Nil callback is a no-op (tests that exercise Next directly
+	// without a runloop). Operators should never set it; the
+	// runloop owns the closure.
+	OnPendingToolCalls func([]ToolCallDeferred)
 }
+
+// ToolCallDeferred is a pending native tool-call the planner will
+// dispatch on the next step (AC-19 serialization fallback).
+type ToolCallDeferred struct {
+	Name   string
+	Args   json.RawMessage
+	CallID string
+}
+
+// ChunkKind is a sealed enum for the streaming-chunk kind (Phase 107).
+// Values: ChunkContent (model output text), ChunkReasoning (thinking
+// trace — Phase 107a renders).
+type ChunkKind string
+
+const (
+	ChunkContent   ChunkKind = "content"
+	ChunkReasoning ChunkKind = "reasoning"
+)
 
 // MemoryBlocks carries the two memory tiers the ReAct planner injects
 // into its system prompt with UNTRUSTED anti-prompt-injection framing

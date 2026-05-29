@@ -71,15 +71,72 @@ func translateRequest(provider bfschemas.ModelProvider, req llm.CompleteRequest)
 func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 	out := make([]bfschemas.ChatMessage, 0, len(in))
 	for i, m := range in {
-		content, err := translateContent(m.Content)
-		if err != nil {
-			return nil, fmt.Errorf("messages[%d]: %w", i, err)
+		// An assistant message with `ToolCalls` and no `Content` —
+		// the trajectory-replay shape for a prior CallTool step
+		// with no preamble — translates with no content field on
+		// the wire. OpenAI's spec requires `content: null` (not
+		// `""`) when `tool_calls` is present; translateContent
+		// would otherwise reject the nil/nil shape.
+		var (
+			content *bfschemas.ChatMessageContent
+			err     error
+		)
+		isAsstWithToolCalls := m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0
+		if isAsstWithToolCalls && m.Content.Text == nil && m.Content.Parts == nil {
+			content = nil
+		} else {
+			content, err = translateContent(m.Content)
+			if err != nil {
+				return nil, fmt.Errorf("messages[%d]: %w", i, err)
+			}
 		}
-		out = append(out, bfschemas.ChatMessage{
-			Role:    translateRole(m.Role),
+		// Defense in depth: when the renderer set Content.Text to a
+		// pointer to "", flatten that to nil on the wire. OpenAI
+		// rejects `content: ""` with tool_calls present.
+		if isAsstWithToolCalls && content != nil &&
+			content.ContentStr != nil && *content.ContentStr == "" &&
+			len(content.ContentBlocks) == 0 {
+			content = nil
+		}
+		// Phase 107c / D-167 — native tool-result routing.
+		//
+		// A RoleTool message that carries a non-nil ToolCallID is a
+		// native tool-result thread-back: it MUST map to bifrost's
+		// `tool` role with `tool_call_id` set so OpenAI/Anthropic/
+		// Gemini recognise the message as a tool-result reply (the
+		// brief-07 user-role-observation convention is preserved for
+		// RoleTool messages WITHOUT a ToolCallID — those are the
+		// legacy prompt-engineered observation strings).
+		role := translateRole(m.Role)
+		if m.Role == llm.RoleTool && m.ToolCallID != nil {
+			role = bfschemas.ChatMessageRoleTool
+		}
+		msg := bfschemas.ChatMessage{
+			Role:    role,
 			Content: content,
 			Name:    m.Name,
-		})
+		}
+		if m.Role == llm.RoleTool && m.ToolCallID != nil {
+			tid := *m.ToolCallID
+			msg.ChatToolMessage = &bfschemas.ChatToolMessage{
+				ToolCallID: &tid,
+			}
+		}
+		// Phase 107c / D-167 — native tool-call replay on the
+		// assistant side. The React planner's trajectory renderer
+		// emits a RoleAssistant message with `ToolCalls` set for
+		// every prior CallTool step, paired with a RoleTool message
+		// carrying the matching `ToolCallID` + observation. Without
+		// this branch the provider would see an assistant turn with
+		// no `tool_calls` block but a sibling tool-result message
+		// referencing a missing call id — every provider rejects
+		// that shape.
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			msg.ChatAssistantMessage = &bfschemas.ChatAssistantMessage{
+				ToolCalls: translateAssistantToolCalls(m.ToolCalls),
+			}
+		}
+		out = append(out, msg)
 	}
 	return out, nil
 }
@@ -386,6 +443,31 @@ func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) 
 			used = true
 		}
 	}
+
+	// Phase 107c / D-167 — native tool-calling params.
+	if len(req.Tools) > 0 {
+		bftools := make([]bfschemas.ChatTool, 0, len(req.Tools))
+		for _, td := range req.Tools {
+			ct, err := translateToolDeclaration(td)
+			if err != nil {
+				return nil, fmt.Errorf("translate tool declaration: %w", err)
+			}
+			bftools = append(bftools, ct)
+		}
+		params.Tools = bftools
+		used = true
+	}
+	if req.ToolChoice != "" {
+		tc := translateToolChoice(req.ToolChoice)
+		params.ToolChoice = &tc
+		used = true
+	}
+	if req.ParallelToolCalls || req.ToolChoice != "" {
+		ptc := req.ParallelToolCalls
+		params.ParallelToolCalls = &ptc
+		used = true
+	}
+
 	if !used {
 		return nil, nil
 	}
@@ -460,6 +542,7 @@ func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse
 		return out
 	}
 	out.Content = extractContent(resp)
+	out.ToolCalls = extractToolCalls(resp)
 	out.Reasoning = extractReasoning(resp)
 	out.Usage, out.Cost = extractUsageAndCost(resp)
 	return out
@@ -479,7 +562,7 @@ func extractReasoning(resp *bfschemas.BifrostChatResponse) string {
 	if choice.ChatNonStreamResponseChoice == nil {
 		return ""
 	}
-	return reasoningFromMessage(choice.ChatNonStreamResponseChoice.Message)
+	return reasoningFromMessage(choice.Message)
 }
 
 // extractContent pulls the assistant-message text from the first
@@ -492,19 +575,19 @@ func extractContent(resp *bfschemas.BifrostChatResponse) string {
 	}
 	choice := resp.Choices[0]
 	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
-		return *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr
+		choice.Message != nil &&
+		choice.Message.Content != nil &&
+		choice.Message.Content.ContentStr != nil {
+		return *choice.Message.Content.ContentStr
 	}
 	// Some providers return the content as blocks even for non-
 	// streaming responses; concatenate the text-typed blocks.
 	if choice.ChatNonStreamResponseChoice != nil &&
-		choice.ChatNonStreamResponseChoice.Message != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content != nil &&
-		choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks != nil {
+		choice.Message != nil &&
+		choice.Message.Content != nil &&
+		choice.Message.Content.ContentBlocks != nil {
 		var sb strings.Builder
-		for _, b := range choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks {
+		for _, b := range choice.Message.Content.ContentBlocks {
 			if b.Type == bfschemas.ChatContentBlockTypeText && b.Text != nil {
 				sb.WriteString(*b.Text)
 			}
@@ -564,4 +647,124 @@ func translateError(berr *bfschemas.BifrostError, kind string) error {
 		return fmt.Errorf("%s: bifrost: status %d: %s", kind, status, msg)
 	}
 	return fmt.Errorf("%s: bifrost: %s", kind, msg)
+}
+
+// Phase 107c / D-167 — native tool-calling translation helpers.
+
+func translateToolDeclaration(td llm.ToolDeclaration) (bfschemas.ChatTool, error) {
+	desc := td.Description
+	ct := bfschemas.ChatTool{
+		Type: bfschemas.ChatToolTypeFunction,
+		Function: &bfschemas.ChatToolFunction{
+			Name:        td.Name,
+			Description: &desc,
+		},
+	}
+	if len(td.Schema) > 0 {
+		var tp bfschemas.ToolFunctionParameters
+		// Fail loud on a malformed JSON Schema — silent drop here
+		// would teach the LLM an undeclared tool shape (CLAUDE.md §5
+		// fail-loudly, §13 forbidden-practices).
+		if err := json.Unmarshal(td.Schema, &tp); err != nil {
+			return bfschemas.ChatTool{}, fmt.Errorf(
+				"tool %q: malformed JSON schema: %w", td.Name, err)
+		}
+		ct.Function.Parameters = &tp
+	}
+	return ct, nil
+}
+
+func translateToolChoice(tc string) bfschemas.ChatToolChoice {
+	val := tc
+	return bfschemas.ChatToolChoice{ChatToolChoiceStr: &val}
+}
+
+// translateAssistantToolCalls projects Harbor's `[]llm.ToolCallStructured`
+// onto bifrost's `[]ChatAssistantMessageToolCall`, which the wire
+// format renders as the assistant message's `tool_calls` block.
+//
+// `Type` is set to "function" explicitly. OpenAI's wire spec for
+// chat-completions `tool_calls` requires `"type": "function"` on
+// every entry; bifrost's struct tags the field `omitempty`, so a
+// nil pointer drops it from the wire and the upstream provider
+// either rejects the request or silently malforms it.
+//
+// `Index` is set sequentially. Provider-side parsers accept either
+// the sequential or the original index; sequential keeps the
+// replay deterministic.
+func translateAssistantToolCalls(in []llm.ToolCallStructured) []bfschemas.ChatAssistantMessageToolCall {
+	if len(in) == 0 {
+		return nil
+	}
+	functionType := "function"
+	out := make([]bfschemas.ChatAssistantMessageToolCall, 0, len(in))
+	for i, tc := range in {
+		var id *string
+		if tc.ID != "" {
+			s := tc.ID
+			id = &s
+		}
+		var name *string
+		if tc.Name != "" {
+			s := tc.Name
+			name = &s
+		}
+		args := ""
+		if len(tc.Args) > 0 {
+			args = string(tc.Args)
+		}
+		out = append(out, bfschemas.ChatAssistantMessageToolCall{
+			Index: uint16(i),
+			Type:  &functionType,
+			ID:    id,
+			Function: bfschemas.ChatAssistantMessageToolCallFunction{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	return out
+}
+
+func extractToolCalls(resp *bfschemas.BifrostChatResponse) []llm.ToolCallStructured {
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil
+	}
+	choice := resp.Choices[0]
+	if choice.ChatNonStreamResponseChoice == nil {
+		return nil
+	}
+	msg := choice.Message
+	// bifrost's `ChatMessage` embeds `*ChatAssistantMessage` as a
+	// pointer (see bfschemas/chatcompletions.go); `msg.ToolCalls` is
+	// promoted through that pointer and nil-derefs when the response
+	// did not carry an assistant block at all. Guard explicitly.
+	if msg == nil || msg.ChatAssistantMessage == nil {
+		return nil
+	}
+	calls := msg.ToolCalls
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]llm.ToolCallStructured, 0, len(calls))
+	for _, tc := range calls {
+		var args json.RawMessage
+		if tc.Function.Arguments != "" {
+			args = json.RawMessage(tc.Function.Arguments)
+		}
+		callID := ""
+		if tc.ID != nil {
+			callID = *tc.ID
+		}
+		name := ""
+		if tc.Function.Name != nil {
+			name = *tc.Function.Name
+		}
+		out = append(out, llm.ToolCallStructured{
+			ID:   callID,
+			Name: name,
+			Args: args,
+		})
+	}
+	return out
 }

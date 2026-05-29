@@ -102,7 +102,20 @@ The planner now sees both skills in its catalog. At reasoning time, it searches 
 skills:
   driver: localdb
   dsn: /tmp/harbor-validation/my-agent-skills.sqlite    # WAL trap caveat applies
+
+tools:
+  built_in:
+    - skill_search   # the LLM discovers runtime skills by capability text
+    - skill_get      # the LLM pulls the full body of a named skill
 ```
+
+### LLM-side discovery via meta-tools (Phase 107c)
+
+After 107c the React planner runs on native provider tool-calling. The LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in meta-tool when it needs one. Opt those built-ins in (above) and the LLM gets a structured search surface backed by the FTS5 catalog. The meta-tools route through the SAME `SkillStore.Search` + `SkillStore.Get` path your operator-side `harbor skill import` populated, so there's no second-source-of-truth and identity-scoping (`(tenant, user, session)`) carries through.
+
+`skill_search(query, tags?, limit?)` returns ranked candidates (`{name, title, description, score}`); `skill_get(name)` returns the full body. Tag filter is intersection. The LLM typically searches once, picks one or two names, and pulls full bodies in the same or next turn.
+
+If you DON'T opt the meta-tools in, the existing pre-107c flow still works: the planner's per-turn `<skills_context>` section injects relevant skill bodies the planner pre-selected. The meta-tools are the LLM-driven discovery path; the prompt-injection path is the planner-driven one. Most operators want both — let the planner inject the obvious matches AND give the LLM the discovery escape hatch.
 
 ### Skill vs tool — when to pick which
 

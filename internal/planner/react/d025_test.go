@@ -2,6 +2,7 @@ package react_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -24,11 +25,18 @@ type sharedClient struct{}
 
 func (s *sharedClient) Complete(ctx context.Context, _ llm.CompleteRequest) (llm.CompleteResponse, error) {
 	id, _ := identity.QuadrupleFrom(ctx)
-	// Emit a JSON `_finish` envelope whose payload is the run's
-	// RunID — this lets the test's per-goroutine assertion confirm
-	// each goroutine's Decision carries its OWN RunID (no bleed).
-	content := fmt.Sprintf(`{"tool":"_finish","args":{"answer":%q}}`, id.RunID)
-	return llm.CompleteResponse{Content: content}, nil
+	// Phase 107c (D-167): emit a native `_finish` ToolCall whose
+	// `answer` arg carries the run's RunID. The projector translates
+	// reserved `_finish` to Finish{Goal, Payload: <RunID>}; the
+	// test's per-goroutine assertion confirms each goroutine's
+	// Decision carries its OWN RunID (no identity bleed).
+	return llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   fmt.Sprintf("call_%s", id.RunID),
+			Name: "_finish",
+			Args: json.RawMessage(fmt.Sprintf(`{"answer":%q}`, id.RunID)),
+		}},
+	}, nil
 }
 
 func (s *sharedClient) Close(_ context.Context) error { return nil }
@@ -389,8 +397,13 @@ func (c *recordingPerRunClient) Complete(ctx context.Context, req llm.CompleteRe
 	c.mu.Lock()
 	c.systems[id.RunID] = append(c.systems[id.RunID], sb.String())
 	c.mu.Unlock()
-	content := fmt.Sprintf(`{"tool":"_finish","args":{"answer":%q}}`, id.RunID)
-	return llm.CompleteResponse{Content: content}, nil
+	return llm.CompleteResponse{
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   fmt.Sprintf("call_%s", id.RunID),
+			Name: "_finish",
+			Args: json.RawMessage(fmt.Sprintf(`{"answer":%q}`, id.RunID)),
+		}},
+	}, nil
 }
 
 func (c *recordingPerRunClient) Close(_ context.Context) error { return nil }

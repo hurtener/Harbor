@@ -291,12 +291,21 @@ func TestE2E_Wave8_ReactSpawnWakeRoundTrip_AssembledSurface(t *testing.T) {
 	}
 	defer sub.Cancel()
 
-	// Scripted LLM: step 1 emits `_spawn_task`; step 2 (after
-	// resolve) emits `_finish`.
+	// Phase 107c (D-167) — scripted LLM emits native `_spawn_task`
+	// then `_finish` ToolCalls. The projector translates the
+	// reserved names into SpawnTask + Finish Decisions.
 	client := &wave8ScriptedLLM{
-		responses: []string{
-			`{"tool":"_spawn_task","args":{"kind":"background","spec":{"description":"wave-8 bg work","query":"do the thing","priority":0,"retain_turn":false}},"reasoning":"need a side channel"}`,
-			`{"tool":"_finish","args":{"answer":"wave-8 complete"},"reasoning":"background resolved"}`,
+		responses: []llm.CompleteResponse{
+			{ToolCalls: []llm.ToolCallStructured{{
+				ID:   "call_spawn",
+				Name: "_spawn_task",
+				Args: json.RawMessage(`{"kind":"background","spec":{"description":"wave-8 bg work","query":"do the thing","priority":0,"retain_turn":false}}`),
+			}}},
+			{ToolCalls: []llm.ToolCallStructured{{
+				ID:   "call_finish",
+				Name: "_finish",
+				Args: json.RawMessage(`{"answer":"wave-8 complete"}`),
+			}}},
 		},
 	}
 	p := react.New(client)
@@ -631,12 +640,15 @@ func TestE2E_Wave8_Concurrency_NoCrossTalk(t *testing.T) {
 // --- helpers ---------------------------------------------------------------
 
 // wave8ScriptedLLM is a tiny `llm.LLMClient` that emits a scripted
-// sequence of CompleteResponse contents. Mirrors the shape used by
-// `internal/planner/react/integration_test.go`'s `scriptedClient`
-// but lives here so the wave-end test has no cross-package coupling.
+// sequence of full `llm.CompleteResponse` values. Phase 107c (D-167)
+// — the wake-mode round-trip case needs native `_spawn_task` /
+// `_finish` ToolCalls (the prompt-engineered Content envelope no
+// longer drives the projector path); the slice carries the full
+// response so each scenario can shape `Content`, `ToolCalls`, and
+// `Reasoning` independently.
 type wave8ScriptedLLM struct {
 	mu        sync.Mutex
-	responses []string
+	responses []llm.CompleteResponse
 	cursor    int
 }
 
@@ -648,11 +660,11 @@ func (s *wave8ScriptedLLM) Complete(_ context.Context, _ llm.CompleteRequest) (l
 		if idx < 0 {
 			return llm.CompleteResponse{}, nil
 		}
-		return llm.CompleteResponse{Content: s.responses[idx]}, nil
+		return s.responses[idx], nil
 	}
 	out := s.responses[s.cursor]
 	s.cursor++
-	return llm.CompleteResponse{Content: out}, nil
+	return out, nil
 }
 
 func (s *wave8ScriptedLLM) Close(_ context.Context) error { return nil }

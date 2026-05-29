@@ -115,6 +115,7 @@ import (
 	searchevents "github.com/hurtener/Harbor/internal/search/events"
 	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
+	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -129,6 +130,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
+	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -628,13 +630,46 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// for OAuth or approval read this same Coordinator from
 	// `devStack.coordinator` — there is NEVER a second Coordinator
 	// instance (CLAUDE.md §13).
-	toolCat := tools.NewCatalog()
-	// Phase 83n / D-153 — register opt-in built-in tools (clock.now,
-	// text.echo) BEFORE the catalog-wiring step so any `tools.entries[]`
-	// middleware that names a built-in resolves cleanly. Empty list is
-	// a no-op; an unknown name fails loud at this boundary (the config
-	// validator also rejects pre-boot, this is the runtime sanity gate).
-	if err := builtin.Register(toolCat, cfg.Tools.BuiltIn); err != nil {
+	// Phase 107c / D-167 — construct the tool SearchCache + attach it to
+	// the catalog so deferred-tool discovery + the `tool_search` /
+	// `tool_get` meta-tools work. In-memory DSN by default; operators
+	// can override via `tools.search_cache_dsn`. A failure here is
+	// non-fatal: discovery degrades to empty (the meta-tools return
+	// "no results") rather than wedging the boot.
+	searchCacheDSN := ":memory:"
+	if cfg.Tools.SearchCacheDSN != "" {
+		searchCacheDSN = cfg.Tools.SearchCacheDSN
+	}
+	searchCache, scErr := searchcache.New(searchcache.Config{DSN: searchCacheDSN})
+	if scErr != nil {
+		opts.logger.Warn("tools/searchcache: disabled — discovery meta-tools will return empty",
+			"err", scErr.Error(),
+			"dsn", searchCacheDSN)
+		searchCache = nil
+	} else {
+		closers = append(closers, func(_ context.Context) error { return searchCache.Close() })
+	}
+	var catOpts []tools.CatalogOption
+	if searchCache != nil {
+		catOpts = append(catOpts, tools.WithSearchCache(searchCache))
+	}
+	toolCat := tools.NewCatalog(catOpts...)
+	// Phase 83n / D-153 + 107c / D-167 — register opt-in built-in tools
+	// (clock.now, text.echo, plus the 107c meta-tools) BEFORE the
+	// catalog-wiring step so any `tools.entries[]` middleware that names
+	// a built-in resolves cleanly. Empty list is a no-op; an unknown
+	// name fails loud at this boundary. RegisterWith threads the
+	// `skills.SkillStore` so `skill_search` / `skill_get` reach their
+	// backing store instead of nil-derefing on first invocation. The
+	// `artifacts.ArtifactStore` is threaded so the `artifact_fetch`
+	// builtin can resolve refs the runtime tool-executor surfaced as
+	// truncated previews; without this the meta-tool fails loud at
+	// first invocation with the operator-readable nil-store message.
+	if err := builtin.RegisterWith(builtin.RegistryContext{
+		Catalog:       toolCat,
+		SkillStore:    skillStore,
+		ArtifactStore: artStore,
+	}, cfg.Tools.BuiltIn); err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tools/builtin: %w", err)
 	}
@@ -788,6 +823,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		planner:  plnr,
 		tasks:    taskReg, // D-098: the FSM the driver advances on RunLoop exit (closes #123)
 		taskKind: tasks.KindForeground,
+		// Phase 107e (D-170): drive KindBackground tasks too, so a
+		// planner-emitted SpawnTask (a background sub-goal) actually runs
+		// through a planner sub-run. Recursion is bounded at the spawn
+		// site by the dev executor's absolute_max_spawn_depth cap.
+		driveBackground: true,
 		// Phase 83f (D-149): per-run consumer wiring. Each of the four
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
@@ -800,7 +840,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
 		catalog:         toolCat,
-		executor:        newDevToolExecutor(toolCat, artStore, cfg.Artifacts.HeavyOutputThresholdBytes, opts.logger),
+		executor:        newDevToolExecutor(toolCat, artStore, taskReg, cfg.Artifacts.HeavyOutputThresholdBytes, cfg.Planner.SpawnDepthCap(), opts.logger),
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
 		// Phase 83m (Item 6, D-156): operator-declared granted scopes
 		// flow into the per-run catalog view's CatalogFilter, closing
@@ -992,7 +1032,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// + redactor are wired so a cross-tenant `tasks.list` fan-in's
 	// `audit.admin_scope_used` event reaches the bus (CLAUDE.md §13 —
 	// the admin path is never a silent no-op).
-	tasksProjector, err := tasksprotocol.NewRegistryProjector(taskReg)
+	tasksProjector, err := tasksprotocol.NewRegistryProjector(taskReg,
+		tasksprotocol.WithEnricher(&devEnricher{
+			trajectoryFn: runLoopDriver.TrajectoryByTaskID,
+		}),
+	)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("tasks/protocol projector: %w", err)
@@ -1302,6 +1346,29 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	draftMW := auth.Middleware(validator, auth.MWLogger(opts.logger))
 	router.Handle(devdraft.RoutePrefix+"/", draftMW(draftHandler))
 
+	// Compute the bind address so the bootstrap handler knows which
+	// URL to put in the response envelope. HARBOR_BIND overrides the
+	// port-based default.
+	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
+	if opts.bindAddr != "" {
+		bindAddr = opts.bindAddr
+	}
+
+	// Phase 105 (V1.2) — dev-only bootstrap endpoint. Mints a fresh
+	// dev token + returns the full connection envelope the Console
+	// needs for a one-click "Attach to local Runtime" button.
+	// Loopback-gated; mounted WITHOUT auth middleware — the loopback
+	// gate is the security boundary. Mounted BEFORE the /v1/ catch-all
+	// so the exact method+path match wins.
+	bootstrapHandler := server.NewBootstrapHandler(
+		devSigner,
+		identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession},
+		[]string{string(auth.ScopeAdmin), string(auth.ScopeConsoleFleet)},
+		"http://"+bindAddr,
+		opts.logger,
+	)
+	router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
+
 	// Forward every other Protocol-prefixed path to the Phase 60 mux.
 	// The draft handler is registered above; this catch-all picks up
 	// everything else under /v1/.
@@ -1322,19 +1389,6 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			return nil, fmt.Errorf("console assets: %w", err)
 		}
 		router.Handle("/", consoleHandler)
-	}
-
-	bindAddr := fmt.Sprintf("127.0.0.1:%d", opts.port)
-	if opts.bindAddr != "" {
-		// runDev's `HARBOR_BIND` parse threads the override here.
-		// bootDevStack itself does NOT read HARBOR_BIND from env —
-		// the read happens once in `runDev` and propagates via the
-		// explicit opts field (D-104). Reading the env directly here
-		// caused cmd/harbor tests that construct `devBootOptions`
-		// with `port: 0` to leak-inherit the preflight harness's
-		// HARBOR_BIND value and try to bind the preflight server's
-		// port under parallel-batch load.
-		bindAddr = opts.bindAddr
 	}
 
 	// Phase 83v (D-162) — CORS middleware. Default-deny: empty allowlist
@@ -1699,7 +1753,11 @@ func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
 		ExtraGuidance:          cfg.ExtraGuidance,
 		ReasoningReplay:        planner.ReasoningReplayMode(cfg.ReasoningReplay),
 		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
-		Extra:                  extra,
+		// Phase 107d (D-169): pass the *bool through verbatim so the
+		// react factory distinguishes "unset" (nil → default true) from
+		// an explicit false (107c serialization opt-out).
+		ParallelToolCalls: cfg.ParallelToolCalls,
+		Extra:             extra,
 	}
 }
 

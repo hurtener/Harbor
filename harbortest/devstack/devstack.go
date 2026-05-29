@@ -666,7 +666,18 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// Phase 83n / D-153 — mirror cmd_dev.go's built-in tool
 		// registration so devstack-driven tests see the same opt-in
 		// surface as the production dev binary (D-094 invariant).
-		if err := builtin.Register(cat, cfg.Tools.BuiltIn); err != nil {
+		// Phase 107c follow-up — thread the ArtifactStore so the
+		// `artifact_fetch` builtin can resolve heavy-content refs.
+		// The §17.6 closeout audit hinges on this mirror: a test stack
+		// that doesn't thread the store would silently disagree with
+		// production, and the wave-end E2E would pass while the live
+		// path stayed broken (the exact bug shape Wave 11.5's F1
+		// finding pinned for the pause.requested bus wiring).
+		if err := builtin.RegisterWith(builtin.RegistryContext{
+			Catalog:       cat,
+			SkillStore:    opts.SkillStore,
+			ArtifactStore: artStore,
+		}, cfg.Tools.BuiltIn); err != nil {
 			return stack, fmt.Errorf("tools/builtin: %w", err)
 		}
 		// Wire the bus into the Coordinator so pause.requested /

@@ -37,6 +37,8 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
@@ -56,31 +58,50 @@ var (
 )
 
 // registrar binds a built-in name to the function that registers it
-// against a catalog. Package-private — callers use Register, never
+// against a catalog. Package-private — callers use RegisterWith, never
 // touch the table directly.
-type registrar func(cat tools.ToolCatalog) error
+type registrar func(rc RegistryContext) error
 
-// registry holds the V1.1 built-in surface. Each entry self-describes
+// registry holds the V1.1+ built-in surface. Each entry self-describes
 // its name and a registration thunk that calls `inproc.RegisterFunc`
 // with the right typed signature.
 var registry = map[string]registrar{
-	"clock.now": func(cat tools.ToolCatalog) error {
+	"clock.now": func(rc RegistryContext) error {
 		return inproc.RegisterFunc[ClockNowArgs, ClockNowOut](
-			cat,
-			"clock.now",
-			ClockNow,
+			rc.Catalog, "clock.now", ClockNow,
 			tools.WithDescription("Return the current UTC time as RFC 3339 + epoch milliseconds."),
 			tools.WithSideEffect(tools.SideEffectPure),
 		)
 	},
-	"text.echo": func(cat tools.ToolCatalog) error {
+	"text.echo": func(rc RegistryContext) error {
 		return inproc.RegisterFunc[TextEchoArgs, TextEchoOut](
-			cat,
-			"text.echo",
-			TextEcho,
+			rc.Catalog, "text.echo", TextEcho,
 			tools.WithDescription("Echo the input text back verbatim. Useful for smoke-testing the planner/executor loop."),
 			tools.WithSideEffect(tools.SideEffectPure),
 		)
+	},
+	// Phase 107c / D-167 — meta-tools for tool + skill discovery.
+	"tool_search": func(rc RegistryContext) error {
+		return registerToolSearch(rc.Catalog)
+	},
+	"tool_get": func(rc RegistryContext) error {
+		return registerToolGet(rc.Catalog)
+	},
+	"skill_search": func(rc RegistryContext) error {
+		return registerSkillSearch(rc.Catalog, rc.SkillStore)
+	},
+	"skill_get": func(rc RegistryContext) error {
+		return registerSkillGet(rc.Catalog, rc.SkillStore)
+	},
+	"declarative_action": func(rc RegistryContext) error {
+		return registerDeclarativeAction(rc.Catalog)
+	},
+	// The escape hatch the LLM uses to pull the full bytes of a
+	// heavy-content artifact ref the prompt builder inlined as a
+	// truncated preview. Always-loaded so the LLM has the recovery
+	// path without needing tool_search.
+	"artifact_fetch": func(rc RegistryContext) error {
+		return registerArtifactFetch(rc.Catalog, rc.ArtifactStore)
 	},
 }
 
@@ -97,16 +118,34 @@ func KnownNames() []string {
 	return out
 }
 
-// Register attaches each named built-in to the catalog. A name that
-// is not in the registry returns ErrUnknownBuiltIn (the message
-// lists the known names so an operator sees the typo); a name that
-// is in the registry but whose underlying registration fails
-// returns ErrRegisterFailed wrapping the inproc error.
+// RegistryContext carries the dependencies builtins may need at
+// registration time. All fields are optional — a builtin that
+// doesn't use a field ignores it. Builtins that REQUIRE a field
+// (e.g. `skill_search` needs `SkillStore`; `artifact_fetch` needs
+// `ArtifactStore`) fail loud at invoke time with an operator-readable
+// message when the dependency is nil.
+type RegistryContext struct {
+	Catalog       tools.ToolCatalog
+	SkillStore    skills.SkillStore
+	ArtifactStore artifacts.ArtifactStore
+}
+
+// Register attaches each named built-in to the catalog. Equivalent to
+// RegisterWith(ctx, names) with a zero RegistryContext — use when no
+// builtins need the skill store.
 //
-// An empty `names` slice is a no-op — operators who don't opt into
-// any built-in see zero behaviour change.
+// Deprecated: prefer RegisterWith for new call sites. Kept for
+// backward compatibility with existing tests + devstack wiring.
 func Register(cat tools.ToolCatalog, names []string) error {
-	if cat == nil {
+	return RegisterWith(RegistryContext{Catalog: cat}, names)
+}
+
+// RegisterWith attaches each named built-in to the catalog, passing
+// the full RegistryContext so builtins that need the SkillStore
+// (skill_search, skill_get) can reach it. Builtins that don't use
+// the store ignore it.
+func RegisterWith(rc RegistryContext, names []string) error {
+	if rc.Catalog == nil {
 		return fmt.Errorf("%w: catalog is nil", ErrRegisterFailed)
 	}
 	for _, name := range names {
@@ -114,7 +153,7 @@ func Register(cat tools.ToolCatalog, names []string) error {
 		if !ok {
 			return fmt.Errorf("%w: %q (known: %v)", ErrUnknownBuiltIn, name, KnownNames())
 		}
-		if err := reg(cat); err != nil {
+		if err := reg(rc); err != nil {
 			return fmt.Errorf("%w: %q: %w", ErrRegisterFailed, name, err)
 		}
 	}

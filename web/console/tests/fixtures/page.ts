@@ -55,12 +55,37 @@ export type ConsoleHelpers = {
    * the harness seeds the pre-encryption token and lets the app re-wrap it.
    */
   seedAuth(token: string): Promise<void>;
+  /**
+   * Seed a FULL live Runtime connection envelope into localStorage so the
+   * app shell resolves `resolveConnection() !== null` and pages render
+   * connected (Phase 105 — V1.2: a disconnected Console redirects to
+   * /settings, so any spec that needs a page to actually render must seed
+   * a connection first). Writes the `harbor.runtime.*` keys
+   * `connection.ts::resolveConnection` reads, pointing at the harness's
+   * live `harbor console` Runtime with the dev identity triple.
+   */
+  seedConnection(): Promise<void>;
   /** Navigate to a Console page by IA slug and wait for it to settle. */
   gotoPage(slug: ConsolePageSlug): Promise<void>;
 };
 
 /** The storage key the Console reads its session token from (D-091). */
 export const AUTH_STORAGE_KEY = "harbor.console.token";
+
+/**
+ * The `harbor.runtime.*` localStorage keys
+ * `connection.ts::resolveConnection` reads to resolve a live Runtime
+ * connection. Mirrors `STORAGE_KEYS` in `src/lib/connection.ts` (kept in
+ * sync by hand — the harness cannot import app source).
+ */
+export const RUNTIME_STORAGE_KEYS = {
+  baseURL: "harbor.runtime.base_url",
+  token: "harbor.runtime.token",
+  tenant: "harbor.runtime.tenant",
+  user: "harbor.runtime.user",
+  session: "harbor.runtime.session",
+  scopes: "harbor.runtime.scopes",
+} as const;
 
 async function seedAuthImpl(page: Page, token: string): Promise<void> {
   // `addInitScript` runs before any page script, so the token is present
@@ -70,6 +95,26 @@ async function seedAuthImpl(page: Page, token: string): Promise<void> {
       window.localStorage.setItem(key, value);
     },
     [AUTH_STORAGE_KEY, token] as const,
+  );
+}
+
+async function seedConnectionImpl(
+  page: Page,
+  runtime: RuntimeFixture,
+): Promise<void> {
+  // Seed the full connection envelope BEFORE any page script runs so the
+  // app shell's first-load redirect ($effect in (console)/+layout.svelte)
+  // sees a live connection and does NOT bounce to /settings.
+  await page.addInitScript(
+    ([keys, baseURL, token]) => {
+      window.localStorage.setItem(keys.baseURL, baseURL);
+      window.localStorage.setItem(keys.token, token);
+      window.localStorage.setItem(keys.tenant, "dev");
+      window.localStorage.setItem(keys.user, "dev");
+      window.localStorage.setItem(keys.session, "dev");
+      window.localStorage.setItem(keys.scopes, "admin,console:fleet");
+    },
+    [RUNTIME_STORAGE_KEYS, runtime.baseURL, runtime.token] as const,
   );
 }
 
@@ -101,6 +146,7 @@ export const test = runtimeTest.extend<{ helpers: ConsoleHelpers }>({
   helpers: async ({ page, runtime }, use) => {
     await use({
       seedAuth: (token: string) => seedAuthImpl(page, token),
+      seedConnection: () => seedConnectionImpl(page, runtime),
       gotoPage: (slug: ConsolePageSlug) => gotoPageImpl(page, runtime, slug),
     });
   },

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -132,4 +133,80 @@ func TestGet_CostPerStepIsNeverNullOnWire(t *testing.T) {
 	if !strings.Contains(string(enc), `"per_step":[]`) {
 		t.Fatalf("wire-shape regression: expected per_step:[] in output:\n%s", enc)
 	}
+}
+
+// TestGet_TrajectoryPopulatedFromEnricher — Phase 107a AC-13.
+// When the enricher returns a *TaskTrajectoryRef, it lands on detail.Trajectory.
+func TestGet_TrajectoryPopulatedFromEnricher(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+	enr := &trajectoryStubEnricher{
+		ref: &prototypes.TaskTrajectoryRef{
+			Steps: []prototypes.TaskTrajectoryStep{
+				{Index: 0, ReasoningTrace: "First, I need to understand what the user asked."},
+				{Index: 2, ReasoningTrace: "Now I'll check using the provided tool."},
+			},
+		},
+	}
+	proj, err := tasksprotocol.NewRegistryProjector(reg, tasksprotocol.WithEnricher(enr))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	id := idFor("t1", "u1", "s1")
+	taskID := seedTask(t, reg, id, tasks.KindForeground, tasks.StatusComplete, "reason", "think step by step")
+	detail, err := proj.GetTask(context.Background(), id, string(taskID))
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if detail.Trajectory == nil {
+		t.Fatal("expected detail.Trajectory to be non-nil")
+	}
+	if len(detail.Trajectory.Steps) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(detail.Trajectory.Steps))
+	}
+	if detail.Trajectory.Steps[0].ReasoningTrace == "" {
+		t.Fatal("first step's ReasoningTrace must be non-empty")
+	}
+}
+
+// TestGet_TrajectoryNilWhenEnricherReturnsNil — Phase 107a AC-13.
+// Graceful absence: nil enricher result preserves a nil detail.Trajectory.
+func TestGet_TrajectoryNilWhenEnricherReturnsNil(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+	enr := &trajectoryStubEnricher{ref: nil}
+	proj, err := tasksprotocol.NewRegistryProjector(reg, tasksprotocol.WithEnricher(enr))
+	if err != nil {
+		t.Fatalf("NewRegistryProjector: %v", err)
+	}
+	id := idFor("t1", "u1", "s1")
+	taskID := seedTask(t, reg, id, tasks.KindForeground, tasks.StatusComplete, "no traj", "simple")
+	detail, err := proj.GetTask(context.Background(), id, string(taskID))
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if detail.Trajectory != nil {
+		t.Fatal("expected detail.Trajectory to be nil when enricher returns nil")
+	}
+}
+
+// trajectoryStubEnricher is a test-only Enricher for Phase 107a projector
+// tests. It returns a stubbed parent-session, cost, and a configurable
+// trajectory ref (nil = no trajectory).
+type trajectoryStubEnricher struct {
+	ref *prototypes.TaskTrajectoryRef
+}
+
+func (s *trajectoryStubEnricher) ParentSession(_ context.Context, _ identity.Identity, _ string) prototypes.TaskParentSessionRef {
+	return prototypes.TaskParentSessionRef{SessionID: "s1", AgentName: "stub", Status: "active"}
+}
+
+func (s *trajectoryStubEnricher) Cost(_ context.Context, _ identity.Identity, _ string) prototypes.TaskCostRollup {
+	return prototypes.TaskCostRollup{PerStep: []prototypes.TaskCostStep{}}
+}
+
+func (s *trajectoryStubEnricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskPlannerSnapshotRef {
+	return nil
+}
+
+func (s *trajectoryStubEnricher) Trajectory(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskTrajectoryRef {
+	return s.ref
 }

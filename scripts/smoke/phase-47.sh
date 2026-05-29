@@ -120,14 +120,20 @@ else
     fail 'phase 47: internal/runtime/parallel/ does NOT import internal/planner — the executor should be a typed consumer of planner.CallParallel (D-056)'
 fi
 
-# 10. System-prompt documentation — the three reserved tools are named
-#     in DefaultSystemPrompt so the LLM can emit them without operator
-#     prompt-engineering.
+# 10. Reserved-tool constants — Phase 47's D-056 pins the three names
+#     in `react.go` source so the projector can intercept them when the
+#     LLM emits them. Phase 107c step 10/11 audit removed the names
+#     from the PROMPT BODY (mentioning `_finish` even as "RETIRED"
+#     primes the legacy JSON-envelope shape on RLHF-trained models);
+#     `_spawn_task` and `_await_task` ride into `req.Tools` as
+#     synthetic native declarations instead. This smoke continues to
+#     pin the source-file constants — the projector + `mapDecision`
+#     reserved-name interception still depend on them.
 for name in '_finish' '_spawn_task' '_await_task'; do
     if grep -q "${name}" "${REACT_FILE}"; then
-        ok "phase 47: DefaultSystemPrompt mentions reserved tool ${name}"
+        ok "phase 47: react.go pins reserved tool constant ${name}"
     else
-        fail "phase 47: DefaultSystemPrompt missing reserved tool ${name} (D-056)"
+        fail "phase 47: react.go missing reserved tool constant ${name} (D-056 — projector requires it)"
     fi
 done
 
