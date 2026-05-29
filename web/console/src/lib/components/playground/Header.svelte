@@ -1,21 +1,15 @@
 <script lang="ts">
-  // Harbor Console — Playground page header (Phase 73n / D-130).
+  // Harbor Console — Playground page header (Phase 108 / D-167).
   //
   // The page-specific header strip rendered inside the shared
-  // `<PageHeader>`'s `actions` slot. It carries: an agent picker, a
-  // model badge, a token-count chip, a cost chip, Cancel-run + Restart
-  // buttons, and — for admin operators only — a "Run as identity"
-  // selector consuming Phase 72b's `IdentityScope` impersonation
-  // triplet (Brief 11 §PG-5, D-107).
-  //
-  // The "Run as identity" selector renders ONLY when the operator
-  // carries the `auth.ScopeAdmin` claim — non-admin operators do not
-  // see it (rendered absent, not disabled — minimises clutter). When an
-  // admin picks a triple, `onimpersonate` fires; the page folds the
-  // triple onto `IdentityScope.Impersonating` for the next
-  // `user_message` / `start` call.
+  // `<PageHeader>`'s `actions` slot. Restructured to match the mock:
+  // breadcrumb-prefixed session id on the left; agent display name +
+  // status pill + planner pill in the middle-left; cost chip + token
+  // chip on the right; Cancel run + Restart buttons rightmost.
   //
   // Design tokens only; no raw literals.
+
+  import StatusChip from '$lib/components/ui/StatusChip.svelte';
 
   /** An impersonation target an admin can run-as. */
   export interface ImpersonationTarget {
@@ -26,7 +20,6 @@
   }
 
   let {
-    agents,
     activeAgent,
     model,
     tokenCount,
@@ -35,12 +28,11 @@
     canImpersonate = false,
     impersonationTargets = [],
     activeImpersonation = null,
-    onagentchange,
+    onagentchange: _onagentchange,
     oncancel,
     onrestart,
     onimpersonate
   }: {
-    agents: string[];
     activeAgent: string;
     model: string;
     tokenCount: number;
@@ -60,10 +52,6 @@
     onimpersonate?: (target: ImpersonationTarget | null) => void;
   } = $props();
 
-  function onAgentSelect(e: Event): void {
-    onagentchange((e.currentTarget as HTMLSelectElement).value);
-  }
-
   function onImpersonationSelect(e: Event): void {
     const value = (e.currentTarget as HTMLSelectElement).value;
     if (value === '') {
@@ -75,79 +63,120 @@
     );
     onimpersonate?.(target ?? null);
   }
+
+  const statusKind = $derived<'success' | 'warning' | 'danger' | 'neutral'>(
+    running ? 'success' : 'neutral'
+  );
+  const statusLabel = $derived(running ? 'Active' : 'Ready');
 </script>
 
 <div class="playground-header" data-testid="playground-header">
-  <label class="header-field">
-    <span class="field-label">Agent</span>
-    <select
-      class="header-select"
-      data-testid="playground-agent-picker"
-      value={activeAgent}
-      onchange={onAgentSelect}
+  <div class="header-left">
+    <span class="session-id mono" title="Session ID">
+      {activeAgent}
+    </span>
+    <StatusChip kind={statusKind} label={statusLabel} />
+    <StatusChip kind="accent" label={model} />
+  </div>
+
+  <div class="header-center">
+    <span class="chip token-chip tabular" data-testid="playground-token-chip">
+      {tokenCount.toLocaleString()} tokens
+    </span>
+    <span class="chip cost-chip tabular" data-testid="playground-cost-chip">
+      ${costUSD.toFixed(4)}
+    </span>
+  </div>
+
+  <div class="header-right">
+    {#if canImpersonate}
+      <label class="header-field">
+        <span class="field-label">Run as</span>
+        <select
+          class="header-select"
+          data-testid="playground-impersonation-select"
+          value={activeImpersonation
+            ? `${activeImpersonation.tenant}/${activeImpersonation.user}/${activeImpersonation.session}`
+            : ''}
+          onchange={onImpersonationSelect}
+        >
+          <option value="">Self</option>
+          {#each impersonationTargets as target (`${target.tenant}/${target.user}/${target.session}`)}
+            <option value={`${target.tenant}/${target.user}/${target.session}`}>
+              {target.label}
+            </option>
+          {/each}
+        </select>
+      </label>
+    {/if}
+
+    <button
+      type="button"
+      class="header-button danger"
+      data-testid="playground-cancel-run"
+      onclick={oncancel}
+      disabled={!running}
+      title={running ? 'Cancel the active run' : 'No active run to cancel'}
     >
-      {#each agents as agent (agent)}
-        <option value={agent}>{agent}</option>
-      {/each}
-    </select>
-  </label>
-
-  <span class="model-badge" data-testid="playground-model-badge">{model}</span>
-
-  <span class="chip token-chip" data-testid="playground-token-chip">
-    {tokenCount} tokens
-  </span>
-  <span class="chip cost-chip" data-testid="playground-cost-chip">
-    ${costUSD.toFixed(4)}
-  </span>
-
-  {#if canImpersonate}
-    <label class="header-field">
-      <span class="field-label">Run as identity</span>
-      <select
-        class="header-select"
-        data-testid="playground-impersonation-select"
-        value={activeImpersonation
-          ? `${activeImpersonation.tenant}/${activeImpersonation.user}/${activeImpersonation.session}`
-          : ''}
-        onchange={onImpersonationSelect}
-      >
-        <option value="">Self</option>
-        {#each impersonationTargets as target (`${target.tenant}/${target.user}/${target.session}`)}
-          <option value={`${target.tenant}/${target.user}/${target.session}`}>
-            {target.label}
-          </option>
-        {/each}
-      </select>
-    </label>
-  {/if}
-
-  <button
-    type="button"
-    class="header-button"
-    data-testid="playground-cancel-run"
-    onclick={oncancel}
-    disabled={!running}
-    title={running ? 'Cancel the active run' : 'No active run to cancel'}
-  >
-    Cancel run
-  </button>
-  <button
-    type="button"
-    class="header-button"
-    data-testid="playground-restart-run"
-    onclick={onrestart}
-  >
-    Restart
-  </button>
+      Cancel run
+    </button>
+    <button
+      type="button"
+      class="header-button"
+      data-testid="playground-restart-run"
+      onclick={onrestart}
+    >
+      Restart
+    </button>
+  </div>
 </div>
 
 <style>
   .playground-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: var(--space-3);
     flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .header-left,
+  .header-center,
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .session-id {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  .tabular {
+    font-variant-numeric: var(--font-variant-tabular);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .token-chip,
+  .cost-chip {
+    font-family: var(--font-mono);
   }
 
   .header-field {
@@ -171,24 +200,6 @@
     color: var(--color-text);
   }
 
-  .model-badge {
-    padding: var(--space-1) var(--space-2);
-    background: var(--color-accent-soft);
-    color: var(--color-accent);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-    font-family: var(--font-mono);
-  }
-
-  .chip {
-    padding: var(--space-1) var(--space-2);
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-  }
-
   .header-button {
     background: var(--color-surface-raised);
     color: var(--color-text);
@@ -197,6 +208,11 @@
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-sm);
     cursor: pointer;
+  }
+
+  .header-button.danger {
+    color: var(--color-danger);
+    border-color: var(--color-danger);
   }
 
   .header-button:disabled {

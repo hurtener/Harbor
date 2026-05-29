@@ -1,0 +1,56 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Harbor Logo</title>
+  <desc>A minimal lighthouse and harbor signal mark for the Harbor agent runtime ecosystem.</desc>
+
+  <defs>
+    <linearGradient id="beam" x1="96" y1="152" x2="416" y2="152" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#48D6D2" stop-opacity="0"/>
+      <stop offset="0.22" stop-color="#48D6D2" stop-opacity="0.72"/>
+      <stop offset="0.5" stop-color="#8BE9E6" stop-opacity="0.95"/>
+      <stop offset="0.78" stop-color="#48D6D2" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#48D6D2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="tower" x1="188" y1="132" x2="324" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAFBFA"/>
+      <stop offset="1" stop-color="#9FE7E4"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="90" y1="394" x2="422" y2="394" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1BB7C9" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#3DE0DB"/>
+      <stop offset="1" stop-color="#1BB7C9" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.20  0 0 0 0 0.88  0 0 0 0 0.86  0 0 0 0.55 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+  </defs>
+
+  <!-- signal beams -->
+  <path d="M104 144H408" stroke="url(#beam)" stroke-width="14" stroke-linecap="round" filter="url(#softGlow)"/>
+  <path d="M136 106C175 130 211 142 256 142C301 142 337 130 376 106" stroke="#48D6D2" stroke-opacity="0.38" stroke-width="10" stroke-linecap="round"/>
+  <path d="M136 182C175 158 211 146 256 146C301 146 337 158 376 182" stroke="#48D6D2" stroke-opacity="0.38" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- beacon cap -->
+  <path d="M218 120H294L312 148H200L218 120Z" fill="#EAFBFA"/>
+  <rect x="208" y="148" width="96" height="42" rx="10" fill="#0D2430" stroke="#8BE9E6" stroke-width="8"/>
+  <circle cx="256" cy="169" r="13" fill="#F4C76B" filter="url(#softGlow)"/>
+  <path d="M228 92H284L294 120H218L228 92Z" fill="#48D6D2"/>
+
+  <!-- tower -->
+  <path d="M218 190H294L324 424H188L218 190Z" fill="url(#tower)"/>
+  <path d="M218 190H294L324 424H188L218 190Z" stroke="#0D2430" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- tower cuts / windows -->
+  <path d="M230 238H282" stroke="#0D2430" stroke-opacity="0.5" stroke-width="10" stroke-linecap="round"/>
+  <rect x="239" y="268" width="34" height="52" rx="17" fill="#0D2430" opacity="0.82"/>
+  <path d="M222 348H290" stroke="#0D2430" stroke-opacity="0.55" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- base -->
+  <path d="M174 424H338L362 458H150L174 424Z" fill="#0D2430"/>
+  <path d="M150 458H362" stroke="#8BE9E6" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- harbor waves -->
+  <path d="M94 384C124 364 150 364 180 384C210 404 236 404 266 384C296 364 322 364 352 384C382 404 408 404 438 384" stroke="url(#sea)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M122 420C148 404 170 404 196 420C222 436 244 436 270 420C296 404 318 404 344 420C370 436 392 436 418 420" stroke="url(#sea)" stroke-opacity="0.7" stroke-width="10" stroke-linecap="round"/>
+</svg>

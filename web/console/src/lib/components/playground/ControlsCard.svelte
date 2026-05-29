@@ -1,15 +1,9 @@
 <script lang="ts">
-  // Harbor Console — Playground Controls card (Phase 73n / D-130).
+  // Harbor Console — Playground Controls card (Phase 73n / D-130, Phase 108 / D-167).
   //
-  // The right-rail Controls card: reasoning-effort, temperature,
-  // max-tokens, and system-prompt-override inputs, plus an Apply button
-  // that records the override via `runs.set_overrides` (Brief 11
-  // §PG-5). The override applies to the NEXT message in the session.
-  //
-  // The drift-mode toggle is rendered visible-but-DISABLED with a
-  // "Post-V1" tooltip — Brief 11 §PG-5 defers drift mode. It is NOT a
-  // stubbed action presented as done (CONVENTIONS.md §5): the disabled
-  // state + tooltip is the honest signal.
+  // The right-rail Controls card: reasoning-effort (segmented control),
+  // temperature + top-p sliders with numeric chips, max-tokens combobox,
+  // system-prompt-override textarea, and an Apply button.
   //
   // Design tokens only.
 
@@ -26,22 +20,30 @@
     onapply: (overrides: {
       reasoningEffort?: string;
       temperature?: number;
+      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     }) => void;
   } = $props();
 
-  // The four override inputs. Each is OPT-IN — an untouched field is
-  // omitted from the override (leaves the runtime default in place).
   let reasoningEffort = $state('');
   let temperature = $state('');
+  let topP = $state('');
   let maxTokens = $state('');
   let systemPrompt = $state('');
+
+  const effortOptions = [
+    { value: '', label: 'Default' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' }
+  ];
 
   function apply(): void {
     const overrides: {
       reasoningEffort?: string;
       temperature?: number;
+      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     } = {};
@@ -52,6 +54,12 @@
       const t = Number(temperature);
       if (!Number.isNaN(t)) {
         overrides.temperature = t;
+      }
+    }
+    if (topP !== '') {
+      const p = Number(topP);
+      if (!Number.isNaN(p)) {
+        overrides.topP = p;
       }
     }
     if (maxTokens !== '') {
@@ -68,34 +76,64 @@
 </script>
 
 <div class="controls-card" data-testid="playground-controls-card">
-  <label class="control-field">
+  <!-- Reasoning effort — segmented control -->
+  <div class="control-field">
     <span class="control-label">Reasoning effort</span>
-    <select
-      class="control-input"
-      data-testid="controls-reasoning-effort"
-      bind:value={reasoningEffort}
-    >
-      <option value="">Default</option>
-      <option value="low">Low</option>
-      <option value="medium">Medium</option>
-      <option value="high">High</option>
-    </select>
-  </label>
+    <div class="segmented" role="radiogroup" aria-label="Reasoning effort">
+      {#each effortOptions as opt (opt.value)}
+        <button
+          type="button"
+          class="segment"
+          class:active={reasoningEffort === opt.value}
+          onclick={() => (reasoningEffort = opt.value)}
+          data-testid="controls-reasoning-effort"
+          data-value={opt.value}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
+  </div>
 
+  <!-- Temperature — slider + numeric chip -->
   <label class="control-field">
     <span class="control-label">Temperature</span>
-    <input
-      class="control-input"
-      type="number"
-      step="0.1"
-      min="0"
-      max="2"
-      placeholder="Default"
-      data-testid="controls-temperature"
-      bind:value={temperature}
-    />
+    <div class="slider-row">
+      <input
+        class="slider"
+        type="range"
+        min="0"
+        max="2"
+        step="0.1"
+        data-testid="controls-temperature"
+        bind:value={temperature}
+      />
+      <span class="numeric-chip tabular">
+        {temperature !== '' ? Number(temperature).toFixed(1) : '—'}
+      </span>
+    </div>
   </label>
 
+  <!-- Top P — slider + numeric chip -->
+  <label class="control-field">
+    <span class="control-label">Top P</span>
+    <div class="slider-row">
+      <input
+        class="slider"
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        data-testid="controls-top-p"
+        bind:value={topP}
+      />
+      <span class="numeric-chip tabular">
+        {topP !== '' ? Number(topP).toFixed(2) : '—'}
+      </span>
+    </div>
+  </label>
+
+  <!-- Max tokens — combobox -->
   <label class="control-field">
     <span class="control-label">Max tokens</span>
     <input
@@ -108,6 +146,7 @@
     />
   </label>
 
+  <!-- System prompt override -->
   <label class="control-field">
     <span class="control-label">System prompt override</span>
     <textarea
@@ -119,6 +158,7 @@
     ></textarea>
   </label>
 
+  <!-- Drift mode — visible but disabled -->
   <label class="control-field drift-field">
     <span class="control-label">Drift mode</span>
     <span class="drift-toggle" title="Drift mode — Post-V1 (Brief 11 §PG-5)">
@@ -132,15 +172,18 @@
     </span>
   </label>
 
-  <button
-    type="button"
-    class="apply-button"
-    data-testid="controls-apply"
-    onclick={apply}
-    disabled={pending}
-  >
-    {pending ? 'Applying…' : 'Apply to next message'}
-  </button>
+  <!-- Sticky bottom action -->
+  <div class="sticky-action">
+    <button
+      type="button"
+      class="apply-button"
+      data-testid="controls-apply"
+      onclick={apply}
+      disabled={pending}
+    >
+      {pending ? 'Applying…' : 'Apply to next message'}
+    </button>
+  </div>
 
   {#if result !== null}
     <p
@@ -173,6 +216,63 @@
     color: var(--color-text-muted);
   }
 
+  .segmented {
+    display: flex;
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .segment {
+    flex: 1;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-bg);
+    color: var(--color-text-muted);
+    border: none;
+    border-right: var(--border-hairline);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .segment:last-child {
+    border-right: none;
+  }
+
+  .segment.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .slider {
+    flex: 1;
+    accent-color: var(--color-accent);
+  }
+
+  .numeric-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    min-width: var(--size-chip-min-width);
+    justify-content: center;
+  }
+
+  .tabular {
+    font-variant-numeric: var(--font-variant-tabular);
+  }
+
   .control-input {
     padding: var(--space-1) var(--space-2);
     background: var(--color-bg);
@@ -194,7 +294,17 @@
     color: var(--color-text-muted);
   }
 
+  .sticky-action {
+    position: sticky;
+    bottom: 0;
+    background: var(--color-surface);
+    padding-top: var(--space-2);
+    border-top: var(--border-hairline);
+    margin-top: auto;
+  }
+
   .apply-button {
+    width: 100%;
     background: var(--color-accent);
     color: var(--color-bg);
     border: none;

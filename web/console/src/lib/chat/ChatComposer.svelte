@@ -272,7 +272,32 @@
     gap: var(--space-2);
     padding: var(--space-3);
     border-top: var(--border-hairline);
+    background: var(--color-bg);
+  }
+
+  .composer-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    padding: var(--space-2);
     background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+  }
+
+  .attach-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2);
+    background: transparent;
+    border: none;
+    border-right: var(--border-hairline);
+    cursor: pointer;
+    font-size: var(--text-base);
+    color: var(--color-text);
+    padding-right: var(--space-3);
+    margin-right: var(--space-1);
   }
 
   .attachment-list {
@@ -319,25 +344,6 @@
     color: var(--color-danger);
   }
 
-  .composer-row {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-2);
-  }
-
-  .attach-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-2);
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--text-base);
-    color: var(--color-text);
-  }
-
   .attach-button input {
     display: none;
   }
@@ -347,8 +353,7 @@
     resize: vertical;
     padding: var(--space-2);
     background: var(--color-bg);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
+    border: none;
     font-family: var(--font-sans);
     font-size: var(--text-sm);
     color: var(--color-text);

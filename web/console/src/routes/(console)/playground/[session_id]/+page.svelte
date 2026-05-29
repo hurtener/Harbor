@@ -22,7 +22,8 @@
   //     override presets via `PlaygroundSavedFilters`.
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, getContext } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import PageHeader from '$lib/components/ui/PageHeader.svelte';
   import FilterBar from '$lib/components/ui/FilterBar.svelte';
@@ -37,6 +38,8 @@
   import PlaygroundHeader, {
     type ImpersonationTarget
   } from '$lib/components/playground/Header.svelte';
+  import KpiStrip from '$lib/components/playground/KpiStrip.svelte';
+  import PlaygroundStatusBar from '$lib/components/playground/PlaygroundStatusBar.svelte';
   import ControlsCard from '$lib/components/playground/ControlsCard.svelte';
   import PendingInterventionsCard, {
     type PendingIntervention
@@ -90,11 +93,19 @@
   let sending = $state(false);
 
   /* ---- header ----------------------------------------------------- */
-  const agents = ['default agent'];
+  const _agents = ['default agent'];
   let activeAgent = $state('default agent');
   let tokenCount = $state(0);
   let costUSD = $state(0);
   let running = $state(false);
+
+  /* ---- Phase 108 KPI strip state ---------------------------------- */
+  let tokenSamples = $state<number[]>([]);
+  let turnLatencies = $state<number[]>([]);
+  let ceilingUSD = $state<number | null>(null);
+
+  /* ---- Phase 108 status bar state --------------------------------- */
+  let eventsStreamLive = $state(false);
 
   /* ---- impersonation (admin only — D-107) ------------------------- */
   let impersonationTargets = $state<ImpersonationTarget[]>([]);
@@ -838,6 +849,12 @@
   }
 
   /* ================================================================ */
+  /* Phase 108 status bar registration                                 */
+  /* ================================================================ */
+
+  const statusBarCtx = getContext<{ set: (snippet: Snippet | null) => void }>('playgroundStatusBar');
+
+  /* ================================================================ */
   /* Boot                                                              */
   /* ================================================================ */
 
@@ -852,6 +869,11 @@
     canControl = hasScope(connection, 'admin');
     chatClient = buildChatClient(client);
     subscribeTaskLifecycle(client);
+
+    // Phase 108 — register the status bar snippet with the shell.
+    if (statusBarCtx) {
+      statusBarCtx.set(statusBar);
+    }
 
     void (async () => {
       try {
@@ -875,6 +897,10 @@
       taskEvents.close();
       taskEvents = null;
     }
+    // Phase 108 — unregister the status bar snippet.
+    if (statusBarCtx) {
+      statusBarCtx.set(null);
+    }
   });
 </script>
 
@@ -886,7 +912,6 @@
   <PageHeader title="Playground" subtitle="Session chat · steering · overrides">
     {#snippet actions()}
       <PlaygroundHeader
-        agents={agents}
         activeAgent={activeAgent}
         model={model}
         tokenCount={tokenCount}
@@ -945,22 +970,17 @@
     {/snippet}
   </FilterBar>
 
+  <!-- Phase 108 KPI strip -->
+  <KpiStrip
+    tokenSamples={tokenSamples}
+    costUSD={costUSD}
+    ceilingUSD={ceilingUSD}
+    turnLatencies={turnLatencies}
+    topologyInfo={pageInfo}
+  />
+
   <div class="layout">
     <div class="main-col">
-      {#if pageInfo !== null}
-        <!--
-          Phase 83w-F5 / D-164 — The chat surface is still functional
-          on a planner/RunLoop runtime, so the page renders normally
-          but surfaces a friendly banner explaining the topology absence
-          above the chat. The pre-83w-F5 behaviour routed the whole
-          page through PageState's red ERROR state with a Retry that
-          would always fail.
-        -->
-        <p class="info-banner" data-testid="playground-topology-info">
-          <strong>{pageInfo.headline}.</strong>
-          {pageInfo.detail}
-        </p>
-      {/if}
       <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
         {#snippet skeleton()}
           <div class="chat-skeleton" aria-hidden="true"></div>
@@ -995,14 +1015,6 @@
           }}
         />
       {/if}
-
-      <footer class="page-footer" data-testid="playground-footer">
-        <span class="footer-item">
-          {sending ? 'Streaming…' : 'Idle'}
-        </span>
-        <span class="footer-item">Protocol {PROTOCOL_VERSION}</span>
-        <span class="footer-item">Console {CONSOLE_VERSION}</span>
-      </footer>
     </div>
 
     <DetailRail>
@@ -1036,6 +1048,16 @@
     </DetailRail>
   </div>
 </div>
+
+<!-- Phase 108 status bar snippet — registered with the shell via getContext -->
+{#snippet statusBar()}
+  <PlaygroundStatusBar
+    streaming={sending}
+    protocolVersion={PROTOCOL_VERSION}
+    eventsStreamLive={eventsStreamLive}
+    consoleVersion={CONSOLE_VERSION}
+  />
+{/snippet}
 
 <style>
   .page {
@@ -1103,29 +1125,5 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
-  }
-
-  .page-footer {
-    display: flex;
-    gap: var(--space-3);
-    padding: var(--space-2);
-    border-top: var(--border-hairline);
-  }
-
-  .footer-item {
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-  }
-
-  /* Phase 83w-F5 / D-164 — friendly info banner above the chat when
-     topology.snapshot returned unknown_method. NOT a red error. */
-  .info-banner {
-    margin: var(--space-0);
-    padding: var(--space-2) var(--space-3);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    background: var(--color-surface-raised);
-    color: var(--color-text-muted);
-    font-size: var(--text-sm);
   }
 </style>

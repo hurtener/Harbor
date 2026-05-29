@@ -1,11 +1,11 @@
 <script lang="ts" module>
-  // Harbor Console — the app shell (D-121, CONVENTIONS.md §2).
+  // Harbor Console — the app shell (D-121, CONVENTIONS.md §2, Phase 108).
   //
   // Every Console page renders inside this shell. It provides the
   // persistent sidebar (the 14-page IA in four clusters), the top bar
   // (breadcrumb + identity / connection indicator), the shared footer,
-  // and the content region. The `(console)` route group exists ONLY to
-  // attach this layout — it does not appear in the URL (CONVENTIONS.md §1).
+  // the content region, and an optional status-bar slot (Phase 108).
+  // The `(console)` route group exists ONLY to attach this layout.
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
 
@@ -23,9 +23,7 @@
 
   // The 14-page information architecture in four clusters (CONVENTIONS.md
   // §2). Playground rides in the Execution cluster as an execution-shaped
-  // surface — the operator's sandbox for steering / inject-context / replay
-  // against the active session. Closes walkthrough F2 (Phase 83q / D-159);
-  // supersedes the original D-121 stance that the Playground was off-nav.
+  // surface.
   const NAV: NavCluster[] = [
     {
       label: 'Runtime',
@@ -63,16 +61,26 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, setContext } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { resolveConnection } from '$lib/connection.js';
   import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
 
-  let { children } = $props();
+  let { children }: { children?: Snippet } = $props();
+
+  // Phase 108 (D-167) — status-bar snippet registry.
+  // Pages call setStatusBar(snippet) to render content in the shell's
+  // status-bar region; calling with null clears it.
+  let statusBarSnippet = $state<Snippet | null>(null);
+  setContext('playgroundStatusBar', {
+    set: (snippet: Snippet | null) => {
+      statusBarSnippet = snippet;
+    }
+  });
 
   // The `console-hydrated` marker the Playwright harness waits on
-  // (CLAUDE.md §17.4 — a real signal, never a fixed timeout).
   let hydrated = $state(false);
   onMount(() => {
     hydrated = true;
@@ -81,16 +89,14 @@
   const connection = $derived(resolveConnection());
 
   // Phase 105 (V1.2) — first-load redirect: when nothing is attached,
-  // send the operator to Settings (the only surface where they can fix
-  // it). Idempotent — if we're already on /settings, no-op.
+  // send the operator to Settings.
   $effect(() => {
     if (resolveConnection() === null && !$page.url.pathname.startsWith('/settings')) {
       goto('/settings', { replaceState: true });
     }
   });
 
-  // The breadcrumb is derived from the active route — the first path
-  // segment maps to a nav label; deeper segments append verbatim.
+  // The breadcrumb is derived from the active route.
   const segments = $derived(
     $page.url.pathname.split('/').filter((s) => s.length > 0)
   );
@@ -112,7 +118,17 @@
 
 <div class="console-shell" data-testid={hydrated ? 'console-hydrated' : 'console-hydrating'}>
   <nav class="sidebar" aria-label="Console navigation">
-    <div class="brand">Harbor Console</div>
+    <div class="brand">
+      <!-- Phase 108 (D-167) — Harbor brand logo + wordmark. -->
+      <img
+        class="brand-logo"
+        src="/harbor_logo.svg"
+        alt="Harbor"
+        width="24"
+        height="24"
+      />
+      <span class="brand-wordmark">Harbor Console</span>
+    </div>
     {#each NAV as cluster (cluster.label)}
       <div class="nav-cluster">
         <p class="cluster-label">{cluster.label}</p>
@@ -136,18 +152,32 @@
       </nav>
       <div class="identity-indicator" data-testid="identity-indicator">
         {#if connection}
-          <span class="triple" title="tenant / user / session">
-            {connection.identity.tenant} · {connection.identity.user} ·
+          <span
+            class="scope-chip"
+            title="tenant / user / session"
+          >
+            {connection.identity.tenant} · {connection.identity.user}
+          </span>
+          <span class="session-id mono" title={connection.identity.session}>
             {connection.identity.session}
           </span>
-          <span class="runtime-url" title={connection.baseURL}>{connection.baseURL}</span>
-          <span class="dot connected" aria-label="Connected"></span>
+          <span
+            class="dot connected"
+            title={connection.baseURL}
+            aria-label="Connected"
+          ></span>
         {:else}
-          <span class="triple muted">no identity</span>
+          <span class="scope-chip muted">no identity</span>
           <span class="dot disconnected" aria-label="Disconnected"></span>
         {/if}
       </div>
     </header>
+
+    {#if statusBarSnippet}
+      <div class="status-bar-region" data-testid="status-bar-region">
+        {@render statusBarSnippet()}
+      </div>
+    {/if}
 
     <main class="content">{@render children?.()}</main>
 
@@ -158,7 +188,8 @@
 <style>
   .console-shell {
     display: flex;
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
     background: var(--color-bg);
     color: var(--color-text);
     font-family: var(--font-sans);
@@ -174,13 +205,26 @@
     padding: var(--space-4);
     background: var(--color-surface);
     border-right: var(--border-hairline);
+    overflow-y: auto;
   }
 
   .brand {
-    font-size: var(--text-lg);
-    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     padding-bottom: var(--space-2);
     border-bottom: var(--border-hairline);
+  }
+
+  .brand-logo {
+    width: var(--size-avatar-sm);
+    height: var(--size-avatar-sm);
+    flex-shrink: 0;
+  }
+
+  .brand-wordmark {
+    font-size: var(--text-lg);
+    font-weight: 600;
   }
 
   .cluster-label {
@@ -208,6 +252,7 @@
     font-size: var(--text-sm);
     color: var(--color-text-muted);
     text-decoration: none;
+    border-left: var(--border-emphasis-width) solid transparent;
   }
 
   .nav-cluster a:hover {
@@ -219,6 +264,7 @@
     color: var(--color-accent);
     background: var(--color-accent-soft);
     font-weight: 600;
+    border-left-color: var(--color-accent);
   }
 
   .main-column {
@@ -226,6 +272,8 @@
     flex-direction: column;
     flex: 1;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .top-bar {
@@ -235,6 +283,7 @@
     gap: var(--space-4);
     padding: var(--space-3) var(--space-6);
     border-bottom: var(--border-hairline);
+    flex-shrink: 0;
   }
 
   .breadcrumb {
@@ -266,15 +315,27 @@
     color: var(--color-text-muted);
   }
 
-  .triple {
+  .scope-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
     font-family: var(--font-mono);
   }
 
-  .triple.muted {
+  .scope-chip.muted {
     font-style: italic;
   }
 
-  .runtime-url {
+  .session-id {
+    max-width: var(--size-session-max-width);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mono {
     font-family: var(--font-mono);
   }
 
@@ -282,6 +343,7 @@
     width: var(--space-2);
     height: var(--space-2);
     border-radius: 50%;
+    flex-shrink: 0;
   }
 
   .dot.connected {
@@ -292,9 +354,15 @@
     background: var(--color-danger);
   }
 
+  .status-bar-region {
+    flex-shrink: 0;
+  }
+
   .content {
     flex: 1;
     padding: var(--space-6);
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 </style>
