@@ -241,14 +241,20 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	// a planner-emitted CallTool that pre-dates a provider-supplied ID),
 	// a deterministic `react.callid.<step-index>` is synthesised and
 	// stamped on BOTH the assistant ToolCalls entry AND the RoleTool
-	// ToolCallID so the round-trip is well-formed regardless. The
-	// projector's reserved-name path emits Finish/SpawnTask/AwaitTask
-	// directly (no trajectory Step), so this renderer's only CallTool-
-	// shaped input is a normal tool dispatch.
+	// ToolCallID so the round-trip is well-formed regardless.
 	//
-	// Non-CallTool action shapes (a defensive prior Finish, an unknown
-	// shape) fall through to the legacy assistant-text rendering so
-	// observability is preserved even in malformed trajectories.
+	// A `_finish` reserved-name call terminates the run, so it never
+	// reaches the trajectory as a completed Step. But `_spawn_task` /
+	// `_await_task` are NON-terminal control meta-tools: the runloop
+	// dispatches them through the ToolExecutor (Phase 107e — D-170) and
+	// appends a trajectory Step exactly like a CallTool. Those steps
+	// replay through [renderNativeControlStep] as native tool_call +
+	// RoleTool pairs (consistent with how the model emitted them, and —
+	// for multi-spawn coordination — preserving which `task_id` maps to
+	// which spawned sub-goal). Remaining non-native shapes (a defensive
+	// prior Finish, an unknown shape) fall through to the legacy
+	// assistant-text rendering so observability is preserved even in
+	// malformed trajectories.
 	if rc.Trajectory != nil {
 		if rc.Trajectory.Summary == nil {
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
@@ -272,7 +278,19 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 					}
 					continue
 				}
-				// Legacy fallback for non-CallTool actions.
+				// Phase 107e (D-170): a SpawnTask / AwaitTask step (the
+				// `_spawn_task` / `_await_task` control meta-tools the model
+				// emits natively) replays as a native tool_call + RoleTool
+				// pair, consistent with the CallTool path above.
+				if cMsg, cToolMsg, control := renderNativeControlStep(step, replayMode, i); control {
+					messages = append(messages, cMsg)
+					if cToolMsg != nil {
+						messages = append(messages, *cToolMsg)
+					}
+					continue
+				}
+				// Legacy fallback for remaining non-native actions
+				// (defensive prior Finish, unknown shape).
 				asst := renderAssistantTurn(step, replayMode)
 				obs := renderObservationForLLM(step)
 				if asst != "" {
@@ -808,6 +826,117 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 		ToolCallID: &id,
 	}
 	return asst, tool, true
+}
+
+// renderNativeControlStep projects a trajectory step whose Action is a
+// [planner.SpawnTask] or [planner.AwaitTask] — the two NON-terminal
+// planner-control meta-tools the model emits as native tool-calls
+// (`_spawn_task` / `_await_task`; Phase 47 / D-056, declared natively
+// since Phase 107c, first dispatched on the dev path by Phase 107e /
+// D-170) — back into the native tool-call wire shape, mirroring
+// [renderNativeStepPair] for CallTool: ONE assistant message carrying the
+// reserved tool name + reconstructed args, paired with ONE RoleTool
+// message carrying the dispatch observation. Returns
+// (assistant, *toolMsg, true) for those two shapes; (zero, nil, false)
+// for any other Action so the caller falls through to the legacy
+// assistant-text rendering (a defensive prior Finish / unknown shape).
+//
+// Why native (not the legacy `{"action":...}` text marker): the model
+// invoked these as native tools, so replaying them as native tool-calls
+// keeps the rebuilt conversation consistent with how it was emitted, and
+// — critically for multi-spawn coordination — preserves each spawn's args
+// so the model can tell which returned `task_id` corresponds to which
+// sub-goal. The text marker dropped the args entirely.
+//
+// CallID: the projector translates the native call into a typed Decision
+// that does not retain the provider tool-call id, so a deterministic
+// `react.callid.<step-index>` is synthesised and stamped on BOTH the
+// assistant tool-call entry and the RoleTool ToolCallID — the same
+// synthesis the CallTool path uses for empty CallIDs — so the pairing is
+// well-formed.
+func renderNativeControlStep(step planner.Step, replayMode planner.ReasoningReplayMode, stepIdx int) (llm.ChatMessage, *llm.ChatMessage, bool) {
+	var toolName string
+	var args json.RawMessage
+	switch a := step.Action.(type) {
+	case planner.SpawnTask:
+		toolName = SpawnTaskToolName
+		args = spawnTaskReplayArgs(a)
+	case planner.AwaitTask:
+		toolName = AwaitTaskToolName
+		args = awaitTaskReplayArgs(a)
+	default:
+		return llm.ChatMessage{}, nil, false
+	}
+
+	callID := fmt.Sprintf("react.callid.%d", stepIdx)
+	assistantText := step.AssistantPreamble
+	if replayMode == planner.ReasoningReplayText && step.ReasoningTrace != "" {
+		if assistantText != "" {
+			assistantText += "\n\nReasoning:\n" + step.ReasoningTrace
+		} else {
+			assistantText = "Reasoning:\n" + step.ReasoningTrace
+		}
+	}
+	var asstContent llm.Content
+	if assistantText != "" {
+		asstContent = textContent(assistantText)
+	}
+	asst := llm.ChatMessage{
+		Role:    llm.RoleAssistant,
+		Content: asstContent,
+		ToolCalls: []llm.ToolCallStructured{{
+			ID:   callID,
+			Name: toolName,
+			Args: args,
+		}},
+	}
+
+	observation := renderNativeObservation(step)
+	if observation == "" {
+		observation = "(control tool returned no observation)"
+	}
+	id := callID
+	tool := &llm.ChatMessage{
+		Role:       llm.RoleTool,
+		Content:    textContent(observation),
+		ToolCallID: &id,
+	}
+	return asst, tool, true
+}
+
+// spawnTaskReplayArgs reconstructs the `_spawn_task` args envelope from a
+// typed [planner.SpawnTask] for trajectory replay. The shape mirrors the
+// envelope [translateNativeSpawn] parses; it is rendered for the model's
+// eyes (not re-parsed), so it carries every field the model set.
+func spawnTaskReplayArgs(d planner.SpawnTask) json.RawMessage {
+	env := map[string]any{
+		"kind": string(d.Kind),
+		"spec": map[string]any{
+			"description": d.Spec.Description,
+			"query":       d.Spec.Query,
+			"priority":    d.Spec.Priority,
+			"retain_turn": d.Spec.RetainTurn,
+			"fail_fast":   d.Spec.FailFast,
+		},
+	}
+	if d.GroupID != "" {
+		env["group_id"] = string(d.GroupID)
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// awaitTaskReplayArgs reconstructs the `_await_task` args envelope from a
+// typed [planner.AwaitTask] for trajectory replay.
+func awaitTaskReplayArgs(d planner.AwaitTask) json.RawMessage {
+	out, err := json.Marshal(map[string]any{"task_id": string(d.TaskID)})
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
 }
 
 // renderNativeParallelStep projects a trajectory step whose Action is a

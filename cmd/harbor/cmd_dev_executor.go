@@ -40,8 +40,10 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/planner/react"
 	"github.com/hurtener/Harbor/internal/runtime/parallel"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -70,7 +72,34 @@ type devToolExecutor struct {
 	// than aborting the whole call (every provider tool_call_id must be
 	// answered).
 	parallel *parallel.Executor
+
+	// tasks is the background-task registry SpawnTask / AwaitTask dispatch
+	// drives (Phase 107e — D-170). SpawnTask creates a KindBackground
+	// task the per-task RunLoop driver picks up and runs; AwaitTask and a
+	// retain-turn SpawnTask poll Get until the task reaches a terminal
+	// status. Immutable after construction (D-025); the registry is itself
+	// concurrent-safe. Nil only in degraded / legacy wiring — Spawn / Await
+	// then fail loud with ErrDecisionShapeUnsupported rather than panic.
+	tasks tasks.TaskRegistry
+
+	// maxSpawnDepth caps the ParentTaskID-chain depth of planner-spawned
+	// background tasks (Phase 107e — D-170; planner.absolute_max_spawn_depth).
+	// A SpawnTask whose child would exceed it is rejected loudly so a
+	// background sub-agent that itself emits SpawnTask cannot recurse
+	// without bound. The cap bounds depth, not breadth.
+	maxSpawnDepth int
 }
+
+// defaultMaxSpawnDepth bounds planner-spawned background-task recursion
+// when planner.absolute_max_spawn_depth is unset / non-positive. Four
+// levels of background nesting is generous for V1.1.x dev workloads.
+const defaultMaxSpawnDepth = 4
+
+// spawnAwaitPollInterval is the cadence at which AwaitTask + a retain-turn
+// SpawnTask poll the registry for a terminal status. The registry's
+// documented poll wake mode (internal/tasks/groups.go) is a cheap
+// in-memory Get on the dev path; the wait is bounded by the caller's ctx.
+const spawnAwaitPollInterval = 100 * time.Millisecond
 
 // newDevToolExecutor binds the catalog + artifact store the runloop
 // dispatches against. Both are the SAME instances bootDevStack
@@ -78,12 +107,15 @@ type devToolExecutor struct {
 // cfg.Artifacts.HeavyOutputThresholdBytes; tool results whose JSON
 // encoding exceeds it get promoted to ArtifactStub-shaped
 // llmObservations.
-func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore, heavyThreshold int, logger *slog.Logger) *devToolExecutor {
+func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore, taskReg tasks.TaskRegistry, heavyThreshold, maxSpawnDepth int, logger *slog.Logger) *devToolExecutor {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if heavyThreshold <= 0 {
 		heavyThreshold = 32 * 1024 // safety floor matches Wave 11 default
+	}
+	if maxSpawnDepth <= 0 {
+		maxSpawnDepth = defaultMaxSpawnDepth
 	}
 	return &devToolExecutor{
 		cat:            cat,
@@ -93,7 +125,9 @@ func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore,
 		// AC-1: the catalog already satisfies parallel.Resolver via
 		// Resolve(name); reuse it as the dispatcher's resolver. No second
 		// fanout engine (§13).
-		parallel: parallel.New(cat),
+		parallel:      parallel.New(cat),
+		tasks:         taskReg,
+		maxSpawnDepth: maxSpawnDepth,
 	}
 }
 
@@ -110,9 +144,16 @@ func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore,
 //     assemble a per-branch aggregate observation (raw + D-026
 //     projected) so the prompt builder can round-trip N RoleTool
 //     messages.
-//   - SpawnTask / AwaitTask: ErrDecisionShapeUnsupported. The runloop
-//     wraps this as the step's observation; the planner re-plans
-//     (typically repairs to a serial CallTool).
+//   - SpawnTask: spawn a KindBackground task via the TaskRegistry under
+//     the run's identity triple, bounded by the spawn-depth cap (Phase
+//     107e — D-170). A non-retain-turn spawn returns {task_id, kind,
+//     status} immediately; a retain-turn spawn blocks (ctx-bounded) until
+//     the spawned task reaches a terminal status and returns its outcome.
+//   - AwaitTask: poll the named task (Get) until it reaches a terminal
+//     status, then return its answer-envelope / error as the observation
+//     (Phase 107e — D-170). Both spawn/await observations go through the
+//     same D-026 projectForLLM discipline so a heavy result never trips
+//     ErrContextLeak.
 func (e *devToolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
@@ -120,11 +161,9 @@ func (e *devToolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunCon
 	case planner.CallParallel:
 		return e.callParallel(ctx, rc, d)
 	case planner.SpawnTask:
-		return nil, nil, fmt.Errorf("%w: SpawnTask (background-task dispatcher lands post-V1.1)",
-			steering.ErrDecisionShapeUnsupported)
+		return e.spawnTask(ctx, rc, d)
 	case planner.AwaitTask:
-		return nil, nil, fmt.Errorf("%w: AwaitTask (background-task dispatcher lands post-V1.1)",
-			steering.ErrDecisionShapeUnsupported)
+		return e.awaitTask(ctx, rc, d)
 	default:
 		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
 	}
@@ -228,6 +267,179 @@ func (e *devToolExecutor) callParallel(ctx context.Context, rc planner.RunContex
 		})
 	}
 	return raw, llmAgg, nil
+}
+
+// spawnTask dispatches a planner.SpawnTask (Phase 107e — D-170).
+//
+// It maps the decision into a tasks.SpawnRequest under the run's
+// identity triple (NEVER a global — CLAUDE.md §6) and calls Spawn. The
+// spawned task's Kind defaults to KindBackground (the projector already
+// defaults it); its ParentTaskID is the current run's task so the
+// spawn-depth cap (AC-8) and the registry's cancel-cascade both see the
+// lineage. A Spawn error (including ErrIdentityRequired) is surfaced as
+// the step's error — never swallowed (§13).
+//
+//   - Non-retain-turn (Spec.RetainTurn == false): returns immediately
+//     with {task_id, kind, status:"spawned"}. The per-task RunLoop driver
+//     picks up the task.spawned event and drives the background sub-run;
+//     the planner joins later by emitting AwaitTask.
+//   - Retain-turn (Spec.RetainTurn == true): blocks (ctx-bounded) until
+//     the spawned task reaches a terminal status, returning its outcome —
+//     a synchronous spawn-and-join in one decision.
+func (e *devToolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d planner.SpawnTask) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: SpawnTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("SpawnTask: attach identity: %w", idErr)
+	}
+
+	// AC-8 recursion guard: the new task's depth is the parent chain
+	// depth + 1. The parent is the current run's task (RunID doubles as
+	// the TaskID at the dev layer). Reject loudly above the cap — never a
+	// silent drop.
+	parentID := tasks.TaskID(rc.Quadruple.RunID)
+	if depth := e.spawnChainDepth(taskCtx, parentID); depth+1 > e.maxSpawnDepth {
+		return nil, nil, fmt.Errorf(
+			"SpawnTask: spawn would reach depth %d, exceeding planner.absolute_max_spawn_depth=%d (parent task %q)",
+			depth+1, e.maxSpawnDepth, parentID)
+	}
+
+	kind := d.Kind
+	if kind == "" {
+		kind = tasks.KindBackground
+	}
+	req := tasks.SpawnRequest{
+		Identity:         identity.Quadruple{Identity: rc.Quadruple.Identity},
+		Kind:             kind,
+		Description:      d.Spec.Description,
+		Query:            d.Spec.Query,
+		Priority:         d.Spec.Priority,
+		GroupID:          d.GroupID,
+		NotifyOnComplete: true,
+	}
+	if parentID != "" {
+		req.ParentTaskID = &parentID
+	}
+	handle, err := e.tasks.Spawn(taskCtx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("SpawnTask: registry spawn: %w", err)
+	}
+
+	if d.Spec.RetainTurn {
+		task, awaitErr := e.awaitTerminal(taskCtx, handle.ID)
+		if awaitErr != nil {
+			return nil, nil, fmt.Errorf("SpawnTask(retain-turn, %q): await: %w", handle.ID, awaitErr)
+		}
+		raw := taskOutcomeObservation(task)
+		return raw, e.projectForLLM(ctx, rc, react.SpawnTaskToolName, raw), nil
+	}
+
+	raw := map[string]any{
+		"task_id": string(handle.ID),
+		"kind":    string(kind),
+		"status":  "spawned",
+	}
+	return raw, raw, nil
+}
+
+// awaitTask dispatches a planner.AwaitTask (Phase 107e — D-170): it
+// blocks (ctx-bounded) until the named task reaches a terminal status,
+// then returns its answer-envelope / error as the observation. Get
+// enforces identity scope, so a cross-session / cross-tenant task id
+// surfaces as a not-found error observation (AC-11) rather than leaking.
+func (e *devToolExecutor) awaitTask(ctx context.Context, rc planner.RunContext, d planner.AwaitTask) (any, any, error) {
+	if e.tasks == nil {
+		return nil, nil, fmt.Errorf("%w: AwaitTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
+	}
+	if d.TaskID == "" {
+		return nil, nil, errors.New("AwaitTask: TaskID is empty")
+	}
+	taskCtx, idErr := identity.With(ctx, rc.Quadruple.Identity)
+	if idErr != nil {
+		return nil, nil, fmt.Errorf("AwaitTask: attach identity: %w", idErr)
+	}
+	task, err := e.awaitTerminal(taskCtx, d.TaskID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("AwaitTask(%q): %w", d.TaskID, err)
+	}
+	raw := taskOutcomeObservation(task)
+	return raw, e.projectForLLM(ctx, rc, react.AwaitTaskToolName, raw), nil
+}
+
+// awaitTerminal polls the registry for `id` until it reaches a terminal
+// status (Complete / Failed / Cancelled) or `ctx` is done. The ctx-done
+// path returns the ctx error so a never-terminating child surfaces as a
+// deadline error observation rather than a hang (the runloop wraps it;
+// the planner re-plans). The poll cadence is spawnAwaitPollInterval.
+func (e *devToolExecutor) awaitTerminal(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) {
+	ticker := time.NewTicker(spawnAwaitPollInterval)
+	defer ticker.Stop()
+	for {
+		task, err := e.tasks.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		switch task.Status {
+		case tasks.StatusComplete, tasks.StatusFailed, tasks.StatusCancelled:
+			return task, nil
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// spawnChainDepth returns the number of ParentTaskID hops from `id` up to
+// the root: a top-level (foreground) task has depth 0, a task spawned
+// from it has depth 1, and so on. The walk is bounded to maxSpawnDepth+1
+// iterations so a corrupt or cyclic parent chain cannot loop unbounded; a
+// Get error mid-walk stops the walk and returns the count so far
+// (best-effort — the cap still bounds creation at the spawn site).
+func (e *devToolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int {
+	depth := 0
+	cur := id
+	for cur != "" && depth <= e.maxSpawnDepth {
+		task, err := e.tasks.Get(ctx, cur)
+		if err != nil || task == nil || task.ParentTaskID == nil {
+			break
+		}
+		depth++
+		cur = *task.ParentTaskID
+	}
+	return depth
+}
+
+// taskOutcomeObservation projects a terminal task record into the
+// planner-readable observation for AwaitTask / retain-turn SpawnTask. The
+// answer envelope on Result.Value is JSON (the per-task driver's
+// {answer, finish_reason, tool_calls_seen} shape); it is embedded parsed
+// so the planner sees structured data rather than a JSON-string. A failed
+// / cancelled task carries its error code + message instead.
+func taskOutcomeObservation(task *tasks.Task) any {
+	out := map[string]any{
+		"task_id": string(task.ID),
+		"status":  string(task.Status),
+	}
+	if task.Result != nil && len(task.Result.Value) > 0 {
+		var v any
+		if err := json.Unmarshal(task.Result.Value, &v); err == nil {
+			out["result"] = v
+		} else {
+			out["result"] = string(task.Result.Value)
+		}
+	}
+	if task.Error != nil {
+		out["error"] = map[string]any{
+			"code":    task.Error.Code,
+			"message": task.Error.Message,
+		}
+	}
+	return out
 }
 
 // projectForLLM applies D-026 heavy-content discipline to the tool
@@ -439,10 +651,6 @@ func fieldAwarePreview(m map[string]any) (string, bool) {
 	}
 	return string(prevBytes), true
 }
-
-// _ avoids the "identity imported but not used" warning when callers
-// don't reference identity types directly.
-var _ = identity.Identity{}
 
 // ensure interface satisfaction at compile time.
 var _ steering.ToolExecutor = (*devToolExecutor)(nil)

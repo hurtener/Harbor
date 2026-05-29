@@ -114,8 +114,6 @@ func spawnDriverTestTask(t *testing.T, reg tasks.TaskRegistry) tasks.TaskID {
 // waitForTaskStatus polls reg.Get until the task reaches `want` or
 // the bounded timeout fires. Returns the observed status (so the
 // caller's failure message can name what the FSM stuck at).
-//
-//nolint:unparam // `timeout` is the gate's tuning knob; callers happen to share the V1 default but the parameter documents intent and lets a slow case raise the bound without re-plumbing
 func waitForTaskStatus(t *testing.T, reg tasks.TaskRegistry, id tasks.TaskID, want tasks.TaskStatus, timeout time.Duration) tasks.TaskStatus {
 	t.Helper()
 	ctx, err := identity.With(context.Background(), runLoopDriverTestID)
@@ -609,11 +607,11 @@ func TestPerTaskRunLoopDriver_FSMBridge_MarksFailed_OnCtxCancel(t *testing.T) {
 	}
 }
 
-// TestPerTaskRunLoopDriver_SkipsBackgroundTasks — the driver only
-// drives foreground tasks; background tasks are emitted by the
-// planner itself (SpawnTask Decision) and run on the runtime
-// dispatch executor. Asserts the driver does NOT start a RunLoop for
-// a `task.spawned` of `KindBackground`.
+// TestPerTaskRunLoopDriver_SkipsBackgroundTasks — with driveBackground
+// unset (the default / legacy path), the driver drives foreground tasks
+// only and skips a `task.spawned` of `KindBackground`. Phase 107e adds
+// the opt-in driveBackground path (see DrivesBackgroundTasks below); this
+// test pins that the default stays foreground-only.
 func TestPerTaskRunLoopDriver_SkipsBackgroundTasks(t *testing.T) {
 	red := auditpatterns.New()
 	bus := mkDriverTestBus(t, red)
@@ -661,6 +659,57 @@ func TestPerTaskRunLoopDriver_SkipsBackgroundTasks(t *testing.T) {
 		t.Errorf("planner.Next fired (step=%d) — driver should have skipped the background task", step)
 	case <-time.After(200 * time.Millisecond):
 		// expected: no fire
+	}
+}
+
+// TestPerTaskRunLoopDriver_DrivesBackgroundTasks_WhenEnabled — Phase 107e
+// (D-170, AC-7): with driveBackground=true the driver runs a planner
+// sub-run for a `task.spawned` of `KindBackground` and drives it to a
+// terminal FSM state, exactly as it does for a foreground task.
+func TestPerTaskRunLoopDriver_DrivesBackgroundTasks_WhenEnabled(t *testing.T) {
+	red := auditpatterns.New()
+	bus := mkDriverTestBus(t, red)
+	reg := mkDriverTestTaskRegistry(t, bus, red)
+	steerReg := steering.NewRegistry()
+	coord := pauseresume.New(pauseresume.WithBus(bus))
+	rl, err := steering.NewRunLoop(steerReg, coord, steering.WithRunLoopBus(bus))
+	if err != nil {
+		t.Fatalf("steering.NewRunLoop: %v", err)
+	}
+	p := &driverTestPlanner{finishGoalImmediately: true, finishPayload: map[string]any{"answer": "bg done"}}
+	driver, err := newPerTaskRunLoopDriver(perTaskRunLoopDriverOpts{
+		bus:             bus,
+		runLoop:         rl,
+		planner:         p,
+		tasks:           reg,
+		driveBackground: true,
+	})
+	if err != nil {
+		t.Fatalf("newPerTaskRunLoopDriver: %v", err)
+	}
+	if err := driver.Start(context.Background()); err != nil {
+		t.Fatalf("driver.Start: %v", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = driver.Close(closeCtx)
+	}()
+
+	ctx, withErr := identity.With(context.Background(), runLoopDriverTestID)
+	if withErr != nil {
+		t.Fatalf("identity.With: %v", withErr)
+	}
+	h, err := reg.Spawn(ctx, tasks.SpawnRequest{
+		Identity: identity.Quadruple{Identity: runLoopDriverTestID},
+		Kind:     tasks.KindBackground,
+		Query:    "background drive-me",
+	})
+	if err != nil {
+		t.Fatalf("reg.Spawn(background): %v", err)
+	}
+	if got := waitForTaskStatus(t, reg, h.ID, tasks.StatusComplete, 5*time.Second); got != tasks.StatusComplete {
+		t.Fatalf("background task status = %q, want complete (driver should have driven it)", got)
 	}
 }
 

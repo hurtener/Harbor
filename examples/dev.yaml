@@ -143,6 +143,11 @@ planner:
   #                           # LLM returns several tool-calls in one turn,
   #                           # the runtime dispatches them concurrently.
   #                           # false → serialise one per step (107c fallback).
+  # absolute_max_spawn_depth: 4 # Phase 107e / D-170. Caps how deeply a
+  #                           # planner-spawned background task (_spawn_task)
+  #                           # may itself spawn further background tasks.
+  #                           # Zero/unset → 4. A spawn beyond the cap is
+  #                           # rejected loudly (the planner sees an error).
 
 tools:
   http_manifests: []

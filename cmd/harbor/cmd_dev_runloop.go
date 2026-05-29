@@ -115,7 +115,14 @@ type perTaskRunLoopDriverOpts struct {
 	runLoop  *steering.RunLoop
 	planner  planner.Planner
 	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit (D-098)
-	taskKind tasks.TaskKind     // KindForeground at V1; the driver only spawns RunLoops for matching kinds
+	taskKind tasks.TaskKind     // KindForeground at V1; the driver spawns RunLoops for this kind
+
+	// driveBackground (Phase 107e — D-170) widens the driver to ALSO
+	// drive KindBackground tasks — the ones a planner-emitted SpawnTask
+	// creates. False (the default / legacy test path) keeps the
+	// foreground-only behaviour. Recursion is bounded at the spawn site
+	// by the dev executor's absolute_max_spawn_depth cap, not here.
+	driveBackground bool
 
 	// Phase 83f (D-149) — RunContext consumer wiring. All three of
 	// memory / skills / planningHints are OPTIONAL: a dev stack that
@@ -159,12 +166,13 @@ type perTaskRunLoopDriverOpts struct {
 // RunLoop per spawned foreground task. The driver is constructed by
 // bootDevStack and Closed during stack teardown.
 type perTaskRunLoopDriver struct {
-	logger   *slog.Logger
-	bus      events.EventBus
-	runLoop  *steering.RunLoop
-	planner  planner.Planner
-	tasks    tasks.TaskRegistry
-	taskKind tasks.TaskKind
+	logger          *slog.Logger
+	bus             events.EventBus
+	runLoop         *steering.RunLoop
+	planner         planner.Planner
+	tasks           tasks.TaskRegistry
+	taskKind        tasks.TaskKind
+	driveBackground bool // Phase 107e (D-170) — also drive KindBackground tasks
 
 	// Phase 83f (D-149) per-run consumer wiring. See driver opts godoc.
 	memory           memory.MemoryStore
@@ -240,6 +248,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		planner:          opts.planner,
 		tasks:            opts.tasks,
 		taskKind:         opts.taskKind,
+		driveBackground:  opts.driveBackground,
 		memory:           opts.memory,
 		skills:           opts.skills,
 		skillsContextMax: skillsCap,
@@ -307,12 +316,26 @@ func (d *perTaskRunLoopDriver) subscribeLoop() {
 	}
 }
 
-// handleEvent dispatches one `task.spawned` event. The driver only
-// drives foreground tasks; background tasks are emitted by the
-// planner itself (SpawnTask Decision) and run on the runtime
-// dispatch executor (a later phase). A malformed payload (wrong
-// type) is logged and skipped — the event registration guarantees
-// the shape, so a mismatch here is a programmer error.
+// drivesKind reports whether the driver runs a planner sub-run for a
+// task of the given kind. It always drives its configured taskKind; with
+// driveBackground set (Phase 107e — D-170) it additionally drives
+// KindBackground.
+func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
+	if kind == d.taskKind {
+		return true
+	}
+	return d.driveBackground && kind == tasks.KindBackground
+}
+
+// handleEvent dispatches one `task.spawned` event. The driver drives
+// its configured `taskKind` (KindForeground) and — when driveBackground
+// is set (Phase 107e — D-170) — KindBackground tasks too, the ones a
+// planner-emitted SpawnTask creates. A KindBackground task is driven
+// identically to a foreground one (a planner sub-run against its Query);
+// recursion is bounded at the spawn site by the dev executor's
+// absolute_max_spawn_depth cap. A malformed payload (wrong type) is
+// logged and skipped — the event registration guarantees the shape, so a
+// mismatch here is a programmer error.
 func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 	payload, ok := ev.Payload.(tasks.TaskSpawnedPayload)
 	if !ok {
@@ -320,10 +343,10 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 			slog.String("got", fmt.Sprintf("%T", ev.Payload)))
 		return
 	}
-	if payload.Kind != d.taskKind {
-		// Background task — the planner itself spawned it via
-		// SpawnTask. The runtime dispatch executor (later phase)
-		// drives those; the dev driver stays out.
+	if !d.drivesKind(payload.Kind) {
+		// A kind this driver does not drive (e.g. a background task on a
+		// foreground-only driver). The runtime dispatch executor / a
+		// background-enabled driver owns those; this driver stays out.
 		return
 	}
 

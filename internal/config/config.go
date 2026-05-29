@@ -1062,6 +1062,7 @@ type PlannerConfig struct {
 	MaxToolExamplesPerTool int                     `yaml:"max_tool_examples_per_tool,omitempty"`
 	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
+	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }
@@ -1076,6 +1077,24 @@ type PlannerConfig struct {
 func (p PlannerConfig) ParallelToolCallsEnabled() bool {
 	return p.ParallelToolCalls == nil || *p.ParallelToolCalls
 }
+
+// SpawnDepthCap resolves the optional `absolute_max_spawn_depth` knob
+// (Phase 107e — D-170). A non-positive value (unset or zero) resolves to
+// the dev-runtime default of 4: a SpawnTask whose child would exceed this
+// ParentTaskID-chain depth is rejected loudly so a background sub-agent
+// cannot recurse without bound. The cap bounds depth, not breadth.
+func (p PlannerConfig) SpawnDepthCap() int {
+	if p.AbsoluteMaxSpawnDepth <= 0 {
+		return defaultSpawnDepthCap
+	}
+	return p.AbsoluteMaxSpawnDepth
+}
+
+// defaultSpawnDepthCap mirrors cmd/harbor's defaultMaxSpawnDepth — kept
+// here so config consumers resolve the same default without importing the
+// binary package. Drift between the two is caught by the dev executor's
+// constructor (it clamps a non-positive cap to its own default too).
+const defaultSpawnDepthCap = 4
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
 // `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the

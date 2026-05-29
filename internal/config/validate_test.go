@@ -1278,6 +1278,29 @@ func TestValidate_Planner_AcceptsPositiveMaxSteps(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_RejectsNegativeSpawnDepth pins the loud rejection
+// of a negative absolute_max_spawn_depth (Phase 107e — D-170).
+func TestValidate_Planner_RejectsNegativeSpawnDepth(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", AbsoluteMaxSpawnDepth: -1}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate(planner.absolute_max_spawn_depth=-1) returned nil, want error")
+	}
+}
+
+// TestPlannerConfig_SpawnDepthCap pins the accessor: zero/unset resolves
+// to the dev-runtime default of 4; a positive value is honoured verbatim.
+func TestPlannerConfig_SpawnDepthCap(t *testing.T) {
+	t.Parallel()
+	if got := (config.PlannerConfig{}).SpawnDepthCap(); got != 4 {
+		t.Errorf("unset SpawnDepthCap() = %d, want 4 (default)", got)
+	}
+	if got := (config.PlannerConfig{AbsoluteMaxSpawnDepth: 7}).SpawnDepthCap(); got != 7 {
+		t.Errorf("SpawnDepthCap() = %d, want 7", got)
+	}
+}
+
 // TestValidate_Planner_AcceptsExtraGuidance pins the Phase 83a
 // `planner.extra_guidance` key (RFC §6.2). The validator imposes no
 // rule beyond "string" — operator copy is operator copy — so an

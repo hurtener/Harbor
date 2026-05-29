@@ -267,7 +267,6 @@ func TestProjectResponse_ReservedNameCoOccurrenceRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		for _, parallelOn := range []bool{true, false} {
-			tc, parallelOn := tc, parallelOn
 			t.Run(tc.name+map[bool]string{true: "/on", false: "/off"}[parallelOn], func(t *testing.T) {
 				t.Parallel()
 				rc := &planner.RunContext{}

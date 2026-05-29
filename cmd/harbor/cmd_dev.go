@@ -823,6 +823,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		planner:  plnr,
 		tasks:    taskReg, // D-098: the FSM the driver advances on RunLoop exit (closes #123)
 		taskKind: tasks.KindForeground,
+		// Phase 107e (D-170): drive KindBackground tasks too, so a
+		// planner-emitted SpawnTask (a background sub-goal) actually runs
+		// through a planner sub-run. Recursion is bounded at the spawn
+		// site by the dev executor's absolute_max_spawn_depth cap.
+		driveBackground: true,
 		// Phase 83f (D-149): per-run consumer wiring. Each of the four
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
@@ -835,7 +840,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
 		catalog:         toolCat,
-		executor:        newDevToolExecutor(toolCat, artStore, cfg.Artifacts.HeavyOutputThresholdBytes, opts.logger),
+		executor:        newDevToolExecutor(toolCat, artStore, taskReg, cfg.Artifacts.HeavyOutputThresholdBytes, cfg.Planner.SpawnDepthCap(), opts.logger),
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
 		// Phase 83m (Item 6, D-156): operator-declared granted scopes
 		// flow into the per-run catalog view's CatalogFilter, closing

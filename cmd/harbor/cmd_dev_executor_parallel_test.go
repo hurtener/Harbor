@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
 	artinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -51,15 +50,17 @@ func registerEcho(t *testing.T, cat tools.ToolCatalog, name string) {
 	}
 }
 
-func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*devToolExecutor, tools.ToolCatalog, artifacts.ArtifactStore) {
+func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*devToolExecutor, tools.ToolCatalog) {
 	t.Helper()
 	cat := tools.NewCatalog()
 	artStore, err := artinmem.New(config.ArtifactsConfig{})
 	if err != nil {
 		t.Fatalf("artifacts inmem: %v", err)
 	}
-	exec := newDevToolExecutor(cat, artStore, heavyThreshold, nil)
-	return exec, cat, artStore
+	// Phase 107e: the parallel-path tests do not exercise spawn/await, so
+	// a nil TaskRegistry + default depth cap is fine here.
+	exec := newDevToolExecutor(cat, artStore, nil, heavyThreshold, 0, nil)
+	return exec, cat
 }
 
 // TestExecuteDecision_CallParallel_MixedSuccessFailure — AC-13 + AC-2:
@@ -69,7 +70,7 @@ func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*devToolExecutor
 // valid branches still dispatch (non-atomic).
 func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
 	t.Parallel()
-	exec, cat, _ := newParallelTestExecutor(t, 0)
+	exec, cat := newParallelTestExecutor(t, 0)
 	registerEcho(t, cat, "good")
 	// boom — Invoke returns an error.
 	if err := cat.Register(tools.ToolDescriptor{
@@ -148,7 +149,7 @@ func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
 func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
 	t.Parallel()
 	const threshold = 256
-	exec, cat, _ := newParallelTestExecutor(t, threshold)
+	exec, cat := newParallelTestExecutor(t, threshold)
 	// heavy tool — returns a value whose JSON encoding exceeds threshold.
 	bigField := strings.Repeat("y", threshold*4)
 	if err := cat.Register(tools.ToolDescriptor{
@@ -211,7 +212,7 @@ func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
 // settle.
 func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
 	t.Parallel()
-	exec, cat, _ := newParallelTestExecutor(t, 0)
+	exec, cat := newParallelTestExecutor(t, 0)
 	// A tool that echoes the run id it observed via ctx identity, so we
 	// can assert no cross-run bleed.
 	if err := cat.Register(tools.ToolDescriptor{
@@ -233,7 +234,7 @@ func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
 	const N = 128
 	var wg sync.WaitGroup
 	errCh := make(chan error, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

@@ -680,6 +680,17 @@ serialization fallback (one `CallTool` per step via
 to `true` (the native-parallel default). Validation: none (both states
 are correct).
 
+### planner.absolute_max_spawn_depth
+
+Caps the `ParentTaskID`-chain depth of planner-spawned background
+tasks (Phase 107e / D-170). When a planner emits `_spawn_task`, the
+dev `ToolExecutor` reads the parent chain depth and rejects loudly —
+an error observation the planner re-plans against, never a silent
+drop — any spawn whose child would exceed this depth, so a background
+sub-agent that itself emits `_spawn_task` cannot recurse without
+bound. The cap bounds depth, not breadth. Default: `0` → dev-runtime
+default of 4. Validation: >= 0.
+
 ### planner.skills_context_max
 
 Cap on skill bodies the dev run loop fetches from

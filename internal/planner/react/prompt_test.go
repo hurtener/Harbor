@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -184,6 +185,81 @@ func TestDefaultBuilder_RendersTrajectoryStepsAsAssistantToolPairs(t *testing.T)
 	tool2 := req.Messages[5]
 	if tool2.ToolCallID == nil || *tool2.ToolCallID != "react.callid.1" {
 		t.Errorf("step-2 tool ToolCallID = %v, want react.callid.1", tool2.ToolCallID)
+	}
+}
+
+// TestDefaultBuilder_RendersSpawnAwaitStepsAsNativeToolPairs — Phase
+// 107e (D-170): a SpawnTask / AwaitTask trajectory step replays as a
+// native tool_call (`_spawn_task` / `_await_task`) + a matching RoleTool
+// message, consistent with the CallTool path — NOT the legacy
+// `{"action":"planner.SpawnTask"}` text marker that dropped the args.
+// The spawn's args (the sub-goal query) survive the round-trip so the
+// model can correlate a returned task_id with what it spawned.
+func TestDefaultBuilder_RendersSpawnAwaitStepsAsNativeToolPairs(t *testing.T) {
+	t.Parallel()
+	rc := planner.RunContext{
+		Goal: "coordinate sub-goals",
+		Trajectory: &planner.Trajectory{
+			Steps: []planner.Step{
+				{
+					Action: planner.SpawnTask{
+						Kind: tasks.KindBackground,
+						Spec: planner.SpawnSpec{Query: "research sub-question A"},
+					},
+					LLMObservation: map[string]any{"task_id": "task-A", "kind": "background", "status": "spawned"},
+				},
+				{
+					Action:         planner.AwaitTask{TaskID: tasks.TaskID("task-A")},
+					LLMObservation: map[string]any{"task_id": "task-A", "status": "complete", "result": map[string]any{"answer": "A done"}},
+				},
+			},
+		},
+	}
+	req := defaultBuilder{}.Build(rc, "sys")
+	// system, user (goal), assistant (spawn tool_call), tool (spawn obs),
+	// assistant (await tool_call), tool (await obs) → 6 messages.
+	wantRoles := []llm.Role{
+		llm.RoleSystem, llm.RoleUser,
+		llm.RoleAssistant, llm.RoleTool,
+		llm.RoleAssistant, llm.RoleTool,
+	}
+	if len(req.Messages) != len(wantRoles) {
+		t.Fatalf("len(Messages) = %d, want %d — roles: %+v", len(req.Messages), len(wantRoles), summariseRoles(req.Messages))
+	}
+	for i, w := range wantRoles {
+		if req.Messages[i].Role != w {
+			t.Errorf("Messages[%d].Role = %q, want %q", i, req.Messages[i].Role, w)
+		}
+	}
+
+	// Spawn step: assistant emits a native _spawn_task tool_call whose
+	// args preserve the sub-goal query; the RoleTool carries the task_id.
+	spawnAsst := req.Messages[2]
+	if len(spawnAsst.ToolCalls) != 1 || spawnAsst.ToolCalls[0].Name != SpawnTaskToolName {
+		t.Fatalf("spawn assistant ToolCalls = %+v, want one %q call", spawnAsst.ToolCalls, SpawnTaskToolName)
+	}
+	if !strings.Contains(string(spawnAsst.ToolCalls[0].Args), "research sub-question A") {
+		t.Errorf("spawn replay dropped the sub-goal query: args = %s", spawnAsst.ToolCalls[0].Args)
+	}
+	spawnTool := req.Messages[3]
+	if spawnTool.ToolCallID == nil || *spawnTool.ToolCallID != spawnAsst.ToolCalls[0].ID {
+		t.Errorf("spawn tool ToolCallID = %v, want match to assistant id %q", spawnTool.ToolCallID, spawnAsst.ToolCalls[0].ID)
+	}
+	if spawnTool.Content.Text == nil || !strings.Contains(*spawnTool.Content.Text, "task-A") {
+		t.Errorf("spawn observation missing task_id: %v", spawnTool.Content.Text)
+	}
+
+	// Await step: native _await_task tool_call + matching RoleTool.
+	awaitAsst := req.Messages[4]
+	if len(awaitAsst.ToolCalls) != 1 || awaitAsst.ToolCalls[0].Name != AwaitTaskToolName {
+		t.Fatalf("await assistant ToolCalls = %+v, want one %q call", awaitAsst.ToolCalls, AwaitTaskToolName)
+	}
+	if !strings.Contains(string(awaitAsst.ToolCalls[0].Args), "task-A") {
+		t.Errorf("await replay dropped the task_id: args = %s", awaitAsst.ToolCalls[0].Args)
+	}
+	awaitTool := req.Messages[5]
+	if awaitTool.ToolCallID == nil || *awaitTool.ToolCallID != awaitAsst.ToolCalls[0].ID {
+		t.Errorf("await tool ToolCallID = %v, want match to assistant id %q", awaitTool.ToolCallID, awaitAsst.ToolCalls[0].ID)
 	}
 }
 

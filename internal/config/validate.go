@@ -1184,6 +1184,11 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 5), got %d",
 				c.Planner.SkillsContextMax))
 	}
+	if c.Planner.AbsoluteMaxSpawnDepth < 0 {
+		return fieldError("planner.absolute_max_spawn_depth",
+			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 4), got %d",
+				c.Planner.AbsoluteMaxSpawnDepth))
+	}
 	return nil
 }
 
