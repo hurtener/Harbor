@@ -218,44 +218,41 @@
       <span class="sr-only">Voice input</span>
     </button>
 
-    <button
-      type="button"
-      class="send-button"
-      data-testid="chat-send-button"
-      onclick={send}
-      disabled={!canSend}
-    >
-      {sending ? 'Sending…' : running ? (mode === 'steer' ? 'Steer' : 'Queue') : 'Send'}
-    </button>
+    <!-- 108a-D — Send is the accent arrow; while a run is active the
+         split mode dropdown (Queue / Steer) replaces the radio fieldset. -->
+    <div class="send-cluster">
+      {#if running}
+        <select
+          class="mode-select"
+          data-testid="chat-mode-picker"
+          bind:value={mode}
+          title="Send mode while a run is active"
+        >
+          <option value="queue">Queue</option>
+          <option value="steer">Steer</option>
+        </select>
+      {/if}
+      <button
+        type="button"
+        class="send-button"
+        data-testid="chat-send-button"
+        onclick={send}
+        disabled={!canSend}
+        title={sending
+          ? 'Sending…'
+          : running
+            ? mode === 'steer'
+              ? 'Steer the current run'
+              : 'Queue after the current run'
+            : 'Send'}
+      >
+        <span aria-hidden="true">{sending ? '…' : '→'}</span>
+        <span class="sr-only">
+          {sending ? 'Sending' : running ? (mode === 'steer' ? 'Steer' : 'Queue') : 'Send'}
+        </span>
+      </button>
+    </div>
   </div>
-
-  {#if running}
-    <fieldset class="mode-picker" data-testid="chat-mode-picker">
-      <legend class="sr-only">Send mode while a run is active</legend>
-      <label class="mode-option">
-        <input
-          type="radio"
-          name="chat-send-mode"
-          value="queue"
-          checked={mode === 'queue'}
-          onchange={() => (mode = 'queue')}
-          data-testid="chat-mode-queue"
-        />
-        <span class="mode-label">Queue after current run</span>
-      </label>
-      <label class="mode-option">
-        <input
-          type="radio"
-          name="chat-send-mode"
-          value="steer"
-          checked={mode === 'steer'}
-          onchange={() => (mode = 'steer')}
-          data-testid="chat-mode-steer"
-        />
-        <span class="mode-label">Steer current run</span>
-      </label>
-    </fieldset>
-  {/if}
 
   <div class="composer-foot">
     <span class="token-count" data-testid="chat-token-count">~{tokenEstimate} tokens</span>
@@ -382,7 +379,24 @@
     background: var(--color-accent);
     color: var(--color-bg);
     font-weight: 600;
+    font-size: var(--text-base);
     border-color: var(--color-accent);
+    min-width: var(--size-avatar-md);
+  }
+
+  .send-cluster {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+
+  .mode-select {
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    padding: var(--space-1) var(--space-2);
   }
 
   .voice-button:disabled,
@@ -395,27 +409,6 @@
   .composer-foot {
     display: flex;
     gap: var(--space-3);
-  }
-
-  .mode-picker {
-    display: flex;
-    gap: var(--space-3);
-    border: none;
-    margin: var(--space-0);
-    padding: var(--space-0);
-  }
-
-  .mode-option {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-    cursor: pointer;
-  }
-
-  .mode-label {
-    font-family: var(--font-sans);
   }
 
   .token-count,
