@@ -389,6 +389,15 @@ export class EventsNamespace {
 			url.searchParams.set('admin', '1');
 		}
 		url.searchParams.set('access_token', this.#t.token);
+		// D-171 — EventSource cannot set the `X-Harbor-Session` header, so
+		// the conversation session rides as a `?session=` query param the
+		// SSE shim promotes to the header (header-precedence). The session
+		// is the client's identity.session (the page builds a per-session
+		// client whose identity.session is the conversation id). Empty is
+		// omitted — the runtime then uses the token's default session.
+		if (this.#t.identity.session !== '') {
+			url.searchParams.set('session', this.#t.identity.session);
+		}
 		return url.toString();
 	}
 

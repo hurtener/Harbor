@@ -118,6 +118,10 @@
   // ISO timestamp of the session's first turn — drives the KPI Started +
   // live Duration columns. Set on the first send; null until then.
   let sessionStartedAt = $state<string | null>(null);
+
+  // D-171 — the connection's other conversations (sessions.list), for the
+  // session switcher. One token, many sessions.
+  let sessionList = $state<Array<{ session_id: string; last_activity_at?: string }>>([]);
   // True once at least one `llm.cost.recorded` reading has landed — gates
   // the Cost tile so it shows "—" rather than a fabricated $0.0000.
   let hasCostReading = $state(false);
@@ -570,6 +574,86 @@
   }
 
   /* ================================================================ */
+  /* Session reload (D-171)                                            */
+  /* ================================================================ */
+
+  // hydratePastTurns reloads the conversation's prior turns when opening
+  // an existing session (the per-session client scopes tasks.list to the
+  // URL session). Each completed task becomes a user bubble (its query) +
+  // an agent bubble (its result_inline answer). No-op when the stream is
+  // already populated (a live conversation) or the session has no tasks.
+  async function hydratePastTurns(): Promise<void> {
+    if (client === null || messages.length > 0) return;
+    try {
+      const resp = await client.tasks.list<{
+        rows?: Array<{ id: string; query?: string; status?: string; started_at?: string }>;
+      }>({ filter: {}, page_size: 50 });
+      const rows = [...(resp.rows ?? [])].sort((a, b) =>
+        (a.started_at ?? '').localeCompare(b.started_at ?? '')
+      );
+      const hydrated: ChatMessage[] = [];
+      for (const row of rows) {
+        const at = row.started_at ?? new Date().toISOString();
+        if (row.query) {
+          hydrated.push({ id: `h-${row.id}-u`, role: 'user', text: row.query, at });
+        }
+        if (row.status === 'complete') {
+          try {
+            const detail = await client.tasks.get<{
+              result_inline?: string;
+              trajectory?: { steps?: ReasoningStep[] };
+            }>(row.id);
+            const reasoningSteps = parseReasoningSteps(detail);
+            hydrated.push({
+              id: `h-${row.id}-a`,
+              role: 'agent',
+              text: parseAnswerFromDetail(detail),
+              taskID: row.id,
+              at,
+              reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined
+            });
+          } catch {
+            /* skip an unreadable task — best-effort reload */
+          }
+        }
+      }
+      if (hydrated.length > 0 && messages.length === 0) {
+        messages = hydrated;
+        if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
+      }
+    } catch {
+      /* reload is best-effort; a runtime without tasks.list just starts empty */
+    }
+  }
+
+  // refreshSessionList loads the connection's sessions for the switcher.
+  async function refreshSessionList(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.sessions.list<{
+        rows?: Array<{ session_id: string; last_activity_at?: string }>;
+      }>({ filter: {}, limit: 50 });
+      sessionList = resp.rows ?? [];
+    } catch {
+      sessionList = [];
+    }
+  }
+
+  // newSession opens a fresh conversation: a new session id, materialised
+  // create-on-first-use on the first send. A full navigation re-mounts the
+  // page so the per-session client + subscription rebuild cleanly.
+  function newSession(): void {
+    const id = `sess-${crypto.randomUUID().slice(0, 12)}`;
+    window.location.assign(`/playground/${id}`);
+  }
+
+  // switchSession opens an existing conversation (full navigation → the
+  // per-session client rebuilds + hydratePastTurns reloads its turns).
+  function switchSession(id: string): void {
+    if (id && id !== sessionID) window.location.assign(`/playground/${id}`);
+  }
+
+  /* ================================================================ */
   /* Loading                                                           */
   /* ================================================================ */
 
@@ -581,6 +665,12 @@
     status = 'loading';
     pageError = null;
     pageInfo = null;
+    // D-171 — reload this conversation's prior turns (sessions persist via
+    // the catalog; tasks.list is scoped to the URL session by the
+    // per-session client). Best-effort: empty for a brand-new session id,
+    // and empty for a pre-restart session (task history is in-memory — see
+    // docs/notes/session-model-contract.md).
+    await hydratePastTurns();
     try {
       // Round-8 F1 / phase 84a — gate the topology probe behind the
       // runtime's advertised capabilities. A planner/RunLoop runtime
@@ -927,16 +1017,25 @@
   /* ================================================================ */
 
   onMount(() => {
-    connection = resolveConnection();
-    if (connection === null) {
+    const base = resolveConnection();
+    if (base === null) {
+      connection = null;
       client = null;
       status = 'disconnected';
       return;
     }
+    // D-171 — the connection token is a per-backend credential; THIS page
+    // operates the conversation session from the URL (`session_id`). Build
+    // a per-session connection so every RPC carries `X-Harbor-Session` =
+    // the conversation id and the SSE subscribes scoped to it. A fresh
+    // session id (e.g. from "New session") is materialised create-on-
+    // first-use on the first send. tenant + user stay token-verified.
+    connection = { ...base, identity: { ...base.identity, session: sessionID || base.identity.session } };
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
     chatClient = buildChatClient(client);
     subscribeEvents(client);
+    void refreshSessionList();
 
     // Resolve the real Protocol version + agent display name. Both are
     // best-effort: runtime.info is universally advertised; the agent
@@ -1026,6 +1125,34 @@
     onimpersonate={(t) => (activeImpersonation = t)}
   />
 
+  <!-- D-171 session switcher: one token, many conversations. -->
+  <div class="session-strip" data-testid="playground-session-strip">
+    <label class="session-pick">
+      <span class="session-pick-label">Conversation</span>
+      <select
+        class="session-select mono"
+        data-testid="playground-session-select"
+        value={sessionID}
+        onchange={(e) => switchSession((e.currentTarget as HTMLSelectElement).value)}
+      >
+        {#if !sessionList.some((s) => s.session_id === sessionID)}
+          <option value={sessionID}>{sessionID || '—'}</option>
+        {/if}
+        {#each sessionList as s (s.session_id)}
+          <option value={s.session_id}>{s.session_id}</option>
+        {/each}
+      </select>
+    </label>
+    <button
+      type="button"
+      class="session-new"
+      data-testid="playground-new-session"
+      onclick={newSession}
+    >
+      + New session
+    </button>
+  </div>
+
   <!-- Thin saved-views strip (D-061) — compact; the disabled "Filter
        messages" post-V1 input is removed (no Post-V1 clutter). -->
   {#if savedFilters !== null}
@@ -1039,7 +1166,7 @@
       <input
         class="view-save-input"
         type="text"
-        placeholder="Save view…"
+        placeholder="Save current as…"
         bind:value={saveName}
         data-testid="playground-save-name"
         onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
@@ -1153,6 +1280,9 @@
         <PlaygroundArtifactsCard artifacts={recentArtifacts} onpreview={previewArtifact} />
       </RailCard>
       <RailCard title="Trace">
+        {#if pageInfo}
+          <p class="topo-info" data-testid="playground-topology-info">{pageInfo.headline}</p>
+        {/if}
         <TraceToggle
           enabled={traceOn}
           nodes={traceNodes}
@@ -1197,6 +1327,49 @@
     min-height: 0;
   }
 
+  .session-strip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .session-pick {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .session-pick-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wider);
+    color: var(--color-text-muted);
+  }
+
+  .session-select {
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    max-width: var(--size-rail);
+  }
+
+  .session-new {
+    background: var(--color-surface-raised);
+    color: var(--color-accent);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .session-new:hover {
+    border-color: var(--color-accent);
+  }
+
   .views-strip {
     display: flex;
     align-items: center;
@@ -1227,6 +1400,12 @@
   .view-save-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .topo-info {
+    margin: var(--space-0) var(--space-0) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .composer-telemetry {
