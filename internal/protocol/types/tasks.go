@@ -428,4 +428,23 @@ type TaskDetail struct {
 	// ResultInline carries the task's result payload directly when it is
 	// below the heavy-content threshold ("" when absent or referenced).
 	ResultInline string `json:"result_inline,omitempty"`
+	// Trajectory is the projected planner reasoning-trace snapshot;
+	// nil when the trajectory is unavailable (evicted or not captured).
+	Trajectory *TaskTrajectoryRef `json:"trajectory,omitempty"`
+}
+
+// TaskTrajectoryRef is the projected reasoning-trace snapshot from the
+// planner's in-memory trajectory, carried on TaskDetail.Trajectory. The
+// projection is narrow — per-step index + reasoning-trace string only;
+// full action / observation projection is a later expansion. Phase 107a.
+type TaskTrajectoryRef struct {
+	Steps []TaskTrajectoryStep `json:"steps"`
+}
+
+// TaskTrajectoryStep maps one planner trajectory step to the wire.
+// Steps with an empty ReasoningTrace are filtered out before the wire
+// — the Console never sees a box that says "no reasoning here."
+type TaskTrajectoryStep struct {
+	Index          int    `json:"index"`
+	ReasoningTrace string `json:"reasoning_trace"`
 }

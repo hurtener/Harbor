@@ -164,6 +164,10 @@ func (stubEnricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ st
 	return &prototypes.TaskPlannerSnapshotRef{CheckpointID: "ckpt-1", Summary: "step 0 plan"}
 }
 
+func (stubEnricher) Trajectory(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskTrajectoryRef {
+	return nil
+}
+
 func TestGet_WithEnricher_PopulatesEnrichmentCards(t *testing.T) {
 	reg, _ := newTestRegistry(t)
 	proj, err := tasksprotocol.NewRegistryProjector(reg, tasksprotocol.WithEnricher(stubEnricher{}))

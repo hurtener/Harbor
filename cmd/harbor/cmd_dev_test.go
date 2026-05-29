@@ -9,11 +9,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,7 +134,7 @@ func TestNewDevSigner_GeneratesDistinctKeysAcrossCalls(t *testing.T) {
 	// The X coordinates of the two public keys MUST differ — the
 	// generator is sourced from crypto/rand, so a collision is
 	// vanishingly unlikely (lottery-ticket math).
-	if a.priv.PublicKey.X.Cmp(b.priv.PublicKey.X) == 0 {
+	if a.priv.X.Cmp(b.priv.X) == 0 {
 		t.Error("two newDevSigner() calls produced the same public-key X — generator looks deterministic")
 	}
 }
@@ -422,5 +426,119 @@ func TestBootDevStack_AppendsDraftStoreAndRegistryClosers(t *testing.T) {
 		if cErr := stack.closeFns[i](closeCtx); cErr != nil {
 			t.Errorf("closer %d returned %v, want nil", i, cErr)
 		}
+	}
+}
+
+// bootStackForBootstrapTest boots a bootDevStack against the minimal
+// bus-wired YAML used by other dev tests. Caller is responsible for
+// draining the closers.
+func bootStackForBootstrapTest(t *testing.T, ctx context.Context, serveConsole bool) *devStack {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "harbor.yaml")
+	if err := os.WriteFile(cfgPath, []byte(bootDevStackBusWiredYAML), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	stack, err := bootDevStack(ctx, devBootOptions{
+		cfgPath:      cfgPath,
+		allowMock:    true,
+		logger:       logger,
+		stderr:       io.Discard,
+		serveConsole: serveConsole,
+	})
+	if err != nil {
+		t.Fatalf("bootDevStack(serveConsole=%v): %v", serveConsole, err)
+	}
+	return stack
+}
+
+func drainStack(t *testing.T, stack *devStack) {
+	t.Helper()
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	for i := len(stack.closeFns) - 1; i >= 0; i-- {
+		_ = stack.closeFns[i](closeCtx)
+	}
+}
+
+// TestBootDevStack_BootstrapEndpointRegistered_HarborDev — Phase 105
+// AC-6: POST /v1/dev/bootstrap.json is mounted on the `harbor dev`
+// stack. A loopback peer receives a 200 + a connection envelope.
+func TestBootDevStack_BootstrapEndpointRegistered_HarborDev(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stack := bootStackForBootstrapTest(t, ctx, false /* serveConsole */)
+	defer drainStack(t, stack)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	stack.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from bootstrap on harbor dev, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		BaseURL  string                                 `json:"base_url"`
+		Token    string                                 `json:"token"`
+		Identity struct{ Tenant, User, Session string } `json:"identity"`
+		Scopes   []string                               `json:"scopes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode bootstrap response: %v\nbody=%s", err, rec.Body.String())
+	}
+	if body.Token == "" {
+		t.Error("bootstrap response token is empty")
+	}
+	if body.Identity.Tenant != DevTenant || body.Identity.User != DevUser || body.Identity.Session != DevSession {
+		t.Errorf("identity = %+v, want (%s,%s,%s)", body.Identity, DevTenant, DevUser, DevSession)
+	}
+	if len(body.Scopes) == 0 {
+		t.Error("bootstrap response scopes is empty")
+	}
+}
+
+// TestBootDevStack_BootstrapEndpointRegistered_HarborConsole — Phase
+// 105 AC-6: POST /v1/dev/bootstrap.json is also mounted when
+// bootDevStack runs with serveConsole=true (the `harbor console`
+// path). The handler must respond identically.
+func TestBootDevStack_BootstrapEndpointRegistered_HarborConsole(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stack := bootStackForBootstrapTest(t, ctx, true /* serveConsole */)
+	defer drainStack(t, stack)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	stack.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from bootstrap on harbor console, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBootDevStack_BootstrapEndpoint_NonLoopback_Returns403 — Phase 105
+// AC-7: a non-loopback peer is rejected by the loopback gate, even
+// though the route is registered. The gate reads r.RemoteAddr directly.
+func TestBootDevStack_BootstrapEndpoint_NonLoopback_Returns403(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stack := bootStackForBootstrapTest(t, ctx, false)
+	defer drainStack(t, stack)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/dev/bootstrap.json", strings.NewReader("{}"))
+	req.RemoteAddr = "192.168.1.5:54321"
+	// Spoofed XFF MUST be ignored.
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	rec := httptest.NewRecorder()
+	stack.server.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-loopback peer, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

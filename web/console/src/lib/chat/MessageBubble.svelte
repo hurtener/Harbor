@@ -16,6 +16,7 @@
   import ToolCallTraceCard from './ToolCallTraceCard.svelte';
   import DiffViewCard from './DiffViewCard.svelte';
   import ArtifactReferenceCard from './ArtifactReferenceCard.svelte';
+  import ReasoningAccordion from './ReasoningAccordion.svelte';
   import StreamingIndicator from './StreamingIndicator.svelte';
   import { splitChatSegments } from './segments.js';
   import type { ChatMessage, ChatProtocolClient } from './types.js';
@@ -45,6 +46,10 @@
   </div>
 
   <div class="bubble-body">
+    {#if message.reasoningSteps}
+      <ReasoningAccordion steps={message.reasoningSteps} />
+    {/if}
+
     {#each parts as part, i (i)}
       {#if part.kind === 'text'}
         {#if part.value.trim() !== ''}

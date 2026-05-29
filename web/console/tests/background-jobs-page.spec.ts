@@ -239,16 +239,16 @@ test.describe("Console Background Jobs page", () => {
     ).toBe(true);
   });
 
-  test("(h) the Disconnected PageState renders without a connection", async ({
+  test("(h) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     helpers,
   }) => {
-    // No `seedConnection` — connection.ts returns null, so the page
-    // renders PageState's Disconnected branch (NOT the Error branch).
+    // No connection seeded — connection.ts returns null. Phase 105
+    // (V1.2): the app shell redirects a disconnected Console to /settings
+    // (the connect surface) rather than stranding the operator.
     await helpers.gotoPage("background-jobs");
-    await expect(
-      page.locator("[data-testid='background-jobs-page']"),
-      "the Background Jobs page shell still renders",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

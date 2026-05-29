@@ -17,69 +17,48 @@ Harbor's local-iteration loop is two processes: `harbor dev` (the Runtime — Pr
 
 ## 1. Single-process dev
 
-In one terminal:
+Open a single terminal and run the Console, which boots a co-resident Runtime:
+
+```bash
+harbor console
+```
+
+Open the printed URL (default <http://127.0.0.1:18790>). On first load, the Console redirects to the Settings page. Click **Attach to local Runtime**. The Console attaches to the co-resident Runtime in one click — no localStorage ceremony.
+
+The token is minted fresh by the bootstrap endpoint and stored in localStorage automatically. Every subsequent page load reads the token and the Console is attached instantly.
+
+If you prefer to attach manually (e.g. to a Runtime in a different terminal), fill the six-field form in Settings → Connected Runtimes → Add Runtime: name, base URL, token, tenant, user, session.
+
+## 2. Multi-process dev (attach from a remote machine)
+
+Start the Runtime on the first machine:
 
 ```bash
 cd ~/my-agent
 harbor dev
 ```
 
-You see:
-
-```text
-time=... msg="harbor dev: starting Protocol server" bind=127.0.0.1:18080
-HARBOR_DEV_TOKEN=eyJhbGc...
-HARBOR_DEV_BOUND=127.0.0.1:18080
-time=... msg="harbor dev: listener bound" bind=127.0.0.1:18080
-```
-
-In a second terminal:
+Start the Console on a second machine (or a second terminal, or a browser tab pointing at a remote `harbor console` process):
 
 ```bash
 harbor console --port 18790
 ```
 
-Open `http://127.0.0.1:18790`. In the browser DevTools console:
+Open the Console URL. On first load it redirects to Settings. Fill the six-field form in Settings → Connected Runtimes → Add Runtime:
 
-```js
-localStorage.clear();
-localStorage.setItem('harbor.runtime.base_url', 'http://127.0.0.1:18080');
-localStorage.setItem('harbor.runtime.token', '<the HARBOR_DEV_TOKEN from the first terminal>');
-localStorage.setItem('harbor.runtime.tenant', 'dev');
-localStorage.setItem('harbor.runtime.user', 'dev');
-localStorage.setItem('harbor.runtime.session', 'dev');
-localStorage.setItem('harbor.runtime.scopes', 'admin console:fleet');
-```
+- **Name:** any label (e.g. "staging")
+- **Base URL:** the Runtime's URL (e.g. <http://10.0.0.42:18080>)
+- **Token:** the `HARBOR_DEV_TOKEN` from the Runtime's stderr output
+- **Tenant / User / Session:** `dev` / `dev` / `dev` (the dev identity triple)
 
-Reload the page. The Console's connection footer shows "Connected <http://127.0.0.1:18080>" and every page reads from your live Runtime.
-
-**The token rotates per `harbor dev` boot.** Restart Runtime → reseed localStorage. Tokens expire 24h after `iat`.
-
-## 2. Multi-process dev (attach from a remote machine)
-
-Edit the agent's `harbor.yaml`:
+Click Add. The Console attaches to the remote Runtime. If the Runtime is on a different origin, configure the CORS allowlist:
 
 ```yaml
 server:
-  bind_addr: 127.0.0.1:8080
-  shutdown_grace_period: 30s
-  # Allow the Console origin to attach via CORS (default-deny posture).
   allowed_origins:
     - http://127.0.0.1:18790
-    - http://10.0.0.42:18790        # if Console runs on another host
+    - http://10.0.0.99:18790
 ```
-
-`harbor dev` honours the binding (note: `bind_addr` is honoured only by `harbor serve` — `harbor dev` always binds `:18080`; setting `:8080` in the yaml is operator convenience for the production path, not the dev path).
-
-The CORS allowlist gates origin access. A request from an origin NOT in the list gets a default-deny — the wire is reachable but the browser rejects the response.
-
-In a second terminal (or on a different machine):
-
-```bash
-harbor console --port 18790
-```
-
-Then seed localStorage the same way, with the Runtime's base_url pointing at wherever Runtime is reachable from the browser. Identity stays `(dev, dev, dev)`.
 
 ## 3. Hot reload
 
@@ -115,6 +94,28 @@ telemetry:
 ```
 
 Per-task events ALSO go to the Console's Events page in real time (assuming `events.driver: inmem` — the dev default — keeps events in memory while the Console is attached). Use the Events page when you want a live stream; use stderr when you want grep-able history.
+
+## Power-user / scripted attach
+
+If you prefer to seed the connection directly (CI scripts, one-liner test harnesses, DevTools-first workflows), the localStorage keys are:
+
+```js
+localStorage.clear();
+localStorage.setItem('harbor.runtime.base_url', 'http://127.0.0.1:18080');
+localStorage.setItem('harbor.runtime.token', '<the HARBOR_DEV_TOKEN>');
+localStorage.setItem('harbor.runtime.tenant', 'dev');
+localStorage.setItem('harbor.runtime.user', 'dev');
+localStorage.setItem('harbor.runtime.session', 'dev');
+localStorage.setItem('harbor.runtime.scopes', 'admin console:fleet');
+```
+
+Or call the bootstrap endpoint directly:
+
+```bash
+curl -sS -X POST http://127.0.0.1:18080/v1/dev/bootstrap.json -d '{}'
+```
+
+The response is a ready-to-use connection envelope containing `base_url`, `token`, `identity`, `scopes`, and `protocol_version`.
 
 ## Common failure modes
 

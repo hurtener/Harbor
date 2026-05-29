@@ -35,7 +35,7 @@ func TestHTTPTool_ConcurrentReuse_NoRace(t *testing.T) {
 	srv := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		token := r.URL.Query().Get("token")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"token":%q}`, token)))
+		_, _ = fmt.Fprintf(w, `{"token":%q}`, token)
 	}))
 	defer srv.Close()
 

@@ -11,6 +11,7 @@
   // driver — never a hand-rolled fetch (CONVENTIONS.md §6). It is NOT a
   // stubbed action (CONVENTIONS.md §5).
   import type { RuntimeRegistryRow } from '$lib/db/index.js';
+  import { validateAddRuntimeDraft } from './add-runtime-form.js';
 
   let {
     runtimes,
@@ -27,8 +28,14 @@
      * as a neutral info banner, NEVER a red error.
      */
     addWarning?: string | null;
-    /** Writes a new runtime row through the Console DB. */
-    onadd: (name: string, baseURL: string) => Promise<void>;
+    /** Writes a new runtime connection. */
+    onadd: (
+      name: string,
+      baseURL: string,
+      token: string,
+      identity: { tenant: string; user: string; session: string },
+      scopes?: string[]
+    ) => Promise<void>;
     /** Deletes a runtime row from the Console DB. */
     onremove: (id: string) => Promise<void>;
     /**
@@ -43,23 +50,41 @@
   let formOpen = $state(false);
   let draftName = $state('');
   let draftURL = $state('');
+  let draftToken = $state('');
+  let draftTenant = $state('');
+  let draftUser = $state('');
+  let draftSession = $state('');
   let busy = $state(false);
   let formError = $state<string | null>(null);
 
   async function submitAdd(): Promise<void> {
     formError = null;
-    if (draftName.trim() === '' || draftURL.trim() === '') {
-      formError = 'Name and base URL are both required.';
+    const validationError = validateAddRuntimeDraft({
+      name: draftName,
+      url: draftURL,
+      token: draftToken,
+      tenant: draftTenant,
+      user: draftUser,
+      session: draftSession
+    });
+    if (validationError !== null) {
+      formError = validationError;
       return;
     }
     busy = true;
     try {
-      // Phase 83u / D-163: addRuntime no longer throws on a deferred
-      // DB write — it sets `addWarning` instead. A thrown error here
-      // means an actual failure (e.g. localStorage unavailable in SSR).
-      await onadd(draftName.trim(), draftURL.trim());
+      await onadd(
+        draftName.trim(),
+        draftURL.trim(),
+        draftToken.trim(),
+        { tenant: draftTenant.trim(), user: draftUser.trim(), session: draftSession.trim() }
+      );
       draftName = '';
       draftURL = '';
+      draftToken = '';
+      draftTenant = '';
+      draftUser = '';
+      draftSession = '';
       formOpen = false;
       // Notify the page so it can reload — the new connection only
       // takes effect on the next page mount (every page reads
@@ -122,6 +147,30 @@
         placeholder="https://runtime.example.com"
         data-testid="add-runtime-url"
         bind:value={draftURL}
+      />
+      <textarea
+        placeholder="Bearer token (JWT)"
+        data-testid="add-runtime-token"
+        rows={3}
+        bind:value={draftToken}
+      ></textarea>
+      <input
+        type="text"
+        placeholder="Tenant ID"
+        data-testid="add-runtime-tenant"
+        bind:value={draftTenant}
+      />
+      <input
+        type="text"
+        placeholder="User ID"
+        data-testid="add-runtime-user"
+        bind:value={draftUser}
+      />
+      <input
+        type="text"
+        placeholder="Session ID"
+        data-testid="add-runtime-session"
+        bind:value={draftSession}
       />
       {#if formError}
         <p class="form-error" data-testid="add-runtime-error">{formError}</p>

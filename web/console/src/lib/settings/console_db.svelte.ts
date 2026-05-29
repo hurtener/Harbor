@@ -180,10 +180,16 @@ export class SettingsDBController {
 	 * page's form reload-on-success closes the deferred DB write the
 	 * next time the page mounts.
 	 */
-	async addRuntime(name: string, baseURL: string): Promise<void> {
+	async addRuntime(
+		name: string,
+		baseURL: string,
+		token: string,
+		identity: { tenant: string; user: string; session: string },
+		scopes: string[] = ['admin', 'console:fleet']
+	): Promise<void> {
 		this.addWarning = null;
 		// (1) Active connection — the primary effect. Always succeeds.
-		attachConnection(baseURL);
+		attachConnection(baseURL, { token, identity, scopes });
 		// (2) Address book persistence — best-effort.
 		if (this.#db === null) {
 			this.addWarning =

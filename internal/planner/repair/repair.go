@@ -306,6 +306,20 @@ func (l *RepairLoop) Run(
 			return RunResult{}, err
 		}
 
+		// Phase 107 — per-step streaming. When rc.OnChunk is set, flip
+		// Stream=true and wire the OnContent / OnReasoning callbacks to
+		// forward deltas through rc.OnChunk. Per D-025, the callback
+		// closures are per-run on the stack, not on the shared artifact.
+		if rc.OnChunk != nil {
+			current.Stream = true
+			current.OnContent = func(delta string, done bool) {
+				rc.OnChunk(delta, done, planner.ChunkContent)
+			}
+			current.OnReasoning = func(delta string, done bool) {
+				rc.OnChunk(delta, done, planner.ChunkReasoning)
+			}
+		}
+
 		// Step 0: issue the LLM call.
 		resp, err := client.Complete(ctx, current)
 		if err != nil {

@@ -74,6 +74,13 @@ var (
 	// wrapper-registered path uses the validator's own error verbatim
 	// in `RetryWithFeedbackPayload.Reason`.
 	ErrValidationFailed = errors.New("llm: response validator rejected output")
+	// ErrOrphanToolCall — an assistant message with `ToolCalls` is
+	// not followed by the corresponding `RoleTool` messages whose
+	// `ToolCallID` matches each `ToolCalls[i].ID`. OpenAI's wire
+	// spec requires the pairing; the safety pass rejects loudly so
+	// the producer is forced to fix the upstream omission rather
+	// than silently shipping an invalid wire shape.
+	ErrOrphanToolCall = errors.New("llm: assistant message with ToolCalls is not followed by matching RoleTool messages")
 )
 
 // invalidJSONSchemaErrorMarkers is the small substring allowlist

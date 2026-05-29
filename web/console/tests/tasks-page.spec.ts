@@ -190,16 +190,16 @@ test.describe("Console Tasks page", () => {
     ).toBe(true);
   });
 
-  test("(e) the Disconnected PageState renders without a Runtime connection", async ({
+  test("(e) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     helpers,
   }) => {
-    // No `seedConnection` — connection.ts returns null, so the page
-    // renders PageState's Disconnected branch (NOT the Error branch).
+    // No connection seeded — connection.ts returns null. Phase 105
+    // (V1.2): the app shell redirects a disconnected Console to /settings
+    // (the connect surface) rather than stranding the operator.
     await helpers.gotoPage("tasks");
-    await expect(
-      page.locator("[data-testid='tasks-page']"),
-      "the Tasks page shell still renders",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
   });
 });

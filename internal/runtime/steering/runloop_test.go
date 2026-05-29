@@ -206,6 +206,88 @@ func TestRun_PlannerFinishesImmediately(t *testing.T) {
 	}
 }
 
+// pendingToolCallsPlanner is a custom planner that exercises the
+// Phase 107c (D-167) AC-19a write-back: on step 1 it populates
+// `rc.PendingToolCalls` (mirroring the projector's serialisation
+// fallback for multi-ToolCall responses) and returns a CallTool; on
+// subsequent steps it asserts the queue persists by recording each
+// rc's PendingToolCalls. The runloop's write-back from rc back into
+// `spec.Base` is the load-bearing wiring this test pins — without it
+// the planner's append is dead code and parallel ToolCall responses
+// silently drop everything past the first call.
+type pendingToolCallsPlanner struct {
+	mu           sync.Mutex
+	step         int
+	seenPending  [][]planner.ToolCallDeferred
+	finishOnStep int
+}
+
+func (p *pendingToolCallsPlanner) Next(_ context.Context, rc planner.RunContext) (planner.Decision, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Snapshot the rc.PendingToolCalls the runloop handed us this
+	// step (copy to detach from any later mutation).
+	snap := append([]planner.ToolCallDeferred(nil), rc.PendingToolCalls...)
+	p.seenPending = append(p.seenPending, snap)
+	p.step++
+	if p.step >= p.finishOnStep {
+		return planner.Finish{Reason: planner.FinishGoal}, nil
+	}
+	if p.step == 1 {
+		// Step 1: populate the per-run queue (the projector's
+		// AC-19a serialisation-fallback shape) AND emit a CallTool
+		// for the first request. The runloop callback must carry
+		// the queue into step 2's rc — without `OnPendingToolCalls`
+		// the planner's append dies with this stack frame because
+		// rc is passed by value.
+		queue := []planner.ToolCallDeferred{
+			{Name: "pending_a", CallID: "id_a"},
+			{Name: "pending_b", CallID: "id_b"},
+		}
+		if rc.OnPendingToolCalls != nil {
+			rc.OnPendingToolCalls(queue)
+		}
+		return planner.CallTool{Tool: "first_dispatch", CallID: "id_first"}, nil
+	}
+	// Step 2+ — emit a noop CallTool so the runloop keeps stepping.
+	return planner.CallTool{Tool: "noop"}, nil
+}
+
+// TestRun_PendingToolCallsPersistAcrossSteps pins Phase 107c (D-167)
+// AC-19a's load-bearing wiring: when the React projector's multi-
+// ToolCall serialisation fallback appends remaining calls to
+// `rc.PendingToolCalls`, the runloop must propagate them back into
+// `spec.Base` so the next step's `rc := spec.Base` value-copy sees
+// them. The planner's drain hook reads them on the subsequent step
+// without an LLM round-trip. Without the runloop write-back the
+// planner's append is dead code and N>1 ToolCalls silently drop
+// everything past the first.
+func TestRun_PendingToolCallsPersistAcrossSteps(t *testing.T) {
+	rl, _, _ := newTestRunLoop(t)
+	p := &pendingToolCallsPlanner{finishOnStep: 3}
+	if _, err := rl.Run(context.Background(), runSpecFor(runA, p)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.seenPending) < 2 {
+		t.Fatalf("planner step count = %d, want ≥ 2 (so the round-trip is observable)", len(p.seenPending))
+	}
+	// Step 1's rc.PendingToolCalls is empty (no queue yet).
+	if len(p.seenPending[0]) != 0 {
+		t.Errorf("step 1 rc.PendingToolCalls = %d entries, want 0", len(p.seenPending[0]))
+	}
+	// Step 2's rc.PendingToolCalls carries the two entries the
+	// step-1 planner appended via the runloop write-back.
+	if len(p.seenPending[1]) != 2 {
+		t.Fatalf("step 2 rc.PendingToolCalls = %d entries, want 2 (runloop write-back regression)", len(p.seenPending[1]))
+	}
+	if p.seenPending[1][0].Name != "pending_a" || p.seenPending[1][0].CallID != "id_a" {
+		t.Errorf("step 2 pending[0] = %+v, want {pending_a, id_a}", p.seenPending[1][0])
+	}
+	if p.seenPending[1][1].Name != "pending_b" || p.seenPending[1][1].CallID != "id_b" {
+		t.Errorf("step 2 pending[1] = %+v, want {pending_b, id_b}", p.seenPending[1][1])
+	}
+}
+
 func TestRun_RetiresInboxOnExit(t *testing.T) {
 	rl, reg, _ := newTestRunLoop(t)
 	p := &scriptedPlanner{defaultDec: planner.Finish{Reason: planner.FinishGoal}}

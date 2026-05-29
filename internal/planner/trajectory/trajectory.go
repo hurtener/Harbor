@@ -120,6 +120,22 @@ type Step struct {
 	// audit redactor (CLAUDE.md §7).
 	ReasoningTrace string `json:"reasoning_trace,omitempty"`
 
+	// AssistantPreamble is the natural-language content the assistant
+	// emitted alongside the tool_call on this step — the "preamble"
+	// prose providers stream as `delta.content` while the structured
+	// `tool_calls` block is being assembled. The planner stamps it
+	// from `llm.CompleteResponse.Content` after the step's LLM call.
+	// The trajectory renderer replays it as the assistant message's
+	// content on the next turn so the model retains its narrative
+	// thread across steps.
+	//
+	// Distinct from `ReasoningTrace` which is the provider-side
+	// thinking channel (opt-in, often empty, sometimes redacted).
+	// AssistantPreamble is the model's visible prose preamble —
+	// always part of the wire shape, no opt-in required. Empty when
+	// the model emitted a tool_call with no preamble.
+	AssistantPreamble string `json:"assistant_preamble,omitempty"`
+
 	// Observation is the runtime's executed-decision result. Shape
 	// depends on the Decision: a CallTool yields a ToolResult; a
 	// SpawnTask yields a TaskHandle; etc.

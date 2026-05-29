@@ -137,11 +137,36 @@ func (s *scriptedLLMServer) Requests() []openAIRequestEnvelope {
 // every recorded LLM request carries it on the way in.
 const scriptedModel = "google/gemma-4-31b-it"
 
-// scriptedResponse returns a canned OpenAI-compatible /v1/chat/completions
-// response whose assistant `content` is the supplied envelope (the
-// react planner reads `content` and parses it as `{"tool":...,
-// "args":...}`).
-func scriptedResponse(envelopeJSON string) string {
+// scriptedToolCallResponse returns a canned OpenAI-compatible
+// /v1/chat/completions response whose assistant message carries a
+// native `tool_calls` block (Phase 107c — D-167). The bifrost driver
+// extracts ToolCalls into `resp.ToolCalls`; the React projector reads
+// them and emits a planner.CallTool decision.
+func scriptedToolCallResponse(callID, toolName, argsJSON string) string {
+	return fmt.Sprintf(`{
+		"id":"chatcmpl-83l-test",
+		"object":"chat.completion",
+		"created":1700000000,
+		"model":%q,
+		"choices":[{
+			"index":0,
+			"message":{"role":"assistant","content":null,"tool_calls":[
+				{"id":%q,"type":"function","function":{"name":%q,"arguments":%q}}
+			]},
+			"finish_reason":"tool_calls"
+		}],
+		"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}
+	}`, scriptedModel, callID, toolName, argsJSON)
+}
+
+// scriptedFinishResponse returns a canned OpenAI-compatible response
+// whose assistant `content` is a natural-language terminal answer
+// (Phase 107c — D-167). The React projector maps a non-empty
+// `resp.Content` with no `resp.ToolCalls` to planner.Finish{Goal,
+// Payload: content}. The reserved `_finish` tool-call shape is also
+// accepted but the natural-language path is what the production
+// contract drives.
+func scriptedFinishResponse(answer string) string {
 	return fmt.Sprintf(`{
 		"id":"chatcmpl-83l-test",
 		"object":"chat.completion",
@@ -153,7 +178,7 @@ func scriptedResponse(envelopeJSON string) string {
 			"finish_reason":"stop"
 		}],
 		"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}
-	}`, scriptedModel, envelopeJSON)
+	}`, scriptedModel, answer)
 }
 
 // phase83lConfig writes the 83l test yaml + loads/validates it. The
@@ -273,8 +298,8 @@ func TestE2E_RealBifrost_PlannerExecutorTrajectory_HappyPath(t *testing.T) {
 	// fake-provider API-key env var, which the testing package forbids
 	// alongside t.Parallel.
 	server := newScriptedLLMServer(t,
-		scriptedResponse(`{"tool":"text.echo","args":{"text":"hello from 83l"}}`),
-		scriptedResponse(`{"tool":"_finish","args":{"answer":"echo returned 'hello from 83l'"}}`),
+		scriptedToolCallResponse("call_echo", "text.echo", `{\"text\":\"hello from 83l\"}`),
+		scriptedFinishResponse("echo returned 'hello from 83l'"),
 	)
 
 	cfg := phase83lConfig(t, server.URL())
@@ -361,10 +386,10 @@ func TestE2E_RealBifrost_ToolValidationFailure_PlannerReplans(t *testing.T) {
 		// Bad-args call: text.echo's input requires a `text` string,
 		// but we send `wrong_field`. The inproc validator rejects;
 		// the planner sees the error observation.
-		scriptedResponse(`{"tool":"text.echo","args":{"wrong_field":"oops"}}`),
+		scriptedToolCallResponse("call_bad", "text.echo", `{\"wrong_field\":\"oops\"}`),
 		// Recovery: the planner re-plans with the validator error in
 		// the trajectory + finishes with an apology.
-		scriptedResponse(`{"tool":"_finish","args":{"answer":"I could not call the echo tool — bad arguments. Sorry."}}`),
+		scriptedFinishResponse("I could not call the echo tool — bad arguments. Sorry."),
 	)
 
 	cfg := phase83lConfig(t, server.URL())

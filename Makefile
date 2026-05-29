@@ -85,7 +85,7 @@ vet:
 lint:
 	@if ! command -v golangci-lint >/dev/null 2>&1; then \
 		echo "ERROR: golangci-lint not installed — the lint gate cannot run." >&2; \
-		echo "  install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8" >&2; \
+		echo "  install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2" >&2; \
 		exit 1; \
 	fi
 	golangci-lint run

@@ -65,6 +65,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { resolveConnection } from '$lib/connection.js';
   import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
 
@@ -78,6 +79,15 @@
   });
 
   const connection = $derived(resolveConnection());
+
+  // Phase 105 (V1.2) — first-load redirect: when nothing is attached,
+  // send the operator to Settings (the only surface where they can fix
+  // it). Idempotent — if we're already on /settings, no-op.
+  $effect(() => {
+    if (resolveConnection() === null && !$page.url.pathname.startsWith('/settings')) {
+      goto('/settings', { replaceState: true });
+    }
+  });
 
   // The breadcrumb is derived from the active route — the first path
   // segment maps to a nav label; deeper segments append verbatim.

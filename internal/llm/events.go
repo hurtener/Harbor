@@ -53,6 +53,12 @@ const (
 	// The cross-tenant read is a privileged action and lands on the
 	// audit trail per CLAUDE.md §7 + RFC §6.15.
 	EventTypePostureReadAdmin events.EventType = "llm.posture_read_admin"
+	// EventTypeCompletionChunk — Phase 107 streaming completion event.
+	// Emitted per token delta from the LLM provider under the originating
+	// run's identity quadruple. The `Done=true` chunk fires exactly once
+	// per stream (terminator marker). SafePayload — deltas are per-session
+	// operator-visible content.
+	EventTypeCompletionChunk events.EventType = "llm.completion.chunk"
 )
 
 func init() {
@@ -64,6 +70,7 @@ func init() {
 		EventTypeModeDowngraded,
 		EventTypeRetryWithFeedback,
 		EventTypePostureReadAdmin,
+		EventTypeCompletionChunk,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -170,5 +177,20 @@ type RetryWithFeedbackPayload struct {
 	Attempt    int
 	MaxRetries int
 	Reason     string
+	OccurredAt time.Time
+}
+
+// CompletionChunkPayload is the typed payload for
+// EventTypeCompletionChunk (Phase 107). SafePayload — the delta is
+// per-session operator-visible content (the LLM's own output), not a
+// secret. Kind is "content" or "reasoning".
+type CompletionChunkPayload struct {
+	events.SafePayload
+	Identity   identity.Quadruple
+	TaskID     string
+	RunID      string
+	Delta      string
+	Done       bool
+	Kind       string
 	OccurredAt time.Time
 }

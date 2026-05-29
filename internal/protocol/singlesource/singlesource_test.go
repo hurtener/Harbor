@@ -412,6 +412,7 @@ func requireOneViolation(t *testing.T, violations []singlesource.Violation, kind
 func exportedStructTypes(t *testing.T, dir string) map[string]struct{} {
 	t.Helper()
 	fset := token.NewFileSet()
+	//nolint:staticcheck // SA1019: parser.ParseDir is adequate for this single-package, build-tag-agnostic AST scan of one source dir; the go/packages migration it points to is heavier than this test-helper warrants
 	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, parser.SkipObjectResolution)

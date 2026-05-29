@@ -65,13 +65,14 @@ jobs:
       # Phase 80 the binary was never installed in CI, so `make lint`'s
       # `command -v` guard silently skipped and the gate was a no-op.
       # Installed via `go install` (NOT a prebuilt release download):
-      # the prebuilt v1.64.8 release binary is built with go1.24, and
       # golangci-lint refuses to load a config whose target Go (1.26)
-      # is newer than its own build-Go. `go install` compiles it here
-      # with the runner's go1.26 toolchain, so build-Go == target-Go.
+      # is newer than its own build-Go, so compiling it here with the
+      # runner's go1.26 toolchain keeps build-Go == target-Go. The v2
+      # module path is `.../v2/cmd/golangci-lint` (the config is v2 —
+      # see .golangci.yml `version: "2"`, migrated 2026-05-28).
       - name: Install golangci-lint
         run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The full golangci-lint gate (every linter in .golangci.yml,
       # including the `revive` doc-hygiene rules). The Wave 14 lint

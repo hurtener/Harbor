@@ -128,6 +128,11 @@ var (
 	// ErrAlreadyApplied — Apply was called twice on the same Builder.
 	// The builder is one-shot.
 	ErrAlreadyApplied = errors.New("catalog: builder already applied")
+	// ErrInvalidLoadingMode — entries[].loading_mode names a value
+	// not in {"", "always", "deferred"}. Phase 107c / D-167. Fired
+	// from the Builder as defence-in-depth; the config validator
+	// rejects the same shape pre-boot.
+	ErrInvalidLoadingMode = errors.New("catalog: invalid loading_mode")
 )
 
 // Deps bundles the collaborators the Builder consumes. When the entry
@@ -293,6 +298,23 @@ func (b *Builder) Apply(ctx context.Context) error {
 func (b *Builder) wrap(_ context.Context, e config.ToolEntryConfig, d tools.ToolDescriptor) (tools.ToolDescriptor, error) {
 	// 1. Inner-most → start from the registered descriptor.
 	current := d
+
+	// Phase 107c / D-167 — propagate operator-declared LoadingMode
+	// from the yaml entry onto the Tool. The descriptor's underlying
+	// transport (in-proc registrar, MCP, HTTP, A2A) may have a
+	// registration-time default; the yaml wins per CLAUDE.md §15
+	// (config > defaults). Validation has already rejected unknown
+	// values in `internal/config/validate.go::validateTools`.
+	switch e.LoadingMode {
+	case "":
+		// Unset — leave whatever the registrar declared.
+	case string(tools.LoadingAlways), string(tools.LoadingDeferred):
+		current.Tool.Loading = tools.LoadingMode(e.LoadingMode)
+	default:
+		return tools.ToolDescriptor{}, fmt.Errorf(
+			"%w: entries[%q].loading_mode=%q (allowed: always, deferred)",
+			ErrInvalidLoadingMode, e.Name, e.LoadingMode)
+	}
 
 	// 2. OAuth — innermost wrapper after the registered descriptor.
 	//    Wraps Invoke so the wrapper can call provider.Token BEFORE

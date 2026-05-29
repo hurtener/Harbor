@@ -190,7 +190,7 @@ func TestE2E_Wave4_FullKernel_Aliveness(t *testing.T) {
 	gotChunks := 0
 	gotEnvelope := false
 	gotDone := false
-	for time.Now().Before(deadline) && !(gotEnvelope && gotDone && gotChunks >= frameCount) {
+	for time.Now().Before(deadline) && (!gotEnvelope || !gotDone || gotChunks < frameCount) {
 		fetchCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		got, err := eng.FetchByRun(fetchCtx, "R-aliveness")
 		cancel()

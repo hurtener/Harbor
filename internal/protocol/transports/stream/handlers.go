@@ -138,7 +138,7 @@ func (h *AggregateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CodeAuthRejected (token invalid → 401).
 	conv := events.FilterFromWire(req.Filter, id.TenantID, id.UserID, id.SessionID)
 	if conv.RequiresAdminScope {
-		if !(auth.HasScope(r.Context(), auth.ScopeAdmin) || auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
+		if !auth.HasScope(r.Context(), auth.ScopeAdmin) && !auth.HasScope(r.Context(), auth.ScopeConsoleFleet) {
 			writeAggregateError(w, protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
 				"cross-tenant aggregate requires a verified `admin` or `console:fleet` scope")
 			return

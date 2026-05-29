@@ -32,8 +32,16 @@ state:
 
 llm:
   driver: mock
+  # The safety pass requires a non-empty Model and a matching ModelProfile.
+  # The mock driver itself ignores the value, but the safety wrapper
+  # rejects an empty Model with ErrInvalidConfig before the driver runs.
+  model: mock
   timeout: 60s
   context_window_reserve: 0.05
+  model_profiles:
+    mock:
+      context_window_tokens: 128000
+      token_estimator: chars_div_4
 
 governance:
   repair_attempts: 3

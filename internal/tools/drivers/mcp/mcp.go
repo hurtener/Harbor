@@ -411,8 +411,18 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	}
 	outSchemaBytes, _ := marshalSchema(t.OutputSchema) //nolint:errcheck // OutputSchema is optional; a marshal failure yields no out-schema
 
+	// Phase 107c step 10/11 audit: provider-native tool-calling
+	// requires the wire-side function name to match
+	// `^[a-zA-Z0-9_-]{1,128}$` (OpenAI spec; OpenRouter→Bedrock
+	// enforces strictly). The original separator was `.` which fails
+	// validation — `youtube.get_metadata` → OpenRouter 400. Single
+	// underscore is spec-safe AND matches the operator-facing naming
+	// users already expect (see media-helper-agent harbor.yaml's
+	// `planning_hints.preferred_tools: [youtube_get_metadata, ...]`).
+	// The double-underscore `__` separator stays reserved for
+	// resources / prompts (`__resource.` / `__prompt.` markers).
 	tool := tools.Tool{
-		Name:        fmt.Sprintf("%s.%s", string(p.source), t.Name),
+		Name:        fmt.Sprintf("%s_%s", string(p.source), t.Name),
 		Description: t.Description,
 		ArgsSchema:  schemaBytes,
 		OutSchema:   outSchemaBytes,

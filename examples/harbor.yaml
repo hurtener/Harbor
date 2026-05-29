@@ -367,6 +367,13 @@ memory:
 # renderer keeps the top N. Zero / unset resolves to 3. Dial it down for
 # catalogs with many tools to keep prompt token usage bounded.
 #
+# `parallel_tool_calls` (Phase 107d — D-169) toggles native parallel
+# tool-call dispatch. Default true (omit the key): when the LLM returns
+# several tool-calls in one turn, the React planner emits a native
+# `CallParallel` and the runtime dispatches the branches concurrently.
+# Set false to revert to the 107c serialization fallback (one tool-call
+# per step). Both paths are correct; true is the intended end state.
+#
 # `skills_context_max` (Phase 83f — D-149) caps how many skill bodies
 # the dev binary's per-task run loop fetches from `SkillStore.Search`
 # and hands the planner via `RunContext.SkillsContext`. Zero / unset
@@ -399,6 +406,7 @@ planner:
   #   call render_table before finishing and reference the artifact
   #   in your final answer.
   # reasoning_replay: never   # never (default) | text
+  # parallel_tool_calls: true       # default true; false → serialise N>1 tool-calls (107c fallback)
   # max_tool_examples_per_tool: 3   # 0/unset → 3
   # skills_context_max: 5            # 0/unset → 5; cap on SkillStore.Search results per run
   # planning_hints:

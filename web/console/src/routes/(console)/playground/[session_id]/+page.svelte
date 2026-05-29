@@ -52,6 +52,9 @@
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
+  import { parseAnswerFromDetail, parseReasoningSteps, normalizeLifecycleType } from './answer-envelope.js';
+  import type { ReasoningStep } from '$lib/chat/types.js';
+  import { applyChunk, finalizeStream } from './chunk-stream.js';
   import {
     PlaygroundSavedFilters,
     type PlaygroundViewSpec
@@ -350,7 +353,7 @@
   function subscribeTaskLifecycle(c: ProtocolClient): void {
     try {
       const url = c.events.subscribeURL({
-        eventTypes: ['task.completed', 'task.failed', 'task.cancelled']
+        eventTypes: ['task.completed', 'task.failed', 'task.cancelled', 'llm.completion.chunk']
       });
       const es = new EventSource(url);
       // The bus envelope's `payload.TaskID` carries the task id for
@@ -365,11 +368,71 @@
       };
       const isTerminal = (t: string | undefined): boolean =>
         t === 'task.completed' || t === 'task.failed' || t === 'task.cancelled';
-      es.addEventListener('task.completed', handleLifecycle);
-      es.addEventListener('task.failed', handleLifecycle);
-      es.addEventListener('task.cancelled', handleLifecycle);
-      es.onmessage = handleLifecycle;
-      function handleLifecycle(msg: MessageEvent): void {
+      es.addEventListener('task.completed', (msg: MessageEvent) => {
+        handleLifecycle(msg, 'completed');
+      });
+      es.addEventListener('task.failed', (msg: MessageEvent) => {
+        handleLifecycle(msg, 'failed');
+      });
+      es.addEventListener('task.cancelled', (msg: MessageEvent) => {
+        handleLifecycle(msg, 'cancelled');
+      });
+      // Phase 107 — per-token streaming listener. Appends `delta` to
+      // the pending agent bubble and sets `streaming: true`.
+      es.addEventListener('llm.completion.chunk', (msg: MessageEvent) => {
+        handleChunkEvent(msg);
+      });
+      es.onmessage = (msg: MessageEvent) => {
+        let parsed: LifecycleEvent | null = null;
+        try {
+          parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
+        } catch {
+          // Try the chunk shape.
+          tryHandleChunkMessage(msg);
+          return;
+        }
+        if (parsed === null || !isTerminal(parsed.type)) {
+          tryHandleChunkMessage(msg);
+          return;
+        }
+        // Normalize 'task.<x>' → '<x>' so the handler's eventType branches
+        // ('completed' vs 'failed' / 'cancelled') match the named-listener
+        // path; otherwise an onmessage-delivered completion would slip into
+        // the error branch.
+        handleLifecycle(msg, normalizeLifecycleType(parsed.type as string));
+      };
+
+      // Phase 107 — chunk event handlers.
+
+      function handleChunkEvent(msg: MessageEvent): void {
+        let parsed: { task_id?: string; delta?: string; done?: boolean; kind?: string } | null = null;
+        try {
+          parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean; kind?: string };
+        } catch {
+          return;
+        }
+        if (!parsed || !parsed.task_id || !parsed.delta) return;
+        const tid = parsed.task_id;
+        if (tid !== activeTaskID) return;
+
+        messages = applyChunk(messages, tid, parsed.delta);
+        if (parsed.done) {
+          messages = finalizeStream(messages, tid);
+        }
+      }
+
+      function tryHandleChunkMessage(msg: MessageEvent): void {
+        try {
+          const parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean };
+          if (parsed && parsed.task_id) {
+            handleChunkEvent(msg);
+          }
+        } catch {
+          // Not a chunk event either — silently ignore.
+        }
+      }
+
+      async function handleLifecycle(msg: MessageEvent, eventType: string): Promise<void> {
         let parsed: LifecycleEvent | null = null;
         try {
           parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
@@ -379,15 +442,45 @@
         if (parsed === null) {
           return;
         }
-        // Default-channel onmessage may receive non-task events too;
-        // filter by event name. The named-listeners path implicitly
-        // pre-filters.
-        if (msg.type === 'message' && !isTerminal(parsed.type)) {
-          return;
-        }
         const ranTaskID = parsed.payload?.TaskID ?? parsed.run ?? '';
         if (ranTaskID === '' || ranTaskID !== activeTaskID) {
           return;
+        }
+        const taskID = ranTaskID;
+
+        // Phase 106 (V1.2) — fetch the real answer from tasks.get
+        // and replace the pending agent bubble. The wire shape is
+        // TaskDetail (internal/protocol/types/tasks.go:409): `result_inline`
+        // is at the TOP LEVEL of the response, NOT nested inside `task`
+        // (that's the compact TaskRow projection).
+        if (eventType === 'completed' && client !== null) {
+          try {
+            const detail = await client.tasks.get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(taskID);
+            const answer = parseAnswerFromDetail(detail);
+            // Phase 107a (V1.3) — extract reasoning steps from the
+            // trajectory projection and populate the accordion.
+            const reasoningSteps = parseReasoningSteps(detail);
+            messages = messages.map((m) =>
+              m.taskID === taskID && m.role === 'agent'
+                ? { ...m, text: answer, reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined, pending: false }
+                : m
+            );
+          } catch {
+            messages = messages.map((m) =>
+              m.taskID === taskID && m.role === 'agent'
+                ? { ...m, text: '(could not read answer)', pending: false }
+                : m
+            );
+          }
+        } else if (eventType !== 'completed') {
+          // Phase 106 (V1.2) AC-10 — task.failed or task.cancelled
+          // populates an error bubble.
+          const errorText = `Task ${eventType} — see Tasks page for details.`;
+          messages = messages.map((m) =>
+            m.taskID === taskID && m.role === 'agent'
+              ? { ...m, text: errorText, role: 'system', pending: false }
+              : m
+          );
         }
         activeTaskID = null;
         void drainQueue();
@@ -511,16 +604,18 @@
     messages = [...messages, userMsg];
     status = 'ready';
     try {
-      await chatClient.sendMessage(text, artifactIDs, mode);
-      // The runtime answers asynchronously over the event stream; V1
-      // surfaces an acknowledgement bubble. A live token stream is the
-      // event-subscription wiring shared with the Live Runtime page.
+      const resp = await chatClient.sendMessage(text, artifactIDs, mode);
+      // Phase 106 (V1.2) — append an empty pending agent bubble.
+      // The task.completed SSE handler populates the text from the
+      // actual LLM answer when the task finishes.
       messages = [
         ...messages,
         {
           id: `m-${Date.now()}-a`,
           role: 'agent',
-          text: 'Message accepted by the Runtime.',
+          text: '',
+          taskID: resp.taskID,
+          pending: true,
           at: new Date().toISOString()
         }
       ];

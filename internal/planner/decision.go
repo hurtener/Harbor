@@ -46,6 +46,12 @@ type CallTool struct {
 	// ArgsSchema. Validation happens at the catalog edge; an invalid
 	// payload produces `tools.ErrToolInvalidArgs` from dispatch.
 	Args json.RawMessage
+	// CallID is the provider-assigned tool-call identifier (Phase
+	// 107c / D-167 — native tool-calling). Empty for prompt-
+	// engineered CallTool emissions; non-empty when the call
+	// originated from a native ToolCall. Round-trips on the
+	// RoleTool message's ToolCallID field.
+	CallID string
 }
 
 func (CallTool) isDecision() {}

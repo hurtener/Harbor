@@ -138,7 +138,7 @@ func applyAuth(req *nethttp.Request, spec AuthSpec, secret string) error {
 		req.Header.Set("Authorization", "Bearer "+secret)
 		return nil
 	case AuthKindCookie:
-		req.AddCookie(&nethttp.Cookie{Name: spec.CookieName, Value: secret})
+		req.AddCookie(&nethttp.Cookie{Name: spec.CookieName, Value: secret}) //nolint:gosec // G124: outbound request cookie attaching upstream auth; Secure/HttpOnly/SameSite are Set-Cookie response directives, N/A on a client request
 		return nil
 	default:
 		return fmt.Errorf("%w: unknown kind %q", ErrAuthInvalidSpec, spec.Kind)

@@ -223,10 +223,11 @@ test.describe("Wave 13 wave-end — cross-cutting concerns", () => {
     runtime,
   }) => {
     // Seed ONLY the harness token — NOT the connection.ts storage
-    // convention — so `resolveConnection()` returns null. The page must
-    // render the Disconnected PageState (CONVENTIONS.md §4 — never
-    // conflated with Error, never a 5xx). This is the cross-page
-    // identity gate: with no resolved identity, no page leaks data.
+    // convention — so `resolveConnection()` returns null. The deep-link
+    // must be GATED, never a 5xx and never a data leak. Phase 105 (V1.2):
+    // an unidentified Console is routed to /settings to connect rather
+    // than stranded on a dead page — the gate is the redirect, not a
+    // per-page Disconnected branch.
     const response = await page.goto(
       new URL("/sessions", runtime.baseURL).toString(),
     );
@@ -238,13 +239,12 @@ test.describe("Wave 13 wave-end — cross-cutting concerns", () => {
     await expect(
       page.locator("[data-testid='console-hydrated']"),
     ).toBeAttached();
-    await expect(
-      page.locator("[data-testid='page-state-disconnected']").first(),
-      "an unidentified load renders the Disconnected gate, never Error",
-    ).toBeVisible();
+    await expect
+      .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
+      .toMatch(/^\/settings(\/.*)?$/);
     await expect(
       page.locator("[data-testid='page-state-error']"),
-      "the Error PageState is NOT shown for an unidentified Console",
+      "the gate never shows the Error PageState for an unidentified Console",
     ).toHaveCount(0);
   });
 

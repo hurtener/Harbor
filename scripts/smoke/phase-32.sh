@@ -30,15 +30,19 @@ else
     fail 'phase 32: internal/llm tests failed (run `go test -race ./internal/llm/...` for detail)'
 fi
 
-# Static guard: assert no provider-native tool-calling symbols leak into the
-# LLM package. RFC §6.4 / brief 07: the runtime owns tool dispatch — the
-# LLM client never sees Tools=, ToolChoice=, FunctionCall=, etc. Token
-# `ToolName` is allowed (it identifies a Harbor tool by name in payloads
-# routed to runtime/tool subsystems, not LLM-side dispatch fields).
-if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(ToolChoice|FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/ 2>/dev/null | grep -q .; then
-    fail 'phase 32: provider-native tool-calling symbol leak detected in internal/llm/ (RFC §6.4 boundary violation)'
+# Static guard: assert no LEGACY provider-native tool-calling symbols
+# leak into the LLM package. Phase 32 originally forbade ToolChoice +
+# Tools too (RFC §6.4 / brief 07), but Phase 107c / D-167 deliberately
+# REVERSES that stance for the React planner: Harbor now ships its own
+# typed `ToolDeclaration` / `ToolCallStructured` / `ToolChoice` surface
+# that bifrost maps to provider-native shapes. The legacy provider-
+# specific shapes (`FunctionCall`, `ToolUse`, `ToolCallSpec`) remain
+# forbidden — Harbor's surface is provider-agnostic + the bifrost driver
+# owns the per-provider translation.
+if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/ 2>/dev/null | grep -q .; then
+    fail 'phase 32: legacy provider-native tool-calling symbol leak detected in internal/llm/ (use Harbor ToolDeclaration / ToolCallStructured instead)'
 else
-    ok 'phase 32: no provider-native tool-calling symbol leak in internal/llm/ (RFC §6.4 boundary preserved)'
+    ok 'phase 32: no legacy provider-native tool-calling symbol leak in internal/llm/ (107c surface is the Harbor ToolDeclaration / ToolCallStructured pair)'
 fi
 
 skip "phase 32: LLM client has no HTTP/Protocol surface yet (lands in Phase 60+)"

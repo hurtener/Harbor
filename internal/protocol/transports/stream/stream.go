@@ -216,7 +216,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// steering-control scope-claim path per RFC §6.3). A request that
 	// does NOT ask for admin is the default triple-scoped stream.
 	wantAdmin := r.URL.Query().Get("admin") == "1"
-	if wantAdmin && !(auth.HasScope(r.Context(), auth.ScopeAdmin) || auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
+	if wantAdmin && (!auth.HasScope(r.Context(), auth.ScopeAdmin) && !auth.HasScope(r.Context(), auth.ScopeConsoleFleet)) {
 		writeProtocolError(w, http.StatusForbidden,
 			protoerrors.Newf(protoerrors.CodeIdentityScopeRequired,
 				"admin fan-in requires a verified `admin` or `console:fleet` scope (D-079)"))

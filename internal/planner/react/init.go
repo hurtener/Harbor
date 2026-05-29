@@ -53,5 +53,11 @@ func factory(cfg planner.PlannerConfig, deps planner.FactoryDeps) (planner.Plann
 	if cfg.MaxToolExamplesPerTool > 0 {
 		opts = append(opts, WithMaxToolExamplesPerTool(cfg.MaxToolExamplesPerTool))
 	}
+	// Phase 107d (D-169): native parallel tool-call emission. The
+	// planner's own default is `true`; only override when the operator
+	// set the knob explicitly (nil = unset = keep the default).
+	if cfg.ParallelToolCalls != nil {
+		opts = append(opts, WithParallelToolCalls(*cfg.ParallelToolCalls))
+	}
 	return New(deps.LLM, opts...), nil
 }

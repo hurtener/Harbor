@@ -103,7 +103,7 @@ func TestSpecCoverage_EveryProtoTypeHasGoCounterpart(t *testing.T) {
 			t.Fatalf("expectedTypes contained a typed nil with no underlying type")
 		}
 		// Pointer types unwrap to their element type for the name check.
-		if ty.Kind() == reflect.Ptr {
+		if ty.Kind() == reflect.Pointer {
 			ty = ty.Elem()
 		}
 		name := ty.Name()

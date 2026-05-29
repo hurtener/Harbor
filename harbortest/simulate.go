@@ -155,6 +155,11 @@ func (c *injectingCatalog) Resolve(name string) (tools.ToolDescriptor, bool) {
 	return d, true
 }
 
+// Search delegates to the inner catalog (Phase 107c / D-167).
+func (c *injectingCatalog) Search(ctx context.Context, query string, tags []string, limit int) []tools.Tool {
+	return c.inj.inner.Search(ctx, query, tags, limit)
+}
+
 // ErrSimulatedFailure is the sentinel a SimulateFailure-triggered
 // error wraps. Callers compare via errors.Is to distinguish
 // kit-injected failures from genuine tool errors.

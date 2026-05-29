@@ -22,6 +22,7 @@ The briefs themselves live alongside this file (`docs/research/01..NN.md`). Brie
 | 12 | Console deployment posture + shared UI library | ~2200 | 2026-05-15 |
 | 13 | React planner prompt engineering (system prompt depth, dynamic augmentation, UNTRUSTED memory framing) | ~3400 | 2026-05-18 |
 | 14 | MCP client/host compliance (spec 2025-11-25 — capability matrix audit + 85-band decomposition) | ~3600 | 2026-05-21 |
+| 15 | Native tool-calling + deferred loading + tag-based scoping (V1.4 React migration tradeoff) | ~3500 | 2026-05-26 |
 
 ## Subsystem → briefs reverse index
 
@@ -32,6 +33,7 @@ When authoring a phase plan whose subsystem matches the left column, **read at l
 | Core runtime — engine, messages, streaming, routers, concurrency, playbooks | §6.1 | **01** |
 | Planner interface + Trajectory + RunContext | §6.2 | **02**, 07 |
 | React planner prompt engineering (Phases 83a–d) | §6.2 | **13**, 02, 03, 07 |
+| React-native planner migration + deferred tool loading + tag scoping (V1.4, Phase 110-band) | §6.2, §6.4, §6.5 | **15**, 13, 03, 04 |
 | Steering and unified pause/resume | §3.3, §6.3 | **02** |
 | Tool catalog + transports (in-proc / HTTP / MCP / A2A) | §6.4 | **03**, **07** |
 | Tool-side OAuth + HITL (Phase 30) | §6.4, §3.3 | **09** |

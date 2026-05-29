@@ -647,6 +647,14 @@ type ToolsConfig struct {
 	// Restart-required (no `reload:"live"` tag — scope changes
 	// trigger a re-evaluation of every catalog descriptor).
 	GrantedScopes []string `yaml:"granted_scopes,omitempty"`
+
+	// SearchCacheDSN is the SQLite DSN backing the Phase 107c tool
+	// SearchCache (FTS5 + regex fallback). Empty means the dev binary
+	// uses an in-memory cache (the V1 default — discovery state lives
+	// for the process lifetime). Operators can point at an on-disk
+	// path (`file:./harbor-tools.db?_pragma=...`) to persist the
+	// cache across reboots. Restart-required.
+	SearchCacheDSN string `yaml:"search_cache_dsn,omitempty"`
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go
@@ -775,6 +783,11 @@ type ToolEntryConfig struct {
 	// The catalog builder fails closed when no tool registered with
 	// this name resolves at boot.
 	Name string `yaml:"name"`
+	// LoadingMode controls when this tool appears in the planner's
+	// prompt-time catalog. "" or "always" = every turn (default).
+	// "deferred" = hidden by default; the LLM discovers via meta-tools.
+	// Phase 107c / D-167.
+	LoadingMode string `yaml:"loading_mode,omitempty"`
 	// Approval declares an approval-gate wiring for this tool. Omit
 	// for tools that need no gating. When present, `Approval.Policy`
 	// MUST be one of the canonical policy names; an unknown value
@@ -1008,6 +1021,16 @@ const (
 // to 3 inside the react driver. The validator rejects negative values
 // loudly pre-boot. Other drivers ignore it.
 //
+// `ParallelToolCalls` toggles native parallel tool-call emission
+// (Phase 107d — D-169). Pointer-bool so an omitted key (nil) resolves
+// to `true` — the React planner emits a native `CallParallel` when the
+// LLM returns N>1 tool-calls in one response, and the dev `ToolExecutor`
+// dispatches the branches concurrently. An explicit `false` selects the
+// Phase 107c serialization fallback (one `CallTool` per step via
+// `RunContext.PendingToolCalls`). It flows to the react driver's
+// `WithParallelToolCalls` Option only when non-nil; other drivers ignore
+// it. No validator rule beyond "bool" — both states are correct.
+//
 // `SkillsContextMax` caps how many skill bodies the dev run loop
 // fetches from `skills.SkillStore.Search` and hands the planner via
 // `RunContext.SkillsContext` (Phase 83f — D-149). Zero (the default)
@@ -1037,10 +1060,41 @@ type PlannerConfig struct {
 	ExtraGuidance          string                  `yaml:"extra_guidance,omitempty"`
 	ReasoningReplay        string                  `yaml:"reasoning_replay,omitempty"`
 	MaxToolExamplesPerTool int                     `yaml:"max_tool_examples_per_tool,omitempty"`
+	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
+	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }
+
+// ParallelToolCallsEnabled resolves the optional `parallel_tool_calls`
+// knob (Phase 107d — D-169). Nil (unset) resolves to `true` — native
+// parallel tool-call emission is the default. A non-nil value is
+// honoured verbatim. The dev stack reads this when no driver-boundary
+// passthrough is wanted; the `*bool` itself flows through the planner
+// boundary so the react factory can distinguish "unset" from an
+// explicit `false`.
+func (p PlannerConfig) ParallelToolCallsEnabled() bool {
+	return p.ParallelToolCalls == nil || *p.ParallelToolCalls
+}
+
+// SpawnDepthCap resolves the optional `absolute_max_spawn_depth` knob
+// (Phase 107e — D-170). A non-positive value (unset or zero) resolves to
+// the dev-runtime default of 4: a SpawnTask whose child would exceed this
+// ParentTaskID-chain depth is rejected loudly so a background sub-agent
+// cannot recurse without bound. The cap bounds depth, not breadth.
+func (p PlannerConfig) SpawnDepthCap() int {
+	if p.AbsoluteMaxSpawnDepth <= 0 {
+		return defaultSpawnDepthCap
+	}
+	return p.AbsoluteMaxSpawnDepth
+}
+
+// defaultSpawnDepthCap mirrors cmd/harbor's defaultMaxSpawnDepth — kept
+// here so config consumers resolve the same default without importing the
+// binary package. Drift between the two is caught by the dev executor's
+// constructor (it clamps a non-positive cap to its own default too).
+const defaultSpawnDepthCap = 4
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
 // `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the

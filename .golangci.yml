@@ -1,96 +1,122 @@
+# golangci-lint v2 configuration. Migrated from the v1 schema on
+# 2026-05-28 (golangci-lint v2.x folds gosimple + stylecheck into
+# staticcheck and moves gofmt + goimports into the `formatters` block).
+# CI installs the pinned v2 binary via `go install` before invoking
+# `make lint` — see .github/workflows/ci.yml.
+version: "2"
 run:
-  timeout: 5m
   go: "1.26"
   modules-download-mode: readonly
-
+# Surface every finding (no per-linter / same-issue display caps). The
+# CI gate fails on ANY issue, so hiding duplicates behind the v2
+# defaults (max-issues-per-linter=50, max-same-issues=3) only obscures
+# what must be fixed.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck
-    - errorlint
-    - gofmt
-    - goimports
-    - govet
-    - gosimple
-    - ineffassign
-    - staticcheck
-    - unused
-    - gocritic
-    - gosec
-    - revive
-    - stylecheck
-    - unconvert
-    - unparam
-    - misspell
-    - prealloc
     - bodyclose
     - copyloopvar
+    - errcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
     - intrange
+    - misspell
     - nilerr
     - nolintlint
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/hurtener/Harbor
-  gofmt:
-    simplify: true
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  errorlint:
-    errorf: true
-    asserts: true
-    comparison: true
-  govet:
-    enable-all: true
-    # fieldalignment + shadow are deliberately disabled (D-141).
-    # fieldalignment: its autofixer strips struct-field doc comments
-    # when reordering fields, and the memory-packing win is negligible
-    # on JSON-serialised Protocol wire structs — it fights logical
-    # field grouping for no runtime benefit. shadow: flags idiomatic
-    # `err :=` shadowing; the mechanical `:=`→`=` "fix" reintroduces
-    # data races inside goroutine bodies. Both are noise, not quality.
-    disable:
-      - fieldalignment
-      - shadow
-  revive:
-    severity: warning
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    govet:
+      # fieldalignment + shadow are deliberately disabled (D-141).
+      # fieldalignment: its autofixer strips struct-field doc comments
+      # when reordering fields, and the memory-packing win is negligible
+      # on JSON-serialised Protocol wire structs — it fights logical
+      # field grouping for no runtime benefit. shadow: flags idiomatic
+      # `err :=` shadowing; the mechanical `:=`→`=` "fix" reintroduces
+      # data races inside goroutine bodies. Both are noise, not quality.
+      disable:
+        - fieldalignment
+        - shadow
+      enable-all: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      severity: warning
+      rules:
+        # Phase 80 (D-138): `exported` enforces a godoc comment on every
+        # exported identifier — the binding documentation-hygiene gate.
+        # `disableStutteringCheck` switches OFF revive's secondary
+        # naming-opinion sub-check ("type name X stutters as pkg.X");
+        # acting on it would mean renaming ~20 exported types across
+        # package boundaries, out of scope for a documentation phase.
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: package-comments
+        - name: var-naming
+        - name: unused-parameter
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      # Phase 80 (D-138): `exported` enforces a godoc comment on every
-      # exported identifier — the binding documentation-hygiene gate.
-      # `disableStutteringCheck` switches OFF revive's secondary
-      # naming-opinion sub-check ("type name X stutters as pkg.X").
-      # Acting on the stutter sub-check would require renaming ~20
-      # exported types across package boundaries — explicitly out of
-      # scope for a documentation phase and a wide API-churn risk.
-      # The godoc-presence enforcement (the actual Phase 80 mandate)
-      # stays fully on.
-      - name: exported
-        arguments:
-          - disableStutteringCheck
-      - name: package-comments
-      - name: var-naming
-      - name: unused-parameter
-        disabled: true
-  nolintlint:
-    require-explanation: true
-    require-specific: true
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
-        - prealloc
-    # Phase 80 (D-138): the A2A wire types are hand-transcribed
-    # verbatim from the A2A v1 protobuf (CLAUDE.md §3 — "A2A v1 Go
-    # shapes, hand-transcribed from proto"). The proto message names
-    # `OpenIdConnectSecurityScheme` / `MutualTlsSecurityScheme` keep
-    # the proto's non-Go initialism casing on purpose so the Go shapes
-    # stay a 1:1 transcription of the wire spec; `var-naming` would
-    # have us rename them and break that correspondence.
-    - path: internal/distributed/a2a/types\.go
-      linters:
-        - revive
-      text: var-naming
+      - linters:
+          - errcheck
+          - gosec
+          - prealloc
+        path: _test\.go
+      # The A2A wire types are hand-transcribed verbatim from the A2A v1
+      # protobuf (CLAUDE.md §3). The proto message names keep their
+      # non-Go initialism casing on purpose so the Go shapes stay a 1:1
+      # transcription of the wire spec; var-naming would rename them.
+      - linters:
+          - revive
+        path: internal/distributed/a2a/types\.go
+        text: var-naming
+    paths:
+      # node_modules holds vendored third-party Go (e.g. the `flatted`
+      # package ships a .go file). CI's lint job has no `npm ci`, so it
+      # never sees these; excluding them keeps local lint == CI lint.
+      - node_modules
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/hurtener/Harbor
+  exclusions:
+    generated: lax
+    paths:
+      - node_modules
+      - third_party$
+      - builtin$
+      - examples$

@@ -79,6 +79,15 @@ type PlannerConfig struct {
 	// Other drivers ignore it.
 	MaxToolExamplesPerTool int
 
+	// ParallelToolCalls is the optional native-parallel tool-call knob
+	// (Phase 107d — D-169). Nil (the default) resolves to `true` — the
+	// react driver emits a native `CallParallel` for N>1 tool-calls in
+	// one response. A non-nil `false` selects the Phase 107c
+	// serialization fallback. The react factory passes the resolved
+	// value to `react.WithParallelToolCalls` only when non-nil (the
+	// planner's own default is already `true`). Other drivers ignore it.
+	ParallelToolCalls *bool
+
 	// Extra is the driver-specific extras map. Reserved for future
 	// drivers' per-flow knobs; unused by the V1 `react` driver.
 	Extra map[string]string

@@ -111,12 +111,23 @@ assert_grep_present 'KnownBuiltInTools' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 # Wiring into dev binary + devstack mirror (D-094).
 # ----------------------------------------------------------------------------
-assert_grep_present 'builtin\.Register\(toolCat, cfg\.Tools\.BuiltIn\)' \
+assert_grep_present 'builtin\.Register(With)?\(' \
     "cmd/harbor/cmd_dev.go" \
-    "bootDevStack registers opt-in built-in tools"
-assert_grep_present 'builtin\.Register\(cat, cfg\.Tools\.BuiltIn\)' \
+    "bootDevStack invokes builtin.Register / RegisterWith"
+assert_grep_present 'cfg\.Tools\.BuiltIn' \
+    "cmd/harbor/cmd_dev.go" \
+    "bootDevStack passes cfg.Tools.BuiltIn into the registrar"
+# Phase 107c (D-167) widened the registrar shape from `Register(cat, names)` to
+# `RegisterWith(RegistryContext{Catalog, SkillStore, ArtifactStore}, names)`
+# so the new meta-tools (skill_search / skill_get / artifact_fetch) can reach
+# their backing stores. The legacy `Register` wrapper survives but the
+# devstack mirror routes through `RegisterWith` to expose the dep slots.
+assert_grep_present 'builtin\.Register(With)?\(' \
     "harbortest/devstack/devstack.go" \
     "devstack mirrors built-in registration (D-094)"
+assert_grep_present 'cfg\.Tools\.BuiltIn' \
+    "harbortest/devstack/devstack.go" \
+    "devstack passes cfg.Tools.BuiltIn into the registrar (D-094)"
 
 # ----------------------------------------------------------------------------
 # docs/CONFIG.md + drift test.

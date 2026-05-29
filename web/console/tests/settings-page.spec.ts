@@ -127,12 +127,19 @@ test.describe("Console Settings page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("settings");
 
-    // Open the Add Runtime form, fill it, submit.
+    // Open the Add Runtime form, fill the six fields the Phase 105
+    // widening requires (name, URL, token, tenant, user, session),
+    // submit. The token is the live `runtime.token` so the value
+    // satisfies the JWT-shape validation.
     await page.locator("[data-testid='add-runtime-open']").click();
     await page.locator("[data-testid='add-runtime-name']").fill("e2e-runtime");
     await page
       .locator("[data-testid='add-runtime-url']")
       .fill("https://e2e-runtime.example.com");
+    await page.locator("[data-testid='add-runtime-token']").fill(runtime.token);
+    await page.locator("[data-testid='add-runtime-tenant']").fill("dev");
+    await page.locator("[data-testid='add-runtime-user']").fill("dev");
+    await page.locator("[data-testid='add-runtime-session']").fill("dev");
     await page.locator("[data-testid='add-runtime-submit']").click();
 
     // The new runtime appears in the Connected-Runtimes list (a real
@@ -340,6 +347,12 @@ test.describe("Console Settings page", () => {
     await page
       .locator("[data-testid='add-runtime-url']")
       .fill(runtime.baseURL);
+    // Phase 105 — fill the four widening fields (token + tenant/user/session)
+    // so the validator passes and submit progresses to the reload.
+    await page.locator("[data-testid='add-runtime-token']").fill(runtime.token);
+    await page.locator("[data-testid='add-runtime-tenant']").fill("dev");
+    await page.locator("[data-testid='add-runtime-user']").fill("dev");
+    await page.locator("[data-testid='add-runtime-session']").fill("dev");
 
     // The Add submit reloads the page; await both the click and the
     // resulting load completion.

@@ -34,10 +34,13 @@ else
 fi
 
 # Static guard: same Phase 33 boundary applies to the Phase 33a files.
-if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(ToolChoice|FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/drivers/bifrost/ 2>/dev/null | grep -q .; then
-    fail 'phase 33a: provider-native tool-calling symbol leak detected in internal/llm/drivers/bifrost/ (RFC §6.4 boundary violation; extension of Phase 33 guard)'
+# Phase 107c / D-167 reversed the brief-07 stance — `ToolChoice` +
+# `Tools` are now Harbor's own surface. Only the legacy provider-private
+# discriminators stay forbidden here.
+if grep -rIn --include='*.go' --exclude='*_test.go' -E '\b(FunctionCall|ToolUse|ToolCallSpec)\b' internal/llm/drivers/bifrost/ 2>/dev/null | grep -q .; then
+    fail 'phase 33a: legacy provider-native tool-calling symbol leak detected in internal/llm/drivers/bifrost/ (extension of Phase 33 guard)'
 else
-    ok 'phase 33a: no provider-native tool-calling symbol leak in internal/llm/drivers/bifrost/ (RFC §6.4 boundary preserved across Phase 33a extensions)'
+    ok 'phase 33a: no legacy provider-native tool-calling symbol leak in internal/llm/drivers/bifrost/ (107c-revised boundary preserved)'
 fi
 
 # Config-layer validation: custom-provider validator rejects malformed
