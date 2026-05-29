@@ -1138,8 +1138,10 @@
     onimpersonate={(t) => (activeImpersonation = t)}
   />
 
-  <!-- D-171 session switcher: one token, many conversations. -->
-  <div class="session-strip" data-testid="playground-session-strip">
+  <!-- 108a — one compact toolbar row: the D-171 conversation switcher +
+       New session, plus saved views (chips only when present, so the
+       default state reclaims the row). -->
+  <div class="toolbar-row" data-testid="playground-session-strip">
     <label class="session-pick">
       <span class="session-pick-label">Conversation</span>
       <select
@@ -1164,37 +1166,37 @@
     >
       + New session
     </button>
-  </div>
 
-  <!-- Thin saved-views strip (D-061) — compact; the disabled "Filter
-       messages" post-V1 input is removed (no Post-V1 clutter). -->
-  {#if savedFilters !== null}
-    <div class="views-strip" data-testid="playground-views-strip">
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeSavedId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <input
-        class="view-save-input"
-        type="text"
-        placeholder="Save current as…"
-        bind:value={saveName}
-        data-testid="playground-save-name"
-        onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
-      />
-      <button
-        type="button"
-        class="view-save-btn"
-        data-testid="playground-save-view"
-        disabled={saveName.trim().length === 0}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    </div>
-  {/if}
+    {#if savedFilters !== null}
+      <div class="toolbar-views">
+        {#if savedViews.length > 0}
+          <SavedViewChips
+            views={savedViews}
+            activeId={activeSavedId}
+            onselect={applySavedView}
+            ondelete={(id) => void deleteSavedView(id)}
+          />
+        {/if}
+        <input
+          class="view-save-input"
+          type="text"
+          placeholder="Save current as…"
+          bind:value={saveName}
+          data-testid="playground-save-name"
+          onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
+        />
+        <button
+          type="button"
+          class="view-save-btn"
+          data-testid="playground-save-view"
+          disabled={saveName.trim().length === 0}
+          onclick={() => void saveCurrentView()}
+        >
+          Save view
+        </button>
+      </div>
+    {/if}
+  </div>
 
   <!-- Phase 108a KPI strip — the integrated metadata band -->
   <KpiStrip
@@ -1340,10 +1342,18 @@
     min-height: 0;
   }
 
-  .session-strip {
+  .toolbar-row {
     display: flex;
     align-items: center;
     gap: var(--space-3);
+  }
+
+  .toolbar-views {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+    flex-wrap: wrap;
   }
 
   .session-pick {
@@ -1381,13 +1391,6 @@
 
   .session-new:hover {
     border-color: var(--color-accent);
-  }
-
-  .views-strip {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    flex-wrap: wrap;
   }
 
   .view-save-input {

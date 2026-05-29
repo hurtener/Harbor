@@ -212,16 +212,18 @@
     font-family: var(--font-mono);
   }
 
+  /* 108a — accent-tinted pills (bluer look & feel, not flat grey). */
   .meta-pill {
     display: inline-flex;
     align-items: center;
     padding: var(--space-1) var(--space-2);
-    background: var(--color-surface-raised);
+    background: var(--chip-accent-bg);
     border: var(--border-hairline);
+    border-color: var(--chip-accent-border);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
     font-family: var(--font-mono);
-    color: var(--color-text-muted);
+    color: var(--chip-accent-fg);
   }
 
   .header-field {

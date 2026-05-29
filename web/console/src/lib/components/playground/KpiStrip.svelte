@@ -208,22 +208,26 @@
   .kpi-strip {
     display: flex;
     align-items: stretch;
-    gap: var(--space-5);
     padding: var(--space-3) var(--space-4);
     border: var(--border-hairline);
     border-radius: var(--radius-md);
     background: var(--color-surface);
-    overflow-x: auto;
   }
 
+  /* 108a — every column grows to fill the band evenly (mock Image 5),
+     instead of packing to the left and wrapping the in/out sub-text. */
   .kpi-col {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     min-width: 0;
-    padding-right: var(--space-5);
+    flex: 1 1 0;
+    padding: 0 var(--space-4);
     border-right: var(--border-hairline);
-    flex-shrink: 0;
+  }
+
+  .kpi-col:first-child {
+    padding-left: 0;
   }
 
   .kpi-col:last-child {
