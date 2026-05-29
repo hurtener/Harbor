@@ -93,6 +93,14 @@ export interface ChatMessage {
 	 * posture does not populate).
 	 */
 	reasoningText?: string;
+	/**
+	 * Per-turn metrics attributed to a completed agent message (108a-C):
+	 * wall-clock elapsed (from the task's duration_ms) + the turn's token
+	 * total and cost (summed from this task's `llm.cost.recorded` events).
+	 * Rendered as the bubble's `<elapsed> · <tokens> tokens · $<cost>` meta
+	 * (mock Image 7). Absent until the turn completes.
+	 */
+	meta?: { elapsedMs?: number; tokens?: number; costUSD?: number };
 }
 
 export interface ReasoningStep {

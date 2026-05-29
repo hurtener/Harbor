@@ -52,6 +52,17 @@
         : 'var(--color-text-muted)'
   );
 
+  let copied = $state(false);
+  async function copyText(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      copied = true;
+      setTimeout(() => (copied = false), 1200);
+    } catch {
+      /* clipboard unavailable — no-op */
+    }
+  }
+
   function formatTime(iso: string): string {
     try {
       const d = new Date(iso);
@@ -106,6 +117,25 @@
         {#if message.role === 'agent' && message.streaming}
           <span class="sep">·</span>
           <span class="planner-phase">streaming…</span>
+        {/if}
+        {#if message.meta && (message.meta.elapsedMs || message.meta.tokens || message.meta.costUSD !== undefined)}
+          <span class="bubble-meta tabular" data-testid="bubble-meta">
+            {#if message.meta.elapsedMs}{(message.meta.elapsedMs / 1000).toFixed(1)}s{/if}
+            {#if message.meta.tokens}<span class="sep">·</span>{message.meta.tokens.toLocaleString()} tok{/if}
+            {#if message.meta.costUSD !== undefined}<span class="sep">·</span>${message.meta.costUSD.toFixed(4)}{/if}
+          </span>
+        {/if}
+        {#if message.role === 'agent' && !message.streaming}
+          <button
+            type="button"
+            class="bubble-action"
+            class:bare={message.meta === undefined}
+            data-testid="bubble-copy"
+            title={copied ? 'Copied!' : 'Copy message'}
+            onclick={() => void copyText()}
+          >
+            {copied ? '✓' : '⧉'}
+          </button>
         {/if}
       </div>
 
@@ -241,6 +271,37 @@
     font-size: var(--text-xs);
     color: var(--color-text-muted);
     font-style: italic;
+  }
+
+  .bubble-meta {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .bubble-action {
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    padding: var(--space-0) var(--space-1);
+    line-height: 1;
+  }
+
+  .bubble-action.bare {
+    margin-left: auto;
+  }
+
+  .bubble-action:hover {
+    color: var(--color-text);
+  }
+
+  .tabular {
+    font-variant-numeric: var(--font-variant-tabular);
   }
 
   .reasoning-chip {

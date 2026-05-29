@@ -125,6 +125,10 @@
   // True once at least one `llm.cost.recorded` reading has landed — gates
   // the Cost tile so it shows "—" rather than a fabricated $0.0000.
   let hasCostReading = $state(false);
+  // Per-task token/cost accumulator (108a-C) — summed from the task's
+  // `llm.cost.recorded` events, attached to the agent bubble as per-turn
+  // meta on completion. Not reactive (read once at terminal).
+  const turnCost: Record<string, { tokens: number; cost: number }> = {};
 
   /* ---- stream-liveness (composer telemetry "Session live") -------- */
   let eventsStreamLive = $state(false);
@@ -414,6 +418,8 @@
     costUSD += ev.usd;
     if (ev.model !== '') modelName = ev.model;
     hasCostReading = true;
+    const prev = turnCost[ev.taskID] ?? { tokens: 0, cost: 0 };
+    turnCost[ev.taskID] = { tokens: prev.tokens + ev.totalTokens, cost: prev.cost + ev.usd };
     const next = [...tokenSamples, ev.totalTokens];
     tokenSamples = next.length > TOKEN_SAMPLE_CAP ? next.slice(-TOKEN_SAMPLE_CAP) : next;
   }
@@ -462,13 +468,20 @@
         }>(taskID);
         const answer = parseAnswerFromDetail(detail);
         const reasoningSteps = parseReasoningSteps(detail);
-        recordTurn(detail.task?.duration_ms ?? 0);
+        const durationMs = detail.task?.duration_ms ?? 0;
+        recordTurn(durationMs);
+        const tc = turnCost[taskID];
         messages = messages.map((m) =>
           m.taskID === taskID && m.role === 'agent'
             ? {
                 ...m,
                 text: answer,
                 reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                meta: {
+                  elapsedMs: durationMs > 0 ? durationMs : undefined,
+                  tokens: tc?.tokens,
+                  costUSD: tc?.cost
+                },
                 pending: false,
                 streaming: false
               }
