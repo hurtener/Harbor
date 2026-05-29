@@ -277,6 +277,21 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 			"method %q: identity scope incomplete: %v", string(method), err)
 	}
 
+	// D-171: create-on-first-use. The session id is the per-request
+	// session the client chose; a `start` on a not-yet-existing session
+	// materialises its registry row BEFORE the task spawns so the
+	// Console's sessions.list surfaces the conversation even if the first
+	// turn later fails. A closed session id fails loud
+	// (CodeReopenAfterClose-shaped — mapped to CodeInvalidRequest):
+	// reopening a GC-reaped conversation is forbidden (RFC §6.9); the
+	// client must pick a new session id for a new conversation. A surface
+	// built without a SessionEnsurer skips this (control-only Runtime).
+	if s.sessions != nil {
+		if eerr := s.sessions.EnsureSession(ctx, id); eerr != nil {
+			return nil, mapSessionEnsureError(string(method), eerr)
+		}
+	}
+
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
 		Identity:         identity.Quadruple{Identity: id},
 		Kind:             tasks.KindForeground,

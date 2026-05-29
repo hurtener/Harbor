@@ -188,6 +188,17 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	r.idIndex[id] = ident
 	r.openSessions[id] = q
 
+	// D-171: record the new SessionID in the (tenant, user) catalog so a
+	// later process can re-discover it (the StateStore has no List). The
+	// catalog write happens while holding r.mu, but it only touches the
+	// StateStore (its own concurrency boundary) — no nested registry-lock
+	// acquisition. A catalog write failure fails the Open loud (§13 — no
+	// silent degradation): a session the catalog never learned about
+	// would silently vanish from sessions.list after a restart.
+	if cerr := r.addToCatalog(ctx, ident.TenantID, ident.UserID, id); cerr != nil {
+		return nil, cerr
+	}
+
 	// Emit session.opened.
 	r.publish(ctx, q, events.Event{
 		Type:     EventTypeSessionOpened,
@@ -199,6 +210,55 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	})
 	cp := s
 	return &cp, nil
+}
+
+// EnsureOpen is the create-on-first-use entry point (D-171). It returns
+// the live session for `ident`, creating it if no record exists. The
+// session id is `ident.SessionID` (the per-request session the client
+// chose); the (tenant, user) come from the verified connection token.
+//
+// Semantics:
+//
+//   - No record yet → Open it (create) and return the fresh session.
+//   - Open record at this exact triple → no-op, return the existing
+//     session (a second turn in the same conversation is not an error).
+//   - Closed record at this triple → ErrReopenAfterClose (RFC §6.9: a
+//     GC-reaped or operator-closed session is read-only; a NEW
+//     conversation must pick a NEW session id). The caller maps this to
+//     a clear client error; it is never a silent revive.
+//
+// EnsureOpen is identity-mandatory: an incomplete triple fails closed.
+// It is the seam the Protocol ControlSurface calls on `start` so the
+// first turn of a brand-new conversation materialises the session row
+// the Console's sessions.list reads.
+func (r *Registry) EnsureOpen(ctx context.Context, ident identity.Identity) (*Session, error) {
+	if r.closed.Load() {
+		return nil, ErrRegistryClosed
+	}
+	if err := identity.Validate(ident); err != nil {
+		return nil, err
+	}
+	// Hydrate this (tenant, user) from the catalog first so a session a
+	// prior process created (and that is still open) is recognised as
+	// already-open rather than re-created.
+	if herr := r.hydrateFromCatalog(ctx, ident.TenantID, ident.UserID); herr != nil {
+		return nil, herr
+	}
+
+	s, err := r.Open(ctx, ident.SessionID, ident)
+	switch {
+	case err == nil:
+		return s, nil
+	case errors.Is(err, ErrSessionAlreadyOpen):
+		// The exact triple is already open — return the live record. This
+		// is the steady-state path for the second-and-later turn of a
+		// conversation. Open already re-hydrated idIndex/openSessions.
+		return r.loadSession(ctx, ident)
+	default:
+		// ErrReopenAfterClose, ErrSessionIDReuse, store errors — surface
+		// loud. A closed session is NOT silently revived (RFC §6.9).
+		return nil, err
+	}
 }
 
 // Get loads the session with `id` for the identity in ctx. Returns
@@ -363,6 +423,29 @@ func (r *Registry) Inspect(ctx context.Context, id string) (*SessionSnapshot, er
 func (r *Registry) ListSnapshots(ctx context.Context, f SessionListFilter) ([]SessionSnapshot, error) {
 	if r.closed.Load() {
 		return nil, ErrRegistryClosed
+	}
+
+	// D-171: hydrate the in-memory idIndex from the persisted
+	// per-(tenant, user) catalog so sessions created by a PRIOR process
+	// (the StateStore survived a restart) are discoverable. The
+	// StateStore has no List, so the catalog is how a fresh process
+	// re-learns which SessionIDs exist. Hydration is keyed on each
+	// (tenant, user) the filter names; an unscoped filter (admin fleet
+	// view) cannot enumerate tenants without a store scan and is left to
+	// whatever the live idIndex already holds (documented gap — a
+	// store-level List is post-V1).
+	for _, tenant := range f.TenantIDs {
+		if tenant == "" {
+			continue
+		}
+		for _, user := range f.UserIDs {
+			if user == "" {
+				continue
+			}
+			if herr := r.hydrateFromCatalog(ctx, tenant, user); herr != nil {
+				return nil, fmt.Errorf("sessions: ListSnapshots hydrate: %w", herr)
+			}
+		}
 	}
 
 	// Snapshot the in-memory catalogs under the lock.

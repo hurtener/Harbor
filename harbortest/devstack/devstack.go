@@ -114,6 +114,8 @@ import (
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/sessions"
+	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver for tests that open one
 	"github.com/hurtener/Harbor/internal/state"
@@ -325,6 +327,15 @@ type DevStack struct {
 	// Steering / Surface are nil when SkipSteering is set.
 	Steering *steering.Registry
 	Surface  *protocol.ControlSurface
+
+	// Sessions is the StateStore-backed SessionRegistry (D-171). Always
+	// non-nil after a successful Assemble — it mirrors the production
+	// `cmd/harbor` boot path. The ControlSurface is wired with its
+	// create-on-first-use ensurer, and (when transports are mounted) the
+	// `sessions.*` Protocol routes project over it. Integration tests use
+	// it to assert per-request session create-on-first-use + restart
+	// re-discovery via the persistent catalog.
+	Sessions *sessions.Registry
 
 	// RunLoop / RunLoopDriver are nil when SkipRunLoop is set OR when
 	// SkipSteering / SkipCatalog forces the construction to be
@@ -734,6 +745,19 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.MCPRegistry = mcpRegistry
 	}
 
+	// D-171: the SessionRegistry — StateStore-backed, mirroring
+	// production `cmd/harbor` boot. Built unconditionally so the
+	// create-on-first-use ensurer can be wired into the ControlSurface
+	// and the `sessions.*` Protocol routes project over it. NOT
+	// force-Opened with a fixed session at boot (the production bug
+	// D-171 closes): sessions are per-request + create-on-first-use.
+	sessionRegistry, sessErr := sessions.New(stack.State, cfg.Sessions, bus)
+	if sessErr != nil {
+		return stack, fmt.Errorf("sessions.New: %w", sessErr)
+	}
+	stack.Sessions = sessionRegistry
+	stack.closeFns = append(stack.closeFns, sessionRegistry.CloseRegistry)
+
 	// Steering + ControlSurface. Skip-aware. The Mux phase below
 	// depends on the surface, so SkipSteering implies SkipTransports
 	// even if the caller did not set both flags.
@@ -754,6 +778,11 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		if opts.ScopeChecker != nil {
 			surfaceOpts = append(surfaceOpts, protocol.WithScopeChecker(opts.ScopeChecker))
 		}
+		// D-171: create-on-first-use ensurer — mirrors production
+		// `cmd/harbor/cmd_dev.go::bootDevStack`. A `start` on a not-yet-
+		// existing session materialises its registry row.
+		surfaceOpts = append(surfaceOpts,
+			protocol.WithSessionEnsurer(newSessionEnsurer(sessionRegistry)))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, steerReg, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -1093,6 +1122,25 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("tasks/protocol service: %w", tsErr)
 			}
 			muxOpts = append(muxOpts, transports.WithTasksService(tasksService))
+		}
+		// D-171: mount the two `sessions.*` Console routes over the
+		// SessionRegistry so an integration test exercises the real
+		// sessions.list / sessions.inspect path (create-on-first-use,
+		// listing, restart re-discovery). Mirrors production
+		// `cmd/harbor/cmd_dev.go::bootDevStack`.
+		if stack.Sessions != nil {
+			sessionsProjector, spErr := sessionsprotocol.NewListerProjector(stack.Sessions)
+			if spErr != nil {
+				return stack, fmt.Errorf("sessions/protocol projector: %w", spErr)
+			}
+			sessionsService, ssErr := sessionsprotocol.NewService(sessionsProjector,
+				sessionsprotocol.WithBus(bus),
+				sessionsprotocol.WithRedactor(stack.Audit),
+			)
+			if ssErr != nil {
+				return stack, fmt.Errorf("sessions/protocol service: %w", ssErr)
+			}
+			muxOpts = append(muxOpts, transports.WithSessionsService(sessionsService))
 		}
 		// Phase 73n (D-130): mount the Console Playground-page route
 		// (`runs.set_overrides`). The devstack mirrors the production

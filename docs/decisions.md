@@ -4151,3 +4151,29 @@ These need go-sdk RC support; the plan can be authored against the RC SEPs now s
 **Known limitations, named here.** (1) Eager push wake-on-resolution is deferred (call 2) — a steering-runloop follow-up. (2) A retain-turn spawn / `AwaitTask` holds a planner step open until the child resolves (bounded by ctx); fine for short V1.1.x dev sub-goals, surfaces as a deadline error observation if a child never terminates — never a hang. (3) Background tasks use the in-mem driver and do not survive a `harbor dev` restart (Phase 87 owns durability). (4) The spawn-depth cap bounds depth, not breadth.
 
 **Cross-references.** Builds on D-056 (the spawn/await emission + group surface), D-032 (wake modes), D-152 (the dev `ToolExecutor` seam), D-097/D-098 (the per-task driver + FSM bridge), D-167/D-169 (the native + parallel cutover this rides behind). Phase plan: `docs/plans/phase-107e-spawn-await-dev-executor-dispatch.md`. Informed by brief 02 (planner + steering) and brief 05 (tasks).
+
+---
+
+## D-171 — Per-request session model: connection token authenticates (tenant, user); session is chosen per-request via X-Harbor-Session; create-on-first-use; boot is crash-proof
+
+**Date:** 2026-05-29
+
+**Context.** `harbor dev` minted one dev JWT whose `session` claim was hardcoded to `"dev"`; `control.start` folded identity from that token, so EVERY conversation wrote to session `"dev"`. Worse, boot called `sessionRegistry.Open("dev", ...)`: once the persisted `"dev"` record was Closed (idle-GC'd or operator-closed), the next boot hit `ErrReopenAfterClose` and **crashed** — restarting `harbor dev` against an existing state dir required deleting the state DB. There was effectively one session; you could not create new conversations or reload past ones.
+
+**Decision.** The connection token is a **per-backend credential, like an API key**: it authenticates `(tenant, user, scopes)` and does NOT pin a session. The **session is dynamic — chosen per-request** via the `X-Harbor-Session` header, scoped under the token's verified `(tenant, user)`. The token's `session` claim becomes a back-compat **default** used only when the header is absent. The multi-isolation triple `(tenant, user, session)` stays mandatory and enforced (CLAUDE.md §6); only the SOURCE of `session` changed from JWT-claim to per-request-under-token-scope.
+
+**What changed (runtime-only + one contract doc).**
+
+- `internal/protocol/auth/middleware.go` — after JWT verification, the middleware re-folds the ctx identity: `X-Harbor-Session` (when present) REPLACES the claim's session; tenant + user stay token-verified (a header can never widen the principal). A verified token with empty tenant/user is a 500 (validator bug); a request that resolves to no session is a 401 `identity_required`.
+- `internal/sessions` — new `EnsureOpen(ctx, ident)` create-on-first-use entry point + a persistent per-`(tenant, user)` **session catalog** (`session.catalog` Kind) so a fresh process re-discovers a prior process's sessions on the read path (the StateStore has no List; the typed wrapper owns enumeration). `ListSnapshots` / `Inspect` hydrate from the catalog. `EnsureOpen` on a CLOSED session id fails loud (`ErrReopenAfterClose`) — no silent revive (RFC §6.9).
+- `internal/protocol` — `SessionEnsurer` seam + `WithSessionEnsurer` option; `dispatchStart` calls it so a `start` on a not-yet-existing session materialises its row before spawning the task.
+- `cmd/harbor/cmd_dev.go` — **removed the boot-time `Open("dev")`** (the crash). The registry is constructed alongside the ControlSurface and wired with the ensurer. `harbor dev` now boots clean against an existing state dir regardless of session state.
+- `harbortest/devstack` — mirrors the production wiring (D-094): registry + ensurer + `sessions.*` routes.
+
+**Tests.** Restart-resilience (boot twice over the same SQLite dir, second boot healthy + sessions re-discovered); multi-session isolation under one token (N concurrent sessions, no cross-talk, `-race`); create-on-first-use; closed-session rejection; per-request session override in the auth middleware (header overrides claim; header cannot widen tenant/user). Integration: `test/integration/session_model_d171_test.go` + the updated `TestE2E_Phase72_BodyVsTokenIdentityMismatch` (now asserts the per-request-session contract).
+
+**RFC delta flagged for coordinator audit.** RFC §8 / CLAUDE.md §6/§8 describe identity as flowing "via JWT." This decision sources `tenant`+`user`+`scopes` from the JWT (unchanged) but sources `session` per-request (header), validated under the token's `(tenant, user)`. The isolation triple and fail-closed posture are unchanged; only the session SOURCE moves. Proposed wording: "The connection credential carries `(tenant, user, scopes)`; the session is selected per-request within the credential's `(tenant, user)` scope and is never client-widenable." Shipped in the dev posture now; flagged here for an RFC-text reconciliation PR.
+
+**Known limitation.** `sessions.list` / `sessions.inspect` survive restart (persistent catalog + StateStore-backed records), but the task registry is in-memory and not rehydrated on boot, so `tasks.list` for a pre-restart session returns empty after a restart (the session row reloads; its task rows do not). Full task durability is a separate post-D-171 workstream. Documented in `docs/notes/session-model-contract.md`.
+
+**Cross-references.** Builds on D-082 (Phase 61 auth middleware + ctx-first identity), D-122 (`sessions.*` Protocol surface), D-108 (`SessionLister`), RFC §6.9 (session lifecycle / reopen-after-close), RFC §8 (Protocol auth). Contract doc: `docs/notes/session-model-contract.md`.

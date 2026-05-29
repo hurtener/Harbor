@@ -794,7 +794,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// §17.6): a Runtime that hosts an engine wires it via
 	// protocol.WithTopologyAccessor; the Phase 74 integration test
 	// does exactly that through harbortest/devstack.AssembleOpts.
-	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
+	// D-171: the SessionRegistry is constructed here (ahead of the
+	// ControlSurface) so the surface can be wired with the
+	// create-on-first-use ensurer. Sessions are per-request and
+	// create-on-first-use: there is NO boot-time Open of a fixed "dev"
+	// session (that path crashed boot on a persisted-closed session —
+	// reopen-after-close is forbidden). The registry's persistent catalog
+	// re-discovers sessions across restarts, so sessions.list / inspect /
+	// tasks-by-session keep working against an existing state dir.
+	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions registry: %w", err)
+	}
+	closers = append(closers, sessionRegistry.CloseRegistry)
+
+	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
+		// D-171 — create-on-first-use: a `start` on a not-yet-existing
+		// session materialises its registry row so the Console's
+		// sessions.list surfaces the conversation from the first turn.
+		protocol.WithSessionEnsurer(newSessionEnsurerAdapter(sessionRegistry)),
+	)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("protocol: %w", err)
@@ -1059,34 +1079,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// a cross-tenant `sessions.list` query emits its
 	// `audit.admin_scope_used` event (CLAUDE.md §13 — the admin path is
 	// never a silent no-op).
-	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions registry: %w", err)
-	}
-	closers = append(closers, sessionRegistry.CloseRegistry)
-
-	// W8 (Phase 83x): the dev token carries `(DevTenant, DevUser,
-	// DevSession)`, but the SessionRegistry has no row until something
-	// explicitly Opens that triple. The Console's `sessions.list` reads
-	// from the registry, so without a row the Sessions page rendered
-	// "No sessions match these filters" even while a task was actively
-	// running under that identity. Open the dev session at boot so the
-	// catalog has the live row a fresh `harbor dev` user can see. A
-	// pre-existing row (e.g. an earlier boot that persisted into a
-	// SQLite state store) is fine — `ErrSessionAlreadyOpen` is
-	// expected and swallowed; any other error fails the boot loud.
-	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
-	devSessCtx, devSessErr := identity.With(ctx, devID)
-	if devSessErr != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions: dev identity scope: %w", devSessErr)
-	}
-	if _, openErr := sessionRegistry.Open(devSessCtx, DevSession, devID); openErr != nil &&
-		!errors.Is(openErr, sessions.ErrSessionAlreadyOpen) {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions: open dev session: %w", openErr)
-	}
+	//
+	// D-171: the registry is constructed earlier (alongside the
+	// ControlSurface) and is NO LONGER force-Opened with a fixed "dev"
+	// session at boot. Boot-time Open crashed against a persisted-closed
+	// session (reopen-after-close is forbidden). Sessions are now
+	// per-request + create-on-first-use, and the registry's persistent
+	// catalog re-discovers a prior process's sessions on the read path —
+	// so sessions.list is non-empty across restarts without a boot Open.
 	sessionsProjector, err := sessionsprotocol.NewListerProjector(sessionRegistry)
 	if err != nil {
 		closeAll(ctx)
