@@ -1,11 +1,12 @@
 <script lang="ts">
   // Harbor Console — Playground page header (Phase 108 / D-167).
   //
-  // The page-specific header strip rendered inside the shared
-  // `<PageHeader>`'s `actions` slot. Restructured to match the mock:
-  // breadcrumb-prefixed session id on the left; agent display name +
-  // status pill + planner pill in the middle-left; cost chip + token
-  // chip on the right; Cancel run + Restart buttons rightmost.
+  // The agent sub-bar rendered inside the shared `<PageHeader>`'s
+  // `actions` slot. Matches the binding mockup: a copyable session id +
+  // the agent display name + a run-status pill + model / planner pills on
+  // the left; impersonation + Cancel run + Restart on the right. The
+  // token / cost numerics live in the KPI strip below, not here (one
+  // component per concern — CONVENTIONS.md §3).
   //
   // Design tokens only; no raw literals.
 
@@ -21,34 +22,43 @@
 
   let {
     activeAgent,
+    sessionID,
     model,
-    tokenCount,
-    costUSD,
+    planner = '',
     running,
+    paused = false,
+    phase,
     canImpersonate = false,
     impersonationTargets = [],
     activeImpersonation = null,
     onagentchange: _onagentchange,
     oncancel,
+    onpause,
     onrestart,
     onimpersonate
   }: {
     activeAgent: string;
+    /** The session id (rendered mono, copy-on-click). */
+    sessionID: string;
+    /** The active model string (e.g. `anthropic/claude-haiku-4.5`). */
     model: string;
-    tokenCount: number;
-    costUSD: number;
-    /** True while a run is active — gates Cancel. */
+    /** The planner name, or '' when the runtime does not expose it. */
+    planner?: string;
+    /** True while a run is active — gates Cancel / Pause. */
     running: boolean;
+    /** True when the active run is paused — flips the Pause button to Resume. */
+    paused?: boolean;
+    /** The live run phase, driving the status pill. */
+    phase: 'streaming' | 'active' | 'idle';
     /** True when the operator has the `auth.ScopeAdmin` claim (D-079). */
     canImpersonate?: boolean;
-    /** The tenants/users/sessions an admin may run-as. */
     impersonationTargets?: ImpersonationTarget[];
-    /** The active impersonation target, or null for "self". */
     activeImpersonation?: ImpersonationTarget | null;
     onagentchange: (agent: string) => void;
     oncancel: () => void;
+    /** Pause/resume toggle for the active run. */
+    onpause?: () => void;
     onrestart: () => void;
-    /** Fires with the picked target, or null to clear impersonation. */
     onimpersonate?: (target: ImpersonationTarget | null) => void;
   } = $props();
 
@@ -64,28 +74,43 @@
     onimpersonate?.(target ?? null);
   }
 
-  const statusKind = $derived<'success' | 'warning' | 'danger' | 'neutral'>(
-    running ? 'success' : 'neutral'
-  );
-  const statusLabel = $derived(running ? 'Active' : 'Ready');
+  const statusMeta = $derived.by<{ kind: 'success' | 'info' | 'neutral'; label: string }>(() => {
+    if (phase === 'streaming') return { kind: 'info', label: 'Streaming' };
+    if (phase === 'active') return { kind: 'success', label: 'Active' };
+    return { kind: 'neutral', label: 'Ready' };
+  });
+
+  let copied = $state(false);
+  async function copySession(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(sessionID);
+      copied = true;
+      setTimeout(() => (copied = false), 1200);
+    } catch {
+      /* clipboard unavailable — no-op */
+    }
+  }
 </script>
 
 <div class="playground-header" data-testid="playground-header">
   <div class="header-left">
-    <span class="session-id mono" title="Session ID">
-      {activeAgent}
-    </span>
-    <StatusChip kind={statusKind} label={statusLabel} />
-    <StatusChip kind="accent" label={model} />
-  </div>
-
-  <div class="header-center">
-    <span class="chip token-chip tabular" data-testid="playground-token-chip">
-      {tokenCount.toLocaleString()} tokens
-    </span>
-    <span class="chip cost-chip tabular" data-testid="playground-cost-chip">
-      ${costUSD.toFixed(4)}
-    </span>
+    <button
+      type="button"
+      class="session-id mono"
+      title={copied ? 'Copied!' : 'Copy session id'}
+      data-testid="playground-session-id"
+      onclick={() => void copySession()}
+    >
+      {sessionID || '—'}
+    </button>
+    <span class="agent-name" data-testid="playground-agent-name">{activeAgent}</span>
+    <StatusChip kind={statusMeta.kind} label={statusMeta.label} />
+    {#if model && model !== '—'}
+      <span class="meta-pill" title="Model">{model}</span>
+    {/if}
+    {#if planner}
+      <span class="meta-pill" title="Planner">{planner}</span>
+    {/if}
   </div>
 
   <div class="header-right">
@@ -110,6 +135,16 @@
       </label>
     {/if}
 
+    <button
+      type="button"
+      class="header-button"
+      data-testid="playground-pause-run"
+      onclick={() => onpause?.()}
+      disabled={!running}
+      title={running ? (paused ? 'Resume the run' : 'Pause the run') : 'No active run'}
+    >
+      {paused ? 'Resume' : 'Pause'}
+    </button>
     <button
       type="button"
       class="header-button danger"
@@ -142,7 +177,6 @@
   }
 
   .header-left,
-  .header-center,
   .header-right {
     display: flex;
     align-items: center;
@@ -150,6 +184,25 @@
   }
 
   .session-id {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+    max-width: var(--size-session-max-width);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-id:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+
+  .agent-name {
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--color-text);
@@ -159,11 +212,7 @@
     font-family: var(--font-mono);
   }
 
-  .tabular {
-    font-variant-numeric: var(--font-variant-tabular);
-  }
-
-  .chip {
+  .meta-pill {
     display: inline-flex;
     align-items: center;
     padding: var(--space-1) var(--space-2);
@@ -171,18 +220,14 @@
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     font-size: var(--text-xs);
-    color: var(--color-text-muted);
-  }
-
-  .token-chip,
-  .cost-chip {
     font-family: var(--font-mono);
+    color: var(--color-text-muted);
   }
 
   .header-field {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .field-label {
@@ -213,6 +258,10 @@
   .header-button.danger {
     color: var(--color-danger);
     border-color: var(--color-danger);
+  }
+
+  .header-button.danger:not(:disabled):hover {
+    background: var(--color-danger-soft);
   }
 
   .header-button:disabled {

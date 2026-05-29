@@ -99,15 +99,25 @@
         <time class="bubble-time" datetime={message.at}>
           {formatTime(message.at)}
         </time>
-        {#if message.role === 'agent'}
+        {#if message.role === 'agent' && (message.reasoningText || message.reasoningSteps)}
           <span class="sep">·</span>
-          <span class="planner-phase">Idle</span>
+          <span class="reasoning-chip">Reasoning</span>
+        {/if}
+        {#if message.role === 'agent' && message.streaming}
+          <span class="sep">·</span>
+          <span class="planner-phase">streaming…</span>
         {/if}
       </div>
 
       <div class="bubble-body">
         {#if message.reasoningSteps}
           <ReasoningAccordion steps={message.reasoningSteps} />
+        {:else if message.reasoningText}
+          <!-- 108a — live-streamed reasoning (kind:"reasoning" chunks). -->
+          <details class="reasoning-live" data-testid="reasoning-live" open={message.streaming}>
+            <summary>Reasoning{message.streaming ? ' · thinking…' : ''}</summary>
+            <p class="reasoning-text">{message.reasoningText}</p>
+          </details>
         {/if}
 
         {#if message.role === 'agent'}
@@ -231,6 +241,43 @@
     font-size: var(--text-xs);
     color: var(--color-text-muted);
     font-style: italic;
+  }
+
+  .reasoning-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--chip-accent-fg);
+    background: var(--chip-accent-bg);
+    border: var(--border-hairline);
+    border-color: var(--chip-accent-border);
+  }
+
+  .reasoning-live {
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    padding: var(--space-2);
+  }
+
+  .reasoning-live summary {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+  }
+
+  .reasoning-text {
+    margin: var(--space-2) var(--space-0) var(--space-0);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-sans);
   }
 
   .bubble-body {

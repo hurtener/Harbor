@@ -55,15 +55,24 @@ function parseInline(text: string): InlineNode[] {
 
 	let pos = 0;
 	while (pos < text.length) {
+		const rest = text.slice(pos);
 		let best: Match | null = null;
 		for (const { re, type } of patterns) {
 			re.lastIndex = 0;
-			const m = re.exec(text.slice(pos));
-			if (m && m.index === 0) {
+			const m = re.exec(rest);
+			// Take the EARLIEST match of any pattern ANYWHERE in the
+			// remaining text — not just one anchored at the current
+			// position. The prior `m.index === 0` guard meant that once a
+			// leading span was emitted, the rest (e.g. `*italic*` / `\`code\``
+			// after a leading `**bold**`) was dumped as one plain-text node
+			// and never re-scanned. Strict `<` keeps pattern-array order as
+			// the tie-break, so bold wins over italic at the same index.
+			if (m) {
 				const raw = m[1] ?? m[2] ?? '';
-				const matchEnd = pos + m[0].length;
-				if (!best || pos + m.index < best.index) {
-					best = { index: pos, end: matchEnd, type, text: unescapeMarkdown(raw) };
+				const start = pos + m.index;
+				const matchEnd = start + m[0].length;
+				if (!best || start < best.index) {
+					best = { index: start, end: matchEnd, type, text: unescapeMarkdown(raw) };
 				}
 			}
 		}

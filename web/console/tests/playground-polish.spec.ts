@@ -40,6 +40,11 @@ test.describe("Console Playground polish (Phase 108)", () => {
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
+    // Wait for the chat stream to actually render (the page reaches its
+    // ready state only after the async onMount → load() resolves). The
+    // original test evaluated immediately and raced that resolve.
+    await page.locator('[data-testid="chat-stream"]').waitFor({ state: "attached" });
+
     // Inject a mock message with markdown into the page state.
     // We simulate an agent message arriving with markdown content.
     await page.evaluate(() => {
@@ -63,7 +68,7 @@ test.describe("Console Playground polish (Phase 108)", () => {
     expect(bubbleText).not.toContain('**By topic:**');
   });
 
-  test("(b) KPI strip renders four tiles", async ({
+  test("(b) KPI strip renders the integrated metadata columns", async ({
     page,
     runtime,
     helpers,
@@ -78,28 +83,25 @@ test.describe("Console Playground polish (Phase 108)", () => {
       "KPI strip is present",
     ).toBeVisible();
 
-    await expect(
-      page.locator("[data-testid='kpi-tokens']"),
-      "Tokens tile renders",
-    ).toBeVisible();
-
-    await expect(
-      page.locator("[data-testid='kpi-cost']"),
-      "Cost tile renders",
-    ).toBeVisible();
-
-    await expect(
-      page.locator("[data-testid='kpi-latency']"),
-      "Latency tile renders",
-    ).toBeVisible();
-
-    await expect(
-      page.locator("[data-testid='kpi-status']"),
-      "Status tile renders",
-    ).toBeVisible();
+    // 108a integrated metadata row (Status moved to the header pill).
+    for (const col of [
+      "kpi-session",
+      "kpi-started",
+      "kpi-duration",
+      "kpi-tokens",
+      "kpi-cost",
+      "kpi-latency",
+      "kpi-identity",
+      "kpi-scope",
+    ]) {
+      await expect(
+        page.locator(`[data-testid='${col}']`),
+        `${col} column renders`,
+      ).toBeVisible();
+    }
   });
 
-  test("(c) bottom status bar renders four indicators", async ({
+  test("(c) global app status bar + composer telemetry render (108a)", async ({
     page,
     runtime,
     helpers,
@@ -109,20 +111,23 @@ test.describe("Console Playground polish (Phase 108)", () => {
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
-    await expect(
-      page.locator("[data-testid='playground-status-bar']"),
-      "Status bar is present",
-    ).toBeVisible();
-
-    // Assert the four indicators are present.
-    const bar = page.locator("[data-testid='playground-status-bar']");
-    await expect(bar).toContainText('Idle');
+    // The status bar is now ONE global app-shell bar (Connection ·
+    // Protocol · Events Stream · Console).
+    const bar = page.locator("[data-testid='app-status-bar']");
+    await expect(bar, "global app status bar is present").toBeVisible();
     await expect(bar).toContainText('Protocol');
     await expect(bar).toContainText('Events Stream');
     await expect(bar).toContainText('Console');
+
+    // The page-level run phase ("Idle"/"Streaming") moved to the
+    // composer telemetry strip.
+    await expect(
+      page.locator("[data-testid='composer-telemetry']"),
+      "composer telemetry strip renders",
+    ).toBeVisible();
   });
 
-  test("(d) status bar protocol version matches breadcrumb", async ({
+  test("(d) status bar shows the live runtime Protocol version", async ({
     page,
     runtime,
     helpers,
@@ -132,9 +137,11 @@ test.describe("Console Playground polish (Phase 108)", () => {
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
-    // The breadcrumb reads "Console / Playground".
-    // The status bar reads "Protocol v1".
-    const bar = page.locator("[data-testid='playground-status-bar']");
-    await expect(bar).toContainText('Protocol v1');
+    // The global bar reads the REAL Protocol version resolved from
+    // runtime.info (no longer a hardcoded 'v1'). Assert a concrete semver
+    // — proving the value is wired to the runtime, not a placeholder. The
+    // web-first assertion auto-waits for the async runtime.info resolve.
+    const bar = page.locator("[data-testid='app-status-bar']");
+    await expect(bar).toContainText(/Protocol \d+\.\d+\.\d+/);
   });
 });

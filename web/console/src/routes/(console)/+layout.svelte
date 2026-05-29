@@ -61,24 +61,17 @@
 </script>
 
 <script lang="ts">
-  import { onMount, setContext } from 'svelte';
+  import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { resolveConnection } from '$lib/connection.js';
-  import ConnectionFooter from '$lib/components/ui/ConnectionFooter.svelte';
+  import AppStatusBar from '$lib/components/ui/AppStatusBar.svelte';
 
   let { children }: { children?: Snippet } = $props();
 
-  // Phase 108 (D-167) — status-bar snippet registry.
-  // Pages call setStatusBar(snippet) to render content in the shell's
-  // status-bar region; calling with null clears it.
-  let statusBarSnippet = $state<Snippet | null>(null);
-  setContext('playgroundStatusBar', {
-    set: (snippet: Snippet | null) => {
-      statusBarSnippet = snippet;
-    }
-  });
+  // 108a — the per-page status-bar slot (108) is superseded by the single
+  // global AppStatusBar rendered below on every page.
 
   // The `console-hydrated` marker the Playwright harness waits on
   let hydrated = $state(false);
@@ -173,15 +166,11 @@
       </div>
     </header>
 
-    {#if statusBarSnippet}
-      <div class="status-bar-region" data-testid="status-bar-region">
-        {@render statusBarSnippet()}
-      </div>
-    {/if}
-
     <main class="content">{@render children?.()}</main>
 
-    <ConnectionFooter />
+    <!-- 108a — one global app status bar on every page (connection ·
+         protocol · events · console version). -->
+    <AppStatusBar />
   </div>
 </div>
 
@@ -352,10 +341,6 @@
 
   .dot.disconnected {
     background: var(--color-danger);
-  }
-
-  .status-bar-region {
-    flex-shrink: 0;
   }
 
   .content {

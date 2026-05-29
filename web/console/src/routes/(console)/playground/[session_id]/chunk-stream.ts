@@ -35,6 +35,24 @@ export function applyChunk<T extends { taskID?: string; role: string; text: stri
 }
 
 /**
+ * applyReasoningChunk appends a `kind: "reasoning"` delta onto the
+ * matching agent bubble's live `reasoningText` buffer (108a). The bubble
+ * renders this as a "Reasoning" disclosure. Kept separate from the
+ * answer body so thinking never pollutes the final answer text.
+ */
+export function applyReasoningChunk<T extends { taskID?: string; role: string; reasoningText?: string; streaming?: boolean }>(
+	messages: T[],
+	taskID: string,
+	delta: string
+): T[] {
+	return messages.map((m) =>
+		m.taskID === taskID && m.role === 'agent'
+			? { ...m, reasoningText: (m.reasoningText ?? '') + delta, streaming: true }
+			: m
+	);
+}
+
+/**
  * finalizeStream clears the `streaming` flag on the matching agent
  * bubble. Safe to call even after `applyChunk` — a bubble that was
  * never streaming is a no-op.

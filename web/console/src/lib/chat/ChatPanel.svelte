@@ -41,10 +41,28 @@
      */
     onsend: (text: string, artifactIDs: string[], mode?: 'queue' | 'steer') => void;
   } = $props();
+
+  // Phase 108 — keep the newest message (and live streaming deltas) in
+  // view. The effect re-runs whenever the message count grows OR the
+  // last message's text length changes (streaming append), pinning the
+  // scroll to the bottom unless the operator has scrolled up to read.
+  let streamEl = $state<HTMLDivElement | null>(null);
+  const tailLength = $derived(messages.length === 0 ? 0 : messages[messages.length - 1].text.length);
+  $effect(() => {
+    // Touch the reactive deps so the effect tracks them.
+    void messages.length;
+    void tailLength;
+    const el = streamEl;
+    if (el === null) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  });
 </script>
 
 <div class="chat-panel" data-testid="chat-panel">
-  <div class="chat-stream" data-testid="chat-stream">
+  <div class="chat-stream" data-testid="chat-stream" bind:this={streamEl}>
     {#if messages.length === 0}
       <p class="stream-empty" data-testid="chat-stream-empty">
         No messages yet — send one to start the conversation.
@@ -63,8 +81,13 @@
   .chat-panel {
     display: flex;
     flex-direction: column;
+    /* Phase 108 — fill the Playground main column and own the scroll
+       internally: the stream scrolls, the composer stays docked. The
+       `flex: 1; min-height: 0` pair is what lets the inner
+       `overflow-y: auto` engage instead of the page growing. */
+    flex: 1 1 0;
+    min-height: 0;
     height: 100%;
-    min-height: var(--layout-detail-min-height);
     border: var(--border-hairline);
     border-radius: var(--radius-md);
     background: var(--color-bg);
