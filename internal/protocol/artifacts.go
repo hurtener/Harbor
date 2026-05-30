@@ -540,15 +540,58 @@ func projectRow(ref artifacts.ArtifactRef, driverName string) types.ArtifactRow 
 		Driver: driverName,
 	}
 	if ref.Source != nil {
-		if src, ok := ref.Source["source"].(string); ok {
-			row.Source = types.ArtifactSource(src)
-		}
+		row.Source = resolveArtifactSource(ref.Source)
 		row.Tags = extractTags(ref.Source["tags"])
 		if created := extractCreatedAt(ref.Source["created_at"]); !created.IsZero() {
 			row.CreatedAt = created
 		}
 	}
 	return row
+}
+
+// resolveArtifactSource projects the storage ref's opaque Source map onto
+// a canonical, closed-enum types.ArtifactSource (Phase 107f — D-176).
+//
+// Resolution order:
+//
+//  1. The canonical `source` key, when present AND a recognised enum
+//     value (`tool` / `planner` / `user_upload` / `system`). The flow
+//     catalog stamps `source: "flow"`, which is NOT an enum member; it
+//     maps onto `system` (a flow run is runtime-produced).
+//  2. Otherwise the presence of a `tool` key (the dev tool-executor's
+//     originating-tool name) implies a tool-produced artifact → `tool`.
+//  3. Otherwise a `flow` key implies a flow → `system`.
+//  4. Otherwise a `producer` key with the flow-describe value → `system`.
+//
+// The else-chain is what keeps EXISTING artifacts (put before Phase 107f,
+// so carrying no `source` key) projecting a correct, non-blank source —
+// no back-fill migration is needed (D-176). When nothing matches, the
+// zero value (an empty ArtifactSource) is returned, matching the prior
+// behaviour for an unrecognised producer.
+func resolveArtifactSource(src map[string]any) types.ArtifactSource {
+	if s, ok := src["source"].(string); ok && s != "" {
+		cand := types.ArtifactSource(s)
+		if types.IsValidArtifactSource(cand) {
+			return cand
+		}
+		// "flow" is the one canonical discriminator that is not an enum
+		// member; a flow-run artifact is runtime-produced → system.
+		if s == "flow" {
+			return types.ArtifactSourceSystem
+		}
+	}
+	// Else-chain over the legacy / name keys so pre-107f artifacts still
+	// project a real source.
+	if _, ok := src["tool"].(string); ok {
+		return types.ArtifactSourceTool
+	}
+	if _, ok := src["flow"].(string); ok {
+		return types.ArtifactSourceSystem
+	}
+	if _, ok := src["producer"].(string); ok {
+		return types.ArtifactSourceSystem
+	}
+	return ""
 }
 
 // extractTags coerces the storage ref's opaque `tags` value into a

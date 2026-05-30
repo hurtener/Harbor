@@ -209,6 +209,14 @@ func (c *RegistryCatalog) maybeRouteHeavyOutput(ctx context.Context, rec flow.Ru
 		MimeType:  "text/plain",
 		Namespace: flowOutputArtifactNamespace,
 		Source: map[string]any{
+			// Phase 107f (D-176): stamp the canonical `source`
+			// discriminator so artifacts.list and the session-artifact
+			// manifest project a real provenance instead of a blank
+			// source. The wire layer (internal/protocol/artifacts.go)
+			// maps "flow" onto the closed ArtifactSource enum's `system`
+			// value (a flow run is runtime-produced); the manifest
+			// provenance string surfaces the originating flow name.
+			"source": "flow",
 			// methods.MethodFlowsRunsDescribe is the single source for
 			// the `flows.runs.describe` wire string (CLAUDE.md §8) — used
 			// here so the Phase 58 single-source checker does not flag

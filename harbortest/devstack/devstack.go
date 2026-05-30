@@ -1579,19 +1579,27 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	// resolve operator-uploaded input artifacts for the first turn.
 	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
 
+	// Phase 107f (D-176 mirror of cmd/harbor/cmd_dev_runloop.go §17.6
+	// parity): build the read-only session-artifact manifest the planner
+	// renders into `<session_artifacts>`. Session-scoped List (TaskID
+	// empty wildcard); a List error → no manifest (logged), never a
+	// fabricated one.
+	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple:      q,
-			Query:          task.Query,
-			Goal:           task.Query,
-			MemoryBlocks:   memBlocks,
-			SkillsContext:  skillsCtx,
-			RepairCounters: counters,
-			PlanningHints:  d.planningHints,
-			Catalog:        catalogView,
-			Trajectory:     traj,
-			InputArtifacts: inputArtifacts,
+			Quadruple:        q,
+			Query:            task.Query,
+			Goal:             task.Query,
+			MemoryBlocks:     memBlocks,
+			SkillsContext:    skillsCtx,
+			RepairCounters:   counters,
+			PlanningHints:    d.planningHints,
+			Catalog:          catalogView,
+			Trajectory:       traj,
+			InputArtifacts:   inputArtifacts,
+			SessionArtifacts: sessionArtifacts,
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,
@@ -1699,6 +1707,38 @@ func (d *DevStackRunLoopDriver) resolveInputArtifacts(
 		out = append(out, view)
 	}
 	return out
+}
+
+// resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s
+// session-artifact manifest build (Phase 107f — D-176, §17.6 parity). It
+// lists `ArtifactStore.List` scoped to the run's `(tenant, user,
+// session)` triple (TaskID empty = session-wide wildcard) and hands the
+// refs to the shared `planner.BuildArtifactManifest`, so the harness and
+// the production run loop produce byte-identical manifests.
+//
+// Fail-soft: a nil store or a List error yields NO manifest (logged) —
+// the turn proceeds, never a fabricated one (CLAUDE.md §5).
+func (d *DevStackRunLoopDriver) resolveSessionArtifacts(
+	ctx context.Context, sessionQ identity.Quadruple,
+) []planner.ArtifactManifestEntry {
+	if d.artifactStore == nil {
+		return nil
+	}
+	scope := artifacts.ArtifactScope{
+		TenantID:  sessionQ.TenantID,
+		UserID:    sessionQ.UserID,
+		SessionID: sessionQ.SessionID,
+	}
+	refs, err := d.artifactStore.List(ctx, scope)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("devstack RunLoop driver: session-artifact List failed; proceeding with no manifest",
+				slog.String("session_id", sessionQ.SessionID),
+				slog.String("err", err.Error()))
+		}
+		return nil
+	}
+	return planner.BuildArtifactManifest(refs)
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {
