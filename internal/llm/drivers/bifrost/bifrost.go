@@ -46,6 +46,10 @@ type Driver struct {
 	client   bifrostClient
 	provider bfschemas.ModelProvider
 	bus      events.EventBus
+	// profiles is the per-model profile map (read-only after construction;
+	// D-025). Used to stamp the model's context-window onto the
+	// `llm.cost.recorded` event so the Console can show context %.
+	profiles map[string]llm.ModelProfile
 
 	closed atomic.Bool
 }
@@ -82,6 +86,7 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		client:   inner,
 		provider: account.provider,
 		bus:      deps.Bus,
+		profiles: cfg.ModelProfiles,
 	}, nil
 }
 
@@ -139,7 +144,7 @@ func (d *Driver) unaryComplete(
 		return llm.CompleteResponse{}, translateError(berr, "ChatCompletionRequest")
 	}
 	out := translateResponse(resp)
-	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage)
+	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage, d.profiles[req.Model].ContextWindowTokens)
 	return out, nil
 }
 
@@ -242,7 +247,7 @@ readLoop:
 		Usage:     finalUsage,
 		Cost:      finalCost,
 	}
-	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage)
+	emitCostRecorded(ctx, d.bus, id, req.Model, out.Cost, out.Usage, d.profiles[req.Model].ContextWindowTokens)
 	return out, nil
 }
 

@@ -30,7 +30,8 @@ const costFrame = JSON.stringify({
 	payload: {
 		Model: 'anthropic/claude-haiku-4.5',
 		Cost: { InputTokensCost: 0, OutputTokensCost: 0, TotalCost: 0.004359, Currency: 'USD' },
-		Usage: { PromptTokens: 4139, CompletionTokens: 44, ReasoningTokens: 0, TotalTokens: 4183, LatencyMS: 2320 }
+		Usage: { PromptTokens: 4139, CompletionTokens: 44, ReasoningTokens: 0, TotalTokens: 4183, LatencyMS: 2320 },
+		ContextWindowTokens: 200000
 	}
 });
 
@@ -78,6 +79,7 @@ describe('decodeCost', () => {
 		expect(c!.promptTokens).toBe(4139);
 		expect(c!.outputTokens).toBe(44);
 		expect(c!.usd).toBeCloseTo(0.004359, 6);
+		expect(c!.contextWindow).toBe(200000);
 	});
 });
 

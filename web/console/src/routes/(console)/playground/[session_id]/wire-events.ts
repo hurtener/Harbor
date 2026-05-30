@@ -46,6 +46,8 @@ export interface CostEvent {
 	promptTokens: number;
 	outputTokens: number;
 	usd: number;
+	/** The model's input-token window (0 when not configured). */
+	contextWindow: number;
 }
 
 /** A decoded task-lifecycle terminal event. */
@@ -120,7 +122,8 @@ export function decodeCost(data: string): CostEvent | null {
 		totalTokens: num(usage.TotalTokens),
 		promptTokens: num(usage.PromptTokens),
 		outputTokens: num(usage.CompletionTokens),
-		usd: num(cost.TotalCost)
+		usd: num(cost.TotalCost),
+		contextWindow: num(frame.payload.ContextWindowTokens)
 	};
 }
 

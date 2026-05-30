@@ -129,6 +129,13 @@
   // `llm.cost.recorded` events, attached to the agent bubble as per-turn
   // meta on completion. Not reactive (read once at terminal).
   const turnCost: Record<string, { tokens: number; cost: number }> = {};
+  // 108a-D composer telemetry: live tokens/sec (from content-chunk rate)
+  // and the current context size (the last LLM call's prompt tokens).
+  let tokensPerSec = $state(0);
+  let lastPromptTokens = $state(0);
+  let contextWindow = $state(0);
+  let streamChars = 0;
+  let streamStartMs = 0;
 
   /* ---- stream-liveness (composer telemetry "Session live") -------- */
   let eventsStreamLive = $state(false);
@@ -417,6 +424,8 @@
     outputTokens += ev.outputTokens;
     costUSD += ev.usd;
     if (ev.model !== '') modelName = ev.model;
+    if (ev.promptTokens > 0) lastPromptTokens = ev.promptTokens;
+    if (ev.contextWindow > 0) contextWindow = ev.contextWindow;
     hasCostReading = true;
     const prev = turnCost[ev.taskID] ?? { tokens: 0, cost: 0 };
     turnCost[ev.taskID] = { tokens: prev.tokens + ev.totalTokens, cost: prev.cost + ev.usd };
@@ -442,10 +451,16 @@
       // The content channel grows the answer body; the reasoning channel
       // grows the live "Reasoning" disclosure (108a — runtime reasoning
       // emit fixed in the corrections layer). Neither pollutes the other.
-      messages =
-        ev.kind === 'reasoning'
-          ? applyReasoningChunk(messages, ev.taskID, ev.delta)
-          : applyChunk(messages, ev.taskID, ev.delta);
+      if (ev.kind === 'reasoning') {
+        messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+      } else {
+        messages = applyChunk(messages, ev.taskID, ev.delta);
+        // 108a-D — live tokens/sec from the content-chunk rate.
+        if (streamStartMs === 0) streamStartMs = Date.now();
+        streamChars += ev.delta.length;
+        const elapsedS = (Date.now() - streamStartMs) / 1000;
+        if (elapsedS > 0.2) tokensPerSec = streamChars / 4 / elapsedS;
+      }
     }
     if (ev.done) {
       messages = finalizeStream(messages, ev.taskID);
@@ -747,6 +762,10 @@
     }
     sending = true;
     running = true;
+    // 108a-D — reset the live tokens/sec tracker for the new turn.
+    streamChars = 0;
+    streamStartMs = 0;
+    tokensPerSec = 0;
     if (sessionStartedAt === null) {
       sessionStartedAt = new Date().toISOString();
     }
@@ -1239,19 +1258,28 @@
         {/if}
       </PageState>
 
-      <!-- 108a composer telemetry (mock Image 7 bottom strip) — page-level
-           live metrics under the chat. Tokens/sec + context-window % land
-           with the full composer pass + the runtime context-window field. -->
+      <!-- 108a composer telemetry (mock Image 13 bottom strip) — page-level
+           live metrics under the composer. Context window % lands once the
+           runtime exposes the model context-window (R2); until then the
+           absolute context size is shown. -->
       <div class="composer-telemetry" data-testid="composer-telemetry">
         <span class="tel-phase" data-phase={runPhase}>
           {runPhase === 'streaming' ? '● Streaming' : runPhase === 'active' ? '● Active' : '○ Idle'}
         </span>
-        {#if hasCostReading}
+        {#if tokensPerSec > 0 && runPhase === 'streaming'}
           <span class="tel-sep">·</span>
-          <span class="tabular">{tokenCount.toLocaleString()} tok</span>
+          <span class="tabular">Tokens/sec: {tokensPerSec.toFixed(1)}</span>
+        {/if}
+        {#if lastPromptTokens > 0}
           <span class="tel-sep">·</span>
           <span class="tabular">
-            ${costUSD.toFixed(4)}{ceilingUSD !== null ? ` / $${ceilingUSD.toFixed(2)}` : ''}
+            Context: {(lastPromptTokens / 1000).toFixed(1)}k{#if contextWindow > 0} / {(contextWindow / 1000).toFixed(0)}k ({Math.round((lastPromptTokens / contextWindow) * 100)}%){/if}
+          </span>
+        {/if}
+        {#if hasCostReading}
+          <span class="tel-sep">·</span>
+          <span class="tabular">
+            Cost: ${costUSD.toFixed(4)}{ceilingUSD !== null ? ` / $${ceilingUSD.toFixed(2)}` : ''}
           </span>
         {/if}
         <span class="tel-spacer"></span>
