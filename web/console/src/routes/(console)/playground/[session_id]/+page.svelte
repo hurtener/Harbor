@@ -59,6 +59,8 @@
     decodeLifecycle,
     decodeBudget,
     decodePlannerDecision,
+    decodeIntervention,
+    decodeInterventionClear,
     type ChunkEvent,
     type CostEvent,
     type LifecycleEvent
@@ -480,6 +482,9 @@
   // `tasks.get` (Phase 106) and records the turn latency; on
   // failure/cancellation it converts the bubble to a system error.
   async function handleTerminal(ev: LifecycleEvent): Promise<void> {
+    // Drop any pending intervention parked on this run — a terminal
+    // task can never still be awaiting an operator decision.
+    interventions = interventions.filter((i) => i.runID !== ev.taskID);
     if (ev.taskID !== activeTaskID) return;
     const taskID = ev.taskID;
     if (ev.kind === 'completed' && client !== null) {
@@ -533,6 +538,9 @@
     paused = false;
     activeTaskID = null;
     void drainQueue();
+    // 108a-F — a completed turn may have produced artifacts (e.g. tool
+    // results); refresh the Recent Artifacts card.
+    void refreshArtifacts();
   }
 
   // Best-effort EventSource subscription. The bus auto-scopes to the
@@ -553,7 +561,14 @@
           'llm.completion.chunk',
           'llm.cost.recorded',
           'governance.budget_exceeded',
-          'planner.decision'
+          'planner.decision',
+          'tool.approval_requested',
+          'tool.auth_required',
+          'pause.requested',
+          'pause.resumed',
+          'tool.approved',
+          'tool.rejected',
+          'tool.auth_completed'
         ]
       });
       const es = new EventSource(url);
@@ -594,6 +609,29 @@
       es.addEventListener('task.completed', onTerminal);
       es.addEventListener('task.failed', onTerminal);
       es.addEventListener('task.cancelled', onTerminal);
+
+      // Pending interventions — the unified-pause family parks a run
+      // awaiting an operator decision. A request event adds the row
+      // (deduped by runID, the approve/reject correlation key); a
+      // resume/terminal event clears it.
+      const onInterventionRequest = (msg: MessageEvent): void => {
+        const ev = decodeIntervention((msg as MessageEvent<string>).data);
+        if (ev === null) return;
+        const rest = interventions.filter((i) => i.runID !== ev.runID);
+        interventions = [...rest, ev];
+      };
+      es.addEventListener('tool.approval_requested', onInterventionRequest);
+      es.addEventListener('tool.auth_required', onInterventionRequest);
+      es.addEventListener('pause.requested', onInterventionRequest);
+      const onInterventionClear = (msg: MessageEvent): void => {
+        const runID = decodeInterventionClear((msg as MessageEvent<string>).data);
+        if (runID === null) return;
+        interventions = interventions.filter((i) => i.runID !== runID);
+      };
+      es.addEventListener('pause.resumed', onInterventionClear);
+      es.addEventListener('tool.approved', onInterventionClear);
+      es.addEventListener('tool.rejected', onInterventionClear);
+      es.addEventListener('tool.auth_completed', onInterventionClear);
       es.onerror = () => {
         // EventSource auto-reconnects on transient drops; only nullify
         // on a permanent close to avoid resubscribe storms.
@@ -678,6 +716,49 @@
       }
     } catch {
       /* reload is best-effort; a runtime without tasks.list just starts empty */
+    }
+  }
+
+  // refreshArtifacts loads this session's recent artifacts (108a-F). The
+  // per-session client scopes artifacts.list to the conversation; tool
+  // results land here (e.g. a `tool-result-*.json`).
+  async function refreshArtifacts(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.artifacts.list<{
+        rows?: Array<{
+          ref?: { id?: string; filename?: string; mime_type?: string; size_bytes?: number };
+          created_at?: string;
+        }>;
+      }>({});
+      recentArtifacts = (resp.rows ?? [])
+        .map((r) => ({
+          id: r.ref?.id ?? '',
+          filename: r.ref?.filename ?? '(unnamed)',
+          mime: r.ref?.mime_type ?? 'application/octet-stream',
+          sizeBytes: r.ref?.size_bytes,
+          createdAt: r.created_at
+        }))
+        .filter((a) => a.id !== '')
+        .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    } catch {
+      recentArtifacts = [];
+    }
+  }
+
+  // 108a-F — the runtime's tool catalog, for the Controls "Tools" row.
+  let toolList = $state<string[]>([]);
+  async function refreshTools(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.tools.list<{
+        tools?: Array<{ id?: string; name?: string }>;
+        rows?: Array<{ id?: string; name?: string }>;
+      }>();
+      const rows = resp.tools ?? resp.rows ?? [];
+      toolList = rows.map((t) => t.id ?? t.name ?? '').filter((s) => s !== '');
+    } catch {
+      toolList = [];
     }
   }
 
@@ -1095,6 +1176,8 @@
     chatClient = buildChatClient(client);
     subscribeEvents(client);
     void refreshSessionList();
+    void refreshArtifacts();
+    void refreshTools();
 
     // Resolve the real Protocol version + agent display name. Both are
     // best-effort: runtime.info is universally advertised; the agent
@@ -1333,6 +1416,8 @@
     <DetailRail>
       <RailCard title="Controls">
         <ControlsCard
+          model={modelName}
+          tools={toolList}
           pending={overridesPending}
           result={overridesResult}
           onapply={(o) => void applyOverrides(o)}

@@ -12,7 +12,9 @@ import {
 	decodeCost,
 	decodeLifecycle,
 	decodeBudget,
-	decodePlannerDecision
+	decodePlannerDecision,
+	decodeIntervention,
+	decodeInterventionClear
 } from './wire-events.js';
 
 const chunkFrame = JSON.stringify({
@@ -114,6 +116,76 @@ describe('decodePlannerDecision', () => {
 
 	it('ignores non-planner.decision frames', () => {
 		expect(decodePlannerDecision(completedFrame)).toBeNull();
+	});
+});
+
+describe('decodeIntervention', () => {
+	it('decodes a tool.approval_requested into an Approve reason', () => {
+		const f = JSON.stringify({
+			type: 'tool.approval_requested',
+			run: 'RUN-A',
+			payload: { Tool: 'youtube_delete', PauseToken: 'tok1', Reason: 'destructive', Tags: ['write'] }
+		});
+		expect(decodeIntervention(f)).toEqual({
+			runID: 'RUN-A',
+			reason: 'Approve call to youtube_delete — destructive',
+			source: 'tool.approval_requested'
+		});
+	});
+
+	it('decodes a tool.auth_required into a Connect reason (SourceName preferred)', () => {
+		const f = JSON.stringify({
+			type: 'tool.auth_required',
+			run: 'RUN-B',
+			payload: { Source: 'gdrive', SourceName: 'Google Drive', AuthorizeURL: 'https://x', PauseToken: 't' }
+		});
+		expect(decodeIntervention(f)).toEqual({
+			runID: 'RUN-B',
+			reason: 'Connect Google Drive',
+			source: 'tool.auth_required'
+		});
+	});
+
+	it('decodes a pause.requested into the canonical pause reason', () => {
+		const f = JSON.stringify({
+			type: 'pause.requested',
+			run: 'RUN-C',
+			payload: { Token: 'tok', Reason: 'hitl_approval' }
+		});
+		expect(decodeIntervention(f)).toEqual({
+			runID: 'RUN-C',
+			reason: 'hitl_approval',
+			source: 'pause.requested'
+		});
+	});
+
+	it('returns null without a run id (the correlation key)', () => {
+		expect(
+			decodeIntervention(JSON.stringify({ type: 'pause.requested', payload: { Reason: 'x' } }))
+		).toBeNull();
+	});
+
+	it('ignores unrelated frames', () => {
+		expect(decodeIntervention(JSON.stringify({ type: 'task.completed', run: 'r', payload: {} }))).toBeNull();
+	});
+});
+
+describe('decodeInterventionClear', () => {
+	it('reads the run id from a pause.resumed frame', () => {
+		expect(decodeInterventionClear(JSON.stringify({ type: 'pause.resumed', run: 'RUN-C', payload: {} }))).toBe(
+			'RUN-C'
+		);
+	});
+
+	it('reads the run id from tool.approved / tool.rejected / tool.auth_completed', () => {
+		for (const type of ['tool.approved', 'tool.rejected', 'tool.auth_completed']) {
+			expect(decodeInterventionClear(JSON.stringify({ type, run: 'RX', payload: {} }))).toBe('RX');
+		}
+	});
+
+	it('ignores request frames and unrelated frames', () => {
+		expect(decodeInterventionClear(JSON.stringify({ type: 'pause.requested', run: 'r', payload: {} }))).toBeNull();
+		expect(decodeInterventionClear(JSON.stringify({ type: 'task.completed', run: 'r' }))).toBeNull();
 	});
 });
 

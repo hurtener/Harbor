@@ -12,10 +12,16 @@
   // Design tokens only.
 
   let {
+    model = '',
+    tools = [],
     pending = false,
     result = null,
     onapply
   }: {
+    /** The active model name (read-only — the runtime exposes no model switch). */
+    model?: string;
+    /** The runtime's tool catalog (read-only display: "All enabled (N)"). */
+    tools?: string[];
     /** True while a `runs.set_overrides` call is in flight. */
     pending?: boolean;
     /** The last apply result — surfaced as a subtle saved/failed hint. */
@@ -111,6 +117,24 @@
     >
       Reset to defaults
     </button>
+  </div>
+
+  <!-- Model (read-only — the runtime exposes no live model switch) -->
+  <div class="control-field control-static">
+    <span class="control-label">Model</span>
+    <span class="static-value mono" data-testid="controls-model">{model || '—'}</span>
+  </div>
+
+  <!-- Tools (read-only catalog) -->
+  <div class="control-field control-static">
+    <span class="control-label">Tools</span>
+    <span
+      class="static-value"
+      data-testid="controls-tools"
+      title={tools.join(', ')}
+    >
+      {tools.length > 0 ? `All enabled (${tools.length})` : '—'}
+    </span>
   </div>
 
   <!-- Reasoning effort — segmented control -->
@@ -251,6 +275,25 @@
     font-size: var(--text-xs);
     text-transform: uppercase;
     color: var(--color-text-muted);
+  }
+
+  .control-static {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .static-value {
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 60%;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
   }
 
   .control-label-row {
