@@ -58,10 +58,12 @@
     decodeCost,
     decodeLifecycle,
     decodeBudget,
+    decodePlannerDecision,
     type ChunkEvent,
     type CostEvent,
     type LifecycleEvent
   } from './wire-events.js';
+  import type { ChatToolCall } from '$lib/chat/types.js';
   import {
     PlaygroundSavedFilters,
     type PlaygroundViewSpec
@@ -129,6 +131,12 @@
   // `llm.cost.recorded` events, attached to the agent bubble as per-turn
   // meta on completion. Not reactive (read once at terminal).
   const turnCost: Record<string, { tokens: number; cost: number }> = {};
+  // 108a-C — per-task tool-call trace, collected from `planner.decision`
+  // CallTool events during the turn and attached to the agent bubble on
+  // completion. The runtime emits the tool NAME + decision kind via
+  // planner.decision (there is no richer tool.* event), so args/timing are
+  // not shown — only the honest tool name + status.
+  const turnTools: Record<string, ChatToolCall[]> = {};
   // 108a-D composer telemetry: live tokens/sec (from content-chunk rate)
   // and the current context size (the last LLM call's prompt tokens).
   let tokensPerSec = $state(0);
@@ -492,6 +500,10 @@
                 ...m,
                 text: answer,
                 reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                toolCalls:
+                  (turnTools[taskID] ?? []).length > 0
+                    ? turnTools[taskID].map((t) => ({ ...t, status: 'succeeded' as const }))
+                    : undefined,
                 meta: {
                   elapsedMs: durationMs > 0 ? durationMs : undefined,
                   tokens: tc?.tokens,
@@ -540,7 +552,8 @@
           'task.cancelled',
           'llm.completion.chunk',
           'llm.cost.recorded',
-          'governance.budget_exceeded'
+          'governance.budget_exceeded',
+          'planner.decision'
         ]
       });
       const es = new EventSource(url);
@@ -559,6 +572,20 @@
       es.addEventListener('governance.budget_exceeded', (msg: MessageEvent) => {
         const ev = decodeBudget((msg as MessageEvent<string>).data);
         if (ev !== null) ceilingUSD = ev.ceilingUSD;
+      });
+      es.addEventListener('planner.decision', (msg: MessageEvent) => {
+        const ev = decodePlannerDecision((msg as MessageEvent<string>).data);
+        if (ev === null || ev.decisionKind !== 'CallTool' || ev.tool === '') return;
+        // Collect the tool call for the in-flight turn; the live bubble
+        // updates immediately so tool use is visible as it happens.
+        const list = turnTools[ev.taskID] ?? [];
+        list.push({ tool: ev.tool, status: 'invoked', summary: '' });
+        turnTools[ev.taskID] = list;
+        messages = messages.map((m) =>
+          m.taskID === ev.taskID && m.role === 'agent'
+            ? { ...m, toolCalls: [...list] }
+            : m
+        );
       });
       const onTerminal = (msg: MessageEvent): void => {
         const ev = decodeLifecycle((msg as MessageEvent<string>).data);

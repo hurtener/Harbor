@@ -7,7 +7,13 @@
 // regression cannot recur.
 
 import { describe, it, expect } from 'vitest';
-import { decodeChunk, decodeCost, decodeLifecycle, decodeBudget } from './wire-events.js';
+import {
+	decodeChunk,
+	decodeCost,
+	decodeLifecycle,
+	decodeBudget,
+	decodePlannerDecision
+} from './wire-events.js';
 
 const chunkFrame = JSON.stringify({
 	type: 'llm.completion.chunk',
@@ -91,6 +97,23 @@ describe('decodeLifecycle', () => {
 
 	it('ignores non-terminal types', () => {
 		expect(decodeLifecycle(JSON.stringify({ type: 'task.started', payload: { TaskID: 't' } }))).toBeNull();
+	});
+});
+
+describe('decodePlannerDecision', () => {
+	const callToolFrame = JSON.stringify({
+		type: 'planner.decision',
+		run: '01KSTW-TASK',
+		payload: { DecisionKind: 'CallTool', Tool: 'youtube_get_metadata', ReasoningChars: 0 }
+	});
+
+	it('decodes a CallTool decision (tool name + kind) using the run fallback', () => {
+		const d = decodePlannerDecision(callToolFrame);
+		expect(d).toEqual({ taskID: '01KSTW-TASK', decisionKind: 'CallTool', tool: 'youtube_get_metadata' });
+	});
+
+	it('ignores non-planner.decision frames', () => {
+		expect(decodePlannerDecision(completedFrame)).toBeNull();
 	});
 });
 

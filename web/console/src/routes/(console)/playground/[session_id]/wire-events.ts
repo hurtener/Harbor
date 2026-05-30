@@ -63,6 +63,15 @@ export interface BudgetEvent {
 	totalCostUSD: number;
 }
 
+/** A decoded `planner.decision` — one ReAct step's decision. */
+export interface PlannerDecisionEvent {
+	taskID: string;
+	/** `CallTool` / `Finish` / … */
+	decisionKind: string;
+	/** The tool name when `decisionKind === 'CallTool'`; '' otherwise. */
+	tool: string;
+}
+
 function parseFrame(data: string): WireFrame | null {
 	try {
 		const v = JSON.parse(data) as unknown;
@@ -142,6 +151,20 @@ export function decodeLifecycle(data: string): LifecycleEvent | null {
 	const taskID = taskIDOf(frame);
 	if (taskID === '') return null;
 	return { taskID, kind };
+}
+
+/** Decode a `planner.decision` frame. Returns null if not one. */
+export function decodePlannerDecision(data: string): PlannerDecisionEvent | null {
+	const frame = parseFrame(data);
+	if (frame === null || frame.payload === undefined) return null;
+	if (str(frame.type) !== 'planner.decision') return null;
+	const taskID = taskIDOf(frame);
+	if (taskID === '') return null;
+	return {
+		taskID,
+		decisionKind: str(frame.payload.DecisionKind),
+		tool: str(frame.payload.Tool)
+	};
 }
 
 /** Decode a `governance.budget_exceeded` frame. Returns null if not one. */
