@@ -79,6 +79,19 @@ assert_absent_or_skip "web/console/src/lib/components/live-runtime/footer.svelte
 assert_grep_or_skip "AppStatusBar" "${LAYOUT}" \
     "phase-108b: shell renders the single global AppStatusBar"
 
+# ---- Brand-fidelity retheme: Harbor teal accent + Inter + larger logo -------
+assert_grep_or_skip "size-brand-logo:" "${TOKENS}" \
+    "phase-108b: dedicated (larger) sidebar brand-logo size token"
+assert_grep_or_skip "Inter Variable" "${TOKENS}" \
+    "phase-108b: --font-sans adopts self-hosted Inter"
+assert_file_or_skip "web/console/src/lib/fonts.css" \
+    "phase-108b: @font-face stylesheet landed"
+assert_file_or_skip "web/console/static/fonts/inter-variable.woff2" \
+    "phase-108b: self-hosted Inter woff2 (static, no npm dep)"
+# The accent is Harbor's brand teal, NOT the inherited GitHub blue (#2f81f7).
+assert_grep_or_skip "color-accent: #2bb6cc" "${TOKENS}" \
+    "phase-108b: --color-accent is Harbor teal (not the inherited blue)"
+
 # ---- Hygiene: markdownlint pinned to the CI-bundled version ------------------
 assert_grep_or_skip "markdownlint-cli2@" "Makefile" \
     "phase-108b: make markdownlint pins the cli2 version CI uses (@v15 → 0.12.1)"

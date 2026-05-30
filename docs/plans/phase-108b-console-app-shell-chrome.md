@@ -351,6 +351,28 @@ cardinality + "sidebar lists the full 14-page IA in four clusters" green).
 §17.6 fix bundled: `overview-page.spec.ts` stale `overview-footer` assertion
 removed (it asserted the footer this wave consolidated away).
 
+## Brand-fidelity retheme (operator follow-up, 2026-05-30)
+
+A side-by-side mock review flagged four fidelity gaps; all fixed, verified live:
+
+1. **Accent was the wrong colour — global retheme to Harbor teal.** The console
+   inherited GitHub blue (`--color-accent: #2f81f7`); the mock's accent is the
+   brand teal/cyan (sampled from the canonical asset: active-nav glyph
+   `#2a9dc0`, the teal lighthouse + "CONSOLE" wordmark). `--color-accent` drives
+   81 files / all 14 pages, so this is a **global** token change (operator-
+   approved): `--color-accent → #2bb6cc`, `--color-accent-soft → #0e2e38` (also
+   softens/de-blues the selected-nav pill the review flagged). Only the two base
+   tokens changed; every accent (active state, links, buttons, focus, info
+   chips) derives via `var()`.
+2. **Logo too small.** New `--size-brand-logo` (36px, mock-sized) replaces the
+   24px `--size-avatar-sm` on the sidebar mark.
+3. **Font.** Adopted self-hosted **Inter** — one variable `woff2` in
+   `static/fonts/` + `src/lib/fonts.css` `@font-face` (imported by the root
+   layout); `--font-sans` lists `'Inter Variable'` first, system stack as
+   fallback. **No npm dependency** (static asset — CLAUDE.md §13).
+4. Verified live: accent `#2bb6cc`, pill `#0e2e38`, logo 36px, Inter loaded
+   (`document.fonts.check`), zero console errors; lint 0/0; smoke 20 OK.
+
 ## Resolved decisions (operator, 2026-05-30)
 
 1. **Scope = full shell chrome** (sidebar + top bar + bottom bar), not sidebar

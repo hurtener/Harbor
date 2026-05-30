@@ -29,8 +29,10 @@
   --color-text: #e6edf3;
   --color-text-muted: #8b949e;
 
-  /* Color — brand + status */
-  --color-accent: #2f81f7;
+  /* Color — brand + status. The accent is Harbor's brand teal/cyan (the
+     lighthouse mark), NOT a generic blue — sampled from the canonical mock
+     (active nav glyph #2a9dc0, CONSOLE wordmark teal). Phase 108b retheme. */
+  --color-accent: #2bb6cc;
   --color-success: #3fb950;
   --color-warning: #d29922;
   --color-danger: #f85149;
@@ -39,7 +41,7 @@
   --color-success-soft: #16341f;
   --color-warning-soft: #3a2e10;
   --color-danger-soft: #3a1a18;
-  --color-accent-soft: #16263f;
+  --color-accent-soft: #0e2e38;
 
   /* Chip palette — backs every status pill across the Console.
      One row per intent: foreground / background / border.
@@ -90,7 +92,7 @@
   /* ================================================================ */
   /* Type scale                                                        */
   /* ================================================================ */
-  --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
@@ -179,7 +181,8 @@
   /* Phase 108 (D-167) — sizing tokens for the polished Playground surface.
      These replace raw px/rem literals in .svelte components so the
      stylelint gate stays green. */
-  --size-avatar-sm: 1.5rem;        /* 24px — sidebar logo, intervention avatar */
+  --size-avatar-sm: 1.5rem;        /* 24px — intervention avatar, status dots */
+  --size-brand-logo: 2.25rem;      /* 36px — sidebar lighthouse mark (Phase 108b, mock-sized) */
   --size-avatar-md: 2rem;          /* 32px — message bubble avatar */
   --size-badge-sm: 1.25rem;        /* 20px — count badge */
   --size-status-bar-height: 1.75rem; /* 28px — PlaygroundStatusBar */
