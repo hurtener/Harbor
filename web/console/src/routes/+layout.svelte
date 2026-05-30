@@ -6,6 +6,7 @@
   // shell (sidebar / top bar / footer) lives in `(console)/+layout.svelte`
   // — the `(console)` route group attaches it to every Console page
   // (CONVENTIONS.md §1/§2). The root `/` route redirects into the group.
+  import '$lib/fonts.css';
   import '$lib/tokens.css';
 
   let { children } = $props();

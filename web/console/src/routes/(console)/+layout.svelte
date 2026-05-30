@@ -152,7 +152,7 @@
   <nav class="sidebar" aria-label="Console navigation">
     <div class="brand" title="Harbor Console">
       <!-- Phase 108 (D-167) — Harbor lighthouse mark + wordmark. -->
-      <img class="brand-logo" src="/harbor_logo.svg" alt="Harbor" width="24" height="24" />
+      <img class="brand-logo" src="/harbor_logo.svg" alt="Harbor" width="36" height="36" />
       {#if !collapsed}
         <span class="brand-wordmark">
           <span class="brand-name">Harbor</span>
@@ -239,8 +239,8 @@
   }
 
   .brand-logo {
-    width: var(--size-avatar-sm);
-    height: var(--size-avatar-sm);
+    width: var(--size-brand-logo);
+    height: var(--size-brand-logo);
     flex-shrink: 0;
   }
 
