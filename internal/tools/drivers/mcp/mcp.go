@@ -106,6 +106,8 @@ type Config struct {
 	// name). When a discovered tool's name is present here, its
 	// descriptor uses the override instead of DefaultPolicy; a tool
 	// absent from the map falls back to DefaultPolicy (Phase 26b).
+	// Per-tool overrides apply to TOOLS only — MCP resources and
+	// prompts always run under DefaultPolicy (the per-server default).
 	//
 	// Concurrent reuse (D-025): the map is read-only after New — it is
 	// never mutated per-run. buildToolDescriptor only reads it, and

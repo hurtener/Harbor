@@ -294,6 +294,13 @@ fields today.
 Persistent-driver connection string. Default: empty. Validation:
 required when `driver != "inmem"`. Secret: redacted.
 
+Note (D-174): conversation memory durability rides on the configured
+**`state.driver`**, not `memory.dsn`. Under the executor-delegation model
+all memory drivers persist strategy state through the StateStore, so a SQL
+memory driver with a SQL `memory.dsn` but an `inmem` `state.driver` is
+NOT durable across a restart. To make memory durable, set a SQL
+`state.driver`; `inmem` memory + a SQL StateStore is already durable.
+
 ### memory.strategy
 
 Memory shape. Default: `none`. Validation: `none` / `truncation` /

@@ -162,9 +162,9 @@ func TestSQLite_PersistsAcrossReopens(t *testing.T) {
 // Restore via another driver byte-stably. The wire shape lives in
 // `internal/memory/wire.go`; both drivers marshal through it.
 //
-// Today (Strategy=none) the only round-trippable payload is the
-// canonical empty record. The test pins the wire shape and proves
-// Snapshot/Restore cross-driver compatibility for that payload.
+// This case pins the canonical empty (Strategy=none) record;
+// TestSQLite_CrossDriver_RollingSummary_PreservesSummary below covers
+// the strategy that actually carries a summary.
 func TestSQLite_CrossDriver_ByteStableRoundTrip(t *testing.T) {
 	bus, store := buildDeps(t)
 	ctx := context.Background()
@@ -228,6 +228,84 @@ func TestSQLite_CrossDriver_ByteStableRoundTrip(t *testing.T) {
 	}
 	if len(rec2.Turns) != 0 {
 		t.Errorf("sqlite record turns=%d, want 0", len(rec2.Turns))
+	}
+}
+
+// TestSQLite_CrossDriver_RollingSummary_PreservesSummary asserts AC-8 of
+// Phase 25a (D-174): a rolling_summary Snapshot taken on one driver
+// Restores on another with its SUMMARY intact. The prior cross-driver
+// test only exercised the empty strategy=none record; this guards the
+// strategy that carries a summary. The two stores use INDEPENDENT state
+// stores, so the summary can only reach the SQLite store through the
+// explicit Snapshot bytes — not a shared StateStore — which is what
+// makes this a real cross-driver byte-stability test.
+func TestSQLite_CrossDriver_RollingSummary_PreservesSummary(t *testing.T) {
+	ctx := context.Background()
+	id := tripleA()
+	bus := buildBus(t)
+
+	stA, err := state.Open(ctx, config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open A: %v", err)
+	}
+	defer func() { _ = stA.Close(ctx) }()
+	stB, err := state.Open(ctx, config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open B: %v", err)
+	}
+	defer func() { _ = stB.Close(ctx) }()
+
+	// 1. InMem rolling_summary: 6 turns overflow the recent window
+	//    (FullZoneTurns=4) so older turns are summarised. Snapshot.
+	inmemStore, err := memory.Open(ctx, memory.ConfigSnapshot{
+		Driver: "inmem", Strategy: memory.StrategyRollingSummary, BudgetTokens: 256,
+	}, memory.Deps{State: stA, Bus: bus, Summarizer: strategy.EchoSummarizer{}})
+	if err != nil {
+		t.Fatalf("inmem memory.Open: %v", err)
+	}
+	defer func() { _ = inmemStore.Close(ctx) }()
+	for i := range 6 {
+		if err := inmemStore.AddTurn(ctx, id, memory.ConversationTurn{
+			UserMessage: "u", AssistantResponse: "a",
+		}); err != nil {
+			t.Fatalf("inmem.AddTurn %d: %v", i, err)
+		}
+	}
+	srcPatch, err := inmemStore.GetLLMContext(ctx, id)
+	if err != nil {
+		t.Fatalf("inmem.GetLLMContext: %v", err)
+	}
+	if srcPatch.Summary == "" {
+		t.Fatalf("precondition: inmem rolling_summary produced no summary after 6 turns: %+v", srcPatch)
+	}
+	inmemSnap, err := inmemStore.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatalf("inmem.Snapshot: %v", err)
+	}
+
+	// 2. SQLite rolling_summary on an INDEPENDENT state store: Restore
+	//    the inmem snapshot, read back — the summary must survive.
+	dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
+	sqliteStore, err := memory.Open(ctx, memory.ConfigSnapshot{
+		Driver: "sqlite", DSN: dbPath, Strategy: memory.StrategyRollingSummary, BudgetTokens: 256,
+	}, memory.Deps{State: stB, Bus: bus, Summarizer: strategy.EchoSummarizer{}})
+	if err != nil {
+		t.Fatalf("sqlite memory.Open: %v", err)
+	}
+	defer func() { _ = sqliteStore.Close(ctx) }()
+	if err := sqliteStore.Restore(ctx, id, inmemSnap); err != nil {
+		t.Fatalf("sqlite.Restore(inmemSnap): %v", err)
+	}
+	dstPatch, err := sqliteStore.GetLLMContext(ctx, id)
+	if err != nil {
+		t.Fatalf("sqlite.GetLLMContext: %v", err)
+	}
+	if dstPatch.Summary == "" {
+		t.Error("rolling_summary cross-driver restore dropped the summary (got empty)")
+	}
+	if dstPatch.Summary != srcPatch.Summary {
+		t.Errorf("summary did not survive cross-driver restore:\n inmem:  %q\n sqlite: %q",
+			srcPatch.Summary, dstPatch.Summary)
 	}
 }
 

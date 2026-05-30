@@ -2117,6 +2117,13 @@ func attachDevMCPServer(
 		Transport:    string(mode),
 		URLOrCommand: urlOrCommand,
 		InitialState: mcpdrv.ServerStateOnline,
+		// Surface the configured per-server policy on the registry so the
+		// Console's mcp.servers.list / mcp.servers.policy read the policy
+		// the operator actually set, not tools.DefaultPolicy() (Phase 26b
+		// wave-audit fix — without this the Console misreports a tuned
+		// server as 30s/3-retries). Per-tool overrides are not part of the
+		// registry projection; the per-server default is the headline.
+		Policy: defaultPolicy,
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}

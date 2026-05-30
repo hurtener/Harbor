@@ -473,8 +473,9 @@ tools:
   #                      max_attempts   — TOTAL attempts INCLUDING the
   #                                       first (NOT retries). 1 = one
   #                                       attempt, no retry; 4 = the
-  #                                       default. Required when `policy`
-  #                                       is present, must be >= 1.
+  #                                       default. Optional: omit it (or
+  #                                       0) to inherit the default attempt
+  #                                       count. Must be >= 0.
   #                      timeout_ms     — per-attempt deadline in ms.
   #                      retry_on       — retryable error classes; any of
   #                                       transient | timeout | 5xx |

@@ -13,14 +13,21 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# The projection helper + validation live in internal/config; the per-tool
-# override application lives in internal/tools/drivers/mcp. Until the phase
-# ships these tests do not exist yet and `go test` reports no such tests —
-# keep the gate green with a skip until the surface lands.
-if go test ./internal/config/ -run 'TestToolPolicyConfig|TestPerToolPolicy' -count=1 >/dev/null 2>&1; then
-  ok "phase 26b: config tool-policy projection tests pass"
+# 1. The projection helper + validation live in internal/config.
+if go test ./internal/config/ -run 'TestToolPolicyConfig|TestPerToolPolicy|TestValidateTools' -count=1 >/dev/null 2>&1; then
+  ok "phase 26b: config tool-policy projection + validation tests pass"
 else
   skip "phase 26b: not yet implemented — config tool-policy projection + validation"
+fi
+
+# 2. The per-tool override APPLICATION (a per-tool max_attempts override
+#    changes the real attempt count at dispatch) lives in the mcp driver —
+#    exercise it so the smoke actually guards the runtime behaviour, not
+#    just the config projection.
+if go test ./internal/tools/drivers/mcp/ -run 'TestPerToolPolicy' -count=1 >/dev/null 2>&1; then
+  ok "phase 26b: mcp per-tool policy override changes the real attempt count"
+else
+  skip "phase 26b: mcp per-tool policy override not yet wired"
 fi
 
 smoke_summary

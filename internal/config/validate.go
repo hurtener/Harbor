@@ -1240,31 +1240,21 @@ func fieldError(path, reason string) error {
 // validateToolPolicy validates one `ToolPolicyConfig` block (Phase
 // 26b). `prefix` is the field path so the error names the offending
 // key (e.g. `tools.mcp_servers[0].policy`). Rules:
-//   - `max_attempts >= 1` (the TOTAL attempt count; 0 is meaningless —
-//     a tool that runs zero times — so it is rejected rather than
-//     silently treated as "inherit default"; an operator who wants the
-//     default omits the whole `policy:` block / the `max_attempts`
-//     key, which leaves the field at the Go zero value).
+//   - `max_attempts >= 0`. The TOTAL attempt count incl. the first.
+//     0 (the Go zero value = the operator omitted the key) means
+//     "inherit the default attempt count" — the per-field fall-through
+//     D-175 documents (a `policy:` that sets only `timeout_ms` keeps
+//     the default 4 attempts). YAML cannot distinguish "absent" from
+//     "0" for a plain int, and the projection treats both as
+//     fall-through, so validation matches that: only a NEGATIVE value
+//     is an error. (1 = exactly one attempt, no retry.)
 //   - `timeout_ms >= 0`.
 //   - `backoff_base_ms` / `backoff_max_ms` / `backoff_mult` >= 0.
 //   - each `retry_on` value is a known error class.
-//
-// Note: an omitted `max_attempts` (the Go zero value, 0) is NOT
-// rejected here — validation only fires when the value is present and
-// non-zero is required. The map-key/zero distinction is handled by the
-// caller: a `policy:` block present in YAML with `max_attempts: 0`
-// trips the `>= 1` rule, while omitting `max_attempts` entirely leaves
-// it 0 and inheriting the default attempt count. The phase plan's
-// AC-5 wording ("max_attempts >= 1 when policy present") is read as
-// "if the operator wrote a max_attempts value, it must be >= 1"; we
-// enforce `>= 1` whenever the field is set. Because YAML cannot
-// distinguish "absent" from "0" for an int without a pointer, we adopt
-// the stricter, less-surprising rule: a present `policy:` block with
-// `max_attempts: 0` is a configuration smell and is rejected.
 func validateToolPolicy(prefix string, p ToolPolicyConfig) error {
-	if p.MaxAttempts < 1 {
+	if p.MaxAttempts < 0 {
 		return fieldError(prefix+".max_attempts",
-			fmt.Sprintf("must be >= 1 (TOTAL attempts incl. the first), got %d", p.MaxAttempts))
+			fmt.Sprintf("must be >= 0 (TOTAL attempts incl. the first; 0 = inherit the default), got %d", p.MaxAttempts))
 	}
 	if p.TimeoutMS < 0 {
 		return fieldError(prefix+".timeout_ms",

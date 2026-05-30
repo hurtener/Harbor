@@ -868,11 +868,25 @@ func TestValidateTools_MCPServers(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "policy max_attempts zero rejected",
+			// D-175 per-field fall-through: max_attempts omitted (0) is
+			// allowed and inherits the default attempt count; only a
+			// `policy:` setting timeout_ms alone is exactly the documented
+			// "set only timeout_ms" case. (Wave-audit WARN-2 fix.)
+			name: "policy max_attempts omitted (only timeout_ms) accepted",
 			mutate: func(c *config.Config) {
 				c.Tools.MCPServers = []config.MCPServerConfig{
 					{Name: "p", TransportMode: "sse", URL: "https://x",
-						Policy: &config.ToolPolicyConfig{MaxAttempts: 0, TimeoutMS: 1000}},
+						Policy: &config.ToolPolicyConfig{TimeoutMS: 1000}},
+				}
+			},
+			wantOK: true,
+		},
+		{
+			name: "policy max_attempts negative rejected",
+			mutate: func(c *config.Config) {
+				c.Tools.MCPServers = []config.MCPServerConfig{
+					{Name: "p", TransportMode: "sse", URL: "https://x",
+						Policy: &config.ToolPolicyConfig{MaxAttempts: -1, TimeoutMS: 1000}},
 				}
 			},
 			wantSub: "tools.mcp_servers[0].policy.max_attempts",
@@ -915,7 +929,7 @@ func TestValidateTools_MCPServers(t *testing.T) {
 				c.Tools.MCPServers = []config.MCPServerConfig{
 					{Name: "p", TransportMode: "sse", URL: "https://x",
 						ToolPolicies: map[string]config.ToolPolicyConfig{
-							"slow": {MaxAttempts: 0}}},
+							"slow": {MaxAttempts: -1}}},
 				}
 			},
 			wantSub: "max_attempts",
