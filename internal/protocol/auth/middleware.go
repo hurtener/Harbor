@@ -17,6 +17,22 @@ import (
 // the scheme.
 const bearerPrefix = "Bearer "
 
+// HeaderSession is the per-request session selector (D-171). The
+// connection token authenticates the (tenant, user, scopes) — it is a
+// per-backend credential, like an API key, NOT a single-session pin.
+// The session is chosen per-conversation by the client and supplied on
+// every request via this header. When present, the middleware REPLACES
+// the token's `session` claim with the header value (keeping the
+// token's verified tenant + user), so one connection drives many
+// isolated sessions. The token's `session` claim is a DEFAULT only:
+// when the header is absent, the claim's session is used.
+//
+// The value MUST be identical to the SSE transport's
+// `stream.HeaderSession`; the constant is duplicated here (rather than
+// imported) because `stream` imports `auth` and the reverse would be an
+// import cycle.
+const HeaderSession = "X-Harbor-Session"
+
 // middlewareConfig holds the optional knobs Middleware threads into the
 // per-request handler. Set once at construction; never mutated after.
 type middlewareConfig struct {
@@ -99,14 +115,56 @@ func Middleware(v Validator, opts ...MiddlewareOption) func(http.Handler) http.H
 				return
 			}
 
+			// Defensive: the Validator already ran identity.Validate over
+			// the JWT claims, so a verified identity with an empty
+			// tenant/user is a Validator-implementation bug. Re-check
+			// tenant + user here (NOT session — session is per-request
+			// below) and fail loud with a 500: this is a server bug, not
+			// a client error.
+			if verified.Identity.TenantID == "" || verified.Identity.UserID == "" {
+				cfg.logger.ErrorContext(r.Context(), "auth: validator returned identity with empty tenant/user",
+					slog.String("tenant", verified.Identity.TenantID),
+					slog.String("user", verified.Identity.UserID))
+				writeProtocolError(w, http.StatusInternalServerError,
+					protoerrors.Newf(protoerrors.CodeRuntimeError,
+						"validator returned an invalid identity"))
+				return
+			}
+
+			// D-171: per-request session. The verified token carries
+			// (tenant, user) + a default `session` claim. When the
+			// request supplies `X-Harbor-Session`, that value REPLACES
+			// the claim's session — the connection token is a
+			// per-backend credential, not a single-session pin. The
+			// tenant + user stay token-verified; only the session is
+			// client-chosen, so a request can never widen its tenant or
+			// user (multi-isolation §6 stays enforced). An empty header
+			// falls back to the token's default session claim.
+			effectiveID := verified.Identity
+			if hdrSession := strings.TrimSpace(r.Header.Get(HeaderSession)); hdrSession != "" {
+				effectiveID.SessionID = hdrSession
+			}
+			if effectiveID.SessionID == "" {
+				// No default session claim on the token AND no
+				// X-Harbor-Session header — identity is mandatory and the
+				// session is the innermost scope (§6 rule 9). This is a
+				// client error (the caller must choose a session), so 401
+				// with CodeIdentityRequired, not 500.
+				cfg.logger.WarnContext(r.Context(), "auth: request has no resolvable session",
+					slog.String("tenant", effectiveID.TenantID),
+					slog.String("user", effectiveID.UserID))
+				writeProtocolError(w, http.StatusUnauthorized,
+					protoerrors.Newf(protoerrors.CodeIdentityRequired,
+						"no session: token carries no default session claim and no X-Harbor-Session header supplied"))
+				return
+			}
+
 			ctx := r.Context()
-			ctx, idErr := identity.With(ctx, verified.Identity)
+			ctx, idErr := identity.With(ctx, effectiveID)
 			if idErr != nil {
-				// Defensive — Validate already ran identity.Validate
-				// and would have failed with ErrIdentityClaimMissing.
-				// If we get here it's a Validator-implementation bug;
-				// fail loud.
-				cfg.logger.ErrorContext(r.Context(), "auth: validator returned identity that fails Validate",
+				// Unreachable given the explicit tenant/user + session
+				// checks above; kept as a defensive fail-closed (§5).
+				cfg.logger.ErrorContext(r.Context(), "auth: identity.With rejected a checked identity",
 					slog.String("error", idErr.Error()))
 				writeProtocolError(w, http.StatusInternalServerError,
 					protoerrors.Newf(protoerrors.CodeRuntimeError,

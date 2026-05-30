@@ -111,7 +111,23 @@ export class Transport {
 	 * a caller-supplied `identity` field wins for cross-tenant admin calls.
 	 */
 	async request<T>(path: string, body: Record<string, unknown> = {}, method: Method = 'POST'): Promise<T> {
-		const payload = JSON.stringify({ identity: this.#identity, ...body });
+		// D-171 — session is per-request (header-supplied) and OPTIONAL on a
+		// connection. The runtime's posture handlers require a body identity
+		// to FULLY match the resolved identity (incl. session) OR be empty;
+		// a partial body identity (or an empty `session: ''`) is rejected
+		// against the token's default session. So fold the FULL identity
+		// only when a session is set; otherwise send an empty body identity
+		// `{}` and rely on the X-Harbor-* headers (the runtime backfills it,
+		// defaulting the session to the token claim). The contract's
+		// "simplest correct client sends identity: {}" path.
+		const idObj: Record<string, string> = this.#identity.session !== ''
+			? {
+					tenant: this.#identity.tenant,
+					user: this.#identity.user,
+					session: this.#identity.session
+				}
+			: {};
+		const payload = JSON.stringify({ identity: idObj, ...body });
 		const resp = await this.#fetch(`${this.#baseURL}${path}`, {
 			method,
 			headers: {
@@ -389,6 +405,15 @@ export class EventsNamespace {
 			url.searchParams.set('admin', '1');
 		}
 		url.searchParams.set('access_token', this.#t.token);
+		// D-171 — EventSource cannot set the `X-Harbor-Session` header, so
+		// the conversation session rides as a `?session=` query param the
+		// SSE shim promotes to the header (header-precedence). The session
+		// is the client's identity.session (the page builds a per-session
+		// client whose identity.session is the conversation id). Empty is
+		// omitted — the runtime then uses the token's default session.
+		if (this.#t.identity.session !== '') {
+			url.searchParams.set('session', this.#t.identity.session);
+		}
 		return url.toString();
 	}
 

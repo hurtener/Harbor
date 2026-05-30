@@ -59,10 +59,15 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 		regFilter.TenantIDs = append(regFilter.TenantIDs, f.TenantIDs...)
 	} else {
 		// Non-admin (or admin with no explicit tenant filter): restrict
-		// to the caller's own tenant. CLAUDE.md §6 — the registry
-		// WHERE-clauses by tenant; the Service already rejected a
-		// cross-tenant filter without the admin claim.
+		// to the caller's own (tenant, user). CLAUDE.md §6 — the registry
+		// WHERE-clauses by the triple; the Service already rejected a
+		// cross-tenant filter without the admin claim. D-171: naming the
+		// caller's UserID (not just the tenant) lets the registry hydrate
+		// the per-(tenant, user) session catalog so sessions a prior
+		// process created are listable after a restart, and keeps one
+		// user's sessions out of another user's listing under one tenant.
 		regFilter.TenantIDs = []string{id.TenantID}
+		regFilter.UserIDs = []string{id.UserID}
 	}
 	snaps, err := p.lister.ListSnapshots(ctx, regFilter)
 	if err != nil {
@@ -93,7 +98,11 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 		IncludeClosed: true,
 	}
 	if !adminScoped {
+		// D-171: scope by the caller's full (tenant, user) so the
+		// registry hydrates the catalog and a closed/past session created
+		// by a prior process is inspectable after a restart.
 		regFilter.TenantIDs = []string{id.TenantID}
+		regFilter.UserIDs = []string{id.UserID}
 	}
 	snaps, err := p.lister.ListSnapshots(ctx, regFilter)
 	if err != nil {

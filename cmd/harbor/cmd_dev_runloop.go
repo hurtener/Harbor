@@ -667,21 +667,33 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// per-step build) so subsequent steps see an empty slice.
 	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
 
+	// Phase 107f (D-176) — pre-resolve the session-artifact manifest so
+	// the planner renders a read-only `<session_artifacts>` block listing
+	// every artifact already in this session (uploads + prior tool
+	// results), each fetchable by ref via `artifact_fetch`. List is
+	// SESSION-scoped (TaskID empty wildcard); a List error yields NO
+	// manifest (logged Warn) — the turn still proceeds, never a
+	// fabricated or partial manifest (CLAUDE.md §5 fail-soft on the
+	// awareness aid). Newest-first ordering + cap live in the resolver /
+	// renderer.
+	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple:      q,
-			Query:          task.Query,
-			Goal:           task.Query, // initial goal = user query; runtime REDIRECT may mutate
-			MemoryBlocks:   memBlocks,
-			SkillsContext:  skillsCtx,
-			RepairCounters: counters,
-			PlanningHints:  d.planningHints, // nil when operator left the config block empty
-			Catalog:        catalogView,     // Phase 83i (D-152) — populates <available_tools>
-			Trajectory:     traj,            // Phase 83i (D-152) — runloop appends per step
-			Emit:           emit,            // Phase 83i (D-152) — planner-side telemetry
-			OnChunk:        onChunk,         // Phase 107 — per-token streaming to bus
-			InputArtifacts: inputArtifacts,  // Round-7 F11 / D-166 — first-turn multimodal inputs
+			Quadruple:        q,
+			Query:            task.Query,
+			Goal:             task.Query, // initial goal = user query; runtime REDIRECT may mutate
+			MemoryBlocks:     memBlocks,
+			SkillsContext:    skillsCtx,
+			RepairCounters:   counters,
+			PlanningHints:    d.planningHints,  // nil when operator left the config block empty
+			Catalog:          catalogView,      // Phase 83i (D-152) — populates <available_tools>
+			Trajectory:       traj,             // Phase 83i (D-152) — runloop appends per step
+			Emit:             emit,             // Phase 83i (D-152) — planner-side telemetry
+			OnChunk:          onChunk,          // Phase 107 — per-token streaming to bus
+			InputArtifacts:   inputArtifacts,   // Round-7 F11 / D-166 — first-turn multimodal inputs
+			SessionArtifacts: sessionArtifacts, // Phase 107f / D-176 — read-only cross-turn manifest
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
@@ -896,6 +908,54 @@ func (d *perTaskRunLoopDriver) resolveInputArtifacts(
 		out = append(out, view)
 	}
 	return out
+}
+
+// resolveSessionArtifacts builds the session-artifact manifest the
+// planner renders into the read-only `<session_artifacts>` block (Phase
+// 107f — D-176). It lists `ArtifactStore.List` scoped to the run's
+// `(tenant, user, session)` triple — TaskID is left empty so the
+// wildcard match returns every artifact in the session (uploads + tool-
+// and flow-materialised results from prior turns), not just the current
+// task's.
+//
+// Fail-soft (CLAUDE.md §5): the manifest is an awareness aid, not a
+// correctness primitive. A nil store, or a List error, yields NO
+// manifest (a Warn is logged) and the turn proceeds — NEVER a fabricated
+// or partial manifest. The model simply is not told about artifacts that
+// turn.
+//
+// Ordering: newest-first by the artifact's `created_at` provenance stamp
+// when present, with the content-addressed ID as a stable tiebreaker so
+// the map-iteration-order non-determinism of `List` does not leak into
+// the prompt (a stable prefix preserves KV-cache windows). The renderer
+// caps the rendered rows and appends an explicit "+K more" line on
+// overflow (AC-6) — this function returns the FULL slice so the renderer
+// can compute the overflow count.
+func (d *perTaskRunLoopDriver) resolveSessionArtifacts(
+	ctx context.Context, sessionQ identity.Quadruple,
+) []planner.ArtifactManifestEntry {
+	if d.artifactStore == nil {
+		return nil
+	}
+	scope := artifacts.ArtifactScope{
+		TenantID:  sessionQ.TenantID,
+		UserID:    sessionQ.UserID,
+		SessionID: sessionQ.SessionID,
+		// TaskID intentionally empty — session-wide wildcard listing.
+	}
+	refs, err := d.artifactStore.List(ctx, scope)
+	if err != nil {
+		d.logger.Warn("perTaskRunLoopDriver: session-artifact List failed; proceeding with no manifest",
+			slog.String("tenant_id", sessionQ.TenantID),
+			slog.String("user_id", sessionQ.UserID),
+			slog.String("session_id", sessionQ.SessionID),
+			slog.String("err", err.Error()))
+		return nil
+	}
+	// planner.BuildArtifactManifest is the SINGLE manifest builder shared
+	// with harbortest/devstack (§17.6 parity) — ordering, provenance
+	// resolution, and the metadata-only projection live there.
+	return planner.BuildArtifactManifest(refs)
 }
 
 func (d *perTaskRunLoopDriver) Close(_ context.Context) error {

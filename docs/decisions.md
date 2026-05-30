@@ -4151,3 +4151,127 @@ These need go-sdk RC support; the plan can be authored against the RC SEPs now s
 **Known limitations, named here.** (1) Eager push wake-on-resolution is deferred (call 2) — a steering-runloop follow-up. (2) A retain-turn spawn / `AwaitTask` holds a planner step open until the child resolves (bounded by ctx); fine for short V1.1.x dev sub-goals, surfaces as a deadline error observation if a child never terminates — never a hang. (3) Background tasks use the in-mem driver and do not survive a `harbor dev` restart (Phase 87 owns durability). (4) The spawn-depth cap bounds depth, not breadth.
 
 **Cross-references.** Builds on D-056 (the spawn/await emission + group surface), D-032 (wake modes), D-152 (the dev `ToolExecutor` seam), D-097/D-098 (the per-task driver + FSM bridge), D-167/D-169 (the native + parallel cutover this rides behind). Phase plan: `docs/plans/phase-107e-spawn-await-dev-executor-dispatch.md`. Informed by brief 02 (planner + steering) and brief 05 (tasks).
+
+---
+
+## D-171 — Per-request session model: connection token authenticates (tenant, user); session is chosen per-request via X-Harbor-Session; create-on-first-use; boot is crash-proof
+
+**Date:** 2026-05-29
+
+**Context.** `harbor dev` minted one dev JWT whose `session` claim was hardcoded to `"dev"`; `control.start` folded identity from that token, so EVERY conversation wrote to session `"dev"`. Worse, boot called `sessionRegistry.Open("dev", ...)`: once the persisted `"dev"` record was Closed (idle-GC'd or operator-closed), the next boot hit `ErrReopenAfterClose` and **crashed** — restarting `harbor dev` against an existing state dir required deleting the state DB. There was effectively one session; you could not create new conversations or reload past ones.
+
+**Decision.** The connection token is a **per-backend credential, like an API key**: it authenticates `(tenant, user, scopes)` and does NOT pin a session. The **session is dynamic — chosen per-request** via the `X-Harbor-Session` header, scoped under the token's verified `(tenant, user)`. The token's `session` claim becomes a back-compat **default** used only when the header is absent. The multi-isolation triple `(tenant, user, session)` stays mandatory and enforced (CLAUDE.md §6); only the SOURCE of `session` changed from JWT-claim to per-request-under-token-scope.
+
+**What changed (runtime-only + one contract doc).**
+
+- `internal/protocol/auth/middleware.go` — after JWT verification, the middleware re-folds the ctx identity: `X-Harbor-Session` (when present) REPLACES the claim's session; tenant + user stay token-verified (a header can never widen the principal). A verified token with empty tenant/user is a 500 (validator bug); a request that resolves to no session is a 401 `identity_required`.
+- `internal/sessions` — new `EnsureOpen(ctx, ident)` create-on-first-use entry point + a persistent per-`(tenant, user)` **session catalog** (`session.catalog` Kind) so a fresh process re-discovers a prior process's sessions on the read path (the StateStore has no List; the typed wrapper owns enumeration). `ListSnapshots` / `Inspect` hydrate from the catalog. `EnsureOpen` on a CLOSED session id fails loud (`ErrReopenAfterClose`) — no silent revive (RFC §6.9).
+- `internal/protocol` — `SessionEnsurer` seam + `WithSessionEnsurer` option; `dispatchStart` calls it so a `start` on a not-yet-existing session materialises its row before spawning the task.
+- `cmd/harbor/cmd_dev.go` — **removed the boot-time `Open("dev")`** (the crash). The registry is constructed alongside the ControlSurface and wired with the ensurer. `harbor dev` now boots clean against an existing state dir regardless of session state.
+- `harbortest/devstack` — mirrors the production wiring (D-094): registry + ensurer + `sessions.*` routes.
+
+**Tests.** Restart-resilience (boot twice over the same SQLite dir, second boot healthy + sessions re-discovered); multi-session isolation under one token (N concurrent sessions, no cross-talk, `-race`); create-on-first-use; closed-session rejection; per-request session override in the auth middleware (header overrides claim; header cannot widen tenant/user). Integration: `test/integration/session_model_d171_test.go` + the updated `TestE2E_Phase72_BodyVsTokenIdentityMismatch` (now asserts the per-request-session contract).
+
+**RFC delta flagged for coordinator audit.** RFC §8 / CLAUDE.md §6/§8 describe identity as flowing "via JWT." This decision sources `tenant`+`user`+`scopes` from the JWT (unchanged) but sources `session` per-request (header), validated under the token's `(tenant, user)`. The isolation triple and fail-closed posture are unchanged; only the session SOURCE moves. Proposed wording: "The connection credential carries `(tenant, user, scopes)`; the session is selected per-request within the credential's `(tenant, user)` scope and is never client-widenable." Shipped in the dev posture now; flagged here for an RFC-text reconciliation PR.
+
+**Known limitation.** `sessions.list` / `sessions.inspect` survive restart (persistent catalog + StateStore-backed records), but the task registry is in-memory and not rehydrated on boot, so `tasks.list` for a pre-restart session returns empty after a restart (the session row reloads; its task rows do not). Full task durability is a separate post-D-171 workstream. Documented in `docs/notes/session-model-contract.md`.
+
+**Cross-references.** Builds on D-082 (Phase 61 auth middleware + ctx-first identity), D-122 (`sessions.*` Protocol surface), D-108 (`SessionLister`), RFC §6.9 (session lifecycle / reopen-after-close), RFC §8 (Protocol auth). Contract doc: `docs/notes/session-model-contract.md`.
+
+---
+
+## D-172 — Deprecate Phase 85g; ship MCP Apps as the 109a–c wave under V1.1.x, scheduled right after Phase 108
+
+**Date:** 2026-05-29
+
+**Context.** Phase 85g ("MCP Apps host") sat in the post-V1 85-band with status "Revisit after RC-final (2026-07-28)" on the premise that MCP Apps was experimental in the 2025-11-25 spec and the RC might reshape `_meta.ui.resourceUri` or move Apps into a versioned extension. Two facts overturn that premise: (1) **MCP Apps is already a stable, independently-versioned extension** (`io.modelcontextprotocol/ui`, the `ext-apps` repo) — it is NOT gated on the July RC and the RC does not change it; (2) the extension ships an **official, framework-agnostic host bridge** (`@modelcontextprotocol/ext-apps` AppBridge), so the single largest risk the 85g plan carried — hand-rolling the `postMessage` JSON-RPC dialect, the `ui/initialize` handshake, lifecycle, and message validation — disappears (we consume it, we do not author it). A code audit also found 85g's "Apps is purely Console-side; the runtime driver is unchanged" non-goal to be **factually wrong**: the MCP driver does not parse `_meta.ui.resourceUri` (`content.go` has no `_meta` slot), `tool.completed` carries no result content, and the runtime's `ReadResource` is not exposed on the Protocol — so there is real runtime + Protocol work before any Console renderer can fetch a `ui://` resource.
+
+**Decision.** **Deprecate Phase 85g** (plan file kept as historical context, marked deprecated) and **supersede it with a three-phase "MCP Apps host" wave under V1.1.x, scheduled immediately after Phase 108**:
+
+- **109a — MCP Apps runtime + Protocol surface** (`internal/tools/drivers/mcp` + `internal/protocol` + `cmd/harbor`): parse `_meta.ui.resourceUri`, recognise `ui://` resources, project the app reference (resourceUri + negotiated DisplayMode + RawHTMLTrusted) onto the tool-result Protocol surface, add the `mcp.servers.read_resource` method (identity-scoped, D-026 heavy-content aware), negotiate `DisplayModes` from the server's `io.modelcontextprotocol/ui` capability (replacing the static `registry.go` placeholder), and add an app-initiated-tool-call proxy method that routes through the existing approval/OAuth/identity tool-safety path.
+- **109b — Console MCP Apps host** (`web/console`): the sandboxed-iframe renderer in the shared chat module, the official AppBridge in manual-handler mode (see D-173), and the **inline** DisplayMode. Consumes 109a's surface — this is the §13 same-wave consumer for 109a's primitives.
+- **109c — MCP Apps DisplayMode layout** (`web/console`): the Playground page-level layout state machine for **fullscreen** (app replaces chat + composer; multi-tab) and **pip** (50/50 resizable split, right rail hidden by default + toggle). `inline` already shipped in 109b.
+
+The wave honours the inline-first incremental cut: 109a+109b prove the bridge + proxy end-to-end with inline rendering; 109c adds the heavier fullscreen/pip layout.
+
+**Numbering note.** The wave claims integers `109a/b/c` as the "MCP Apps host" band, executing right after 108. The 14-round page-by-page visual-polish series that Phase 108 opens continues from the next free integer **after** this band (it is not yet numbered beyond 108); this band does not displace it, it precedes it in execution order.
+
+**Dependency prerequisite (binding).** 109b adds `@modelcontextprotocol/ext-apps` + its peer `@modelcontextprotocol/sdk` to `web/console`. Per CLAUDE.md §13 / §16 this is a dependency addition requiring an **RFC §10 companion update** before/with the phase. These are framework-agnostic TypeScript (core + app-bridge entry points only, never the `/react` entry), so they are not the forbidden React/Vue surface — but the RFC sign-off is still required and is named as a prerequisite risk in the 109b plan.
+
+**Cross-references.** Supersedes the 85g detail block + plan file. Builds on D-062 (DisplayMode + Live-Runtime ≠ Sessions), D-091 (shared chat module + Console deployment posture), D-093 (`protocol.ts` generated), D-026 (context-window safety net), D-120/D-121 (Console renderer registry + design-system conventions). Paired with D-173 (AppBridge manual-handler mode). Plans: `docs/plans/phase-109a-mcp-apps-runtime-protocol.md`, `phase-109b-console-mcp-apps-host.md`, `phase-109c-mcp-apps-displaymode-layout.md`. Briefs: 14 (MCP compliance), 11 (Console/playground), 12 (Console deployment).
+
+---
+
+## D-173 — The MCP Apps host integrates the official AppBridge in manual-handler mode; every app→host call is Protocol-proxied, never a direct MCP connection
+
+**Date:** 2026-05-29
+
+**Context.** The official `@modelcontextprotocol/ext-apps` AppBridge offers two integration modes: (1) **auto-forward**, where the bridge wraps a live MCP `Client` and proxies app requests straight to the MCP server; (2) **manual-handler**, where the host registers handlers (`oncalltool`, `onreadresource`, `onlistresources`, `onlisttools`, `onrequestdisplaymode`, …) and wires each itself. Auto-forward is the natural fit for a host that is itself an MCP client. The Harbor Console is **not** an MCP client — it is a Protocol client of the Harbor Runtime (CLAUDE.md §4.5), and the Runtime owns the MCP southbound connection, the `(tenant, user, session)` isolation boundary, audit redaction, and the unified pause/approval/OAuth tool-safety gates.
+
+**Decision.** The Harbor MCP Apps host MUST integrate the AppBridge in **manual-handler mode only**. Every app→host request — tool call, resource read, resource/prompt list, display-mode change — is wired to the injected Harbor `ProtocolClient` (the 109a methods) → Runtime → MCP southbound. The Console **never opens a direct MCP transport** and never lets the AppBridge wrap an MCP `Client`. Concretely:
+
+- An app-initiated `tools/call` is routed to 109a's app-tool-call proxy, which enters the SAME identity + approval-gate (Phase 31) + tool-side-OAuth (Phase 30) path a planner-initiated call uses. An app call to a gated tool parks on the unified pause primitive exactly as a planner call does — no bypass.
+- An app-initiated `resources/read` is routed to `mcp.servers.read_resource`, scoped to the request identity triple, D-026 heavy-content aware.
+- `postMessage` **origin validation** is mandatory: the host accepts messages only from the expected iframe; a foreign-origin or malformed message is rejected, not executed.
+- The iframe `sandbox` is set with no `allow-same-origin` unless the projected `RawHTMLTrusted` state explicitly permits; strict CSP; no parent-DOM / cookie / `localStorage` access.
+
+**Why.** If the AppBridge opened its own MCP connection (auto-forward), an in-iframe app could call tools and read resources **outside** the runtime's identity scope, audit redaction, and approval/OAuth gates — a direct violation of CLAUDE.md §6 (multi-isolation), §7 (security), and §13 (Console reading runtime internals / bypassing the unified pause primitive). Manual-handler mode makes the Protocol the only path, so the app is structurally confined to what the operator's `(tenant, user, session)` may already do. The 109b test suite asserts the Console opens no direct MCP transport and that an app call to a gated tool still parks.
+
+**Cross-references.** Implements the security posture of D-172's 109b. Builds on D-091 (shared chat module — injected `ProtocolClient`, never a singleton), D-062 (DisplayMode), the unified pause/resume primitive (Phase 50), tool-side OAuth (Phase 30 / D-083), tool-side approval (Phase 31 / D-086). CLAUDE.md §4.5, §6, §7, §13. Plan: `docs/plans/phase-109b-console-mcp-apps-host.md`.
+
+---
+
+## D-174 — Durable memory strategies: the SQL memory drivers delegate to the shared strategy executors; `Summarizer` threads through `memory.Open`
+
+**Date:** 2026-05-30
+
+**Context.** Phases 24 (memory strategies) and 25 (SQLite/Postgres memory drivers) both shipped, but their intersection did not: the `truncation` and `rolling_summary` strategies were only ever implemented in the **inmem** driver. The SQLite + Postgres memory drivers implement `strategy=none` only and return `ErrStrategyNotImplemented` for the rest. And the registry factory `memory.Open` has no `Summarizer` in its `Deps`, so `harbor dev` special-cases `rolling_summary` with a direct `inmem.New(...)` call and rejects every non-inmem driver at boot — the "hardwiring for devs" an operator hit when asking for durable rolling-summary memory. Net effect: durable memory with real recall did not exist; only inmem had the strategies.
+
+**Key architectural finding.** The strategy algorithms are NOT in the inmem driver — they live in a driver-agnostic `internal/memory/strategy/` executor package that persists through an injected `state.StateStore`. The inmem driver is a thin shell delegating to the executor. So the fix is NOT to reimplement truncation/rolling_summary in SQL — it is to make the SQL drivers delegate to the SAME executors with their injected `state.StateStore`, exactly like inmem. Durability then rides on the StateStore writes (a SQL StateStore → durable across restart, proven by a reopen-rehydration test).
+
+**Decision (Phase 25a).**
+
+- Add `Summarizer memory.Summarizer` to `memory.Deps`; `memory.Open` validates it (required for `rolling_summary`, on every driver) and routes it to the driver factory → the executor `Deps`.
+- The SQLite + Postgres memory drivers delegate to `strategy.StrategyExecutor` (using their `state.StateStore` dep), gaining all three strategies; the `ErrStrategyNotImplemented` rejections and the `Rejects*Strategy` guard tests are removed.
+- `cmd/harbor/cmd_dev.go` collapses to a single `memory.Open(ctx, cfg, Deps{State, Bus, Summarizer})` call; the rolling_summary-only-inmem error is deleted. The summariser still defaults to the agent's configured LLM (`llmsummarizer.New(llmClient)`) — no separate summariser model, no special-case.
+- **Fail-loud preserved (CLAUDE.md §13):** `rolling_summary` without a `Summarizer` errors at `memory.Open` on all drivers; the registry default is NEVER a stub summariser.
+- The memory conformance suite runs `{none, truncation, rolling_summary} × {inmem, sqlite, postgres}`. Rolling-summary snapshots keep the summary because Snapshot/Restore go through the executor's own Summary-bearing record (`strategy.memoryStateRecord{Strategy, Turns, Summary}`) on every driver; the exported `memory.Record` (turns-only, no `Summary`) is unchanged and remains a Console-facing turns projection — it is no longer on the persistence path, so nothing drops the summary.
+
+**Cross-references.** Completes Phase 24 (strategies) × Phase 25 (SQL drivers). Builds on Phases 15/16 (SQLite/Postgres StateStore — the durable backing), the §13 primitive-with-consumer rule (`Deps.Summarizer` + its `cmd_dev` consumer land together), brief 02 (fail-loud memory), brief 13 (memory injection / recall). Plan: `docs/plans/phase-25a-durable-memory-strategies.md`. The dev binary's prior special-case it replaces is the one referenced by `docs/plans/phase-25-memory-drivers.md`.
+
+---
+
+## D-175 — Per-MCP-server + per-tool tool-policy config (`policy:` / `tool_policies:` in YAML); projection via a cycle-free `ProjectedToolPolicy`
+
+**Date:** 2026-05-30
+
+**Context.** Tool retry/timeout was the hardcoded `tools.DefaultPolicy()` (30 s per-attempt deadline, 4 total attempts) with NO operator knob — `MCPServerConfig` had no policy field. A slow/throttled tool (a YouTube metadata call over `uvx mcp-youtube` → yt-dlp) burned ~4×30 s = ~128 s before failing, and the operator could not tune it. The MCP driver already carried an unused per-server `DefaultPolicy` slot (`mcp.go`) but it was never wired from config.
+
+**Decision.** Phase 26b exposes the policy as operator YAML on each MCP server: a `policy: { max_attempts, timeout_ms, retry_on, backoff_* }` block (per-server default) plus a `tool_policies: { <tool-name>: { … } }` map (per-tool overrides). The YAML uses **`max_attempts` = TOTAL attempts including the first** (projected to `tools.ToolPolicy.MaxRetries = max_attempts - 1`), because operators think in total attempts, not retries. Per-field zero-value fall-through is preserved (a `policy:` that sets only `timeout_ms` keeps the default attempt count) — the projection never substitutes a default itself; `tools.ToolPolicy.resolved()` does at dispatch.
+
+**Two implementation subtleties (settled).**
+
+- **Import cycle → `ProjectedToolPolicy`.** `internal/config` cannot import `internal/tools` (`tools → events → config` cycle). So the single config→policy interpretation seam, `config.ToolPolicyConfig.ToToolPolicy()`, returns a cycle-free primitive image `config.ProjectedToolPolicy`; the binary entry point (`cmd/harbor`) does the trivial primitive→`tools.ToolPolicy` copy. The `tools.ToolPolicy` struct stays the single definition (CLAUDE.md §13); there is exactly ONE interpreter of the operator fields. This is a §4.3 deviation from the plan (which placed the projection's return type as `tools.ToolPolicy`); justified by the hard cycle.
+- **`max_attempts: 1` needs an explicit-empty `RetryOn`.** Because `resolved()` treats a zero `MaxRetries` on an otherwise-set policy as "inherit the default 3 retries", `MaxRetries: 0` alone does NOT pin a single attempt. The policy shell reads an EXPLICIT empty (non-nil) `RetryOn` as "retry on nothing". So when the operator asks for `max_attempts: 1` and names no `retry_on`, the projection sets a `RetryOnEmpty` flag and `cmd/harbor` materialises an empty non-nil `RetryOn` — making one attempt mean one attempt.
+
+**Tests.** Projection off-by-one + per-field fall-through + retry_on mapping + unknown-class rejection; MCP integration: a per-tool `max_attempts: 1` override makes exactly one attempt while a sibling tool uses the server default of four; concurrent-reuse (100 concurrent calls across two differently-policied tools, no cross-bleed, goroutine baseline); a "no policy → DefaultPolicy" regression. `go test -race ./internal/config/... ./internal/tools/drivers/mcp/...` green.
+
+**Cross-references.** Builds on D-024 (`tools.ToolPolicy` + `RunWithPolicy`), the §4.4 MCP seam (Phase 28). Validation in `internal/config/validate.go`; example in `examples/harbor.yaml`; `mcp`/`tools` operator skills updated (§18). Plan: `docs/plans/phase-26b-per-source-tool-policy-config.md`.
+
+---
+
+## D-176 — Session artifact manifest: the run loop injects a read-only `<session_artifacts>` block each turn so the planner stays aware of artifacts across turns
+
+**Date:** 2026-05-30
+
+**Context.** A user upload, or a tool result materialised above the heavy-output threshold (D-026), becomes a session-scoped artifact the model can read via the `artifact_fetch` builtin. But the model learns the artifact's ref ONLY on the turn it is created (from the input `ArtifactStub` or the heavy-result summary). On the next turn the ref is gone from context, so the model cannot iterate on an uploaded file or a prior tool output even though `artifact_fetch` already resolves session-scoped (the artifact is still readable — the model just doesn't know it exists). A second, latent issue: artifact provenance is keyed inconsistently — uploads set `Source["source"]="user_upload"`, but tool/flow artifacts record the producer under `Source["tool"]`/`Source["producer"]` and leave the canonical `"source"` blank, so `artifacts.list` (and the Console Artifacts page) show blank source for them.
+
+**Decision (Phase 107f).** Each planner turn, the run loop lists the session's artifacts (`ArtifactStore.List` scoped to `(tenant, user, session)` — already in scope) and pre-resolves a metadata-only manifest onto a new `planner.RunContext.SessionArtifacts []ArtifactManifestEntry` field (the D-166 pattern — the planner does no I/O, reads `rc` only). The ReAct planner renders a read-only `<session_artifacts>` system block (one line per artifact: `ref · filename (mime, size) · provenance`) with the same UNTRUSTED-metadata anti-injection framing the memory blocks use, instructing the model it may `artifact_fetch <ref>` to read/iterate on any of them. Empty session → NO block (no fabricated rows). Capped at 20 newest-first with an explicit `+K more (use artifact_fetch by ref)` line — never a silent truncation. A `List` error fails soft: a logged Warn and NO manifest that turn — never a fabricated or partial one (CLAUDE.md §5).
+
+**Provenance canonicalisation (the latent-bug fix).** The dev tool-executor stamps `Source["source"]="tool"` and the flow catalog `Source["source"]="flow"`, in addition to the producer/tool name. `internal/protocol/artifacts.go::projectRow` resolves the source discriminator from an else-chain (`"source"` → `"tool"` → `"producer"`/`"flow"`) so even artifacts created before this phase project a correct non-blank source. The closed `types.ArtifactSource` enum is NOT extended: `"tool"` is an existing member; `"flow"` maps to `ArtifactSourceSystem` (a flow run is runtime-produced); the richer `"flow: <name>"` string surfaces only in the manifest provenance, never on the wire enum.
+
+**Shared builder + parity.** `planner.BuildArtifactManifest` + `planner.ResolveProvenance` are the single source the run loop AND `harbortest/devstack` both call, so production and the harness cannot diverge (§17.6). `BuildArtifactManifest` imposes a deterministic newest-first (`created_at` desc, ID tiebreak) order because `ArtifactStore.List` order is interface-unspecified — keeping the prompt prefix stable across turns.
+
+**Tests.** Provenance resolver table; manifest ordering + cap + empty; the read-only render framing + the `artifact_fetch` instruction; the Protocol source projection (a tool artifact no longer projects blank); the run-loop build with a prior-turn artifact + a user upload; identity scoping (session A's artifacts never appear for session B); the fail-soft List-error path. `go test -race ./internal/planner/... ./internal/protocol/... ./cmd/harbor/... ./harbortest/...` green.
+
+**Cross-references.** Builds on Phases 17–19 (Artifacts + `ArtifactStore.List`), 33 (multimodal upload), 107c (the `artifact_fetch` meta-tool + the heavy-result `ArtifactStub`), D-026 (heavy-content routing — the manifest is metadata-only, never inlines content), D-166 (run-loop pre-resolution of `RunContext` inputs), brief 13 (read-only injected prompt blocks + anti-injection framing). The reserved `memory.ConversationTurn.ArtifactsShown`/`ArtifactsHiddenRefs` fields (brief 04) are NOT wired — a future "new-since-last-turn" delta optimisation. Plan: `docs/plans/phase-107f-session-artifact-manifest.md`.

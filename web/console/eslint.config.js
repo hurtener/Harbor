@@ -30,6 +30,16 @@ export default ts.config(
     }
   },
   {
+    rules: {
+      // Allow underscore-prefixed unused variables (Svelte 5 props that
+      // are destructured but not yet wired in the component).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }
+      ]
+    }
+  },
+  {
     ignores: [
       'build/',
       '.svelte-kit/',

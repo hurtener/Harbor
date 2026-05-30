@@ -137,13 +137,11 @@ func TestInMem_New_DefaultsToStrategyNone(t *testing.T) {
 	defer mem.Close(context.Background())
 }
 
-// TestInMem_RegistryOpen_RejectsRollingSummary asserts that the
-// registry path (which doesn't take Options) rejects
-// rolling_summary because no Summarizer is injectable through the
-// registry. Operators staging rolling_summary today MUST call
-// inmem.New directly; Phase 32+ will land an LLM-backed default
-// summariser the registry resolves automatically.
-func TestInMem_RegistryOpen_RejectsRollingSummary(t *testing.T) {
+// TestInMem_RegistryOpen_RejectsRollingSummaryWithoutSummarizer
+// asserts the fail-loud contract (AC-6): the registry path rejects
+// rolling_summary when no Summarizer is supplied — never a stub
+// fallback (AGENTS.md §13).
+func TestInMem_RegistryOpen_RejectsRollingSummaryWithoutSummarizer(t *testing.T) {
 	bus, store := buildDeps(t)
 	_, err := memory.Open(context.Background(), memory.ConfigSnapshot{
 		Driver:   "inmem",
@@ -152,6 +150,21 @@ func TestInMem_RegistryOpen_RejectsRollingSummary(t *testing.T) {
 	if err == nil {
 		t.Fatal("err=nil, want non-nil (rolling_summary needs summariser)")
 	}
+}
+
+// TestInMem_RegistryOpen_AcceptsRollingSummaryWithSummarizer asserts
+// the Phase 25a (D-174) win: with a Summarizer threaded through
+// `memory.Deps.Summarizer`, rolling_summary is now registry-reachable.
+func TestInMem_RegistryOpen_AcceptsRollingSummaryWithSummarizer(t *testing.T) {
+	bus, store := buildDeps(t)
+	mem, err := memory.Open(context.Background(), memory.ConfigSnapshot{
+		Driver:   "inmem",
+		Strategy: memory.StrategyRollingSummary,
+	}, memory.Deps{State: store, Bus: bus, Summarizer: strategy.EchoSummarizer{}})
+	if err != nil {
+		t.Fatalf("memory.Open(rolling_summary, with summarizer): %v", err)
+	}
+	defer func() { _ = mem.Close(context.Background()) }()
 }
 
 func driverEventsConfig() config.EventsConfig {

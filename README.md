@@ -145,15 +145,24 @@ example.
 
 ## Status
 
-**Harbor v1.0.0.** The V1 surface is complete: the runtime kernel, the Protocol
+**Harbor v1.2.0.** The complete V1 surface — the runtime kernel, the Protocol
 and its conformance suite, the ReAct and Deterministic planners, the three-driver
 persistence triad, the tool transports (in-proc / HTTP / MCP / A2A), the skills
-and memory subsystems, the unified pause/resume primitive, the Console and its
-fourteen pages, and the `harbor` CLI. Cross-tenant isolation, goroutine-leak,
-and chaos conformance harnesses gate every change.
+and memory subsystems, the unified pause/resume primitive, the Console, and the
+`harbor` CLI — now carries a markedly deeper developer experience. The Console
+Playground is a real interactive workbench: live token streaming, reasoning
+traces, native and parallel tool-calling, multi-session conversations, durable
+rolling-summary memory, live tool-call status, and cross-turn artifact awareness
+— held to a binding, page-by-page *verbatim-vs-mock* verification procedure that
+the rest of the Console is being brought through. Conversation memory now runs
+durably under every persistence driver, and tool retry/timeout is operator-
+configurable per MCP server and per tool. Cross-tenant isolation, goroutine-leak,
+and chaos conformance harnesses still gate every change.
 
-Post-V1 work — deeper ReAct prompting, additional planner concretes, a durable
-distributed bus, governance extensions — is tracked in the master phase plan.
+Next: the MCP Apps host (interactive, sandboxed `ui://` resources) and the
+remaining Console page-polish waves. Post-V1 work — additional planner concretes,
+a durable distributed bus, governance extensions — is tracked in the master phase
+plan.
 
 ## Releases
 

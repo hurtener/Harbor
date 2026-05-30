@@ -540,8 +540,12 @@ type ModelProfile struct {
 	OutputMode OutputMode
 	// DefaultMaxTokens — Phase 36b's identity-tier override target.
 	DefaultMaxTokens *int
-	// ReasoningEffort — request-level default; req.ReasoningEffort
-	// overrides per call.
+	// ReasoningEffort — request-level default applied by the
+	// corrections layer (`corrections.Complete`) when the caller left
+	// `CompleteRequest.ReasoningEffort` empty; an explicit per-call
+	// value overrides it. Maps to the provider reasoning param (bifrost
+	// `ChatReasoning.Effort`, or `Extra["reasoning_effort"]` under
+	// `ReasoningRouteThinking`).
 	ReasoningEffort ReasoningEffort
 	// CostOverrides — per-1M-token rates when the provider doesn't
 	// report cost (some OpenRouter routes don't). Phase 36a reads.

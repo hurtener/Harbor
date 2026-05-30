@@ -24,6 +24,8 @@ type mockServer struct {
 	server          *mcpsdk.Server
 	flakyTarget     atomic.Int64 // when > 0, the first N flaky calls return IsError
 	flakyAttempts   atomic.Int64
+	alwaysFailCount atomic.Int64 // per-tool attempt counters for the always-erroring siblings
+	alwaysFail2     atomic.Int64
 	identityCapture sync.Map // map[string]map[string]any — keyed by tool name
 }
 
@@ -96,6 +98,48 @@ func newMockServer() *mockServer {
 			}
 			return &mcpsdk.CallToolResult{
 				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: fmt.Sprintf("ok: attempt %d", n)}},
+			}, nil, nil
+		},
+	)
+
+	// always_fail / always_fail2: every call returns a transient-class
+	// IsError, incrementing a per-tool attempt counter. Used by the
+	// Phase 26b per-tool-policy tests to assert exact attempt counts: a
+	// tool with a per-tool override of max_attempts:1 makes exactly ONE
+	// attempt; a sibling on the server default makes the default count.
+	mcpsdk.AddTool(srv,
+		&mcpsdk.Tool{
+			Name:        "always_fail",
+			Description: "Always returns a transient error.",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+		func(ctx context.Context, req *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
+			n := m.alwaysFailCount.Add(1)
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: fmt.Sprintf("transient: attempt %d", n)}},
+				IsError: true,
+			}, nil, nil
+		},
+	)
+	mcpsdk.AddTool(srv,
+		&mcpsdk.Tool{
+			Name:        "always_fail2",
+			Description: "Always returns a transient error (sibling).",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+		func(ctx context.Context, req *mcpsdk.CallToolRequest, _ any) (*mcpsdk.CallToolResult, any, error) {
+			n := m.alwaysFail2.Add(1)
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: fmt.Sprintf("transient: attempt %d", n)}},
+				IsError: true,
 			}, nil, nil
 		},
 	)

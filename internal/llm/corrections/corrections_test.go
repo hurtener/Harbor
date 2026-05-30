@@ -229,6 +229,168 @@ func TestCorrections_ReasoningEffort_ThinkingRouting(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Profile-level ReasoningEffort default (the v1.1 reasoning-wiring fix)
+// ---------------------------------------------------------------------------
+
+// TestCorrections_ReasoningEffort_ProfileDefaultApplied proves the
+// corrections layer copies `ModelProfile.ReasoningEffort` onto a request
+// that left `CompleteRequest.ReasoningEffort` empty. Before the fix the
+// react planner built `CompleteRequest{Messages: ...}` with no effort,
+// the profile knob (`model_profiles[<model>].reasoning_effort`) was
+// dead, and reasoning-capable models returned no reasoning.
+func TestCorrections_ReasoningEffort_ProfileDefaultApplied(t *testing.T) {
+	const model = "openai/gpt-5.4"
+	profile := llm.ModelProfile{
+		ContextWindowTokens: 400_000,
+		ReasoningEffort:     llm.ReasoningMedium,
+		// No Corrections.ReasoningEffortRouting — default routing keeps
+		// the effort on the top-level field (bifrost ChatReasoning.Effort).
+	}
+	cfg := snapshotWithProfile(model, profile)
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, cfg)
+
+	// Request intentionally omits ReasoningEffort, mimicking the planner.
+	req := makeRequest(model, []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("think step by step")}},
+	})
+	if req.ReasoningEffort != "" {
+		t.Fatalf("precondition: request should start with empty ReasoningEffort")
+	}
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got, ok := rec.lastRequest()
+	if !ok {
+		t.Fatalf("recorder did not receive a request")
+	}
+	if got.ReasoningEffort != llm.ReasoningMedium {
+		t.Errorf("ReasoningEffort: got %q want %q (profile default not applied)",
+			got.ReasoningEffort, llm.ReasoningMedium)
+	}
+}
+
+// TestCorrections_EmptyModel_DefaultsFromSnapshot_ThenAppliesEffort is
+// the regression test for the v1.1 reasoning-wiring bug: the react
+// planner builds `CompleteRequest{Messages: ...}` with an EMPTY Model
+// (the LLM client chain is meant to default it from `cfg.Model`). The
+// corrections layer wraps OUTSIDE the safety pass that does the
+// defaulting, so before the fix it looked up `ModelProfiles[""]`,
+// missed, bypassed, and the profile's reasoning_effort never reached the
+// driver. This test sends an empty-Model request and asserts the layer
+// (a) defaults the Model from the snapshot and (b) then applies the
+// profile's ReasoningEffort.
+func TestCorrections_EmptyModel_DefaultsFromSnapshot_ThenAppliesEffort(t *testing.T) {
+	const model = "openai/gpt-5.4"
+	cfg := llm.ConfigSnapshot{
+		Driver:               "bifrost",
+		Model:                model, // the configured default the planner relies on
+		ContextWindowReserve: 0.05,
+		HeavyOutputThreshold: 32_768,
+		ModelProfiles: map[string]llm.ModelProfile{
+			model: {ContextWindowTokens: 400_000, ReasoningEffort: llm.ReasoningMedium},
+		},
+	}
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, cfg)
+
+	// Request mimics the planner exactly: NO Model, NO ReasoningEffort.
+	req := llm.CompleteRequest{
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("think step by step")}},
+		},
+	}
+	if req.Model != "" {
+		t.Fatalf("precondition: request should start with empty Model")
+	}
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got, ok := rec.lastRequest()
+	if !ok {
+		t.Fatalf("recorder did not receive a request")
+	}
+	if got.Model != model {
+		t.Errorf("Model: got %q want %q (snapshot default not applied)", got.Model, model)
+	}
+	if got.ReasoningEffort != llm.ReasoningMedium {
+		t.Errorf("ReasoningEffort: got %q want %q (profile default not applied after Model default)",
+			got.ReasoningEffort, llm.ReasoningMedium)
+	}
+}
+
+// TestCorrections_ReasoningEffort_ExplicitOverridesProfile proves an
+// explicit per-call ReasoningEffort wins over the profile default.
+func TestCorrections_ReasoningEffort_ExplicitOverridesProfile(t *testing.T) {
+	const model = "openai/gpt-5.4"
+	profile := llm.ModelProfile{
+		ContextWindowTokens: 400_000,
+		ReasoningEffort:     llm.ReasoningMedium,
+	}
+	cfg := snapshotWithProfile(model, profile)
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, cfg)
+
+	req := makeRequest(model, []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("think hard")}},
+	})
+	req.ReasoningEffort = llm.ReasoningHigh
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got, _ := rec.lastRequest()
+	if got.ReasoningEffort != llm.ReasoningHigh {
+		t.Errorf("ReasoningEffort: got %q want %q (explicit value should win)",
+			got.ReasoningEffort, llm.ReasoningHigh)
+	}
+}
+
+// TestCorrections_ReasoningEffort_ProfileDefaultThenThinkingRoute proves
+// the profile default flows through the ReasoningRouteThinking step: the
+// applied default lands in `Extra["reasoning_effort"]` and the top-level
+// field is cleared, exactly as an explicit value would.
+func TestCorrections_ReasoningEffort_ProfileDefaultThenThinkingRoute(t *testing.T) {
+	const model = "deepseek/deepseek-reasoner"
+	profile := llm.ModelProfile{
+		ContextWindowTokens: 64_000,
+		ReasoningEffort:     llm.ReasoningHigh,
+		Corrections: llm.CorrectionsProfile{
+			ReasoningEffortRouting: llm.ReasoningRouteThinking,
+		},
+	}
+	cfg := snapshotWithProfile(model, profile)
+	rec := newRecorder()
+	c := wrapRecorder(t, rec, cfg)
+
+	req := makeRequest(model, []llm.ChatMessage{
+		{Role: llm.RoleUser, Content: llm.Content{Text: strPtr("solve")}},
+	})
+	// No explicit effort — the profile default must be picked up THEN routed.
+
+	if _, err := c.Complete(testCtx(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got, _ := rec.lastRequest()
+	if got.ReasoningEffort != "" {
+		t.Errorf("top-level ReasoningEffort should be cleared by thinking route, got %q", got.ReasoningEffort)
+	}
+	gotHint, ok := got.Extra["reasoning_effort"]
+	if !ok {
+		t.Fatalf("Extra[reasoning_effort] not set — profile default did not flow into the thinking route")
+	}
+	if gotHint != "high" {
+		t.Errorf("Extra[reasoning_effort]: got %v want %q", gotHint, "high")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Quirk 4: Response-format envelope translation (Anthropic + JSONOnly)
 // ---------------------------------------------------------------------------
 

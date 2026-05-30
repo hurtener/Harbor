@@ -45,6 +45,15 @@ func (d *downgradeClient) Complete(ctx context.Context, req llm.CompleteRequest)
 		return llm.CompleteResponse{}, err
 	}
 
+	// Default the model from the snapshot when the caller left it empty
+	// (the react planner does — see safety.go). This wrapper sits OUTSIDE
+	// corrections + safety, so without the default the profile lookup
+	// below would miss `ModelProfiles[""]` and the downgrade chain would
+	// silently no-op even when the operator configured an OutputMode.
+	if req.Model == "" {
+		req.Model = d.cfg.Model
+	}
+
 	// Resolve the starting mode from the profile. If no profile or
 	// the mode is unset, the wrapper is a pure pass-through — the
 	// inner safety pass already rejects unknown models, so we don't

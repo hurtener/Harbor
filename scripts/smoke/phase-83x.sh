@@ -72,17 +72,21 @@ assert_grep_present \
     'W7 Kanban grid widened to five columns'
 
 # -----------------------------------------------------------------------------
-# W8 — dev boot Opens the dev SessionRegistry row so the Sessions page
-# shows the active session instead of "No sessions match these filters".
+# W8 (superseded by D-171) — dev boot no longer Opens a fixed dev session
+# at boot (that boot-time Open crashed when the persisted "dev" session
+# was idle-GC-closed). Sessions are now create-on-first-use via the
+# SessionEnsurer, and a persistent catalog backs the Sessions page across
+# restarts. Assert the old crash-causing boot Open is GONE and the new
+# ensurer wiring is present.
 # -----------------------------------------------------------------------------
-assert_grep_present \
+assert_grep_absent \
     'sessionRegistry.Open\(devSessCtx, DevSession, devID\)' \
     'cmd/harbor/cmd_dev.go' \
-    'W8 dev boot opens the dev SessionRegistry row at boot'
+    'W8/D-171 dev boot no longer Opens a fixed dev session at boot (crash fix)'
 assert_grep_present \
-    'sessions.ErrSessionAlreadyOpen' \
+    'WithSessionEnsurer' \
     'cmd/harbor/cmd_dev.go' \
-    'W8 dev-session open is idempotent (already-open is swallowed)'
+    'W8/D-171 dev wires the SessionEnsurer (create-on-first-use)'
 
 # -----------------------------------------------------------------------------
 # W9 — Events page empty-state copy names the `events.driver: durable`

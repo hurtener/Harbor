@@ -37,8 +37,10 @@ import (
 	"github.com/hurtener/Harbor/internal/memory/conformancetest"
 	memorydriverinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	memorydriverpostgres "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
+	"github.com/hurtener/Harbor/internal/memory/strategy"
 	"github.com/hurtener/Harbor/internal/state"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	_ "github.com/hurtener/Harbor/internal/state/drivers/postgres"
 )
 
 const (
@@ -134,29 +136,46 @@ func appendSearchPath(dsn, schema string) string {
 }
 
 // TestPostgres_ConformanceSuite invokes the canonical conformance
-// suite against a Postgres connection. Each subtest gets its own
-// fresh driver + TRUNCATE between cases so state cannot bleed.
+// suite against a Postgres connection under all three strategies
+// (Phase 25a, D-174). Each strategy gets its own fresh schema; each
+// subtest gets its own fresh driver + fresh (inmem) StateStore so
+// strategy state cannot bleed. The rolling_summary leg injects a stub
+// Summarizer via `memory.Deps.Summarizer`.
 func TestPostgres_ConformanceSuite(t *testing.T) {
 	baseDSN := requireDSN(t)
-	dsn := freshSchema(t, baseDSN)
 
-	conformancetest.Run(t, func() conformancetest.Harness {
-		bus, store := buildDeps(t)
-		m, err := memorydriverpostgres.New(memory.ConfigSnapshot{
-			Driver: "postgres", DSN: dsn, Strategy: memory.StrategyNone,
-		}, memory.Deps{State: store, Bus: bus})
-		if err != nil {
-			t.Fatalf("postgres.New: %v", err)
-		}
-		truncateAll(t, dsn)
-		return conformancetest.Harness{
-			Store: m,
-			Bus:   bus,
-			Cleanup: func() {
-				_ = m.Close(context.Background())
-			},
-		}
-	})
+	strategies := []memory.Strategy{
+		memory.StrategyNone,
+		memory.StrategyTruncation,
+		memory.StrategyRollingSummary,
+	}
+	for _, s := range strategies {
+		t.Run(string(s), func(t *testing.T) {
+			dsn := freshSchema(t, baseDSN)
+			conformancetest.Run(t, func() conformancetest.Harness {
+				bus, store := buildDeps(t)
+				deps := memory.Deps{State: store, Bus: bus}
+				if s == memory.StrategyRollingSummary {
+					deps.Summarizer = strategy.EchoSummarizer{}
+				}
+				m, err := memorydriverpostgres.New(memory.ConfigSnapshot{
+					Driver: "postgres", DSN: dsn, Strategy: s, BudgetTokens: 64,
+				}, deps)
+				if err != nil {
+					t.Fatalf("postgres.New(%q): %v", s, err)
+				}
+				truncateAll(t, dsn)
+				return conformancetest.Harness{
+					Store:    m,
+					Bus:      bus,
+					Strategy: s,
+					Cleanup: func() {
+						_ = m.Close(context.Background())
+					},
+				}
+			})
+		})
+	}
 }
 
 // truncateAll wipes the memory_state table between conformance
@@ -219,15 +238,19 @@ func TestPostgres_New_RequiresBus(t *testing.T) {
 	}
 }
 
-// TestPostgres_New_RejectsTruncationStrategy pins the
-// `ErrStrategyNotImplemented` guard.
-func TestPostgres_New_RejectsTruncationStrategy(t *testing.T) {
+// TestPostgres_New_RejectsRollingSummaryWithoutSummarizer pins the
+// fail-loud contract (AC-6): rolling_summary with no Summarizer must
+// error — never a stub fallback (AGENTS.md §13). DSN-gated because
+// the executor is only reached after the eager ping + migration.
+func TestPostgres_New_RejectsRollingSummaryWithoutSummarizer(t *testing.T) {
+	baseDSN := requireDSN(t)
+	dsn := freshSchema(t, baseDSN)
 	bus, store := buildDeps(t)
 	_, err := memorydriverpostgres.New(memory.ConfigSnapshot{
-		Driver: "postgres", DSN: "postgres://x", Strategy: memory.StrategyTruncation,
+		Driver: "postgres", DSN: dsn, Strategy: memory.StrategyRollingSummary,
 	}, memory.Deps{State: store, Bus: bus})
-	if !errors.Is(err, memory.ErrStrategyNotImplemented) {
-		t.Fatalf("err=%v, want errors.Is ErrStrategyNotImplemented", err)
+	if err == nil {
+		t.Fatal("err=nil, want non-nil for rolling_summary without summarizer")
 	}
 }
 
@@ -335,6 +358,134 @@ func TestPostgres_CrossDriver_ByteStableRoundTrip(t *testing.T) {
 	if len(rec2.Turns) != 0 {
 		t.Errorf("postgres record turns=%d, want 0", len(rec2.Turns))
 	}
+}
+
+// TestPostgres_RestartRehydration is the durability proof (AC-5) for
+// the Postgres leg: write turns under a strategy on a Postgres memory
+// store backed by a REAL Postgres `state.StateStore`, Close
+// everything, reopen a fresh state store + memory store against the
+// SAME schema, and assert `GetLLMContext` returns the prior summary +
+// recent turns. DSN-gated.
+func TestPostgres_RestartRehydration(t *testing.T) {
+	baseDSN := requireDSN(t)
+	ctx := context.Background()
+	id := tripleA()
+
+	cases := []struct {
+		name         string
+		strategyName memory.Strategy
+		summarizer   memory.Summarizer
+		wantSummary  bool
+	}{
+		{
+			name:         "rolling_summary",
+			strategyName: memory.StrategyRollingSummary,
+			summarizer:   strategy.EchoSummarizer{},
+			wantSummary:  true,
+		},
+		{
+			name:         "truncation",
+			strategyName: memory.StrategyTruncation,
+			summarizer:   nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// One fresh schema shared by the state store across both
+			// sessions — that schema IS the durable backing.
+			stateDSN := freshSchema(t, baseDSN)
+			memDSN := freshSchema(t, baseDSN)
+			bus := buildBus(t)
+
+			// --- Session 1 ---
+			st1, err := state.Open(ctx, config.StateConfig{Driver: "postgres", DSN: stateDSN})
+			if err != nil {
+				t.Fatalf("state.Open (1): %v", err)
+			}
+			m1, err := memorydriverpostgres.New(memory.ConfigSnapshot{
+				Driver: "postgres", DSN: memDSN, Strategy: tc.strategyName, BudgetTokens: 256,
+			}, memory.Deps{State: st1, Bus: bus, Summarizer: tc.summarizer})
+			if err != nil {
+				t.Fatalf("postgres.New (1): %v", err)
+			}
+			for i := range 6 {
+				if err := m1.AddTurn(ctx, id, memory.ConversationTurn{
+					UserMessage: "u", AssistantResponse: "a",
+				}); err != nil {
+					t.Fatalf("AddTurn %d: %v", i, err)
+				}
+			}
+			patch1, err := m1.GetLLMContext(ctx, id)
+			if err != nil {
+				t.Fatalf("GetLLMContext (1): %v", err)
+			}
+			if tc.wantSummary && patch1.Summary == "" {
+				t.Fatalf("pre-restart: expected non-empty summary")
+			}
+			if len(patch1.RecentTurns) == 0 {
+				t.Fatalf("pre-restart: expected recent turns")
+			}
+			if err := m1.Close(ctx); err != nil {
+				t.Fatalf("m1.Close: %v", err)
+			}
+			if err := st1.Close(ctx); err != nil {
+				t.Fatalf("st1.Close: %v", err)
+			}
+
+			// --- Session 2: reopen against the SAME state schema ---
+			st2, err := state.Open(ctx, config.StateConfig{Driver: "postgres", DSN: stateDSN})
+			if err != nil {
+				t.Fatalf("state.Open (2): %v", err)
+			}
+			defer func() { _ = st2.Close(ctx) }()
+			m2, err := memorydriverpostgres.New(memory.ConfigSnapshot{
+				Driver: "postgres", DSN: memDSN, Strategy: tc.strategyName, BudgetTokens: 256,
+			}, memory.Deps{State: st2, Bus: bus, Summarizer: tc.summarizer})
+			if err != nil {
+				t.Fatalf("postgres.New (2): %v", err)
+			}
+			defer func() { _ = m2.Close(ctx) }()
+
+			patch2, err := m2.GetLLMContext(ctx, id)
+			if err != nil {
+				t.Fatalf("GetLLMContext (2): %v", err)
+			}
+			if tc.wantSummary {
+				if patch2.Summary == "" {
+					t.Errorf("post-restart: lost the summary")
+				}
+				if patch2.Summary != patch1.Summary {
+					t.Errorf("post-restart summary drift:\n pre=%q\npost=%q", patch1.Summary, patch2.Summary)
+				}
+			}
+			if len(patch2.RecentTurns) == 0 {
+				t.Errorf("post-restart: lost recent turns")
+			}
+		})
+	}
+}
+
+// buildBus builds just the EventBus (the rehydration test owns its
+// own StateStore lifecycle).
+func buildBus(t *testing.T) events.EventBus {
+	t.Helper()
+	red, err := audit.Open(context.Background(), config.AuditConfig{})
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              60_000_000_000,
+		DropWindow:               1_000_000_000,
+	}, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close(context.Background()) })
+	return bus
 }
 
 func buildDeps(t *testing.T) (events.EventBus, state.StateStore) {

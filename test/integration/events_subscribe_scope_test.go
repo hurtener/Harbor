@@ -561,13 +561,21 @@ func TestE2E_Phase72_DroppedMiddleware_NoScopeOnCtx_Rejected(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase72_BodyVsTokenIdentityMismatch — scope-degradation
-// regression: the SSE transport reads identity from ctx (Phase 61
-// middleware) — so a header-vs-token mismatch resolves through the
-// JWT, not the carrier header. Asserts the stream opens against the
-// JWT-derived identity, not the carrier identity (defence-in-depth
-// against a caller trying to claim a different identity via headers
-// after the JWT verified).
+// TestE2E_Phase72_BodyVsTokenIdentityMismatch — D-171 per-request
+// session + tenant/user-spoof defence. The connection token verifies
+// (tenant, user); the SESSION is chosen per-request via
+// X-Harbor-Session and REPLACES the token's session claim. The
+// tenant/user carrier headers, by contrast, can NEVER widen the
+// verified principal — the auth middleware honours only X-Harbor-Session.
+//
+// Concretely, with token (t-token, u-token, s-token) and headers
+// X-Harbor-{Tenant,User}=foreign + X-Harbor-Session=s-foreign, the
+// stream must scope to (t-token, u-token, s-foreign):
+//   - the header-chosen session wins (D-171),
+//   - the token tenant/user win (no spoof),
+//   - the token's OWN session (s-token) is NOT received (the request
+//     chose a different session),
+//   - the fully-foreign tenant is NOT received (headers can't widen it).
 func TestE2E_Phase72_BodyVsTokenIdentityMismatch(t *testing.T) {
 	deps := newPhase72Deps(t)
 	defer deps.cleanup()
@@ -578,54 +586,69 @@ func TestE2E_Phase72_BodyVsTokenIdentityMismatch(t *testing.T) {
 	tokenID := identity.Identity{TenantID: "t-token", UserID: "u-token", SessionID: "s-token"}
 	tok := signES256Phase72(t, deps.priv, validClaimsPhase72(tokenID.TenantID, tokenID.UserID, tokenID.SessionID, nil))
 
+	// The identity the request resolves to: token tenant/user + the
+	// header-chosen session (D-171).
+	resolvedID := identity.Identity{TenantID: "t-token", UserID: "u-token", SessionID: "s-foreign"}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/events", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	// Deliberately set DIFFERENT carrier identity headers — the
-	// Phase 61 middleware's ctx-attached identity must win.
+	// The session header is a legitimate per-request override (D-171);
+	// the tenant/user headers are a SPOOF attempt the middleware ignores.
 	req.Header.Set("X-Harbor-Tenant", "t-foreign")
 	req.Header.Set("X-Harbor-User", "u-foreign")
 	req.Header.Set("X-Harbor-Session", "s-foreign")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("open mismatch SSE: %v", err)
+		t.Fatalf("open per-request-session SSE: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("mismatch headers vs token: status = %d, want 200 (JWT wins per Phase 61)", resp.StatusCode)
+		t.Fatalf("per-request session stream: status = %d, want 200", resp.StatusCode)
 	}
 
-	// Publish for the TOKEN identity. The stream should receive it.
-	publishCancelledPhase72(t, deps.bus, tokenID, "r-token-wins")
-	// Publish for the FOREIGN identity. The stream must NOT receive
-	// it (it would prove the carrier headers spoofed the identity).
+	// Publish for the RESOLVED identity (token tenant/user + header
+	// session). The stream SHOULD receive it.
+	publishCancelledPhase72(t, deps.bus, resolvedID, "r-resolved-session")
+	// Publish for the token's OWN session — the request chose a DIFFERENT
+	// session, so the stream must NOT receive it.
+	publishCancelledPhase72(t, deps.bus, tokenID, "r-token-session-not-chosen")
+	// Publish for the fully-foreign tenant — the header can't widen the
+	// tenant, so the stream must NOT receive it.
 	publishCancelledPhase72(t, deps.bus, identity.Identity{
 		TenantID: "t-foreign", UserID: "u-foreign", SessionID: "s-foreign",
-	}, "r-foreign-leak")
+	}, "r-foreign-tenant-leak")
 
 	sc := bufio.NewScanner(resp.Body)
 	deadline := time.Now().Add(1200 * time.Millisecond)
-	sawToken := false
-	var sawForeign atomic.Bool
+	sawResolved := false
+	var sawTokenSession atomic.Bool
+	var sawForeignTenant atomic.Bool
 	for sc.Scan() && time.Now().Before(deadline) {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
-		if strings.Contains(data, "r-token-wins") {
-			sawToken = true
+		if strings.Contains(data, "r-resolved-session") {
+			sawResolved = true
 		}
-		if strings.Contains(data, "r-foreign-leak") {
-			sawForeign.Store(true)
+		if strings.Contains(data, "r-token-session-not-chosen") {
+			sawTokenSession.Store(true)
+		}
+		if strings.Contains(data, "r-foreign-tenant-leak") {
+			sawForeignTenant.Store(true)
 		}
 	}
-	if sawForeign.Load() {
-		t.Fatal("carrier-header identity spoofed the JWT identity — token-vs-body identity mismatch broken")
+	if sawForeignTenant.Load() {
+		t.Fatal("carrier tenant/user header spoofed the verified principal — D-171 must only honour X-Harbor-Session")
 	}
-	if !sawToken {
-		t.Error("did not observe the token-identity event in the window")
+	if sawTokenSession.Load() {
+		t.Fatal("stream received the token's own session despite a per-request X-Harbor-Session override — session source is broken")
+	}
+	if !sawResolved {
+		t.Error("did not observe the resolved (token tenant/user + header session) event in the window")
 	}
 }
 

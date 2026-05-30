@@ -118,6 +118,22 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return llm.CompleteResponse{}, err
 	}
 
+	// Default the model from the snapshot when the caller left it empty.
+	// The react planner builds `CompleteRequest{Messages: ...}` without
+	// pinning Model (the configured `llm.model` is the natural default —
+	// see safety.go). The defaulting MUST happen here, BEFORE the profile
+	// lookup, because the corrections layer wraps OUTSIDE the safety pass
+	// (D-041) — if we deferred to safety's own default, every
+	// profile-keyed correction (reasoning effort, schema mode, envelope
+	// shaping) would look up `ModelProfiles[""]`, miss, and silently
+	// bypass. That is the bug this fix closes: reasoning effort was never
+	// applied because `req.Model` was empty at this layer. The defaulted
+	// Model flows downstream on the corrected request, so the safety
+	// pass's own default becomes a redundant no-op.
+	if req.Model == "" {
+		req.Model = c.cfg.Model
+	}
+
 	profile, hasProfile := c.cfg.ModelProfiles[req.Model]
 
 	// If no profile exists for the model, run the inner client
@@ -126,6 +142,21 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	// safety pass keeps its single point of enforcement.
 	if !hasProfile {
 		return c.inner.Complete(ctx, req)
+	}
+
+	// Apply the profile's request-level ReasoningEffort default when the
+	// caller did not pin one. The react planner (and repair loop) build
+	// `CompleteRequest` without setting ReasoningEffort, so the operator's
+	// `model_profiles[<model>].reasoning_effort` is the natural default;
+	// an explicit per-call value (e.g. a run-time override) always wins.
+	// Without this, the profile knob was dead — the driver never received
+	// a reasoning param, and reasoning-capable models returned no
+	// reasoning (zero `Kind:"reasoning"` chunks, ReasoningTokens=0). The
+	// corrections layer is the right home: it is the one pass that already
+	// reads the full profile and owns reasoning routing (the
+	// ReasoningRouteThinking step below consumes the populated field).
+	if req.ReasoningEffort == "" && profile.ReasoningEffort != "" {
+		req.ReasoningEffort = profile.ReasoningEffort
 	}
 
 	corrected, err := applyRequestCorrections(req, profile.Corrections)
