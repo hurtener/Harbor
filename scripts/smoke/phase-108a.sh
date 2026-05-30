@@ -90,23 +90,26 @@ assert_grep_or_skip "req.Model == \"\"" \
     "internal/llm/corrections/corrections.go" \
     "phase-108a: corrections defaults empty req.Model before profile lookup"
 
-# ---- No new npm dependency ----
-if command -v git >/dev/null 2>&1 && git rev-parse --verify main >/dev/null 2>&1; then
-    BEFORE=$(git show main:web/console/package.json 2>/dev/null \
-        | jq '(.dependencies | length) + (.devDependencies | length)' 2>/dev/null || echo "")
-    AFTER=$(jq '(.dependencies | length) + (.devDependencies | length)' \
-        web/console/package.json 2>/dev/null || echo "")
-    if [ -n "${BEFORE}" ] && [ -n "${AFTER}" ]; then
-        if [ "${BEFORE}" = "${AFTER}" ]; then
-            ok "phase-108a: no new npm dependency (${AFTER} entries, unchanged)"
-        else
-            fail "phase-108a: package.json dep count changed (before=${BEFORE}, after=${AFTER}) — 108a is no-new-deps"
-        fi
+# ---- No UNEXPECTED npm dependency ----
+# 108a adds none; the only sanctioned post-108 addition is `@lucide/svelte`
+# (Phase 108b chrome icons, operator-approved). Compare the dependency NAME SET
+# vs main and fail on any added dep outside that allowlist — a count-only check
+# tripped on 108b's legitimate icon dep (§17.6).
+if command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
+        && git rev-parse --verify main >/dev/null 2>&1; then
+    ADDED=$(comm -13 \
+        <(git show main:web/console/package.json 2>/dev/null \
+            | jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' 2>/dev/null | sort) \
+        <(jq -r '((.dependencies // {}) | keys[]), ((.devDependencies // {}) | keys[])' \
+            web/console/package.json 2>/dev/null | sort) )
+    UNEXPECTED=$(printf '%s\n' "${ADDED}" | grep -vE '^(@lucide/svelte)?$' || true)
+    if [ -z "${UNEXPECTED}" ]; then
+        ok "phase-108a: no unexpected npm dependency vs main (only sanctioned post-108 additions)"
     else
-        skip "phase-108a: dep-count comparison skipped (jq or main ref unavailable)"
+        fail "phase-108a: unexpected dependency vs main: $(printf '%s' "${UNEXPECTED}" | tr '\n' ' ') — 108a is no-new-deps"
     fi
 else
-    skip "phase-108a: dep-count comparison skipped (git or main branch unavailable)"
+    skip "phase-108a: dep-set comparison skipped (git or jq or main ref unavailable)"
 fi
 
 smoke_summary
