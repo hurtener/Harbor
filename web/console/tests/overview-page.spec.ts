@@ -102,10 +102,9 @@ test.describe("Overview page", () => {
       page.locator("[data-testid='overview-window-facet']"),
       "the counter-window facet renders",
     ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='overview-footer']"),
-      "the page footer (runtime + Protocol + stream + Console version) renders",
-    ).toBeVisible();
+    // Phase 108b — the page-local OverviewFooter strip was removed; the
+    // connection/protocol/stream/console posture lives in the single global
+    // AppStatusBar (asserted above as `connection-footer`). No per-page footer.
   });
 
   test("the counter row populates or a documented PageState renders", async ({

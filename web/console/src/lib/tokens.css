@@ -92,6 +92,7 @@
   /* ================================================================ */
   --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -102,6 +103,7 @@
   /* Letter-spacing — the uppercase-label tracking the inventory uses. */
   --tracking-wide: 0.04em;
   --tracking-wider: 0.06em;
+  --tracking-widest: 0.1em;
 
   /* ================================================================ */
   /* Typography utilities                                              */
@@ -115,6 +117,8 @@
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
+  /* Phase 108b — fully-rounded pill (top-bar identity avatar chip). */
+  --radius-pill: 999px;
 
   /* ================================================================ */
   /* Borders — ONE hairline token (CONVENTIONS.md §7)                  */
@@ -135,12 +139,28 @@
   /* ================================================================ */
   /* The single detail-rail width every page's right rail uses. */
   --size-rail: 22rem;
+  /* The single app-shell nav-sidebar width (Phase 108b). DISTINCT from
+     `--size-rail`: the nav sidebar and the detail rail are different
+     surfaces, so CONVENTIONS.md §7's "one rail-width token" is not
+     violated — §7 forbids variants of the SAME concept. Pre-108b the
+     sidebar borrowed `--size-rail` (22rem/352px), which is why it
+     rendered far wider than the compact mock. `--size-nav` matches the
+     mock's dense sidebar; `--size-nav-collapsed` is the icons-only
+     width the top-bar hamburger toggles to. */
+  --size-nav: 13.5rem;
+  --size-nav-collapsed: 3.5rem;
 
   /* Sizing — other layout dimensions */
   --size-px: 1px;
   --size-sr-square: 1px;
   --size-value-viewer-max: 16rem;
   --size-search-min: 12rem;
+  /* Phase 108b — the top-bar ⌘K global-search command palette. */
+  --size-palette-width: 36rem;
+  --size-palette-max-height: 24rem;
+  --size-search-group-width: 5rem;
+  /* Phase 108b — the top-bar identity / connection popover. */
+  --size-popover-min-width: 16rem;
   --size-graph-max-height: 480px;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;

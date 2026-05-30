@@ -40,6 +40,7 @@
     "vitest": "^2.1.5"
   },
   "dependencies": {
+    "@lucide/svelte": "^1.17.0",
     "@skeletonlabs/skeleton": "^3.0.0"
   }
 }
