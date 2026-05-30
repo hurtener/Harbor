@@ -59,11 +59,13 @@
     decodeLifecycle,
     decodeBudget,
     decodePlannerDecision,
+    decodeToolLifecycle,
     decodeIntervention,
     decodeInterventionClear,
     type ChunkEvent,
     type CostEvent,
-    type LifecycleEvent
+    type LifecycleEvent,
+    type ToolLifecycleEvent
   } from './wire-events.js';
   import type { ChatToolCall } from '$lib/chat/types.js';
   import {
@@ -443,6 +445,36 @@
     tokenSamples = next.length > TOKEN_SAMPLE_CAP ? next.slice(-TOKEN_SAMPLE_CAP) : next;
   }
 
+  // applyToolLifecycle reflects a tool.invoked/completed/failed event onto
+  // the in-flight turn's tool-call rows. `planner.decision` adds the row
+  // ('invoked') when the planner chooses the tool; the lifecycle events
+  // resolve it to 'succeeded' / 'failed' (with a duration / error summary).
+  // The first still-'invoked' row for the tool is the one that resolves;
+  // a terminal event with no matching open row appends one (so a failure
+  // is never silently dropped). This is what replaced the old
+  // handleTerminal blanket "mark every tool succeeded" — a timed-out tool
+  // now shows as failed.
+  function applyToolLifecycle(ev: ToolLifecycleEvent): void {
+    const status = ev.kind === 'completed' ? 'succeeded' : ev.kind === 'failed' ? 'failed' : 'invoked';
+    const list = [...(turnTools[ev.taskID] ?? [])];
+    let resolved = false;
+    for (let i = 0; i < list.length && !resolved; i++) {
+      if (list[i].tool === ev.tool && list[i].status === 'invoked') {
+        if (ev.kind !== 'invoked') {
+          list[i] = { ...list[i], status, summary: ev.summary !== '' ? ev.summary : list[i].summary };
+        }
+        resolved = true;
+      }
+    }
+    if (!resolved) {
+      list.push({ tool: ev.tool, status, summary: ev.kind === 'invoked' ? '' : ev.summary });
+    }
+    turnTools[ev.taskID] = list;
+    messages = messages.map((m) =>
+      m.taskID === ev.taskID && m.role === 'agent' ? { ...m, toolCalls: [...list] } : m
+    );
+  }
+
   // recordTurn pushes a completed turn's wall-clock latency (the
   // `tasks.get` duration_ms) into the p50 buffer.
   function recordTurn(durationMs: number): void {
@@ -505,10 +537,13 @@
                 ...m,
                 text: answer,
                 reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                // Preserve the per-tool statuses the tool.* lifecycle
+                // events set — do NOT blanket-mark succeeded (that hid a
+                // timed-out / failed tool as a success). A row still
+                // 'invoked' here never saw a terminal tool event; leave it
+                // honest rather than fabricate success.
                 toolCalls:
-                  (turnTools[taskID] ?? []).length > 0
-                    ? turnTools[taskID].map((t) => ({ ...t, status: 'succeeded' as const }))
-                    : undefined,
+                  (turnTools[taskID] ?? []).length > 0 ? [...turnTools[taskID]] : undefined,
                 meta: {
                   elapsedMs: durationMs > 0 ? durationMs : undefined,
                   tokens: tc?.tokens,
@@ -562,6 +597,9 @@
           'llm.cost.recorded',
           'governance.budget_exceeded',
           'planner.decision',
+          'tool.invoked',
+          'tool.completed',
+          'tool.failed',
           'tool.approval_requested',
           'tool.auth_required',
           'pause.requested',
@@ -602,6 +640,19 @@
             : m
         );
       });
+      // Tool lifecycle — the runtime emits tool.invoked/completed/failed
+      // (internal/tools/events.go). These carry the REAL terminal state, so
+      // a timed-out / failed tool shows as failed instead of masquerading
+      // as succeeded. planner.decision adds the row when the planner chooses
+      // the tool; these update its status as the call actually resolves.
+      const onToolLifecycle = (msg: MessageEvent): void => {
+        const ev = decodeToolLifecycle((msg as MessageEvent<string>).data);
+        if (ev !== null) applyToolLifecycle(ev);
+      };
+      es.addEventListener('tool.invoked', onToolLifecycle);
+      es.addEventListener('tool.completed', onToolLifecycle);
+      es.addEventListener('tool.failed', onToolLifecycle);
+
       const onTerminal = (msg: MessageEvent): void => {
         const ev = decodeLifecycle((msg as MessageEvent<string>).data);
         if (ev !== null) void handleTerminal(ev);

@@ -13,6 +13,7 @@ import {
 	decodeLifecycle,
 	decodeBudget,
 	decodePlannerDecision,
+	decodeToolLifecycle,
 	decodeIntervention,
 	decodeInterventionClear
 } from './wire-events.js';
@@ -116,6 +117,62 @@ describe('decodePlannerDecision', () => {
 
 	it('ignores non-planner.decision frames', () => {
 		expect(decodePlannerDecision(completedFrame)).toBeNull();
+	});
+});
+
+describe('decodeToolLifecycle', () => {
+	it('decodes tool.invoked (run fallback for the task id, empty summary)', () => {
+		const f = JSON.stringify({
+			type: 'tool.invoked',
+			run: 'RUN-T',
+			payload: { ToolName: 'youtube_get_metadata', Transport: 'mcp', StartedAt: '2026-05-30T03:55:22Z' }
+		});
+		expect(decodeToolLifecycle(f)).toEqual({
+			taskID: 'RUN-T',
+			tool: 'youtube_get_metadata',
+			kind: 'invoked',
+			summary: ''
+		});
+	});
+
+	it('decodes tool.completed with a duration summary', () => {
+		const f = JSON.stringify({
+			type: 'tool.completed',
+			run: 'RUN-T',
+			payload: { ToolName: 'youtube_get_metadata', Attempts: 1, DurationMS: 2320 }
+		});
+		expect(decodeToolLifecycle(f)).toEqual({
+			taskID: 'RUN-T',
+			tool: 'youtube_get_metadata',
+			kind: 'completed',
+			summary: '2.3s'
+		});
+	});
+
+	it('decodes tool.failed with the class + message summary (the timeout case)', () => {
+		const f = JSON.stringify({
+			type: 'tool.failed',
+			run: 'RUN-T',
+			payload: {
+				ToolName: 'youtube_get_metadata',
+				Attempts: 4,
+				ErrorClass: 'timeout',
+				ErrorMessage: 'context deadline exceeded'
+			}
+		});
+		expect(decodeToolLifecycle(f)).toEqual({
+			taskID: 'RUN-T',
+			tool: 'youtube_get_metadata',
+			kind: 'failed',
+			summary: 'timeout: context deadline exceeded'
+		});
+	});
+
+	it('returns null without a tool name or for unrelated frames', () => {
+		expect(decodeToolLifecycle(JSON.stringify({ type: 'tool.invoked', run: 'r', payload: {} }))).toBeNull();
+		expect(
+			decodeToolLifecycle(JSON.stringify({ type: 'planner.decision', run: 'r', payload: { Tool: 'x' } }))
+		).toBeNull();
 	});
 });
 

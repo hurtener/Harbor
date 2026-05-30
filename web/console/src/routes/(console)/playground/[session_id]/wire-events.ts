@@ -186,6 +186,52 @@ export function decodePlannerDecision(data: string): PlannerDecisionEvent | null
 	};
 }
 
+/** A decoded tool-lifecycle event — `tool.invoked` / `.completed` / `.failed`. */
+export interface ToolLifecycleEvent {
+	taskID: string;
+	/** The tool name (`payload.ToolName`). */
+	tool: string;
+	/** Normalised lifecycle stage. */
+	kind: 'invoked' | 'completed' | 'failed';
+	/** Operator-facing one-liner: a duration for completed, the redacted
+	 *  error (`ErrorClass: ErrorMessage`) for failed, '' for invoked. */
+	summary: string;
+}
+
+const TOOL_LIFECYCLE: Record<string, ToolLifecycleEvent['kind']> = {
+	'tool.invoked': 'invoked',
+	'tool.completed': 'completed',
+	'tool.failed': 'failed'
+};
+
+/**
+ * Decode a `tool.invoked` / `tool.completed` / `tool.failed` frame
+ * (`internal/tools/events.go`). The payloads carry no TaskID, so the run
+ * is taken from the frame envelope's `run` (as with `planner.decision`).
+ * Returns null for any other frame. This is what lets the Playground show
+ * a tool call's REAL terminal state — a timed-out / failed tool no longer
+ * masquerades as "succeeded".
+ */
+export function decodeToolLifecycle(data: string): ToolLifecycleEvent | null {
+	const frame = parseFrame(data);
+	if (frame === null || frame.payload === undefined) return null;
+	const kind = TOOL_LIFECYCLE[str(frame.type)];
+	if (kind === undefined) return null;
+	const taskID = taskIDOf(frame);
+	const tool = str(frame.payload.ToolName);
+	if (taskID === '' || tool === '') return null;
+	let summary = '';
+	if (kind === 'completed') {
+		const ms = num(frame.payload.DurationMS);
+		if (ms > 0) summary = `${(ms / 1000).toFixed(1)}s`;
+	} else if (kind === 'failed') {
+		const cls = str(frame.payload.ErrorClass);
+		const msg = str(frame.payload.ErrorMessage);
+		summary = msg !== '' ? (cls !== '' ? `${cls}: ${msg}` : msg) : cls !== '' ? cls : 'failed';
+	}
+	return { taskID, tool, kind, summary };
+}
+
 const INTERVENTION_TYPES = new Set([
 	'tool.approval_requested',
 	'tool.auth_required',
