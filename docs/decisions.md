@@ -4218,3 +4218,42 @@ The wave honours the inline-first incremental cut: 109a+109b prove the bridge + 
 **Why.** If the AppBridge opened its own MCP connection (auto-forward), an in-iframe app could call tools and read resources **outside** the runtime's identity scope, audit redaction, and approval/OAuth gates — a direct violation of CLAUDE.md §6 (multi-isolation), §7 (security), and §13 (Console reading runtime internals / bypassing the unified pause primitive). Manual-handler mode makes the Protocol the only path, so the app is structurally confined to what the operator's `(tenant, user, session)` may already do. The 109b test suite asserts the Console opens no direct MCP transport and that an app call to a gated tool still parks.
 
 **Cross-references.** Implements the security posture of D-172's 109b. Builds on D-091 (shared chat module — injected `ProtocolClient`, never a singleton), D-062 (DisplayMode), the unified pause/resume primitive (Phase 50), tool-side OAuth (Phase 30 / D-083), tool-side approval (Phase 31 / D-086). CLAUDE.md §4.5, §6, §7, §13. Plan: `docs/plans/phase-109b-console-mcp-apps-host.md`.
+
+---
+
+## D-174 — Durable memory strategies: the SQL memory drivers delegate to the shared strategy executors; `Summarizer` threads through `memory.Open`
+
+**Date:** 2026-05-30
+
+**Context.** Phases 24 (memory strategies) and 25 (SQLite/Postgres memory drivers) both shipped, but their intersection did not: the `truncation` and `rolling_summary` strategies were only ever implemented in the **inmem** driver. The SQLite + Postgres memory drivers implement `strategy=none` only and return `ErrStrategyNotImplemented` for the rest. And the registry factory `memory.Open` has no `Summarizer` in its `Deps`, so `harbor dev` special-cases `rolling_summary` with a direct `inmem.New(...)` call and rejects every non-inmem driver at boot — the "hardwiring for devs" an operator hit when asking for durable rolling-summary memory. Net effect: durable memory with real recall did not exist; only inmem had the strategies.
+
+**Key architectural finding.** The strategy algorithms are NOT in the inmem driver — they live in a driver-agnostic `internal/memory/strategy/` executor package that persists through an injected `state.StateStore`. The inmem driver is a thin shell delegating to the executor. So the fix is NOT to reimplement truncation/rolling_summary in SQL — it is to make the SQL drivers delegate to the SAME executors with their injected `state.StateStore`, exactly like inmem. Durability then rides on the StateStore writes (a SQL StateStore → durable across restart, proven by a reopen-rehydration test).
+
+**Decision (Phase 25a).**
+
+- Add `Summarizer memory.Summarizer` to `memory.Deps`; `memory.Open` validates it (required for `rolling_summary`, on every driver) and routes it to the driver factory → the executor `Deps`.
+- The SQLite + Postgres memory drivers delegate to `strategy.StrategyExecutor` (using their `state.StateStore` dep), gaining all three strategies; the `ErrStrategyNotImplemented` rejections and the `Rejects*Strategy` guard tests are removed.
+- `cmd/harbor/cmd_dev.go` collapses to a single `memory.Open(ctx, cfg, Deps{State, Bus, Summarizer})` call; the rolling_summary-only-inmem error is deleted. The summariser still defaults to the agent's configured LLM (`llmsummarizer.New(llmClient)`) — no separate summariser model, no special-case.
+- **Fail-loud preserved (CLAUDE.md §13):** `rolling_summary` without a `Summarizer` errors at `memory.Open` on all drivers; the registry default is NEVER a stub summariser.
+- The memory conformance suite runs `{none, truncation, rolling_summary} × {inmem, sqlite, postgres}`; the cross-driver byte-stable snapshot reconciles the exported `memory.Record` with the internal `memoryStateRecord{Summary}` so rolling-summary snapshots keep the summary.
+
+**Cross-references.** Completes Phase 24 (strategies) × Phase 25 (SQL drivers). Builds on Phases 15/16 (SQLite/Postgres StateStore — the durable backing), the §13 primitive-with-consumer rule (`Deps.Summarizer` + its `cmd_dev` consumer land together), brief 02 (fail-loud memory), brief 13 (memory injection / recall). Plan: `docs/plans/phase-25a-durable-memory-strategies.md`. The dev binary's prior special-case it replaces is the one referenced by `docs/plans/phase-25-memory-drivers.md`.
+
+---
+
+## D-175 — Per-MCP-server + per-tool tool-policy config (`policy:` / `tool_policies:` in YAML); projection via a cycle-free `ProjectedToolPolicy`
+
+**Date:** 2026-05-30
+
+**Context.** Tool retry/timeout was the hardcoded `tools.DefaultPolicy()` (30 s per-attempt deadline, 4 total attempts) with NO operator knob — `MCPServerConfig` had no policy field. A slow/throttled tool (a YouTube metadata call over `uvx mcp-youtube` → yt-dlp) burned ~4×30 s = ~128 s before failing, and the operator could not tune it. The MCP driver already carried an unused per-server `DefaultPolicy` slot (`mcp.go`) but it was never wired from config.
+
+**Decision.** Phase 26b exposes the policy as operator YAML on each MCP server: a `policy: { max_attempts, timeout_ms, retry_on, backoff_* }` block (per-server default) plus a `tool_policies: { <tool-name>: { … } }` map (per-tool overrides). The YAML uses **`max_attempts` = TOTAL attempts including the first** (projected to `tools.ToolPolicy.MaxRetries = max_attempts - 1`), because operators think in total attempts, not retries. Per-field zero-value fall-through is preserved (a `policy:` that sets only `timeout_ms` keeps the default attempt count) — the projection never substitutes a default itself; `tools.ToolPolicy.resolved()` does at dispatch.
+
+**Two implementation subtleties (settled).**
+
+- **Import cycle → `ProjectedToolPolicy`.** `internal/config` cannot import `internal/tools` (`tools → events → config` cycle). So the single config→policy interpretation seam, `config.ToolPolicyConfig.ToToolPolicy()`, returns a cycle-free primitive image `config.ProjectedToolPolicy`; the binary entry point (`cmd/harbor`) does the trivial primitive→`tools.ToolPolicy` copy. The `tools.ToolPolicy` struct stays the single definition (CLAUDE.md §13); there is exactly ONE interpreter of the operator fields. This is a §4.3 deviation from the plan (which placed the projection's return type as `tools.ToolPolicy`); justified by the hard cycle.
+- **`max_attempts: 1` needs an explicit-empty `RetryOn`.** Because `resolved()` treats a zero `MaxRetries` on an otherwise-set policy as "inherit the default 3 retries", `MaxRetries: 0` alone does NOT pin a single attempt. The policy shell reads an EXPLICIT empty (non-nil) `RetryOn` as "retry on nothing". So when the operator asks for `max_attempts: 1` and names no `retry_on`, the projection sets a `RetryOnEmpty` flag and `cmd/harbor` materialises an empty non-nil `RetryOn` — making one attempt mean one attempt.
+
+**Tests.** Projection off-by-one + per-field fall-through + retry_on mapping + unknown-class rejection; MCP integration: a per-tool `max_attempts: 1` override makes exactly one attempt while a sibling tool uses the server default of four; concurrent-reuse (100 concurrent calls across two differently-policied tools, no cross-bleed, goroutine baseline); a "no policy → DefaultPolicy" regression. `go test -race ./internal/config/... ./internal/tools/drivers/mcp/...` green.
+
+**Cross-references.** Builds on D-024 (`tools.ToolPolicy` + `RunWithPolicy`), the §4.4 MCP seam (Phase 28). Validation in `internal/config/validate.go`; example in `examples/harbor.yaml`; `mcp`/`tools` operator skills updated (§18). Plan: `docs/plans/phase-26b-per-source-tool-policy-config.md`.

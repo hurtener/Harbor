@@ -101,6 +101,18 @@ type Config struct {
 	// DefaultPolicy is the ToolPolicy applied to descriptors built
 	// from this provider. Zero-valued → tools.DefaultPolicy().
 	DefaultPolicy tools.ToolPolicy
+	// ToolPolicies are per-tool ToolPolicy overrides keyed by the
+	// MCP server-side tool name (NOT the `<source>_<tool>` Harbor
+	// name). When a discovered tool's name is present here, its
+	// descriptor uses the override instead of DefaultPolicy; a tool
+	// absent from the map falls back to DefaultPolicy (Phase 26b).
+	//
+	// Concurrent reuse (D-025): the map is read-only after New — it is
+	// never mutated per-run. buildToolDescriptor only reads it, and
+	// the resolved ToolPolicy is copied by value into each descriptor
+	// at Discover time, so concurrent invocations of different tools
+	// never share or race this map.
+	ToolPolicies map[string]tools.ToolPolicy
 	// DefaultIdentity is the fallback identity stamped on
 	// transport-side events (notifications that arrive without an
 	// inflight call). Required so the bus's ValidateEvent does not
@@ -421,6 +433,16 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// `planning_hints.preferred_tools: [youtube_get_metadata, ...]`).
 	// The double-underscore `__` separator stays reserved for
 	// resources / prompts (`__resource.` / `__prompt.` markers).
+	// Phase 26b — per-tool policy override. A tool named in
+	// p.cfg.ToolPolicies (keyed by the server-side MCP tool name)
+	// uses that policy; otherwise the per-server DefaultPolicy
+	// applies. The lookup happens BEFORE the Invoke closure captures
+	// tool.Policy below, so the configured budget governs every
+	// attempt. The map is read-only after New (D-025).
+	policy := p.cfg.DefaultPolicy
+	if override, ok := p.cfg.ToolPolicies[t.Name]; ok {
+		policy = override
+	}
 	tool := tools.Tool{
 		Name:        fmt.Sprintf("%s_%s", string(p.source), t.Name),
 		Description: t.Description,
@@ -429,7 +451,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 		SideEffects: deriveSideEffect(t.Annotations),
 		Source:      p.source,
 		Transport:   tools.TransportMCP,
-		Policy:      p.cfg.DefaultPolicy,
+		Policy:      policy,
 		Loading:     tools.LoadingAlways,
 	}
 

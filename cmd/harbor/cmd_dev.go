@@ -2070,6 +2070,16 @@ func attachDevMCPServer(
 	if mode == "" {
 		mode = mcpdrv.TransportAuto
 	}
+	// Phase 26b — project the operator-facing policy YAML onto the
+	// driver's runtime ToolPolicy fields. A nil ms.Policy leaves
+	// DefaultPolicy zero-valued, so every tool inherits
+	// tools.DefaultPolicy() at dispatch (today's behaviour). A
+	// projection error (e.g. an unknown retry_on class that slipped
+	// past validation) fails the boot loud (CLAUDE.md §5).
+	defaultPolicy, toolPolicies, policyErr := projectMCPToolPolicies(ms)
+	if policyErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
+	}
 	provider, err := mcpdrv.New(mcpdrv.Config{
 		Name:          ms.Name,
 		TransportMode: mode,
@@ -2079,6 +2089,8 @@ func attachDevMCPServer(
 		KeepAlive:     ms.KeepAlive,
 		Logger:        logger,
 		Bus:           bus,
+		DefaultPolicy: defaultPolicy,
+		ToolPolicies:  toolPolicies,
 		DefaultIdentity: identity.Identity{
 			TenantID:  DevTenant,
 			UserID:    DevUser,
@@ -2138,6 +2150,75 @@ func attachDevMCPServer(
 		slog.Int("tools_registered", len(descriptors)),
 	)
 	return nil
+}
+
+// projectMCPToolPolicies converts an MCPServerConfig's operator-facing
+// policy YAML (Phase 26b) into the driver's runtime ToolPolicy fields:
+// the per-server default and the per-tool override map (keyed by the
+// MCP server-side tool name). The config package owns the single
+// config→policy translation seam (config.ToolPolicyConfig.ToToolPolicy);
+// this helper performs only the trivial primitive→tools.ToolPolicy copy
+// — it lives in cmd/harbor because internal/config cannot import
+// internal/tools (an import cycle via internal/events). Any projection
+// error (e.g. an unknown retry_on class) is returned so the boot path
+// fails loud (CLAUDE.md §5).
+//
+// A nil ms.Policy yields a zero-valued DefaultPolicy, so the driver
+// applies tools.DefaultPolicy() per-field at dispatch — preserving
+// today's behaviour exactly when no policy is configured.
+func projectMCPToolPolicies(ms config.MCPServerConfig) (tools.ToolPolicy, map[string]tools.ToolPolicy, error) {
+	var defaultPolicy tools.ToolPolicy
+	if ms.Policy != nil {
+		projected, err := ms.Policy.ToToolPolicy()
+		if err != nil {
+			return tools.ToolPolicy{}, nil, fmt.Errorf("policy: %w", err)
+		}
+		defaultPolicy = toolPolicyFromProjected(projected)
+	}
+
+	var toolPolicies map[string]tools.ToolPolicy
+	if len(ms.ToolPolicies) > 0 {
+		toolPolicies = make(map[string]tools.ToolPolicy, len(ms.ToolPolicies))
+		for toolName, tp := range ms.ToolPolicies {
+			projected, err := tp.ToToolPolicy()
+			if err != nil {
+				return tools.ToolPolicy{}, nil, fmt.Errorf("tool_policies[%q]: %w", toolName, err)
+			}
+			toolPolicies[toolName] = toolPolicyFromProjected(projected)
+		}
+	}
+
+	return defaultPolicy, toolPolicies, nil
+}
+
+// toolPolicyFromProjected copies the cycle-free config.ProjectedToolPolicy
+// image into the runtime tools.ToolPolicy. Fields the operator omitted
+// stay zero so tools.ToolPolicy's own per-field resolved() fall-through
+// fills them with the package default at dispatch (per-field semantics,
+// Phase 26b). RetryOn strings are turned into tools.ErrorClass values;
+// they were already validated against the allowlist by ToToolPolicy.
+func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
+	var retryOn []tools.ErrorClass
+	switch {
+	case len(p.RetryOn) > 0:
+		retryOn = make([]tools.ErrorClass, 0, len(p.RetryOn))
+		for _, class := range p.RetryOn {
+			retryOn = append(retryOn, tools.ErrorClass(class))
+		}
+	case p.RetryOnEmpty:
+		// Explicit empty, non-nil slice → "retry on nothing" (exactly
+		// one attempt), surviving tools.ToolPolicy.resolved()'s
+		// MaxRetries fall-through. See config.ToolPolicyConfig.ToToolPolicy.
+		retryOn = []tools.ErrorClass{}
+	}
+	return tools.ToolPolicy{
+		TimeoutMS:   p.TimeoutMS,
+		MaxRetries:  p.MaxRetries,
+		BackoffBase: p.BackoffBase,
+		BackoffMult: p.BackoffMult,
+		BackoffMax:  p.BackoffMax,
+		RetryOn:     retryOn,
+	}
 }
 
 // cloneStringMap returns a defensive copy of m so the Provider's

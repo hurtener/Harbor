@@ -882,6 +882,33 @@ func (c *Config) validateTools() error {
 		if s.KeepAlive < 0 {
 			return fieldError(prefix+".keep_alive", "must be >= 0")
 		}
+		// Phase 26b — per-server default tool policy + per-tool
+		// overrides. Both optional; omitting them preserves today's
+		// behaviour (every tool inherits tools.DefaultPolicy()).
+		if s.Policy != nil {
+			if err := validateToolPolicy(prefix+".policy", *s.Policy); err != nil {
+				return err
+			}
+		}
+		toolPolicyNames := make(map[string]struct{}, len(s.ToolPolicies))
+		for toolName, tp := range s.ToolPolicies {
+			if strings.TrimSpace(toolName) == "" {
+				return fieldError(prefix+".tool_policies",
+					"override key (tool name) must not be empty")
+			}
+			if _, dup := toolPolicyNames[toolName]; dup {
+				// Go maps cannot carry duplicate keys, so this guards a
+				// future shape change; kept for parity with the unique
+				// constraint stated in the phase plan.
+				return fieldError(prefix+".tool_policies",
+					fmt.Sprintf("duplicate override key %q (must be unique)", toolName))
+			}
+			toolPolicyNames[toolName] = struct{}{}
+			if err := validateToolPolicy(
+				fmt.Sprintf("%s.tool_policies[%q]", prefix, toolName), tp); err != nil {
+				return err
+			}
+		}
 	}
 	// Phase 29 A2A peers. Empty list is valid. Each entry must
 	// declare a non-empty URL, a TrustTier in [1, 5], a non-negative
@@ -1208,6 +1235,60 @@ var allowedReasoningReplayModes = map[string]struct{}{
 // the operator can grep for the key in their YAML.
 func fieldError(path, reason string) error {
 	return fmt.Errorf("config.%s: %s", path, reason)
+}
+
+// validateToolPolicy validates one `ToolPolicyConfig` block (Phase
+// 26b). `prefix` is the field path so the error names the offending
+// key (e.g. `tools.mcp_servers[0].policy`). Rules:
+//   - `max_attempts >= 1` (the TOTAL attempt count; 0 is meaningless —
+//     a tool that runs zero times — so it is rejected rather than
+//     silently treated as "inherit default"; an operator who wants the
+//     default omits the whole `policy:` block / the `max_attempts`
+//     key, which leaves the field at the Go zero value).
+//   - `timeout_ms >= 0`.
+//   - `backoff_base_ms` / `backoff_max_ms` / `backoff_mult` >= 0.
+//   - each `retry_on` value is a known error class.
+//
+// Note: an omitted `max_attempts` (the Go zero value, 0) is NOT
+// rejected here — validation only fires when the value is present and
+// non-zero is required. The map-key/zero distinction is handled by the
+// caller: a `policy:` block present in YAML with `max_attempts: 0`
+// trips the `>= 1` rule, while omitting `max_attempts` entirely leaves
+// it 0 and inheriting the default attempt count. The phase plan's
+// AC-5 wording ("max_attempts >= 1 when policy present") is read as
+// "if the operator wrote a max_attempts value, it must be >= 1"; we
+// enforce `>= 1` whenever the field is set. Because YAML cannot
+// distinguish "absent" from "0" for an int without a pointer, we adopt
+// the stricter, less-surprising rule: a present `policy:` block with
+// `max_attempts: 0` is a configuration smell and is rejected.
+func validateToolPolicy(prefix string, p ToolPolicyConfig) error {
+	if p.MaxAttempts < 1 {
+		return fieldError(prefix+".max_attempts",
+			fmt.Sprintf("must be >= 1 (TOTAL attempts incl. the first), got %d", p.MaxAttempts))
+	}
+	if p.TimeoutMS < 0 {
+		return fieldError(prefix+".timeout_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.TimeoutMS))
+	}
+	if p.BackoffBaseMS < 0 {
+		return fieldError(prefix+".backoff_base_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.BackoffBaseMS))
+	}
+	if p.BackoffMaxMS < 0 {
+		return fieldError(prefix+".backoff_max_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.BackoffMaxMS))
+	}
+	if p.BackoffMult < 0 {
+		return fieldError(prefix+".backoff_mult",
+			fmt.Sprintf("must be >= 0, got %v", p.BackoffMult))
+	}
+	for i, class := range p.RetryOn {
+		if _, ok := validToolPolicyErrorClasses[class]; !ok {
+			return fieldError(fmt.Sprintf("%s.retry_on[%d]", prefix, i),
+				fmt.Sprintf("unknown error class %q (allowed: 5xx, permanent, timeout, transient)", class))
+		}
+	}
+	return nil
 }
 
 // IsValidationError reports whether err originated in validation
