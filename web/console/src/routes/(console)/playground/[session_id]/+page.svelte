@@ -676,44 +676,59 @@
   // an agent bubble (its result_inline answer). No-op when the stream is
   // already populated (a live conversation) or the session has no tasks.
   async function hydratePastTurns(): Promise<void> {
-    if (client === null || messages.length > 0) return;
+    if (client === null) return;
+    const c = client;
     try {
-      const resp = await client.tasks.list<{
+      const resp = await c.tasks.list<{
         rows?: Array<{ id: string; query?: string; status?: string; started_at?: string }>;
       }>({ filter: {}, page_size: 50 });
       const rows = [...(resp.rows ?? [])].sort((a, b) =>
         (a.started_at ?? '').localeCompare(b.started_at ?? '')
       );
+      // Dedup against turns already in the stream. A live turn sent before
+      // hydration finished must not be duplicated AND (the bug this fixes)
+      // must not cause the reloaded history to be DISCARDED: the prior
+      // all-or-nothing `messages.length === 0` guard threw the whole
+      // reloaded history away if any message arrived first, so a reload
+      // followed by a quick send showed only the post-reload message.
+      const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
+      const fresh = rows.filter((r) => !present.has(r.id));
+      // Fetch each completed turn's answer in PARALLEL — sequential gets
+      // were slow enough (one round-trip per turn) to lose the race with a
+      // fast send after reload.
+      const details = await Promise.all(
+        fresh.map((r) =>
+          r.status === 'complete'
+            ? c.tasks
+                .get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(r.id)
+                .catch(() => null)
+            : Promise.resolve(null)
+        )
+      );
       const hydrated: ChatMessage[] = [];
-      for (const row of rows) {
+      fresh.forEach((row, i) => {
         const at = row.started_at ?? new Date().toISOString();
         if (row.query) {
-          hydrated.push({ id: `h-${row.id}-u`, role: 'user', text: row.query, at });
+          hydrated.push({ id: `h-${row.id}-u`, role: 'user', text: row.query, taskID: row.id, at });
         }
-        if (row.status === 'complete') {
-          try {
-            const detail = await client.tasks.get<{
-              result_inline?: string;
-              trajectory?: { steps?: ReasoningStep[] };
-            }>(row.id);
-            const reasoningSteps = parseReasoningSteps(detail);
-            hydrated.push({
-              id: `h-${row.id}-a`,
-              role: 'agent',
-              text: parseAnswerFromDetail(detail),
-              taskID: row.id,
-              at,
-              reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined
-            });
-          } catch {
-            /* skip an unreadable task — best-effort reload */
-          }
+        const detail = details[i];
+        if (row.status === 'complete' && detail !== null) {
+          const reasoningSteps = parseReasoningSteps(detail);
+          hydrated.push({
+            id: `h-${row.id}-a`,
+            role: 'agent',
+            text: parseAnswerFromDetail(detail),
+            taskID: row.id,
+            at,
+            reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined
+          });
         }
-      }
-      if (hydrated.length > 0 && messages.length === 0) {
-        messages = hydrated;
-        if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
-      }
+      });
+      if (hydrated.length === 0) return;
+      // Prepend — the reloaded turns predate any live message sent after
+      // reload, so history sits above the live tail.
+      messages = [...hydrated, ...messages];
+      if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
     } catch {
       /* reload is best-effort; a runtime without tasks.list just starts empty */
     }
@@ -1384,12 +1399,6 @@
           <span class="tel-sep">·</span>
           <span class="tabular">
             Context: {(lastPromptTokens / 1000).toFixed(1)}k{#if contextWindow > 0} / {(contextWindow / 1000).toFixed(0)}k ({Math.round((lastPromptTokens / contextWindow) * 100)}%){/if}
-          </span>
-        {/if}
-        {#if hasCostReading}
-          <span class="tel-sep">·</span>
-          <span class="tabular">
-            Cost: ${costUSD.toFixed(4)}{ceilingUSD !== null ? ` / $${ceilingUSD.toFixed(2)}` : ''}
           </span>
         {/if}
         <span class="tel-spacer"></span>

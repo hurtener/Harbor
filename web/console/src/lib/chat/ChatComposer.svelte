@@ -55,11 +55,6 @@
   let uploadError = $state('');
   let listening = $state(false);
 
-  // A rough token-count preview — ~4 chars per token is the common
-  // heuristic. It is a PREVIEW (the runtime is authoritative); the
-  // estimate keeps the operator oriented without a round-trip.
-  const tokenEstimate = $derived(Math.ceil(text.length / 4));
-
   // SpeechRecognition is vendor-prefixed in some browsers; resolve it
   // once. When absent, the voice button is disabled-with-tooltip.
   const speechSupported =
@@ -282,12 +277,11 @@
     </div>
   </div>
 
-  <div class="composer-foot">
-    <span class="token-count" data-testid="chat-token-count">~{tokenEstimate} tokens</span>
-    {#if uploading}
+  {#if uploading}
+    <div class="composer-foot">
       <span class="uploading">Uploading…</span>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -463,7 +457,6 @@
     gap: var(--space-3);
   }
 
-  .token-count,
   .uploading {
     font-size: var(--text-xs);
     color: var(--color-text-muted);

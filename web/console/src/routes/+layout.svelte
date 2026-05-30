@@ -12,3 +12,20 @@
 </script>
 
 {@render children?.()}
+
+<style>
+  /* Global reset. `tokens.css` defines the palette; this gives html/body
+     the dark app background and removes the default 8px body margin that
+     otherwise produced a full-page scroll (moving the whole shell — header
+     + sidebar) and a white gutter around the app. The console shell owns
+     all scrolling (each page scrolls its own region), so the document
+     itself never scrolls. */
+  :global(html),
+  :global(body) {
+    margin: var(--space-0);
+    padding: var(--space-0);
+    height: 100vh;
+    overflow: hidden;
+    background: var(--color-bg);
+  }
+</style>
