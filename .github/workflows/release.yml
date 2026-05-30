@@ -115,10 +115,10 @@ jobs:
           subject-path: ${{ steps.artifact.outputs.path }}
 
       # Upload the binary + sidecar for the `release` job to gather.
-      # actions/upload-artifact@v4 requires unique names per job, so the
+      # actions/upload-artifact@v7 requires unique names per job, so the
       # GOOS/GOARCH pair is folded in.
       - name: Upload artifact + checksum sidecar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: harbor-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
