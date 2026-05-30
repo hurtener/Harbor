@@ -94,7 +94,6 @@ import (
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
-	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -520,19 +519,20 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	closers = append(closers, llmClient.Close)
 
-	// Memory subsystem. When the operator picked rolling_summary, wire
-	// the LLM-backed default Summarizer (constraint #3 — Phase 64 / D-089).
-	// The memory open path is configured even when strategy=none so the
-	// runtime has a memory store for future per-session reads.
+	// Memory subsystem (Phase 25a, D-174). The summariser threads
+	// through `memory.Deps.Summarizer`, so ONE `memory.Open` call
+	// serves every driver × strategy — no rolling_summary special-case,
+	// no "only inmem" rejection. The memory open path is configured
+	// even when strategy=none so the runtime has a memory store for
+	// per-session reads.
 	//
-	// The Phase 23 registry path (`memory.Open`) does NOT accept a
-	// Summarizer injection; only strategy=none + strategy=truncation
-	// resolve through it. For strategy=rolling_summary we MUST call
-	// the driver's `inmem.New(...)` directly with `Options{Summarizer:
-	// llmsummarizer.New(client)}`. SQLite + Postgres memory drivers
-	// (Phase 25) have not yet been audited for this same shape — for
-	// now, rolling_summary on those drivers is rejected at boot with a
-	// clear "not yet wired" error.
+	// The default Summarizer is the agent's configured LLM
+	// (`llmsummarizer.New(llmClient)`) — no separate summariser model,
+	// no hardwiring (constraint #3 — Phase 64 / D-089). It is built
+	// only when the strategy actually needs it (`rolling_summary`); a
+	// nil Summarizer is valid for `none` / `truncation`. A
+	// `rolling_summary` config with no Summarizer fails loud at
+	// `memory.Open` — never a stub fallback (AGENTS.md §13).
 	var memStore memory.MemoryStore
 	if cfg.Memory.Driver != "" {
 		memCfg := memory.ConfigSnapshot{
@@ -542,40 +542,26 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			BudgetTokens:       cfg.Memory.BudgetTokens,
 			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
 		}
-		if cfg.Memory.Strategy == "rolling_summary" {
-			if cfg.Memory.Driver != "inmem" {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: rolling_summary is only wired against driver=inmem at Phase 64 (got driver=%q); see docs/plans/phase-25-memory-drivers.md for the SQLite/Postgres Summarizer-injection follow-up", cfg.Memory.Driver)
-			}
+		var summarizer memory.Summarizer
+		if memCfg.Strategy == memory.StrategyRollingSummary {
 			s, sErr := llmsummarizer.New(llmClient)
 			if sErr != nil {
 				closeAll(ctx)
 				return nil, fmt.Errorf("summarizer: %w", sErr)
 			}
-			ms, openErr := memoryinmem.New(memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			}, memoryinmem.Options{
-				Summarizer: s,
-			})
-			if openErr != nil {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: %w", openErr)
-			}
-			closers = append(closers, ms.Close)
-			memStore = ms
-		} else {
-			ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			})
-			if openErr != nil {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: %w", openErr)
-			}
-			closers = append(closers, ms.Close)
-			memStore = ms
+			summarizer = s
 		}
+		ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
+			State:      stateStore,
+			Bus:        bus,
+			Summarizer: summarizer,
+		})
+		if openErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("memory: %w", openErr)
+		}
+		closers = append(closers, ms.Close)
+		memStore = ms
 	}
 	// memStore is consumed by the Phase 73j (D-118) Console Memory page
 	// `memory.*` read routes — wired into transports.NewMux below via

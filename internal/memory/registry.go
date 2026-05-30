@@ -19,9 +19,21 @@ import (
 // Drivers MUST NOT accept missing deps silently; the registry
 // rejects an `Open` call whose Deps omits either with a wrapped
 // error.
+//
+// The `Summarizer` field (Phase 25a, D-174) is the injectable
+// LLM-edge callable the `rolling_summary` strategy consumes. It is
+// OPTIONAL — required only when `cfg.Strategy == StrategyRollingSummary`,
+// ignored by `none` / `truncation`. The registry routes it into the
+// driver factory, which threads it into the strategy executor. A
+// `rolling_summary` config without a `Summarizer` fails loudly at
+// `Open` (mirroring `strategy.New`'s rejection) — never a stub
+// fallback (AGENTS.md §13). Existing callers that construct
+// `Deps{State, Bus}` keep compiling: the zero value is nil, valid for
+// the non-summarising strategies.
 type Deps struct {
-	State state.StateStore
-	Bus   events.EventBus
+	State      state.StateStore
+	Bus        events.EventBus
+	Summarizer Summarizer
 }
 
 // ConfigSnapshot is the strict subset of `config.MemoryConfig` the
@@ -88,7 +100,7 @@ func Register(name string, factory Factory) {
 // wrapped error before the factory runs — fail loudly, never
 // silently degrade.
 func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (MemoryStore, error) {
-	if err := validateDeps(deps); err != nil {
+	if err := validateDeps(cfg, deps); err != nil {
 		return nil, err
 	}
 	name := cfg.Driver
@@ -101,18 +113,26 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (MemoryStore, error)
 // OpenDriver opens a specific driver by name; useful for tests
 // that want to exercise the registry against a non-default driver.
 func OpenDriver(name string, cfg ConfigSnapshot, deps Deps) (MemoryStore, error) {
-	if err := validateDeps(deps); err != nil {
+	if err := validateDeps(cfg, deps); err != nil {
 		return nil, err
 	}
 	return open(name, cfg, deps)
 }
 
-func validateDeps(d Deps) error {
+func validateDeps(cfg ConfigSnapshot, d Deps) error {
 	if d.State == nil {
 		return fmt.Errorf("memory: Deps.State is required (state.StateStore)")
 	}
 	if d.Bus == nil {
 		return fmt.Errorf("memory: Deps.Bus is required (events.EventBus)")
+	}
+	// Fail loudly at the registry boundary when rolling_summary is
+	// configured without a Summarizer (Phase 25a, D-174). The driver
+	// factory + strategy.New also reject this, but catching it here
+	// surfaces the misconfiguration before any DB connection is
+	// opened — and never silently falls back to a stub (AGENTS.md §13).
+	if cfg.Strategy == StrategyRollingSummary && d.Summarizer == nil {
+		return fmt.Errorf("memory: Deps.Summarizer is required for strategy %q (no stub fallback)", StrategyRollingSummary)
 	}
 	return nil
 }

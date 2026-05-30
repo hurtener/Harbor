@@ -49,7 +49,7 @@ drivers) that shipped only against inmem; it does not redesign the executors.
 - The `cmd/harbor/cmd_dev.go` rolling_summary special-case (the direct
   `inmem.New(...)` + the "only inmem" rejection) is removed: one
   `memory.Open(ctx, cfg, Deps{State, Bus, Summarizer})` call serves every driver
-  + strategy. The summariser still defaults to the agent's configured LLM
+  and strategy. The summariser still defaults to the agent's configured LLM
   (`llmsummarizer.New(llmClient)`) — no separate summariser model, no hardwiring.
 - Fail loud, unchanged: `rolling_summary` without a `Summarizer` errors at open
   on every driver; no stub default (CLAUDE.md §13).

@@ -98,9 +98,9 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
-	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -610,17 +610,13 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.closeFns = append(stack.closeFns, llmClient.Close)
 	}
 
-	// Memory. Only opened when the cfg names a driver. The
-	// rolling_summary strategy needs a real Summarizer (Phase 23 /
-	// D-089) — the helper rejects that path with a clear error
-	// because the integration tests we target all use strategy=none.
-	// A future test that needs rolling_summary against an LLM-backed
-	// summarizer can extend this helper or open memory by hand.
+	// Memory. Only opened when the cfg names a driver. Mirrors the
+	// production wiring in cmd/harbor/cmd_dev.go (D-174, §17.6 — the
+	// helper must not diverge from production): a single memory.Open
+	// with the Summarizer threaded through Deps. For rolling_summary
+	// the Summarizer defaults to the configured LLM (no special-case,
+	// no stub); strategy=none / truncation pass a nil Summarizer.
 	if cfg.Memory.Driver != "" {
-		if cfg.Memory.Strategy == "rolling_summary" {
-			return stack, fmt.Errorf("memory.strategy=rolling_summary is not wired in the helper; " +
-				"open memoryinmem.New directly with Options{Summarizer: ...} if you need it")
-		}
 		memCfg := memory.ConfigSnapshot{
 			Driver:             cfg.Memory.Driver,
 			DSN:                cfg.Memory.DSN,
@@ -628,24 +624,23 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			BudgetTokens:       cfg.Memory.BudgetTokens,
 			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
 		}
-		// Use the inmem driver directly when the cfg picks it so we
-		// stay aligned with the bootDevStack split (registry.Open
-		// vs direct New). The registry path also works for non-
-		// rolling-summary, but the direct path is symmetric with
-		// production for the strategy=none case.
-		var ms memory.MemoryStore
-		var openErr error
-		if cfg.Memory.Driver == "inmem" {
-			ms, openErr = memoryinmem.New(memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			}, memoryinmem.Options{})
-		} else {
-			ms, openErr = memory.Open(context.Background(), memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			})
+		var summarizer memory.Summarizer
+		if cfg.Memory.Strategy == "rolling_summary" {
+			if stack.LLMClient == nil {
+				return stack, fmt.Errorf("memory.strategy=rolling_summary requires an LLM " +
+					"(configure llm) so the helper can build the default Summarizer")
+			}
+			s, sErr := llmsummarizer.New(stack.LLMClient)
+			if sErr != nil {
+				return stack, fmt.Errorf("summarizer: %w", sErr)
+			}
+			summarizer = s
 		}
+		ms, openErr := memory.Open(context.Background(), memCfg, memory.Deps{
+			State:      stateStore,
+			Bus:        bus,
+			Summarizer: summarizer,
+		})
 		if openErr != nil {
 			return stack, fmt.Errorf("memory.Open: %w", openErr)
 		}

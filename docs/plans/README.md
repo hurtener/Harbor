@@ -41,10 +41,10 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 23 | MemoryStore iface + InMem + conformance       | memory               | §6.6        | 01, 07                | 85%  | Shipped  |
 | 24 | Memory strategies (truncation, summary)       | memory               | §6.6        | 23                    | 85%  | Shipped  |
 | 25 | SQLite + Postgres memory drivers              | memory               | §6.6, §9    | 23, 15, 16            | 90%  | Shipped  |
-| 25a| Durable memory strategies (truncation + rolling_summary on SQL drivers; Summarizer through `memory.Open`) | memory | §6.6, §9 | 23, 24, 25, 15, 16 | n/a | Pending (V1.1.x) |
+| 25a| Durable memory strategies (truncation + rolling_summary on SQL drivers; Summarizer through `memory.Open`) | memory | §6.6, §9 | 23, 24, 25, 15, 16 | n/a | Shipped (V1.1.x) |
 | 26 | Tool catalog core + InProcess registration    | tools                | §6.4        | 01, 05, 09            | 85%  | Shipped  |
 | 26a| Flow-as-Tool registration + per-flow Budget   | runtime/flow + tools | §6.1, §6.4  | 14, 26                | 85%  | Shipped  |
-| 26b| Per-MCP-server + per-tool tool-policy config (`policy:` / `tool_policies:`) | tools + config | §6.4 | 26, 28 | n/a | Pending (V1.1.x) |
+| 26b| Per-MCP-server + per-tool tool-policy config (`policy:` / `tool_policies:`) | tools + config | §6.4 | 26, 28 | n/a | Shipped (V1.1.x) |
 | 27 | HTTP tool driver                              | tools/http           | §6.4        | 26                    | 85%  | Shipped  |
 | 28 | MCP southbound driver                         | tools/mcp            | §6.4        | 26                    | 80%  | Shipped  |
 | 29 | A2A southbound driver (full spec)             | tools/a2a            | §6.4        | 26, 22                | 80%  | Shipped  |

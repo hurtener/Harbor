@@ -483,23 +483,41 @@ func TestTryAssemble_NilCfg_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestTryAssemble_RollingSummary_Rejected — the helper explicitly
-// rejects the rolling_summary memory strategy because it would need
-// a Summarizer the helper does not own. The error is returned with
-// `stack != nil` so the caller's Close drains the layers that
-// already opened.
-func TestTryAssemble_RollingSummary_Rejected(t *testing.T) {
+// TestTryAssemble_RollingSummary_WiredWithLLM — the helper now wires
+// rolling_summary through memory.Open with the Summarizer defaulting to
+// the configured LLM (D-174 / §17.6 — the helper mirrors production
+// cmd_dev wiring). minimalConfig carries the mock LLM, so the strategy
+// opens cleanly.
+func TestTryAssemble_RollingSummary_WiredWithLLM(t *testing.T) {
 	t.Parallel()
 	cfg := minimalConfig(t)
 	cfg.Memory.Strategy = "rolling_summary"
 	stack, err := devstack.TryAssemble(cfg, devstack.AssembleOpts{})
+	if err != nil {
+		t.Fatalf("rolling_summary should wire with the configured LLM: %v", err)
+	}
+	if stack == nil || stack.Memory == nil {
+		t.Fatal("expected a non-nil stack with an opened Memory store")
+	}
+	stack.Close()
+}
+
+// TestTryAssemble_RollingSummary_FailsLoudWithoutLLM — rolling_summary
+// without an LLM fails loud (no stub summariser, CLAUDE.md §13). The
+// error is returned with `stack != nil` so the caller's Close drains the
+// layers that already opened.
+func TestTryAssemble_RollingSummary_FailsLoudWithoutLLM(t *testing.T) {
+	t.Parallel()
+	cfg := minimalConfig(t)
+	cfg.Memory.Strategy = "rolling_summary"
+	cfg.LLM = config.LLMConfig{} // no LLM → no default Summarizer
+	stack, err := devstack.TryAssemble(cfg, devstack.AssembleOpts{})
 	if err == nil {
-		t.Fatal("expected error on memory.strategy=rolling_summary")
+		t.Fatal("expected a loud error: rolling_summary without an LLM has no Summarizer")
 	}
 	if stack == nil {
 		t.Fatal("expected non-nil stack so caller can Close partially-opened layers")
 	}
-	// Drain the partial stack.
 	stack.Close()
 }
 
