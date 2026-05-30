@@ -22,11 +22,18 @@
       status = 'disconnected';
       return;
     }
-    // Deep-link to the operator's active session — the Playground is a
-    // session-scoped surface (CONVENTIONS.md §1/§2).
-    void goto(`/playground/${encodeURIComponent(connection.identity.session)}`, {
-      replaceState: true
-    });
+    // D-171: the connection token is a per-backend credential and no
+    // longer pins a session, so `identity.session` is normally blank.
+    // Mint a fresh conversation id in that case — sessions are
+    // create-on-first-use, so the new id materialises on the first send
+    // (this matches the "New session" action). Without this, a blank
+    // session deep-linked to `/playground/` (an empty id) and rendered
+    // nothing.
+    const session =
+      connection.identity.session !== ''
+        ? connection.identity.session
+        : `sess-${crypto.randomUUID().slice(0, 12)}`;
+    void goto(`/playground/${encodeURIComponent(session)}`, { replaceState: true });
   });
 </script>
 

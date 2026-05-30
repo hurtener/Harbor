@@ -55,11 +55,6 @@
   let uploadError = $state('');
   let listening = $state(false);
 
-  // A rough token-count preview — ~4 chars per token is the common
-  // heuristic. It is a PREVIEW (the runtime is authoritative); the
-  // estimate keeps the operator oriented without a round-trip.
-  const tokenEstimate = $derived(Math.ceil(text.length / 4));
-
   // SpeechRecognition is vendor-prefixed in some browsers; resolve it
   // once. When absent, the voice button is disabled-with-tooltip.
   const speechSupported =
@@ -105,6 +100,21 @@
     );
     text = '';
     attachments = [];
+  }
+
+  // 108a-D — drag & drop file upload onto the composer.
+  let dragOver = $state(false);
+  function onDragOver(e: DragEvent): void {
+    e.preventDefault();
+    dragOver = true;
+  }
+  function onDragLeave(): void {
+    dragOver = false;
+  }
+  function onDrop(e: DragEvent): void {
+    e.preventDefault();
+    dragOver = false;
+    void handleFiles(e.dataTransfer?.files ?? null);
   }
 
   function onKeydown(e: KeyboardEvent): void {
@@ -155,7 +165,16 @@
   }
 </script>
 
-<div class="chat-composer" data-testid="chat-composer">
+<div
+  class="chat-composer"
+  class:drag-over={dragOver}
+  data-testid="chat-composer"
+  role="group"
+  aria-label="Message composer"
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+>
   {#if attachments.length > 0}
     <ul class="attachment-list" data-testid="chat-attachments">
       {#each attachments as a (a.id)}
@@ -180,8 +199,20 @@
     <p class="composer-error" role="alert">Attachment failed: {uploadError}</p>
   {/if}
 
-  <div class="composer-row">
-    <label class="attach-button" title="Attach a file">
+  <!-- 108a-D — message textarea on top (mock Image 13), then the action
+       row: attach + drop-zone, voice, and the Send cluster. -->
+  <textarea
+    class="composer-input"
+    data-testid="chat-composer-input"
+    placeholder="Type your message…  (Cmd/Ctrl-Enter to send)"
+    bind:value={text}
+    onkeydown={onKeydown}
+    disabled={sending}
+    rows="2"
+  ></textarea>
+
+  <div class="composer-actions">
+    <label class="drop-zone" title="Attach a file — or drag & drop">
       <input
         type="file"
         multiple
@@ -189,19 +220,11 @@
         onchange={(e) => void handleFiles((e.currentTarget as HTMLInputElement).files)}
         disabled={sending}
       />
-      <span aria-hidden="true">＋</span>
-      <span class="sr-only">Attach a file</span>
+      <span class="attach-icon" aria-hidden="true">📎</span>
+      <span class="drop-zone-label">
+        {dragOver ? 'Drop files to upload' : 'Drag & drop files here or click to upload'}
+      </span>
     </label>
-
-    <textarea
-      class="composer-input"
-      data-testid="chat-composer-input"
-      placeholder="Send a message — Cmd/Ctrl-Enter to send"
-      bind:value={text}
-      onkeydown={onKeydown}
-      disabled={sending}
-      rows="2"
-    ></textarea>
 
     <button
       type="button"
@@ -218,61 +241,98 @@
       <span class="sr-only">Voice input</span>
     </button>
 
-    <button
-      type="button"
-      class="send-button"
-      data-testid="chat-send-button"
-      onclick={send}
-      disabled={!canSend}
-    >
-      {sending ? 'Sending…' : running ? (mode === 'steer' ? 'Steer' : 'Queue') : 'Send'}
-    </button>
+    <!-- 108a-D — Send is the accent arrow; while a run is active the
+         split mode dropdown (Queue / Steer) replaces the radio fieldset. -->
+    <div class="send-cluster">
+      {#if running}
+        <select
+          class="mode-select"
+          data-testid="chat-mode-picker"
+          bind:value={mode}
+          title="Send mode while a run is active"
+        >
+          <option value="queue">Queue</option>
+          <option value="steer">Steer</option>
+        </select>
+      {/if}
+      <button
+        type="button"
+        class="send-button"
+        data-testid="chat-send-button"
+        onclick={send}
+        disabled={!canSend}
+        title={sending
+          ? 'Sending…'
+          : running
+            ? mode === 'steer'
+              ? 'Steer the current run'
+              : 'Queue after the current run'
+            : 'Send'}
+      >
+        <span aria-hidden="true">{sending ? '…' : '→'}</span>
+        <span class="sr-only">
+          {sending ? 'Sending' : running ? (mode === 'steer' ? 'Steer' : 'Queue') : 'Send'}
+        </span>
+      </button>
+    </div>
   </div>
 
-  {#if running}
-    <fieldset class="mode-picker" data-testid="chat-mode-picker">
-      <legend class="sr-only">Send mode while a run is active</legend>
-      <label class="mode-option">
-        <input
-          type="radio"
-          name="chat-send-mode"
-          value="queue"
-          checked={mode === 'queue'}
-          onchange={() => (mode = 'queue')}
-          data-testid="chat-mode-queue"
-        />
-        <span class="mode-label">Queue after current run</span>
-      </label>
-      <label class="mode-option">
-        <input
-          type="radio"
-          name="chat-send-mode"
-          value="steer"
-          checked={mode === 'steer'}
-          onchange={() => (mode = 'steer')}
-          data-testid="chat-mode-steer"
-        />
-        <span class="mode-label">Steer current run</span>
-      </label>
-    </fieldset>
-  {/if}
-
-  <div class="composer-foot">
-    <span class="token-count" data-testid="chat-token-count">~{tokenEstimate} tokens</span>
-    {#if uploading}
+  {#if uploading}
+    <div class="composer-foot">
       <span class="uploading">Uploading…</span>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
+  /* 108a-D — recessed composer container (mock Image 13): textarea on
+     top, an action row (attach/drop-zone, voice, Send) below. */
   .chat-composer {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-3);
     border-top: var(--border-hairline);
-    background: var(--color-surface);
+    background: var(--color-bg);
+  }
+
+  .chat-composer.drag-over {
+    background: var(--color-accent-soft);
+  }
+
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* The drop-zone is the wide click-to-upload + drag target. */
+  .drop-zone {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-hairline);
+    border-style: dashed;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .drop-zone:hover,
+  .chat-composer.drag-over .drop-zone {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+
+  .drop-zone input {
+    display: none;
+  }
+
+  .attach-icon {
+    font-size: var(--text-base);
   }
 
   .attachment-list {
@@ -319,39 +379,22 @@
     color: var(--color-danger);
   }
 
-  .composer-row {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-2);
-  }
-
-  .attach-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-2);
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--text-base);
-    color: var(--color-text);
-  }
-
-  .attach-button input {
-    display: none;
-  }
-
   .composer-input {
-    flex: 1;
+    width: 100%;
+    box-sizing: border-box;
     resize: vertical;
-    padding: var(--space-2);
-    background: var(--color-bg);
+    padding: var(--space-3);
+    background: var(--color-surface);
     border: var(--border-hairline);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     font-family: var(--font-sans);
     font-size: var(--text-sm);
     color: var(--color-text);
+  }
+
+  .composer-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .voice-button,
@@ -376,13 +419,35 @@
   .send-button {
     background: var(--color-accent);
     color: var(--color-bg);
-    font-weight: 600;
+    font-weight: 700;
+    font-size: var(--text-lg);
     border-color: var(--color-accent);
+    min-width: var(--space-10);
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .send-button:not(:disabled):hover {
+    filter: brightness(1.1);
+  }
+
+  .send-cluster {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+
+  .mode-select {
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    padding: var(--space-1) var(--space-2);
   }
 
   .voice-button:disabled,
   .send-button:disabled,
-  .attach-button:has(input:disabled) {
+  .drop-zone:has(input:disabled) {
     opacity: 0.4;
     cursor: not-allowed;
   }
@@ -392,28 +457,6 @@
     gap: var(--space-3);
   }
 
-  .mode-picker {
-    display: flex;
-    gap: var(--space-3);
-    border: none;
-    margin: var(--space-0);
-    padding: var(--space-0);
-  }
-
-  .mode-option {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-    cursor: pointer;
-  }
-
-  .mode-label {
-    font-family: var(--font-sans);
-  }
-
-  .token-count,
   .uploading {
     font-size: var(--text-xs);
     color: var(--color-text-muted);

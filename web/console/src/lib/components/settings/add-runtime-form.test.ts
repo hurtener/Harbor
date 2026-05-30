@@ -90,10 +90,10 @@ describe('validateAddRuntimeDraft — AC-1 / AC-4 rejection shapes', () => {
 		expect(validateAddRuntimeDraft(d)).toMatch(/whitespace/i);
 	});
 
-	it('an empty session is rejected', () => {
+	it('an empty session is ACCEPTED — session is per-request (D-171)', () => {
 		const d = validDraft();
 		d.session = '';
-		expect(validateAddRuntimeDraft(d)).toMatch(/session/i);
+		expect(validateAddRuntimeDraft(d)).toBeNull();
 	});
 
 	it('a session with whitespace is rejected', () => {

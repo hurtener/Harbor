@@ -84,11 +84,14 @@ else
     ok "playground/[session_id] does not render a duplicate ConnectionFooter (N2)"
 fi
 
-# The app shell IS allowed to render it — confirm the single canonical
-# render is still there so we don't accidentally delete the only footer.
+# The app shell renders the single canonical bottom bar. 108a folded the
+# ConnectionFooter into the global AppStatusBar (one bar: connection +
+# protocol + events + console), which carries the connection-footer
+# testid. Confirm that single shell-level bar is still present so we don't
+# accidentally delete the only footer (D-161 single-source intent).
 assert_grep_present \
-    '<ConnectionFooter' \
+    '<AppStatusBar' \
     'web/console/src/routes/(console)/+layout.svelte' \
-    'the app shell renders the single ConnectionFooter instance'
+    'the app shell renders the single global AppStatusBar (folds ConnectionFooter)'
 
 smoke_summary

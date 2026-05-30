@@ -95,7 +95,7 @@ TOKENS="web/console/src/lib/tokens.css"
 
 for intent in info success warning danger accent neutral; do
     assert_grep_or_skip \
-        "--chip-${intent}-fg" \
+        "\-\-chip\-${intent}\-fg" \
         "${TOKENS}" \
         "phase-108: --chip-${intent}-fg defined in tokens.css"
 done

@@ -86,6 +86,53 @@ func mapTaskError(method string, err error) *protoerrors.Error {
 	}
 }
 
+// Session-ensure sentinels (D-171). The SessionEnsurer seam is
+// error-only and the protocol package does not import the sessions
+// package, so the adapter that wraps a concrete sessions.Registry
+// translates the registry's sentinels into THESE before returning them
+// to dispatchStart. Keeping the mapping vocabulary here means the
+// Protocol surface owns its own error-code contract (CLAUDE.md §8)
+// without coupling to the sessions package.
+var (
+	// ErrSessionReopenAfterClose — `start` named a session id whose
+	// record is Closed (GC-reaped or operator-closed). Reopening is
+	// forbidden (RFC §6.9); the client must pick a new session id for a
+	// new conversation. Maps to CodeInvalidRequest.
+	ErrSessionReopenAfterClose = stderrors.New("protocol: session reopen-after-close forbidden")
+	// ErrSessionIDReuse — `start` named a session id already opened under
+	// a different (tenant, user). Cross-principal session-id reuse is
+	// rejected. Maps to CodeInvalidRequest.
+	ErrSessionIDReuse = stderrors.New("protocol: session id reused across principals")
+)
+
+// mapSessionEnsureError translates a SessionEnsurer error into a stable
+// *protoerrors.Error. The adapter is responsible for translating the
+// concrete registry sentinels into the protocol-side sentinels above;
+// an unclassified error surfaces loud as a runtime error (never
+// swallowed — CLAUDE.md §5).
+func mapSessionEnsureError(method string, err error) *protoerrors.Error {
+	switch {
+	case err == nil:
+		return nil
+
+	case stderrors.Is(err, identity.ErrIdentityIncomplete):
+		return protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete", method)
+
+	case stderrors.Is(err, ErrSessionReopenAfterClose):
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: session is closed and cannot be reopened — start a new conversation with a fresh session id", method)
+
+	case stderrors.Is(err, ErrSessionIDReuse):
+		return protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: session id is already in use by a different tenant/user", method)
+
+	default:
+		return protoerrors.Newf(protoerrors.CodeRuntimeError,
+			"method %q: session create-on-first-use failed", method)
+	}
+}
+
 // mapTopologyError translates an engine Topology() error into a stable
 // *protoerrors.Error (Phase 74 / D-114). The engine's identity-rejection
 // path wraps identity.ErrIdentityIncomplete; anything else is an

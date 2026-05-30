@@ -314,6 +314,25 @@ type RunContext struct {
 	// without a runloop). Operators should never set it; the
 	// runloop owns the closure.
 	OnPendingToolCalls func([]ToolCallDeferred)
+
+	// SessionArtifacts (Phase 107f — D-176) carries the pre-resolved,
+	// identity-scoped session-artifact manifest the planner renders into
+	// a read-only `<session_artifacts>` prompt block, so the model stays
+	// aware of uploads and tool-materialised artifacts across turns and
+	// can `artifact_fetch` any of them by ref.
+	//
+	// The run loop lists `ArtifactStore.List` scoped to the run's
+	// `(tenant, user, session)` triple each turn and maps each ref into
+	// a metadata-only entry (the D-166 run-loop pre-resolution pattern —
+	// the planner does NO I/O; it reads only from rc). Nil/empty means
+	// "no manifest": the planner omits the `<session_artifacts>` block
+	// entirely (no fabricated rows). Newest-first; the renderer caps the
+	// rendered rows and appends an explicit "+K more" line on overflow
+	// (never a silent truncation, CLAUDE.md §17.6).
+	//
+	// Concurrent-reuse (D-025): the manifest is per-run state on rc,
+	// never on the shared planner artifact.
+	SessionArtifacts []ArtifactManifestEntry
 }
 
 // ToolCallDeferred is a pending native tool-call the planner will
@@ -583,6 +602,35 @@ type InputArtifactView struct {
 	// for `image/*` MIMEs (the Path 1 inline-bytes case). Nil for
 	// every other MIME (the LLM sees an ArtifactStub ref instead).
 	Bytes []byte
+}
+
+// ArtifactManifestEntry is one metadata-only row in the session-artifact
+// manifest (Phase 107f — D-176). The run loop builds the slice from
+// `ArtifactStore.List` scoped to the run's `(tenant, user, session)`
+// triple and sets it on `RunContext.SessionArtifacts`; the ReAct planner
+// renders the rows into the read-only `<session_artifacts>` prompt block
+// so the model can `artifact_fetch` any listed `Ref`.
+//
+// The shape carries NO bytes — content stays in the store and is fetched
+// on demand via the `artifact_fetch` meta-tool (D-026 heavy-content
+// discipline). `Provenance` is the run-loop-resolved origin string
+// (e.g. "user_upload", "tool: web_search", "flow: ...") — see the
+// run loop's provenance resolver.
+type ArtifactManifestEntry struct {
+	// Ref is the content-addressed artifact identifier the model passes
+	// to `artifact_fetch` to read the artifact's bytes.
+	Ref string
+	// Filename is the operator-supplied or producer-supplied original
+	// filename, if known. May be empty.
+	Filename string
+	// MIME is the artifact's IANA media type (metadata for the model).
+	MIME string
+	// SizeBytes is the artifact's byte length (metadata, not the bytes).
+	SizeBytes int64
+	// Provenance is the human-readable origin of the artifact, resolved
+	// by the run loop from the artifact's `Source` map (canonical
+	// `source` key else the tool/producer/flow name else "unknown").
+	Provenance string
 }
 
 // PlanningNudges are caller-provided nudges the planner MAY honour.

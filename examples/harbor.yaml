@@ -466,6 +466,31 @@ tools:
   #                    key, etc.). Treated as secrets; redacted in
   #                    boot logs.
   #   keep_alive     — session ping interval; zero disables.
+  #   policy         — (Phase 26b) per-server default tool reliability
+  #                    policy. Optional; omit it and every tool inherits
+  #                    the package default (30s per-attempt deadline /
+  #                    4 total attempts). Fields:
+  #                      max_attempts   — TOTAL attempts INCLUDING the
+  #                                       first (NOT retries). 1 = one
+  #                                       attempt, no retry; 4 = the
+  #                                       default. Optional: omit it (or
+  #                                       0) to inherit the default attempt
+  #                                       count. Must be >= 0.
+  #                      timeout_ms     — per-attempt deadline in ms.
+  #                      retry_on       — retryable error classes; any of
+  #                                       transient | timeout | 5xx |
+  #                                       permanent.
+  #                      backoff_base_ms / backoff_max_ms / backoff_mult
+  #                                     — exponential-backoff knobs.
+  #                    Per-FIELD fall-through: a field you omit inherits
+  #                    the package default for THAT field. Setting only
+  #                    timeout_ms keeps the default 4 attempts.
+  #   tool_policies  — (Phase 26b) per-TOOL overrides keyed by the MCP
+  #                    server-side tool name (e.g. `get_metadata`, NOT
+  #                    the `<source>_<tool>` Harbor name). A tool named
+  #                    here uses its override instead of `policy`; tools
+  #                    absent from the map fall back to `policy` (or the
+  #                    package default). Same field shape as `policy`.
   #
   # Examples (commented):
   #
@@ -476,6 +501,23 @@ tools:
   #     headers:
   #       Authorization: Bearer replace-me
   #     keep_alive: 30s
+  #     # Per-server default: every github tool gets 3 total attempts
+  #     # with a 10s per-attempt deadline. Omitted backoff fields keep
+  #     # the package defaults (100ms base / 30s cap / x2 mult).
+  #     policy:
+  #       max_attempts: 3
+  #       timeout_ms: 10000
+  #       retry_on: [transient, timeout, 5xx]
+  #     # Per-tool overrides: a slow metadata call gets ONE long attempt;
+  #     # a flaky search gets more retries. Other github tools keep the
+  #     # per-server default above.
+  #     tool_policies:
+  #       get_metadata:
+  #         max_attempts: 1        # one attempt, no retry
+  #         timeout_ms: 60000      # 60s single deadline
+  #       search:
+  #         max_attempts: 6
+  #         timeout_ms: 5000
   #
   #   - name: filesystem
   #     transport_mode: stdio

@@ -44,10 +44,18 @@ describe('resolveConnection', () => {
 		expect(isConnected()).toBe(false);
 	});
 
-	it('returns null when any single key is missing', () => {
+	it('returns null when a REQUIRED key (tenant) is missing', () => {
+		seedConnection();
+		localStorage.removeItem(STORAGE_KEYS.tenant);
+		expect(resolveConnection()).toBeNull();
+	});
+
+	it('still resolves when session is absent — session is per-request (D-171)', () => {
 		seedConnection();
 		localStorage.removeItem(STORAGE_KEYS.session);
-		expect(resolveConnection()).toBeNull();
+		const conn = resolveConnection();
+		expect(conn).not.toBeNull();
+		expect(conn?.identity).toEqual({ tenant: 't1', user: 'u1', session: '' });
 	});
 
 	it('resolves the comma-separated scope claims, empty when unset', () => {

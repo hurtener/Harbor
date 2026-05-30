@@ -1,101 +1,198 @@
 <script lang="ts">
-  // Harbor Console — Playground Controls card (Phase 73n / D-130).
+  // Harbor Console — Playground Controls card (Phase 73n / D-130, 108 / D-167,
+  // 108a fidelity pass).
   //
-  // The right-rail Controls card: reasoning-effort, temperature,
-  // max-tokens, and system-prompt-override inputs, plus an Apply button
-  // that records the override via `runs.set_overrides` (Brief 11
-  // §PG-5). The override applies to the NEXT message in the session.
-  //
-  // The drift-mode toggle is rendered visible-but-DISABLED with a
-  // "Post-V1" tooltip — Brief 11 §PG-5 defers drift mode. It is NOT a
-  // stubbed action presented as done (CONVENTIONS.md §5): the disabled
-  // state + tooltip is the honest signal.
+  // The right-rail Controls card: reasoning-effort (segmented), temperature +
+  // top-p sliders with live numeric values, max-tokens, and a collapsible
+  // system-prompt override. Overrides apply LIVE (debounced) — they re-wire the
+  // NEXT message, so there is no "save" button (108a D-Q3 / operator feedback:
+  // a save button is wrong when the controls implicitly affect the next turn).
+  // The Drift-mode "Post-V1" toggle is removed (no Post-V1 labels above V1).
   //
   // Design tokens only.
 
   let {
+    model = '',
+    tools = [],
     pending = false,
     result = null,
     onapply
   }: {
+    /** The active model name (read-only — the runtime exposes no model switch). */
+    model?: string;
+    /** The runtime's tool catalog (read-only display: "All enabled (N)"). */
+    tools?: string[];
     /** True while a `runs.set_overrides` call is in flight. */
     pending?: boolean;
-    /** The last apply result — success/failure feedback. */
+    /** The last apply result — surfaced as a subtle saved/failed hint. */
     result?: { ok: boolean; message: string } | null;
-    /** Invoked with the composed overrides on Apply. */
+    /** Invoked (debounced) with the composed overrides whenever a control changes. */
     onapply: (overrides: {
       reasoningEffort?: string;
       temperature?: number;
+      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     }) => void;
   } = $props();
 
-  // The four override inputs. Each is OPT-IN — an untouched field is
-  // omitted from the override (leaves the runtime default in place).
-  let reasoningEffort = $state('');
-  let temperature = $state('');
+  // Defaults: reasoning unset ('' = the agent's default); temperature/top-p sit
+  // at neutral resting values so the numeric readout shows a real number rather
+  // than the prior "—". Nothing is sent until the operator changes a control.
+  const DEFAULTS = { reasoningEffort: '', temperature: 1, topP: 1, maxTokens: '', systemPrompt: '' };
+
+  let reasoningEffort = $state(DEFAULTS.reasoningEffort);
+  let temperature = $state<number>(DEFAULTS.temperature);
+  let topP = $state<number>(DEFAULTS.topP);
   let maxTokens = $state('');
   let systemPrompt = $state('');
+  let systemPromptOpen = $state(false);
 
-  function apply(): void {
-    const overrides: {
+  const effortOptions = [
+    { value: '', label: 'Default' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' }
+  ];
+
+  function composeOverrides(): {
+    reasoningEffort?: string;
+    temperature?: number;
+    topP?: number;
+    maxTokens?: number;
+    systemPromptOverride?: string;
+  } {
+    const o: {
       reasoningEffort?: string;
       temperature?: number;
+      topP?: number;
       maxTokens?: number;
       systemPromptOverride?: string;
     } = {};
-    if (reasoningEffort !== '') {
-      overrides.reasoningEffort = reasoningEffort;
-    }
-    if (temperature !== '') {
-      const t = Number(temperature);
-      if (!Number.isNaN(t)) {
-        overrides.temperature = t;
-      }
-    }
+    if (reasoningEffort !== '') o.reasoningEffort = reasoningEffort;
+    o.temperature = temperature;
+    o.topP = topP;
     if (maxTokens !== '') {
       const m = Number(maxTokens);
-      if (!Number.isNaN(m)) {
-        overrides.maxTokens = m;
-      }
+      if (!Number.isNaN(m)) o.maxTokens = m;
     }
-    if (systemPrompt !== '') {
-      overrides.systemPromptOverride = systemPrompt;
-    }
-    onapply(overrides);
+    if (systemPrompt !== '') o.systemPromptOverride = systemPrompt;
+    return o;
+  }
+
+  // Live apply, debounced — every control change re-sends the override set so
+  // the next message reflects it without an explicit save.
+  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
+  function applyLive(): void {
+    if (debounceHandle !== null) clearTimeout(debounceHandle);
+    debounceHandle = setTimeout(() => {
+      onapply(composeOverrides());
+      debounceHandle = null;
+    }, 400);
+  }
+
+  function setEffort(value: string): void {
+    reasoningEffort = value;
+    applyLive();
+  }
+
+  function resetDefaults(): void {
+    reasoningEffort = DEFAULTS.reasoningEffort;
+    temperature = DEFAULTS.temperature;
+    topP = DEFAULTS.topP;
+    maxTokens = DEFAULTS.maxTokens;
+    systemPrompt = DEFAULTS.systemPrompt;
+    systemPromptOpen = false;
+    applyLive();
   }
 </script>
 
 <div class="controls-card" data-testid="playground-controls-card">
-  <label class="control-field">
-    <span class="control-label">Reasoning effort</span>
-    <select
-      class="control-input"
-      data-testid="controls-reasoning-effort"
-      bind:value={reasoningEffort}
+  <div class="controls-head">
+    <button
+      type="button"
+      class="reset-link"
+      data-testid="controls-reset"
+      onclick={resetDefaults}
     >
-      <option value="">Default</option>
-      <option value="low">Low</option>
-      <option value="medium">Medium</option>
-      <option value="high">High</option>
-    </select>
-  </label>
+      Reset to defaults
+    </button>
+  </div>
 
+  <!-- Model (read-only — the runtime exposes no live model switch) -->
+  <div class="control-field control-static">
+    <span class="control-label">Model</span>
+    <span class="static-value mono" data-testid="controls-model">{model || '—'}</span>
+  </div>
+
+  <!-- Tools (read-only catalog) -->
+  <div class="control-field control-static">
+    <span class="control-label">Tools</span>
+    <span
+      class="static-value"
+      data-testid="controls-tools"
+      title={tools.join(', ')}
+    >
+      {tools.length > 0 ? `All enabled (${tools.length})` : '—'}
+    </span>
+  </div>
+
+  <!-- Reasoning effort — segmented control -->
+  <div class="control-field">
+    <span class="control-label">Reasoning effort</span>
+    <div class="segmented" role="radiogroup" aria-label="Reasoning effort">
+      {#each effortOptions as opt (opt.value)}
+        <button
+          type="button"
+          class="segment"
+          class:active={reasoningEffort === opt.value}
+          onclick={() => setEffort(opt.value)}
+          data-testid="controls-reasoning-effort"
+          data-value={opt.value}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  <!-- Temperature — slider + live numeric value -->
   <label class="control-field">
     <span class="control-label">Temperature</span>
-    <input
-      class="control-input"
-      type="number"
-      step="0.1"
-      min="0"
-      max="2"
-      placeholder="Default"
-      data-testid="controls-temperature"
-      bind:value={temperature}
-    />
+    <div class="slider-row">
+      <input
+        class="slider"
+        type="range"
+        min="0"
+        max="2"
+        step="0.1"
+        data-testid="controls-temperature"
+        bind:value={temperature}
+        oninput={applyLive}
+      />
+      <span class="numeric-chip tabular">{temperature.toFixed(1)}</span>
+    </div>
   </label>
 
+  <!-- Top P — slider + live numeric value -->
+  <label class="control-field">
+    <span class="control-label">Top P</span>
+    <div class="slider-row">
+      <input
+        class="slider"
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        data-testid="controls-top-p"
+        bind:value={topP}
+        oninput={applyLive}
+      />
+      <span class="numeric-chip tabular">{topP.toFixed(2)}</span>
+    </div>
+  </label>
+
+  <!-- Max tokens -->
   <label class="control-field">
     <span class="control-label">Max tokens</span>
     <input
@@ -105,53 +202,45 @@
       placeholder="Default"
       data-testid="controls-max-tokens"
       bind:value={maxTokens}
+      oninput={applyLive}
     />
   </label>
 
-  <label class="control-field">
-    <span class="control-label">System prompt override</span>
-    <textarea
-      class="control-input"
-      rows="3"
-      placeholder="Leave blank to keep the agent's prompt"
-      data-testid="controls-system-prompt"
-      bind:value={systemPrompt}
-    ></textarea>
-  </label>
+  <!-- System prompt override — collapsible -->
+  <div class="control-field">
+    <div class="control-label-row">
+      <span class="control-label">System prompt override</span>
+      <button
+        type="button"
+        class="toggle-link"
+        data-testid="controls-system-prompt-toggle"
+        aria-expanded={systemPromptOpen}
+        onclick={() => (systemPromptOpen = !systemPromptOpen)}
+      >
+        {systemPromptOpen ? 'On' : 'Off'}
+      </button>
+    </div>
+    {#if systemPromptOpen}
+      <textarea
+        class="control-input"
+        rows="3"
+        placeholder="Leave blank to keep the agent's prompt"
+        data-testid="controls-system-prompt"
+        bind:value={systemPrompt}
+        oninput={applyLive}
+      ></textarea>
+    {/if}
+  </div>
 
-  <label class="control-field drift-field">
-    <span class="control-label">Drift mode</span>
-    <span class="drift-toggle" title="Drift mode — Post-V1 (Brief 11 §PG-5)">
-      <input
-        type="checkbox"
-        data-testid="controls-drift-mode"
-        disabled
-        title="Drift mode — Post-V1 (Brief 11 §PG-5)"
-      />
-      <span class="drift-note">Post-V1</span>
-    </span>
-  </label>
-
-  <button
-    type="button"
-    class="apply-button"
-    data-testid="controls-apply"
-    onclick={apply}
-    disabled={pending}
-  >
-    {pending ? 'Applying…' : 'Apply to next message'}
-  </button>
-
-  {#if result !== null}
-    <p
-      class="apply-result"
-      data-testid="controls-apply-result"
-      data-ok={result.ok}
-      role="status"
-    >
-      {result.message}
-    </p>
-  {/if}
+  <p class="apply-hint" data-testid="controls-apply-hint">
+    {#if pending}
+      Applying…
+    {:else if result !== null}
+      <span data-ok={result.ok} data-testid="controls-apply-result">{result.message}</span>
+    {:else}
+      Changes apply to your next message.
+    {/if}
+  </p>
 </div>
 
 <style>
@@ -159,6 +248,21 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+  }
+
+  .controls-head {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .reset-link,
+  .toggle-link {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    padding: var(--space-0);
   }
 
   .control-field {
@@ -173,6 +277,88 @@
     color: var(--color-text-muted);
   }
 
+  .control-static {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .static-value {
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 60%;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  .control-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .segmented {
+    display: flex;
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .segment {
+    flex: 1;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-bg);
+    color: var(--color-text-muted);
+    border: none;
+    border-right: var(--border-hairline);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .segment:last-child {
+    border-right: none;
+  }
+
+  .segment.active {
+    background: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .slider {
+    flex: 1;
+    accent-color: var(--color-accent);
+  }
+
+  .numeric-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    min-width: var(--size-chip-min-width);
+    justify-content: center;
+  }
+
+  .tabular {
+    font-variant-numeric: var(--font-variant-tabular);
+  }
+
   .control-input {
     padding: var(--space-1) var(--space-2);
     background: var(--color-bg);
@@ -183,40 +369,17 @@
     font-family: var(--font-sans);
   }
 
-  .drift-field .drift-toggle {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-  }
-
-  .drift-note {
+  .apply-hint {
+    margin: var(--space-0);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
   }
 
-  .apply-button {
-    background: var(--color-accent);
-    color: var(--color-bg);
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .apply-button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .apply-result {
-    margin: var(--space-0);
-    font-size: var(--text-xs);
+  .apply-hint [data-ok='true'] {
     color: var(--color-success);
   }
 
-  .apply-result[data-ok='false'] {
+  .apply-hint [data-ok='false'] {
     color: var(--color-danger);
   }
 </style>

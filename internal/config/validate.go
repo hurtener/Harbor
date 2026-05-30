@@ -882,6 +882,33 @@ func (c *Config) validateTools() error {
 		if s.KeepAlive < 0 {
 			return fieldError(prefix+".keep_alive", "must be >= 0")
 		}
+		// Phase 26b — per-server default tool policy + per-tool
+		// overrides. Both optional; omitting them preserves today's
+		// behaviour (every tool inherits tools.DefaultPolicy()).
+		if s.Policy != nil {
+			if err := validateToolPolicy(prefix+".policy", *s.Policy); err != nil {
+				return err
+			}
+		}
+		toolPolicyNames := make(map[string]struct{}, len(s.ToolPolicies))
+		for toolName, tp := range s.ToolPolicies {
+			if strings.TrimSpace(toolName) == "" {
+				return fieldError(prefix+".tool_policies",
+					"override key (tool name) must not be empty")
+			}
+			if _, dup := toolPolicyNames[toolName]; dup {
+				// Go maps cannot carry duplicate keys, so this guards a
+				// future shape change; kept for parity with the unique
+				// constraint stated in the phase plan.
+				return fieldError(prefix+".tool_policies",
+					fmt.Sprintf("duplicate override key %q (must be unique)", toolName))
+			}
+			toolPolicyNames[toolName] = struct{}{}
+			if err := validateToolPolicy(
+				fmt.Sprintf("%s.tool_policies[%q]", prefix, toolName), tp); err != nil {
+				return err
+			}
+		}
 	}
 	// Phase 29 A2A peers. Empty list is valid. Each entry must
 	// declare a non-empty URL, a TrustTier in [1, 5], a non-negative
@@ -1208,6 +1235,50 @@ var allowedReasoningReplayModes = map[string]struct{}{
 // the operator can grep for the key in their YAML.
 func fieldError(path, reason string) error {
 	return fmt.Errorf("config.%s: %s", path, reason)
+}
+
+// validateToolPolicy validates one `ToolPolicyConfig` block (Phase
+// 26b). `prefix` is the field path so the error names the offending
+// key (e.g. `tools.mcp_servers[0].policy`). Rules:
+//   - `max_attempts >= 0`. The TOTAL attempt count incl. the first.
+//     0 (the Go zero value = the operator omitted the key) means
+//     "inherit the default attempt count" — the per-field fall-through
+//     D-175 documents (a `policy:` that sets only `timeout_ms` keeps
+//     the default 4 attempts). YAML cannot distinguish "absent" from
+//     "0" for a plain int, and the projection treats both as
+//     fall-through, so validation matches that: only a NEGATIVE value
+//     is an error. (1 = exactly one attempt, no retry.)
+//   - `timeout_ms >= 0`.
+//   - `backoff_base_ms` / `backoff_max_ms` / `backoff_mult` >= 0.
+//   - each `retry_on` value is a known error class.
+func validateToolPolicy(prefix string, p ToolPolicyConfig) error {
+	if p.MaxAttempts < 0 {
+		return fieldError(prefix+".max_attempts",
+			fmt.Sprintf("must be >= 0 (TOTAL attempts incl. the first; 0 = inherit the default), got %d", p.MaxAttempts))
+	}
+	if p.TimeoutMS < 0 {
+		return fieldError(prefix+".timeout_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.TimeoutMS))
+	}
+	if p.BackoffBaseMS < 0 {
+		return fieldError(prefix+".backoff_base_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.BackoffBaseMS))
+	}
+	if p.BackoffMaxMS < 0 {
+		return fieldError(prefix+".backoff_max_ms",
+			fmt.Sprintf("must be >= 0, got %d", p.BackoffMaxMS))
+	}
+	if p.BackoffMult < 0 {
+		return fieldError(prefix+".backoff_mult",
+			fmt.Sprintf("must be >= 0, got %v", p.BackoffMult))
+	}
+	for i, class := range p.RetryOn {
+		if _, ok := validToolPolicyErrorClasses[class]; !ok {
+			return fieldError(fmt.Sprintf("%s.retry_on[%d]", prefix, i),
+				fmt.Sprintf("unknown error class %q (allowed: 5xx, permanent, timeout, transient)", class))
+		}
+	}
+	return nil
 }
 
 // IsValidationError reports whether err originated in validation

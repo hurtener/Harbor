@@ -125,6 +125,11 @@ func (p GCPolicy) withDefaults() GCPolicy {
 // (`*Registry`); driver pluralism lives at the StateStore layer.
 type SessionRegistry interface {
 	Open(ctx context.Context, id string, ident identity.Identity) (*Session, error)
+	// EnsureOpen is the create-on-first-use entry point (D-171): it
+	// returns the live session for ident, creating it if absent and
+	// no-opping if already open. A closed session is NOT revived
+	// (ErrReopenAfterClose). See the concrete impl for full semantics.
+	EnsureOpen(ctx context.Context, ident identity.Identity) (*Session, error)
 	Get(ctx context.Context, id string) (*Session, error)
 	Touch(ctx context.Context, id string) error
 	Close(ctx context.Context, id string, reason string) error

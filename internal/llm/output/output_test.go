@@ -175,6 +175,46 @@ func TestWrap_PassesThrough_WhenOutputModeUnset(t *testing.T) {
 	}
 }
 
+// TestWrap_EmptyModel_DefaultsFromSnapshot_ThenEngagesProfile proves
+// the downgrade wrapper defaults `req.Model` from the snapshot before the
+// profile lookup. The react planner sends an empty Model (the chain
+// defaults it); this wrapper sits OUTSIDE the safety pass that does the
+// defaulting, so without its own default the profile lookup would miss
+// `ModelProfiles[""]` and the downgrade chain would silently no-op. Here
+// a Prompted profile must engage (FormatJSONSchema coerced to
+// FormatJSONObject) even though the request's Model is empty.
+func TestWrap_EmptyModel_DefaultsFromSnapshot_ThenEngagesProfile(t *testing.T) {
+	t.Parallel()
+	bus := testBus(t)
+	rec := newRecorder(func(_ llm.CompleteRequest, _ int) (llm.CompleteResponse, error) {
+		return llm.CompleteResponse{Content: `{}`}, nil
+	})
+	const model = "nim/some"
+	cfg := snapshotWithProfile(model, llm.ModelProfile{
+		ContextWindowTokens: 1000,
+		OutputMode:          llm.OutputModePrompted,
+	})
+	cfg.Model = model // the configured default the planner relies on
+
+	client := output.Wrap(rec, cfg, llm.Deps{Bus: bus})
+
+	// Empty Model, mimicking the planner.
+	req := sampleRequest("", llm.FormatJSONSchema)
+	if _, err := client.Complete(ctxWithIdentity(t), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	seen := rec.snapshot()
+	if len(seen) != 1 {
+		t.Fatalf("inner saw %d requests, want 1", len(seen))
+	}
+	if seen[0].Model != model {
+		t.Errorf("Model: got %q want %q (snapshot default not applied)", seen[0].Model, model)
+	}
+	if seen[0].ResponseFormat == nil || seen[0].ResponseFormat.Kind != llm.FormatJSONObject {
+		t.Errorf("Prompted profile did not engage after Model default; ResponseFormat=%+v", seen[0].ResponseFormat)
+	}
+}
+
 // TestWrap_Native_HappyPath — Native mode forwards the json_schema
 // request unchanged when the inner client returns success.
 func TestWrap_Native_HappyPath(t *testing.T) {

@@ -98,9 +98,9 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
-	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -114,6 +114,8 @@ import (
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/sessions"
+	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver for tests that open one
 	"github.com/hurtener/Harbor/internal/state"
@@ -325,6 +327,15 @@ type DevStack struct {
 	// Steering / Surface are nil when SkipSteering is set.
 	Steering *steering.Registry
 	Surface  *protocol.ControlSurface
+
+	// Sessions is the StateStore-backed SessionRegistry (D-171). Always
+	// non-nil after a successful Assemble — it mirrors the production
+	// `cmd/harbor` boot path. The ControlSurface is wired with its
+	// create-on-first-use ensurer, and (when transports are mounted) the
+	// `sessions.*` Protocol routes project over it. Integration tests use
+	// it to assert per-request session create-on-first-use + restart
+	// re-discovery via the persistent catalog.
+	Sessions *sessions.Registry
 
 	// RunLoop / RunLoopDriver are nil when SkipRunLoop is set OR when
 	// SkipSteering / SkipCatalog forces the construction to be
@@ -599,17 +610,13 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.closeFns = append(stack.closeFns, llmClient.Close)
 	}
 
-	// Memory. Only opened when the cfg names a driver. The
-	// rolling_summary strategy needs a real Summarizer (Phase 23 /
-	// D-089) — the helper rejects that path with a clear error
-	// because the integration tests we target all use strategy=none.
-	// A future test that needs rolling_summary against an LLM-backed
-	// summarizer can extend this helper or open memory by hand.
+	// Memory. Only opened when the cfg names a driver. Mirrors the
+	// production wiring in cmd/harbor/cmd_dev.go (D-174, §17.6 — the
+	// helper must not diverge from production): a single memory.Open
+	// with the Summarizer threaded through Deps. For rolling_summary
+	// the Summarizer defaults to the configured LLM (no special-case,
+	// no stub); strategy=none / truncation pass a nil Summarizer.
 	if cfg.Memory.Driver != "" {
-		if cfg.Memory.Strategy == "rolling_summary" {
-			return stack, fmt.Errorf("memory.strategy=rolling_summary is not wired in the helper; " +
-				"open memoryinmem.New directly with Options{Summarizer: ...} if you need it")
-		}
 		memCfg := memory.ConfigSnapshot{
 			Driver:             cfg.Memory.Driver,
 			DSN:                cfg.Memory.DSN,
@@ -617,24 +624,23 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			BudgetTokens:       cfg.Memory.BudgetTokens,
 			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
 		}
-		// Use the inmem driver directly when the cfg picks it so we
-		// stay aligned with the bootDevStack split (registry.Open
-		// vs direct New). The registry path also works for non-
-		// rolling-summary, but the direct path is symmetric with
-		// production for the strategy=none case.
-		var ms memory.MemoryStore
-		var openErr error
-		if cfg.Memory.Driver == "inmem" {
-			ms, openErr = memoryinmem.New(memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			}, memoryinmem.Options{})
-		} else {
-			ms, openErr = memory.Open(context.Background(), memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			})
+		var summarizer memory.Summarizer
+		if cfg.Memory.Strategy == "rolling_summary" {
+			if stack.LLMClient == nil {
+				return stack, fmt.Errorf("memory.strategy=rolling_summary requires an LLM " +
+					"(configure llm) so the helper can build the default Summarizer")
+			}
+			s, sErr := llmsummarizer.New(stack.LLMClient)
+			if sErr != nil {
+				return stack, fmt.Errorf("summarizer: %w", sErr)
+			}
+			summarizer = s
 		}
+		ms, openErr := memory.Open(context.Background(), memCfg, memory.Deps{
+			State:      stateStore,
+			Bus:        bus,
+			Summarizer: summarizer,
+		})
 		if openErr != nil {
 			return stack, fmt.Errorf("memory.Open: %w", openErr)
 		}
@@ -734,6 +740,19 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.MCPRegistry = mcpRegistry
 	}
 
+	// D-171: the SessionRegistry — StateStore-backed, mirroring
+	// production `cmd/harbor` boot. Built unconditionally so the
+	// create-on-first-use ensurer can be wired into the ControlSurface
+	// and the `sessions.*` Protocol routes project over it. NOT
+	// force-Opened with a fixed session at boot (the production bug
+	// D-171 closes): sessions are per-request + create-on-first-use.
+	sessionRegistry, sessErr := sessions.New(stack.State, cfg.Sessions, bus)
+	if sessErr != nil {
+		return stack, fmt.Errorf("sessions.New: %w", sessErr)
+	}
+	stack.Sessions = sessionRegistry
+	stack.closeFns = append(stack.closeFns, sessionRegistry.CloseRegistry)
+
 	// Steering + ControlSurface. Skip-aware. The Mux phase below
 	// depends on the surface, so SkipSteering implies SkipTransports
 	// even if the caller did not set both flags.
@@ -754,6 +773,11 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		if opts.ScopeChecker != nil {
 			surfaceOpts = append(surfaceOpts, protocol.WithScopeChecker(opts.ScopeChecker))
 		}
+		// D-171: create-on-first-use ensurer — mirrors production
+		// `cmd/harbor/cmd_dev.go::bootDevStack`. A `start` on a not-yet-
+		// existing session materialises its registry row.
+		surfaceOpts = append(surfaceOpts,
+			protocol.WithSessionEnsurer(newSessionEnsurer(sessionRegistry)))
 		surface, surfaceErr := protocol.NewControlSurface(taskReg, steerReg, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
@@ -1093,6 +1117,25 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("tasks/protocol service: %w", tsErr)
 			}
 			muxOpts = append(muxOpts, transports.WithTasksService(tasksService))
+		}
+		// D-171: mount the two `sessions.*` Console routes over the
+		// SessionRegistry so an integration test exercises the real
+		// sessions.list / sessions.inspect path (create-on-first-use,
+		// listing, restart re-discovery). Mirrors production
+		// `cmd/harbor/cmd_dev.go::bootDevStack`.
+		if stack.Sessions != nil {
+			sessionsProjector, spErr := sessionsprotocol.NewListerProjector(stack.Sessions)
+			if spErr != nil {
+				return stack, fmt.Errorf("sessions/protocol projector: %w", spErr)
+			}
+			sessionsService, ssErr := sessionsprotocol.NewService(sessionsProjector,
+				sessionsprotocol.WithBus(bus),
+				sessionsprotocol.WithRedactor(stack.Audit),
+			)
+			if ssErr != nil {
+				return stack, fmt.Errorf("sessions/protocol service: %w", ssErr)
+			}
+			muxOpts = append(muxOpts, transports.WithSessionsService(sessionsService))
 		}
 		// Phase 73n (D-130): mount the Console Playground-page route
 		// (`runs.set_overrides`). The devstack mirrors the production
@@ -1536,19 +1579,27 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	// resolve operator-uploaded input artifacts for the first turn.
 	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
 
+	// Phase 107f (D-176 mirror of cmd/harbor/cmd_dev_runloop.go §17.6
+	// parity): build the read-only session-artifact manifest the planner
+	// renders into `<session_artifacts>`. Session-scoped List (TaskID
+	// empty wildcard); a List error → no manifest (logged), never a
+	// fabricated one.
+	sessionArtifacts := d.resolveSessionArtifacts(taskCtx, sessionQ)
+
 	spec := steering.RunSpec{
 		Planner: d.planner,
 		Base: planner.RunContext{
-			Quadruple:      q,
-			Query:          task.Query,
-			Goal:           task.Query,
-			MemoryBlocks:   memBlocks,
-			SkillsContext:  skillsCtx,
-			RepairCounters: counters,
-			PlanningHints:  d.planningHints,
-			Catalog:        catalogView,
-			Trajectory:     traj,
-			InputArtifacts: inputArtifacts,
+			Quadruple:        q,
+			Query:            task.Query,
+			Goal:             task.Query,
+			MemoryBlocks:     memBlocks,
+			SkillsContext:    skillsCtx,
+			RepairCounters:   counters,
+			PlanningHints:    d.planningHints,
+			Catalog:          catalogView,
+			Trajectory:       traj,
+			InputArtifacts:   inputArtifacts,
+			SessionArtifacts: sessionArtifacts,
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,
@@ -1656,6 +1707,38 @@ func (d *DevStackRunLoopDriver) resolveInputArtifacts(
 		out = append(out, view)
 	}
 	return out
+}
+
+// resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s
+// session-artifact manifest build (Phase 107f — D-176, §17.6 parity). It
+// lists `ArtifactStore.List` scoped to the run's `(tenant, user,
+// session)` triple (TaskID empty = session-wide wildcard) and hands the
+// refs to the shared `planner.BuildArtifactManifest`, so the harness and
+// the production run loop produce byte-identical manifests.
+//
+// Fail-soft: a nil store or a List error yields NO manifest (logged) —
+// the turn proceeds, never a fabricated one (CLAUDE.md §5).
+func (d *DevStackRunLoopDriver) resolveSessionArtifacts(
+	ctx context.Context, sessionQ identity.Quadruple,
+) []planner.ArtifactManifestEntry {
+	if d.artifactStore == nil {
+		return nil
+	}
+	scope := artifacts.ArtifactScope{
+		TenantID:  sessionQ.TenantID,
+		UserID:    sessionQ.UserID,
+		SessionID: sessionQ.SessionID,
+	}
+	refs, err := d.artifactStore.List(ctx, scope)
+	if err != nil {
+		if d.logger != nil {
+			d.logger.Warn("devstack RunLoop driver: session-artifact List failed; proceeding with no manifest",
+				slog.String("session_id", sessionQ.SessionID),
+				slog.String("err", err.Error()))
+		}
+		return nil
+	}
+	return planner.BuildArtifactManifest(refs)
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {

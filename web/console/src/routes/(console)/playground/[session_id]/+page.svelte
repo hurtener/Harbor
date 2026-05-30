@@ -24,19 +24,17 @@
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
-  import PageHeader from '$lib/components/ui/PageHeader.svelte';
-  import FilterBar from '$lib/components/ui/FilterBar.svelte';
   import SavedViewChips, { type SavedView } from '$lib/components/ui/SavedViewChips.svelte';
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
-  // ConnectionFooter is rendered ONCE by the app shell
-  // ((console)/+layout.svelte — CONVENTIONS.md §2). The per-page import was
-  // duplicating the footer (post-83k walkthrough N2); removed.
+  // The global status bar (connection + protocol + events + console) is
+  // rendered ONCE by the app shell ((console)/+layout.svelte — 108a).
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
   import PlaygroundHeader, {
     type ImpersonationTarget
   } from '$lib/components/playground/Header.svelte';
+  import KpiStrip from '$lib/components/playground/KpiStrip.svelte';
   import ControlsCard from '$lib/components/playground/ControlsCard.svelte';
   import PendingInterventionsCard, {
     type PendingIntervention
@@ -52,9 +50,24 @@
   import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
   import { openListPageDB } from '$lib/db/console_db.js';
   import { operatorIdOf } from '$lib/db/schema.js';
-  import { parseAnswerFromDetail, parseReasoningSteps, normalizeLifecycleType } from './answer-envelope.js';
+  import { parseAnswerFromDetail, parseReasoningSteps } from './answer-envelope.js';
   import type { ReasoningStep } from '$lib/chat/types.js';
-  import { applyChunk, finalizeStream } from './chunk-stream.js';
+  import { applyChunk, applyReasoningChunk, finalizeStream } from './chunk-stream.js';
+  import {
+    decodeChunk,
+    decodeCost,
+    decodeLifecycle,
+    decodeBudget,
+    decodePlannerDecision,
+    decodeToolLifecycle,
+    decodeIntervention,
+    decodeInterventionClear,
+    type ChunkEvent,
+    type CostEvent,
+    type LifecycleEvent,
+    type ToolLifecycleEvent
+  } from './wire-events.js';
+  import type { ChatToolCall } from '$lib/chat/types.js';
   import {
     PlaygroundSavedFilters,
     type PlaygroundViewSpec
@@ -90,11 +103,62 @@
   let sending = $state(false);
 
   /* ---- header ----------------------------------------------------- */
-  const agents = ['default agent'];
   let activeAgent = $state('default agent');
   let tokenCount = $state(0);
   let costUSD = $state(0);
   let running = $state(false);
+  let paused = $state(false);
+
+  /* ---- Phase 108 KPI strip state ---------------------------------- */
+  // All KPI numerics derive from REAL runtime events (no synthetic
+  // placeholders — CLAUDE.md §13). Tokens + cost come from the
+  // `llm.cost.recorded` event (the `tasks.get` cost rollup is 0 for
+  // foreground dev turns); per-turn latency from `tasks.get` duration_ms;
+  // the ceiling from `governance.budget_exceeded`. A metric with no
+  // reading yet renders an em-dash, never a fake number.
+  let tokenSamples = $state<number[]>([]);
+  let turnLatencies = $state<number[]>([]);
+  let ceilingUSD = $state<number | null>(null);
+  let promptTokens = $state(0);
+  let outputTokens = $state(0);
+  // ISO timestamp of the session's first turn — drives the KPI Started
+  // column. Set on the first send; null until then.
+  let sessionStartedAt = $state<string | null>(null);
+  // Total active-work time (ms) across all completed turns in this session
+  // — the summed per-turn `duration_ms` (foreground + background), i.e. the
+  // time the system was actually doing something (thinking + tool calls),
+  // NOT wall-clock since the session opened. Drives the KPI Duration.
+  let activeWorkMs = $state(0);
+  // Epoch ms the in-flight turn started (0 when idle) — lets Duration tick
+  // up live only while a turn is actually running.
+  let activeTurnStartMs = $state(0);
+
+  // D-171 — the connection's other conversations (sessions.list), for the
+  // session switcher. One token, many sessions.
+  let sessionList = $state<Array<{ session_id: string; last_activity_at?: string }>>([]);
+  // True once at least one `llm.cost.recorded` reading has landed — gates
+  // the Cost tile so it shows "—" rather than a fabricated $0.0000.
+  let hasCostReading = $state(false);
+  // Per-task token/cost accumulator (108a-C) — summed from the task's
+  // `llm.cost.recorded` events, attached to the agent bubble as per-turn
+  // meta on completion. Not reactive (read once at terminal).
+  const turnCost: Record<string, { tokens: number; cost: number }> = {};
+  // 108a-C — per-task tool-call trace, collected from `planner.decision`
+  // CallTool events during the turn and attached to the agent bubble on
+  // completion. The runtime emits the tool NAME + decision kind via
+  // planner.decision (there is no richer tool.* event), so args/timing are
+  // not shown — only the honest tool name + status.
+  const turnTools: Record<string, ChatToolCall[]> = {};
+  // 108a-D composer telemetry: live tokens/sec (from content-chunk rate)
+  // and the current context size (the last LLM call's prompt tokens).
+  let tokensPerSec = $state(0);
+  let lastPromptTokens = $state(0);
+  let contextWindow = $state(0);
+  let streamChars = 0;
+  let streamStartMs = 0;
+
+  /* ---- stream-liveness (composer telemetry "Session live") -------- */
+  let eventsStreamLive = $state(false);
 
   /* ---- impersonation (admin only — D-107) ------------------------- */
   let impersonationTargets = $state<ImpersonationTarget[]>([]);
@@ -125,15 +189,17 @@
   let activeSavedId = $state<string | null>(null);
   let saveName = $state('');
 
-  /* ---- footer constants ------------------------------------------- */
-  const PROTOCOL_VERSION = 'v1';
-  const CONSOLE_VERSION = 'dev';
 
   /* ================================================================ */
   /* Derived                                                           */
   /* ================================================================ */
 
-  const model = $derived('runtime-default');
+  // The active model + planner names. `modelName` is captured live from
+  // the first `llm.cost.recorded` event (the real provider/model string);
+  // `plannerName` is not exposed on the dev Protocol surface, so it stays
+  // empty and the Header omits the pill rather than inventing a value.
+  let modelName = $state('—');
+  let plannerName = $state('');
 
   // The message page-window — real pagination over the stream.
   const pagedMessages = $derived<ChatMessage[]>(
@@ -199,7 +265,7 @@
         //     planner turn.
         //   - 'queue' → stash the message locally and dispatch via
         //     `start` once the current task reaches a terminal state.
-        //     The lifecycle watcher below (subscribeTaskLifecycle)
+        //     The lifecycle watcher below (subscribeEvents)
         //     auto-drains the queue when activeTaskID becomes null.
         //
         // Round-7 F11 / D-166 — multimodal artifact inputs. The
@@ -243,6 +309,9 @@
           inputArtifactIDs: artifactIDs
         });
         activeTaskID = resp.task_id;
+        // Anchor the live Duration tick — Duration counts up only while a
+        // turn is actually in flight (cleared on terminal).
+        activeTurnStartMs = Date.now();
         return { taskID: resp.task_id };
       },
       async setOverrides(overrides) {
@@ -252,6 +321,9 @@
         }
         if (overrides.temperature !== undefined) {
           payload.temperature = overrides.temperature;
+        }
+        if (overrides.topP !== undefined) {
+          payload.top_p = overrides.topP;
         }
         if (overrides.maxTokens !== undefined) {
           payload.max_tokens = overrides.maxTokens;
@@ -340,6 +412,15 @@
   // soon as activeTaskID becomes null.
   let queuedSends = $state<Array<{ text: string; artifactIDs: string[] }>>([]);
 
+  // Run phase derived from real stream + task state (no invented planner
+  // state machine — CLAUDE.md §13 / decision #1). 'streaming' while
+  // content deltas are flowing, 'active' while a task is in flight,
+  // 'idle' otherwise.
+  const isStreaming = $derived(messages.some((m) => m.streaming === true));
+  const runPhase = $derived<'streaming' | 'active' | 'idle'>(
+    isStreaming ? 'streaming' : activeTaskID !== null ? 'active' : 'idle'
+  );
+
   // Best-effort EventSource subscription for task lifecycle. Filters
   // to the terminal task events scoped by this session's identity; the
   // bus auto-scopes to the bearer's (tenant, user, session) so the
@@ -350,150 +431,285 @@
   // pressing Send manually after the run completes).
   let taskEvents = $state<EventSource | null>(null);
 
-  function subscribeTaskLifecycle(c: ProtocolClient): void {
+  // KPI sample-buffer caps — the sparkline plots the last 60 token
+  // observations; p50 latency is computed over the last 20 turns.
+  const TOKEN_SAMPLE_CAP = 60;
+  const LATENCY_SAMPLE_CAP = 20;
+
+  // recordCost folds one `llm.cost.recorded` reading into the session
+  // KPI totals (cumulative tokens + cost) and pushes the per-call token
+  // total into the sparkline buffer. A ReAct turn fires this once per
+  // LLM call, so a multi-step turn contributes multiple samples — all
+  // real, none synthetic.
+  function recordCost(ev: CostEvent): void {
+    tokenCount += ev.totalTokens;
+    promptTokens += ev.promptTokens;
+    outputTokens += ev.outputTokens;
+    costUSD += ev.usd;
+    if (ev.model !== '') modelName = ev.model;
+    if (ev.promptTokens > 0) lastPromptTokens = ev.promptTokens;
+    if (ev.contextWindow > 0) contextWindow = ev.contextWindow;
+    hasCostReading = true;
+    const prev = turnCost[ev.taskID] ?? { tokens: 0, cost: 0 };
+    turnCost[ev.taskID] = { tokens: prev.tokens + ev.totalTokens, cost: prev.cost + ev.usd };
+    const next = [...tokenSamples, ev.totalTokens];
+    tokenSamples = next.length > TOKEN_SAMPLE_CAP ? next.slice(-TOKEN_SAMPLE_CAP) : next;
+  }
+
+  // applyToolLifecycle reflects a tool.invoked/completed/failed event onto
+  // the in-flight turn's tool-call rows. `planner.decision` adds the row
+  // ('invoked') when the planner chooses the tool; the lifecycle events
+  // resolve it to 'succeeded' / 'failed' (with a duration / error summary).
+  // The first still-'invoked' row for the tool is the one that resolves;
+  // a terminal event with no matching open row appends one (so a failure
+  // is never silently dropped). This is what replaced the old
+  // handleTerminal blanket "mark every tool succeeded" — a timed-out tool
+  // now shows as failed.
+  function applyToolLifecycle(ev: ToolLifecycleEvent): void {
+    const status = ev.kind === 'completed' ? 'succeeded' : ev.kind === 'failed' ? 'failed' : 'invoked';
+    const list = [...(turnTools[ev.taskID] ?? [])];
+    let resolved = false;
+    for (let i = 0; i < list.length && !resolved; i++) {
+      if (list[i].tool === ev.tool && list[i].status === 'invoked') {
+        if (ev.kind !== 'invoked') {
+          list[i] = { ...list[i], status, summary: ev.summary !== '' ? ev.summary : list[i].summary };
+        }
+        resolved = true;
+      }
+    }
+    if (!resolved) {
+      list.push({ tool: ev.tool, status, summary: ev.kind === 'invoked' ? '' : ev.summary });
+    }
+    turnTools[ev.taskID] = list;
+    messages = messages.map((m) =>
+      m.taskID === ev.taskID && m.role === 'agent' ? { ...m, toolCalls: [...list] } : m
+    );
+  }
+
+  // recordTurn pushes a completed turn's active duration (the `tasks.get`
+  // duration_ms) into the p50 buffer AND adds it to the session's summed
+  // active-work time (the KPI Duration).
+  function recordTurn(durationMs: number): void {
+    if (durationMs <= 0) return;
+    activeWorkMs += durationMs;
+    const next = [...turnLatencies, durationMs];
+    turnLatencies = next.length > LATENCY_SAMPLE_CAP ? next.slice(-LATENCY_SAMPLE_CAP) : next;
+  }
+
+  // handleChunk streams one decoded `llm.completion.chunk` into the
+  // pending agent bubble. Only the `content` channel grows the answer
+  // body; `reasoning` deltas land in the accordion at completion, not
+  // inline. Done flips the bubble's streaming flag off.
+  function handleChunk(ev: ChunkEvent): void {
+    if (ev.taskID !== activeTaskID) return;
+    if (ev.delta !== '') {
+      // The content channel grows the answer body; the reasoning channel
+      // grows the live "Reasoning" disclosure (108a — runtime reasoning
+      // emit fixed in the corrections layer). Neither pollutes the other.
+      if (ev.kind === 'reasoning') {
+        messages = applyReasoningChunk(messages, ev.taskID, ev.delta);
+      } else {
+        messages = applyChunk(messages, ev.taskID, ev.delta);
+        // 108a-D — live tokens/sec from the content-chunk rate.
+        if (streamStartMs === 0) streamStartMs = Date.now();
+        streamChars += ev.delta.length;
+        const elapsedS = (Date.now() - streamStartMs) / 1000;
+        if (elapsedS > 0.2) tokensPerSec = streamChars / 4 / elapsedS;
+      }
+    }
+    if (ev.done) {
+      messages = finalizeStream(messages, ev.taskID);
+    }
+  }
+
+  // handleTerminal reconciles a completed/failed/cancelled turn. On
+  // completion it fetches the authoritative answer + reasoning trace via
+  // `tasks.get` (Phase 106) and records the turn latency; on
+  // failure/cancellation it converts the bubble to a system error.
+  async function handleTerminal(ev: LifecycleEvent): Promise<void> {
+    // Drop any pending intervention parked on this run — a terminal
+    // task can never still be awaiting an operator decision.
+    interventions = interventions.filter((i) => i.runID !== ev.taskID);
+    if (ev.taskID !== activeTaskID) return;
+    const taskID = ev.taskID;
+    if (ev.kind === 'completed' && client !== null) {
+      try {
+        const detail = await client.tasks.get<{
+          result_inline?: string;
+          trajectory?: { steps?: ReasoningStep[] };
+          task?: { duration_ms?: number };
+        }>(taskID);
+        const answer = parseAnswerFromDetail(detail);
+        const reasoningSteps = parseReasoningSteps(detail);
+        const durationMs = detail.task?.duration_ms ?? 0;
+        recordTurn(durationMs);
+        const tc = turnCost[taskID];
+        messages = messages.map((m) =>
+          m.taskID === taskID && m.role === 'agent'
+            ? {
+                ...m,
+                text: answer,
+                reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined,
+                // Preserve the per-tool statuses the tool.* lifecycle
+                // events set — do NOT blanket-mark succeeded (that hid a
+                // timed-out / failed tool as a success). A row still
+                // 'invoked' here never saw a terminal tool event; leave it
+                // honest rather than fabricate success.
+                toolCalls:
+                  (turnTools[taskID] ?? []).length > 0 ? [...turnTools[taskID]] : undefined,
+                meta: {
+                  elapsedMs: durationMs > 0 ? durationMs : undefined,
+                  tokens: tc?.tokens,
+                  costUSD: tc?.cost
+                },
+                pending: false,
+                streaming: false
+              }
+            : m
+        );
+      } catch {
+        messages = messages.map((m) =>
+          m.taskID === taskID && m.role === 'agent'
+            ? { ...m, text: '(could not read answer)', pending: false, streaming: false }
+            : m
+        );
+      }
+    } else if (ev.kind !== 'completed') {
+      const errorText = `Task ${ev.kind} — see Tasks page for details.`;
+      messages = messages.map((m) =>
+        m.taskID === taskID && m.role === 'agent'
+          ? { ...m, text: errorText, role: 'system', pending: false, streaming: false }
+          : m
+      );
+    }
+    running = false;
+    paused = false;
+    activeTaskID = null;
+    // Stop the live Duration tick; the turn's real duration_ms was added to
+    // activeWorkMs by recordTurn above.
+    activeTurnStartMs = 0;
+    void drainQueue();
+    // 108a-F — a completed turn may have produced artifacts (e.g. tool
+    // results); refresh the Recent Artifacts card.
+    void refreshArtifacts();
+  }
+
+  // Best-effort EventSource subscription. The bus auto-scopes to the
+  // bearer's (tenant, user, session), so the page receives only its own
+  // session's events. Every frame is the flat `wireEvent` projection
+  // (`{type, payload:{...PascalCase}}`); the `wire-events.ts` decoders
+  // own that shape (the prior cut read top-level snake_case and silently
+  // dropped every chunk). The subscription is optional — a runtime
+  // without the SSE surface leaves the stream Off and the page still
+  // works (the operator sends manually; answers arrive via tasks.get).
+  function subscribeEvents(c: ProtocolClient): void {
     try {
       const url = c.events.subscribeURL({
-        eventTypes: ['task.completed', 'task.failed', 'task.cancelled', 'llm.completion.chunk']
+        eventTypes: [
+          'task.completed',
+          'task.failed',
+          'task.cancelled',
+          'llm.completion.chunk',
+          'llm.cost.recorded',
+          'governance.budget_exceeded',
+          'planner.decision',
+          'tool.invoked',
+          'tool.completed',
+          'tool.failed',
+          'tool.approval_requested',
+          'tool.auth_required',
+          'pause.requested',
+          'pause.resumed',
+          'tool.approved',
+          'tool.rejected',
+          'tool.auth_completed'
+        ]
       });
       const es = new EventSource(url);
-      // The bus envelope's `payload.TaskID` carries the task id for
-      // task.{spawned,started,completed,failed,cancelled} events; the
-      // top-level `run` carries the same id once the run loop is alive.
-      // Both are checked so the watcher works whether the lifecycle
-      // event lands in pre- or post-run-loop form.
-      type LifecycleEvent = {
-        type?: string;
-        run?: string;
-        payload?: { TaskID?: string };
+      es.onopen = () => {
+        eventsStreamLive = true;
       };
-      const isTerminal = (t: string | undefined): boolean =>
-        t === 'task.completed' || t === 'task.failed' || t === 'task.cancelled';
-      es.addEventListener('task.completed', (msg: MessageEvent) => {
-        handleLifecycle(msg, 'completed');
-      });
-      es.addEventListener('task.failed', (msg: MessageEvent) => {
-        handleLifecycle(msg, 'failed');
-      });
-      es.addEventListener('task.cancelled', (msg: MessageEvent) => {
-        handleLifecycle(msg, 'cancelled');
-      });
-      // Phase 107 — per-token streaming listener. Appends `delta` to
-      // the pending agent bubble and sets `streaming: true`.
       es.addEventListener('llm.completion.chunk', (msg: MessageEvent) => {
-        handleChunkEvent(msg);
+        eventsStreamLive = true;
+        const ev = decodeChunk((msg as MessageEvent<string>).data);
+        if (ev !== null) handleChunk(ev);
       });
-      es.onmessage = (msg: MessageEvent) => {
-        let parsed: LifecycleEvent | null = null;
-        try {
-          parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
-        } catch {
-          // Try the chunk shape.
-          tryHandleChunkMessage(msg);
-          return;
-        }
-        if (parsed === null || !isTerminal(parsed.type)) {
-          tryHandleChunkMessage(msg);
-          return;
-        }
-        // Normalize 'task.<x>' → '<x>' so the handler's eventType branches
-        // ('completed' vs 'failed' / 'cancelled') match the named-listener
-        // path; otherwise an onmessage-delivered completion would slip into
-        // the error branch.
-        handleLifecycle(msg, normalizeLifecycleType(parsed.type as string));
+      es.addEventListener('llm.cost.recorded', (msg: MessageEvent) => {
+        const ev = decodeCost((msg as MessageEvent<string>).data);
+        if (ev !== null) recordCost(ev);
+      });
+      es.addEventListener('governance.budget_exceeded', (msg: MessageEvent) => {
+        const ev = decodeBudget((msg as MessageEvent<string>).data);
+        if (ev !== null) ceilingUSD = ev.ceilingUSD;
+      });
+      es.addEventListener('planner.decision', (msg: MessageEvent) => {
+        const ev = decodePlannerDecision((msg as MessageEvent<string>).data);
+        if (ev === null || ev.decisionKind !== 'CallTool' || ev.tool === '') return;
+        // Collect the tool call for the in-flight turn; the live bubble
+        // updates immediately so tool use is visible as it happens.
+        const list = turnTools[ev.taskID] ?? [];
+        list.push({ tool: ev.tool, status: 'invoked', summary: '' });
+        turnTools[ev.taskID] = list;
+        messages = messages.map((m) =>
+          m.taskID === ev.taskID && m.role === 'agent'
+            ? { ...m, toolCalls: [...list] }
+            : m
+        );
+      });
+      // Tool lifecycle — the runtime emits tool.invoked/completed/failed
+      // (internal/tools/events.go). These carry the REAL terminal state, so
+      // a timed-out / failed tool shows as failed instead of masquerading
+      // as succeeded. planner.decision adds the row when the planner chooses
+      // the tool; these update its status as the call actually resolves.
+      const onToolLifecycle = (msg: MessageEvent): void => {
+        const ev = decodeToolLifecycle((msg as MessageEvent<string>).data);
+        if (ev !== null) applyToolLifecycle(ev);
       };
+      es.addEventListener('tool.invoked', onToolLifecycle);
+      es.addEventListener('tool.completed', onToolLifecycle);
+      es.addEventListener('tool.failed', onToolLifecycle);
 
-      // Phase 107 — chunk event handlers.
+      const onTerminal = (msg: MessageEvent): void => {
+        const ev = decodeLifecycle((msg as MessageEvent<string>).data);
+        if (ev !== null) void handleTerminal(ev);
+      };
+      es.addEventListener('task.completed', onTerminal);
+      es.addEventListener('task.failed', onTerminal);
+      es.addEventListener('task.cancelled', onTerminal);
 
-      function handleChunkEvent(msg: MessageEvent): void {
-        let parsed: { task_id?: string; delta?: string; done?: boolean; kind?: string } | null = null;
-        try {
-          parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean; kind?: string };
-        } catch {
-          return;
-        }
-        if (!parsed || !parsed.task_id || !parsed.delta) return;
-        const tid = parsed.task_id;
-        if (tid !== activeTaskID) return;
-
-        messages = applyChunk(messages, tid, parsed.delta);
-        if (parsed.done) {
-          messages = finalizeStream(messages, tid);
-        }
-      }
-
-      function tryHandleChunkMessage(msg: MessageEvent): void {
-        try {
-          const parsed = JSON.parse((msg as MessageEvent<string>).data) as { task_id?: string; delta?: string; done?: boolean };
-          if (parsed && parsed.task_id) {
-            handleChunkEvent(msg);
-          }
-        } catch {
-          // Not a chunk event either — silently ignore.
-        }
-      }
-
-      async function handleLifecycle(msg: MessageEvent, eventType: string): Promise<void> {
-        let parsed: LifecycleEvent | null = null;
-        try {
-          parsed = JSON.parse((msg as MessageEvent<string>).data) as LifecycleEvent;
-        } catch {
-          return;
-        }
-        if (parsed === null) {
-          return;
-        }
-        const ranTaskID = parsed.payload?.TaskID ?? parsed.run ?? '';
-        if (ranTaskID === '' || ranTaskID !== activeTaskID) {
-          return;
-        }
-        const taskID = ranTaskID;
-
-        // Phase 106 (V1.2) — fetch the real answer from tasks.get
-        // and replace the pending agent bubble. The wire shape is
-        // TaskDetail (internal/protocol/types/tasks.go:409): `result_inline`
-        // is at the TOP LEVEL of the response, NOT nested inside `task`
-        // (that's the compact TaskRow projection).
-        if (eventType === 'completed' && client !== null) {
-          try {
-            const detail = await client.tasks.get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(taskID);
-            const answer = parseAnswerFromDetail(detail);
-            // Phase 107a (V1.3) — extract reasoning steps from the
-            // trajectory projection and populate the accordion.
-            const reasoningSteps = parseReasoningSteps(detail);
-            messages = messages.map((m) =>
-              m.taskID === taskID && m.role === 'agent'
-                ? { ...m, text: answer, reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined, pending: false }
-                : m
-            );
-          } catch {
-            messages = messages.map((m) =>
-              m.taskID === taskID && m.role === 'agent'
-                ? { ...m, text: '(could not read answer)', pending: false }
-                : m
-            );
-          }
-        } else if (eventType !== 'completed') {
-          // Phase 106 (V1.2) AC-10 — task.failed or task.cancelled
-          // populates an error bubble.
-          const errorText = `Task ${eventType} — see Tasks page for details.`;
-          messages = messages.map((m) =>
-            m.taskID === taskID && m.role === 'agent'
-              ? { ...m, text: errorText, role: 'system', pending: false }
-              : m
-          );
-        }
-        activeTaskID = null;
-        void drainQueue();
-      }
+      // Pending interventions — the unified-pause family parks a run
+      // awaiting an operator decision. A request event adds the row
+      // (deduped by runID, the approve/reject correlation key); a
+      // resume/terminal event clears it.
+      const onInterventionRequest = (msg: MessageEvent): void => {
+        const ev = decodeIntervention((msg as MessageEvent<string>).data);
+        if (ev === null) return;
+        const rest = interventions.filter((i) => i.runID !== ev.runID);
+        interventions = [...rest, ev];
+      };
+      es.addEventListener('tool.approval_requested', onInterventionRequest);
+      es.addEventListener('tool.auth_required', onInterventionRequest);
+      es.addEventListener('pause.requested', onInterventionRequest);
+      const onInterventionClear = (msg: MessageEvent): void => {
+        const runID = decodeInterventionClear((msg as MessageEvent<string>).data);
+        if (runID === null) return;
+        interventions = interventions.filter((i) => i.runID !== runID);
+      };
+      es.addEventListener('pause.resumed', onInterventionClear);
+      es.addEventListener('tool.approved', onInterventionClear);
+      es.addEventListener('tool.rejected', onInterventionClear);
+      es.addEventListener('tool.auth_completed', onInterventionClear);
       es.onerror = () => {
         // EventSource auto-reconnects on transient drops; only nullify
         // on a permanent close to avoid resubscribe storms.
         if (es.readyState === EventSource.CLOSED) {
+          eventsStreamLive = false;
           taskEvents = null;
         }
       };
       taskEvents = es;
     } catch {
+      eventsStreamLive = false;
       taskEvents = null;
     }
   }
@@ -518,6 +734,155 @@
   }
 
   /* ================================================================ */
+  /* Session reload (D-171)                                            */
+  /* ================================================================ */
+
+  // hydratePastTurns reloads the conversation's prior turns when opening
+  // an existing session (the per-session client scopes tasks.list to the
+  // URL session). Each completed task becomes a user bubble (its query) +
+  // an agent bubble (its result_inline answer). No-op when the stream is
+  // already populated (a live conversation) or the session has no tasks.
+  async function hydratePastTurns(): Promise<void> {
+    if (client === null) return;
+    const c = client;
+    try {
+      const resp = await c.tasks.list<{
+        rows?: Array<{
+          id: string;
+          query?: string;
+          status?: string;
+          started_at?: string;
+          duration_ms?: number;
+        }>;
+      }>({ filter: {}, page_size: 50 });
+      const rows = [...(resp.rows ?? [])].sort((a, b) =>
+        (a.started_at ?? '').localeCompare(b.started_at ?? '')
+      );
+      // Dedup against turns already in the stream. A live turn sent before
+      // hydration finished must not be duplicated AND (the bug this fixes)
+      // must not cause the reloaded history to be DISCARDED: the prior
+      // all-or-nothing `messages.length === 0` guard threw the whole
+      // reloaded history away if any message arrived first, so a reload
+      // followed by a quick send showed only the post-reload message.
+      const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
+      const fresh = rows.filter((r) => !present.has(r.id));
+      // Sum the active-work time of the reloaded turns into the Duration
+      // KPI (foreground + background tasks; `tasks.list` returns both). The
+      // live turns already counted via recordTurn are excluded by the
+      // `present` dedup, so this never double-counts.
+      activeWorkMs += fresh.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
+      // Fetch each completed turn's answer in PARALLEL — sequential gets
+      // were slow enough (one round-trip per turn) to lose the race with a
+      // fast send after reload.
+      const details = await Promise.all(
+        fresh.map((r) =>
+          r.status === 'complete'
+            ? c.tasks
+                .get<{ result_inline?: string; trajectory?: { steps?: ReasoningStep[] } }>(r.id)
+                .catch(() => null)
+            : Promise.resolve(null)
+        )
+      );
+      const hydrated: ChatMessage[] = [];
+      fresh.forEach((row, i) => {
+        const at = row.started_at ?? new Date().toISOString();
+        if (row.query) {
+          hydrated.push({ id: `h-${row.id}-u`, role: 'user', text: row.query, taskID: row.id, at });
+        }
+        const detail = details[i];
+        if (row.status === 'complete' && detail !== null) {
+          const reasoningSteps = parseReasoningSteps(detail);
+          hydrated.push({
+            id: `h-${row.id}-a`,
+            role: 'agent',
+            text: parseAnswerFromDetail(detail),
+            taskID: row.id,
+            at,
+            reasoningSteps: reasoningSteps.length > 0 ? reasoningSteps : undefined
+          });
+        }
+      });
+      if (hydrated.length === 0) return;
+      // Prepend — the reloaded turns predate any live message sent after
+      // reload, so history sits above the live tail.
+      messages = [...hydrated, ...messages];
+      if (sessionStartedAt === null && hydrated[0]?.at) sessionStartedAt = hydrated[0].at;
+    } catch {
+      /* reload is best-effort; a runtime without tasks.list just starts empty */
+    }
+  }
+
+  // refreshArtifacts loads this session's recent artifacts (108a-F). The
+  // per-session client scopes artifacts.list to the conversation; tool
+  // results land here (e.g. a `tool-result-*.json`).
+  async function refreshArtifacts(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.artifacts.list<{
+        rows?: Array<{
+          ref?: { id?: string; filename?: string; mime_type?: string; size_bytes?: number };
+          created_at?: string;
+        }>;
+      }>({});
+      recentArtifacts = (resp.rows ?? [])
+        .map((r) => ({
+          id: r.ref?.id ?? '',
+          filename: r.ref?.filename ?? '(unnamed)',
+          mime: r.ref?.mime_type ?? 'application/octet-stream',
+          sizeBytes: r.ref?.size_bytes,
+          createdAt: r.created_at
+        }))
+        .filter((a) => a.id !== '')
+        .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    } catch {
+      recentArtifacts = [];
+    }
+  }
+
+  // 108a-F — the runtime's tool catalog, for the Controls "Tools" row.
+  let toolList = $state<string[]>([]);
+  async function refreshTools(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.tools.list<{
+        tools?: Array<{ id?: string; name?: string }>;
+        rows?: Array<{ id?: string; name?: string }>;
+      }>();
+      const rows = resp.tools ?? resp.rows ?? [];
+      toolList = rows.map((t) => t.id ?? t.name ?? '').filter((s) => s !== '');
+    } catch {
+      toolList = [];
+    }
+  }
+
+  // refreshSessionList loads the connection's sessions for the switcher.
+  async function refreshSessionList(): Promise<void> {
+    if (client === null) return;
+    try {
+      const resp = await client.sessions.list<{
+        rows?: Array<{ session_id: string; last_activity_at?: string }>;
+      }>({ filter: {}, limit: 50 });
+      sessionList = resp.rows ?? [];
+    } catch {
+      sessionList = [];
+    }
+  }
+
+  // newSession opens a fresh conversation: a new session id, materialised
+  // create-on-first-use on the first send. A full navigation re-mounts the
+  // page so the per-session client + subscription rebuild cleanly.
+  function newSession(): void {
+    const id = `sess-${crypto.randomUUID().slice(0, 12)}`;
+    window.location.assign(`/playground/${id}`);
+  }
+
+  // switchSession opens an existing conversation (full navigation → the
+  // per-session client rebuilds + hydratePastTurns reloads its turns).
+  function switchSession(id: string): void {
+    if (id && id !== sessionID) window.location.assign(`/playground/${id}`);
+  }
+
+  /* ================================================================ */
   /* Loading                                                           */
   /* ================================================================ */
 
@@ -529,6 +894,12 @@
     status = 'loading';
     pageError = null;
     pageInfo = null;
+    // D-171 — reload this conversation's prior turns (sessions persist via
+    // the catalog; tasks.list is scoped to the URL session by the
+    // per-session client). Best-effort: empty for a brand-new session id,
+    // and empty for a pre-restart session (task history is in-memory — see
+    // docs/notes/session-model-contract.md).
+    await hydratePastTurns();
     try {
       // Round-8 F1 / phase 84a — gate the topology probe behind the
       // runtime's advertised capabilities. A planner/RunLoop runtime
@@ -592,6 +963,13 @@
     }
     sending = true;
     running = true;
+    // 108a-D — reset the live tokens/sec tracker for the new turn.
+    streamChars = 0;
+    streamStartMs = 0;
+    tokensPerSec = 0;
+    if (sessionStartedAt === null) {
+      sessionStartedAt = new Date().toISOString();
+    }
     const userMsg: ChatMessage = {
       id: `m-${Date.now()}-u`,
       role: 'user',
@@ -638,6 +1016,7 @@
   async function applyOverrides(overrides: {
     reasoningEffort?: string;
     temperature?: number;
+    topP?: number;
     maxTokens?: number;
     systemPromptOverride?: string;
   }): Promise<void> {
@@ -657,6 +1036,34 @@
     }
   }
 
+  // Pause / resume the active run via the SHIPPED pause/resume control
+  // verbs (Phase 54). Toggles on `paused`; no-op when no run is in flight.
+  async function pauseRun(): Promise<void> {
+    if (client === null || activeTaskID === null) {
+      return;
+    }
+    try {
+      if (paused) {
+        await client.control.resume(activeTaskID);
+        paused = false;
+      } else {
+        await client.control.pause(activeTaskID);
+        paused = true;
+      }
+    } catch (err) {
+      const e = toError(err);
+      messages = [
+        ...messages,
+        {
+          id: `m-${Date.now()}-sys`,
+          role: 'system',
+          text: `${paused ? 'Resume' : 'Pause'} failed — ${e.code}: ${e.message}`,
+          at: new Date().toISOString()
+        }
+      ];
+    }
+  }
+
   async function cancelRun(): Promise<void> {
     if (chatClient === null) {
       return;
@@ -664,6 +1071,7 @@
     try {
       await chatClient.cancelRun(false);
       running = false;
+      paused = false;
     } catch (err) {
       const e = toError(err);
       messages = [
@@ -842,16 +1250,53 @@
   /* ================================================================ */
 
   onMount(() => {
-    connection = resolveConnection();
-    if (connection === null) {
+    const base = resolveConnection();
+    if (base === null) {
+      connection = null;
       client = null;
       status = 'disconnected';
       return;
     }
+    // D-171 — the connection token is a per-backend credential; THIS page
+    // operates the conversation session from the URL (`session_id`). Build
+    // a per-session connection so every RPC carries `X-Harbor-Session` =
+    // the conversation id and the SSE subscribes scoped to it. A fresh
+    // session id (e.g. from "New session") is materialised create-on-
+    // first-use on the first send. tenant + user stay token-verified.
+    connection = { ...base, identity: { ...base.identity, session: sessionID || base.identity.session } };
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
     chatClient = buildChatClient(client);
-    subscribeTaskLifecycle(client);
+    subscribeEvents(client);
+    void refreshSessionList();
+    void refreshArtifacts();
+    void refreshTools();
+
+    // Resolve the real Protocol version + agent display name. Both are
+    // best-effort: runtime.info is universally advertised; the agent
+    // registry may be empty (the dev posture registers no named agent),
+    // in which case the honest 'default agent' fallback stands
+    // (AC-11 fallback chain).
+    void (async () => {
+      try {
+        const info = await client!.posture.info<{ display_name?: string }>();
+        // Fallback rung 3 (below the address-book name + agents.list): the
+        // runtime's own display name. Only used if nothing better resolved.
+        if (info.display_name && activeAgent === 'default agent') activeAgent = info.display_name;
+      } catch {
+        /* keep the em-dash */
+      }
+      try {
+        const list = await client!.agents.list<{ agents?: Array<{ name?: string }> }>();
+        const name = list.agents?.[0]?.name;
+        // Fallback rung 2 — only when the address book has not named it.
+        if (name && (activeAgent === 'default agent' || activeAgent === 'harbor dev')) {
+          activeAgent = name;
+        }
+      } catch {
+        /* keep 'default agent' */
+      }
+    })();
 
     void (async () => {
       try {
@@ -862,6 +1307,17 @@
         );
         savedFilters = new PlaygroundSavedFilters(db, operator);
         await refreshSavedViews();
+        // F1 — the authoritative display name is the one the operator typed
+        // in Settings → Connected Runtimes (the Console DB address book),
+        // matched to the active connection's base URL. It wins over the
+        // agents.list / runtime.info fallbacks.
+        try {
+          const runtimes = await db.runtimes.list(operator);
+          const hit = runtimes.find((r) => r.base_url === connection!.baseURL);
+          if (hit?.name) activeAgent = hit.name;
+        } catch {
+          /* address-book name is best-effort */
+        }
       } catch {
         savedFilters = null;
       }
@@ -883,84 +1339,108 @@
 </svelte:head>
 
 <div class="page" data-testid="playground-page" data-session-id={sessionID}>
-  <PageHeader title="Playground" subtitle="Session chat · steering · overrides">
-    {#snippet actions()}
-      <PlaygroundHeader
-        agents={agents}
-        activeAgent={activeAgent}
-        model={model}
-        tokenCount={tokenCount}
-        costUSD={costUSD}
-        running={running}
-        canImpersonate={canControl}
-        impersonationTargets={impersonationTargets}
-        activeImpersonation={activeImpersonation}
-        onagentchange={(a) => (activeAgent = a)}
-        oncancel={() => void cancelRun()}
-        onrestart={() => void restartRun()}
-        onimpersonate={(t) => (activeImpersonation = t)}
-      />
-    {/snippet}
-  </PageHeader>
+  <!-- 108a — the agent sub-bar is the page's top row; the shell breadcrumb
+       already names "Playground", so the bulky PageHeader title/subtitle is
+       dropped to reclaim vertical space (mock Image 3). -->
+  <PlaygroundHeader
+    activeAgent={activeAgent}
+    sessionID={sessionID}
+    model={modelName}
+    planner={plannerName}
+    running={running}
+    paused={paused}
+    phase={runPhase}
+    canImpersonate={canControl}
+    impersonationTargets={impersonationTargets}
+    activeImpersonation={activeImpersonation}
+    onagentchange={(a) => (activeAgent = a)}
+    oncancel={() => void cancelRun()}
+    onpause={() => void pauseRun()}
+    onrestart={() => void restartRun()}
+    onimpersonate={(t) => (activeImpersonation = t)}
+  />
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeSavedId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <input
-        class="control save-input"
-        type="text"
-        placeholder="Save current as…"
-        bind:value={saveName}
-        data-testid="playground-save-name"
-        disabled={savedFilters === null}
-        onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
-      />
-      <button
-        type="button"
-        class="control"
-        data-testid="playground-save-view"
-        disabled={savedFilters === null || saveName.trim().length === 0}
-        title={savedFilters === null
-          ? 'Console-local saved-view store unavailable'
-          : undefined}
-        onclick={() => void saveCurrentView()}
+  <!-- 108a — one compact toolbar row: the D-171 conversation switcher +
+       New session, plus saved views (chips only when present, so the
+       default state reclaims the row). -->
+  <div class="toolbar-row" data-testid="playground-session-strip">
+    <label class="session-pick">
+      <span class="session-pick-label">Conversation</span>
+      <select
+        class="session-select mono"
+        data-testid="playground-session-select"
+        value={sessionID}
+        onchange={(e) => switchSession((e.currentTarget as HTMLSelectElement).value)}
       >
-        Save view
-      </button>
-    {/snippet}
-    {#snippet search()}
-      <input
-        class="control"
-        type="search"
-        placeholder="Filter messages…"
-        data-testid="playground-message-search"
-        disabled
-        title="Message search — Post-V1"
-      />
-    {/snippet}
-  </FilterBar>
+        {#if !sessionList.some((s) => s.session_id === sessionID)}
+          <option value={sessionID}>{sessionID || '—'}</option>
+        {/if}
+        {#each sessionList as s (s.session_id)}
+          <option value={s.session_id}>{s.session_id}</option>
+        {/each}
+      </select>
+    </label>
+    <button
+      type="button"
+      class="session-new"
+      data-testid="playground-new-session"
+      onclick={newSession}
+    >
+      + New session
+    </button>
+
+    {#if savedFilters !== null}
+      <div class="toolbar-views">
+        {#if savedViews.length > 0}
+          <SavedViewChips
+            views={savedViews}
+            activeId={activeSavedId}
+            onselect={applySavedView}
+            ondelete={(id) => void deleteSavedView(id)}
+          />
+        {/if}
+        <input
+          class="view-save-input"
+          type="text"
+          placeholder="Save current as…"
+          bind:value={saveName}
+          data-testid="playground-save-name"
+          onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
+        />
+        <button
+          type="button"
+          class="view-save-btn"
+          data-testid="playground-save-view"
+          disabled={saveName.trim().length === 0}
+          onclick={() => void saveCurrentView()}
+        >
+          Save view
+        </button>
+      </div>
+    {/if}
+  </div>
+
+  <!-- Phase 108a KPI strip — the integrated metadata band -->
+  <KpiStrip
+    sessionID={sessionID}
+    startedAt={sessionStartedAt}
+    activeWorkMs={activeWorkMs}
+    activeSinceMs={activeTurnStartMs}
+    identityUser={connection?.identity.user ?? ''}
+    identityTenant={connection?.identity.tenant ?? ''}
+    scopeLabel={connection?.scopes.includes('admin') ? 'admin' : (connection?.scopes[0] ?? '')}
+    tokenCount={tokenCount}
+    promptTokens={promptTokens}
+    outputTokens={outputTokens}
+    tokenSamples={tokenSamples}
+    costUSD={costUSD}
+    ceilingUSD={ceilingUSD}
+    hasCostReading={hasCostReading}
+    turnLatencies={turnLatencies}
+  />
 
   <div class="layout">
     <div class="main-col">
-      {#if pageInfo !== null}
-        <!--
-          Phase 83w-F5 / D-164 — The chat surface is still functional
-          on a planner/RunLoop runtime, so the page renders normally
-          but surfaces a friendly banner explaining the topology absence
-          above the chat. The pre-83w-F5 behaviour routed the whole
-          page through PageState's red ERROR state with a Retry that
-          would always fail.
-        -->
-        <p class="info-banner" data-testid="playground-topology-info">
-          <strong>{pageInfo.headline}.</strong>
-          {pageInfo.detail}
-        </p>
-      {/if}
       <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
         {#snippet skeleton()}
           <div class="chat-skeleton" aria-hidden="true"></div>
@@ -983,7 +1463,32 @@
         {/if}
       </PageState>
 
-      {#if status === 'ready'}
+      <!-- 108a composer telemetry (mock Image 13 bottom strip) — page-level
+           live metrics under the composer. Context window % lands once the
+           runtime exposes the model context-window (R2); until then the
+           absolute context size is shown. -->
+      <div class="composer-telemetry" data-testid="composer-telemetry">
+        <span class="tel-phase" data-phase={runPhase}>
+          {runPhase === 'streaming' ? '● Streaming' : runPhase === 'active' ? '● Active' : '○ Idle'}
+        </span>
+        {#if tokensPerSec > 0 && runPhase === 'streaming'}
+          <span class="tel-sep">·</span>
+          <span class="tabular">Tokens/sec: {tokensPerSec.toFixed(1)}</span>
+        {/if}
+        {#if lastPromptTokens > 0}
+          <span class="tel-sep">·</span>
+          <span class="tabular">
+            Context: {(lastPromptTokens / 1000).toFixed(1)}k{#if contextWindow > 0} / {(contextWindow / 1000).toFixed(0)}k ({Math.round((lastPromptTokens / contextWindow) * 100)}%){/if}
+          </span>
+        {/if}
+        <span class="tel-spacer"></span>
+        <span class="tel-live">
+          <span class="tel-dot" data-on={eventsStreamLive} aria-hidden="true"></span>
+          Session {eventsStreamLive ? 'live' : 'off'}
+        </span>
+      </div>
+
+      {#if status === 'ready' && messages.length > pageSize}
         <Pagination
           page={pageIndex}
           pageSize={pageSize}
@@ -995,19 +1500,13 @@
           }}
         />
       {/if}
-
-      <footer class="page-footer" data-testid="playground-footer">
-        <span class="footer-item">
-          {sending ? 'Streaming…' : 'Idle'}
-        </span>
-        <span class="footer-item">Protocol {PROTOCOL_VERSION}</span>
-        <span class="footer-item">Console {CONSOLE_VERSION}</span>
-      </footer>
     </div>
 
     <DetailRail>
       <RailCard title="Controls">
         <ControlsCard
+          model={modelName}
+          tools={toolList}
           pending={overridesPending}
           result={overridesResult}
           onapply={(o) => void applyOverrides(o)}
@@ -1025,6 +1524,9 @@
         <PlaygroundArtifactsCard artifacts={recentArtifacts} onpreview={previewArtifact} />
       </RailCard>
       <RailCard title="Trace">
+        {#if pageInfo}
+          <p class="topo-info" data-testid="playground-topology-info">{pageInfo.headline}</p>
+        {/if}
         <TraceToggle
           enabled={traceOn}
           nodes={traceNodes}
@@ -1038,18 +1540,27 @@
 </div>
 
 <style>
+  /* Phase 108 — the page fills the shell's content box (which already
+     supplies the --space-6 padding) and owns its own internal scroll.
+     The header / filter / KPI bands are fixed-height; only `.layout`
+     (and inside it the chat stream + the right rail) scroll. No
+     whole-document scroll. */
   .page {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-6);
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .layout {
+    flex: 1;
+    min-height: 0;
     display: grid;
     grid-template-columns: 1fr var(--size-rail);
     gap: var(--space-4);
-    align-items: start;
+    align-items: stretch;
   }
 
   .main-col {
@@ -1057,24 +1568,135 @@
     flex-direction: column;
     gap: var(--space-4);
     min-width: var(--space-0);
+    min-height: 0;
   }
 
-  .control {
+  .toolbar-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .toolbar-views {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+
+  .session-pick {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .session-pick-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wider);
+    color: var(--color-text-muted);
+  }
+
+  .session-select {
     background: var(--color-surface-raised);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    max-width: var(--size-rail);
   }
 
-  .control:disabled {
+  .session-new {
+    background: var(--color-surface-raised);
+    color: var(--color-accent);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .session-new:hover {
+    border-color: var(--color-accent);
+  }
+
+  .view-save-input {
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    width: var(--size-chip-min-width);
+  }
+
+  .view-save-btn {
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+
+  .view-save-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
 
-  .save-input {
-    width: var(--size-search-min);
+  .topo-info {
+    margin: var(--space-0) var(--space-0) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .composer-telemetry {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .tel-phase[data-phase='streaming'] {
+    color: var(--color-success);
+  }
+
+  .tel-phase[data-phase='active'] {
+    color: var(--color-accent);
+  }
+
+  .tel-sep {
+    opacity: 0.5;
+  }
+
+  .tel-spacer {
+    flex: 1;
+  }
+
+  .tel-live {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .tel-dot {
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: 50%;
+    background: var(--color-text-muted);
+  }
+
+  .tel-dot[data-on='true'] {
+    background: var(--color-success);
+  }
+
+  .tabular {
+    font-variant-numeric: var(--font-variant-tabular);
   }
 
   .chat-skeleton {
@@ -1103,29 +1725,5 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
-  }
-
-  .page-footer {
-    display: flex;
-    gap: var(--space-3);
-    padding: var(--space-2);
-    border-top: var(--border-hairline);
-  }
-
-  .footer-item {
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
-  }
-
-  /* Phase 83w-F5 / D-164 — friendly info banner above the chat when
-     topology.snapshot returned unknown_method. NOT a red error. */
-  .info-banner {
-    margin: var(--space-0);
-    padding: var(--space-2) var(--space-3);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    background: var(--color-surface-raised);
-    color: var(--color-text-muted);
-    font-size: var(--text-sm);
   }
 </style>

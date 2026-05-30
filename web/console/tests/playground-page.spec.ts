@@ -167,18 +167,20 @@ test.describe("Console Playground page", () => {
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
+    // 108a: reasoning-effort is a segmented control and overrides apply LIVE
+    // (debounced) — there is no "Apply" button. Picking "high" triggers
+    // runs.set_overrides on its own.
     await page
-      .locator("[data-testid='controls-reasoning-effort']")
-      .selectOption("high");
-    await page.locator("[data-testid='controls-apply']").click();
+      .locator("[data-testid='controls-reasoning-effort'][data-value='high']")
+      .click();
 
     await expect(
       page.locator("[data-testid='controls-apply-result']"),
-      "the Controls card surfaces a runs.set_overrides result",
+      "the Controls card surfaces a runs.set_overrides result on live apply",
     ).toBeVisible();
   });
 
-  test("(f) the drift-mode toggle is visible-but-disabled (Post-V1)", async ({
+  test("(f) Controls apply live — no save button, no Post-V1 drift toggle (108a)", async ({
     page,
     runtime,
     helpers,
@@ -188,9 +190,21 @@ test.describe("Console Playground page", () => {
     await helpers.gotoPage("playground");
     await page.waitForLoadState("load");
 
-    const drift = page.locator("[data-testid='controls-drift-mode']");
-    await expect(drift, "the drift-mode toggle renders").toBeVisible();
-    await expect(drift, "the drift-mode toggle is disabled (Post-V1)").toBeDisabled();
+    // The "Apply to next message" save button is gone (controls apply live).
+    await expect(
+      page.locator("[data-testid='controls-apply']"),
+      "no explicit apply/save button",
+    ).toHaveCount(0);
+    // The Post-V1 drift-mode toggle is removed entirely (D-Q3).
+    await expect(
+      page.locator("[data-testid='controls-drift-mode']"),
+      "drift-mode toggle is removed",
+    ).toHaveCount(0);
+    // The live-apply hint is present.
+    await expect(
+      page.locator("[data-testid='controls-apply-hint']"),
+      "the live-apply hint renders",
+    ).toBeVisible();
   });
 
   test("(g) the trace toggle reveals the topology trace body", async ({

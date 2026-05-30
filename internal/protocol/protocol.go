@@ -65,6 +65,7 @@ import (
 	"fmt"
 
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -114,6 +115,23 @@ type ControlSurface struct {
 	topology   TopologyAccessor // Phase 74 — may be nil (Runtime hosts no engine)
 	adminScope ScopeChecker     // Phase 74 — the admin-cross-tenant gate; defaults to auth.HasScope
 	bus        events.EventBus  // Phase 74 — optional; the audit.admin_scope_used emit on a cross-tenant topology read
+	sessions   SessionEnsurer   // D-171 — optional; create-on-first-use on `start`
+}
+
+// SessionEnsurer is the create-on-first-use seam the `start` method
+// calls (D-171). The session id is the per-request session the client
+// chose (carried in the request's IdentityScope, sourced from the
+// X-Harbor-Session header by auth.Middleware). When a `start` names a
+// session id that has no registry row yet, EnsureSession materialises it
+// under the verified (tenant, user); a later turn in the same session
+// is a no-op. A closed session id fails loud (the runtime never
+// silently revives a GC-reaped conversation).
+//
+// Defined here (consumer side, error-only) so the protocol package does
+// not import the sessions package; the concrete *sessions.Registry is
+// adapted to this interface in cmd/harbor / harbortest.
+type SessionEnsurer interface {
+	EnsureSession(ctx context.Context, ident identity.Identity) error
 }
 
 // Option configures a ControlSurface at construction time. Reserved for
@@ -202,6 +220,23 @@ func WithEventBus(b events.EventBus) Option {
 	return func(s *ControlSurface) {
 		if b != nil {
 			s.bus = b
+		}
+	}
+}
+
+// WithSessionEnsurer wires the create-on-first-use seam (D-171) the
+// `start` method calls so a brand-new conversation's session row
+// materialises in the SessionRegistry on the first turn. A surface
+// built WITHOUT it does NOT create sessions on start — the explicit
+// "this Runtime has no session registry" posture (e.g. a control-only
+// surface). A nil ensurer passed here is treated as "not supplied"
+// (no silent panic). The production wiring (cmd/harbor, harbortest)
+// always supplies it so `harbor dev` gets create-on-first-use sessions
+// out of the box.
+func WithSessionEnsurer(e SessionEnsurer) Option {
+	return func(s *ControlSurface) {
+		if e != nil {
+			s.sessions = e
 		}
 	}
 }

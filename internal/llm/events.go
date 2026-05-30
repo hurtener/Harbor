@@ -141,11 +141,15 @@ type ContextWindowExceededPayload struct {
 // subscribes for per-identity accumulator updates.
 type CostRecordedPayload struct {
 	events.SafeSealed
-	Identity   identity.Quadruple
-	Model      string
-	Cost       Cost
-	Usage      Usage
-	OccurredAt time.Time
+	Identity identity.Quadruple
+	Model    string
+	Cost     Cost
+	Usage    Usage
+	// ContextWindowTokens is the model's input-token window (from the
+	// model profile), stamped so the Console can render context-used vs
+	// window (%). Zero when the model has no profile / configured window.
+	ContextWindowTokens int
+	OccurredAt          time.Time
 }
 
 // ModeDowngradedPayload is the typed payload for

@@ -168,7 +168,7 @@
       />
       <input
         type="text"
-        placeholder="Session ID"
+        placeholder="Session ID (optional — chosen per conversation)"
         data-testid="add-runtime-session"
         bind:value={draftSession}
       />

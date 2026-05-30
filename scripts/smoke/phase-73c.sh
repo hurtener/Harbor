@@ -325,4 +325,53 @@ else
     skip 'phase 73c: Playwright not installed; SKIP per Phase 75 baseline-harness gate'
 fi
 
+# --------------------------------------------------------------------
+# 5. D-171 — per-request session + create-on-first-use. The connection
+#    token carries (tenant, user); the SESSION is chosen per-request via
+#    the X-Harbor-Session header, NOT pinned by the token. A `start` on a
+#    fresh session id materialises the row; sessions.list then surfaces
+#    it. Two distinct headers => two distinct, coexisting sessions under
+#    one token. SKIP via the 404/405/501 convention until the surface is
+#    live.
+# --------------------------------------------------------------------
+if [ -n "${DEV_TOKEN:-}" ] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    START_URL="$(api_url /v1/control/start)"
+    SESSIONS_LIST_URL="$(api_url /v1/sessions/list)"
+    SMOKE_SESS="d170-smoke-$$"
+
+    start_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+        -X POST -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${DEV_TOKEN}" \
+        -H "X-Harbor-Session: ${SMOKE_SESS}" \
+        -d '{"identity":{},"query":"d170 smoke turn"}' \
+        "${START_URL}" || echo "000")
+    case "${start_status}" in
+        404|405|501)
+            skip 'phase 73c/D-171: control.start not mounted (404/405/501 -> SKIP)'
+            ;;
+        200)
+            # The per-request session must now be listable under the
+            # connection token (create-on-first-use materialised the row).
+            list_body=$(curl -s --max-time 8 \
+                -X POST -H 'Content-Type: application/json' \
+                -H "Authorization: Bearer ${DEV_TOKEN}" \
+                -H "X-Harbor-Session: ${SMOKE_SESS}" \
+                -d '{"filter":{},"limit":50}' \
+                "${SESSIONS_LIST_URL}" || echo '{}')
+            found=$(printf '%s' "${list_body}" | jq --arg s "${SMOKE_SESS}" \
+                '[.rows[]? | select(.session_id == $s)] | length' 2>/dev/null || echo '0')
+            if [ "${found}" = '1' ]; then
+                ok 'phase 73c/D-171: per-request X-Harbor-Session create-on-first-use — start materialised the session and sessions.list surfaces it under the connection token'
+            else
+                fail "phase 73c/D-171: started session ${SMOKE_SESS} not found in sessions.list (create-on-first-use or catalog wiring broken); body=${list_body}"
+            fi
+            ;;
+        *)
+            fail "phase 73c/D-171: control.start with X-Harbor-Session expected 200, got ${start_status}"
+            ;;
+    esac
+else
+    skip 'phase 73c/D-171: DEV_TOKEN / curl / jq unavailable; SKIP per-request-session live check'
+fi
+
 smoke_summary

@@ -24,7 +24,7 @@ import (
 // The payload is `events.SafePayload` (composes `events.SafeSealed`):
 // cost figures and token counts are operator-visible, not secret-
 // shaped.
-func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quadruple, model string, cost llm.Cost, usage llm.Usage) {
+func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quadruple, model string, cost llm.Cost, usage llm.Usage, contextWindow int) {
 	if bus == nil {
 		return
 	}
@@ -34,11 +34,12 @@ func emitCostRecorded(ctx context.Context, bus events.EventBus, id identity.Quad
 		Identity:   id,
 		OccurredAt: now,
 		Payload: llm.CostRecordedPayload{
-			Identity:   id,
-			Model:      model,
-			Cost:       cost,
-			Usage:      usage,
-			OccurredAt: now,
+			Identity:            id,
+			Model:               model,
+			Cost:                cost,
+			Usage:               usage,
+			ContextWindowTokens: contextWindow,
+			OccurredAt:          now,
 		},
 	})
 }

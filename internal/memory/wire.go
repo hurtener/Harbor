@@ -14,10 +14,12 @@ package memory
 // keep round-tripping older snapshots).
 
 // KindMemoryState is the canonical record-kind string Harbor uses to
-// route memory state in the persistence layer. The InMem driver writes
-// this kind through `state.StateStore`; the SQLite + Postgres drivers
-// write it to their own dedicated `memory_state` tables. The constant
-// is exported so cross-driver tests and operators can reference it.
+// route memory state in the persistence layer. Since Phase 25a (D-174)
+// every driver — InMem, SQLite, Postgres — persists this kind through
+// the injected `state.StateStore` via the shared strategy executor; the
+// SQL drivers no longer write a private `memory_state` table on the
+// strategy path. The constant is exported so cross-driver tests and
+// operators can reference it.
 const KindMemoryState = "memory.state"
 
 // Record is the JSON envelope every driver persists as the opaque

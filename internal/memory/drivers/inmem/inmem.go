@@ -45,11 +45,11 @@ import (
 //
 // `Summarizer` is REQUIRED when the configured strategy is
 // `rolling_summary`. The `New` constructor rejects a nil
-// summariser for that strategy with a wrapped error; the registry
-// path (`memory.Open`) currently has no way to inject a
-// non-default summariser, so callers wanting `rolling_summary` MUST
-// call `New` directly (Phase 32+ will land an LLM-backed
-// summariser the registry can resolve by default).
+// summariser for that strategy with a wrapped error. As of Phase 25a
+// (D-174) the registry path (`memory.Open`) injects the summariser
+// via `memory.Deps.Summarizer`, so `rolling_summary` is registry-
+// reachable too; this `Options.Summarizer` field remains for direct
+// `New` callers that want explicit control.
 //
 // `RecoveryBacklogMax` overrides the strategy default (16); zero
 // uses the default. Operators set this through
@@ -64,11 +64,11 @@ type Options struct {
 // New constructs a `MemoryStore` directly. Exposed for tests +
 // production callers that want full control over the strategy
 // `Options`; production callers using `memory.Open` go through the
-// registry and the default summariser (which is nil at Phase 24 —
-// only `none` + `truncation` are registry-reachable).
+// registry, which (Phase 25a, D-174) threads `memory.Deps.Summarizer`
+// into `Options` so every strategy — `none`, `truncation`, and
+// `rolling_summary` — is registry-reachable.
 //
-// Strategy unsupported at this phase returns
-// `memory.ErrStrategyNotImplemented`.
+// An unknown strategy returns `memory.ErrStrategyNotImplemented`.
 func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.MemoryStore, error) {
 	if deps.State == nil {
 		return nil, fmt.Errorf("memory/inmem: deps.State is required")
@@ -106,13 +106,13 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.Memo
 
 func init() {
 	memory.Register("inmem", func(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
-		// Registry path: no summariser is injectable. Only
-		// strategies that don't require a summariser are
-		// constructable through this path. The rolling-summary
-		// strategy needs `Summarizer`; operators staging it must
-		// call `inmem.New(...)` directly until Phase 32+ lands the
-		// LLM-backed summariser the registry resolves by default.
-		return New(cfg, deps, Options{})
+		// Registry path (Phase 25a, D-174): the summariser now
+		// threads through `memory.Deps.Summarizer`, so every strategy
+		// — including `rolling_summary` — is constructable through the
+		// registry. `rolling_summary` without a Summarizer fails loud
+		// (validated at `memory.Open` and again in `strategy.New`);
+		// never a stub fallback (AGENTS.md §13).
+		return New(cfg, deps, Options{Summarizer: deps.Summarizer})
 	})
 }
 

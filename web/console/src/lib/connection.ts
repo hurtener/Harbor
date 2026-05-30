@@ -71,8 +71,15 @@ export function resolveConnection(): RuntimeConnection | null {
 	const token = localStorage.getItem(STORAGE_KEYS.token);
 	const tenant = localStorage.getItem(STORAGE_KEYS.tenant);
 	const user = localStorage.getItem(STORAGE_KEYS.user);
-	const session = localStorage.getItem(STORAGE_KEYS.session);
-	if (!baseURL || !token || !tenant || !user || !session) {
+	// D-171 — the connection token is a per-backend credential carrying
+	// tenant + user + scopes; the SESSION is chosen per-conversation and
+	// supplied per-request, so it is OPTIONAL on the connection. When
+	// absent the default session is empty and the runtime falls back to
+	// the token's default session claim (the per-page client overrides it
+	// with the conversation id). Only baseURL + token + tenant + user are
+	// required to consider the Console attached.
+	const session = localStorage.getItem(STORAGE_KEYS.session) ?? '';
+	if (!baseURL || !token || !tenant || !user) {
 		return null;
 	}
 	const scopes = (localStorage.getItem(STORAGE_KEYS.scopes) ?? '')

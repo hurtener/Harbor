@@ -399,3 +399,111 @@ func TestMiddleware_UnknownValidatorError_FallsBackToAuthRejected(t *testing.T) 
 		t.Errorf("unknown error fall-through: code=%q, want %q", body.Code, protoerrors.CodeAuthRejected)
 	}
 }
+
+// decodeEchoBody reads the echoHandler's JSON identity body.
+func decodeEchoBody(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("decode echo body: %v (body=%q)", err, w.Body.String())
+	}
+	return m
+}
+
+// TestMiddleware_PerRequestSession_HeaderOverridesTokenClaim — D-171:
+// the X-Harbor-Session header REPLACES the token's session claim while
+// keeping the token-verified tenant + user. The connection token is a
+// per-backend credential, not a single-session pin.
+func TestMiddleware_PerRequestSession_HeaderOverridesTokenClaim(t *testing.T) {
+	stub := &stubValidator{verified: auth.Verified{
+		Identity: identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "default-claim"},
+	}}
+	mw := auth.Middleware(stub)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer faketoken")
+	r.Header.Set(auth.HeaderSession, "conversation-B")
+	mw(echoHandler(t)).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (body=%q)", w.Code, w.Body.String())
+	}
+	body := decodeEchoBody(t, w)
+	if body["session"] != "conversation-B" {
+		t.Errorf("session: got %v, want conversation-B (header must override claim)", body["session"])
+	}
+	if body["tenant"] != "dev" || body["user"] != "dev" {
+		t.Errorf("tenant/user must stay token-verified: got tenant=%v user=%v", body["tenant"], body["user"])
+	}
+}
+
+// TestMiddleware_PerRequestSession_FallsBackToTokenClaim — with no
+// X-Harbor-Session header, the token's session claim is used as the
+// default (back-compat for clients that don't yet send the header).
+func TestMiddleware_PerRequestSession_FallsBackToTokenClaim(t *testing.T) {
+	stub := &stubValidator{verified: auth.Verified{
+		Identity: identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "default-claim"},
+	}}
+	mw := auth.Middleware(stub)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer faketoken")
+	mw(echoHandler(t)).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	body := decodeEchoBody(t, w)
+	if body["session"] != "default-claim" {
+		t.Errorf("session fallback: got %v, want default-claim", body["session"])
+	}
+}
+
+// TestMiddleware_PerRequestSession_NoClaimNoHeader_401 — a token with no
+// default session claim AND no header is a client error (the caller must
+// choose a session): 401 + CodeIdentityRequired, NOT 500.
+func TestMiddleware_PerRequestSession_NoClaimNoHeader_401(t *testing.T) {
+	stub := &stubValidator{verified: auth.Verified{
+		Identity: identity.Identity{TenantID: "dev", UserID: "dev", SessionID: ""},
+	}}
+	mw := auth.Middleware(stub)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer faketoken")
+	mw(echoHandler(t)).ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want 401 (body=%q)", w.Code, w.Body.String())
+	}
+	body := readErrorBody(t, w)
+	if body.Code != protoerrors.CodeIdentityRequired {
+		t.Errorf("no-session code: got %q, want %q", body.Code, protoerrors.CodeIdentityRequired)
+	}
+}
+
+// TestMiddleware_PerRequestSession_HeaderCannotWidenTenantOrUser —
+// security: the header only sets session. A request can never widen its
+// tenant or user; those stay token-verified. (There is no
+// X-Harbor-Tenant / X-Harbor-User override path in the middleware.)
+func TestMiddleware_PerRequestSession_HeaderCannotWidenTenantOrUser(t *testing.T) {
+	stub := &stubValidator{verified: auth.Verified{
+		Identity: identity.Identity{TenantID: "tenant-A", UserID: "user-A", SessionID: "s"},
+	}}
+	mw := auth.Middleware(stub)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/events", nil)
+	r.Header.Set("Authorization", "Bearer faketoken")
+	// Even if a client tries to spoof tenant/user via headers, the
+	// middleware ignores them — only X-Harbor-Session is honoured.
+	r.Header.Set("X-Harbor-Tenant", "tenant-EVIL")
+	r.Header.Set("X-Harbor-User", "user-EVIL")
+	r.Header.Set(auth.HeaderSession, "s2")
+	mw(echoHandler(t)).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	body := decodeEchoBody(t, w)
+	if body["tenant"] != "tenant-A" || body["user"] != "user-A" {
+		t.Errorf("header must not widen tenant/user: got tenant=%v user=%v", body["tenant"], body["user"])
+	}
+	if body["session"] != "s2" {
+		t.Errorf("session: got %v, want s2", body["session"])
+	}
+}

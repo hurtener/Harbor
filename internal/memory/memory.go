@@ -237,10 +237,12 @@ var (
 	// ErrStoreClosed — a method was called after `Close`.
 	ErrStoreClosed = errors.New("memory: store is closed")
 
-	// ErrStrategyNotImplemented — `Open` was asked for a strategy
-	// not yet implemented at this phase (Phase 23 ships
-	// `StrategyNone` only). Phase 24 will widen the supported
-	// set.
+	// ErrStrategyNotImplemented — `Open` (or a driver) was asked for
+	// an UNKNOWN strategy name. The three canonical strategies
+	// (`none` / `truncation` / `rolling_summary`) are implemented on
+	// every driver via the shared strategy executor (Phase 25a / D-174);
+	// this sentinel now guards an unrecognised strategy string, not a
+	// phase gap. (The error text is preserved for callers that match it.)
 	ErrStrategyNotImplemented = errors.New("memory: strategy not implemented at this phase")
 
 	// ErrInvalidSnapshot — `Restore` was called with a snapshot

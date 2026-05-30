@@ -91,6 +91,22 @@ func SSEAccessTokenShim(next http.Handler) http.Handler {
 		// the cloned request only.
 		clone := r.Clone(r.Context())
 		clone.Header.Set("Authorization", bearerPrefix+token)
+		// D-171 EventSource session selector. An EventSource cannot set
+		// the canonical `X-Harbor-Session` header (no header API), so the
+		// SSE surface ALSO accepts the per-request session as a `?session=`
+		// query param — promoted here to the header the D-171 middleware
+		// reads. This is a header-incapable-client fallback ONLY: a header
+		// already present wins (header precedence), and a header-capable
+		// client (curl, a WebSocket/gRPC third-party console) sets
+		// `X-Harbor-Session` directly and never touches the query. The
+		// query is honored ONLY on this SSE shim path, so the token does
+		// not leak a session selector onto the REST surface. Like the
+		// access_token query, scoping `session` under the token-verified
+		// (tenant, user) is enforced downstream by the middleware — the
+		// query can set session, never widen tenant/user.
+		if sess := r.URL.Query().Get("session"); sess != "" && clone.Header.Get(HeaderSession) == "" {
+			clone.Header.Set(HeaderSession, sess)
+		}
 		next.ServeHTTP(w, clone)
 	})
 }

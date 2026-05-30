@@ -494,6 +494,12 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 		Filename: fmt.Sprintf("tool-result-%s.json", tool),
 		MimeType: "application/json",
 		Source: map[string]any{
+			// Phase 107f (D-176): stamp the canonical `source`
+			// discriminator so artifacts.list and the session-artifact
+			// manifest project a real provenance ("tool") instead of a
+			// blank source. The `tool`/`producer` keys stay for the
+			// originating-tool name.
+			"source":     "tool",
 			"producer":   "dev-tool-executor",
 			"tool":       tool,
 			"run_id":     rc.Quadruple.RunID,

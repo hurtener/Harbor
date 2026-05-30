@@ -1,5 +1,14 @@
 # Phase 85g — mcp-apps-host
 
+> **DEPRECATED (2026-05-29, D-172) — superseded by the 109a–c "MCP Apps host" wave (V1.1.x), scheduled immediately after Phase 108.**
+> This plan is retained as historical context. It is no longer the plan of record for MCP Apps. Two facts overturned its premises: (1) MCP Apps is a stable, independently-versioned extension (`io.modelcontextprotocol/ui`, the `ext-apps` repo) — NOT gated on the 2026-07-28 RC, and the RC does not reshape it — so the "revisit after RC-final" hold was unnecessary; (2) the extension ships an official, framework-agnostic host bridge (`@modelcontextprotocol/ext-apps` AppBridge), so the hand-rolled-`postMessage`-dialect risk this plan carried is gone (we consume the bridge, we do not author it). A code audit also found this plan's "Apps is purely Console-side; the runtime driver is unchanged" non-goal to be **factually wrong** — the MCP driver does not parse `_meta.ui.resourceUri`, `tool.completed` carries no result content, and `ReadResource` is not exposed on the Protocol — so there is genuine runtime + Protocol work. The reshaped work lives in:
+>
+> - `docs/plans/phase-109a-mcp-apps-runtime-protocol.md` — runtime + Protocol surface (`_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy).
+> - `docs/plans/phase-109b-console-mcp-apps-host.md` — Console sandboxed-iframe host + the official AppBridge in manual-handler mode (D-173) + inline DisplayMode.
+> - `docs/plans/phase-109c-mcp-apps-displaymode-layout.md` — fullscreen-tab + pip-split DisplayMode layout.
+>
+> See **D-172** (deprecation + supersession) and **D-173** (AppBridge manual-handler mode; every app→host call Protocol-proxied, never a direct MCP connection).
+
 ## Summary
 
 Implement the Console-side MCP Apps host: render the interactive HTML UIs MCP tools declare via the `io.modelcontextprotocol/ui` extension. A tool result references a `ui://` resource; the Console fetches it, renders it in a sandboxed iframe under a strict CSP, and bridges app↔host communication over the AppBridge `postMessage` JSON-RPC dialect. This phase also closes a standing primitive-without-consumer gap: `internal/tools/drivers/mcp/registry.go` already carries `DisplayModes` / `RawHTMLTrust` / `set_raw_html_trust` projection fields for a renderer that does not exist — Phase 85g is that renderer.

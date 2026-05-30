@@ -854,6 +854,54 @@ type MCPServerConfig struct {
 	Command       []string          `yaml:"command,omitempty"`
 	Headers       map[string]string `yaml:"headers,omitempty" secret:"true"`
 	KeepAlive     time.Duration     `yaml:"keep_alive,omitempty"`
+	// Policy is the per-server default tool reliability policy
+	// (Phase 26b). Optional; nil preserves today's behaviour exactly
+	// (every tool inherits `tools.DefaultPolicy()` — 30 s per-attempt
+	// deadline / 4 total attempts). When set, it projects to the
+	// `mcpdrv.Config.DefaultPolicy` applied to every tool this server
+	// registers. Per-field zero values fall through to
+	// `tools.DefaultPolicy()` (see `ToolPolicyConfig`). Restart-required.
+	Policy *ToolPolicyConfig `yaml:"policy,omitempty"`
+	// ToolPolicies are per-tool overrides keyed by the MCP tool's name
+	// (the server-side name, NOT the `<source>_<tool>` Harbor-facing
+	// name). A tool named here uses the override instead of `Policy`
+	// (or the package default). Optional; empty preserves today's
+	// behaviour. Restart-required.
+	ToolPolicies map[string]ToolPolicyConfig `yaml:"tool_policies,omitempty"`
+}
+
+// ToolPolicyConfig is the operator-facing YAML projection of
+// `tools.ToolPolicy` (Phase 26b). It is the single config→policy
+// translation surface (CLAUDE.md §13): the projection helper in
+// `policy_projection.go` is the only code that maps these fields onto
+// a `tools.ToolPolicy`. There is no second policy definition.
+//
+// Field semantics (all optional; a zero/omitted field falls through
+// to `tools.DefaultPolicy()` per-field via `tools.ToolPolicy`'s own
+// zero-value resolution):
+//
+//   - MaxAttempts is the TOTAL number of attempts including the first
+//     (operators think in total attempts, not retries). It projects to
+//     `tools.ToolPolicy.MaxRetries = MaxAttempts - 1`. `1` means a
+//     single attempt with no retry; `0`/omitted falls through to the
+//     default 4 total attempts (3 retries).
+//   - TimeoutMS is the per-attempt deadline in milliseconds. `0`/
+//     omitted falls through to the default 30000.
+//   - RetryOn is the retryable error-class allowlist. Each value must
+//     be a known `tools.ErrorClass` string (`transient` / `timeout` /
+//     `5xx` / `permanent`); validation rejects unknown classes. Empty/
+//     omitted falls through to the default `[transient timeout 5xx]`.
+//   - BackoffBaseMS / BackoffMaxMS are the backoff base / cap in
+//     milliseconds; `0`/omitted fall through to the defaults
+//     (100 ms / 30 s). BackoffMult is the per-retry multiplier;
+//     `0`/omitted falls through to the default 2.
+type ToolPolicyConfig struct {
+	MaxAttempts   int      `yaml:"max_attempts,omitempty"`
+	TimeoutMS     int      `yaml:"timeout_ms,omitempty"`
+	RetryOn       []string `yaml:"retry_on,omitempty"`
+	BackoffBaseMS int      `yaml:"backoff_base_ms,omitempty"`
+	BackoffMult   float64  `yaml:"backoff_mult,omitempty"`
+	BackoffMaxMS  int      `yaml:"backoff_max_ms,omitempty"`
 }
 
 // A2APeerConfig declares an A2A peer the southbound driver may connect

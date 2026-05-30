@@ -22,10 +22,12 @@ Prerequisites:
 
 Navigate to **Playground** in the Console nav. The page shows:
 
-- Chat history (assistant + user turns).
-- Foreground task indicator (the LLM is reasoning; tool calls visible).
-- Input box at the bottom — type + Enter to send.
-- File-upload chip (paperclip icon) — drag-and-drop or click to attach.
+- **Header row** — agent display name, a status pill (`Active` / `Ready` / `Paused` / `Failed`), a planner-type pill, a token-count chip, and a cost chip. Cancel-run and Restart buttons sit on the right.
+- **KPI strip** — four tiles under the header: Tokens (with a mini sparkline), Cost (with ceiling-percent label), p50 latency, and Status. The cost tile turns warning-coloured when you are ≥80% of the ceiling.
+- **Chat history** — assistant + user turns. Assistant bubbles render markdown (bold, italic, inline code, lists) and show an avatar + timestamp + planner-phase label.
+- **Bottom status bar** — streaming state (`Idle` / `Streaming`), Protocol version, Events Stream live indicator, and Console build version.
+- **Input box** at the bottom — type + Enter to send, or Cmd/Ctrl-Enter.
+- **File-upload chip** (paperclip icon) — drag-and-drop or click to attach.
 
 Type a message, hit Enter. The Runtime mints a Task, dispatches it through the planner, and streams events back. You see the assistant response token-by-token as Bifrost streams from the provider.
 

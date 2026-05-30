@@ -210,6 +210,38 @@ return Result{}, fmt.Errorf("weather.get_current: %w", ErrUnknownCity)
 
 The planner can `errors.Is(err, weather.ErrUnknownCity)` and choose a graceful fallback path.
 
+## 6. Tuning retry / timeout for MCP tools — `policy:` and `tool_policies:` (Phase 26b)
+
+In-process tools set their reliability shell programmatically with `tools.WithPolicy(...)` at registration. Tools imported from an **MCP server** have no Go call site you own, so Harbor exposes the same `tools.ToolPolicy` as operator YAML on each `tools.mcp_servers[]` entry:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: youtube
+      transport_mode: streamable_http
+      url: https://example.com/mcp/youtube
+      # Per-server default applied to EVERY tool this server registers.
+      policy:
+        max_attempts: 3            # TOTAL attempts incl. the first (NOT retries)
+        timeout_ms: 10000          # per-attempt deadline
+        retry_on: [transient, timeout, 5xx]
+      # Per-tool overrides keyed by the MCP server-side tool name
+      # (`get_metadata`, NOT the `youtube_get_metadata` Harbor name).
+      tool_policies:
+        get_metadata:
+          max_attempts: 1          # one attempt, no retry
+          timeout_ms: 60000        # a slow call gets one long deadline
+        search:
+          max_attempts: 6          # a flaky call gets more retries
+```
+
+Two semantics that trip people up:
+
+- **`max_attempts` is the TOTAL attempt count, including the first** — not the retry count. `max_attempts: 1` means a single attempt with no retry; the package default is `4` (one call + three retries). It projects internally to `tools.ToolPolicy.MaxRetries = max_attempts - 1`.
+- **Per-FIELD fall-through.** A field you omit inherits the package default for *that field only* — it does not reset the whole policy. A `policy:` block that sets only `timeout_ms: 5000` still keeps the default 4 attempts. This mirrors `tools.ToolPolicy`'s own zero-value resolution, so a partial policy is never surprising. Omit the entire `policy:` / `tool_policies:` blocks to keep today's behaviour (30 s per-attempt deadline, 4 total attempts).
+
+A tool named in `tool_policies` uses its override; tools absent from the map fall back to `policy` (or, if `policy` is omitted too, the package default). `retry_on` values must be one of `transient` / `timeout` / `5xx` / `permanent`; an unknown class fails config validation at boot. Resources and prompts a server exposes always use the per-server `policy` (the per-tool override is for tools). The whole block is restart-required.
+
 ## Common failure modes
 
 - **`tools.NewCatalog().Register(...)` panics at boot with "duplicate tool name".** Two tools registered under the same `Spec.Name`. Names are the planner's only handle; keep them unique.

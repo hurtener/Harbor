@@ -6,6 +6,13 @@
 > If a convention here conflicts with the RFC, the RFC wins; if it conflicts with
 > a page phase plan, this doc wins (it is a cross-cutting convention, like
 > `docs/plans/README.md`). See `docs/decisions.md` D-121.
+>
+> **Verification gate:** the Phase 108 page-polish series brings each Console page
+> to verbatim-vs-mock parity (look & feel + functionality) with every datum wired
+> to real Protocol data. The binding component-by-component, wire-by-wire procedure
+> each page wave passes before it is "done" is `PAGE-POLISH-PROCEDURE.md` (in this
+> directory). A page phase plan's "Console consistency" section cites BOTH this doc
+> and that procedure.
 
 ## Why this document exists
 

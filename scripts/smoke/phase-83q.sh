@@ -30,9 +30,12 @@ assert_grep_present "label: 'Playground', href: '/playground'" \
 # "Playground" — the header copy was correct pre-83q; we assert it here
 # so a future copy edit can't silently regress the Title-Case surface.
 # ----------------------------------------------------------------------------
-assert_grep_present 'PageHeader title="Playground"' \
+# 108a — the page identity moved from the bulky PageHeader title into the
+# shell breadcrumb + the document <title> (header compaction). The page
+# still identifies as "Playground" via its head title.
+assert_grep_present '<title>Playground' \
     "web/console/src/routes/(console)/playground/[session_id]/+page.svelte" \
-    "Playground deep-link page header reads 'Playground' (capital P)"
+    "Playground deep-link page identifies as 'Playground' (head title)"
 
 # ----------------------------------------------------------------------------
 # Playwright coverage: the harness baseline asserts both the sidebar

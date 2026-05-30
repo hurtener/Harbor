@@ -294,10 +294,24 @@ fields today.
 Persistent-driver connection string. Default: empty. Validation:
 required when `driver != "inmem"`. Secret: redacted.
 
+Note (D-174): conversation memory durability rides on the configured
+**`state.driver`**, not `memory.dsn`. Under the executor-delegation model
+all memory drivers persist strategy state through the StateStore, so a SQL
+memory driver with a SQL `memory.dsn` but an `inmem` `state.driver` is
+NOT durable across a restart. To make memory durable, set a SQL
+`state.driver`; `inmem` memory + a SQL StateStore is already durable.
+
 ### memory.strategy
 
 Memory shape. Default: `none`. Validation: `none` / `truncation` /
-`rolling_summary`.
+`rolling_summary`. All three strategies run on every memory driver
+(`inmem` / `sqlite` / `postgres`) — they delegate to a shared strategy
+executor that persists through the configured StateStore, so a SQL
+`state.driver` makes `truncation` and `rolling_summary` durable across a
+runtime restart (D-174). `rolling_summary` requires an LLM: `harbor dev`
+builds the Summarizer from the configured `llm` automatically (no separate
+summariser model). Configuring `rolling_summary` with no LLM fails loud at
+boot — there is no stub fallback (CLAUDE.md §13).
 
 ### memory.budget_tokens
 
@@ -520,6 +534,30 @@ driver. Default: empty list. Validation: each path non-empty.
 MCP southbound attachments (Phase 28). Each entry needs `name`,
 `transport_mode`, and either `url` (HTTP transports) or `command`
 (stdio). See `MCPServerConfig` godoc for the full surface.
+
+#### tools.mcp_servers[].policy (and .tool_policies)
+
+Optional retry/timeout policy for the tools a server registers (Phase
+26b / D-175). Without it, every tool uses the runtime default (30 s
+per-attempt deadline, 4 total attempts). `policy:` sets the per-server
+default; `tool_policies: { <tool-name>: { … } }` overrides individual
+tools (keyed by the server-side MCP tool name). Fields, all optional:
+
+- `max_attempts` — TOTAL attempts including the first (e.g. `1` = one
+  attempt, no retry; `4` = the default). Projected to `MaxRetries =
+  max_attempts - 1`.
+- `timeout_ms` — per-attempt deadline in milliseconds.
+- `retry_on` — error-class allowlist: `transient` / `timeout` / `5xx` /
+  `permanent`.
+- `backoff_base_ms` / `backoff_mult` / `backoff_max_ms` — exponential
+  backoff between retries.
+
+Per-field fall-through: a field you omit inherits the runtime default —
+setting only `timeout_ms` keeps the default 4 attempts. Example: a slow,
+reliably-throttled tool can be set to `max_attempts: 1, timeout_ms:
+90000` so it makes one long attempt instead of four 30 s ones. Validation:
+`max_attempts >= 1`, `timeout_ms >= 0`, `retry_on` in the allowlist,
+override keys non-empty + unique. See `examples/harbor.yaml`.
 
 ### tools.a2a_peers
 

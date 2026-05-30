@@ -1,19 +1,43 @@
 <script lang="ts">
   // Harbor Console — Playground Pending Interventions card (Phase 73n /
-  // D-130).
+  // D-130, Phase 108 / D-167).
   //
   // The right-rail card listing HITL gates awaiting an operator
-  // decision. Approve / Reject invoke the SHIPPED Phase 54 `approve` /
-  // `reject` control verbs (no parallel approval protocol — CLAUDE.md
-  // §13). When the operator lacks the steering scope claim the buttons
-  // render disabled-with-tooltip (CONVENTIONS.md §5).
+  // decision. Phase 108 adds: red count badge in header, avatar per row,
+  // intent-coloured title, Approve/Reject button intents.
   //
   // Design tokens only.
+
+  import StatusChip from '$lib/components/ui/StatusChip.svelte';
 
   /** A pending HITL intervention awaiting a decision. */
   export interface PendingIntervention {
     runID: string;
     reason: string;
+    /** The source event that created this intervention. */
+    source: 'tool.approval_requested' | 'tool.auth_required' | 'pause.requested';
+  }
+
+  function sourceToIntent(source: PendingIntervention['source']): 'warning' | 'accent' | 'danger' {
+    switch (source) {
+      case 'tool.approval_requested':
+        return 'warning';
+      case 'tool.auth_required':
+        return 'accent';
+      case 'pause.requested':
+        return 'danger';
+    }
+  }
+
+  function sourceToLabel(source: PendingIntervention['source']): string {
+    switch (source) {
+      case 'tool.approval_requested':
+        return 'Approval';
+      case 'tool.auth_required':
+        return 'OAuth';
+      case 'pause.requested':
+        return 'HITL';
+    }
   }
 
   let {
@@ -31,6 +55,15 @@
 </script>
 
 <div class="interventions-card" data-testid="playground-interventions-card">
+  <div class="card-header">
+    <span class="card-title">Pending Interventions</span>
+    {#if interventions.length > 0}
+      <span class="count-badge" data-testid="interventions-count">
+        {interventions.length}
+      </span>
+    {/if}
+  </div>
+
   {#if interventions.length === 0}
     <p class="empty-note" data-testid="interventions-empty">
       No pending interventions.
@@ -40,7 +73,19 @@
       {#each interventions as item (item.runID)}
         <li class="intervention" data-run-id={item.runID}>
           <div class="intervention-meta">
-            <span class="intervention-run">{item.runID}</span>
+            <div class="intervention-avatar-row">
+              <span
+                class="intervention-avatar"
+                style:background="var(--chip-{sourceToIntent(item.source)}-bg)"
+                style:color="var(--chip-{sourceToIntent(item.source)}-fg)"
+              >
+                {sourceToLabel(item.source)[0]}
+              </span>
+              <StatusChip
+                kind={sourceToIntent(item.source)}
+                label={sourceToLabel(item.source)}
+              />
+            </div>
             <span class="intervention-reason">{item.reason}</span>
           </div>
           <div class="intervention-actions">
@@ -82,6 +127,31 @@
     gap: var(--space-2);
   }
 
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .card-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-badge-sm);
+    height: var(--size-badge-sm);
+    border-radius: 50%;
+    background: var(--color-danger);
+    color: var(--color-bg);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
   .empty-note {
     margin: var(--space-0);
     font-size: var(--text-sm);
@@ -113,10 +183,22 @@
     gap: var(--space-1);
   }
 
-  .intervention-run {
-    font-family: var(--font-mono);
+  .intervention-avatar-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .intervention-avatar {
+    width: var(--size-avatar-sm);
+    height: var(--size-avatar-sm);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-size: var(--text-xs);
-    color: var(--color-text-muted);
+    font-weight: 600;
+    flex-shrink: 0;
   }
 
   .intervention-reason {
@@ -139,13 +221,15 @@
   }
 
   .action.approve {
-    background: var(--color-success-soft);
-    color: var(--color-success);
+    background: var(--chip-success-bg);
+    color: var(--chip-success-fg);
+    border-color: var(--chip-success-border);
   }
 
   .action.reject {
-    background: var(--color-danger-soft);
-    color: var(--color-danger);
+    background: var(--chip-danger-bg);
+    color: var(--chip-danger-fg);
+    border-color: var(--chip-danger-border);
   }
 
   .action:disabled {

@@ -46,7 +46,10 @@ export function validateAddRuntimeDraft(draft: AddRuntimeDraft): string | null {
 	if (/\s/.test(draft.tenant)) return 'Tenant must not contain whitespace.';
 	if (draft.user.trim() === '') return 'User is required.';
 	if (/\s/.test(draft.user)) return 'User must not contain whitespace.';
-	if (draft.session.trim() === '') return 'Session is required.';
+	// D-171 — session is OPTIONAL on a connection (the token is a
+	// per-backend credential; session is chosen per-conversation and
+	// supplied per-request). An empty session is accepted; only its shape
+	// is validated when provided.
 	if (/\s/.test(draft.session)) return 'Session must not contain whitespace.';
 	return null;
 }

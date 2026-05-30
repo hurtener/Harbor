@@ -74,6 +74,15 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 		return c.inner.Complete(ctx, req)
 	}
 
+	// Default the model from the snapshot when the caller left it empty
+	// (the react planner does — see safety.go). This wrapper is the
+	// outermost profile-consumer; without the default `resolveMaxRetries`
+	// would key `ModelProfiles[""]` and silently fall back to the global
+	// default instead of the model's configured MaxRetries.
+	if req.Model == "" {
+		req.Model = c.cfg.Model
+	}
+
 	maxRetries := resolveMaxRetries(c.cfg, req.Model)
 	id := identityFromCtx(ctx)
 

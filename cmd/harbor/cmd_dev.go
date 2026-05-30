@@ -94,7 +94,6 @@ import (
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
-	memoryinmem "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
@@ -520,19 +519,20 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	closers = append(closers, llmClient.Close)
 
-	// Memory subsystem. When the operator picked rolling_summary, wire
-	// the LLM-backed default Summarizer (constraint #3 — Phase 64 / D-089).
-	// The memory open path is configured even when strategy=none so the
-	// runtime has a memory store for future per-session reads.
+	// Memory subsystem (Phase 25a, D-174). The summariser threads
+	// through `memory.Deps.Summarizer`, so ONE `memory.Open` call
+	// serves every driver × strategy — no rolling_summary special-case,
+	// no "only inmem" rejection. The memory open path is configured
+	// even when strategy=none so the runtime has a memory store for
+	// per-session reads.
 	//
-	// The Phase 23 registry path (`memory.Open`) does NOT accept a
-	// Summarizer injection; only strategy=none + strategy=truncation
-	// resolve through it. For strategy=rolling_summary we MUST call
-	// the driver's `inmem.New(...)` directly with `Options{Summarizer:
-	// llmsummarizer.New(client)}`. SQLite + Postgres memory drivers
-	// (Phase 25) have not yet been audited for this same shape — for
-	// now, rolling_summary on those drivers is rejected at boot with a
-	// clear "not yet wired" error.
+	// The default Summarizer is the agent's configured LLM
+	// (`llmsummarizer.New(llmClient)`) — no separate summariser model,
+	// no hardwiring (constraint #3 — Phase 64 / D-089). It is built
+	// only when the strategy actually needs it (`rolling_summary`); a
+	// nil Summarizer is valid for `none` / `truncation`. A
+	// `rolling_summary` config with no Summarizer fails loud at
+	// `memory.Open` — never a stub fallback (AGENTS.md §13).
 	var memStore memory.MemoryStore
 	if cfg.Memory.Driver != "" {
 		memCfg := memory.ConfigSnapshot{
@@ -542,40 +542,26 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			BudgetTokens:       cfg.Memory.BudgetTokens,
 			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
 		}
-		if cfg.Memory.Strategy == "rolling_summary" {
-			if cfg.Memory.Driver != "inmem" {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: rolling_summary is only wired against driver=inmem at Phase 64 (got driver=%q); see docs/plans/phase-25-memory-drivers.md for the SQLite/Postgres Summarizer-injection follow-up", cfg.Memory.Driver)
-			}
+		var summarizer memory.Summarizer
+		if memCfg.Strategy == memory.StrategyRollingSummary {
 			s, sErr := llmsummarizer.New(llmClient)
 			if sErr != nil {
 				closeAll(ctx)
 				return nil, fmt.Errorf("summarizer: %w", sErr)
 			}
-			ms, openErr := memoryinmem.New(memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			}, memoryinmem.Options{
-				Summarizer: s,
-			})
-			if openErr != nil {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: %w", openErr)
-			}
-			closers = append(closers, ms.Close)
-			memStore = ms
-		} else {
-			ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
-				State: stateStore,
-				Bus:   bus,
-			})
-			if openErr != nil {
-				closeAll(ctx)
-				return nil, fmt.Errorf("memory: %w", openErr)
-			}
-			closers = append(closers, ms.Close)
-			memStore = ms
+			summarizer = s
 		}
+		ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
+			State:      stateStore,
+			Bus:        bus,
+			Summarizer: summarizer,
+		})
+		if openErr != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("memory: %w", openErr)
+		}
+		closers = append(closers, ms.Close)
+		memStore = ms
 	}
 	// memStore is consumed by the Phase 73j (D-118) Console Memory page
 	// `memory.*` read routes — wired into transports.NewMux below via
@@ -794,7 +780,27 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// §17.6): a Runtime that hosts an engine wires it via
 	// protocol.WithTopologyAccessor; the Phase 74 integration test
 	// does exactly that through harbortest/devstack.AssembleOpts.
-	surface, err := protocol.NewControlSurface(taskReg, steeringReg)
+	// D-171: the SessionRegistry is constructed here (ahead of the
+	// ControlSurface) so the surface can be wired with the
+	// create-on-first-use ensurer. Sessions are per-request and
+	// create-on-first-use: there is NO boot-time Open of a fixed "dev"
+	// session (that path crashed boot on a persisted-closed session —
+	// reopen-after-close is forbidden). The registry's persistent catalog
+	// re-discovers sessions across restarts, so sessions.list / inspect /
+	// tasks-by-session keep working against an existing state dir.
+	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("sessions registry: %w", err)
+	}
+	closers = append(closers, sessionRegistry.CloseRegistry)
+
+	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
+		// D-171 — create-on-first-use: a `start` on a not-yet-existing
+		// session materialises its registry row so the Console's
+		// sessions.list surfaces the conversation from the first turn.
+		protocol.WithSessionEnsurer(newSessionEnsurerAdapter(sessionRegistry)),
+	)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("protocol: %w", err)
@@ -1059,34 +1065,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// a cross-tenant `sessions.list` query emits its
 	// `audit.admin_scope_used` event (CLAUDE.md §13 — the admin path is
 	// never a silent no-op).
-	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions registry: %w", err)
-	}
-	closers = append(closers, sessionRegistry.CloseRegistry)
-
-	// W8 (Phase 83x): the dev token carries `(DevTenant, DevUser,
-	// DevSession)`, but the SessionRegistry has no row until something
-	// explicitly Opens that triple. The Console's `sessions.list` reads
-	// from the registry, so without a row the Sessions page rendered
-	// "No sessions match these filters" even while a task was actively
-	// running under that identity. Open the dev session at boot so the
-	// catalog has the live row a fresh `harbor dev` user can see. A
-	// pre-existing row (e.g. an earlier boot that persisted into a
-	// SQLite state store) is fine — `ErrSessionAlreadyOpen` is
-	// expected and swallowed; any other error fails the boot loud.
-	devID := identity.Identity{TenantID: DevTenant, UserID: DevUser, SessionID: DevSession}
-	devSessCtx, devSessErr := identity.With(ctx, devID)
-	if devSessErr != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions: dev identity scope: %w", devSessErr)
-	}
-	if _, openErr := sessionRegistry.Open(devSessCtx, DevSession, devID); openErr != nil &&
-		!errors.Is(openErr, sessions.ErrSessionAlreadyOpen) {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions: open dev session: %w", openErr)
-	}
+	//
+	// D-171: the registry is constructed earlier (alongside the
+	// ControlSurface) and is NO LONGER force-Opened with a fixed "dev"
+	// session at boot. Boot-time Open crashed against a persisted-closed
+	// session (reopen-after-close is forbidden). Sessions are now
+	// per-request + create-on-first-use, and the registry's persistent
+	// catalog re-discovers a prior process's sessions on the read path —
+	// so sessions.list is non-empty across restarts without a boot Open.
 	sessionsProjector, err := sessionsprotocol.NewListerProjector(sessionRegistry)
 	if err != nil {
 		closeAll(ctx)
@@ -2070,6 +2056,16 @@ func attachDevMCPServer(
 	if mode == "" {
 		mode = mcpdrv.TransportAuto
 	}
+	// Phase 26b — project the operator-facing policy YAML onto the
+	// driver's runtime ToolPolicy fields. A nil ms.Policy leaves
+	// DefaultPolicy zero-valued, so every tool inherits
+	// tools.DefaultPolicy() at dispatch (today's behaviour). A
+	// projection error (e.g. an unknown retry_on class that slipped
+	// past validation) fails the boot loud (CLAUDE.md §5).
+	defaultPolicy, toolPolicies, policyErr := projectMCPToolPolicies(ms)
+	if policyErr != nil {
+		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
+	}
 	provider, err := mcpdrv.New(mcpdrv.Config{
 		Name:          ms.Name,
 		TransportMode: mode,
@@ -2079,6 +2075,8 @@ func attachDevMCPServer(
 		KeepAlive:     ms.KeepAlive,
 		Logger:        logger,
 		Bus:           bus,
+		DefaultPolicy: defaultPolicy,
+		ToolPolicies:  toolPolicies,
 		DefaultIdentity: identity.Identity{
 			TenantID:  DevTenant,
 			UserID:    DevUser,
@@ -2119,6 +2117,13 @@ func attachDevMCPServer(
 		Transport:    string(mode),
 		URLOrCommand: urlOrCommand,
 		InitialState: mcpdrv.ServerStateOnline,
+		// Surface the configured per-server policy on the registry so the
+		// Console's mcp.servers.list / mcp.servers.policy read the policy
+		// the operator actually set, not tools.DefaultPolicy() (Phase 26b
+		// wave-audit fix — without this the Console misreports a tuned
+		// server as 30s/3-retries). Per-tool overrides are not part of the
+		// registry projection; the per-server default is the headline.
+		Policy: defaultPolicy,
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}
@@ -2138,6 +2143,75 @@ func attachDevMCPServer(
 		slog.Int("tools_registered", len(descriptors)),
 	)
 	return nil
+}
+
+// projectMCPToolPolicies converts an MCPServerConfig's operator-facing
+// policy YAML (Phase 26b) into the driver's runtime ToolPolicy fields:
+// the per-server default and the per-tool override map (keyed by the
+// MCP server-side tool name). The config package owns the single
+// config→policy translation seam (config.ToolPolicyConfig.ToToolPolicy);
+// this helper performs only the trivial primitive→tools.ToolPolicy copy
+// — it lives in cmd/harbor because internal/config cannot import
+// internal/tools (an import cycle via internal/events). Any projection
+// error (e.g. an unknown retry_on class) is returned so the boot path
+// fails loud (CLAUDE.md §5).
+//
+// A nil ms.Policy yields a zero-valued DefaultPolicy, so the driver
+// applies tools.DefaultPolicy() per-field at dispatch — preserving
+// today's behaviour exactly when no policy is configured.
+func projectMCPToolPolicies(ms config.MCPServerConfig) (tools.ToolPolicy, map[string]tools.ToolPolicy, error) {
+	var defaultPolicy tools.ToolPolicy
+	if ms.Policy != nil {
+		projected, err := ms.Policy.ToToolPolicy()
+		if err != nil {
+			return tools.ToolPolicy{}, nil, fmt.Errorf("policy: %w", err)
+		}
+		defaultPolicy = toolPolicyFromProjected(projected)
+	}
+
+	var toolPolicies map[string]tools.ToolPolicy
+	if len(ms.ToolPolicies) > 0 {
+		toolPolicies = make(map[string]tools.ToolPolicy, len(ms.ToolPolicies))
+		for toolName, tp := range ms.ToolPolicies {
+			projected, err := tp.ToToolPolicy()
+			if err != nil {
+				return tools.ToolPolicy{}, nil, fmt.Errorf("tool_policies[%q]: %w", toolName, err)
+			}
+			toolPolicies[toolName] = toolPolicyFromProjected(projected)
+		}
+	}
+
+	return defaultPolicy, toolPolicies, nil
+}
+
+// toolPolicyFromProjected copies the cycle-free config.ProjectedToolPolicy
+// image into the runtime tools.ToolPolicy. Fields the operator omitted
+// stay zero so tools.ToolPolicy's own per-field resolved() fall-through
+// fills them with the package default at dispatch (per-field semantics,
+// Phase 26b). RetryOn strings are turned into tools.ErrorClass values;
+// they were already validated against the allowlist by ToToolPolicy.
+func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
+	var retryOn []tools.ErrorClass
+	switch {
+	case len(p.RetryOn) > 0:
+		retryOn = make([]tools.ErrorClass, 0, len(p.RetryOn))
+		for _, class := range p.RetryOn {
+			retryOn = append(retryOn, tools.ErrorClass(class))
+		}
+	case p.RetryOnEmpty:
+		// Explicit empty, non-nil slice → "retry on nothing" (exactly
+		// one attempt), surviving tools.ToolPolicy.resolved()'s
+		// MaxRetries fall-through. See config.ToolPolicyConfig.ToToolPolicy.
+		retryOn = []tools.ErrorClass{}
+	}
+	return tools.ToolPolicy{
+		TimeoutMS:   p.TimeoutMS,
+		MaxRetries:  p.MaxRetries,
+		BackoffBase: p.BackoffBase,
+		BackoffMult: p.BackoffMult,
+		BackoffMax:  p.BackoffMax,
+		RetryOn:     retryOn,
+	}
 }
 
 // cloneStringMap returns a defensive copy of m so the Provider's

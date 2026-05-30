@@ -1,12 +1,30 @@
 <script lang="ts" module>
-  // Harbor Console — shared StatusChip (D-121, CONVENTIONS.md §3).
+  // Harbor Console — shared StatusChip (D-121, CONVENTIONS.md §3, Phase 108 / D-167).
   //
-  // One status pill. The `kind` prop maps over the status token scale —
-  // a page never hand-rolls a coloured pill. The audit found per-page
-  // status pills forked across all five pages; this is the one.
+  // One status pill. The `kind` prop maps over the chip token scale.
+  // Pre-existing kinds (`online` / `offline` / `error`) alias onto the
+  // new palette for backward compatibility.
 
-  /** The closed set of status kinds, mapped onto the status token scale. */
-  export type StatusKind = 'success' | 'warning' | 'danger' | 'accent' | 'neutral';
+  /** The closed set of status kinds, mapped onto the chip token scale. */
+  export type StatusKind = 'success' | 'warning' | 'danger' | 'accent' | 'neutral' | 'info';
+
+  /** Legacy aliases for pre-Phase-108 consumers. */
+  type LegacyKind = 'online' | 'offline' | 'error';
+
+  export type ChipKind = StatusKind | LegacyKind;
+
+  function normalizeKind(kind: ChipKind): StatusKind {
+    switch (kind) {
+      case 'online':
+        return 'success';
+      case 'offline':
+        return 'neutral';
+      case 'error':
+        return 'danger';
+      default:
+        return kind;
+    }
+  }
 </script>
 
 <script lang="ts">
@@ -16,7 +34,7 @@
     desaturated = false
   }: {
     /** The status kind — selects the token-driven colour. */
-    kind?: StatusKind;
+    kind?: ChipKind;
     /** The pill text. */
     label: string;
     /** When true, the chip drops its kind-coloured styling and renders
@@ -25,11 +43,13 @@
         disconnected — the colour without a backing Runtime is noise. */
     desaturated?: boolean;
   } = $props();
+
+  const resolvedKind = $derived(normalizeKind(kind));
 </script>
 
 <span
   class="status-chip"
-  data-kind={desaturated ? 'neutral' : kind}
+  data-kind={desaturated ? 'neutral' : resolvedKind}
   data-desaturated={desaturated ? 'true' : undefined}
 >{label}</span>
 
@@ -43,30 +63,42 @@
     font-weight: 600;
     line-height: 1;
     white-space: nowrap;
+    border: var(--border-hairline);
+  }
+
+  .status-chip[data-kind='info'] {
+    color: var(--chip-info-fg);
+    background: var(--chip-info-bg);
+    border-color: var(--chip-info-border);
   }
 
   .status-chip[data-kind='success'] {
-    color: var(--color-success);
-    background: var(--color-success-soft);
+    color: var(--chip-success-fg);
+    background: var(--chip-success-bg);
+    border-color: var(--chip-success-border);
   }
 
   .status-chip[data-kind='warning'] {
-    color: var(--color-warning);
-    background: var(--color-warning-soft);
+    color: var(--chip-warning-fg);
+    background: var(--chip-warning-bg);
+    border-color: var(--chip-warning-border);
   }
 
   .status-chip[data-kind='danger'] {
-    color: var(--color-danger);
-    background: var(--color-danger-soft);
+    color: var(--chip-danger-fg);
+    background: var(--chip-danger-bg);
+    border-color: var(--chip-danger-border);
   }
 
   .status-chip[data-kind='accent'] {
-    color: var(--color-accent);
-    background: var(--color-accent-soft);
+    color: var(--chip-accent-fg);
+    background: var(--chip-accent-bg);
+    border-color: var(--chip-accent-border);
   }
 
   .status-chip[data-kind='neutral'] {
-    color: var(--color-text-muted);
-    background: var(--color-surface-raised);
+    color: var(--chip-neutral-fg);
+    background: var(--chip-neutral-bg);
+    border-color: var(--chip-neutral-border);
   }
 </style>

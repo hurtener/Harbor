@@ -41,6 +41,28 @@
   --color-danger-soft: #3a1a18;
   --color-accent-soft: #16263f;
 
+  /* Chip palette — backs every status pill across the Console.
+     One row per intent: foreground / background / border.
+     Every value derives from the existing base palette via var(). */
+  --chip-info-fg: var(--color-accent);
+  --chip-info-bg: var(--color-accent-soft);
+  --chip-info-border: var(--color-accent);
+  --chip-success-fg: var(--color-success);
+  --chip-success-bg: var(--color-success-soft);
+  --chip-success-border: var(--color-success);
+  --chip-warning-fg: var(--color-warning);
+  --chip-warning-bg: var(--color-warning-soft);
+  --chip-warning-border: var(--color-warning);
+  --chip-danger-fg: var(--color-danger);
+  --chip-danger-bg: var(--color-danger-soft);
+  --chip-danger-border: var(--color-danger);
+  --chip-accent-fg: var(--color-accent);
+  --chip-accent-bg: var(--color-accent-soft);
+  --chip-accent-border: var(--color-accent);
+  --chip-neutral-fg: var(--color-text-muted);
+  --chip-neutral-bg: var(--color-surface-raised);
+  --chip-neutral-border: var(--color-border);
+
   /* Color — modal scrim */
   --color-overlay: rgb(1 4 9 / 70%);
 
@@ -74,10 +96,18 @@
   --text-sm: 0.875rem;
   --text-base: 1rem;
   --text-lg: 1.125rem;
-  --text-xl: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
   /* Letter-spacing — the uppercase-label tracking the inventory uses. */
   --tracking-wide: 0.04em;
   --tracking-wider: 0.06em;
+
+  /* ================================================================ */
+  /* Typography utilities                                              */
+  /* ================================================================ */
+  /* Tabular-nums for every numeric chip / KPI / column. */
+  --font-variant-tabular: tabular-nums;
 
   /* ================================================================ */
   /* Radii                                                             */
@@ -125,6 +155,20 @@
   --layout-table-row-height: 2.5rem;
   --layout-hist-label-width: 5rem;
   --layout-hist-count-width: 2.5rem;
+
+  /* Phase 108 (D-167) — sizing tokens for the polished Playground surface.
+     These replace raw px/rem literals in .svelte components so the
+     stylelint gate stays green. */
+  --size-avatar-sm: 1.5rem;        /* 24px — sidebar logo, intervention avatar */
+  --size-avatar-md: 2rem;          /* 32px — message bubble avatar */
+  --size-badge-sm: 1.25rem;        /* 20px — count badge */
+  --size-status-bar-height: 1.75rem; /* 28px — PlaygroundStatusBar */
+  --size-sparkline-dot: 6px;       /* static dot when only one sample */
+  --size-chip-min-width: 3rem;     /* numeric chip in ControlsCard */
+  --size-session-max-width: 8rem;  /* session id truncation */
+  --size-code-font: 0.9em;         /* inline code relative size */
+  --size-code-padding-x: 0.3em;    /* inline code horizontal padding */
+  --size-code-padding-y: 0.1em;    /* inline code vertical padding */
 
   /* ================================================================ */
   /* Motion                                                            */
