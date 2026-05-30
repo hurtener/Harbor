@@ -121,9 +121,17 @@
   let ceilingUSD = $state<number | null>(null);
   let promptTokens = $state(0);
   let outputTokens = $state(0);
-  // ISO timestamp of the session's first turn — drives the KPI Started +
-  // live Duration columns. Set on the first send; null until then.
+  // ISO timestamp of the session's first turn — drives the KPI Started
+  // column. Set on the first send; null until then.
   let sessionStartedAt = $state<string | null>(null);
+  // Total active-work time (ms) across all completed turns in this session
+  // — the summed per-turn `duration_ms` (foreground + background), i.e. the
+  // time the system was actually doing something (thinking + tool calls),
+  // NOT wall-clock since the session opened. Drives the KPI Duration.
+  let activeWorkMs = $state(0);
+  // Epoch ms the in-flight turn started (0 when idle) — lets Duration tick
+  // up live only while a turn is actually running.
+  let activeTurnStartMs = $state(0);
 
   // D-171 — the connection's other conversations (sessions.list), for the
   // session switcher. One token, many sessions.
@@ -301,6 +309,9 @@
           inputArtifactIDs: artifactIDs
         });
         activeTaskID = resp.task_id;
+        // Anchor the live Duration tick — Duration counts up only while a
+        // turn is actually in flight (cleared on terminal).
+        activeTurnStartMs = Date.now();
         return { taskID: resp.task_id };
       },
       async setOverrides(overrides) {
@@ -475,10 +486,12 @@
     );
   }
 
-  // recordTurn pushes a completed turn's wall-clock latency (the
-  // `tasks.get` duration_ms) into the p50 buffer.
+  // recordTurn pushes a completed turn's active duration (the `tasks.get`
+  // duration_ms) into the p50 buffer AND adds it to the session's summed
+  // active-work time (the KPI Duration).
   function recordTurn(durationMs: number): void {
     if (durationMs <= 0) return;
+    activeWorkMs += durationMs;
     const next = [...turnLatencies, durationMs];
     turnLatencies = next.length > LATENCY_SAMPLE_CAP ? next.slice(-LATENCY_SAMPLE_CAP) : next;
   }
@@ -572,6 +585,9 @@
     running = false;
     paused = false;
     activeTaskID = null;
+    // Stop the live Duration tick; the turn's real duration_ms was added to
+    // activeWorkMs by recordTurn above.
+    activeTurnStartMs = 0;
     void drainQueue();
     // 108a-F — a completed turn may have produced artifacts (e.g. tool
     // results); refresh the Recent Artifacts card.
@@ -731,7 +747,13 @@
     const c = client;
     try {
       const resp = await c.tasks.list<{
-        rows?: Array<{ id: string; query?: string; status?: string; started_at?: string }>;
+        rows?: Array<{
+          id: string;
+          query?: string;
+          status?: string;
+          started_at?: string;
+          duration_ms?: number;
+        }>;
       }>({ filter: {}, page_size: 50 });
       const rows = [...(resp.rows ?? [])].sort((a, b) =>
         (a.started_at ?? '').localeCompare(b.started_at ?? '')
@@ -744,6 +766,11 @@
       // followed by a quick send showed only the post-reload message.
       const present = new Set(messages.map((m) => m.taskID).filter(Boolean));
       const fresh = rows.filter((r) => !present.has(r.id));
+      // Sum the active-work time of the reloaded turns into the Duration
+      // KPI (foreground + background tasks; `tasks.list` returns both). The
+      // live turns already counted via recordTurn are excluded by the
+      // `present` dedup, so this never double-counts.
+      activeWorkMs += fresh.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
       // Fetch each completed turn's answer in PARALLEL — sequential gets
       // were slow enough (one round-trip per turn) to lose the race with a
       // fast send after reload.
@@ -1397,6 +1424,8 @@
   <KpiStrip
     sessionID={sessionID}
     startedAt={sessionStartedAt}
+    activeWorkMs={activeWorkMs}
+    activeSinceMs={activeTurnStartMs}
     identityUser={connection?.identity.user ?? ''}
     identityTenant={connection?.identity.tenant ?? ''}
     scopeLabel={connection?.scopes.includes('admin') ? 'admin' : (connection?.scopes[0] ?? '')}

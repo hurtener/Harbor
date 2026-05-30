@@ -16,6 +16,8 @@
   let {
     sessionID,
     startedAt,
+    activeWorkMs,
+    activeSinceMs,
     identityUser,
     identityTenant,
     scopeLabel,
@@ -31,6 +33,13 @@
     sessionID: string;
     /** ISO timestamp of the session's first turn, or null before any turn. */
     startedAt: string | null;
+    /** Summed active-work time across all completed turns (foreground +
+     *  background) in this session, in ms — the time the system was
+     *  actually doing something (thinking + tool calls), NOT wall-clock. */
+    activeWorkMs: number;
+    /** Epoch ms a turn started while it is in flight (0 when idle). Lets
+     *  Duration tick up live only while the system is actively working. */
+    activeSinceMs: number;
     identityUser: string;
     identityTenant: string;
     /** A short scope summary (e.g. "admin"). */
@@ -81,7 +90,8 @@
     return `${(n / 1000).toFixed(1)}k`;
   }
 
-  // Live-ticking clock so Duration counts up while the session is open.
+  // Ticks once a second so Duration counts up live WHILE a turn is in
+  // flight; when idle the displayed value is the static active-work sum.
   let nowMs = $state(Date.now());
   const ticker = setInterval(() => (nowMs = Date.now()), 1000);
   onDestroy(() => clearInterval(ticker));
@@ -100,10 +110,14 @@
     }
   });
 
+  // Duration = total active-work time = the summed per-turn durations
+  // (foreground + background) plus, while a turn is in flight, the live
+  // elapsed of the current turn. NOT wall-clock since the session opened —
+  // idle time between turns is excluded.
   const durationLabel = $derived.by(() => {
-    if (startedAt === null) return '—';
-    const ms = nowMs - new Date(startedAt).getTime();
-    if (!Number.isFinite(ms) || ms < 0) return '—';
+    const live = activeSinceMs > 0 ? Math.max(0, nowMs - activeSinceMs) : 0;
+    const ms = activeWorkMs + live;
+    if (ms <= 0 && startedAt === null) return '—';
     const s = Math.floor(ms / 1000);
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
