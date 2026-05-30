@@ -1,5 +1,11 @@
 # Phase 108a — Playground fidelity pass (follow-up to D-167)
 
+<!-- markdownlint-disable-file MD029 -->
+<!-- This checklist numbers its items GLOBALLY (1..N) across the ### section
+     headers and cross-references them by that number ("item 19", "item 1"),
+     so the ordered-list prefixes intentionally do not restart per section.
+     MD029/ol-prefix is disabled file-wide to preserve that numbering. -->
+
 ## Summary
 
 Phase 108 (D-167) made the Playground functional — fixed-viewport shell, real
