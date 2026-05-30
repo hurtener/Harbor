@@ -4177,3 +4177,44 @@ These need go-sdk RC support; the plan can be authored against the RC SEPs now s
 **Known limitation.** `sessions.list` / `sessions.inspect` survive restart (persistent catalog + StateStore-backed records), but the task registry is in-memory and not rehydrated on boot, so `tasks.list` for a pre-restart session returns empty after a restart (the session row reloads; its task rows do not). Full task durability is a separate post-D-171 workstream. Documented in `docs/notes/session-model-contract.md`.
 
 **Cross-references.** Builds on D-082 (Phase 61 auth middleware + ctx-first identity), D-122 (`sessions.*` Protocol surface), D-108 (`SessionLister`), RFC §6.9 (session lifecycle / reopen-after-close), RFC §8 (Protocol auth). Contract doc: `docs/notes/session-model-contract.md`.
+
+---
+
+## D-172 — Deprecate Phase 85g; ship MCP Apps as the 109a–c wave under V1.1.x, scheduled right after Phase 108
+
+**Date:** 2026-05-29
+
+**Context.** Phase 85g ("MCP Apps host") sat in the post-V1 85-band with status "Revisit after RC-final (2026-07-28)" on the premise that MCP Apps was experimental in the 2025-11-25 spec and the RC might reshape `_meta.ui.resourceUri` or move Apps into a versioned extension. Two facts overturn that premise: (1) **MCP Apps is already a stable, independently-versioned extension** (`io.modelcontextprotocol/ui`, the `ext-apps` repo) — it is NOT gated on the July RC and the RC does not change it; (2) the extension ships an **official, framework-agnostic host bridge** (`@modelcontextprotocol/ext-apps` AppBridge), so the single largest risk the 85g plan carried — hand-rolling the `postMessage` JSON-RPC dialect, the `ui/initialize` handshake, lifecycle, and message validation — disappears (we consume it, we do not author it). A code audit also found 85g's "Apps is purely Console-side; the runtime driver is unchanged" non-goal to be **factually wrong**: the MCP driver does not parse `_meta.ui.resourceUri` (`content.go` has no `_meta` slot), `tool.completed` carries no result content, and the runtime's `ReadResource` is not exposed on the Protocol — so there is real runtime + Protocol work before any Console renderer can fetch a `ui://` resource.
+
+**Decision.** **Deprecate Phase 85g** (plan file kept as historical context, marked deprecated) and **supersede it with a three-phase "MCP Apps host" wave under V1.1.x, scheduled immediately after Phase 108**:
+
+- **109a — MCP Apps runtime + Protocol surface** (`internal/tools/drivers/mcp` + `internal/protocol` + `cmd/harbor`): parse `_meta.ui.resourceUri`, recognise `ui://` resources, project the app reference (resourceUri + negotiated DisplayMode + RawHTMLTrusted) onto the tool-result Protocol surface, add the `mcp.servers.read_resource` method (identity-scoped, D-026 heavy-content aware), negotiate `DisplayModes` from the server's `io.modelcontextprotocol/ui` capability (replacing the static `registry.go` placeholder), and add an app-initiated-tool-call proxy method that routes through the existing approval/OAuth/identity tool-safety path.
+- **109b — Console MCP Apps host** (`web/console`): the sandboxed-iframe renderer in the shared chat module, the official AppBridge in manual-handler mode (see D-173), and the **inline** DisplayMode. Consumes 109a's surface — this is the §13 same-wave consumer for 109a's primitives.
+- **109c — MCP Apps DisplayMode layout** (`web/console`): the Playground page-level layout state machine for **fullscreen** (app replaces chat + composer; multi-tab) and **pip** (50/50 resizable split, right rail hidden by default + toggle). `inline` already shipped in 109b.
+
+The wave honours the inline-first incremental cut: 109a+109b prove the bridge + proxy end-to-end with inline rendering; 109c adds the heavier fullscreen/pip layout.
+
+**Numbering note.** The wave claims integers `109a/b/c` as the "MCP Apps host" band, executing right after 108. The 14-round page-by-page visual-polish series that Phase 108 opens continues from the next free integer **after** this band (it is not yet numbered beyond 108); this band does not displace it, it precedes it in execution order.
+
+**Dependency prerequisite (binding).** 109b adds `@modelcontextprotocol/ext-apps` + its peer `@modelcontextprotocol/sdk` to `web/console`. Per CLAUDE.md §13 / §16 this is a dependency addition requiring an **RFC §10 companion update** before/with the phase. These are framework-agnostic TypeScript (core + app-bridge entry points only, never the `/react` entry), so they are not the forbidden React/Vue surface — but the RFC sign-off is still required and is named as a prerequisite risk in the 109b plan.
+
+**Cross-references.** Supersedes the 85g detail block + plan file. Builds on D-062 (DisplayMode + Live-Runtime ≠ Sessions), D-091 (shared chat module + Console deployment posture), D-093 (`protocol.ts` generated), D-026 (context-window safety net), D-120/D-121 (Console renderer registry + design-system conventions). Paired with D-173 (AppBridge manual-handler mode). Plans: `docs/plans/phase-109a-mcp-apps-runtime-protocol.md`, `phase-109b-console-mcp-apps-host.md`, `phase-109c-mcp-apps-displaymode-layout.md`. Briefs: 14 (MCP compliance), 11 (Console/playground), 12 (Console deployment).
+
+---
+
+## D-173 — The MCP Apps host integrates the official AppBridge in manual-handler mode; every app→host call is Protocol-proxied, never a direct MCP connection
+
+**Date:** 2026-05-29
+
+**Context.** The official `@modelcontextprotocol/ext-apps` AppBridge offers two integration modes: (1) **auto-forward**, where the bridge wraps a live MCP `Client` and proxies app requests straight to the MCP server; (2) **manual-handler**, where the host registers handlers (`oncalltool`, `onreadresource`, `onlistresources`, `onlisttools`, `onrequestdisplaymode`, …) and wires each itself. Auto-forward is the natural fit for a host that is itself an MCP client. The Harbor Console is **not** an MCP client — it is a Protocol client of the Harbor Runtime (CLAUDE.md §4.5), and the Runtime owns the MCP southbound connection, the `(tenant, user, session)` isolation boundary, audit redaction, and the unified pause/approval/OAuth tool-safety gates.
+
+**Decision.** The Harbor MCP Apps host MUST integrate the AppBridge in **manual-handler mode only**. Every app→host request — tool call, resource read, resource/prompt list, display-mode change — is wired to the injected Harbor `ProtocolClient` (the 109a methods) → Runtime → MCP southbound. The Console **never opens a direct MCP transport** and never lets the AppBridge wrap an MCP `Client`. Concretely:
+
+- An app-initiated `tools/call` is routed to 109a's app-tool-call proxy, which enters the SAME identity + approval-gate (Phase 31) + tool-side-OAuth (Phase 30) path a planner-initiated call uses. An app call to a gated tool parks on the unified pause primitive exactly as a planner call does — no bypass.
+- An app-initiated `resources/read` is routed to `mcp.servers.read_resource`, scoped to the request identity triple, D-026 heavy-content aware.
+- `postMessage` **origin validation** is mandatory: the host accepts messages only from the expected iframe; a foreign-origin or malformed message is rejected, not executed.
+- The iframe `sandbox` is set with no `allow-same-origin` unless the projected `RawHTMLTrusted` state explicitly permits; strict CSP; no parent-DOM / cookie / `localStorage` access.
+
+**Why.** If the AppBridge opened its own MCP connection (auto-forward), an in-iframe app could call tools and read resources **outside** the runtime's identity scope, audit redaction, and approval/OAuth gates — a direct violation of CLAUDE.md §6 (multi-isolation), §7 (security), and §13 (Console reading runtime internals / bypassing the unified pause primitive). Manual-handler mode makes the Protocol the only path, so the app is structurally confined to what the operator's `(tenant, user, session)` may already do. The 109b test suite asserts the Console opens no direct MCP transport and that an app call to a gated tool still parks.
+
+**Cross-references.** Implements the security posture of D-172's 109b. Builds on D-091 (shared chat module — injected `ProtocolClient`, never a singleton), D-062 (DisplayMode), the unified pause/resume primitive (Phase 50), tool-side OAuth (Phase 30 / D-083), tool-side approval (Phase 31 / D-086). CLAUDE.md §4.5, §6, §7, §13. Plan: `docs/plans/phase-109b-console-mcp-apps-host.md`.
