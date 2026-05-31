@@ -366,65 +366,70 @@
     {/if}
   </PageState>
 
-  <!-- Row 3 — interventions (left) + cost by-model (right). -->
-  <div class="row-3">
-    <section class="panel card queue-panel">
-      <h2 class="panel-title">Interventions</h2>
-      <PageState status={queueStatus} error={queueError} onretry={() => void loadQueue()} nested>
-        {#snippet skeleton()}
-          <div class="row-skeleton" aria-hidden="true"></div>
-        {/snippet}
-        {#snippet empty()}
-          <div class="panel-empty" data-testid="intervention-queue-state-empty">
-            <span class="empty-icon" data-tone="success"><CircleCheck size={20} aria-hidden="true" /></span>
-            <p class="empty-headline">No pending interventions</p>
-            <p class="empty-detail">No runs are parked awaiting an operator decision.</p>
-          </div>
-        {/snippet}
-        <InterventionQueue
-          snapshots={queueSnapshots}
-          canControl={canControl}
-          pendingToken={actionPendingToken}
-          results={actionResults}
-          onapprove={(s) => void dispatchRowAction(s, 'approve')}
-          onreject={(s) => void dispatchRowAction(s, 'reject')}
-        />
-      </PageState>
-    </section>
+  <!-- Lower section — two stacking columns (mock): LEFT = Interventions then
+       Recent activity; RIGHT = Cost then Quick Links. Stacking Quick Links
+       under Cost fills the negative space that opened below the Cost card and
+       removes the tall full-width rows that caused vertical scroll. -->
+  <div class="lower">
+    <div class="lower-col">
+      <section class="panel card queue-panel">
+        <h2 class="panel-title">Interventions</h2>
+        <PageState status={queueStatus} error={queueError} onretry={() => void loadQueue()} nested>
+          {#snippet skeleton()}
+            <div class="row-skeleton" aria-hidden="true"></div>
+          {/snippet}
+          {#snippet empty()}
+            <div class="panel-empty" data-testid="intervention-queue-state-empty">
+              <span class="empty-icon" data-tone="success"><CircleCheck size={20} aria-hidden="true" /></span>
+              <p class="empty-headline">No pending interventions</p>
+              <p class="empty-detail">No runs are parked awaiting an operator decision.</p>
+            </div>
+          {/snippet}
+          <InterventionQueue
+            snapshots={queueSnapshots}
+            canControl={canControl}
+            pendingToken={actionPendingToken}
+            results={actionResults}
+            onapprove={(s) => void dispatchRowAction(s, 'approve')}
+            onreject={(s) => void dispatchRowAction(s, 'reject')}
+          />
+        </PageState>
+      </section>
 
-    <section class="panel card cost-panel">
-      <h2 class="panel-title">Cost (last 24 hours)</h2>
-      <CostRollupCard
-        rollup={costRollup}
-        breakdown={costBreakdown}
-        onbreakdown={(b) => (costBreakdown = b)}
-        {disconnected}
-      />
-    </section>
-  </div>
-
-  <!-- Row 4 — recent activity. -->
-  <section class="panel card activity-panel">
-    <h2 class="panel-title">Recent activity</h2>
-    <RecentActivityFeed rows={activityRows} now={nowMillis} />
-  </section>
-
-  <!-- Row 5 — quick links + (deferred) layout customization. -->
-  <section class="panel card quick-links-panel">
-    <div class="quick-links-head">
-      <h2 class="panel-title">Quick Links</h2>
-      <button
-        type="button"
-        class="customize"
-        data-testid="overview-customize"
-        disabled
-        title="Personal overview layouts — coming soon (page-overview.md §10 deferred)"
-      >
-        Customize overview
-      </button>
+      <section class="panel card activity-panel">
+        <h2 class="panel-title">Recent activity</h2>
+        <RecentActivityFeed rows={activityRows} now={nowMillis} />
+      </section>
     </div>
-    <QuickLinksGrid />
-  </section>
+
+    <div class="lower-col">
+      <section class="panel card cost-panel">
+        <h2 class="panel-title">Cost (last 24 hours)</h2>
+        <CostRollupCard
+          rollup={costRollup}
+          breakdown={costBreakdown}
+          onbreakdown={(b) => (costBreakdown = b)}
+          {disconnected}
+        />
+      </section>
+
+      <section class="panel card quick-links-panel">
+        <div class="quick-links-head">
+          <h2 class="panel-title">Quick Links</h2>
+          <button
+            type="button"
+            class="customize"
+            data-testid="overview-customize"
+            disabled
+            title="Personal overview layouts — coming soon (page-overview.md §10 deferred)"
+          >
+            Customize overview
+          </button>
+        </div>
+        <QuickLinksGrid />
+      </section>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -441,11 +446,21 @@
     gap: var(--space-3);
   }
 
-  .row-3 {
+  /* Lower section — two columns (left 3fr / right 2fr), each stacking its
+     panels. Left: Interventions + Recent activity; right: Cost + Quick Links
+     (mock). `align-items: start` lets each column take its natural height. */
+  .lower {
     display: grid;
     grid-template-columns: 3fr 2fr;
     gap: var(--space-4);
     align-items: start;
+  }
+
+  .lower-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: var(--space-0);
   }
 
   .panel {
