@@ -1,12 +1,14 @@
 /**
- * Overview page — cost-rollup projection (Phase 73a / D-127).
+ * Overview page — cost-rollup projection (Phase 73a / 108c — Phase 108c
+ * reworked the axes to model | runtime).
  *
- * The cost-rollup card (page-overview.md §3 + §5 + §12) renders a
- * per-agent cost breakdown by default; a per-tenant breakdown is the
- * admin elevation. Its data source is the SHIPPED `llm.cost.recorded`
- * event topic, aggregated CLIENT-SIDE off the `events.subscribe`
- * cursor — page-overview.md §5 tags this `[shipped]`; Phase 73a ships
- * NO new Protocol method for it.
+ * The cost-rollup card (page-overview.md §3 + §5 + §12) groups cost by
+ * **model** (the inference endpoint) by default, or by **runtime/agent** (the
+ * connected agent-registry name) as the secondary axis. A per-tenant breakdown
+ * is deferred to multi-runtime support (D-091 / spec §10). Its data source is
+ * the SHIPPED `llm.cost.recorded` event topic, aggregated CLIENT-SIDE off the
+ * `events.subscribe` cursor — page-overview.md §5 tags this `[shipped]`; no new
+ * Protocol method.
  *
  * This module is the PURE projection layer: it folds an `Event[]` slice
  * into per-key cost rows. No `$state`, no Protocol call — unit-testable.
@@ -24,8 +26,24 @@
 
 import type { Event } from '$lib/protocol/events.js';
 
-/** The closed set of cost-rollup grouping axes. */
-export type CostBreakdown = 'agent' | 'tenant';
+/** The closed set of cost-rollup grouping axes (Phase 108c).
+ *
+ * `llm.cost.recorded` carries `Model` + the identity quadruple
+ * (tenant/user/session/run) — verified live — but NO agent attribution, so a
+ * per-agent breakdown keyed off the event has no source.
+ *
+ * - **`model`** (default): group by the inference endpoint (`openai/gpt-5.4`,
+ *   …) — real, multi-row, and the dimension that answers rate-limit / routing
+ *   questions.
+ * - **`runtime`**: group all in-scope cost under the connected runtime's
+ *   AGENT label (resolved from the agent registry, passed in by the caller).
+ *   "Each runtime is an agent" — so in single-runtime V1 this is ONE row (the
+ *   connected agent's spend); it fans out to one row per runtime once the
+ *   multi-runtime "All Runtimes" mode lands (deferred, D-091 / spec §10).
+ *
+ * Genuine per-agent-WITHIN-a-runtime cost needs an `agent_id` on the cost
+ * event — a tracked Runtime/Protocol follow-up. */
+export type CostBreakdown = 'model' | 'runtime';
 
 /** One row of the cost-rollup card. */
 export interface CostRow {
@@ -91,14 +109,18 @@ export function extractCostUSD(ev: Event): number | null {
 /**
  * `projectCost` folds the `events.subscribe` cursor into the cost
  * rollup. Only `llm.cost.recorded` events are considered; the grouping
- * key is the event's agent label (from the payload `Model` field as a
- * proxy when no agent label is present) for the `agent` breakdown, or
- * the event's `tenant` for the `tenant` breakdown.
+ * key is the payload `Model` field for the `model` breakdown, or the
+ * caller-supplied `runtimeLabel` (the agent-registry name) for the `runtime`
+ * breakdown.
  *
  * An event whose payload does not yield a parseable cost is skipped —
  * it never deflates a row to a misleading zero (CLAUDE.md §13).
  */
-export function projectCost(events: readonly Event[], breakdown: CostBreakdown): CostRollup {
+export function projectCost(
+	events: readonly Event[],
+	breakdown: CostBreakdown,
+	runtimeLabel = 'This runtime'
+): CostRollup {
 	const byKey = new Map<string, CostRow>();
 	let totalUSD = 0;
 	for (const ev of events) {
@@ -110,11 +132,13 @@ export function projectCost(events: readonly Event[], breakdown: CostBreakdown):
 			continue;
 		}
 		let key: string;
-		if (breakdown === 'tenant') {
-			key = ev.tenant !== '' ? ev.tenant : 'unknown';
+		if (breakdown === 'runtime') {
+			// All in-scope cost belongs to the one connected runtime/agent in
+			// V1 (single-runtime); labelled with the agent-registry name.
+			key = runtimeLabel;
 		} else {
 			const p = (ev.payload ?? {}) as Record<string, unknown>;
-			key = readString(p, ['Model', 'model', 'agent', 'Agent']) ?? 'unknown';
+			key = readString(p, ['Model', 'model']) ?? 'unknown';
 		}
 		const row = byKey.get(key) ?? { key, costUSD: 0, events: 0 };
 		row.costUSD += costUSD;

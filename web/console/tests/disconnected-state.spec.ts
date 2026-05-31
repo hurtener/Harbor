@@ -103,7 +103,9 @@ test.describe("Console disconnected-state contract (Phase 83r/83s + Phase 105 re
       slug: Parameters<typeof helpers.gotoPage>[0];
       testid: string;
     }> = [
-      { slug: "overview", testid: "overview-save-view" },
+      // Overview dropped its saved-view bar in Phase 108c — the page's top
+      // FilterBar was removed (the mock has none) and personal overview
+      // layouts are deferred (page-overview.md §10). No Save-view button here.
       { slug: "live-runtime", testid: "live-runtime-save-view" },
       { slug: "sessions", testid: "sessions-save-view" },
       { slug: "tasks", testid: "tasks-save-filter" },

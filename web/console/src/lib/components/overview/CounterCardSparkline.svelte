@@ -1,30 +1,30 @@
 <script lang="ts">
-  // Harbor Console — Overview counter-card sparkline (Phase 73a / D-127).
+  // Harbor Console — Overview counter-card sparkline (Phase 73a / 108c).
   //
-  // A mini bar-sparkline rendered inside a `<CounterCard>`. It folds the
-  // windowed `RateSeries` (from `$lib/overview/aggregations.ts` — pure,
-  // subscription-derived; NO new Protocol method per page-overview.md
-  // §12) into a row of bars. An empty / quiet window renders flat-zero
-  // bars rather than an empty box — "the runtime is up but quiet"
-  // (page-overview.md §12 refinement to §7).
+  // A mini bar-sparkline rendered inside a `<CounterCard>`. It takes a raw
+  // numeric series (`values`) — for Events/min this is the windowed event-rate
+  // fold (`aggregations.ts`); for the snapshot gauges (tasks / background jobs /
+  // MCP) it is a client-side ring buffer of `runtime.counters` samples taken
+  // while the page is open (real sampled data — NOT fabricated). A quiet / flat
+  // window renders floor bars rather than an empty box ("the runtime is up but
+  // quiet" — page-overview.md §12).
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
-  import type { RateSeries } from '$lib/overview/aggregations.js';
-
   let {
-    series
+    values,
+    label
   }: {
-    /** The windowed rate series this sparkline renders. */
-    series: RateSeries;
+    /** The raw numeric series (oldest → newest). */
+    values: number[];
+    /** Accessible label describing the trend. */
+    label?: string;
   } = $props();
 
-  // The bar height is a 0..1 fraction of the y-peak; a flat-zero window
-  // keeps every bar at the floor so the chart never collapses.
-  function heightPct(count: number): number {
-    if (series.peak <= 0) {
-      return 0;
-    }
-    return (count / series.peak) * 100;
+  const peak = $derived(values.reduce((m, v) => (v > m ? v : m), 0));
+
+  function heightPct(v: number): number {
+    if (peak <= 0) return 0;
+    return (v / peak) * 100;
   }
 </script>
 
@@ -32,14 +32,10 @@
   class="sparkline"
   data-testid="counter-sparkline"
   role="img"
-  aria-label={`Trend over the last ${series.window}, peak ${series.peak} per minute`}
+  aria-label={label ?? `Trend, peak ${peak}`}
 >
-  {#each series.buckets as bucket (bucket.startMillis)}
-    <span
-      class="bar"
-      style:height={`${Math.max(heightPct(bucket.count), 4)}%`}
-      title={`${bucket.count} events`}
-    ></span>
+  {#each values as v, i (i)}
+    <span class="bar" style:height={`${Math.max(heightPct(v), 6)}%`} title={`${v}`}></span>
   {/each}
 </div>
 
@@ -55,7 +51,8 @@
   .bar {
     flex: 1;
     min-width: var(--size-px);
-    background: var(--color-accent-soft);
+    background: var(--color-accent);
+    opacity: 0.55;
     border-radius: var(--radius-sm);
   }
 </style>
