@@ -44,9 +44,10 @@
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
-  // ConnectionFooter is rendered ONCE by the app shell ((console)/+layout.svelte —
-  // CONVENTIONS.md §2). Per-page imports were duplicating the footer
-  // (post-83k walkthrough N2); they are removed.
+  // The bottom status bar is rendered ONCE by the app shell
+  // ((console)/+layout.svelte — CONVENTIONS.md §2, the global AppStatusBar).
+  // Per-page footer strips duplicated it (post-83k N2 + Phase 108b); the
+  // page-local LiveRuntimeFooter is removed.
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
   import StatusCounterStripView from '$lib/components/live-runtime/status-counter-strip.svelte';
   import {
@@ -72,7 +73,6 @@
   import InterventionsPanel, {
     type Intervention
   } from '$lib/components/live-runtime/interventions-panel.svelte';
-  import LiveRuntimeFooter from '$lib/components/live-runtime/footer.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
@@ -155,10 +155,6 @@
   let activeSavedId = $state<string | null>(null);
   let saveName = $state('');
 
-  /* ---- footer constants ------------------------------------------- */
-  const PROTOCOL_VERSION = 'v1';
-  const CONSOLE_VERSION = 'dev';
-
   /* ================================================================ */
   /* Derived                                                           */
   /* ================================================================ */
@@ -207,6 +203,8 @@
       : subscription.events.slice((pageIndex - 1) * pageSize, pageIndex * pageSize)
   );
   let totalEvents = $derived(subscription === null ? 0 : subscription.events.length);
+  // The SSE stream state — consumed by the EventStreamDock (the footer that
+  // also read it was removed in Phase 108b; the dock keeps it).
   let streamState = $derived(subscription?.state ?? 'idle');
 
   /* ================================================================ */
@@ -664,11 +662,6 @@
         {/if}
       </div>
 
-      <LiveRuntimeFooter
-        protocolVersion={PROTOCOL_VERSION}
-        streamState={streamState}
-        consoleVersion={CONSOLE_VERSION}
-      />
     </div>
 
     <DetailRail>

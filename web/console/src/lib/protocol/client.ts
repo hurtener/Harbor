@@ -41,6 +41,7 @@ import type {
 import type { EventAggregateRequest, EventAggregateResponse } from './events.js';
 import type { RuntimeCounters, RuntimeHealth } from './posture.js';
 import type { PauseListRequest, PauseListResponse } from './pause.js';
+import type { SearchRequest, SearchResponse } from './search.js';
 
 /* ------------------------------------------------------------------ */
 /* Transport                                                           */
@@ -777,6 +778,30 @@ export class AuthNamespace {
 	}
 }
 
+/**
+ * The `search.*` namespace — the shipped global-search surface (Phase
+ * 72c). Consumed by the app-shell top-bar ⌘K launcher (Phase 108b). The
+ * Runtime mounts `search.query` on the control surface at
+ * `POST /v1/control/search.query` (verified live — `/v1/search/query` is
+ * NOT mounted; `methods.IsControlMethod` branches the route table). The
+ * four per-index methods exist too but the launcher uses the fan-out
+ * `query`. Pure read; identity mandatory; cross-tenant requires the
+ * verified `auth.ScopeAdmin` claim (D-079).
+ */
+export class SearchNamespace {
+	readonly #t: Transport;
+	constructor(t: Transport) {
+		this.#t = t;
+	}
+	/** `search.query` — fan-out across sessions/tasks/events/artifacts. */
+	query(req: SearchRequest = {}): Promise<SearchResponse> {
+		return this.#t.request<SearchResponse>(
+			'/v1/control/search.query',
+			req as unknown as Record<string, unknown>
+		);
+	}
+}
+
 /** The `mcp` namespace — groups the MCP-server surface. */
 export class MCPNamespace {
 	/** The `mcp.servers.*` method surface. */
@@ -812,6 +837,7 @@ export interface ProtocolClient {
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
+	readonly search: SearchNamespace;
 
 	/**
 	 * Round-8 F1 / phase 84a: returns the per-instance Protocol
@@ -848,6 +874,7 @@ export class HarborClient implements ProtocolClient {
 	readonly pause: PauseNamespace;
 	readonly posture: PostureNamespace;
 	readonly auth: AuthNamespace;
+	readonly search: SearchNamespace;
 
 	// Round-8 F1 / phase 84a: per-connection capability cache. Pages
 	// with optional Protocol surfaces (Live Runtime topology view,
@@ -877,6 +904,7 @@ export class HarborClient implements ProtocolClient {
 		this.pause = new PauseNamespace(transport);
 		this.posture = new PostureNamespace(transport);
 		this.auth = new AuthNamespace(transport);
+		this.search = new SearchNamespace(transport);
 	}
 
 	/**

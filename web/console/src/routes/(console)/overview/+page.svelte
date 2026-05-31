@@ -29,9 +29,11 @@
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
-  // ConnectionFooter is rendered ONCE by the app shell ((console)/+layout.svelte —
-  // CONVENTIONS.md §2). Per-page imports were duplicating the footer at the
-  // bottom of every page (post-83k walkthrough N2); they are removed.
+  // The bottom status bar is rendered ONCE by the app shell
+  // ((console)/+layout.svelte — CONVENTIONS.md §2, the global AppStatusBar).
+  // Per-page footer strips duplicated it (post-83k N2 + Phase 108b); the
+  // page-local OverviewFooter is removed — connection/protocol/stream/console
+  // posture lives in the shell's AppStatusBar.
   import CounterCard from '$lib/components/overview/CounterCard.svelte';
   import HealthChipStrip from '$lib/components/overview/HealthChipStrip.svelte';
   import CostRollupCard from '$lib/components/overview/CostRollupCard.svelte';
@@ -41,7 +43,6 @@
   import RecentActivityFeed from '$lib/components/overview/RecentActivityFeed.svelte';
   import QuickLinksGrid from '$lib/components/overview/QuickLinksGrid.svelte';
   import NewMenu from '$lib/components/overview/NewMenu.svelte';
-  import OverviewFooter from '$lib/components/overview/Footer.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
@@ -123,16 +124,11 @@
   let activeSavedId = $state<string | null>(null);
   let saveName = $state('');
 
-  /* ---- footer constants ------------------------------------------- */
-  const PROTOCOL_VERSION = 'v1';
-  const CONSOLE_VERSION = 'dev';
-
   /* ================================================================ */
   /* Derived — folded client-side off the events.subscribe cursor      */
   /* ================================================================ */
 
   let liveEvents = $derived(subscription?.events ?? []);
-  let streamState = $derived(subscription?.state ?? 'idle');
 
   // The Events/min counter card's sparkline — windowed rate aggregation
   // from the SSE cursor (page-overview.md §12 — subscription-derived, no
@@ -639,12 +635,6 @@
         <QuickLinksGrid />
       </section>
 
-      <OverviewFooter
-        runtimeName={connection?.baseURL ?? 'no runtime'}
-        protocolVersion={PROTOCOL_VERSION}
-        streamState={streamState}
-        consoleVersion={CONSOLE_VERSION}
-      />
     </div>
 
     <DetailRail>
