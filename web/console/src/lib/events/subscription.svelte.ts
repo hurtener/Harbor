@@ -43,6 +43,14 @@ export interface EventSourceLike {
 	onopen: ((this: unknown, ev: unknown) => void) | null;
 	onerror: ((this: unknown, ev: unknown) => void) | null;
 	onmessage: ((this: unknown, ev: { data: string; lastEventId?: string }) => void) | null;
+	/**
+	 * Register a listener for a NAMED SSE event. The Harbor Runtime emits every
+	 * frame with an `event: <type>` name (frame.go), and `EventSource.onmessage`
+	 * fires ONLY for unnamed `message` frames — so a named-event listener per
+	 * subscribed type is required to receive anything. Optional so the in-page
+	 * test factory (which dispatches via `onmessage`) need not implement it.
+	 */
+	addEventListener?(type: string, handler: (ev: { data: string }) => void): void;
 	close(): void;
 }
 
@@ -111,6 +119,14 @@ export class EventsSubscription {
 		src.onmessage = (ev) => {
 			this.#ingest(ev.data);
 		};
+		// The Runtime emits NAMED SSE frames (`event: <type>`), which do NOT
+		// trigger `onmessage` — register a per-type listener for every subscribed
+		// type so the rolling page actually fills. Without this the stream
+		// connects (200) but no event is ever ingested. The in-page test factory
+		// dispatches via `onmessage` and is unaffected (addEventListener optional).
+		for (const t of opts.eventTypes ?? []) {
+			src.addEventListener?.(t, (ev) => this.#ingest(ev.data));
+		}
 		this.#source = src;
 	}
 

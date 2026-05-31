@@ -101,14 +101,12 @@
 </div>
 
 <style>
+  /* Content-only — the enclosing panel section (Phase 108c) provides the card
+     surface so all three row-3/row-4 panels share one carded look. */
   .cost-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-    padding: var(--space-4);
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
-    border-radius: var(--radius-md);
   }
 
   .cost-head {

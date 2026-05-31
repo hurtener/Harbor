@@ -1,58 +1,73 @@
 <script lang="ts">
   // Harbor Console — Overview counter-card sparkline (Phase 73a / 108c).
   //
-  // A mini bar-sparkline rendered inside a `<CounterCard>`. It takes a raw
-  // numeric series (`values`) — for Events/min this is the windowed event-rate
-  // fold (`aggregations.ts`); for the snapshot gauges (tasks / background jobs /
-  // MCP) it is a client-side ring buffer of `runtime.counters` samples taken
-  // while the page is open (real sampled data — NOT fabricated). A quiet / flat
-  // window renders floor bars rather than an empty box ("the runtime is up but
-  // quiet" — page-overview.md §12).
+  // A mini LINE/area sparkline (matches the mock — not bars) rendered inside a
+  // `<CounterCard>`. Takes a raw numeric series (`values`): for Events/min the
+  // windowed event-rate fold; for the snapshot gauges a client-side ring buffer
+  // of `runtime.counters` samples taken while the page is open — real sampled
+  // data, never fabricated (procedure §1). Strokes with `currentColor` so the
+  // card colours it per metric. A flat/quiet window draws a flat line on the
+  // floor rather than an empty box (page-overview.md §12).
   //
-  // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
+  // Svelte 5 runes (D-092); design tokens only (CLAUDE.md §4.5).
   let {
     values,
     label
   }: {
-    /** The raw numeric series (oldest → newest). */
     values: number[];
-    /** Accessible label describing the trend. */
     label?: string;
   } = $props();
 
-  const peak = $derived(values.reduce((m, v) => (v > m ? v : m), 0));
+  const W = 100;
+  const H = 28;
 
-  function heightPct(v: number): number {
-    if (peak <= 0) return 0;
-    return (v / peak) * 100;
-  }
+  const line = $derived.by(() => {
+    if (values.length === 0) return '';
+    const max = values.reduce((m, v) => (v > m ? v : m), 0) || 1;
+    const n = values.length;
+    return values
+      .map((v, i) => {
+        const x = n === 1 ? W : (i / (n - 1)) * W;
+        const y = H - (v / max) * (H - 2) - 1;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  });
+  const area = $derived(line ? `0,${H} ${line} ${W},${H}` : '');
 </script>
 
-<div
-  class="sparkline"
-  data-testid="counter-sparkline"
+<svg
+  class="spark"
+  viewBox="0 0 100 28"
+  preserveAspectRatio="none"
   role="img"
-  aria-label={label ?? `Trend, peak ${peak}`}
+  aria-label={label ?? 'trend'}
 >
-  {#each values as v, i (i)}
-    <span class="bar" style:height={`${Math.max(heightPct(v), 6)}%`} title={`${v}`}></span>
-  {/each}
-</div>
+  {#if line}
+    <polygon class="area" points={area} />
+    <polyline class="line" points={line} />
+  {/if}
+</svg>
 
 <style>
-  .sparkline {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-1);
-    height: var(--size-sparkline-height);
+  .spark {
+    display: block;
     width: 100%;
+    height: var(--size-sparkline-height);
+    color: inherit;
   }
 
-  .bar {
-    flex: 1;
-    min-width: var(--size-px);
-    background: var(--color-accent);
-    opacity: 0.55;
-    border-radius: var(--radius-sm);
+  .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .area {
+    fill: currentColor;
+    opacity: 0.12;
+    stroke: none;
   }
 </style>

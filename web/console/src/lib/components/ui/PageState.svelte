@@ -41,7 +41,8 @@
     onretry,
     skeleton,
     empty,
-    children
+    children,
+    nested = false
   }: {
     /** The current async status. */
     status: PageStatus;
@@ -65,16 +66,23 @@
     empty?: Snippet;
     /** The loaded primary view — rendered only when `status === 'ready'`. */
     children?: Snippet;
+    /**
+     * Nested usage — a panel or detail rail rather than the whole page
+     * (CONVENTIONS.md §4). Drops the full-page `min-height: 40vh` centering so
+     * an empty/error placeholder is compact inside its card instead of
+     * reserving ~40% of the viewport (Phase 108c — the oversized-empty fix).
+     */
+    nested?: boolean;
   } = $props();
 </script>
 
 {#if status === 'disconnected'}
-  <div class="page-state disconnected" data-testid="page-state-disconnected">
+  <div class="page-state disconnected" class:nested={nested} data-testid="page-state-disconnected">
     <p class="headline">Not connected to a Harbor Runtime</p>
     <p class="detail">Attach one in <a href="/settings">Settings</a>.</p>
   </div>
 {:else if status === 'loading'}
-  <div class="page-state loading" data-testid="page-state-loading">
+  <div class="page-state loading" class:nested={nested} data-testid="page-state-loading">
     {#if skeleton}
       {@render skeleton()}
     {:else}
@@ -87,7 +95,7 @@
     <span class="sr-only">Loading…</span>
   </div>
 {:else if status === 'error'}
-  <div class="page-state error" data-testid="page-state-error" role="alert">
+  <div class="page-state error" class:nested={nested} data-testid="page-state-error" role="alert">
     <p class="headline">Request failed</p>
     <p class="detail code">{error?.code ?? 'runtime_error'}: {error?.message ?? 'unknown error'}</p>
     <button type="button" class="retry" data-testid="page-state-retry" onclick={() => onretry?.()}>
@@ -95,14 +103,14 @@
     </button>
   </div>
 {:else if status === 'info'}
-  <div class="page-state info" data-testid="page-state-info">
+  <div class="page-state info" class:nested={nested} data-testid="page-state-info">
     <p class="headline">{info?.headline ?? 'Not available on this Runtime'}</p>
     <p class="detail">
       {info?.detail ?? 'This surface is not part of this Runtime’s shape.'}
     </p>
   </div>
 {:else if status === 'empty'}
-  <div class="page-state empty" data-testid="page-state-empty">
+  <div class="page-state empty" class:nested={nested} data-testid="page-state-empty">
     {#if empty}
       {@render empty()}
     {:else}
@@ -134,6 +142,12 @@
   .page-state.error,
   .page-state.info {
     min-height: 40vh;
+  }
+
+  /* Nested (panel / rail) — compact, no full-page centering. */
+  .page-state.nested {
+    min-height: auto;
+    padding: var(--space-4);
   }
 
   .page-state.loading {

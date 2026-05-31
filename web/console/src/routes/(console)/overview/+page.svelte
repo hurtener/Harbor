@@ -25,6 +25,7 @@
   import ListChecks from '@lucide/svelte/icons/list-checks';
   import Layers from '@lucide/svelte/icons/layers';
   import Plug from '@lucide/svelte/icons/plug';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
   import CounterCard from '$lib/components/overview/CounterCard.svelte';
   import ContextAuditRow from '$lib/components/overview/ContextAuditRow.svelte';
@@ -367,15 +368,17 @@
 
   <!-- Row 3 — interventions (left) + cost by-model (right). -->
   <div class="row-3">
-    <section class="panel queue-panel">
+    <section class="panel card queue-panel">
       <h2 class="panel-title">Interventions</h2>
-      <PageState status={queueStatus} error={queueError} onretry={() => void loadQueue()}>
+      <PageState status={queueStatus} error={queueError} onretry={() => void loadQueue()} nested>
         {#snippet skeleton()}
-          <div class="table-skeleton" aria-hidden="true"></div>
+          <div class="row-skeleton" aria-hidden="true"></div>
         {/snippet}
         {#snippet empty()}
-          <div class="block-empty-pad" data-testid="intervention-queue-state-empty">
-            <p class="block-empty">No pending interventions in scope.</p>
+          <div class="panel-empty" data-testid="intervention-queue-state-empty">
+            <span class="empty-icon" data-tone="success"><CircleCheck size={20} aria-hidden="true" /></span>
+            <p class="empty-headline">No pending interventions</p>
+            <p class="empty-detail">No runs are parked awaiting an operator decision.</p>
           </div>
         {/snippet}
         <InterventionQueue
@@ -389,7 +392,7 @@
       </PageState>
     </section>
 
-    <section class="panel cost-panel">
+    <section class="panel card cost-panel">
       <h2 class="panel-title">Cost (last 24 hours)</h2>
       <CostRollupCard
         rollup={costRollup}
@@ -401,13 +404,13 @@
   </div>
 
   <!-- Row 4 — recent activity. -->
-  <section class="panel activity-panel">
+  <section class="panel card activity-panel">
     <h2 class="panel-title">Recent activity</h2>
     <RecentActivityFeed rows={activityRows} now={nowMillis} />
   </section>
 
   <!-- Row 5 — quick links + (deferred) layout customization. -->
-  <section class="panel quick-links-panel">
+  <section class="panel card quick-links-panel">
     <div class="quick-links-head">
       <h2 class="panel-title">Quick Links</h2>
       <button
@@ -451,6 +454,17 @@
     gap: var(--space-2);
   }
 
+  /* The shared carded surface for the row-3/row-4/row-5 panels — gives the
+     interventions / cost / activity / quick-links sections the same panel
+     background the mock shows (no more bare tables drifting on the page bg). */
+  .card {
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+  }
+
   .panel-title {
     margin: var(--space-0);
     font-size: var(--text-sm);
@@ -486,23 +500,53 @@
     font-size: var(--text-sm);
   }
 
-  .block-empty-pad {
-    padding: var(--space-6) var(--space-0);
+  /* Compact, intentional empty state for a carded panel — centred icon +
+     headline + detail, modest height (no full-table dead space). */
+  .panel-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-5) var(--space-2);
     text-align: center;
   }
 
-  .card-skeleton,
-  .table-skeleton {
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
+  .empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
     border-radius: var(--radius-md);
+    margin-bottom: var(--space-1);
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+
+  .empty-headline {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .empty-detail {
+    margin: var(--space-0);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .card-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
     height: var(--size-card-min);
   }
 
-  .table-skeleton {
-    height: var(--layout-detail-min-height);
+  .row-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    height: var(--size-sparkline-height);
   }
 </style>
