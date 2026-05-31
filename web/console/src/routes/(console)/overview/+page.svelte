@@ -1,103 +1,81 @@
 <script lang="ts">
-  // Harbor Console — Overview page (`/overview`), built on the D-121
-  // design-system foundation (CONVENTIONS.md; Phase 73a / D-127).
+  // Harbor Console — Overview page (`/overview`) — Phase 108c rebuild.
   //
-  // The operator's at-a-glance hub — the default route on a fresh
-  // attach. It is COMPOSITION over Stage-1 primitives, not a new
-  // catalog surface (page-overview.md §1, brief 11 §"Overview view"):
-  //   - `runtime.counters` (Phase 72f) — the 4-card counter row;
-  //   - `runtime.health` (Phase 72f) — the sub-header health-chip strip;
-  //   - `pause.list` (Phase 72e) — the intervention queue;
-  //   - `events.subscribe` (Phase 60/72) — the recent-activity feed +
-  //     counter sparklines + cost rollup, all folded client-side;
-  //   - `approve` / `reject` (Phase 54 — SHIPPED) — the intervention
-  //     queue's Approve / Reject row actions (NO parallel impl — §13).
+  // The operator's at-a-glance hub, rebuilt to verbatim parity with
+  // `docs/rfc/assets/console-overview-page.png`. It is COMPOSITION over the
+  // shipped data layer (page-overview.md §1; D-127) — NO new Protocol method:
+  //   - `runtime.counters` (72f) — the 4 KPI cards (sampled into a client-side
+  //     ring buffer for real trend sparklines + deltas);
+  //   - `runtime.health` (72f) — the context-row health pill;
+  //   - `pause.list` (72e) + `approve`/`reject` (54) — the intervention queue;
+  //   - `events.subscribe` (60/72) — recent activity + the events/min rate
+  //     sparkline + the cost rollup + the alerts strip + the audit ribbon,
+  //     all folded client-side.
   //
-  // Phase 73a ships NO new Protocol method. Every Runtime read routes
-  // through the unified `HarborClient` + `connection.ts` (CONVENTIONS.md
-  // §6) — no hand-rolled `fetch`, no page-local client, no direct
-  // `localStorage`. The page clears the §5 depth bar: PageHeader +
-  // FilterBar (SavedViewChips + facets + search) + primary DataTable
-  // (the intervention queue) + DetailRail + real Pagination +
-  // ConnectionFooter + the four-state PageState (with nested PageState
-  // per panel). Svelte 5 runes (D-092); design tokens only.
+  // Canvas rows (mock): context+audit → alerts → 4 KPI cards → interventions |
+  // cost(by-model) → recent activity → quick links. NO right detail-rail, NO
+  // page-level top filter bar, NO per-page search/+New (those are app-shell
+  // chrome — 108b). Every datum is real-wired; deferred items (notifications
+  // bell, by-agent cost, personal layouts §10) are absent, never faked.
+  //
+  // Svelte 5 runes (D-092); design tokens only; HarborClient + connection.ts
+  // only (CONVENTIONS.md §6).
   import { onMount, onDestroy } from 'svelte';
-  import PageHeader from '$lib/components/ui/PageHeader.svelte';
-  import FilterBar from '$lib/components/ui/FilterBar.svelte';
-  import SavedViewChips, { type SavedView } from '$lib/components/ui/SavedViewChips.svelte';
-  import DetailRail from '$lib/components/ui/DetailRail.svelte';
-  import RailCard from '$lib/components/ui/RailCard.svelte';
-  import Pagination from '$lib/components/ui/Pagination.svelte';
+  import Activity from '@lucide/svelte/icons/activity';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import Layers from '@lucide/svelte/icons/layers';
+  import Plug from '@lucide/svelte/icons/plug';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
-  // The bottom status bar is rendered ONCE by the app shell
-  // ((console)/+layout.svelte — CONVENTIONS.md §2, the global AppStatusBar).
-  // Per-page footer strips duplicated it (post-83k N2 + Phase 108b); the
-  // page-local OverviewFooter is removed — connection/protocol/stream/console
-  // posture lives in the shell's AppStatusBar.
   import CounterCard from '$lib/components/overview/CounterCard.svelte';
-  import HealthChipStrip from '$lib/components/overview/HealthChipStrip.svelte';
+  import ContextAuditRow from '$lib/components/overview/ContextAuditRow.svelte';
+  import AlertsStrip from '$lib/components/overview/AlertsStrip.svelte';
   import CostRollupCard from '$lib/components/overview/CostRollupCard.svelte';
   import InterventionQueue, {
     type RowActionResult
   } from '$lib/components/overview/InterventionQueue.svelte';
   import RecentActivityFeed from '$lib/components/overview/RecentActivityFeed.svelte';
   import QuickLinksGrid from '$lib/components/overview/QuickLinksGrid.svelte';
-  import NewMenu from '$lib/components/overview/NewMenu.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
   import type { RuntimeCounters, RuntimeHealth } from '$lib/protocol/posture.js';
   import type { PauseListResponse, PauseSnapshot } from '$lib/protocol/pause.js';
   import { DEFAULT_PAUSE_LIST_PAGE_SIZE } from '$lib/protocol/pause.js';
-  import {
-    resolveConnection,
-    hasScope,
-    DISCONNECTED_TOOLTIP,
-    type RuntimeConnection
-  } from '$lib/connection.js';
-  import {
-    aggregateRate,
-    eventsPerMinute,
-    COUNTER_WINDOWS,
-    type CounterWindow
-  } from '$lib/overview/aggregations.js';
+  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
+  import { aggregateRate, eventsPerMinute } from '$lib/overview/aggregations.js';
   import { projectActivity } from '$lib/overview/activity.js';
-  import { projectCost } from '$lib/overview/cost.js';
-  import { openListPageDB } from '$lib/db/console_db.js';
-  import { operatorIdOf } from '$lib/db/schema.js';
-  import {
-    OverviewSavedFilters,
-    type OverviewViewSpec
-  } from '$lib/db/saved_filters_overview.js';
+  import { projectCost, type CostBreakdown } from '$lib/overview/cost.js';
+  import { projectAlerts, auditScopeCount, ALERT_TYPES, AUDIT_TYPE } from '$lib/overview/alerts.js';
 
   /* ---- connection + client (CONVENTIONS.md §6) -------------------- */
   let { client: injectedClient }: { client?: ProtocolClient } = $props();
-
   let connection = $state<RuntimeConnection | null>(null);
   let client = $state<ProtocolClient | null>(null);
-  // Approve / Reject are control-plane verbs (D-066). Without the admin
-  // scope the intervention-queue buttons render disabled-with-tooltip;
-  // the same claim drives the per-tenant cost-rollup elevation (D-079).
   let canControl = $state(false);
-  // The Phase 83r W1/W2/W3 disconnected predicate — drives the
-  // Refresh button + Save view + filter chips disabled state. The
-  // synthetic-data CostRollupCard reads it directly so it stops
-  // rendering `$0.00 · No cost recorded` against a phantom Runtime.
   let disconnected = $derived(connection === null);
 
-  /* ---- page-level async state (the four-state contract) ----------- */
+  /* ---- page-level state (counter row is the primary view) --------- */
   let status = $state<PageStatus>('loading');
   let pageError = $state<ProtocolError | { code: string; message: string } | null>(null);
-
-  /* ---- counter row (runtime.counters) ----------------------------- */
   let counters = $state<RuntimeCounters | null>(null);
 
-  /* ---- health strip — its own NESTED PageState -------------------- */
-  let healthStatus = $state<PageStatus>('loading');
-  let health = $state<RuntimeHealth | null>(null);
-  let healthError = $state<ProtocolError | { code: string; message: string } | null>(null);
+  /* ---- counter trend history (sampled gauges → real sparklines) --- */
+  // runtime.counters is a point-in-time snapshot; we sample it on an interval
+  // into per-metric ring buffers so the sparklines + deltas are REAL sampled
+  // data (trend since the page opened), never fabricated (procedure §1).
+  const HISTORY_CAP = 16;
+  let hist = $state<{ tasks: number[]; jobs: number[]; mcp: number[] }>({
+    tasks: [],
+    jobs: [],
+    mcp: []
+  });
+  let sampleTimer: ReturnType<typeof setInterval> | null = null;
 
-  /* ---- intervention queue — its own NESTED PageState -------------- */
+  /* ---- health (context row) --------------------------------------- */
+  let health = $state<RuntimeHealth | null>(null);
+
+  /* ---- intervention queue — nested PageState ---------------------- */
   let queueStatus = $state<PageStatus>('loading');
   let queueResp = $state<PauseListResponse | null>(null);
   let queueError = $state<ProtocolError | { code: string; message: string } | null>(null);
@@ -106,73 +84,60 @@
   let actionPendingToken = $state<string | null>(null);
   let actionResults = $state<Map<string, RowActionResult>>(new Map());
 
-  /* ---- live event stream (recent activity + sparklines + cost) ---- */
+  /* ---- live event stream + rolling clock -------------------------- */
   let subscription = $state<EventsSubscription | null>(null);
-
-  /* ---- FilterBar facets ------------------------------------------- */
-  let counterWindow = $state<CounterWindow>('5m');
-  let activitySearch = $state('');
-
-  /* ---- the rolling reference clock (relative timestamps) ---------- */
   let nowMillis = $state(Date.now());
   let clockTimer: ReturnType<typeof setInterval> | null = null;
-
-  /* ---- saved views (Console-DB-backed, D-061) --------------------- */
-  let savedFilters = $state<OverviewSavedFilters | null>(null);
-  let savedViews = $state<SavedView[]>([]);
-  let savedSpecs = $state<Map<string, OverviewViewSpec>>(new Map());
-  let activeSavedId = $state<string | null>(null);
-  let saveName = $state('');
 
   /* ================================================================ */
   /* Derived — folded client-side off the events.subscribe cursor      */
   /* ================================================================ */
-
   let liveEvents = $derived(subscription?.events ?? []);
-
-  // The Events/min counter card's sparkline — windowed rate aggregation
-  // from the SSE cursor (page-overview.md §12 — subscription-derived, no
-  // new Protocol method).
-  let rateSeries = $derived(aggregateRate(liveEvents, counterWindow, nowMillis));
+  let rateSeries = $derived(aggregateRate(liveEvents, '15m', nowMillis));
   let eventsPerMin = $derived(eventsPerMinute(rateSeries));
-
-  // The recent-activity feed — projected + free-text filtered.
-  let activityRows = $derived(
-    projectActivity(liveEvents).filter((row) => {
-      if (activitySearch.trim() === '') {
-        return true;
-      }
-      const q = activitySearch.trim().toLowerCase();
-      return (
-        row.type.toLowerCase().includes(q) ||
-        row.session.toLowerCase().includes(q) ||
-        row.description.toLowerCase().includes(q)
-      );
-    })
-  );
-
-  // The cost rollup — per-agent by default, per-tenant on admin.
-  let costRollup = $derived(projectCost(liveEvents, canControl ? 'tenant' : 'agent'));
-
-  // The intervention-queue snapshot page.
+  let eventsValues = $derived(rateSeries.buckets.map((b) => b.count));
+  let activityRows = $derived(projectActivity(liveEvents));
+  // Cost by MODEL (default) or by runtime/AGENT ("each runtime is an agent").
+  // `runtimeLabel` is the agent-registry name when available, else the runtime
+  // host (set in onMount). See cost.ts for the no-per-agent-attribution finding.
+  let costBreakdown = $state<CostBreakdown>('model');
+  let runtimeLabel = $state('This runtime');
+  let costRollup = $derived(projectCost(liveEvents, costBreakdown, runtimeLabel));
+  let alerts = $derived(projectAlerts(liveEvents, nowMillis));
+  let auditCount = $derived(auditScopeCount(liveEvents, nowMillis));
   let queueSnapshots = $derived<PauseSnapshot[]>(queueResp?.snapshots ?? []);
-  let queueTotal = $derived(queueResp?.total_rows ?? 0);
+
+  /** A real delta from a numeric series — null unless ≥2 samples and a positive base. */
+  function deltaOf(values: number[]): { pct: number; dir: 'up' | 'down' } | null {
+    if (values.length < 2) return null;
+    const first = values[0];
+    const last = values[values.length - 1];
+    if (first <= 0) return null;
+    const pct = ((last - first) / first) * 100;
+    return { pct, dir: last >= first ? 'up' : 'down' };
+  }
+  let eventsDelta = $derived(deltaOf(eventsValues));
+  let tasksDelta = $derived(deltaOf(hist.tasks));
+  let jobsDelta = $derived(deltaOf(hist.jobs));
+  let mcpDelta = $derived(deltaOf(hist.mcp));
 
   /* ================================================================ */
   /* Loading                                                           */
   /* ================================================================ */
-
   function toError(err: unknown): { code: string; message: string } {
-    if (err instanceof ProtocolError) {
-      return { code: err.code, message: err.message };
-    }
-    return {
-      code: 'runtime_error',
-      message: err instanceof Error ? err.message : 'unknown error'
+    if (err instanceof ProtocolError) return { code: err.code, message: err.message };
+    return { code: 'runtime_error', message: err instanceof Error ? err.message : 'unknown error' };
+  }
+
+  function pushSample(c: RuntimeCounters): void {
+    const cap = (arr: number[], v: number) => [...arr, v].slice(-HISTORY_CAP);
+    hist = {
+      tasks: cap(hist.tasks, c.tasks_running),
+      jobs: cap(hist.jobs, c.background_jobs_active),
+      mcp: cap(hist.mcp, c.mcp_connections_healthy)
     };
   }
 
-  // loadCounters resolves runtime.counters — the 4-card counter row.
   async function loadCounters(): Promise<void> {
     if (client === null) {
       status = 'disconnected';
@@ -182,39 +147,38 @@
     pageError = null;
     try {
       counters = await client.runtime.counters();
+      pushSample(counters);
       status = 'ready';
     } catch (err) {
-      // The Error state suppresses any stale view — drop last-good data.
       counters = null;
       pageError = toError(err);
       status = 'error';
     }
   }
 
-  // loadHealth resolves runtime.health into the NESTED health-strip
-  // PageState — a health-load failure surfaces in the strip, not the
-  // whole page (CONVENTIONS.md §4).
-  async function loadHealth(): Promise<void> {
-    if (client === null) {
-      healthStatus = 'disconnected';
-      return;
-    }
-    healthStatus = 'loading';
-    healthError = null;
+  // A lightweight sampler that refreshes the live counter values + appends to
+  // the trend ring buffers WITHOUT touching page status (so a transient sample
+  // failure never flips the whole page to Error).
+  async function sampleCounters(): Promise<void> {
+    if (client === null) return;
     try {
-      const resp = await client.runtime.health();
-      health = resp;
-      healthStatus = resp.subsystems.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      health = null;
-      healthError = toError(err);
-      healthStatus = 'error';
+      const c = await client.runtime.counters();
+      counters = c;
+      pushSample(c);
+    } catch {
+      /* keep last-good; the next tick retries */
     }
   }
 
-  // loadQueue resolves pause.list into the NESTED intervention-queue
-  // PageState. Empty filter = the operator's own identity scope,
-  // status=paused (the intervention-queue default — D-110).
+  async function loadHealth(): Promise<void> {
+    if (client === null) return;
+    try {
+      health = await client.runtime.health();
+    } catch {
+      health = null;
+    }
+  }
+
   async function loadQueue(): Promise<void> {
     if (client === null) {
       queueStatus = 'disconnected';
@@ -223,10 +187,7 @@
     queueStatus = 'loading';
     queueError = null;
     try {
-      const resp = await client.pause.list({
-        page: queuePage,
-        page_size: queuePageSize
-      });
+      const resp = await client.pause.list({ page: queuePage, page_size: queuePageSize });
       queueResp = resp;
       queueStatus = resp.snapshots.length === 0 ? 'empty' : 'ready';
     } catch (err) {
@@ -236,52 +197,23 @@
     }
   }
 
-  // The page-level Retry re-invokes every loader (CONVENTIONS.md §4).
   async function reloadAll(): Promise<void> {
     await Promise.all([loadCounters(), loadHealth(), loadQueue()]);
   }
 
-  /* ================================================================ */
-  /* Intervention-queue actions — the SHIPPED Phase 54 verbs (§13)     */
-  /* ================================================================ */
-
-  async function approveRow(snapshot: PauseSnapshot): Promise<void> {
-    await dispatchRowAction(snapshot, 'approve');
-  }
-
-  async function rejectRow(snapshot: PauseSnapshot): Promise<void> {
-    await dispatchRowAction(snapshot, 'reject');
-  }
-
-  // dispatchRowAction invokes the SHIPPED Phase 54 `approve` / `reject`
-  // control verbs against the paused run — there is NO parallel pause
-  // mutation here (CLAUDE.md §13). The run is keyed by the pause
-  // record's run id; the verb is re-checked server-side for scope.
-  async function dispatchRowAction(
-    snapshot: PauseSnapshot,
-    verb: 'approve' | 'reject'
-  ): Promise<void> {
-    if (client === null || !canControl) {
-      return;
-    }
+  /* ---- intervention-queue actions — the SHIPPED Phase 54 verbs ----- */
+  async function dispatchRowAction(snapshot: PauseSnapshot, verb: 'approve' | 'reject'): Promise<void> {
+    if (client === null || !canControl) return;
     const runID = snapshot.identity.run ?? '';
     actionPendingToken = snapshot.token;
     try {
-      if (verb === 'approve') {
-        await client.control.approve(runID);
-      } else {
-        await client.control.reject(runID);
-      }
+      if (verb === 'approve') await client.control.approve(runID);
+      else await client.control.reject(runID);
       setActionResult(snapshot.token, { token: snapshot.token, ok: true, message: `${verb}d` });
-      // The snapshot is now resolved — refresh the queue page.
       await loadQueue();
     } catch (err) {
       const e = toError(err);
-      setActionResult(snapshot.token, {
-        token: snapshot.token,
-        ok: false,
-        message: `${e.code}: ${e.message}`
-      });
+      setActionResult(snapshot.token, { token: snapshot.token, ok: false, message: `${e.code}: ${e.message}` });
     } finally {
       actionPendingToken = null;
     }
@@ -294,120 +226,69 @@
   }
 
   /* ================================================================ */
-  /* Saved views (Console-DB-backed, D-061)                            */
-  /* ================================================================ */
-
-  async function refreshSavedViews(): Promise<void> {
-    if (savedFilters === null) {
-      return;
-    }
-    try {
-      const records = await savedFilters.list();
-      savedViews = records.map((r) => ({ id: r.id, name: r.name }));
-      savedSpecs = new Map(records.map((r) => [r.id, r.viewSpec]));
-    } catch {
-      savedViews = [];
-      savedSpecs = new Map();
-    }
-  }
-
-  function applySavedView(id: string): void {
-    const spec = savedSpecs.get(id);
-    if (spec === undefined) {
-      return;
-    }
-    counterWindow = spec.window;
-    activeSavedId = id;
-  }
-
-  async function deleteSavedView(id: string): Promise<void> {
-    if (savedFilters === null) {
-      return;
-    }
-    await savedFilters.delete(id);
-    if (activeSavedId === id) {
-      activeSavedId = null;
-    }
-    await refreshSavedViews();
-  }
-
-  async function saveCurrentView(): Promise<void> {
-    const name = saveName.trim();
-    if (name.length === 0 || savedFilters === null) {
-      return;
-    }
-    const created = await savedFilters.create(name, {
-      window: counterWindow,
-      activityTypes: []
-    });
-    saveName = '';
-    await refreshSavedViews();
-    activeSavedId = created.id;
-  }
-
-  /* ================================================================ */
   /* Boot                                                              */
   /* ================================================================ */
-
   onMount(() => {
     connection = resolveConnection();
     if (connection === null) {
       client = null;
       status = 'disconnected';
-      healthStatus = 'disconnected';
       queueStatus = 'disconnected';
       return;
     }
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
 
-    // Open the live event stream — the recent-activity / sparkline /
-    // cost-rollup feed. Narrowed to the operator-relevant topics so the
-    // cursor is not flooded by every bus event. The `events` namespace
-    // is read off the resolved (or injected) ProtocolClient — no
-    // hand-rolled per-page client (CONVENTIONS.md §6).
+    // The runtime/agent label for the cost "Agent" axis: the agent-registry
+    // name when the runtime has a registered agent, else the runtime host.
+    try {
+      runtimeLabel = new URL(connection.baseURL).host;
+    } catch {
+      runtimeLabel = 'This runtime';
+    }
+    void client.agents
+      .list<{ agents?: Array<{ name?: string; display_name?: string; agent_id?: string }> }>()
+      .then((r) => {
+        const a = r.agents?.[0];
+        const name = a?.display_name ?? a?.name ?? a?.agent_id;
+        if (name) runtimeLabel = name;
+      })
+      .catch(() => {
+        /* registry unavailable — keep the host label */
+      });
+
+    // The live event stream — activity + sparkline + cost + alerts + audit.
     const sub = new EventsSubscription(client.events);
     sub.open({
       eventTypes: [
         'session.opened',
         'session.closed',
+        'task.started',
         'task.completed',
         'task.failed',
         'task.cancelled',
+        'tool.failed',
         'agent.registered',
         'agent.restarted',
-        'llm.cost.recorded'
+        'llm.cost.recorded',
+        AUDIT_TYPE,
+        ...ALERT_TYPES
       ]
     });
     subscription = sub;
 
-    // The relative-timestamp clock ticks once a second.
-    clockTimer = setInterval(() => {
-      nowMillis = Date.now();
-    }, 1000);
-
-    void (async () => {
-      try {
-        const db = await openListPageDB(connection!);
-        const operator = await operatorIdOf(
-          connection!.identity.tenant,
-          connection!.identity.user
-        );
-        savedFilters = new OverviewSavedFilters(db, operator);
-        await refreshSavedViews();
-      } catch {
-        savedFilters = null;
-      }
-    })();
+    clockTimer = setInterval(() => (nowMillis = Date.now()), 1000);
+    // Sample the gauges every 5s so the snapshot-counter sparklines fill with
+    // real data over the session.
+    sampleTimer = setInterval(() => void sampleCounters(), 5000);
 
     void reloadAll();
   });
 
   onDestroy(() => {
     subscription?.close();
-    if (clockTimer !== null) {
-      clearInterval(clockTimer);
-    }
+    if (clockTimer !== null) clearInterval(clockTimer);
+    if (sampleTimer !== null) clearInterval(sampleTimer);
   });
 </script>
 
@@ -416,285 +297,143 @@
 </svelte:head>
 
 <div class="page" data-testid="overview-page">
-  <PageHeader
-    title="Overview"
-    subtitle="The operator's at-a-glance hub — counters, interventions, and activity"
-  >
-    {#snippet actions()}
-      <NewMenu />
-      <button
-        type="button"
-        class="control"
-        data-testid="overview-refresh"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void reloadAll()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-  </PageHeader>
+  <!-- Row 1 — slim context (health pill + audit ribbon). Runtime name /
+       version / Protocol are app-shell chrome (108b), not duplicated here. -->
+  <ContextAuditRow {health} {auditCount} {disconnected} onRefresh={() => void reloadAll()} />
 
-  <!-- Sub-header health-chip strip — its own NESTED PageState so a
-       health-load failure surfaces here, not on the whole page. -->
-  <PageState status={healthStatus} error={healthError} onretry={() => void loadHealth()}>
+  <!-- Row 1b — alerts strip (renders only when real in-window alerts exist). -->
+  <AlertsStrip {alerts} now={nowMillis} />
+
+  <!-- Row 2 — the 4 KPI cards. The page-level PageState drives this row. -->
+  <PageState status={status} error={pageError} onretry={() => void reloadAll()}>
     {#snippet skeleton()}
-      <div class="strip-skeleton" aria-hidden="true"></div>
+      <div class="counter-row" aria-hidden="true">
+        <span class="card-skeleton"></span>
+        <span class="card-skeleton"></span>
+        <span class="card-skeleton"></span>
+        <span class="card-skeleton"></span>
+      </div>
     {/snippet}
     {#snippet empty()}
-      <p class="strip-empty" data-testid="health-chip-strip-empty">
-        The Runtime reported no registered subsystems.
-      </p>
+      <p class="block-empty">Waiting for runtime activity.</p>
     {/snippet}
-    {#if health !== null}
-      <HealthChipStrip subsystems={health.subsystems} />
+
+    {#if counters !== null}
+      <div class="counter-row" data-testid="counter-row">
+        <CounterCard
+          testid="counter-events"
+          label="Events / min"
+          value={eventsPerMin.toFixed(1)}
+          href="/events"
+          icon={Activity}
+          viewLabel="View Events"
+          values={eventsValues}
+          delta={eventsDelta}
+        />
+        <CounterCard
+          testid="counter-tasks"
+          label="Tasks Running (now)"
+          value={String(counters.tasks_running)}
+          href="/tasks"
+          icon={ListChecks}
+          viewLabel="View Tasks"
+          values={hist.tasks}
+          delta={tasksDelta}
+        />
+        <CounterCard
+          testid="counter-jobs"
+          label="Background Jobs (now)"
+          value={String(counters.background_jobs_active)}
+          href="/background-jobs"
+          icon={Layers}
+          viewLabel="View Background Jobs"
+          values={hist.jobs}
+          delta={jobsDelta}
+          tone={counters.background_jobs_active > 0 ? 'warn' : 'accent'}
+        />
+        <CounterCard
+          testid="counter-mcp"
+          label="MCP Connections (now)"
+          value={String(counters.mcp_connections_healthy)}
+          href="/mcp-connections"
+          icon={Plug}
+          viewLabel="View MCP Connections"
+          values={hist.mcp}
+          delta={mcpDelta}
+          tone="success"
+        />
+      </div>
     {/if}
   </PageState>
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeSavedId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <input
-        class="control save-input"
-        type="text"
-        placeholder="Save current as…"
-        bind:value={saveName}
-        data-testid="overview-save-name"
-        disabled={savedFilters === null || disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
-      />
-      <button
-        type="button"
-        class="control"
-        data-testid="overview-save-view"
-        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
-        title={disconnected
-          ? DISCONNECTED_TOOLTIP
-          : savedFilters === null
-            ? 'Console-local saved-view store unavailable'
-            : undefined}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
+  <!-- Lower section — two stacking columns (mock): LEFT = Interventions then
+       Recent activity; RIGHT = Cost then Quick Links. Stacking Quick Links
+       under Cost fills the negative space that opened below the Cost card and
+       removes the tall full-width rows that caused vertical scroll. -->
+  <div class="lower">
+    <div class="lower-col">
+      <section class="panel card queue-panel">
+        <h2 class="panel-title">Interventions</h2>
+        <PageState status={queueStatus} error={queueError} onretry={() => void loadQueue()} nested>
+          {#snippet skeleton()}
+            <div class="row-skeleton" aria-hidden="true"></div>
+          {/snippet}
+          {#snippet empty()}
+            <div class="panel-empty" data-testid="intervention-queue-state-empty">
+              <span class="empty-icon" data-tone="success"><CircleCheck size={20} aria-hidden="true" /></span>
+              <p class="empty-headline">No pending interventions</p>
+              <p class="empty-detail">No runs are parked awaiting an operator decision.</p>
+            </div>
+          {/snippet}
+          <InterventionQueue
+            snapshots={queueSnapshots}
+            canControl={canControl}
+            pendingToken={actionPendingToken}
+            results={actionResults}
+            onapprove={(s) => void dispatchRowAction(s, 'approve')}
+            onreject={(s) => void dispatchRowAction(s, 'reject')}
+          />
+        </PageState>
+      </section>
 
-    {#snippet facets()}
-      <div class="window-facet" data-testid="overview-window-facet">
-        {#each COUNTER_WINDOWS as w (w)}
-          <button
-            type="button"
-            class="window-chip"
-            data-active={counterWindow === w}
-            data-testid={`overview-window-${w}`}
-            disabled={disconnected}
-            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-            onclick={() => (counterWindow = w)}
-          >
-            {w}
-          </button>
-        {/each}
-      </div>
-    {/snippet}
-
-    {#snippet search()}
-      <input
-        class="control"
-        type="search"
-        placeholder="Filter recent activity…"
-        bind:value={activitySearch}
-        data-testid="overview-activity-search"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-      />
-    {/snippet}
-  </FilterBar>
-
-  <div class="layout">
-    <div class="main-col">
-      <!-- Row 2 — the 4-card counter row. The page-level PageState
-           drives it: the counter row is the page's primary view. -->
-      <PageState status={status} error={pageError} onretry={() => void reloadAll()}>
-        {#snippet skeleton()}
-          <div class="counter-skeleton" aria-hidden="true">
-            <span class="card-skeleton"></span>
-            <span class="card-skeleton"></span>
-            <span class="card-skeleton"></span>
-            <span class="card-skeleton"></span>
-          </div>
-        {/snippet}
-        {#snippet empty()}
-          <p class="block-empty">No runtime counters available.</p>
-        {/snippet}
-
-        {#if counters !== null}
-          <div class="counter-row" data-testid="counter-row">
-            <!-- N11 (Phase 83x): every counter card on this row reads
-                 a CURRENTLY-active gauge (not a window-cumulative
-                 count). The legacy labels did not say so — an operator
-                 expecting "tasks completed in the last hour" read
-                 zero after a successful 13s run and assumed the
-                 counter was broken. Suffix each label with "(now)" so
-                 the semantics are explicit. The Events/min card is
-                 already a per-minute RATE so it keeps its own label. -->
-            <CounterCard
-              testid="counter-events"
-              label="Events/min"
-              value={eventsPerMin.toFixed(1)}
-              href="/events"
-              series={rateSeries}
-            />
-            <CounterCard
-              testid="counter-tasks"
-              label="Tasks Running (now)"
-              value={String(counters.tasks_running)}
-              href="/tasks"
-            />
-            <CounterCard
-              testid="counter-jobs"
-              label="Background Jobs (now)"
-              value={String(counters.background_jobs_active)}
-              href="/background-jobs"
-            />
-            <CounterCard
-              testid="counter-mcp"
-              label="MCP Connections (now)"
-              value={String(counters.mcp_connections_healthy)}
-              href="/mcp-connections"
-            />
-          </div>
-        {/if}
-      </PageState>
-
-      <!-- Row 3 — two-column split: intervention queue + cost rollup. -->
-      <div class="row-3">
-        <section class="queue-panel">
-          <h2 class="panel-title">Intervention queue</h2>
-          <PageState
-            status={queueStatus}
-            error={queueError}
-            onretry={() => void loadQueue()}
-          >
-            {#snippet skeleton()}
-              <div class="table-skeleton" aria-hidden="true"></div>
-            {/snippet}
-            {#snippet empty()}
-              <div class="block-empty-pad" data-testid="intervention-queue-state-empty">
-                <p class="block-empty">No pending interventions in scope.</p>
-              </div>
-            {/snippet}
-
-            <InterventionQueue
-              snapshots={queueSnapshots}
-              canControl={canControl}
-              pendingToken={actionPendingToken}
-              results={actionResults}
-              onapprove={(s) => void approveRow(s)}
-              onreject={(s) => void rejectRow(s)}
-            />
-          </PageState>
-          {#if queueStatus === 'ready' || queueStatus === 'empty'}
-            <Pagination
-              page={queuePage}
-              pageSize={queuePageSize}
-              total={queueTotal}
-              onpage={(p) => {
-                queuePage = p;
-                void loadQueue();
-              }}
-              onpagesize={(s) => {
-                queuePageSize = s;
-                queuePage = 1;
-                void loadQueue();
-              }}
-            />
-          {/if}
-        </section>
-
-        <section class="cost-panel">
-          <h2 class="panel-title">Cost rollup</h2>
-          <CostRollupCard rollup={costRollup} canElevate={canControl} {disconnected} />
-        </section>
-      </div>
-
-      <!-- Row 4 — full-width recent-activity feed. -->
-      <section class="activity-panel">
+      <section class="panel card activity-panel">
         <h2 class="panel-title">Recent activity</h2>
         <RecentActivityFeed rows={activityRows} now={nowMillis} />
       </section>
-
-      <!-- Row 5 — the 2×3 Quick Links grid. -->
-      <section class="quick-links-panel">
-        <h2 class="panel-title">Quick Links</h2>
-        <QuickLinksGrid />
-      </section>
-
     </div>
 
-    <DetailRail>
-      <RailCard title="Runtime">
-        {#if connection !== null}
-          <dl class="rail-dl">
-            <dt>Runtime</dt>
-            <dd class="mono">{connection.baseURL}</dd>
-            <dt>Tenant</dt>
-            <dd class="mono">{connection.identity.tenant}</dd>
-            <dt>Session</dt>
-            <dd class="mono">{connection.identity.session}</dd>
-            <dt>Scope</dt>
-            <dd>{canControl ? 'admin (elevated)' : 'operator'}</dd>
-          </dl>
-        {:else}
-          <p class="rail-note">Not connected to a Runtime.</p>
-        {/if}
-      </RailCard>
-      <RailCard title="Counters">
-        {#if counters !== null}
-          <dl class="rail-dl">
-            <dt>Sessions active</dt>
-            <dd>{counters.sessions_active}</dd>
-            <dt>Tasks running</dt>
-            <dd>{counters.tasks_running}</dd>
-            <dt>Background jobs</dt>
-            <dd>{counters.background_jobs_active}</dd>
-            <dt>MCP connections</dt>
-            <dd>{counters.mcp_connections_healthy}</dd>
-          </dl>
-        {:else}
-          <p class="rail-note">Counters unavailable.</p>
-        {/if}
-      </RailCard>
-      <RailCard title="Pending interventions">
-        <p class="rail-note" data-testid="rail-intervention-count">
-          {queueTotal} run{queueTotal === 1 ? '' : 's'} awaiting a decision.
-        </p>
-      </RailCard>
-    </DetailRail>
+    <div class="lower-col">
+      <section class="panel card cost-panel">
+        <h2 class="panel-title">Cost (last 24 hours)</h2>
+        <CostRollupCard
+          rollup={costRollup}
+          breakdown={costBreakdown}
+          onbreakdown={(b) => (costBreakdown = b)}
+          {disconnected}
+        />
+      </section>
+
+      <section class="panel card quick-links-panel">
+        <div class="quick-links-head">
+          <h2 class="panel-title">Quick Links</h2>
+          <button
+            type="button"
+            class="customize"
+            data-testid="overview-customize"
+            disabled
+            title="Personal overview layouts — coming soon (page-overview.md §10 deferred)"
+          >
+            Customize overview
+          </button>
+        </div>
+        <QuickLinksGrid />
+      </section>
+    </div>
   </div>
 </div>
 
 <style>
   .page {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-6);
-  }
-
-  .layout {
-    display: grid;
-    grid-template-columns: 1fr var(--size-rail);
-    gap: var(--space-4);
-    align-items: start;
-  }
-
-  .main-col {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -707,20 +446,38 @@
     gap: var(--space-3);
   }
 
-  .row-3 {
+  /* Lower section — two columns (left 3fr / right 2fr), each stacking its
+     panels. Left: Interventions + Recent activity; right: Cost + Quick Links
+     (mock). `align-items: start` lets each column take its natural height. */
+  .lower {
     display: grid;
     grid-template-columns: 3fr 2fr;
     gap: var(--space-4);
     align-items: start;
   }
 
-  .queue-panel,
-  .cost-panel,
-  .activity-panel,
-  .quick-links-panel {
+  .lower-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: var(--space-0);
+  }
+
+  .panel {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  /* The shared carded surface for the row-3/row-4/row-5 panels — gives the
+     interventions / cost / activity / quick-links sections the same panel
+     background the mock shows (no more bare tables drifting on the page bg). */
+  .card {
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
   }
 
   .panel-title {
@@ -732,118 +489,79 @@
     color: var(--color-text-muted);
   }
 
-  .control {
-    background: var(--color-surface-raised);
-    color: var(--color-text);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-sm);
-    cursor: pointer;
+  .quick-links-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
-  .control:disabled {
-    opacity: 0.4;
+  .customize {
+    background: transparent;
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .customize:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .save-input {
-    width: var(--size-search-min);
-  }
-
-  .window-facet {
-    display: inline-flex;
-    gap: var(--space-1);
-  }
-
-  .window-chip {
-    background: var(--color-surface-raised);
-    color: var(--color-text-muted);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: 600;
-    cursor: pointer;
-  }
-
-  .window-chip[data-active='true'] {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
-
-  .counter-skeleton {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-3);
-  }
-
-  .card-skeleton {
-    height: var(--space-12);
-    background: var(--color-surface-raised);
-    border-radius: var(--radius-md);
-    animation: pulse var(--motion-slow) ease-in-out infinite alternate;
-  }
-
-  .strip-skeleton {
-    height: var(--space-6);
-    background: var(--color-surface-raised);
-    border-radius: var(--radius-sm);
-  }
-
-  .table-skeleton {
-    height: var(--space-12);
-    background: var(--color-surface-raised);
-    border-radius: var(--radius-md);
-  }
-
-  .strip-empty,
   .block-empty {
     margin: var(--space-0);
-    font-size: var(--text-sm);
     color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 
-  .block-empty-pad {
-    padding: var(--space-6) var(--space-4);
+  /* Compact, intentional empty state for a carded panel — centred icon +
+     headline + detail, modest height (no full-table dead space). */
+  .panel-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-5) var(--space-2);
     text-align: center;
   }
 
-  .rail-dl {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: var(--space-1) var(--space-3);
+  .empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-1);
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+
+  .empty-headline {
     margin: var(--space-0);
     font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
   }
 
-  .rail-dl dt {
-    color: var(--color-text-muted);
-  }
-
-  .rail-dl dd {
+  .empty-detail {
     margin: var(--space-0);
-    text-align: right;
-  }
-
-  .rail-note {
-    margin: var(--space-0);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-  }
-
-  .mono {
-    font-family: var(--font-mono);
     font-size: var(--text-xs);
-    overflow-wrap: anywhere;
+    color: var(--color-text-muted);
   }
 
-  @keyframes pulse {
-    from {
-      opacity: 0.4;
-    }
-    to {
-      opacity: 0.8;
-    }
+  .card-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    height: var(--size-card-min);
+  }
+
+  .row-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    height: var(--size-sparkline-height);
   }
 </style>
