@@ -1,61 +1,73 @@
 <script lang="ts">
-  // Harbor Console — Overview counter-card sparkline (Phase 73a / D-127).
+  // Harbor Console — Overview counter-card sparkline (Phase 73a / 108c).
   //
-  // A mini bar-sparkline rendered inside a `<CounterCard>`. It folds the
-  // windowed `RateSeries` (from `$lib/overview/aggregations.ts` — pure,
-  // subscription-derived; NO new Protocol method per page-overview.md
-  // §12) into a row of bars. An empty / quiet window renders flat-zero
-  // bars rather than an empty box — "the runtime is up but quiet"
-  // (page-overview.md §12 refinement to §7).
+  // A mini LINE/area sparkline (matches the mock — not bars) rendered inside a
+  // `<CounterCard>`. Takes a raw numeric series (`values`): for Events/min the
+  // windowed event-rate fold; for the snapshot gauges a client-side ring buffer
+  // of `runtime.counters` samples taken while the page is open — real sampled
+  // data, never fabricated (procedure §1). Strokes with `currentColor` so the
+  // card colours it per metric. A flat/quiet window draws a flat line on the
+  // floor rather than an empty box (page-overview.md §12).
   //
-  // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
-  import type { RateSeries } from '$lib/overview/aggregations.js';
-
+  // Svelte 5 runes (D-092); design tokens only (CLAUDE.md §4.5).
   let {
-    series
+    values,
+    label
   }: {
-    /** The windowed rate series this sparkline renders. */
-    series: RateSeries;
+    values: number[];
+    label?: string;
   } = $props();
 
-  // The bar height is a 0..1 fraction of the y-peak; a flat-zero window
-  // keeps every bar at the floor so the chart never collapses.
-  function heightPct(count: number): number {
-    if (series.peak <= 0) {
-      return 0;
-    }
-    return (count / series.peak) * 100;
-  }
+  const W = 100;
+  const H = 28;
+
+  const line = $derived.by(() => {
+    if (values.length === 0) return '';
+    const max = values.reduce((m, v) => (v > m ? v : m), 0) || 1;
+    const n = values.length;
+    return values
+      .map((v, i) => {
+        const x = n === 1 ? W : (i / (n - 1)) * W;
+        const y = H - (v / max) * (H - 2) - 1;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+  });
+  const area = $derived(line ? `0,${H} ${line} ${W},${H}` : '');
 </script>
 
-<div
-  class="sparkline"
-  data-testid="counter-sparkline"
+<svg
+  class="spark"
+  viewBox="0 0 100 28"
+  preserveAspectRatio="none"
   role="img"
-  aria-label={`Trend over the last ${series.window}, peak ${series.peak} per minute`}
+  aria-label={label ?? 'trend'}
 >
-  {#each series.buckets as bucket (bucket.startMillis)}
-    <span
-      class="bar"
-      style:height={`${Math.max(heightPct(bucket.count), 4)}%`}
-      title={`${bucket.count} events`}
-    ></span>
-  {/each}
-</div>
+  {#if line}
+    <polygon class="area" points={area} />
+    <polyline class="line" points={line} />
+  {/if}
+</svg>
 
 <style>
-  .sparkline {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-1);
-    height: var(--size-sparkline-height);
+  .spark {
+    display: block;
     width: 100%;
+    height: var(--size-sparkline-height);
+    color: inherit;
   }
 
-  .bar {
-    flex: 1;
-    min-width: var(--size-px);
-    background: var(--color-accent-soft);
-    border-radius: var(--radius-sm);
+  .line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .area {
+    fill: currentColor;
+    opacity: 0.12;
+    stroke: none;
   }
 </style>

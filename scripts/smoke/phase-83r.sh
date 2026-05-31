@@ -38,10 +38,16 @@ assert_grep_present \
 # -----------------------------------------------------------------------------
 for page in overview live-runtime sessions tasks agents tools events background-jobs flows memory mcp-connections artifacts; do
     file="web/console/src/routes/(console)/${page}/+page.svelte"
+    # Phase 108c: the Overview rebuild moved its only disconnected-gated control
+    # (the Refresh button) out of the page and into the ContextAuditRow
+    # component, which imports the canonical tooltip — assert there for overview.
+    if [ "${page}" = "overview" ]; then
+        file="web/console/src/lib/components/overview/ContextAuditRow.svelte"
+    fi
     assert_grep_present \
         'DISCONNECTED_TOOLTIP' \
         "${file}" \
-        "${page} page imports the canonical disconnected tooltip"
+        "${page} disconnected controls use the canonical tooltip"
 done
 
 # -----------------------------------------------------------------------------

@@ -59,14 +59,14 @@ describe('cost: extractCostUSD', () => {
 });
 
 describe('cost: projectCost', () => {
-	it('groups by agent (Model) and sums per-key', () => {
+	it('groups by model and sums per-key', () => {
 		const rollup = projectCost(
 			[
 				costEvent('t1', 'research-agent', 1.0, 1),
 				costEvent('t1', 'research-agent', 0.5, 2),
 				costEvent('t1', 'support-agent', 2.0, 3)
 			],
-			'agent'
+			'model'
 		);
 		expect(rollup.totalUSD).toBeCloseTo(3.5);
 		// Descending by cost — support-agent (2.0) before research-agent (1.5).
@@ -76,13 +76,18 @@ describe('cost: projectCost', () => {
 		expect(rollup.rows[1].events).toBe(2);
 	});
 
-	it('groups by tenant when the breakdown is per-tenant (admin)', () => {
+	it('groups all cost under the runtime/agent label for the runtime breakdown', () => {
 		const rollup = projectCost(
-			[costEvent('tenant-a', 'm', 1.0, 1), costEvent('tenant-b', 'm', 3.0, 2)],
-			'tenant'
+			[costEvent('tenant-a', 'm1', 1.0, 1), costEvent('tenant-b', 'm2', 3.0, 2)],
+			'runtime',
+			'media-helper-agent'
 		);
-		expect(rollup.breakdown).toBe('tenant');
-		expect(rollup.rows.map((r) => r.key)).toEqual(['tenant-b', 'tenant-a']);
+		expect(rollup.breakdown).toBe('runtime');
+		// Single-runtime V1: one row, keyed by the agent-registry name.
+		expect(rollup.rows).toHaveLength(1);
+		expect(rollup.rows[0].key).toBe('media-helper-agent');
+		expect(rollup.rows[0].costUSD).toBeCloseTo(4.0);
+		expect(rollup.rows[0].events).toBe(2);
 	});
 
 	it('ignores non-cost events', () => {
@@ -94,7 +99,7 @@ describe('cost: projectCost', () => {
 			user: 'u',
 			session: 's'
 		};
-		const rollup = projectCost([other, costEvent('t1', 'm', 1.0, 1)], 'agent');
+		const rollup = projectCost([other, costEvent('t1', 'm', 1.0, 1)], 'model');
 		expect(rollup.totalUSD).toBe(1.0);
 		expect(rollup.rows).toHaveLength(1);
 	});
@@ -109,7 +114,7 @@ describe('cost: projectCost', () => {
 			session: 's',
 			payload: { Model: 'm' } // no Cost object
 		};
-		const rollup = projectCost([malformed, costEvent('t1', 'm', 2.0, 2)], 'agent');
+		const rollup = projectCost([malformed, costEvent('t1', 'm', 2.0, 2)], 'model');
 		// Only the well-formed event is folded — the agent row has 1
 		// event, not 2.
 		expect(rollup.rows[0].events).toBe(1);
