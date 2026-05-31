@@ -43,6 +43,7 @@ export {
 	PauseNamespace,
 	PostureNamespace,
 	AuthNamespace,
+	SearchNamespace,
 	type ProtocolClient,
 	type HarborClientOptions
 } from './client.js';

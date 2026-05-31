@@ -29,8 +29,10 @@
   --color-text: #e6edf3;
   --color-text-muted: #8b949e;
 
-  /* Color — brand + status */
-  --color-accent: #2f81f7;
+  /* Color — brand + status. The accent is Harbor's brand teal/cyan (the
+     lighthouse mark), NOT a generic blue — sampled from the canonical mock
+     (active nav glyph #2a9dc0, CONSOLE wordmark teal). Phase 108b retheme. */
+  --color-accent: #2bb6cc;
   --color-success: #3fb950;
   --color-warning: #d29922;
   --color-danger: #f85149;
@@ -39,7 +41,7 @@
   --color-success-soft: #16341f;
   --color-warning-soft: #3a2e10;
   --color-danger-soft: #3a1a18;
-  --color-accent-soft: #16263f;
+  --color-accent-soft: #0e2e38;
 
   /* Chip palette — backs every status pill across the Console.
      One row per intent: foreground / background / border.
@@ -90,8 +92,9 @@
   /* ================================================================ */
   /* Type scale                                                        */
   /* ================================================================ */
-  --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -102,6 +105,7 @@
   /* Letter-spacing — the uppercase-label tracking the inventory uses. */
   --tracking-wide: 0.04em;
   --tracking-wider: 0.06em;
+  --tracking-widest: 0.1em;
 
   /* ================================================================ */
   /* Typography utilities                                              */
@@ -115,6 +119,8 @@
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
+  /* Phase 108b — fully-rounded pill (top-bar identity avatar chip). */
+  --radius-pill: 999px;
 
   /* ================================================================ */
   /* Borders — ONE hairline token (CONVENTIONS.md §7)                  */
@@ -135,12 +141,28 @@
   /* ================================================================ */
   /* The single detail-rail width every page's right rail uses. */
   --size-rail: 22rem;
+  /* The single app-shell nav-sidebar width (Phase 108b). DISTINCT from
+     `--size-rail`: the nav sidebar and the detail rail are different
+     surfaces, so CONVENTIONS.md §7's "one rail-width token" is not
+     violated — §7 forbids variants of the SAME concept. Pre-108b the
+     sidebar borrowed `--size-rail` (22rem/352px), which is why it
+     rendered far wider than the compact mock. `--size-nav` matches the
+     mock's dense sidebar; `--size-nav-collapsed` is the icons-only
+     width the top-bar hamburger toggles to. */
+  --size-nav: 13.5rem;
+  --size-nav-collapsed: 3.5rem;
 
   /* Sizing — other layout dimensions */
   --size-px: 1px;
   --size-sr-square: 1px;
   --size-value-viewer-max: 16rem;
   --size-search-min: 12rem;
+  /* Phase 108b — the top-bar ⌘K global-search command palette. */
+  --size-palette-width: 36rem;
+  --size-palette-max-height: 24rem;
+  --size-search-group-width: 5rem;
+  /* Phase 108b — the top-bar identity / connection popover. */
+  --size-popover-min-width: 16rem;
   --size-graph-max-height: 480px;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;
@@ -159,7 +181,8 @@
   /* Phase 108 (D-167) — sizing tokens for the polished Playground surface.
      These replace raw px/rem literals in .svelte components so the
      stylelint gate stays green. */
-  --size-avatar-sm: 1.5rem;        /* 24px — sidebar logo, intervention avatar */
+  --size-avatar-sm: 1.5rem;        /* 24px — intervention avatar, status dots */
+  --size-brand-logo: 2.25rem;      /* 36px — sidebar lighthouse mark (Phase 108b, mock-sized) */
   --size-avatar-md: 2rem;          /* 32px — message bubble avatar */
   --size-badge-sm: 1.25rem;        /* 20px — count badge */
   --size-status-bar-height: 1.75rem; /* 28px — PlaygroundStatusBar */

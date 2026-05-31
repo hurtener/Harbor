@@ -207,3 +207,83 @@ describe('HarborClient error mapping', () => {
 		}
 	});
 });
+
+// Phase 108b — the app-shell ⌘K global-search launcher consumes the
+// shipped `search.query` method. These tests pin the route + body shape
+// and verify the decoder reads a CAPTURED REAL `search.query` frame
+// (PAGE-POLISH-PROCEDURE §3.2/§3.3 — verify against real data, snake_case
+// RPC body). The frame below was captured live (2026-05-30) from the
+// validation runtime after seeding a youtube task.
+describe('search.query namespace (Phase 108b)', () => {
+	it('routes search.query onto the control surface with the request body', async () => {
+		const fetchImpl = vi.fn(async () =>
+			okResponse({
+				rows: [],
+				page: 1,
+				page_size: 8,
+				page_count: 1,
+				total_count: 0,
+				has_more: false
+			})
+		);
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		await client.search.query({ query: 'youtube', page_size: 8 });
+
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe('http://127.0.0.1:18080/v1/control/search.query');
+		const body = JSON.parse(init.body as string);
+		expect(body.identity).toEqual(CONNECTION.identity);
+		expect(body.query).toBe('youtube');
+		expect(body.page_size).toBe(8);
+	});
+
+	it('decodes a captured real search.query frame (task + heavy-artifact ref)', async () => {
+		// Verbatim from the live runtime — a task row (inline preview) and an
+		// artifact row whose 686KB JSON preview ships by-reference (D-026).
+		const realFrame = {
+			rows: [
+				{
+					index: 'tasks',
+					id: '01KSX5GR8Z2X16TJJ3XEJSH229',
+					tenant_id: 'dev',
+					user_id: 'dev',
+					session_id: 'dev',
+					occurred_at: '2026-05-30T19:25:00Z',
+					preview: 'task 01KSX5GR8Z2X16TJJ3XEJSH229 status=complete kind=foreground'
+				},
+				{
+					index: 'artifacts',
+					id: 'default_e5aa9d3aa0f6',
+					tenant_id: 'dev',
+					user_id: 'dev',
+					session_id: 'dev',
+					ref: {
+						id: 'default_e5aa9d3aa0f6',
+						mime_type: 'application/json',
+						size_bytes: 686923,
+						filename: 'tool-result-youtube_get_metadata.json'
+					}
+				}
+			],
+			page: 1,
+			page_size: 8,
+			page_count: 1,
+			total_count: 2,
+			has_more: false,
+			protocol_version: '0.1.0'
+		};
+		const fetchImpl = vi.fn(async () => okResponse(realFrame));
+		const client = new HarborClient({ connection: CONNECTION, fetchImpl });
+		const resp = await client.search.query({ query: 'youtube' });
+
+		expect(resp.total_count).toBe(2);
+		expect(resp.rows).toHaveLength(2);
+		expect(resp.rows[0].index).toBe('tasks');
+		expect(resp.rows[0].preview).toContain('status=complete');
+		// Heavy-content row carries a `ref`, not an inline preview (D-026).
+		expect(resp.rows[1].index).toBe('artifacts');
+		expect(resp.rows[1].preview).toBeUndefined();
+		expect(resp.rows[1].ref?.mime_type).toBe('application/json');
+		expect(resp.rows[1].ref?.filename).toBe('tool-result-youtube_get_metadata.json');
+	});
+});

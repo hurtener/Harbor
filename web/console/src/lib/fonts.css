@@ -1,0 +1,23 @@
+/*
+ * Harbor Console — self-hosted Inter (Phase 108b).
+ *
+ * The mock's type is the Inter family; the console previously fell back to the
+ * native system UI stack. Inter ships as ONE variable woff2 in
+ * `static/fonts/` (no npm dependency — CLAUDE.md §4.5 / §13: no new frontend
+ * deps). `--font-sans` (tokens.css) lists 'Inter Variable' first and keeps the
+ * system stack as the fallback while the font loads / if it 404s.
+ */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/inter-variable.woff2') format('woff2');
+}
+
+/* Global default so every surface — including portals/overlays and any
+   route outside the app shell — inherits Inter rather than the UA serif. */
+html,
+body {
+  font-family: var(--font-sans);
+}
