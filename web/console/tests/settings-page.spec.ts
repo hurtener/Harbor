@@ -1,17 +1,24 @@
-// Harbor Console e2e — Settings page per-page spec (Phase 73m / D-129).
+// Harbor Console e2e — Settings page per-page spec (Phase 108f / D-178 —
+// calm single-section model; supersedes the Phase 73m / D-129 paginated-
+// cards composition).
 //
-// Covers the Settings page:
+// Covers the Settings page in the single-section model:
 //   (a) the page route serves + hydrates inside the app shell,
-//   (b) the section-nav rail lists the 12 sections + anchors scroll,
-//   (c) the Connected-Runtimes card's `+ Add Runtime` round-trips
-//       through the Console DB (a new runtime row appears),
+//   (b) the sub-nav rail lists the sections + clicking `settings-subnav-
+//       about` makes `settings-active-section` read "About",
+//   (c) the default (connected-runtimes) section's `+ Add Runtime`
+//       round-trips through the Console DB (a new runtime row appears),
 //   (d) the `Rotate token` action degrades to disabled-with-tooltip
-//       when the connection lacks the admin scope claim (CONVENTIONS.md
-//       §5 — no stubbed action presented as done),
+//       when the connection lacks the admin scope claim, and is enabled
+//       with it (click the per-runtime-auth nav entry first),
 //   (e) the mock-mode banner renders conditionally on the backend
-//       `llm.posture` `MockMode` flag,
-//   (f) the four-state `<PageState>` Disconnected branch renders when
-//       no Runtime connection is configured.
+//       `llm.posture` `MockMode` flag (click the llm-posture nav entry),
+//   (f) the page shell renders when no Runtime connection is configured,
+//   (g) the D-158 disconnected-attach path — the default connected-
+//       runtimes section (console-local) renders + the add form is
+//       reachable while disconnected, and selecting a runtime-posture
+//       section then shows the consolidated PageState disconnected branch,
+//   (h) the 83u disconnected-boot localStorage-write follow-through.
 //
 // SKIP semantics (mirrors `harness.spec.ts`): pre-73m the `harbor
 // console` subcommand was absent and the whole suite SKIPped. With 73m
@@ -74,7 +81,7 @@ test.describe("Console Settings page", () => {
     ).toBeVisible();
   });
 
-  test("(b) the section-nav rail lists the Settings sections", async ({
+  test("(b) the sub-nav rail lists the sections", async ({
     page,
     runtime,
     helpers,
@@ -85,9 +92,9 @@ test.describe("Console Settings page", () => {
 
     await expect(
       page.locator("[data-testid='settings-subnav']"),
-      "the section-nav rail is present",
+      "the sub-nav rail is present",
     ).toBeVisible();
-    // A representative sample of the 12 section anchors.
+    // A representative sample of the section anchors across both groups.
     for (const section of [
       "connected-runtimes",
       "runtime-info",
@@ -97,12 +104,12 @@ test.describe("Console Settings page", () => {
     ]) {
       await expect(
         page.locator(`[data-testid='settings-subnav-${section}']`),
-        `the section-nav rail has the ${section} entry`,
+        `the sub-nav rail has the ${section} entry`,
       ).toBeVisible();
     }
   });
 
-  test("(b) clicking a section-nav entry switches the active section", async ({
+  test("(b) clicking a sub-nav entry switches the active section", async ({
     page,
     runtime,
     helpers,
@@ -114,7 +121,7 @@ test.describe("Console Settings page", () => {
     await page.locator("[data-testid='settings-subnav-about']").click();
     await expect(
       page.locator("[data-testid='settings-active-section']"),
-      "the detail rail reflects the selected section",
+      "the active-section heading reflects the selected section",
     ).toHaveText("About");
   });
 
@@ -127,10 +134,11 @@ test.describe("Console Settings page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("settings");
 
-    // Open the Add Runtime form, fill the six fields the Phase 105
-    // widening requires (name, URL, token, tenant, user, session),
-    // submit. The token is the live `runtime.token` so the value
-    // satisfies the JWT-shape validation.
+    // The default section is connected-runtimes, so the Add Runtime form
+    // is reachable on first render. Open it, fill the six fields the
+    // Phase 105 widening requires (name, URL, token, tenant, user,
+    // session), submit. The token is the live `runtime.token` so the
+    // value satisfies the JWT-shape validation.
     await page.locator("[data-testid='add-runtime-open']").click();
     await page.locator("[data-testid='add-runtime-name']").fill("e2e-runtime");
     await page
@@ -230,7 +238,7 @@ test.describe("Console Settings page", () => {
     ).toBe(true);
   });
 
-  test("(f) the Disconnected PageState renders when no Runtime is attached", async ({
+  test("(f) the page shell renders when no Runtime is attached", async ({
     page,
     runtime,
     helpers,
@@ -251,19 +259,18 @@ test.describe("Console Settings page", () => {
     runtime,
     helpers,
   }) => {
-    // Phase 83p — the Connected Runtimes form MUST render when the
-    // Console has no Runtime attached (it's the operator's only path to
-    // attach one). The pre-83p Settings page wrapped EVERY section in
-    // <PageState>, so the disconnected state short-circuited the whole
-    // page to the "Not connected" placeholder — hiding the form an
-    // operator needs to fix the disconnection. The two-group layout
-    // (console-local sections render unconditionally; runtime-posture
-    // sections wrap in PageState) closes Bug F1 from the post-83k
-    // walkthrough.
+    // Phase 83p / D-158 (preserved by 108f) — the Connected Runtimes form
+    // MUST render when the Console has no Runtime attached (it's the
+    // operator's only path to attach one). In the single-section model
+    // the default section is connected-runtimes, so on a disconnected
+    // boot the console-local cards render directly while a runtime-
+    // posture section routes through the consolidated PageState
+    // disconnected branch.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("settings");
 
-    // The console-local card group renders unconditionally.
+    // The default section is connected-runtimes (console-local) — it
+    // renders unconditionally even when no Runtime is attached.
     await expect(
       page.locator("[data-testid='settings-cards-console-local']"),
       "console-local cards render even when no Runtime is attached",
@@ -291,9 +298,10 @@ test.describe("Console Settings page", () => {
       "base URL input is in the DOM after opening the form",
     ).toBeVisible();
 
-    // The runtime-posture card group is wrapped in <PageState> and
-    // shows the consolidated disconnected placeholder (one card, not
-    // N empty per-section placeholders).
+    // Selecting a runtime-posture section routes through <PageState> and
+    // shows the consolidated disconnected placeholder (one card, not N
+    // empty per-section placeholders).
+    await page.locator("[data-testid='settings-subnav-runtime-info']").click();
     await expect(
       page.locator("[data-testid='page-state-disconnected']").first(),
       "runtime-posture sections route through PageState (disconnected branch)",
@@ -320,11 +328,8 @@ test.describe("Console Settings page", () => {
     //      the DB is not open, so this is deferred and the catch-up
     //      in SettingsDBController.load() runs after the page reload.
     //
-    // This test exercises (1) end-to-end. The Playwright harness
-    // pre-seeds the auth token but NOT the runtime connection triple,
-    // so `connection.ts::resolveConnection` returns null on first mount
-    // (the operator's first-boot state). Clicking Add writes the
-    // localStorage `base_url` key, which is the load-bearing assertion.
+    // In the 108f single-section model the default section is connected-
+    // runtimes, so the add flow is reachable on a disconnected first boot.
     await helpers.seedAuth(runtime.token);
     await helpers.gotoPage("settings");
 
@@ -336,9 +341,6 @@ test.describe("Console Settings page", () => {
 
     // Open the add-form, fill it, and submit. The submit triggers a
     // page reload (the new connection only takes effect on next mount).
-    // We intercept the reload by capturing the localStorage write
-    // BEFORE the navigation completes — Playwright's `page.evaluate`
-    // runs synchronously against the current page context.
     const addBtn = page.locator("button:has-text('+ Add Runtime')").first();
     await addBtn.click();
     await page
