@@ -7,7 +7,13 @@
  * saturation (including the zero-capacity and over-capacity edges).
  */
 import { describe, expect, it } from 'vitest';
-import { projectionToGraph, edgeSaturation } from '../topology-adapter.js';
+import {
+	projectionToGraph,
+	edgeSaturation,
+	legendCounts,
+	filterProjection,
+	type NodeStateMap
+} from '../topology-adapter.js';
 import type { TopologyProjection } from '../../protocol/topology.js';
 
 const SAMPLE: TopologyProjection = {
@@ -66,5 +72,114 @@ describe('topology-adapter: edgeSaturation', () => {
 	it('returns 0 for a zero or negative capacity', () => {
 		expect(edgeSaturation(5, 0)).toBe(0);
 		expect(edgeSaturation(5, -1)).toBe(0);
+	});
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 108d Stage 2 — node-state enrichment + legend + filtering     */
+/*                                                                     */
+/* The validation runtime is planner-shaped and returns               */
+/* `unknown_method` for `topology.snapshot` LIVE, so the topology      */
+/* graph is verified STRUCTURALLY here against the pure adapter the    */
+/* `<TopologyCanvas>` wrapper + shared `<GraphNode>` render verbatim   */
+/* (the repo carries no `@testing-library/svelte`, so the structural   */
+/* graph assertions are made against this pure layer — the project's   */
+/* existing pure-logic test pattern). The fixture carries a FAILED     */
+/* terminal node + multiple edges + multiple node states.              */
+/* ------------------------------------------------------------------ */
+
+const STAGE2: TopologyProjection = {
+	engine_id: 'eng-1',
+	occurred_at: '2026-05-18T00:00:00Z',
+	nodes: [
+		{ name: 'plan', kind: 'inlet' },
+		{ name: 'fetch', kind: 'node' },
+		{ name: 'aggregate', kind: 'node' },
+		{ name: 'queued', kind: 'node' },
+		{ name: 'reject', kind: 'outlet' }
+	],
+	edges: [
+		{ from: 'plan', to: 'fetch', queue_depth: 0, queue_capacity: 4 },
+		{ from: 'fetch', to: 'aggregate', queue_depth: 2, queue_capacity: 4 },
+		{ from: 'fetch', to: 'reject', queue_depth: 4, queue_capacity: 4 }
+	]
+};
+
+const STATES: NodeStateMap = {
+	plan: { state: 'completed' },
+	fetch: { state: 'running' },
+	aggregate: { state: 'paused' },
+	queued: { state: 'pending' },
+	reject: { state: 'failed', failureCode: 'E_TOOL' }
+};
+
+describe('topology-adapter: node-state enrichment (Stage 2)', () => {
+	it('renders all nodes and all edges from the projection', () => {
+		const graph = projectionToGraph(STAGE2, STATES);
+		expect(graph.nodes).toHaveLength(5);
+		expect(graph.edges).toHaveLength(3);
+		expect(graph.edges.map((e) => `${e.from}->${e.to}`)).toEqual([
+			'plan->fetch',
+			'fetch->aggregate',
+			'fetch->reject'
+		]);
+	});
+
+	it('carries Console-derived node state into the shared meta bag', () => {
+		const graph = projectionToGraph(STAGE2, STATES);
+		expect(graph.nodes.find((n) => n.id === 'fetch')?.meta?.['state']).toBe('running');
+	});
+
+	it('styles the failed/reject terminal node with its failure code', () => {
+		// The shared GraphNode renders `meta.state === 'failed'` as a red
+		// (error) node + the failure code tag.
+		const graph = projectionToGraph(STAGE2, STATES);
+		const failed = graph.nodes.find((n) => n.id === 'reject');
+		expect(failed?.meta?.['state']).toBe('failed');
+		expect(failed?.meta?.['failure_code']).toBe('E_TOOL');
+	});
+
+	it('fabricates no state when no state map is supplied', () => {
+		const graph = projectionToGraph(STAGE2);
+		for (const n of graph.nodes) {
+			expect(n.meta?.['state']).toBeUndefined();
+		}
+	});
+});
+
+describe('topology-adapter: legendCounts (Stage 2)', () => {
+	it('counts each node state for the canvas-corner legend', () => {
+		const c = legendCounts(STAGE2, STATES);
+		expect(c.all).toBe(5);
+		expect(c.running).toBe(1);
+		expect(c.pending).toBe(1);
+		expect(c.completed).toBe(1);
+		expect(c.paused).toBe(1);
+		expect(c.failed).toBe(1);
+	});
+
+	it('reports zero per-state counts on a runtime with no node states', () => {
+		const c = legendCounts(STAGE2, {});
+		expect(c.all).toBe(5);
+		expect(c.running + c.pending + c.completed + c.paused + c.failed).toBe(0);
+	});
+});
+
+describe('topology-adapter: filterProjection (Stage 2)', () => {
+	it('scopes nodes by status chip and drops dangling edges', () => {
+		const f = filterProjection(STAGE2, STATES, 'failed', '');
+		expect(f.nodes.map((n) => n.name)).toEqual(['reject']);
+		expect(f.edges).toHaveLength(0);
+	});
+
+	it('scopes nodes by tool-name substring', () => {
+		const f = filterProjection(STAGE2, STATES, 'all', 'fetch');
+		expect(f.nodes.map((n) => n.name)).toEqual(['fetch']);
+	});
+
+	it('returns the full projection for All + empty query', () => {
+		const f = filterProjection(STAGE2, STATES, 'all', '');
+		expect(f.nodes).toHaveLength(5);
+		expect(f.edges).toHaveLength(3);
 	});
 });

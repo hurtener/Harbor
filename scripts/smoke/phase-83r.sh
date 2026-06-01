@@ -44,6 +44,12 @@ for page in overview live-runtime sessions tasks agents tools events background-
     if [ "${page}" = "overview" ]; then
         file="web/console/src/lib/components/overview/ContextAuditRow.svelte"
     fi
+    # Phase 108e: the Live Runtime cockpit moved its only disconnected-gated
+    # control (the Refresh button) onto the runtime posture header, which
+    # imports the canonical tooltip — assert there for live-runtime.
+    if [ "${page}" = "live-runtime" ]; then
+        file="web/console/src/lib/components/live-runtime/runtime-posture-header.svelte"
+    fi
     assert_grep_present \
         'DISCONNECTED_TOOLTIP' \
         "${file}" \
@@ -60,17 +66,21 @@ assert_grep_present \
     'Overview CostRollupCard exposes a disconnected branch (W1)'
 
 # -----------------------------------------------------------------------------
-# W2 — Live Runtime composer accepts the disconnected prop + every verb
-# routes through tipFor() (which prefers the disconnected tooltip).
+# W2 — Live Runtime disconnected gating. Phase 108e removed the free-floating
+# run composer (D-062 — conversational steering belongs to the Playground), so
+# the W2 composer-prop assertions no longer apply. The W2 INTENT — the Live
+# Runtime page's disconnected controls render disabled-with-the-canonical-
+# tooltip — is preserved by the posture header's Refresh button, which accepts
+# the `disconnected` prop and carries DISCONNECTED_TOOLTIP.
 # -----------------------------------------------------------------------------
 assert_grep_present \
-    'disconnected\?: boolean' \
-    'web/console/src/lib/components/live-runtime/composer/run-composer.svelte' \
-    'RunComposer accepts the disconnected prop (W2)'
+    'disconnected: boolean' \
+    'web/console/src/lib/components/live-runtime/runtime-posture-header.svelte' \
+    'Live Runtime posture header accepts the disconnected prop (W2)'
 assert_grep_present \
-    'composer-textarea' \
-    'web/console/src/lib/components/live-runtime/composer/run-composer.svelte' \
-    'RunComposer textarea is the canonical composer-textarea testid'
+    'DISCONNECTED_TOOLTIP' \
+    'web/console/src/lib/components/live-runtime/runtime-posture-header.svelte' \
+    'Live Runtime posture header gates Refresh on the canonical tooltip (W2)'
 
 # -----------------------------------------------------------------------------
 # N5 — Tools page collapses ToolDetailTabs when disconnected (one empty

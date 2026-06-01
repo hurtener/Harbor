@@ -180,3 +180,29 @@ Reconciliation of `docs/rfc/assets/console-live-runtime-page.png` against §3-§
 - **D-066 (control-scope on intervention verbs)** — mockup shows the elevated-operator view (Approve/Reject visible). Spec's existing rule (buttons hidden when JWT lacks the claim) preserved.
 - **D-062 (Live Runtime ≠ Sessions, Agents ≠ chatbots)** — mockup shows the topology workbench, not a chat surface. Confirmed.
 - **Runtime-lens principle (§7.1)** — every panel sources from a Protocol surface (events / snapshots). No standalone Console-only features.
+
+## 13. Reframe — single-runtime capability-adaptive cockpit (Phase 108e, 2026-06-01)
+
+**This section supersedes the topology-first composition** of §4 (page anatomy, "the topology graph at default") and §12 for the page's *spine*. The per-datum source map (§5), the binding carve-outs (§12 "No mockup violations"), and D-061/D-062/D-066/D-164 all stand and are reused. Recorded as **D-177** (supersedes the composition half of D-126).
+
+**Why.** `topology.snapshot` exists only on engine-graph runtimes; the dominant V1 shape is planner/RunLoop (`harbor dev`, most scaffolded agents), which returns `unknown_method` (D-164). A topology-first page is therefore an empty "topology not available" hero on the common runtime, and the remainder (steer-a-run + event table) duplicates the Playground (D-062). The 108d build confirmed it: sparse, Playground-overlapping, weak use of space.
+
+**The reframe.** Live Runtime is the **single-runtime operations cockpit** — the Overview(fleet) → one-runtime drill-down (a runtime switcher selects context; it never fans in — that is Overview). The page composes itself from the runtime's advertised `runtime.info` capabilities (Phase 84a): an always-present **spine** plus **capability-gated** panels. A new shape (engine, multi-agent, workflow, distributed) adds a panel entry to the registry, never a page rewrite. The free-floating Start/Redirect/Inject/User-message composer is **removed**; run-level steering is a drill into a session → Playground.
+
+### Capability → panel map
+
+| Panel | Capability gate | Protocol source | Shape |
+|---|---|---|---|
+| Runtime posture header (name · version · protocol · capability chips · switcher) | always | `runtime.info` (84a) | spine |
+| Activity counters (Pending/Running/Completed/Paused/Failed) | always | `tasks.list` strip / event-fold | spine |
+| Needs attention (pauses / approvals / auth-required) | always | `pause.list` + `pause.requested` / `tool.approval_requested` / `tool.auth_required`; resolve via approve/reject/resume (D-072, D-066-gated) | spine |
+| Live event stream | always | `GET /v1/events` SSE (§6.13) | spine |
+| Active sessions (drill → Sessions / Playground) | `sessions_list` (else event-fold of `session.opened`) | `sessions.list` / `sessions.inspect` | spine (degrades to event-derived) |
+| Cost & governance posture | `governance_posture` / `llm.cost.recorded` | 72g posture + `llm.cost.recorded` aggregate | gated → honest "not advertised" |
+| Health | `runtime_health` | `runtime.health` (72f) | gated → honest |
+| Topology (graph + legend + timeline) | `topology_snapshot` | `topology.snapshot` (74) | gated → absent on planner |
+| (future) multi-agent / workflow / distributed | new capability key | future surfaces | gated, additive |
+
+**Honest states (CLAUDE.md §13).** A gated-absent panel renders "this runtime does not advertise `<X>`", never synthetic data. Topology node run-state (legend counts + failed-node styling) is Console-derived from the event stream — the wire projection carries no per-node state — empty → zeros.
+
+**Layout bar.** Viewport-locked (no full-page scroll; only inner regions scroll), shared baseline grid, full-bleed, deliberate negative space — and validated in the EMPTY/info state (what dev runtimes render), not only the populated one. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`.

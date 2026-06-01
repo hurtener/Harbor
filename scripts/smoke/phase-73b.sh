@@ -227,25 +227,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Static guard — the Metrics/Health empty states point to Phase 72f.
+# 8. Static guard — the Metrics/Health tabs are capability-probed honest
+#    states (Phase 108d Stage 2 supersedes the old Phase-72f pointer).
 # ---------------------------------------------------------------------------
 #
-# Brief 11 §LR-2: the Metrics + Health tabs render an empty-state
-# pointer to the responsible phase (72f) until that phase's
-# `metrics.snapshot` / `runtime.health` primitives land. The risk is
-# the pointer drifts on a renumber — this guard fails if the empty-
-# state copy stops referencing 72f, forcing an update.
+# Brief 11 §LR-2 originally had the Metrics + Health tabs point to the
+# responsible phase (72f) until its primitives land. Phase 108d Stage 2
+# replaced that hardcoded phase-pointer copy with a real capability
+# probe: the tabs take an `available` prop (resolved from
+# `runtime.info` capabilities) and render an honest "this runtime does
+# not advertise metrics/health" info state — no fabricated data, no
+# hardcoded phase numbers (CLAUDE.md §13 — no fabrication, no silent
+# degradation). This guard now fails if a tab regresses to a hardcoded
+# phase pointer OR drops the capability-probe `available` prop / the
+# honest copy. (§17.6 in-wave cross-phase fix — the 108d wave owns it.)
 
-METRICS_EMPTY="${PAGE_DIR}/metrics-tab-empty.svelte"
-HEALTH_EMPTY="${PAGE_DIR}/health-tab-empty.svelte"
-if [[ -f "${METRICS_EMPTY}" && -f "${HEALTH_EMPTY}" ]]; then
-    if grep -q '72f' "${METRICS_EMPTY}" && grep -q '72f' "${HEALTH_EMPTY}"; then
-        ok 'phase 73b: Metrics/Health empty states reference Phase 72f (Brief 11 §LR-2 pointer intact)'
+# Phase 108e reframed the page into the capability cockpit: the tab strip
+# (and the metrics-tab-empty / health-tab-empty components) are GONE. Health
+# is now a spine cockpit panel (`health-panel.svelte`) that renders REAL
+# `runtime.health` data and an honest "not available on this runtime" state on
+# a throw — no fabrication, no hardcoded phase pointer. The 73b intent (the
+# health surface is a capability-probed honest state, never a "72f pointer")
+# is preserved, repointed to the cockpit health panel.
+HEALTH_PANEL="web/console/src/lib/components/live-runtime/health-panel.svelte"
+if [[ -f "${HEALTH_PANEL}" ]]; then
+    # The honest no-data copy is present and the RENDERED markup carries no
+    # hardcoded "Phase 72…" pointer (a 72f reference in a code COMMENT is the
+    # legitimate data-source citation, not a UI phase pointer).
+    if grep -qi 'not available on this runtime' "${HEALTH_PANEL}" \
+        && ! grep -qiE 'Phase 72|coming in Phase' "${HEALTH_PANEL}"; then
+        ok 'phase 73b: Health is a capability-probed honest cockpit panel (Phase 108e superseded the tab/72f pointer)'
     else
-        fail 'phase 73b: a Metrics/Health empty state lost its Phase 72f pointer — Brief 11 §LR-2'
+        fail 'phase 73b: the Health panel is not a capability-probed honest state — regressed to fabricated data or a phase pointer'
     fi
 else
-    skip 'phase 73b: Metrics/Health empty-state components not present yet'
+    skip 'phase 73b: Health cockpit panel not present yet'
 fi
 
 smoke_summary

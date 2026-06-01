@@ -28,14 +28,27 @@
   }: Props = $props();
 
   const label = $derived(node.label ?? node.id);
+
+  // Phase 108d (Live Runtime): an OPTIONAL, additive per-node run state +
+  // failure code carried in the shared `meta` bag (`meta.state` /
+  // `meta.failure_code`). The Live Runtime topology canvas sets it from
+  // the live event stream; the Flows page sets no `meta.state`, so
+  // `dataStatus` is undefined there and the original kind-based styling
+  // is unchanged. A `failed` node renders with a red border + its
+  // failure-code tag.
+  const dataStatus = $derived(node.meta?.['state']);
+  const failureCode = $derived(node.meta?.['failure_code']);
+  const isError = $derived(dataStatus === 'failed');
 </script>
 
 <g
   class="graph-node"
   class:selected
+  class:error={isError}
   data-testid="graph-node"
   data-node-id={node.id}
   data-node-kind={node.kind}
+  data-status={dataStatus}
   role="button"
   tabindex="0"
   aria-label={`Flow node ${label} (${node.kind})`}
@@ -50,7 +63,11 @@
 >
   <rect {x} {y} {width} {height} rx="6" class={`node-rect kind-${node.kind}`} />
   <text x={x + width / 2} y={y + height / 2} class="node-label">{label}</text>
-  <text x={x + width / 2} y={y + height - 6} class="node-kind">{node.kind}</text>
+  {#if isError && failureCode}
+    <text x={x + width / 2} y={y + height - 6} class="node-failure">{failureCode}</text>
+  {:else}
+    <text x={x + width / 2} y={y + height - 6} class="node-kind">{node.kind}</text>
+  {/if}
 </g>
 
 <style>
@@ -89,6 +106,21 @@
 
   .kind-artifact_emitter {
     stroke: var(--color-text-muted);
+  }
+
+  /* Phase 108d — a failed / reject node renders with a red border. The
+     selector is scoped to the error class, so non-Live-Runtime consumers
+     (Flows, which sets no `meta.state`) are unaffected. */
+  .graph-node.error .node-rect {
+    stroke: var(--color-danger);
+    stroke-width: 2;
+  }
+
+  .node-failure {
+    fill: var(--color-danger);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    text-anchor: middle;
   }
 
   .node-label {
