@@ -8,14 +8,13 @@
   //   - the four-state `<PageState>` async contract (CONVENTIONS.md §4):
   //     Disconnected / Loading / Error / Empty, mutually exclusive; the
   //     Error state has a working Retry and suppresses any stale view.
-  //   - the shared `ui/` inventory (CONVENTIONS.md §3): `PageHeader`,
-  //     `FilterBar`, `SavedViewChips`, `DetailRail`/`RailCard`,
-  //     `Pagination`, `StatusChip`, `ConnectionFooter`, `PageState`.
-  //     The §5 depth-bar primary view is the topology CANVAS (in place
-  //     of a `DataTable`) — the shared `<EngineGraphCanvas>` from
-  //     `components/graph/`, reused (NOT forked) via the
-  //     `<TopologyCanvas>` adapter. Live-Runtime-specific pieces live
-  //     in `components/live-runtime/`.
+  //   - the shared `ui/` inventory (CONVENTIONS.md §3): `DetailRail` /
+  //     `RailCard`, `Pagination`, `StatusChip`, `PageState`. A header row
+  //     (the live status-counter strip + Refresh) + a tab-strip toolbar
+  //     (Topology / Timeline / Metrics / Health) replace the saved-view
+  //     FilterBar the mock does not have (Phase 108d). The primary view is
+  //     the topology CANVAS — the shared `<TopologyCanvas>`. Live-Runtime
+  //     pieces live in `components/live-runtime/`.
   //   - the unified `HarborClient` + `connection.ts` (CONVENTIONS.md §6):
   //     `client.tasks.list` (the status-counter-strip aggregate),
   //     `client.tasks.get` (per-task detail), `client.topology.snapshot`
@@ -23,9 +22,6 @@
   //     SHIPPED Phase 54 control verbs via `client.control.*`. No
   //     hand-rolled `fetch`, no page-local client, no direct
   //     `localStorage`.
-  //   - Console-DB-backed `SavedViewChips` (D-061): topology/timeline +
-  //     trace-toggle presets persist in the Console IndexedDB store via
-  //     `LiveRuntimeSavedFilters`.
   //
   // # NOT the chat module (D-091 + CLAUDE.md §4.5 #11)
   //
@@ -38,12 +34,10 @@
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
   import { onMount, onDestroy } from 'svelte';
-  import PageHeader from '$lib/components/ui/PageHeader.svelte';
-  import FilterBar from '$lib/components/ui/FilterBar.svelte';
-  import SavedViewChips, { type SavedView } from '$lib/components/ui/SavedViewChips.svelte';
   import DetailRail from '$lib/components/ui/DetailRail.svelte';
   import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
   // The bottom status bar is rendered ONCE by the app shell
   // ((console)/+layout.svelte — CONVENTIONS.md §2, the global AppStatusBar).
   // Per-page footer strips duplicated it (post-83k N2 + Phase 108b); the
@@ -85,12 +79,6 @@
     DISCONNECTED_TOOLTIP,
     type RuntimeConnection
   } from '$lib/connection.js';
-  import { openListPageDB } from '$lib/db/console_db.js';
-  import { operatorIdOf } from '$lib/db/schema.js';
-  import {
-    LiveRuntimeSavedFilters,
-    type LiveRuntimeViewSpec
-  } from '$lib/db/saved_filters_live_runtime.js';
 
   /* ---- connection + client (CONVENTIONS.md §6) -------------------- */
   let { client: injectedClient }: { client?: ProtocolClient } = $props();
@@ -147,13 +135,6 @@
   /* ---- pagination (the recent-events page window) ----------------- */
   let pageIndex = $state(1);
   let pageSize = $state(50);
-
-  /* ---- saved views (Console-DB-backed, D-061) --------------------- */
-  let savedFilters = $state<LiveRuntimeSavedFilters | null>(null);
-  let savedViews = $state<SavedView[]>([]);
-  let savedSpecs = $state<Map<string, LiveRuntimeViewSpec>>(new Map());
-  let activeSavedId = $state<string | null>(null);
-  let saveName = $state('');
 
   /* ================================================================ */
   /* Derived                                                           */
@@ -356,7 +337,6 @@
 
   function setTab(tab: LiveRuntimeTab): void {
     activeTab = tab;
-    activeSavedId = null;
   }
 
   function toggleTrace(next: boolean): void {
@@ -428,56 +408,6 @@
   }
 
   /* ================================================================ */
-  /* Saved views (Console-DB-backed, D-061)                            */
-  /* ================================================================ */
-
-  async function refreshSavedViews(): Promise<void> {
-    if (savedFilters === null) {
-      return;
-    }
-    try {
-      const records = await savedFilters.list();
-      savedViews = records.map((r) => ({ id: r.id, name: r.name }));
-      savedSpecs = new Map(records.map((r) => [r.id, r.viewSpec]));
-    } catch {
-      savedViews = [];
-      savedSpecs = new Map();
-    }
-  }
-
-  function applySavedView(id: string): void {
-    const spec = savedSpecs.get(id);
-    if (spec === undefined) {
-      return;
-    }
-    activeTab = spec.tab;
-    traceOn = spec.traceOn;
-    activeSavedId = id;
-  }
-
-  async function deleteSavedView(id: string): Promise<void> {
-    if (savedFilters === null) {
-      return;
-    }
-    await savedFilters.delete(id);
-    if (activeSavedId === id) {
-      activeSavedId = null;
-    }
-    await refreshSavedViews();
-  }
-
-  async function saveCurrentView(): Promise<void> {
-    const name = saveName.trim();
-    if (name.length === 0 || savedFilters === null) {
-      return;
-    }
-    const created = await savedFilters.create(name, { tab: activeTab, traceOn });
-    saveName = '';
-    await refreshSavedViews();
-    activeSavedId = created.id;
-  }
-
-  /* ================================================================ */
   /* Boot                                                              */
   /* ================================================================ */
 
@@ -491,26 +421,40 @@
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
 
-    // Open the live event stream — the bottom-dock Event Stream pane.
+    // Open the live event stream — the bottom-dock Event Stream pane. The
+    // Runtime emits NAMED SSE frames, so the subscription MUST list the event
+    // types it wants (108c named-event fix) — an empty open() receives nothing.
     const sub = new EventsSubscription(
       (client as HarborClient).events ?? new HarborClient({ connection }).events
     );
-    sub.open();
+    sub.open({
+      eventTypes: [
+        'task.spawned',
+        'task.started',
+        'task.completed',
+        'task.failed',
+        'task.cancelled',
+        'tool.invoked',
+        'tool.completed',
+        'tool.failed',
+        'planner.decision',
+        'planner.finish',
+        'planner.error',
+        'pause.requested',
+        'pause.resumed',
+        'tool.approval_requested',
+        'tool.approved',
+        'tool.rejected',
+        'tool.auth_required',
+        'control.received',
+        'control.applied',
+        'control.rejected',
+        'session.opened',
+        'session.closed',
+        'llm.cost.recorded'
+      ]
+    });
     subscription = sub;
-
-    void (async () => {
-      try {
-        const db = await openListPageDB(connection!);
-        const operator = await operatorIdOf(
-          connection!.identity.tenant,
-          connection!.identity.user
-        );
-        savedFilters = new LiveRuntimeSavedFilters(db, operator);
-        await refreshSavedViews();
-      } catch {
-        savedFilters = null;
-      }
-    })();
 
     void load();
   });
@@ -525,64 +469,28 @@
 </svelte:head>
 
 <div class="page" data-testid="live-runtime-page">
-  <PageHeader
-    title="Live Runtime"
-    subtitle="Present-tense execution workbench · topology + steering"
-  >
-    {#snippet actions()}
-      <button
-        type="button"
-        class="control"
-        data-testid="live-runtime-refresh"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void load()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-  </PageHeader>
+  <!-- Header row: the live status-counter strip (left) + Refresh (right).
+       Runtime name / breadcrumb live in the app-shell chrome (108b). -->
+  <div class="header-row">
+    <StatusCounterStripView {strip} />
+    <button
+      type="button"
+      class="refresh"
+      data-testid="live-runtime-refresh"
+      disabled={disconnected}
+      title={disconnected ? DISCONNECTED_TOOLTIP : 'Refresh'}
+      onclick={() => void load()}
+    >
+      <RotateCw size={14} aria-hidden="true" /> Refresh
+    </button>
+  </div>
 
-  <StatusCounterStripView {strip} />
-
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeSavedId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <input
-        class="control save-input"
-        type="text"
-        placeholder="Save current as…"
-        bind:value={saveName}
-        data-testid="live-runtime-save-name"
-        disabled={savedFilters === null || disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onkeydown={(e) => e.key === 'Enter' && void saveCurrentView()}
-      />
-      <button
-        type="button"
-        class="control"
-        data-testid="live-runtime-save-view"
-        disabled={savedFilters === null || saveName.trim().length === 0 || disconnected}
-        title={disconnected
-          ? DISCONNECTED_TOOLTIP
-          : savedFilters === null
-            ? 'Console-local saved-view store unavailable'
-            : undefined}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
-
-    {#snippet facets()}
-      <TabStrip active={activeTab} onselect={setTab} />
-    {/snippet}
-  </FilterBar>
+  <!-- Tab strip toolbar (Topology | Timeline | Metrics | Health). The mock's
+       Status/Type/Run/Time-range/Pause filters belong to the topology canvas
+       controls (Stage 2); the saved-view bar the mock omits is removed. -->
+  <div class="toolbar">
+    <TabStrip active={activeTab} onselect={setTab} />
+  </div>
 
   <div class="layout">
     <div class="main-col">
@@ -597,7 +505,7 @@
               No engine graph is registered, or the Runtime exposes no
               nodes yet.
             </p>
-            <button type="button" class="control" onclick={() => void load()}>
+            <button type="button" class="refresh" onclick={() => void load()}>
               Reload
             </button>
           </div>
@@ -721,7 +629,23 @@
     align-items: start;
   }
 
-  .control {
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+  }
+
+  .refresh {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
     background: var(--color-surface-raised);
     color: var(--color-text);
     border: var(--border-hairline);
@@ -731,13 +655,9 @@
     cursor: pointer;
   }
 
-  .control:disabled {
+  .refresh:disabled {
     opacity: 0.4;
     cursor: not-allowed;
-  }
-
-  .save-input {
-    width: var(--size-search-min);
   }
 
   .canvas-skeleton {

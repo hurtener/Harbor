@@ -30,7 +30,10 @@ source "scripts/smoke/common.sh"
 # the mock has none — and personal overview layouts are deferred,
 # page-overview.md §10), so Overview is out of the saved-view label/placeholder
 # loops below.
-for page in live-runtime sessions tasks agents tools events background-jobs flows memory artifacts; do
+# Phase 108d removed Live Runtime's saved-view bar (the mock has the
+# tab/topology toolbar, not a saved-view strip) — so live-runtime is out of the
+# saved-view label/placeholder loops (still in the footer loop below).
+for page in sessions tasks agents tools events background-jobs flows memory artifacts; do
     file="web/console/src/routes/(console)/${page}/+page.svelte"
     if grep -qE '^[[:space:]]+Save view[[:space:]]*$' "${file}" 2>/dev/null; then
         ok "${page} page uses 'Save view' as the saved-view button label (N7)"
@@ -52,7 +55,7 @@ fi
 # N7 — saved-view input placeholder reads "Save current as…" everywhere
 # the input is rendered (only pages with a "save name" text input).
 # -----------------------------------------------------------------------------
-for page in live-runtime tasks tools background-jobs; do
+for page in tasks tools background-jobs; do
     file="web/console/src/routes/(console)/${page}/+page.svelte"
     assert_grep_present \
         'placeholder="Save current as…"' \

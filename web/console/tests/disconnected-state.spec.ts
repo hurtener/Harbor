@@ -103,10 +103,9 @@ test.describe("Console disconnected-state contract (Phase 83r/83s + Phase 105 re
       slug: Parameters<typeof helpers.gotoPage>[0];
       testid: string;
     }> = [
-      // Overview dropped its saved-view bar in Phase 108c — the page's top
-      // FilterBar was removed (the mock has none) and personal overview
-      // layouts are deferred (page-overview.md §10). No Save-view button here.
-      { slug: "live-runtime", testid: "live-runtime-save-view" },
+      // Overview (108c) and Live Runtime (108d) dropped their saved-view bars —
+      // the mocks have no saved-view strip on those pages — so neither appears
+      // in this per-page Save-view label check.
       { slug: "sessions", testid: "sessions-save-view" },
       { slug: "tasks", testid: "tasks-save-filter" },
       { slug: "agents", testid: "agents-save-view" },
