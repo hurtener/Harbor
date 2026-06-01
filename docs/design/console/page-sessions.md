@@ -150,3 +150,41 @@ Reconciliation of `docs/rfc/assets/console-sessions-page.png` against §3-§7.
 - **D-061** — saved filters live in Console DB; session/intervention/artifact data sources from Protocol.
 - **D-066** — Cancel (and bulk-cancel) row actions gated on control-scope.
 - **D-064** — Convert-to-Evaluation is visible but disabled with tooltip; mockup respects.
+
+## 13. Reframe note — Phase 108g (2026-06-01)
+
+The shipped Sessions page (Phase 73c / D-122) was rebuilt under the page-polish
+pass to the carded `.panel.card` + `.panel-title` vocabulary the four done
+pages set (Overview, Live Runtime, Settings, Playground), and **every datum and
+action was wired to the shipped Protocol surface** — the two placeholders D-122
+left are gone (see D-179):
+
+- **The detail bottom-dock is real, not blurbs.** The five tabs (Trajectory |
+  Events | Cost History | Control History | Interventions) each render a
+  session-filtered projection of the shipped `events.subscribe` SSE: Trajectory
+  from `planner.*` / `tool.*` / `task.*` lifecycle events as a step timeline;
+  Events as the raw filtered log; Cost History from `llm.cost.recorded` summed
+  client-side (reusing `overview/cost.ts`); Control History from `control.*`;
+  Interventions from `pause.*` / `tool.approval_*` / `tool.auth_*` + a
+  `pause.list` backfill, with a real Resume action (`resume` / `approve` /
+  `reject`).
+- **Bulk Cancel / Pause are functional**, not disabled — each iterates the
+  shipped `cancel` / `pause` control method per selected session's active run,
+  gated on the control scope (D-066).
+
+Two §3 line-items are intentionally reframed to honest states rather than
+faked, because they have **no shipped V1 wire**:
+
+- **No Cost / Tokens column on the list** (departs from §3's per-row cost). The
+  Phase 08 registry does not model per-session cost (D-122) and no shipped
+  aggregate sums `llm.cost.recorded` per session (`events.aggregate` counts by
+  type only). Cost is surfaced where it can be computed honestly — the detail's
+  Cost History tab. A `cost.aggregate` wire (V1.3) would restore a list cost.
+- **The scrubbing "Replay trajectory" player and the Markdown full-transcript
+  export stay deferred** — both need the Phase 73 `state.history` /
+  `state.list_trajectories` surface (still `Pending`). The static Trajectory
+  timeline (from events) ships; "Export events (JSONL)" ships in place of the
+  full transcript.
+
+Convert-to-Evaluation remains disabled with a D-064 tooltip (Evaluations is
+post-V1). All other §3–§12 functionality is preserved and now genuinely wired.
