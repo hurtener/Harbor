@@ -242,19 +242,26 @@ fi
 # phase pointer OR drops the capability-probe `available` prop / the
 # honest copy. (§17.6 in-wave cross-phase fix — the 108d wave owns it.)
 
-METRICS_EMPTY="${PAGE_DIR}/metrics-tab-empty.svelte"
-HEALTH_EMPTY="${PAGE_DIR}/health-tab-empty.svelte"
-if [[ -f "${METRICS_EMPTY}" && -f "${HEALTH_EMPTY}" ]]; then
-    if grep -q 'available' "${METRICS_EMPTY}" && grep -q 'available' "${HEALTH_EMPTY}" \
-        && grep -q 'does not advertise' "${METRICS_EMPTY}" \
-        && grep -q 'does not advertise' "${HEALTH_EMPTY}" \
-        && ! grep -q '72f' "${METRICS_EMPTY}" && ! grep -q '72f' "${HEALTH_EMPTY}"; then
-        ok 'phase 73b: Metrics/Health tabs are capability-probed honest states (Phase 108d superseded the 72f pointer)'
+# Phase 108e reframed the page into the capability cockpit: the tab strip
+# (and the metrics-tab-empty / health-tab-empty components) are GONE. Health
+# is now a spine cockpit panel (`health-panel.svelte`) that renders REAL
+# `runtime.health` data and an honest "not available on this runtime" state on
+# a throw — no fabrication, no hardcoded phase pointer. The 73b intent (the
+# health surface is a capability-probed honest state, never a "72f pointer")
+# is preserved, repointed to the cockpit health panel.
+HEALTH_PANEL="web/console/src/lib/components/live-runtime/health-panel.svelte"
+if [[ -f "${HEALTH_PANEL}" ]]; then
+    # The honest no-data copy is present and the RENDERED markup carries no
+    # hardcoded "Phase 72…" pointer (a 72f reference in a code COMMENT is the
+    # legitimate data-source citation, not a UI phase pointer).
+    if grep -qi 'not available on this runtime' "${HEALTH_PANEL}" \
+        && ! grep -qiE 'Phase 72|coming in Phase' "${HEALTH_PANEL}"; then
+        ok 'phase 73b: Health is a capability-probed honest cockpit panel (Phase 108e superseded the tab/72f pointer)'
     else
-        fail 'phase 73b: a Metrics/Health tab is not a capability-probed honest state — Phase 108d Stage 2 (no available prop / honest copy, or regressed to a phase pointer)'
+        fail 'phase 73b: the Health panel is not a capability-probed honest state — regressed to fabricated data or a phase pointer'
     fi
 else
-    skip 'phase 73b: Metrics/Health tab components not present yet'
+    skip 'phase 73b: Health cockpit panel not present yet'
 fi
 
 smoke_summary

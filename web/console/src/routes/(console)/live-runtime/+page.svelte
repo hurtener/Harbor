@@ -1,354 +1,303 @@
 <script lang="ts">
-  // Harbor Console — Live Runtime page (`/live-runtime`), built on the
-  // D-121 design-system foundation (CONVENTIONS.md; Phase 73b / D-126).
+  // Harbor Console — Live Runtime page (`/live-runtime`) — the single-runtime
+  // capability-adaptive operations COCKPIT (Phase 108e / D-177; reframes the
+  // 108d topology-first build). The Overview(fleet) → runtime drill-down: one
+  // runtime selected at a time, its composition a PURE function of the
+  // runtime's advertised `runtime.info.capabilities`.
   //
-  // The operator's present-tense workbench for initiating, observing,
-  // and steering a live execution. Built entirely against the shared
-  // foundation:
-  //   - the four-state `<PageState>` async contract (CONVENTIONS.md §4):
-  //     Disconnected / Loading / Error / Empty, mutually exclusive; the
-  //     Error state has a working Retry and suppresses any stale view.
-  //   - the shared `ui/` inventory (CONVENTIONS.md §3): `DetailRail` /
-  //     `RailCard`, `Pagination`, `StatusChip`, `PageState`. A header row
-  //     (the live status-counter strip + Refresh) + a tab-strip toolbar
-  //     (Topology / Timeline / Metrics / Health) replace the saved-view
-  //     FilterBar the mock does not have (Phase 108d). The primary view is
-  //     the topology CANVAS — the shared `<TopologyCanvas>`. Live-Runtime
-  //     pieces live in `components/live-runtime/`.
-  //   - the unified `HarborClient` + `connection.ts` (CONVENTIONS.md §6):
-  //     `client.tasks.list` (the status-counter-strip aggregate),
-  //     `client.tasks.get` (per-task detail), `client.topology.snapshot`
-  //     (the canvas), `client.events` (the SSE Event Stream), and the
-  //     SHIPPED Phase 54 control verbs via `client.control.*`. No
-  //     hand-rolled `fetch`, no page-local client, no direct
-  //     `localStorage`.
+  // # The cockpit composition (panels.ts::resolvePanels)
   //
-  // # NOT the chat module (D-091 + CLAUDE.md §4.5 #11)
+  // A declarative capability→panel registry yields an always-present SPINE
+  // (posture · activity counters · needs-attention · live events · active
+  // sessions · health · cost) plus CAPABILITY-GATED panels (topology, gated on
+  // `topology_snapshot`; future multi-agent / workflow shapes are additive).
+  // The page reads `resolvePanels(capabilities)` and renders only the panels it
+  // returns — adding a runtime shape adds a registry entry, never a page
+  // rewrite. On a planner/RunLoop runtime (no topology) the cockpit is a full
+  // viewport of meaningful panels, not a topology hero void.
   //
-  // The composer (Start / Redirect / Inject / User message / Cancel /
-  // Pause / Resume) is built with NON-CHAT Skeleton primitives — see
-  // `components/live-runtime/composer/run-composer.svelte`. The chat
-  // module's V1 first consumer is 73n Playground; a second in-V1
-  // consumer would force extraction to `web/shared/chat/` (out of V1
-  // scope). This page proves no import from `$lib/chat/`.
+  // # No Playground overlap (D-062 / D-091)
+  //
+  // The free-floating Start/Redirect/Inject/User-message composer is REMOVED —
+  // conversational steering belongs to the Playground (chat is ONE panel, not
+  // this page). Run-level steering is a drill into a session → Playground. NO
+  // tabs, NO bottom-dock, NO chat-module import.
+  //
+  // # Data sources — all REAL, honest fallback, zero fabrication (CLAUDE.md §13)
+  //
+  // Every panel sources a shipped Protocol surface through the typed
+  // HarborClient (CONVENTIONS.md §6): `client.capabilities()` (the composition
+  // input), `client.runtime.counters/health()`, `client.pause.list()` +
+  // `client.control.approve/reject/resume()`, `client.events` (the SSE stream),
+  // `client.agents.list()` (the runtime label), `client.topology.snapshot()`
+  // (gated), `client.posture.info()` (the Protocol version). A surface that
+  // throws / returns `unknown_method` degrades to an honest empty state.
+  //
+  // # Layout — viewport-locked (D-177 layout bar)
+  //
+  // The page is a flex column that fills the shell content region: rows 1–2
+  // (posture header + counter strip) are fixed; row 3 is a two-column grid
+  // (3fr | 2fr) that flex-grows to fill the remaining viewport, with
+  // `min-height: 0` so its tall panels (Live events, Needs attention) scroll
+  // INTERNALLY — the PAGE never grows a full-page scrollbar.
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
   import { onMount, onDestroy } from 'svelte';
-  import Pagination from '$lib/components/ui/Pagination.svelte';
-  import RotateCw from '@lucide/svelte/icons/rotate-cw';
-  // The bottom status bar is rendered ONCE by the app shell
-  // ((console)/+layout.svelte — CONVENTIONS.md §2, the global AppStatusBar).
-  // Per-page footer strips duplicated it (post-83k N2 + Phase 108b); the
-  // page-local LiveRuntimeFooter is removed.
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
   import PageState, { type PageStatus } from '$lib/components/ui/PageState.svelte';
+  import RuntimePostureHeader from '$lib/components/live-runtime/runtime-posture-header.svelte';
   import StatusCounterStripView from '$lib/components/live-runtime/status-counter-strip.svelte';
+  import NeedsAttentionPanel, {
+    type AttentionActionResult
+  } from '$lib/components/live-runtime/needs-attention-panel.svelte';
+  import EventStreamDock from '$lib/components/live-runtime/event-stream-dock.svelte';
+  import ActiveSessionsPanel, {
+    type RecentSession
+  } from '$lib/components/live-runtime/active-sessions-panel.svelte';
+  import HealthPanel from '$lib/components/live-runtime/health-panel.svelte';
+  import CostGovernancePanel from '$lib/components/live-runtime/cost-governance-panel.svelte';
+  import TopologyPanel from '$lib/components/live-runtime/topology-panel.svelte';
+  import { resolvePanels, CAP_TOPOLOGY_SNAPSHOT } from '$lib/live-runtime/panels.js';
   import {
     EMPTY_STRIP,
     applyTaskEvent,
     type StatusCounterStrip
   } from '$lib/live-runtime/strip.js';
-  import TabStrip, { type LiveRuntimeTab } from '$lib/components/live-runtime/tab-strip.svelte';
-  import TopologyCanvas from '$lib/components/live-runtime/topology-canvas.svelte';
-  import TimelineTab from '$lib/components/live-runtime/timeline-tab.svelte';
-  import MetricsTabEmpty from '$lib/components/live-runtime/metrics-tab-empty.svelte';
-  import HealthTabEmpty from '$lib/components/live-runtime/health-tab-empty.svelte';
-  import BottomDock from '$lib/components/live-runtime/bottom-dock.svelte';
-  import { type ComposerVerb } from '$lib/components/live-runtime/composer/run-composer.svelte';
-  import DetailRailView from '$lib/components/live-runtime/detail-rail.svelte';
-  import type { RecentArtifact } from '$lib/components/live-runtime/recent-artifacts-panel.svelte';
-  import type { Intervention } from '$lib/components/live-runtime/interventions-panel.svelte';
-  import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import {
     LIVE_RUNTIME_EVENT_TYPES,
     toError,
     nodeStateForEvent,
-    sessionStatusLabel as deriveSessionStatusLabel
+    sessionStatusLabel as deriveSessionStatusLabel,
+    foldRecentSessions
   } from '$lib/live-runtime/page-data.js';
+  import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
+  import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
   import type { Event } from '$lib/protocol/events.js';
-  import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
+  import type { TaskListResponse } from '$lib/protocol/tasks.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
   import type { NodeState } from '$lib/live-runtime/topology-adapter.js';
-  import {
-    resolveConnection,
-    hasScope,
-    DISCONNECTED_TOOLTIP,
-    type RuntimeConnection
-  } from '$lib/connection.js';
+  import type { RuntimeCounters, RuntimeHealth } from '$lib/protocol/posture.js';
+  import type { PauseListResponse, PauseSnapshot } from '$lib/protocol/pause.js';
+  import { DEFAULT_PAUSE_LIST_PAGE_SIZE } from '$lib/protocol/pause.js';
+  import { projectCost } from '$lib/overview/cost.js';
+  import { resolveConnection, hasScope, type RuntimeConnection } from '$lib/connection.js';
 
   /* ---- connection + client (CONVENTIONS.md §6) -------------------- */
   let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
   let connection = $state<RuntimeConnection | null>(null);
   let client = $state<ProtocolClient | null>(null);
-  // The steering verbs are an elevated tier (D-066 / D-079) — without
-  // the admin scope claim the composer + per-task control render
-  // disabled-with-tooltip (CONVENTIONS.md §5).
+  // Control verbs are an elevated tier (D-066 / D-079) — without the admin
+  // scope claim the Needs-attention verbs render disabled-with-tooltip.
   let canControl = $state(false);
-  // The Phase 83r W2 disconnected predicate — drives the Refresh /
-  // Save-view buttons + the composer (textarea + verbs).
   let disconnected = $derived(connection === null);
 
   /* ---- page-level async state (the four-state contract) ----------- */
   let status = $state<PageStatus>('loading');
   let pageError = $state<ProtocolError | { code: string; message: string } | null>(null);
-  // Phase 83w-F5 / D-164 — the friendly "topology not available on this
-  // Runtime" info banner the page renders when topology.snapshot returns
-  // `unknown_method` (planner/RunLoop runtimes — no engine graph). NOT
-  // an error; the page is functional, the topology canvas just isn't
-  // part of this Runtime's shape.
-  let pageInfo = $state<{ headline: string; detail: string } | null>(null);
 
-  /* ---- topology canvas (the §5 depth-bar primary view) ------------ */
+  /* ---- the advertised capability set (the composition input) ------ */
+  let capabilities = $state<ReadonlySet<string>>(new Set());
+  let capabilityList = $derived([...capabilities]);
+  let panels = $derived(resolvePanels(capabilities));
+  let topologyAvailable = $derived(capabilities.has(CAP_TOPOLOGY_SNAPSHOT));
+
+  /* ---- posture header --------------------------------------------- */
+  let runtimeLabel = $state('This runtime');
+  let protocolVersion = $state('');
+
+  /* ---- activity strip --------------------------------------------- */
+  let strip = $state<StatusCounterStrip>({ ...EMPTY_STRIP });
+  let counters = $state<RuntimeCounters | null>(null);
+
+  /* ---- needs-attention (nested PageState) ------------------------- */
+  let queueStatus = $state<PageStatus>('loading');
+  let queueResp = $state<PauseListResponse | null>(null);
+  let queueError = $state<ProtocolError | { code: string; message: string } | null>(null);
+  let queuePage = $state(1);
+  let queuePageSize = $state(DEFAULT_PAUSE_LIST_PAGE_SIZE);
+  let actionPendingToken = $state<string | null>(null);
+  let actionResults = $state<Map<string, AttentionActionResult>>(new Map());
+  let queueSnapshots = $derived<PauseSnapshot[]>(queueResp?.snapshots ?? []);
+
+  /* ---- health (self-probing spine panel) -------------------------- */
+  let health = $state<RuntimeHealth | null>(null);
+
+  /* ---- topology (capability-gated) -------------------------------- */
   let projection = $state<TopologyProjection | null>(null);
-
-  // Console-derived per-node run states for the topology canvas's status
-  // legend + failed-node styling. The Protocol `TopologyProjection` does
-  // NOT carry per-node state (it is identity + kind + edge queue depth
-  // only), so the legend counts and the red failed/reject nodes are
-  // derived best-effort from the live `task.*` event stream, keyed by the
-  // event's node/source descriptor. EMPTY on a planner/RunLoop runtime
-  // (which emits no node states) — the legend then reads zeros and no
-  // node is styled failed: nothing fabricated (CLAUDE.md §13). See
-  // `$lib/live-runtime/topology-adapter.ts`.
   let nodeStates = $state<Record<string, NodeState>>({});
-
-  /* ---- runtime capability set ------------------------------------- */
-  // Resolved once in load() from `client.capabilities()`. Drives (a) the
-  // default active tab (topology only when `topology_snapshot` is
-  // advertised — see `defaultTabApplied` below), and (b) the Metrics /
-  // Health tabs' honest "this runtime does not advertise …" info states
-  // (the typed client exposes no metrics/health method yet, so the tabs
-  // probe the capability rather than fabricate data — CLAUDE.md §13).
-  let metricsAvailable = $state(false);
-  let healthAvailable = $state(false);
-
-  /* ---- Console-side live-update pause (topology canvas control) ---- */
-  // Local UI state only — halts the Console's live mirroring without
-  // touching the runtime (page-live-runtime.md §6, "Pause-Console-updates").
+  let selectedNode = $state<string | null>(null);
   let streamPaused = $state(false);
 
-  /* ---- header status-counter strip -------------------------------- */
-  let strip = $state<StatusCounterStrip>({ ...EMPTY_STRIP });
-
-  /* ---- main-canvas tab -------------------------------------------- */
-  // The default tab is NOT hardcoded to 'topology' — topology is
-  // runtime-conditional (a planner/RunLoop runtime omits the engine
-  // graph). `applyDefaultTab()` picks the default once, AFTER
-  // `client.capabilities()` resolves in load(): 'topology' only when the
-  // runtime advertises `topology_snapshot`; otherwise the first
-  // capability-backed tab, falling back to the always-present 'timeline'
-  // (it renders from the same projection but is the neutral non-graph
-  // view). Health is always present (it has an honest no-capability
-  // state) so it is the final fallback. The default is applied ONCE
-  // (`defaultTabApplied`) so a user's explicit tab click is never
-  // overridden by a subsequent load()/Refresh.
-  let activeTab = $state<LiveRuntimeTab>('timeline');
-  let defaultTabApplied = $state(false);
-
-  function applyDefaultTab(caps: { has(name: string): boolean }): void {
-    if (defaultTabApplied) {
-      return;
-    }
-    defaultTabApplied = true;
-    if (caps.has('topology_snapshot')) {
-      activeTab = 'topology';
-    } else if (caps.has('metrics_snapshot')) {
-      activeTab = 'metrics';
-    } else if (caps.has('runtime_health')) {
-      activeTab = 'health';
-    } else {
-      // Neutral always-present fallback: Health renders an honest
-      // no-capability info state on any runtime.
-      activeTab = 'health';
-    }
-  }
-
-  /* ---- node selection + per-task detail (nested PageState) -------- */
-  let selectedNode = $state<string | null>(null);
-  let detail = $state<TaskDetail | null>(null);
-  let detailLoading = $state(false);
-
-  /* ---- right-rail derived fields ---------------------------------- */
-  let costUSD = $state(0);
-  let lastError = $state<string | null>(null);
-  let currentStep = $state<string | null>(null);
-  let recentArtifacts = $state<RecentArtifact[]>([]);
-  let interventions = $state<Intervention[]>([]);
-
-  /* ---- composer --------------------------------------------------- */
-  let composerPending = $state(false);
-  let composerResult = $state<{ ok: boolean; message: string } | null>(null);
-
-  /* ---- live event stream (the bottom-dock left pane) -------------- */
+  /* ---- live event stream ------------------------------------------ */
   let subscription = $state<EventsSubscription | null>(null);
   let traceOn = $state(false);
 
-  /* ---- pagination (the recent-events page window) ----------------- */
-  let pageIndex = $state(1);
-  let pageSize = $state(50);
+  /* ---- rail derived fields (cost / last error) -------------------- */
+  let lastError = $state<string | null>(null);
 
   /* ================================================================ */
-  /* Derived                                                           */
+  /* Derived — folded client-side off the event stream                 */
   /* ================================================================ */
-
-  // The Trace tab narrows the event stream to the selected node's run.
-  // V1 uses the node name as the run-correlation key (the topology
-  // projection is engine-scoped; the selected node names the run the
-  // Trace tab correlates against — the D-082 run carrier).
-  let traceRunID = $derived(selectedNode ?? '');
-
-  // The run-scoped event slice the per-task detail's Trace tab renders.
-  let traceEvents = $derived<Event[]>(
-    subscription === null
-      ? []
-      : subscription.events.filter((ev) => traceRunID !== '' && ev.run === traceRunID)
-  );
-
-  // W10 (Phase 83x): the session-detail rail's `Status` field used to
-  // mirror the PAGE's PageStatus (`'ready' ? 'active' : status`). That
-  // wired the rail to react to a topology-snapshot failure — a load()
-  // failure left the rail reading "error" forever, even after the task
-  // itself had completed. Derive the session-level status from the
-  // status-counter strip instead: it is the live aggregate of every
-  // task event in the session and reflects the SESSION's lifecycle
-  // truthfully (active while anything is in-flight; complete when
-  // everything terminated cleanly; failed when something failed). The
-  // page's own loading-state status remains separate and drives the
-  // PageState chrome — the rail stops conflating the two.
-  let sessionStatusLabel = $derived(deriveSessionStatusLabel(strip, status));
-
-  // The event-stream dock page window — real pagination over the
-  // rolling event buffer (not a fake "load more").
-  let pagedEvents = $derived<Event[]>(
-    subscription === null
-      ? []
-      : subscription.events.slice((pageIndex - 1) * pageSize, pageIndex * pageSize)
-  );
-  let totalEvents = $derived(subscription === null ? 0 : subscription.events.length);
-  // The SSE stream state — consumed by the EventStreamDock (the footer that
-  // also read it was removed in Phase 108b; the dock keeps it).
+  let liveEvents = $derived<Event[]>(subscription?.events ?? []);
+  let pagedEvents = $derived<Event[]>(liveEvents.slice(0, 80));
   let streamState = $derived(subscription?.state ?? 'idle');
+  let traceRunID = $derived(selectedNode ?? '');
+  let recentSessions = $derived<RecentSession[]>(foldRecentSessions(liveEvents));
+  let costRollup = $derived(projectCost(liveEvents, 'model'));
+  let costUSD = $derived(costRollup.totalUSD);
+  // W10 (Phase 83x): the session status reads the DERIVED strip label, not the
+  // page's own PageStatus — a topology/load failure never poisons the rail.
+  let sessionStatusLabel = $derived(deriveSessionStatusLabel(strip, status));
 
   /* ================================================================ */
   /* Loading                                                           */
   /* ================================================================ */
 
-  // load resolves the topology snapshot + the status-counter-strip
-  // aggregate. Both go through the typed client; a thrown ProtocolError
-  // routes into PageState's Error state with a working Retry.
-  //
-  // Phase 83w-F5 / D-164 — `topology.snapshot` returning `unknown_method`
-  // is not an error: the Runtime is planner/RunLoop-shaped (no engine
-  // graph), so the topology surface is honestly not part of its shape.
-  // The page maps that one error code to the friendly `info` branch
-  // (a banner, not a red ERROR with a Retry that would always fail).
-  // Every other error — `identity_required`, `unauthorized`, transport
-  // failure — still routes into the Error state with a working Retry.
+  // load() resolves the cockpit's composition + spine data in one pass:
+  //   1. `client.capabilities()` — the panel registry input (drives which
+  //      panels render + whether topology is gated in/out).
+  //   2. the always-on spine surfaces (counters strip via tasks.list, the
+  //      pause queue, runtime.health, posture.info) — each self-probing and
+  //      degrading honestly on a throw.
+  //   3. the topology snapshot ONLY when `topology_snapshot` is advertised
+  //      (no wasted fetch on a planner runtime — the D-164 short-circuit).
+  // A capabilities()/counters() failure routes the PAGE into Error with a
+  // working Retry; the per-panel surfaces self-probe so one weak surface never
+  // empties the whole cockpit.
   async function load(): Promise<void> {
     if (client === null) {
       status = 'disconnected';
+      queueStatus = 'disconnected';
       return;
     }
     status = 'loading';
     pageError = null;
-    pageInfo = null;
     try {
-      // Round-8 F1 / phase 84a: gate the topology fetch behind the
-      // runtime's advertised capabilities. A planner/RunLoop runtime
-      // (the dev posture) omits `topology_snapshot` from
-      // `runtime.info.capabilities`; the Console then short-circuits
-      // to the info banner WITHOUT making the fetch, so the browser
-      // network log stays clean. The D-164 `unknown_method` catch
-      // remains the safety net for any runtime that advertises the
-      // capability but rejects at the wire (defence-in-depth).
       const caps = await client.capabilities();
-      // Resolve the capability-driven tab states (default tab + the
-      // Metrics/Health honest info states) from the one capabilities call.
-      metricsAvailable = caps.has('metrics_snapshot');
-      healthAvailable = caps.has('runtime_health');
-      applyDefaultTab(caps);
-      if (!caps.has('topology_snapshot')) {
-        projection = null;
-        const taskResp = await client.tasks.list<TaskListResponse>({
-          include_status_counter_strip: true
-        });
-        strip = taskResp.status_counter_strip ?? { ...EMPTY_STRIP };
-        pageInfo = {
-          headline: 'Topology view not available on this Runtime',
-          detail:
-            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
-        };
-        status = 'info';
-        return;
-      }
-      const [proj, taskResp] = await Promise.all([
-        client.topology.snapshot<TopologyProjection>(),
-        client.tasks.list<TaskListResponse>({ include_status_counter_strip: true })
-      ]);
-      projection = proj;
+      capabilities = caps;
+
+      // The status-counter strip (initial-load aggregate) — the page's
+      // primary always-on view; a failure here flips the page to Error.
+      const taskResp = await client.tasks.list<TaskListResponse>({
+        include_status_counter_strip: true
+      });
       strip = taskResp.status_counter_strip ?? { ...EMPTY_STRIP };
-      status = proj.nodes.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      // The Error / Info states both suppress any stale view — drop
-      // last-good data so the canvas doesn't render a half-state.
-      projection = null;
-      strip = { ...EMPTY_STRIP };
-      if (isUnknownMethod(err)) {
-        pageInfo = {
-          headline: 'Topology view not available on this Runtime',
-          detail:
-            'This runtime is planner/RunLoop-shaped, not engine-graph-shaped. See docs/CONFIG.md for runtime shapes.'
-        };
-        status = 'info';
+      status = 'ready';
+
+      // The remaining spine surfaces self-probe in parallel (a throw on any
+      // one degrades just that panel — never the page).
+      void loadCounters();
+      void loadHealth();
+      void loadQueue();
+
+      // Topology only when advertised — the D-164 short-circuit keeps the
+      // network log clean on planner/RunLoop runtimes.
+      if (caps.has(CAP_TOPOLOGY_SNAPSHOT)) {
+        void loadTopology();
       } else {
-        pageError = toError(err);
-        status = 'error';
+        projection = null;
+      }
+    } catch (err) {
+      strip = { ...EMPTY_STRIP };
+      pageError = toError(err);
+      status = 'error';
+    }
+  }
+
+  async function loadCounters(): Promise<void> {
+    if (client === null) return;
+    try {
+      counters = await client.runtime.counters();
+    } catch {
+      counters = null;
+    }
+  }
+
+  async function loadHealth(): Promise<void> {
+    if (client === null) return;
+    try {
+      health = await client.runtime.health();
+    } catch {
+      // unknown_method / unavailable → honest "not available" (no fabrication).
+      health = null;
+    }
+  }
+
+  async function loadTopology(): Promise<void> {
+    if (client === null) return;
+    try {
+      projection = await client.topology.snapshot<TopologyProjection>();
+    } catch (err) {
+      // A runtime that advertises the capability but rejects at the wire
+      // (defence-in-depth) falls back to the honest panel-empty state.
+      if (isUnknownMethod(err)) {
+        projection = null;
+      } else {
+        projection = null;
       }
     }
   }
 
-  async function loadDetail(node: string): Promise<void> {
+  async function loadQueue(): Promise<void> {
     if (client === null) {
+      queueStatus = 'disconnected';
       return;
     }
-    detailLoading = true;
+    queueStatus = 'loading';
+    queueError = null;
     try {
-      // V1: the topology node names the task the per-task pane inspects.
-      detail = await client.tasks.get<TaskDetail>(node);
-    } catch {
-      // A node with no task projection is honest "no detail" — not an
-      // error of the whole page (the Trace tab still renders the
-      // run-scoped event slice).
-      detail = null;
+      const resp = await client.pause.list({ page: queuePage, page_size: queuePageSize });
+      queueResp = resp;
+      queueStatus = resp.snapshots.length === 0 ? 'empty' : 'ready';
+    } catch (err) {
+      queueResp = null;
+      queueError = toError(err);
+      queueStatus = 'error';
+    }
+  }
+
+  /* ---- needs-attention actions — the SHIPPED Phase 54 verbs -------- */
+  function setActionResult(token: string, result: AttentionActionResult): void {
+    const next = new Map(actionResults);
+    next.set(token, result);
+    actionResults = next;
+  }
+
+  async function dispatchRowAction(
+    snapshot: PauseSnapshot,
+    verb: 'approve' | 'reject' | 'resume'
+  ): Promise<void> {
+    if (client === null || !canControl) return;
+    const runID = snapshot.identity.run ?? '';
+    actionPendingToken = snapshot.token;
+    try {
+      if (verb === 'approve') await client.control.approve(runID);
+      else if (verb === 'reject') await client.control.reject(runID);
+      else await client.control.resume(runID);
+      setActionResult(snapshot.token, { token: snapshot.token, ok: true, message: `${verb}d` });
+      await loadQueue();
+    } catch (err) {
+      const e = toError(err);
+      setActionResult(snapshot.token, {
+        token: snapshot.token,
+        ok: false,
+        message: `${e.code}: ${e.message}`
+      });
     } finally {
-      detailLoading = false;
+      actionPendingToken = null;
     }
   }
 
   /* ================================================================ */
-  /* Live event stream                                                 */
+  /* Live event stream — fold task.* deltas into the strip             */
   /* ================================================================ */
-
-  // mirrorEvent keeps the header strip + rail live: a `task.*` event on
-  // the SSE feed shifts the counts via the pure `applyTaskEvent` reducer
-  // (in `$lib/live-runtime/strip.ts`) without re-polling `tasks.list`
-  // (the aggregate call is the initial-load shape only). The deltas are
-  // best-effort; the authoritative recount is the next `load()`.
   function mirrorEvent(ev: Event): void {
     strip = applyTaskEvent(strip, ev.type);
     if (ev.type === 'task.failed') {
       lastError = `task.failed (${ev.run ?? 'unknown run'})`;
     }
-    if (ev.type.startsWith('planner.')) {
-      currentStep = ev.type;
-    }
-    // Derive the topology node's run state from the event, keyed by the
-    // node/source sidecar descriptor (`ev.extra.source`), falling back to
-    // the run id. Best-effort enrichment for the canvas legend +
-    // failed-node styling; a runtime that emits no node-scoped task
-    // events leaves `nodeStates` empty (nothing fabricated — §13).
     const nodeKey = ev.extra?.source ?? ev.run;
     if (nodeKey !== undefined && nodeKey !== '') {
       const next = nodeStateForEvent(ev.type, ev.payload);
@@ -358,21 +307,10 @@
     }
   }
 
-  // This effect mirrors new `task.*` / `planner.*` events into the live
-  // strip + rail — Svelte's runes already make `subscription.events`
-  // reactive, so the page reads it directly.
   let lastSeenSeq = 0;
   $effect(() => {
-    if (subscription === null) {
-      return;
-    }
-    // The topology-canvas Pause-stream toggle halts Console-side live
-    // mirroring (the strip/rail deltas) without touching the runtime — the
-    // SSE feed keeps buffering; we simply stop folding new events into the
-    // derived UI state until the operator resumes.
-    if (streamPaused) {
-      return;
-    }
+    if (subscription === null) return;
+    if (streamPaused) return;
     for (const ev of subscription.events) {
       if (ev.sequence > lastSeenSeq) {
         mirrorEvent(ev);
@@ -384,16 +322,10 @@
   });
 
   /* ================================================================ */
-  /* Node selection                                                    */
+  /* Node selection (topology) + trace toggle                          */
   /* ================================================================ */
-
   function selectNode(node: string): void {
     selectedNode = node;
-    void loadDetail(node);
-  }
-
-  function setTab(tab: LiveRuntimeTab): void {
-    activeTab = tab;
   }
 
   function toggleTrace(next: boolean): void {
@@ -401,89 +333,49 @@
   }
 
   /* ================================================================ */
-  /* Composer — the SHIPPED Phase 54 control surface (§13)             */
-  /* ================================================================ */
-
-  async function dispatchVerb(verb: ComposerVerb, text: string): Promise<void> {
-    if (client === null) {
-      return;
-    }
-    composerPending = true;
-    composerResult = null;
-    try {
-      if (verb === 'start') {
-        // `start` spawns a task; it is the owner-tier verb.
-        await client.control.dispatch('start', '', { query: text });
-      } else {
-        // The remaining verbs target the selected node's run; without a
-        // selected node there is no run to steer.
-        const runID = selectedNode ?? '';
-        if (runID === '' && verb !== 'user_message') {
-          composerResult = { ok: false, message: 'Select a topology node to target a run.' };
-          composerPending = false;
-          return;
-        }
-        await client.control.dispatch(verb, runID, text ? { text } : undefined);
-      }
-      composerResult = { ok: true, message: `${verb} dispatched.` };
-      interventions = [
-        { label: verb, detail: text || '(no payload)', ok: true },
-        ...interventions
-      ];
-    } catch (err) {
-      const e = toError(err);
-      composerResult = { ok: false, message: `${e.code}: ${e.message}` };
-      interventions = [
-        { label: verb, detail: `${e.code}: ${e.message}`, ok: false },
-        ...interventions
-      ];
-    } finally {
-      composerPending = false;
-    }
-  }
-
-  async function prioritizeTask(taskID: string, priority: number): Promise<void> {
-    if (client === null || !canControl) {
-      return;
-    }
-    try {
-      await client.control.prioritize(taskID, priority);
-      interventions = [
-        { label: 'prioritize', detail: `${taskID} → ${priority}`, ok: true },
-        ...interventions
-      ];
-      if (selectedNode !== null) {
-        await loadDetail(selectedNode);
-      }
-    } catch (err) {
-      const e = toError(err);
-      interventions = [
-        { label: 'prioritize', detail: `${e.code}: ${e.message}`, ok: false },
-        ...interventions
-      ];
-    }
-  }
-
-  /* ================================================================ */
   /* Boot                                                              */
   /* ================================================================ */
-
   onMount(() => {
     connection = resolveConnection();
     if (connection === null) {
       client = null;
       status = 'disconnected';
+      queueStatus = 'disconnected';
       return;
     }
     client = injectedClient ?? new HarborClient({ connection });
     canControl = hasScope(connection, 'admin');
 
-    // Open the live event stream — the bottom-dock Event Stream pane. The
-    // Runtime emits NAMED SSE frames, so the subscription MUST list the event
-    // types it wants (108c named-event fix) — an empty open() receives nothing.
-    const sub = new EventsSubscription(
-      (client as HarborClient).events ?? new HarborClient({ connection }).events
-    );
+    // The runtime label: the agent-registry display name when available, else
+    // the runtime host (the Overview pattern — no fabrication).
+    try {
+      runtimeLabel = new URL(connection.baseURL).host;
+    } catch {
+      runtimeLabel = 'This runtime';
+    }
+    void client.agents
+      .list<{ agents?: Array<{ name?: string; display_name?: string; agent_id?: string }> }>()
+      .then((r) => {
+        const a = r.agents?.[0];
+        const name = a?.display_name ?? a?.name ?? a?.agent_id;
+        if (name) runtimeLabel = name;
+      })
+      .catch(() => {
+        /* registry unavailable — keep the host label */
+      });
+
+    // The Protocol version banner — runtime.info is universally advertised.
+    void client.posture
+      .info<{ protocol_version?: string }>()
+      .then((info) => {
+        if (info.protocol_version) protocolVersion = info.protocol_version;
+      })
+      .catch(() => {
+        /* keep empty — never fabricate a version */
+      });
+
+    // Open the live event stream — NAMED SSE frames (108c named-event fix).
+    const sub = new EventsSubscription(client.events);
     sub.open({ eventTypes: LIVE_RUNTIME_EVENT_TYPES });
     subscription = sub;
 
@@ -500,205 +392,287 @@
 </svelte:head>
 
 <div class="page" data-testid="live-runtime-page">
-  <!-- Header row: the live status-counter strip (left) + Refresh (right).
-       Runtime name / breadcrumb live in the app-shell chrome (108b). -->
-  <div class="header-row">
-    <StatusCounterStripView {strip} />
-    <button
-      type="button"
-      class="refresh"
-      data-testid="live-runtime-refresh"
-      disabled={disconnected}
-      title={disconnected ? DISCONNECTED_TOOLTIP : 'Refresh'}
-      onclick={() => void load()}
-    >
-      <RotateCw size={14} aria-hidden="true" /> Refresh
-    </button>
-  </div>
+  <!-- Row 1 — runtime posture header (full width). -->
+  <RuntimePostureHeader
+    runtimeLabel={runtimeLabel}
+    protocolVersion={protocolVersion}
+    capabilities={capabilityList}
+    disconnected={disconnected}
+    onRefresh={() => void load()}
+  />
 
-  <!-- Tab strip toolbar (Topology | Timeline | Metrics | Health). The mock's
-       Status/Type/Run/Time-range/Pause filters belong to the topology canvas
-       controls (Stage 2); the saved-view bar the mock omits is removed. -->
-  <div class="toolbar">
-    <TabStrip active={activeTab} onselect={setTab} />
-  </div>
+  <!-- Rows 2+3 — the page-level four-state contract. A catastrophic
+       capabilities()/tasks.list failure routes here into Error with a working
+       Retry; loading shows a shape-matched skeleton; disconnected defers to
+       the app-shell redirect. On ready the cockpit body renders (its spine
+       panels self-probe their surfaces independently). -->
+  <div class="page-body">
+    <PageState status={status} error={pageError} onretry={() => void load()}>
+      {#snippet skeleton()}
+        <div class="body-skeleton" aria-hidden="true">
+          <span class="card-skeleton"></span>
+          <span class="card-skeleton"></span>
+        </div>
+      {/snippet}
+      {#snippet empty()}
+        <p class="block-empty">Waiting for runtime activity.</p>
+      {/snippet}
 
-  <div class="layout">
-    <div class="main-col">
-      {#if (activeTab === 'metrics' || activeTab === 'health') && (status === 'ready' || status === 'empty' || status === 'info')}
-        <!-- Metrics / Health are runtime-SELF tabs (capability-probed), not
-             engine-graph projections. Once the capability set is known
-             (ready / empty / info) they render their OWN honest state rather
-             than being shrouded by the topology `info` banner — so the
-             capability-driven default tab (which on a planner/RunLoop runtime
-             falls through to Health) shows meaningful content, not a topology
-             message. While the page is still loading / errored / disconnected
-             they fall through to <PageState> below for the correct chrome. -->
-        {#if activeTab === 'metrics'}
-          <MetricsTabEmpty available={metricsAvailable} />
-        {:else}
-          <HealthTabEmpty available={healthAvailable} />
-        {/if}
-      {:else}
-        <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
-          {#snippet skeleton()}
-            <div class="canvas-skeleton" aria-hidden="true"></div>
-          {/snippet}
-          {#snippet empty()}
-            <div class="empty-block" data-testid="live-runtime-empty">
-              <p class="headline">The Runtime engine has no topology</p>
-              <p class="detail">
-                No engine graph is registered, or the Runtime exposes no
-                nodes yet.
-              </p>
-              <button type="button" class="refresh" onclick={() => void load()}>
-                Reload
-              </button>
-            </div>
-          {/snippet}
+      <!-- Row 2 — the activity status-counter strip (full width). -->
+      <section class="panel card" data-testid="cockpit-activity">
+        <h2 class="panel-title">Activity</h2>
+        <StatusCounterStripView {strip} />
+      </section>
 
-          {#if activeTab === 'topology' && projection !== null}
-            <TopologyCanvas
+      <!-- Row 3 — the cockpit grid (3fr | 2fr); flex-grows to fill the viewport.
+           LEFT spine: Needs attention + Live events (internal scroll).
+           RIGHT: Active sessions + Health + Cost + Topology (gated). -->
+      <div class="cockpit" data-testid="cockpit-grid">
+    <div class="col-left">
+      {#each panels.filter((p) => p.column === 'left') as panel (panel.id)}
+        {#if panel.id === 'needs-attention'}
+          <section class="panel card attention-card" data-testid="panel-needs-attention">
+            <h2 class="panel-title">Needs attention</h2>
+            <PageState
+              status={queueStatus}
+              error={queueError}
+              onretry={() => void loadQueue()}
+              nested
+            >
+              {#snippet skeleton()}
+                <div class="row-skeleton" aria-hidden="true"></div>
+              {/snippet}
+              {#snippet empty()}
+                <div class="panel-empty" data-testid="needs-attention-empty">
+                  <span class="empty-icon" data-tone="success">
+                    <CircleCheck size={20} aria-hidden="true" />
+                  </span>
+                  <p class="empty-headline">No pending interventions</p>
+                  <p class="empty-detail">
+                    No runs are parked awaiting an operator decision.
+                  </p>
+                </div>
+              {/snippet}
+              <NeedsAttentionPanel
+                snapshots={queueSnapshots}
+                canControl={canControl}
+                pendingToken={actionPendingToken}
+                results={actionResults}
+                onapprove={(s) => void dispatchRowAction(s, 'approve')}
+                onreject={(s) => void dispatchRowAction(s, 'reject')}
+                onresume={(s) => void dispatchRowAction(s, 'resume')}
+              />
+            </PageState>
+          </section>
+        {:else if panel.id === 'topology'}
+          <section class="panel card topology-card" data-testid="panel-topology">
+            <h2 class="panel-title">Topology</h2>
+            <TopologyPanel
+              available={topologyAvailable}
               projection={projection}
               selectedNode={selectedNode}
-              onnodeclick={selectNode}
               nodeStates={nodeStates}
               streamPaused={streamPaused}
+              onnodeclick={selectNode}
               onstreamtoggle={(next) => (streamPaused = next)}
             />
-          {:else if activeTab === 'timeline' && projection !== null}
-            <TimelineTab
-              projection={projection}
-              selectedNode={selectedNode}
-              onselect={selectNode}
-            />
-          {/if}
-        </PageState>
-      {/if}
-
-      {#if status === 'ready'}
-        <Pagination
-          page={pageIndex}
-          pageSize={pageSize}
-          total={totalEvents}
-          onpage={(p) => (pageIndex = p)}
-          onpagesize={(s) => {
-            pageSize = s;
-            pageIndex = 1;
-          }}
-        />
-      {/if}
-
-      <BottomDock
-        events={pagedEvents}
-        streamState={streamState}
-        traceOn={traceOn}
-        traceRunID={traceRunID}
-        selectedNode={selectedNode}
-        detail={detail}
-        detailLoading={detailLoading}
-        traceEvents={traceEvents}
-        canControl={canControl}
-        composerPending={composerPending}
-        composerResult={composerResult}
-        {disconnected}
-        ontracetoggle={toggleTrace}
-        onverb={(verb, text) => void dispatchVerb(verb, text)}
-        onprioritize={(id, p) => void prioritizeTask(id, p)}
-      />
-
+          </section>
+        {:else if panel.id === 'live-events'}
+          <section class="panel card events-card" data-testid="panel-live-events">
+            <h2 class="panel-title">Live events</h2>
+            <div class="events-scroll">
+              <EventStreamDock
+                events={pagedEvents}
+                streamState={streamState}
+                traceOn={traceOn}
+                traceRunID={traceRunID}
+                ontracetoggle={toggleTrace}
+              />
+            </div>
+          </section>
+        {/if}
+      {/each}
     </div>
 
-    <DetailRailView
-      connection={connection}
-      sessionStatusLabel={sessionStatusLabel}
-      costUSD={costUSD}
-      lastError={lastError}
-      currentStep={currentStep}
-      recentArtifacts={recentArtifacts}
-      interventions={interventions}
-    />
+    <div class="col-right">
+      {#each panels.filter((p) => p.column === 'right') as panel (panel.id)}
+        {#if panel.id === 'active-sessions'}
+          <section class="panel card" data-testid="panel-active-sessions">
+            <h2 class="panel-title">Active sessions</h2>
+            <ActiveSessionsPanel
+              activeCount={counters?.sessions_active ?? 0}
+              sessions={recentSessions}
+              identity={connection?.identity ?? null}
+              sessionStatusLabel={sessionStatusLabel}
+              costUSD={costUSD}
+              lastError={lastError}
+            />
+          </section>
+        {:else if panel.id === 'health'}
+          <section class="panel card" data-testid="panel-health">
+            <h2 class="panel-title">Health</h2>
+            <HealthPanel health={health} />
+          </section>
+        {:else if panel.id === 'cost'}
+          <section class="panel card" data-testid="panel-cost">
+            <h2 class="panel-title">Cost</h2>
+            <CostGovernancePanel rollup={costRollup} />
+          </section>
+        {/if}
+      {/each}
+    </div>
+      </div>
+    </PageState>
   </div>
 </div>
 
 <style>
+  /* The page fills the shell content region as a flex column so the cockpit
+     grid (row 3) can flex-grow and the page never grows a full-page
+     scrollbar (D-177 viewport-lock). */
   .page {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-6);
-  }
-
-  .layout {
-    display: grid;
-    grid-template-columns: 1fr var(--size-rail);
-    gap: var(--space-4);
-    align-items: start;
-  }
-
-  .main-col {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
     min-width: var(--space-0);
+    height: 100%;
+    min-height: var(--space-0);
   }
 
-  .header-row {
+  /* The page body (rows 2+3) flex-grows so the cockpit grid fills the
+     remaining viewport; it is itself a flex column so the row-2 strip is
+     fixed and the row-3 grid grows. */
+  .page-body {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     gap: var(--space-4);
-    flex-wrap: wrap;
+    flex: 1 1 auto;
+    min-height: var(--space-0);
+    min-width: var(--space-0);
   }
 
-  .toolbar {
+  .panel {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: var(--space-0);
   }
 
-  .refresh {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    background: var(--color-surface-raised);
-    color: var(--color-text);
+  .card {
+    padding: var(--space-4);
+    background: var(--color-surface);
     border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
-
-  .refresh:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .canvas-skeleton {
-    height: var(--space-12);
-    background: var(--color-surface-raised);
     border-radius: var(--radius-md);
   }
 
-  .empty-block {
+  .panel-title {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
+  }
+
+  /* Row 3 — the two-column cockpit grid. It flex-grows to fill the remaining
+     viewport height; `min-height: 0` lets its tall children scroll INTERNALLY
+     rather than push the page taller. */
+  .cockpit {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    gap: var(--space-4);
+    align-items: start;
+    flex: 1 1 auto;
+    min-height: var(--space-0);
+  }
+
+  .col-left,
+  .col-right {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: var(--space-0);
+    min-height: var(--space-0);
+    height: 100%;
+  }
+
+  /* The Live events card is the vertical-space filler in the left column: it
+     grows to consume the remaining height and scrolls internally. */
+  .events-card {
+    flex: 1 1 auto;
+    min-height: var(--space-0);
+  }
+
+  .events-scroll {
+    flex: 1 1 auto;
+    min-height: var(--space-0);
+    overflow: auto;
+  }
+
+  /* Needs attention is compact at the top of the left spine and scrolls
+     internally when the queue is long, never pushing the page taller. */
+  .attention-card {
+    max-height: var(--size-graph-max-height);
+    overflow: auto;
+  }
+
+  .panel-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-12) var(--space-4);
+    gap: var(--space-1);
+    padding: var(--space-5) var(--space-2);
     text-align: center;
   }
 
-  .empty-block .headline {
+  .empty-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-1);
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+
+  .empty-headline {
     margin: var(--space-0);
-    font-size: var(--text-lg);
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--color-text);
   }
 
-  .empty-block .detail {
+  .empty-detail {
     margin: var(--space-0);
-    font-size: var(--text-sm);
+    font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+
+  .row-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    height: var(--size-sparkline-height);
+  }
+
+  .body-skeleton {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    gap: var(--space-4);
+  }
+
+  .card-skeleton {
+    background: var(--color-surface-raised);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    height: var(--size-card-min);
+  }
+
+  .block-empty {
+    margin: var(--space-0);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 </style>

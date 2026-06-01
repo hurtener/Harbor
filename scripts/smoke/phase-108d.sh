@@ -59,12 +59,20 @@ assert_grep_or_skip "task.completed" "${PAGE_DATA}" "phase-108d: event stream li
 assert_grep_or_skip "llm.cost.recorded" "${PAGE_DATA}" "phase-108d: event stream subscribes to cost events"
 assert_grep_or_skip "LIVE_RUNTIME_EVENT_TYPES" "${PAGE}" "phase-108d: page opens stream with the named-event vocabulary"
 
-# ---- Tab strip toolbar + header refresh present ----------------------------
-assert_grep_or_skip "TabStrip" "${PAGE}" "phase-108d: tab strip toolbar present"
-assert_grep_or_skip "live-runtime-refresh" "${PAGE}" "phase-108d: header Refresh present"
+# ---- Header Refresh present ------------------------------------------------
+# Phase 108e reframed the page into the capability cockpit: the tab strip is
+# GONE (no tabs), and Refresh moved onto the runtime posture header. The 108d
+# intent (a live Refresh affordance exists, the page wires it) holds —
+# repointed to where the control now lives.
+POSTURE_HEADER="web/console/src/lib/components/live-runtime/runtime-posture-header.svelte"
+assert_grep_or_skip "live-runtime-refresh" "${POSTURE_HEADER}" "phase-108d: header Refresh present (on the posture header — 108e)"
+assert_grep_or_skip "RuntimePostureHeader|onRefresh" "${PAGE}" "phase-108d: page wires the Refresh control"
 
 # ---- Topology honest info state (D-164) ------------------------------------
-assert_grep_or_skip "Topology view not available" "${PAGE}" "phase-108d: topology info state (D-164) on planner runtimes"
+# Phase 108e: the honest D-164 copy moved off the page into the gated topology
+# panel (the cockpit composes topology as a capability-gated panel).
+TOPO_PANEL="web/console/src/lib/components/live-runtime/topology-panel.svelte"
+assert_grep_or_skip "Topology view not available" "${TOPO_PANEL}" "phase-108d: topology info state (D-164) on planner runtimes (108e topology panel)"
 
 # ---- Dead code deleted -----------------------------------------------------
 assert_absent_or_ok "web/console/src/lib/db/saved_filters_live_runtime.ts" \

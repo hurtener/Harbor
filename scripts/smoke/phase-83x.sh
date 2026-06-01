@@ -102,11 +102,12 @@ assert_grep_present \
 # W10 — Live Runtime session-detail Status field is derived from the
 # status-counter strip (the live task aggregate), not the page's own
 # PageStatus. A topology-snapshot failure no longer poisons the rail.
-# Phase 108d Stage 3 extracted the right rail into `detail-rail.svelte`,
-# so the page still DERIVES `sessionStatusLabel` (and passes it to the
-# rail), while the `<SessionDetailCard sessionStatus={sessionStatusLabel}>`
-# binding now lives in the rail component — the data-flow intent is
-# unchanged (the rail reads the derived label, never page.status).
+# Phase 108e reframed the page into the capability cockpit and removed the
+# detail rail; the `<SessionDetailCard sessionStatus={sessionStatusLabel}>`
+# binding now lives in the Active-sessions cockpit panel. The page still
+# DERIVES `sessionStatusLabel` from the strip and passes it down — the W10
+# data-flow intent is unchanged (the card reads the derived label, never
+# page.status).
 # -----------------------------------------------------------------------------
 assert_grep_present \
     'sessionStatusLabel' \
@@ -114,7 +115,7 @@ assert_grep_present \
     'W10 Live Runtime derives sessionStatusLabel from the strip'
 assert_grep_present \
     'sessionStatus=\{sessionStatusLabel\}' \
-    'web/console/src/lib/components/live-runtime/detail-rail.svelte' \
+    'web/console/src/lib/components/live-runtime/active-sessions-panel.svelte' \
     'W10 SessionDetailCard reads sessionStatusLabel, not page.status'
 
 # -----------------------------------------------------------------------------

@@ -9,9 +9,9 @@
 # topology is capability-GATED (not the page spine), and that the
 # Playground-overlapping run composer + any chat import are gone.
 #
-# Until the reframe lands, the registry module is absent → every assertion
-# SKIPs (the 404/405/501 → SKIP analogue), so preflight stays green at 108d.
-# When 108e ships, `panels.ts` appears and the assertions flip to OK.
+# When the reframe is absent (panels.ts missing) every assertion SKIPs (the
+# 404/405/501 → SKIP analogue); once it lands the assertions are HARD (present /
+# absent), so a regressed spine panel or a re-introduced composer FAILs.
 
 set -euo pipefail
 
@@ -23,6 +23,8 @@ source "scripts/smoke/common.sh"
 
 PAGE="web/console/src/routes/(console)/live-runtime/+page.svelte"
 PANELS="web/console/src/lib/live-runtime/panels.ts"
+HEALTH="web/console/src/lib/components/live-runtime/health-panel.svelte"
+TOPO_PANEL="web/console/src/lib/components/live-runtime/topology-panel.svelte"
 
 if [[ ! -f "${PANELS}" ]]; then
     skip "phase-108e: capability panel registry (panels.ts) not present yet — reframe not implemented"
@@ -30,42 +32,42 @@ if [[ ! -f "${PANELS}" ]]; then
     return 0 2>/dev/null || exit 0
 fi
 
-assert_grep_or_skip() {
-    local pattern="$1" path="$2" desc="$3"
-    if [ ! -f "${path}" ]; then skip "${desc}: ${path} not found"; return; fi
-    if grep -qE "${pattern}" "${path}" 2>/dev/null; then ok "${desc}"
-    else skip "${desc}: pattern absent"; fi
-}
-assert_not_grep_or_fail() {
-    local pattern="$1" path="$2" desc="$3"
-    if [ ! -f "${path}" ]; then skip "${desc}: ${path} not found"; return; fi
-    if grep -qE "${pattern}" "${path}" 2>/dev/null; then fail "${desc}: '${pattern}' still present in ${path}"
-    else ok "${desc}"; fi
-}
-
 # ---- Composition is capability-driven (declarative registry) ---------------
-assert_grep_or_skip "resolvePanels" "${PANELS}" "phase-108e: panel registry exposes resolvePanels"
-assert_grep_or_skip "resolvePanels" "${PAGE}" "phase-108e: page composes panels via resolvePanels (not a hardcoded list)"
+assert_grep_present "resolvePanels" "${PANELS}" "phase-108e: panel registry exposes resolvePanels"
+assert_grep_present "resolvePanels" "${PAGE}" "phase-108e: page composes panels via resolvePanels (not a hardcoded list)"
 
 # ---- Capability vocabulary stays guarded -----------------------------------
-assert_grep_or_skip "topology_snapshot" "${PANELS}" "phase-108e: registry keys the topology capability"
-assert_grep_or_skip "runtime_health" "${PANELS}" "phase-108e: registry keys the health capability"
-assert_grep_or_skip "governance_posture|llm.cost.recorded" "${PANELS}" "phase-108e: registry keys the cost/governance capability"
+assert_grep_present "topology_snapshot" "${PANELS}" "phase-108e: registry keys the topology capability"
+assert_grep_present "runtime_health" "${PANELS}" "phase-108e: registry keys the health capability"
+assert_grep_present "governance_posture" "${PANELS}" "phase-108e: registry keys the cost/governance capability"
 
 # ---- Spine panels present --------------------------------------------------
-assert_grep_or_skip "needs-attention" "${PAGE}" "phase-108e: Needs-attention spine panel present"
-assert_grep_or_skip "active-sessions" "${PAGE}" "phase-108e: Active-sessions spine panel present"
-assert_grep_or_skip "runtime-posture-header|RuntimePostureHeader" "${PAGE}" "phase-108e: runtime posture header present"
+assert_grep_present "needs-attention" "${PAGE}" "phase-108e: Needs-attention spine panel present"
+assert_grep_present "active-sessions" "${PAGE}" "phase-108e: Active-sessions spine panel present"
+assert_grep_present "runtime-posture-header|RuntimePostureHeader" "${PAGE}" "phase-108e: runtime posture header present"
+assert_grep_present "panel-live-events" "${PAGE}" "phase-108e: Live-events spine panel present"
+assert_grep_present "panel-health" "${PAGE}" "phase-108e: Health spine panel present"
+assert_grep_present "panel-cost" "${PAGE}" "phase-108e: Cost spine panel present"
+
+# ---- Header Refresh moved onto the posture header --------------------------
+assert_grep_present "live-runtime-refresh" "web/console/src/lib/components/live-runtime/runtime-posture-header.svelte" \
+    "phase-108e: Refresh lives on the posture header"
 
 # ---- Topology is capability-GATED, not the spine ---------------------------
-assert_grep_or_skip "topology_snapshot" "${PAGE}" "phase-108e: topology panel is capability-gated on the page"
+assert_grep_present "topology_snapshot|CAP_TOPOLOGY_SNAPSHOT" "${PAGE}" "phase-108e: topology panel is capability-gated on the page"
+assert_grep_present "Topology view not available" "${TOPO_PANEL}" "phase-108e: honest D-164 topology-absent copy retained"
+
+# ---- Tabs are GONE (the cockpit has no tab strip) --------------------------
+assert_grep_absent "TabStrip" "${PAGE}" "phase-108e: tab strip removed from the cockpit"
 
 # ---- Playground overlap removed --------------------------------------------
-assert_not_grep_or_fail "run-composer" "${PAGE}" "phase-108e: free-floating run composer removed from the cockpit"
-assert_not_grep_or_fail "\\\$lib/chat/" "${PAGE}" "phase-108e: no chat-module import on the cockpit (D-062/D-091)"
+assert_grep_absent "run-composer" "${PAGE}" "phase-108e: free-floating run composer removed from the cockpit"
+assert_grep_absent "\\\$lib/chat/" "${PAGE}" "phase-108e: no chat-module import on the cockpit (D-062/D-091)"
 
-# ---- Honest no-fabrication copy for gated-absent panels --------------------
-assert_grep_or_skip "does not advertise" "${PAGE_DATA:-web/console/src/lib/components/live-runtime/health-panel.svelte}" \
-    "phase-108e: gated-absent panels keep honest 'does not advertise' copy (no fabrication)"
+# ---- Honest no-fabrication copy for spine self-probing panels --------------
+assert_grep_present "not available on this runtime" "${HEALTH}" \
+    "phase-108e: Health panel keeps honest 'not available' copy (no fabrication)"
+assert_grep_present "No cost recorded yet" "web/console/src/lib/components/live-runtime/cost-governance-panel.svelte" \
+    "phase-108e: Cost panel keeps honest 'no cost recorded' copy (no fabrication)"
 
 smoke_summary

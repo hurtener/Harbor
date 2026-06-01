@@ -52,17 +52,22 @@ assert_grep_present "code === 'unknown_method'" \
     "web/console/src/lib/protocol/errors.ts" \
     "isUnknownMethod matches the 'unknown_method' canonical code"
 
-# The Live Runtime page routes topology.snapshot's unknown_method to
-# the friendly info banner — NOT the red ERROR state.
+# The Live Runtime page routes topology.snapshot's unknown_method to the
+# friendly state — NOT the red ERROR state. Phase 108e reframed the page into
+# the capability cockpit: topology is a CAPABILITY-GATED panel, so the page
+# only fetches the snapshot when `topology_snapshot` is advertised (the D-164
+# short-circuit) and the friendly "Topology view not available" copy moved into
+# the gated topology panel. The page still imports + uses isUnknownMethod as
+# the defence-in-depth wire catch in loadTopology().
 assert_grep_present 'isUnknownMethod' \
     "web/console/src/routes/(console)/live-runtime/+page.svelte" \
     "Live Runtime page imports + uses isUnknownMethod"
-assert_grep_present 'Topology view not available on this Runtime' \
-    "web/console/src/routes/(console)/live-runtime/+page.svelte" \
-    "Live Runtime page renders the friendly headline on unknown_method"
+assert_grep_present 'Topology view not available' \
+    "web/console/src/lib/components/live-runtime/topology-panel.svelte" \
+    "Live Runtime topology panel renders the friendly headline on unknown_method (108e)"
 assert_grep_present 'planner/RunLoop' \
-    "web/console/src/routes/(console)/live-runtime/+page.svelte" \
-    "Live Runtime page's friendly detail names the runtime shape"
+    "web/console/src/lib/components/live-runtime/topology-panel.svelte" \
+    "Live Runtime topology panel's friendly detail names the runtime shape (108e)"
 
 # The Playground session_id page routes topology.snapshot's
 # unknown_method to the friendly info banner above the chat surface,

@@ -22,6 +22,8 @@ import { ProtocolError } from '$lib/protocol/errors.js';
 import type { NodeState } from '$lib/live-runtime/topology-adapter.js';
 import type { StatusCounterStrip } from '$lib/live-runtime/strip.js';
 import type { PageStatus } from '$lib/components/ui/PageState.svelte';
+import type { Event } from '$lib/protocol/events.js';
+import type { RecentSession } from '$lib/components/live-runtime/active-sessions-panel.svelte';
 
 /**
  * The named SSE event types the Live Runtime page subscribes to. The Runtime
@@ -124,4 +126,33 @@ export function sessionStatusLabel(strip: StatusCounterStrip, status: PageStatus
 		return 'complete';
 	}
 	return 'idle';
+}
+
+/**
+ * Fold the live event stream into the cockpit's "Active sessions" list
+ * (Phase 108e). There is no runtime-scoped `sessions.list` Protocol surface
+ * yet, so the cockpit derives a best-effort, honest, partial recent-sessions
+ * view from the `session.opened` / `session.closed` frames the SSE stream
+ * delivers. A session's state is its LATEST observed lifecycle event; an
+ * unobserved session never appears (no fabrication — CLAUDE.md §13). Newest
+ * activity first; capped at `limit` rows.
+ */
+export function foldRecentSessions(events: readonly Event[], limit = 8): RecentSession[] {
+	const latest = new Map<string, RecentSession>();
+	for (const ev of events) {
+		if (ev.type !== 'session.opened' && ev.type !== 'session.closed') {
+			continue;
+		}
+		const session = ev.session;
+		if (session === undefined || session === '') {
+			continue;
+		}
+		const state: RecentSession['state'] = ev.type === 'session.closed' ? 'closed' : 'open';
+		const existing = latest.get(session);
+		// The events array is newest-first; keep the first (latest) seen per id.
+		if (existing === undefined) {
+			latest.set(session, { session, state, at: ev.occurred_at });
+		}
+	}
+	return [...latest.values()].slice(0, limit);
 }
