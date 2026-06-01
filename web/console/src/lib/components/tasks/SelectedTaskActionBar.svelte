@@ -47,7 +47,6 @@
 
 {#if task !== null}
   <div class="action-bar" data-testid="task-action-bar" role="toolbar" aria-label="Task controls">
-    <span class="bar-label">Task {task.id}</span>
     {#each ['pause', 'resume', 'cancel', 'approve', 'reject'] as const as verb (verb)}
       <button
         type="button"
@@ -99,27 +98,17 @@
     align-items: center;
     flex-wrap: wrap;
     gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    background: var(--color-surface-raised);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-  }
-
-  .bar-label {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--color-text);
-    margin-right: var(--space-2);
   }
 
   .control {
-    background: var(--color-surface);
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-sm);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
     cursor: pointer;
+    text-transform: capitalize;
   }
 
   .control:disabled {

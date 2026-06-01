@@ -54,8 +54,11 @@ fi
 # -----------------------------------------------------------------------------
 # N7 — saved-view input placeholder reads "Save current as…" everywhere
 # the input is rendered (only pages with a "save name" text input).
+# Phase 108i (D-181): the Tasks page adopted the Sessions saved-view UX —
+# a "Save view" button (asserted above) whose name derives from the search
+# text, with NO inline rename input — so `tasks` drops out of this loop.
 # -----------------------------------------------------------------------------
-for page in tasks tools background-jobs; do
+for page in tools background-jobs; do
     file="web/console/src/routes/(console)/${page}/+page.svelte"
     assert_grep_present \
         'placeholder="Save current as…"' \
