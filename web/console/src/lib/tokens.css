@@ -166,6 +166,13 @@
   --size-graph-max-height: 480px;
   --size-modal-width: 420px;
   --size-sparkline-height: 4rem;
+  /* Phase 108h — the Events rate card holds a multi-line chart + a
+     Type / Rate / Total legend (≈7 rows); tall enough so the legend
+     fits inside the card instead of bleeding past its border. */
+  --size-rate-chart-height: 7rem;
+  /* Phase 108h — compact width for the Events facet inputs (Tenant /
+     User / Session / Run) so the filter strip packs instead of sprawling. */
+  --size-facet-input: 6.5rem;
   --size-progress-track: 0.5rem;
   --size-bar-min: 0.125rem;
   --size-card-min: 18rem;

@@ -146,3 +146,34 @@ Reconciliation of `docs/rfc/assets/console-events-page.png` against §3-§7.
 - **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label; no embedded `harbor dev` path.
 - **§13 forbidden practices.** The Open-artifact link goes through `artifacts.get` rather than inlining heavy payload bytes (closes the D-026 leak shape); no parallel implementation of pause (the stream pause is a Console-local view toggle, not a runtime pause — distinct from `pause` Protocol method which is task-scoped).
 - Glossary terms used: `Console`, `Runtime lens`, `Scope claim`, `Fleet control / fleet observation`, `Protocol`, `Deprecation window`.
+
+## 13. Reframe note — Phase 108h (2026-06-01)
+
+The shipped Events page (Phase 73g / D-125) was rethemed under the page-polish
+pass to the carded `.panel.card` + `.panel-title` vocabulary the five done pages
+set (Overview, Live Runtime, Settings, Playground, Sessions) and **viewport-
+locked** (PAGE-POLISH §6): the page no longer full-page-scrolls — the faceted
+filter strip and the rate sparkline are fixed, the events table scrolls
+internally behind a sticky header, and the right rail scrolls internally. The
+per-page PageHeader is dropped (the breadcrumb is app-shell chrome, 108b). The
+data layer is unchanged (live `events.subscribe` SSE table + `events.aggregate`
+sparkline + Console-local saved-views / export / pause); no new Protocol method
+(see D-180).
+
+Three honest gaps the audit found were filled rather than left misleading:
+
+- **Empty copy reframed.** The table feed is the LIVE `events.subscribe` SSE, not
+  a persistent-buffer read; the empty copy now describes the live-stream reality
+  (a quiet window shows no rows until events fire; an in-memory driver keeps no
+  historical backfill) instead of claiming a `durable`-only persistent read.
+- **Sparkline scope.** `events.aggregate` defaults to the caller's own session
+  when the filter elides it; the rate sparkline is now scoped to the active facet
+  set so it reflects what the table shows, not an empty default-session aggregate.
+- **Idle right rail.** With no row selected the right rail shows the live
+  subscription status (cursor sequence, dropped count, stream state) per §4,
+  instead of rendering blank.
+
+Deferred surfaces stay honest: runtime-side `search.events` (Phase 72c) is absent
+— the search box is Console-local substring match over the loaded page; the trace
+deep-link (D-073) stays disabled-with-tooltip (post-V1). All other §3–§12
+functionality is preserved.
