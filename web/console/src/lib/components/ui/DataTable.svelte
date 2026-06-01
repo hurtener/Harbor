@@ -124,9 +124,21 @@
       </tr>
     {:else}
       {#each rows as r (rowKey(r))}
-        <tr class="data-row" class:selected={selected.has(rowKey(r))}>
+        <!-- The data `<td>`s emitted by the page's `row` snippet render
+             DIRECTLY in the `<tr>` so they share the `<thead>` column
+             model — header labels and cell content stay column-aligned.
+             (A previous nested per-row `<table>` computed each row's
+             widths independently and broke alignment.) The whole row is
+             the click target; the checkbox cell stops propagation so a
+             select-toggle never opens the detail. -->
+        <tr
+          class="data-row"
+          class:selected={selected.has(rowKey(r))}
+          class:clickable={!!onrowclick}
+          onclick={onrowclick ? () => onrowclick?.(r) : undefined}
+        >
           {#if selectable}
-            <td class="select-col">
+            <td class="select-col" onclick={(e) => e.stopPropagation()}>
               <input
                 type="checkbox"
                 checked={selected.has(rowKey(r))}
@@ -135,19 +147,7 @@
               />
             </td>
           {/if}
-          <!-- The row snippet emits the data `<td>`s; wrapping them in a
-               clickable region keeps row-click separate from checkboxes. -->
-          {#if onrowclick}
-            <td
-              class="row-body-cell"
-              colspan={columns.length}
-              onclick={() => onrowclick?.(r)}
-            >
-              <table class="row-inner"><tbody><tr>{@render row(r)}</tr></tbody></table>
-            </td>
-          {:else}
-            {@render row(r)}
-          {/if}
+          {@render row(r)}
         </tr>
       {/each}
     {/if}
@@ -162,6 +162,10 @@
   }
 
   thead th {
+    position: sticky;
+    top: var(--space-0);
+    z-index: 1;
+    background: var(--color-surface);
     text-align: left;
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-xs);
@@ -188,14 +192,12 @@
     background: var(--color-accent-soft);
   }
 
-  .row-body-cell {
-    padding: var(--space-0);
+  tbody tr.data-row.clickable {
     cursor: pointer;
   }
 
-  .row-inner {
-    width: 100%;
-    border-collapse: collapse;
+  tbody tr.data-row.clickable:hover {
+    background: var(--color-surface-raised);
   }
 
   .empty-row td {
