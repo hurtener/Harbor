@@ -108,12 +108,17 @@ test.describe("Events page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("events");
 
+    // Phase 108h: the rate sparkline is now a permanent carded region
+    // (always rendered once the aggregator resolves), so it can coexist
+    // with the table's empty/loaded state — `.first()` resolves the
+    // strict-mode ambiguity while still asserting the page reaches a
+    // documented surface (the sparkline OR a PageState branch).
     const sparkline = page.locator("[data-testid='events-rate-sparkline']");
     const empty = page.locator("[data-testid='events-empty']");
     const error = page.locator("[data-testid='page-state-error']");
     const loading = page.locator("[data-testid='page-state-loading']");
     await expect(
-      sparkline.or(empty).or(error).or(loading),
+      sparkline.or(empty).or(error).or(loading).first(),
       "the page resolves into the sparkline or a documented PageState",
     ).toBeVisible();
   });

@@ -224,7 +224,7 @@
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-2);
     font-size: var(--text-xs);
-    width: var(--size-search-min);
+    width: var(--size-facet-input);
   }
 
   .facet-text:disabled {
