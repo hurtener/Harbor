@@ -146,7 +146,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all matrix artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist/
           # Each matrix job uploaded into its own named bucket; flatten
