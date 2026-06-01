@@ -19,6 +19,12 @@ cd "${ROOT}"
 source "scripts/smoke/common.sh"
 
 PAGE="web/console/src/routes/(console)/live-runtime/+page.svelte"
+# Stage-3 refactor (Phase 108d): the SSE subscription vocabulary moved out of
+# the page into the pure `page-data.ts` module (exported as
+# LIVE_RUNTIME_EVENT_TYPES, which the page imports + opens the stream against).
+# The named-event assertions below grep that module so they keep guarding the
+# live event vocabulary where it now lives.
+PAGE_DATA="web/console/src/lib/live-runtime/page-data.ts"
 
 assert_grep_or_skip() {
     local pattern="$1" path="$2" desc="$3"
@@ -47,8 +53,11 @@ assert_not_grep_or_fail "import SavedViewChips" "${PAGE}" "phase-108d: SavedView
 assert_not_grep_or_fail "data-testid=\"live-runtime-save-view\"" "${PAGE}" "phase-108d: save-view button removed"
 
 # ---- Event stream subscribes to NAMED event types (108c named-SSE fix) ------
-assert_grep_or_skip "task.completed" "${PAGE}" "phase-108d: event stream lists named event types (not empty open())"
-assert_grep_or_skip "llm.cost.recorded" "${PAGE}" "phase-108d: event stream subscribes to cost events"
+# Vocabulary lives in page-data.ts (LIVE_RUNTIME_EVENT_TYPES); the page imports
+# it and opens the stream with `eventTypes: LIVE_RUNTIME_EVENT_TYPES`.
+assert_grep_or_skip "task.completed" "${PAGE_DATA}" "phase-108d: event stream lists named event types (not empty open())"
+assert_grep_or_skip "llm.cost.recorded" "${PAGE_DATA}" "phase-108d: event stream subscribes to cost events"
+assert_grep_or_skip "LIVE_RUNTIME_EVENT_TYPES" "${PAGE}" "phase-108d: page opens stream with the named-event vocabulary"
 
 # ---- Tab strip toolbar + header refresh present ----------------------------
 assert_grep_or_skip "TabStrip" "${PAGE}" "phase-108d: tab strip toolbar present"

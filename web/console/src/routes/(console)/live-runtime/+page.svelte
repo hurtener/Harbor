@@ -34,8 +34,6 @@
   //
   // Svelte 5 runes mode (D-092); design tokens only (CLAUDE.md §4.5).
   import { onMount, onDestroy } from 'svelte';
-  import DetailRail from '$lib/components/ui/DetailRail.svelte';
-  import RailCard from '$lib/components/ui/RailCard.svelte';
   import Pagination from '$lib/components/ui/Pagination.svelte';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
   // The bottom status bar is rendered ONCE by the app shell
@@ -54,21 +52,19 @@
   import TimelineTab from '$lib/components/live-runtime/timeline-tab.svelte';
   import MetricsTabEmpty from '$lib/components/live-runtime/metrics-tab-empty.svelte';
   import HealthTabEmpty from '$lib/components/live-runtime/health-tab-empty.svelte';
-  import EventStreamDock from '$lib/components/live-runtime/event-stream-dock.svelte';
-  import PerTaskDetailPane from '$lib/components/live-runtime/per-task-detail-pane.svelte';
-  import RunComposer, {
-    type ComposerVerb
-  } from '$lib/components/live-runtime/composer/run-composer.svelte';
-  import SessionDetailCard from '$lib/components/live-runtime/session-detail-card.svelte';
-  import CurrentStepPanel from '$lib/components/live-runtime/current-step-panel.svelte';
-  import RecentArtifactsPanel, {
-    type RecentArtifact
-  } from '$lib/components/live-runtime/recent-artifacts-panel.svelte';
-  import InterventionsPanel, {
-    type Intervention
-  } from '$lib/components/live-runtime/interventions-panel.svelte';
+  import BottomDock from '$lib/components/live-runtime/bottom-dock.svelte';
+  import { type ComposerVerb } from '$lib/components/live-runtime/composer/run-composer.svelte';
+  import DetailRailView from '$lib/components/live-runtime/detail-rail.svelte';
+  import type { RecentArtifact } from '$lib/components/live-runtime/recent-artifacts-panel.svelte';
+  import type { Intervention } from '$lib/components/live-runtime/interventions-panel.svelte';
   import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
   import { ProtocolError, isUnknownMethod } from '$lib/protocol/errors.js';
+  import {
+    LIVE_RUNTIME_EVENT_TYPES,
+    toError,
+    nodeStateForEvent,
+    sessionStatusLabel as deriveSessionStatusLabel
+  } from '$lib/live-runtime/page-data.js';
   import { EventsSubscription } from '$lib/events/subscription.svelte.js';
   import type { Event } from '$lib/protocol/events.js';
   import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
@@ -221,17 +217,7 @@
   // everything terminated cleanly; failed when something failed). The
   // page's own loading-state status remains separate and drives the
   // PageState chrome — the rail stops conflating the two.
-  let sessionStatusLabel = $derived(
-    status === 'disconnected'
-      ? 'disconnected'
-      : strip.running + strip.pending + strip.paused > 0
-        ? 'active'
-        : strip.failed > 0 && strip.completed === 0
-          ? 'failed'
-          : strip.completed > 0
-            ? 'complete'
-            : 'idle'
-  );
+  let sessionStatusLabel = $derived(deriveSessionStatusLabel(strip, status));
 
   // The event-stream dock page window — real pagination over the
   // rolling event buffer (not a fake "load more").
@@ -248,16 +234,6 @@
   /* ================================================================ */
   /* Loading                                                           */
   /* ================================================================ */
-
-  function toError(err: unknown): { code: string; message: string } {
-    if (err instanceof ProtocolError) {
-      return { code: err.code, message: err.message };
-    }
-    return {
-      code: 'runtime_error',
-      message: err instanceof Error ? err.message : 'unknown error'
-    };
-  }
 
   // load resolves the topology snapshot + the status-counter-strip
   // aggregate. Both go through the typed client; a thrown ProtocolError
@@ -379,34 +355,6 @@
       if (next !== null) {
         nodeStates = { ...nodeStates, [nodeKey]: next };
       }
-    }
-  }
-
-  // Maps a `task.*` event type to a topology node run state, or null when
-  // the event does not change a node's state. Pure — no fabrication: a
-  // type that carries no state mapping returns null and the node keeps
-  // its last-known state.
-  function nodeStateForEvent(type: string, payload?: unknown): NodeState | null {
-    switch (type) {
-      case 'task.spawned':
-        return { state: 'pending' };
-      case 'task.started':
-        return { state: 'running' };
-      case 'task.completed':
-        return { state: 'completed' };
-      case 'pause.requested':
-        return { state: 'paused' };
-      case 'pause.resumed':
-        return { state: 'running' };
-      case 'task.failed':
-      case 'tool.failed':
-      case 'planner.error': {
-        const rec = (payload ?? {}) as Record<string, unknown>;
-        const code = typeof rec['code'] === 'string' ? (rec['code'] as string) : 'failed';
-        return { state: 'failed', failureCode: code };
-      }
-      default:
-        return null;
     }
   }
 
@@ -536,33 +484,7 @@
     const sub = new EventsSubscription(
       (client as HarborClient).events ?? new HarborClient({ connection }).events
     );
-    sub.open({
-      eventTypes: [
-        'task.spawned',
-        'task.started',
-        'task.completed',
-        'task.failed',
-        'task.cancelled',
-        'tool.invoked',
-        'tool.completed',
-        'tool.failed',
-        'planner.decision',
-        'planner.finish',
-        'planner.error',
-        'pause.requested',
-        'pause.resumed',
-        'tool.approval_requested',
-        'tool.approved',
-        'tool.rejected',
-        'tool.auth_required',
-        'control.received',
-        'control.applied',
-        'control.rejected',
-        'session.opened',
-        'session.closed',
-        'llm.cost.recorded'
-      ]
-    });
+    sub.open({ eventTypes: LIVE_RUNTIME_EVENT_TYPES });
     subscription = sub;
 
     void load();
@@ -667,60 +589,35 @@
         />
       {/if}
 
-      <div class="bottom-dock">
-        <EventStreamDock
-          events={pagedEvents}
-          streamState={streamState}
-          traceOn={traceOn}
-          traceRunID={traceRunID}
-          ontracetoggle={toggleTrace}
-        />
-        {#if selectedNode !== null}
-          <PerTaskDetailPane
-            detail={detail}
-            loading={detailLoading}
-            traceEvents={traceEvents}
-            canControl={canControl}
-            onprioritize={(id, p) => void prioritizeTask(id, p)}
-          />
-        {:else}
-          <RunComposer
-            canControl={canControl}
-            pending={composerPending}
-            result={composerResult}
-            {disconnected}
-            onverb={(verb, text) => void dispatchVerb(verb, text)}
-          />
-        {/if}
-      </div>
+      <BottomDock
+        events={pagedEvents}
+        streamState={streamState}
+        traceOn={traceOn}
+        traceRunID={traceRunID}
+        selectedNode={selectedNode}
+        detail={detail}
+        detailLoading={detailLoading}
+        traceEvents={traceEvents}
+        canControl={canControl}
+        composerPending={composerPending}
+        composerResult={composerResult}
+        {disconnected}
+        ontracetoggle={toggleTrace}
+        onverb={(verb, text) => void dispatchVerb(verb, text)}
+        onprioritize={(id, p) => void prioritizeTask(id, p)}
+      />
 
     </div>
 
-    <DetailRail>
-      <RailCard title="Session">
-        {#if connection !== null}
-          <SessionDetailCard
-            identity={connection.identity}
-            agentName="default agent"
-            sessionStatus={sessionStatusLabel}
-            costUSD={costUSD}
-            lastError={lastError}
-            tenant={connection.identity.tenant}
-          />
-        {:else}
-          <p class="rail-note">Not connected to a Runtime.</p>
-        {/if}
-      </RailCard>
-      <RailCard title="Current step">
-        <CurrentStepPanel step={currentStep} detail="Derived from the live planner event stream." />
-      </RailCard>
-      <RailCard title="Recent artifacts">
-        <RecentArtifactsPanel artifacts={recentArtifacts} />
-      </RailCard>
-      <RailCard title="Interventions">
-        <InterventionsPanel interventions={interventions} />
-      </RailCard>
-    </DetailRail>
+    <DetailRailView
+      connection={connection}
+      sessionStatusLabel={sessionStatusLabel}
+      costUSD={costUSD}
+      lastError={lastError}
+      currentStep={currentStep}
+      recentArtifacts={recentArtifacts}
+      interventions={interventions}
+    />
   </div>
 </div>
 
@@ -744,13 +641,6 @@
     flex-direction: column;
     gap: var(--space-4);
     min-width: var(--space-0);
-  }
-
-  .bottom-dock {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-4);
-    align-items: start;
   }
 
   .header-row {
@@ -807,12 +697,6 @@
   }
 
   .empty-block .detail {
-    margin: var(--space-0);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-  }
-
-  .rail-note {
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
