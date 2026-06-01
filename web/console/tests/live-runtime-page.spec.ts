@@ -109,7 +109,7 @@ test.describe("Console Live Runtime page", () => {
     }
   });
 
-  test("(c) the tab strip swaps the primary view; Metrics/Health point to 72f", async ({
+  test("(c) the tab strip swaps the primary view; Metrics/Health render honest capability-probe states", async ({
     page,
     runtime,
     helpers,
@@ -139,18 +139,20 @@ test.describe("Console Live Runtime page", () => {
       "the main-canvas tab strip renders",
     ).toBeVisible();
 
-    // The Metrics tab renders the 72f-pointer empty state.
+    // The Metrics tab renders the honest capability-probe state (Phase
+    // 108d Stage 2 — no hardcoded phase pointer; the tab probes
+    // runtime.info capabilities and says so honestly when absent).
     await page.locator("[data-testid='tab-metrics']").click();
     await expect(
-      page.locator("[data-testid='metrics-tab-empty']"),
-      "the Metrics tab shows the 72f-pointer empty state",
+      page.locator("[data-testid='live-runtime-metrics-empty']"),
+      "the Metrics tab shows the honest capability-probe state",
     ).toBeVisible();
 
     // The Health tab likewise.
     await page.locator("[data-testid='tab-health']").click();
     await expect(
-      page.locator("[data-testid='health-tab-empty']"),
-      "the Health tab shows the 72f-pointer empty state",
+      page.locator("[data-testid='live-runtime-health-empty']"),
+      "the Health tab shows the honest capability-probe state",
     ).toBeVisible();
   });
 

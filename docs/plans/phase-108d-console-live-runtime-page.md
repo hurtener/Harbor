@@ -159,6 +159,43 @@ label/placeholder loops) + `disconnected-state.spec.ts` (live-runtime out of the
 N7 save-view list). Gates: svelte-check 0/0, lint clean, 83s smoke 24 OK,
 live-runtime + disconnected e2e 18/18.
 
+## Stage 2 ledger (verified 2026-05-31)
+
+Live env: validation runtime :18080 (planner/RunLoop) + Console dev source
+:18790, fresh token. The topology graph is verified **structurally** — the
+runtime returns `unknown_method` for `topology.snapshot` (D-164), so the graph
+RENDERING is asserted against the pure adapter + a sample projection (15 vitest
+cases), not live (operator decision: no flow runtime stood up). Every other
+Stage 2 datum is verified live.
+
+| Item | Source | Verified | Result |
+|---|---|---|---|
+| Default tab (capability-driven) | `runtime.info` capabilities (84a) | live | **PASS** — `topology` only if `topology_snapshot` advertised; planner runtime → Health (NOT topology), operator requirement met |
+| Topology canvas (legend / filters / zoom+reset / pause-stream) | wrapper local UI + adapter | structural | **PASS** — chrome in the wrapper; shared `EngineGraphCanvas`/Flows untouched |
+| Failed-node red + code | Console event-fold (wire type has NO per-node state) | structural | **PASS (finding)** — derived honestly from the event stream; empty → nothing styled, no fabricated wire field |
+| Status legend counts | Console node-state map | structural | PASS — zeros when no states (honest) |
+| Metrics tab | `runtime.info` capability probe | live | **PASS** — honest "does not advertise metrics" (no client method yet; no fabricated tiles) |
+| Health tab | `runtime.info` capability probe | live | **PASS** — honest "does not advertise health"; renders as the default-tab content (not shrouded by the topology info banner) |
+| Timeline tab | `topology.snapshot` (re-laid) | structural | PASS — projection-gated; D-164 info banner on the planner runtime |
+| Console errors | — | live | **0** on `/live-runtime` (fresh token, all tabs) |
+
+Gates: svelte-check 0/0 · eslint clean · vitest 15/15 (topology-adapter incl.
+Stage 2) · full Playwright e2e 154 passed / 26 skipped / 0 failed (incl.
+`/live-runtime` hydrates w/o console errors) · phase-108d 9 OK · phase-83s 29 OK
+· phase-73b updated to the capability-probe contract.
+
+§17.6 in-wave fixes (found during the review of the Stage 2 implementation):
+`phase-73b.sh` guard #8 (72f-pointer → capability-probe contract); a stale
+`live-runtime-page.spec.ts` testid + wording; an invented `--space-80` token
+reverted to `--size-search-min`; and Metrics/Health pulled out of the
+topology-gated `PageState` so the capability-default tab shows meaningful
+content (loading/error/disconnected still route through `PageState`).
+
+Deferred finding: the node-state event-fold reads `ev.extra.source` /
+lowercase `payload.code` — unverified against a real engine runtime (correctly
+empty on the planner runtime; SSE payloads are PascalCase). Revisit alongside
+the engine-run topology fixture (issue #178).
+
 ## Acceptance criteria
 
 - **Stage 1:** each datum real-wired + verified live; carded panels; four-state

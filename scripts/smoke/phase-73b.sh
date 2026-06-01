@@ -227,25 +227,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Static guard — the Metrics/Health empty states point to Phase 72f.
+# 8. Static guard — the Metrics/Health tabs are capability-probed honest
+#    states (Phase 108d Stage 2 supersedes the old Phase-72f pointer).
 # ---------------------------------------------------------------------------
 #
-# Brief 11 §LR-2: the Metrics + Health tabs render an empty-state
-# pointer to the responsible phase (72f) until that phase's
-# `metrics.snapshot` / `runtime.health` primitives land. The risk is
-# the pointer drifts on a renumber — this guard fails if the empty-
-# state copy stops referencing 72f, forcing an update.
+# Brief 11 §LR-2 originally had the Metrics + Health tabs point to the
+# responsible phase (72f) until its primitives land. Phase 108d Stage 2
+# replaced that hardcoded phase-pointer copy with a real capability
+# probe: the tabs take an `available` prop (resolved from
+# `runtime.info` capabilities) and render an honest "this runtime does
+# not advertise metrics/health" info state — no fabricated data, no
+# hardcoded phase numbers (CLAUDE.md §13 — no fabrication, no silent
+# degradation). This guard now fails if a tab regresses to a hardcoded
+# phase pointer OR drops the capability-probe `available` prop / the
+# honest copy. (§17.6 in-wave cross-phase fix — the 108d wave owns it.)
 
 METRICS_EMPTY="${PAGE_DIR}/metrics-tab-empty.svelte"
 HEALTH_EMPTY="${PAGE_DIR}/health-tab-empty.svelte"
 if [[ -f "${METRICS_EMPTY}" && -f "${HEALTH_EMPTY}" ]]; then
-    if grep -q '72f' "${METRICS_EMPTY}" && grep -q '72f' "${HEALTH_EMPTY}"; then
-        ok 'phase 73b: Metrics/Health empty states reference Phase 72f (Brief 11 §LR-2 pointer intact)'
+    if grep -q 'available' "${METRICS_EMPTY}" && grep -q 'available' "${HEALTH_EMPTY}" \
+        && grep -q 'does not advertise' "${METRICS_EMPTY}" \
+        && grep -q 'does not advertise' "${HEALTH_EMPTY}" \
+        && ! grep -q '72f' "${METRICS_EMPTY}" && ! grep -q '72f' "${HEALTH_EMPTY}"; then
+        ok 'phase 73b: Metrics/Health tabs are capability-probed honest states (Phase 108d superseded the 72f pointer)'
     else
-        fail 'phase 73b: a Metrics/Health empty state lost its Phase 72f pointer — Brief 11 §LR-2'
+        fail 'phase 73b: a Metrics/Health tab is not a capability-probed honest state — Phase 108d Stage 2 (no available prop / honest copy, or regressed to a phase pointer)'
     fi
 else
-    skip 'phase 73b: Metrics/Health empty-state components not present yet'
+    skip 'phase 73b: Metrics/Health tab components not present yet'
 fi
 
 smoke_summary

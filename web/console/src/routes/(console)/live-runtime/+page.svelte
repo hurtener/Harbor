@@ -73,6 +73,7 @@
   import type { Event } from '$lib/protocol/events.js';
   import type { TaskListResponse, TaskDetail } from '$lib/protocol/tasks.js';
   import type { TopologyProjection } from '$lib/protocol/topology.js';
+  import type { NodeState } from '$lib/live-runtime/topology-adapter.js';
   import {
     resolveConnection,
     hasScope,
@@ -106,11 +107,67 @@
   /* ---- topology canvas (the §5 depth-bar primary view) ------------ */
   let projection = $state<TopologyProjection | null>(null);
 
+  // Console-derived per-node run states for the topology canvas's status
+  // legend + failed-node styling. The Protocol `TopologyProjection` does
+  // NOT carry per-node state (it is identity + kind + edge queue depth
+  // only), so the legend counts and the red failed/reject nodes are
+  // derived best-effort from the live `task.*` event stream, keyed by the
+  // event's node/source descriptor. EMPTY on a planner/RunLoop runtime
+  // (which emits no node states) — the legend then reads zeros and no
+  // node is styled failed: nothing fabricated (CLAUDE.md §13). See
+  // `$lib/live-runtime/topology-adapter.ts`.
+  let nodeStates = $state<Record<string, NodeState>>({});
+
+  /* ---- runtime capability set ------------------------------------- */
+  // Resolved once in load() from `client.capabilities()`. Drives (a) the
+  // default active tab (topology only when `topology_snapshot` is
+  // advertised — see `defaultTabApplied` below), and (b) the Metrics /
+  // Health tabs' honest "this runtime does not advertise …" info states
+  // (the typed client exposes no metrics/health method yet, so the tabs
+  // probe the capability rather than fabricate data — CLAUDE.md §13).
+  let metricsAvailable = $state(false);
+  let healthAvailable = $state(false);
+
+  /* ---- Console-side live-update pause (topology canvas control) ---- */
+  // Local UI state only — halts the Console's live mirroring without
+  // touching the runtime (page-live-runtime.md §6, "Pause-Console-updates").
+  let streamPaused = $state(false);
+
   /* ---- header status-counter strip -------------------------------- */
   let strip = $state<StatusCounterStrip>({ ...EMPTY_STRIP });
 
   /* ---- main-canvas tab -------------------------------------------- */
-  let activeTab = $state<LiveRuntimeTab>('topology');
+  // The default tab is NOT hardcoded to 'topology' — topology is
+  // runtime-conditional (a planner/RunLoop runtime omits the engine
+  // graph). `applyDefaultTab()` picks the default once, AFTER
+  // `client.capabilities()` resolves in load(): 'topology' only when the
+  // runtime advertises `topology_snapshot`; otherwise the first
+  // capability-backed tab, falling back to the always-present 'timeline'
+  // (it renders from the same projection but is the neutral non-graph
+  // view). Health is always present (it has an honest no-capability
+  // state) so it is the final fallback. The default is applied ONCE
+  // (`defaultTabApplied`) so a user's explicit tab click is never
+  // overridden by a subsequent load()/Refresh.
+  let activeTab = $state<LiveRuntimeTab>('timeline');
+  let defaultTabApplied = $state(false);
+
+  function applyDefaultTab(caps: { has(name: string): boolean }): void {
+    if (defaultTabApplied) {
+      return;
+    }
+    defaultTabApplied = true;
+    if (caps.has('topology_snapshot')) {
+      activeTab = 'topology';
+    } else if (caps.has('metrics_snapshot')) {
+      activeTab = 'metrics';
+    } else if (caps.has('runtime_health')) {
+      activeTab = 'health';
+    } else {
+      // Neutral always-present fallback: Health renders an honest
+      // no-capability info state on any runtime.
+      activeTab = 'health';
+    }
+  }
 
   /* ---- node selection + per-task detail (nested PageState) -------- */
   let selectedNode = $state<string | null>(null);
@@ -231,6 +288,11 @@
       // remains the safety net for any runtime that advertises the
       // capability but rejects at the wire (defence-in-depth).
       const caps = await client.capabilities();
+      // Resolve the capability-driven tab states (default tab + the
+      // Metrics/Health honest info states) from the one capabilities call.
+      metricsAvailable = caps.has('metrics_snapshot');
+      healthAvailable = caps.has('runtime_health');
+      applyDefaultTab(caps);
       if (!caps.has('topology_snapshot')) {
         projection = null;
         const taskResp = await client.tasks.list<TaskListResponse>({
@@ -306,6 +368,46 @@
     if (ev.type.startsWith('planner.')) {
       currentStep = ev.type;
     }
+    // Derive the topology node's run state from the event, keyed by the
+    // node/source sidecar descriptor (`ev.extra.source`), falling back to
+    // the run id. Best-effort enrichment for the canvas legend +
+    // failed-node styling; a runtime that emits no node-scoped task
+    // events leaves `nodeStates` empty (nothing fabricated — §13).
+    const nodeKey = ev.extra?.source ?? ev.run;
+    if (nodeKey !== undefined && nodeKey !== '') {
+      const next = nodeStateForEvent(ev.type, ev.payload);
+      if (next !== null) {
+        nodeStates = { ...nodeStates, [nodeKey]: next };
+      }
+    }
+  }
+
+  // Maps a `task.*` event type to a topology node run state, or null when
+  // the event does not change a node's state. Pure — no fabrication: a
+  // type that carries no state mapping returns null and the node keeps
+  // its last-known state.
+  function nodeStateForEvent(type: string, payload?: unknown): NodeState | null {
+    switch (type) {
+      case 'task.spawned':
+        return { state: 'pending' };
+      case 'task.started':
+        return { state: 'running' };
+      case 'task.completed':
+        return { state: 'completed' };
+      case 'pause.requested':
+        return { state: 'paused' };
+      case 'pause.resumed':
+        return { state: 'running' };
+      case 'task.failed':
+      case 'tool.failed':
+      case 'planner.error': {
+        const rec = (payload ?? {}) as Record<string, unknown>;
+        const code = typeof rec['code'] === 'string' ? (rec['code'] as string) : 'failed';
+        return { state: 'failed', failureCode: code };
+      }
+      default:
+        return null;
+    }
   }
 
   // This effect mirrors new `task.*` / `planner.*` events into the live
@@ -314,6 +416,13 @@
   let lastSeenSeq = 0;
   $effect(() => {
     if (subscription === null) {
+      return;
+    }
+    // The topology-canvas Pause-stream toggle halts Console-side live
+    // mirroring (the strip/rail deltas) without touching the runtime — the
+    // SSE feed keeps buffering; we simply stop folding new events into the
+    // derived UI state until the operator resumes.
+    if (streamPaused) {
       return;
     }
     for (const ev of subscription.events) {
@@ -494,41 +603,56 @@
 
   <div class="layout">
     <div class="main-col">
-      <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
-        {#snippet skeleton()}
-          <div class="canvas-skeleton" aria-hidden="true"></div>
-        {/snippet}
-        {#snippet empty()}
-          <div class="empty-block" data-testid="live-runtime-empty">
-            <p class="headline">The Runtime engine has no topology</p>
-            <p class="detail">
-              No engine graph is registered, or the Runtime exposes no
-              nodes yet.
-            </p>
-            <button type="button" class="refresh" onclick={() => void load()}>
-              Reload
-            </button>
-          </div>
-        {/snippet}
-
-        {#if activeTab === 'topology' && projection !== null}
-          <TopologyCanvas
-            projection={projection}
-            selectedNode={selectedNode}
-            onnodeclick={selectNode}
-          />
-        {:else if activeTab === 'timeline' && projection !== null}
-          <TimelineTab
-            projection={projection}
-            selectedNode={selectedNode}
-            onselect={selectNode}
-          />
-        {:else if activeTab === 'metrics'}
-          <MetricsTabEmpty />
-        {:else if activeTab === 'health'}
-          <HealthTabEmpty />
+      {#if (activeTab === 'metrics' || activeTab === 'health') && (status === 'ready' || status === 'empty' || status === 'info')}
+        <!-- Metrics / Health are runtime-SELF tabs (capability-probed), not
+             engine-graph projections. Once the capability set is known
+             (ready / empty / info) they render their OWN honest state rather
+             than being shrouded by the topology `info` banner — so the
+             capability-driven default tab (which on a planner/RunLoop runtime
+             falls through to Health) shows meaningful content, not a topology
+             message. While the page is still loading / errored / disconnected
+             they fall through to <PageState> below for the correct chrome. -->
+        {#if activeTab === 'metrics'}
+          <MetricsTabEmpty available={metricsAvailable} />
+        {:else}
+          <HealthTabEmpty available={healthAvailable} />
         {/if}
-      </PageState>
+      {:else}
+        <PageState status={status} error={pageError} info={pageInfo} onretry={() => void load()}>
+          {#snippet skeleton()}
+            <div class="canvas-skeleton" aria-hidden="true"></div>
+          {/snippet}
+          {#snippet empty()}
+            <div class="empty-block" data-testid="live-runtime-empty">
+              <p class="headline">The Runtime engine has no topology</p>
+              <p class="detail">
+                No engine graph is registered, or the Runtime exposes no
+                nodes yet.
+              </p>
+              <button type="button" class="refresh" onclick={() => void load()}>
+                Reload
+              </button>
+            </div>
+          {/snippet}
+
+          {#if activeTab === 'topology' && projection !== null}
+            <TopologyCanvas
+              projection={projection}
+              selectedNode={selectedNode}
+              onnodeclick={selectNode}
+              nodeStates={nodeStates}
+              streamPaused={streamPaused}
+              onstreamtoggle={(next) => (streamPaused = next)}
+            />
+          {:else if activeTab === 'timeline' && projection !== null}
+            <TimelineTab
+              projection={projection}
+              selectedNode={selectedNode}
+              onselect={selectNode}
+            />
+          {/if}
+        </PageState>
+      {/if}
 
       {#if status === 'ready'}
         <Pagination
