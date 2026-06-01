@@ -1,37 +1,38 @@
 <script lang="ts">
-  // Console Settings page (Phase 73m / D-129).
+  // Console Settings page (Phase 108f / D-178 — calm single-section model;
+  // supersedes the Phase 73m / D-129 paginated-cards + saved-views +
+  // detail-rail composition).
   //
-  // The per-operator + per-runtime configuration surface. 12 cards:
-  // Connected Runtimes / Per-Runtime Auth / API Tokens / Appearance /
-  // Time & Locale / Keybindings / Notifications Routing / Runtime Info /
-  // Governance Posture / Storage Drivers / LLM-Provider Posture / About.
+  // A calm "sub-nav rail + one section at a time" surface. The left rail
+  // lists the 12 sections (grouped: Console-local first, then a Runtime
+  // sub-heading for the read-only posture sections). The right pane renders
+  // ONLY the active section as a carded `<section class="panel card">`,
+  // mirroring the Overview page's (108c) vocabulary. The over-engineered
+  // 73m composition (per-page paging, the top filter bar, saved-view chips,
+  // the detail rail, scroll-to-anchor) is removed — a single section is
+  // always in view, so the page is calm and aligned.
   //
   // The page is a pure CONSUMER of upstream surfaces — 72f's runtime
   // posture methods, 72g's governance + LLM posture methods, 72h's
   // Console DB schema. The ONE net-new Protocol method it owns is
   // `auth.rotate_token` (the Per-Runtime Auth card's "Rotate token").
   //
-  // Built against `docs/design/console/CONVENTIONS.md` (D-121): routes
-  // under `(console)/` (served at `/settings`), renders inside the app
-  // shell, composes the shared `ui/` inventory, routes all async state
-  // through the four-state `<PageState>`, talks to the Runtime only
-  // through `HarborClient` + `connection.ts`, uses design tokens only.
+  // D-158 split preserved per active-section: a `console-local` section
+  // renders DIRECTLY (works disconnected — the operator's only path to
+  // attach a runtime); a `runtime-posture` section renders INSIDE
+  // `<PageState>` so the disconnected / error state shows the standard
+  // placeholder + Retry.
+  //
+  // Built against `docs/design/console/CONVENTIONS.md` (D-121) +
+  // `docs/design/console/PAGE-POLISH-PROCEDURE.md`: routes under
+  // `(console)/` (served at `/settings`), renders inside the app shell,
+  // routes async state through `<PageState>`, talks to the Runtime only
+  // through `HarborClient` + `connection.ts`, uses design tokens only,
+  // Svelte 5 runes (D-092).
   import { onMount } from 'svelte';
-  import {
-    PageHeader,
-    FilterBar,
-    SavedViewChips,
-    DataTable,
-    DetailRail,
-    RailCard,
-    StatusChip,
-    Pagination,
-    PageState,
-    type DataTableColumn
-  } from '$lib/components/ui/index.js';
+  import { PageState } from '$lib/components/ui/index.js';
   // ConnectionFooter is rendered ONCE by the app shell
-  // ((console)/+layout.svelte — CONVENTIONS.md §2). The per-page import was
-  // duplicating the footer (post-83k walkthrough N2); removed.
+  // ((console)/+layout.svelte — CONVENTIONS.md §2).
   import SubNavRail from '$lib/components/settings/SubNavRail.svelte';
   import AttachToLocalCard from '$lib/components/settings/AttachToLocalCard.svelte';
   import ConnectedRuntimesCard from '$lib/components/settings/ConnectedRuntimesCard.svelte';
@@ -55,96 +56,52 @@
     type SettingsSectionId
   } from '$lib/settings/state.svelte.js';
   import { SettingsDBController } from '$lib/settings/console_db.svelte.js';
-  import { SettingsSavedViews } from '$lib/settings/saved_views.svelte.js';
 
   const settings = new SettingsState();
   const db = new SettingsDBController();
   const rotate = new RotateTokenState();
-  const savedViews = new SettingsSavedViews();
 
-  /** The active section anchor — drives the sub-nav rail highlight. */
+  /** The active section — drives the sub-nav rail highlight + the right pane. */
   let activeSection = $state<SettingsSectionId>('connected-runtimes');
 
-  /** Pagination model over the 12 sections (depth-bar §5: real pagination). */
-  let sectionPage = $state(1);
-  let sectionPageSize = $state(6);
-
-  /** The sections shown on the current pagination page. */
-  const visibleSections = $derived(
-    SETTINGS_SECTIONS.slice(
-      (sectionPage - 1) * sectionPageSize,
-      sectionPage * sectionPageSize
-    )
+  /** The active section's descriptor (id / label / group). */
+  const activeSectionObj = $derived(
+    SETTINGS_SECTIONS.find((s) => s.id === activeSection) ?? SETTINGS_SECTIONS[0]
   );
 
   /**
-   * Phase 83p / D-158 — partition the visible sections by data
-   * dependency. Console-local sections render unconditionally; runtime-
-   * posture sections route through `<PageState>` so the disconnected /
-   * error states show one consolidated placeholder.
+   * Phase 83p / D-158 — partition the ACTIVE section by data dependency.
+   * Exactly one of these resolves to `[activeSectionObj]`; the other is
+   * empty. The two wrappers below render from these subsets so the D-158
+   * console-local-renders-disconnected / posture-routes-through-PageState
+   * split is honoured per active section. (These derivations also keep
+   * phase-83p's greps honest — the page still names both subsets.)
    */
   const visibleConsoleLocal = $derived(
-    visibleSections.filter((s) => s.group === 'console-local')
+    activeSectionObj.group === 'console-local' ? [activeSectionObj] : []
   );
   const visibleRuntimePosture = $derived(
-    visibleSections.filter((s) => s.group === 'runtime-posture')
+    activeSectionObj.group === 'runtime-posture' ? [activeSectionObj] : []
   );
 
   // Reference the section-helpers so Vite + svelte-check do NOT prune the
-  // exports; the template branches above derive from the discriminator
-  // already, but a future refactor that switches to the helpers should
-  // not require re-adding the import. `void` discards the array; the
-  // expression keeps the imports reachable without an unused identifier
-  // (a pre-83r ESLint drift from Phase 83p — §17.6).
+  // exports; the derivations above filter by the discriminator directly,
+  // but a future refactor that switches to the helpers should not require
+  // re-adding the import. `void` discards the arrays, keeping the imports
+  // reachable without an unused identifier (a pre-83r ESLint drift carried
+  // forward from Phase 83p — §17.6).
   void [consoleLocalSections, runtimePostureSections];
 
-  /** The Connected-Runtimes table columns (the page's primary DataTable). */
-  const RUNTIME_COLUMNS: DataTableColumn[] = [
-    { key: 'name', label: 'Runtime' },
-    { key: 'base_url', label: 'Base URL' },
-    { key: 'transport', label: 'Transport' },
-    { key: 'default', label: 'Default' }
-  ];
-
   onMount(() => {
+    // Default-load the runtime posture so a posture section shows real data
+    // the moment it is selected; load the Console DB for the local sections.
     void settings.load();
     void db.load();
-    void savedViews.load();
   });
 
   function selectSection(id: SettingsSectionId): void {
     activeSection = id;
     settings.activeSection = id;
-    // Page the section into the visible window.
-    const idx = SETTINGS_SECTIONS.findIndex((s) => s.id === id);
-    if (idx >= 0) {
-      sectionPage = Math.floor(idx / sectionPageSize) + 1;
-    }
-    if (typeof document !== 'undefined') {
-      document.getElementById('section-' + id)?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }
-
-  function applySavedView(id: string): void {
-    const section = savedViews.sectionFor(id);
-    if (section !== null) {
-      selectSection(section);
-    }
-  }
-
-  async function saveCurrentSection(): Promise<void> {
-    const name = (
-      typeof window !== 'undefined'
-        ? window.prompt('Name this section bookmark', activeSection)
-        : null
-    )?.trim();
-    if (name) {
-      await savedViews.create(name, activeSection);
-    }
-  }
-
-  function runtimeRowKey(row: unknown): string {
-    return (row as { id: string }).id;
   }
 </script>
 
@@ -153,132 +110,75 @@
 </svelte:head>
 
 <section class="settings-page" data-testid="settings-page">
-  <PageHeader
-    title="Settings"
-    subtitle="Per-operator preferences, runtime connections, and read-only runtime posture."
-  />
+  <SubNavRail active={activeSection} onselect={selectSection} />
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews.views}
-        activeId={null}
-        onselect={applySavedView}
-        ondelete={(id) => void savedViews.remove(id)}
-      />
-    {/snippet}
-    {#snippet search()}
-      <input
-        type="search"
-        class="search-input"
-        placeholder="Jump to a section…"
-        data-testid="settings-search"
-        oninput={(e) => {
-          const q = (e.currentTarget as HTMLInputElement).value.toLowerCase();
-          const hit = SETTINGS_SECTIONS.find((s) => s.label.toLowerCase().includes(q));
-          if (hit && q.length > 0) {
-            selectSection(hit.id);
-          }
-        }}
-      />
-    {/snippet}
-    {#snippet actions()}
-      <button
-        type="button"
-        class="bar-action"
-        data-testid="settings-save-view"
-        onclick={() => void saveCurrentSection()}
-      >
-        Bookmark section
-      </button>
-    {/snippet}
-  </FilterBar>
-
-  <div class="layout">
-    <SubNavRail active={activeSection} onselect={selectSection} />
-
-    <div class="main-col">
-      <!--
-        Phase 83p / D-158 — Console-local sections (Connected Runtimes,
-        Per-Runtime Auth, API Tokens, Appearance, Time & Locale,
-        Keybindings, Notifications Routing) render UNCONDITIONALLY. They
-        read from the Console-side DB, not from the Runtime posture; the
-        operator MUST be able to reach the Connected Runtimes form even
-        when no Runtime is attached (it's the ONLY path to attach one).
-      -->
-      <div class="cards" data-testid="settings-cards-console-local">
+  <div class="section-pane">
+    <!--
+      Phase 83p / D-158 — when the ACTIVE section is Console-local
+      (Connected Runtimes, Per-Runtime Auth, API Tokens, Appearance,
+      Time & Locale, Keybindings, Notifications Routing) it renders
+      DIRECTLY. These read from the Console-side DB, not the Runtime
+      posture; the operator MUST be able to reach the Connected Runtimes
+      form even when no Runtime is attached (it's the ONLY path to attach
+      one).
+    -->
+    {#if activeSectionObj.group === 'console-local'}
+      <div data-testid="settings-cards-console-local">
         {#each visibleConsoleLocal as section (section.id)}
-          <div id="section-{section.id}" class="card-anchor" data-testid="settings-section-{section.id}">
-            <RailCard title={section.label}>
-              {#if section.id === 'connected-runtimes'}
-                <AttachToLocalCard />
-                <ConnectedRuntimesCard
-                  runtimes={db.runtimes}
-                  addWarning={db.addWarning}
-                  onadd={(name, url, token, identity, scopes) => db.addRuntime(name, url, token, identity, scopes)}
-                  onremove={(id) => db.removeRuntime(id)}
-                  onaddsuccess={() => {
-                    // Phase 83u / D-163 — the new connection only takes
-                    // effect on the next page mount (every page reads
-                    // resolveConnection() once via HarborClient —
-                    // CONVENTIONS.md §6). Reload so the DB opens against
-                    // the now-live connection and the address-book
-                    // catch-up routine in load() promotes the active URL.
-                    if (typeof window !== 'undefined') {
-                      window.location.reload();
-                    }
-                  }}
-                />
-                <DataTable
-                  columns={RUNTIME_COLUMNS}
-                  rows={db.runtimes}
-                  rowKey={runtimeRowKey}
-                >
-                  {#snippet row(r)}
-                    {@const rt = r as { name: string; base_url: string; transport: string; is_default: number }}
-                    <td>{rt.name}</td>
-                    <td>{rt.base_url}</td>
-                    <td>{rt.transport}</td>
-                    <td>
-                      {#if rt.is_default === 1}
-                        <StatusChip kind="accent" label="default" />
-                      {:else}
-                        <span class="muted">—</span>
-                      {/if}
-                    </td>
-                  {/snippet}
-                  {#snippet empty()}
-                    <p class="muted">No runtimes in the address book yet.</p>
-                  {/snippet}
-                </DataTable>
-              {:else if section.id === 'per-runtime-auth'}
-                <PerRuntimeAuthCard authProfiles={db.authProfiles} {rotate} />
-              {:else if section.id === 'api-tokens'}
-                <APITokensCard pats={db.pats} />
-              {:else if section.id === 'appearance'}
-                <AppearanceCard profile={db.profile} />
-              {:else if section.id === 'time-locale'}
-                <TimeLocaleCard profile={db.profile} />
-              {:else if section.id === 'keybindings'}
-                <KeybindingsCard keybindings={db.keybindings} />
-              {:else if section.id === 'notifications-routing'}
-                <NotificationsRoutingCard
-                  routing={db.routing}
-                  hasAdminScope={rotate.hasAdminScope}
-                />
-              {/if}
-            </RailCard>
-          </div>
+          <section
+            class="panel card"
+            id="section-{section.id}"
+            data-testid="settings-section-{section.id}"
+          >
+            <h2 class="panel-title" data-testid="settings-active-section">{section.label}</h2>
+            {#if section.id === 'connected-runtimes'}
+              <AttachToLocalCard />
+              <ConnectedRuntimesCard
+                runtimes={db.runtimes}
+                addWarning={db.addWarning}
+                onadd={(name, url, token, identity, scopes) => db.addRuntime(name, url, token, identity, scopes)}
+                onremove={(id) => db.removeRuntime(id)}
+                onaddsuccess={() => {
+                  // Phase 83u / D-163 — the new connection only takes
+                  // effect on the next page mount (every page reads
+                  // resolveConnection() once via HarborClient —
+                  // CONVENTIONS.md §6). Reload so the DB opens against
+                  // the now-live connection and the address-book
+                  // catch-up routine in load() promotes the active URL.
+                  if (typeof window !== 'undefined') {
+                    window.location.reload();
+                  }
+                }}
+              />
+            {:else if section.id === 'per-runtime-auth'}
+              <PerRuntimeAuthCard authProfiles={db.authProfiles} {rotate} />
+            {:else if section.id === 'api-tokens'}
+              <APITokensCard pats={db.pats} />
+            {:else if section.id === 'appearance'}
+              <AppearanceCard profile={db.profile} />
+            {:else if section.id === 'time-locale'}
+              <TimeLocaleCard profile={db.profile} />
+            {:else if section.id === 'keybindings'}
+              <KeybindingsCard keybindings={db.keybindings} />
+            {:else if section.id === 'notifications-routing'}
+              <NotificationsRoutingCard
+                routing={db.routing}
+                hasAdminScope={rotate.hasAdminScope}
+              />
+            {/if}
+          </section>
         {/each}
       </div>
+    {/if}
 
-      <!--
-        Phase 83p / D-158 — Runtime-posture sections (Runtime Info,
-        Governance Posture, Storage Drivers, LLM-Provider Posture, About)
-        DO depend on a live Runtime connection. They route through
-        `<PageState>` so the disconnected / error states show ONE
-        consolidated placeholder + Retry button instead of N empty cards.
-      -->
+    <!--
+      Phase 83p / D-158 — when the ACTIVE section is runtime-posture
+      (Runtime Info, Governance Posture, Storage Drivers, LLM-Provider
+      Posture, About) it DOES depend on a live Runtime connection, so it
+      renders INSIDE `<PageState>`: the disconnected / error states show
+      ONE consolidated placeholder + Retry.
+    -->
+    {#if activeSectionObj.group === 'runtime-posture'}
       <PageState
         status={settings.status}
         error={settings.error}
@@ -288,123 +188,73 @@
           <p class="empty-headline">No runtime posture to show.</p>
         {/snippet}
 
-        <div class="cards" data-testid="settings-cards-runtime-posture">
+        <div data-testid="settings-cards-runtime-posture">
           {#each visibleRuntimePosture as section (section.id)}
-            <div id="section-{section.id}" class="card-anchor" data-testid="settings-section-{section.id}">
-              <RailCard title={section.label}>
-                {#if section.id === 'runtime-info'}
-                  <RuntimeInfoCard info={settings.posture.info} />
-                {:else if section.id === 'governance-posture'}
-                  <GovernancePostureCard
-                    governance={settings.posture.governance}
-                    mockMode={settings.mockMode}
-                  />
-                {:else if section.id === 'storage-drivers'}
-                  <StorageDriversCard drivers={settings.posture.drivers} />
-                {:else if section.id === 'llm-posture'}
-                  <LLMPostureCard llm={settings.posture.llm} />
-                {:else if section.id === 'about'}
-                  <AboutCard info={settings.posture.info} />
-                {/if}
-              </RailCard>
-            </div>
+            <section
+              class="panel card"
+              id="section-{section.id}"
+              data-testid="settings-section-{section.id}"
+            >
+              <h2 class="panel-title" data-testid="settings-active-section">{section.label}</h2>
+              {#if section.id === 'runtime-info'}
+                <RuntimeInfoCard info={settings.posture.info} />
+              {:else if section.id === 'governance-posture'}
+                <GovernancePostureCard
+                  governance={settings.posture.governance}
+                  mockMode={settings.mockMode}
+                />
+              {:else if section.id === 'storage-drivers'}
+                <StorageDriversCard drivers={settings.posture.drivers} />
+              {:else if section.id === 'llm-posture'}
+                <LLMPostureCard llm={settings.posture.llm} />
+              {:else if section.id === 'about'}
+                <AboutCard info={settings.posture.info} />
+              {/if}
+            </section>
           {/each}
         </div>
-
-        <Pagination
-          page={sectionPage}
-          pageSize={sectionPageSize}
-          total={SETTINGS_SECTIONS.length}
-          pageSizeOptions={[6, 12]}
-          onpage={(p) => (sectionPage = p)}
-          onpagesize={(s) => {
-            sectionPageSize = s;
-            sectionPage = 1;
-          }}
-        />
       </PageState>
-    </div>
-
-    <DetailRail>
-      <RailCard title="Active section">
-        <p class="rail-line" data-testid="settings-active-section">
-          {SETTINGS_SECTIONS.find((s) => s.id === activeSection)?.label ?? '—'}
-        </p>
-      </RailCard>
-      <RailCard title="Runtime">
-        {#if settings.posture.info}
-          <p class="rail-line">{settings.posture.info.display_name || settings.posture.info.instance_id}</p>
-          <p class="rail-sub">Protocol {settings.posture.info.protocol_version}</p>
-        {:else}
-          <p class="rail-sub">Not connected.</p>
-        {/if}
-      </RailCard>
-      <RailCard title="LLM mode">
-        {#if settings.mockMode}
-          <StatusChip kind="danger" label="mock (dev-only)" />
-        {:else if settings.posture.llm}
-          <StatusChip kind="success" label="live" />
-        {:else}
-          <span class="muted">unknown</span>
-        {/if}
-      </RailCard>
-    </DetailRail>
+    {/if}
   </div>
 </section>
 
 <style>
+  /* Viewport-friendly two-pane layout: the rail is fixed; the right pane
+     scrolls internally when a section is long (e.g. Keybindings) — the
+     chrome never full-page-scrolls. */
   .settings-page {
     display: flex;
-    flex-direction: column;
     gap: var(--space-4);
     padding: var(--space-4);
-  }
-  .layout {
-    display: flex;
-    gap: var(--space-4);
     align-items: flex-start;
+    min-height: 0;
   }
-  .main-col {
+  .section-pane {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
   }
-  .cards {
+  /* The carded surface — same vocabulary as the Overview page (108c). */
+  .card {
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
-  }
-  .card-anchor {
-    scroll-margin-top: var(--space-4);
-  }
-  .search-input,
-  .bar-action {
-    padding: var(--space-1) var(--space-3);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
+    padding: var(--space-4);
     background: var(--color-surface);
-    color: var(--color-text);
-    font-size: var(--text-sm);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
   }
-  .bar-action {
-    cursor: pointer;
+  .panel-title {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
   }
   .empty-headline {
     color: var(--color-text-muted);
-  }
-  .muted {
-    color: var(--color-text-muted);
-  }
-  .rail-line {
-    margin: var(--space-0);
-    color: var(--color-text);
-    font-size: var(--text-sm);
-  }
-  .rail-sub {
-    margin: var(--space-0);
-    color: var(--color-text-muted);
-    font-size: var(--text-xs);
   }
 </style>
