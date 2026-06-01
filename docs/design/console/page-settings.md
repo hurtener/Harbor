@@ -161,3 +161,20 @@ Reconciliation of `docs/rfc/assets/console-settings-page.png` against §3-§7.
 - **D-091 (Console deployment posture).** No "Embed Console in `harbor dev`" toggle; the Console is served by `harbor console` per the binding rule. Connected Runtimes treats every runtime as a remote peer (even local-host runtimes), which is consistent with the D-091 deployment shape.
 - **D-092 / D-093 (Svelte 5 runes + generated `protocol.ts`).** Implementation-detail decisions — not exposed in UI per spec.
 - **§13 forbidden practices.** No identity-downgrading knobs anywhere (Per-Runtime Auth never offers a "skip identity" toggle); no parallel implementation of governance (Governance Posture is read-only); no shadow source of truth for runtime entities (Console DB holds only Console-local preferences, runtimes registry, and auth profiles per D-061); mock-mode banner is loud and explicit per D-089.
+
+## 13. Single-section reframe (2026-06-01 — Phase 108f / D-178)
+
+The page adopts the §4 model in full: a left sub-nav rail + a right pane that
+shows ONLY the active section. The Phase 73m / D-129 over-build is removed — the
+6-per-page section paginator, the top FilterBar + section-search, the saved-view
+chips + "Bookmark section" button, the right detail rail, the page-level
+duplicate runtimes DataTable, and scroll-to-anchor. A single section is always
+in view, so the page is calm, aligned, and viewport-friendly (the rail is
+sticky; the right pane scrolls internally for a long section). Each active
+section is a carded `<section class="panel card">` with a `.panel-title`
+heading, copying the Overview page's (108c) vocabulary, tokens only.
+
+The D-158 split is preserved per active section — a Console-local section renders
+directly (works disconnected; the operator's only path to attach a runtime),
+while a runtime-posture section renders inside `<PageState>`. D-061 (Console DB
+local-only) and D-066 (rotate-token admin gating) are unchanged. See D-178.
