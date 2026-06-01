@@ -1,159 +1,234 @@
 <script lang="ts">
-  // Events page — event-rate sparkline (Phase 73g / D-125).
+  // Events page — event-rate chart (Phase 73g / D-125; Phase 108h rework
+  // to the mock's multi-line + legend composition, page-events.md §12).
   //
-  // A per-event-type stacked-area chart over the active window. The data
-  // source is `events.aggregate` (Phase 72a) projected by `sparkline.ts`
-  // — a PURE read; no Protocol mutation fires from this component.
-  // Hovering a column highlights its time slice; clicking a column pins
-  // that window's dominant event-type facet chip (both Console-local
-  // state changes — page-events.md §12). Page-specific component:
+  // A per-category multi-line chart over the active window with a Type /
+  // Rate / Total legend on the right of the SAME card. The data source is
+  // `events.aggregate` (Phase 72a) projected by `sparkline.ts` — a PURE
+  // read; no Protocol mutation fires from this component. Per-event-type
+  // counts are folded by category (`tool.*`, `task.*`, …) so the chart
+  // reads like the mockup; clicking a legend row pins that category's
+  // dominant exact type (Console-local). Page-specific component:
   // `components/events/` per CONVENTIONS.md §3. Svelte 5 runes (D-092);
   // design tokens only.
-  //
-  // Note (page-events.md §12 risk): Pause-stream freezes the TABLE only.
-  // The sparkline keeps refreshing while events flow — hiding the
-  // rate-over-time view would be a worse UX than freezing only the table.
-  import { categoryKind, categoryOf } from '$lib/events/taxonomy.js';
+  import { categoryOf } from '$lib/events/taxonomy.js';
   import type { SparklineSeries } from '$lib/events/sparkline.js';
 
   let {
     series,
+    windowSeconds = 3600,
     onpin
   }: {
-    /** The projected stacked-area series from `EventsAggregator`. */
+    /** The projected per-bucket series from `EventsAggregator`. */
     series: SparklineSeries;
-    /** Pins an event-type facet chip — fired on a column click. */
+    /** The active window span in seconds — drives the per-second rate. */
+    windowSeconds?: number;
+    /** Pins an event-type facet chip — fired on a legend-row click. */
     onpin?: (eventType: string) => void;
   } = $props();
 
-  /** The column the operator is hovering, or -1. */
-  let hovered = $state(-1);
+  /** The categorical line-colour palette (token-only; 5 distinct hues). */
+  const PALETTE = [
+    'var(--color-success)',
+    'var(--color-accent)',
+    'var(--color-warning)',
+    'var(--color-danger)',
+    'var(--color-text-muted)'
+  ];
 
-  /** The dominant (highest-count) event type in a column, for click-to-pin. */
-  function dominantType(idx: number): string | null {
-    const col = series.columns[idx];
-    if (col === undefined) {
-      return null;
-    }
-    let best: string | null = null;
-    let bestN = 0;
-    for (const [type, n] of Object.entries(col.counts)) {
-      if (n > bestN) {
-        bestN = n;
-        best = type;
-      }
-    }
-    return best;
+  interface CategorySeries {
+    category: string;
+    values: number[];
+    total: number;
+    rate: number;
+    dominant: string;
+    color: string;
   }
 
-  /** A column's height as a percentage of the series peak. */
-  function columnHeightPct(total: number): number {
-    return series.peak === 0 ? 0 : (total / series.peak) * 100;
+  /** Folds the per-type per-bucket counts into per-category line series. */
+  const categories = $derived.by<CategorySeries[]>(() => {
+    const n = series.columns.length;
+    const map = new Map<string, { values: number[]; total: number; types: Record<string, number> }>();
+    series.columns.forEach((col, i) => {
+      for (const [type, c] of Object.entries(col.counts)) {
+        const cat = categoryOf(type);
+        let e = map.get(cat);
+        if (e === undefined) {
+          e = { values: new Array(n).fill(0), total: 0, types: {} };
+          map.set(cat, e);
+        }
+        e.values[i] += c;
+        e.total += c;
+        e.types[type] = (e.types[type] ?? 0) + c;
+      }
+    });
+    const arr = [...map.entries()].map(([category, e]) => ({
+      category,
+      values: e.values,
+      total: e.total,
+      rate: windowSeconds > 0 ? e.total / windowSeconds : 0,
+      dominant: Object.entries(e.types).sort((a, b) => b[1] - a[1])[0]?.[0] ?? category
+    }));
+    arr.sort((a, b) => b.total - a.total);
+    return arr.map((c, i) => ({ ...c, color: PALETTE[i % PALETTE.length] }));
+  });
+
+  /** The lines drawn — the top categories (the legend caps the rest). */
+  const topCategories = $derived(categories.slice(0, 5));
+  const maxValue = $derived(Math.max(1, ...categories.flatMap((c) => c.values)));
+
+  /** Builds an SVG polyline `points` string in the 100×32 viewBox. */
+  function points(values: number[]): string {
+    const n = values.length;
+    if (n === 0) return '';
+    if (n === 1) {
+      const y = (32 - (values[0] / maxValue) * 32).toFixed(2);
+      return `0,${y} 100,${y}`;
+    }
+    return values
+      .map((v, i) => `${((i / (n - 1)) * 100).toFixed(2)},${(32 - (v / maxValue) * 32).toFixed(2)}`)
+      .join(' ');
+  }
+
+  /** Formats a per-second rate compactly. */
+  function fmtRate(r: number): string {
+    if (r >= 10) return r.toFixed(0);
+    if (r >= 1) return r.toFixed(1);
+    return r.toFixed(2);
   }
 </script>
 
-<div class="sparkline" data-testid="events-rate-sparkline" role="img" aria-label="Event rate over time">
-  {#if series.columns.length === 0}
-    <p class="sparkline-empty">No event activity in this window.</p>
+<div class="rate" data-testid="events-rate-sparkline" role="img" aria-label="Event rate over time">
+  {#if categories.length === 0}
+    <p class="rate-empty">No event activity in this window.</p>
   {:else}
-    <div class="bars">
-      {#each series.columns as col, idx (col.startISO)}
-        <button
-          type="button"
-          class="bar-col"
-          class:hovered={hovered === idx}
-          data-testid={`sparkline-col-${idx}`}
-          title={`${col.total} events`}
-          aria-label={`${col.total} events at ${col.startISO}`}
-          onmouseenter={() => (hovered = idx)}
-          onmouseleave={() => (hovered = -1)}
-          onclick={() => {
-            const t = dominantType(idx);
-            if (t) onpin?.(t);
-          }}
-        >
-          <span class="bar-stack" style:height={`${columnHeightPct(col.total)}%`}>
-            {#each Object.entries(col.counts) as [type, n] (type)}
-              <span
-                class="bar-stripe"
-                data-kind={categoryKind(categoryOf(type))}
-                style:flex-grow={n}
-              ></span>
-            {/each}
-          </span>
-        </button>
-      {/each}
+    <div class="chart">
+      <svg viewBox="0 0 100 32" preserveAspectRatio="none" class="chart-svg" aria-hidden="true">
+        {#each topCategories as cat (cat.category)}
+          <polyline
+            points={points(cat.values)}
+            fill="none"
+            stroke-width="1.2"
+            vector-effect="non-scaling-stroke"
+            style:stroke={cat.color}
+          />
+        {/each}
+      </svg>
     </div>
+
+    <table class="legend" data-testid="events-rate-legend">
+      <thead>
+        <tr><th>Type</th><th class="num">Rate</th><th class="num">Total</th></tr>
+      </thead>
+      <tbody>
+        {#each topCategories as cat (cat.category)}
+          <tr>
+            <td>
+              <button
+                type="button"
+                class="legend-type"
+                data-testid={`legend-${cat.category}`}
+                title={`Filter by ${cat.dominant}`}
+                onclick={() => onpin?.(cat.dominant)}
+              >
+                <span class="dot" style:background={cat.color}></span>
+                {cat.category}.*
+              </button>
+            </td>
+            <td class="num mono">{fmtRate(cat.rate)}</td>
+            <td class="num mono">{cat.total.toLocaleString('en-US')}</td>
+          </tr>
+        {/each}
+      </tbody>
+      {#if categories.length > topCategories.length}
+        <tfoot>
+          <tr><td colspan="3" class="view-all">View all ({categories.length})</td></tr>
+        </tfoot>
+      {/if}
+    </table>
   {/if}
 </div>
 
 <style>
-  .sparkline {
-    background: var(--color-surface);
-    border: var(--border-hairline);
-    border-radius: var(--radius-md);
-    padding: var(--space-3);
-    height: var(--size-sparkline-height);
-    min-height: var(--size-sparkline-height);
+  .rate {
+    display: flex;
+    gap: var(--space-4);
+    align-items: stretch;
+    height: var(--size-rate-chart-height);
+    min-height: var(--size-rate-chart-height);
+    overflow: hidden;
   }
 
-  .sparkline-empty {
+  .rate-empty {
     margin: var(--space-0);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
   }
 
-  .bars {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-0);
-    height: 100%;
+  .chart {
+    flex: 1;
+    min-width: var(--space-0);
   }
 
-  .bar-col {
-    flex: 1 1 0;
+  .chart-svg {
+    width: 100%;
     height: 100%;
-    display: flex;
-    align-items: flex-end;
-    background: transparent;
+    display: block;
+  }
+
+  .legend {
+    flex-shrink: 0;
+    border-collapse: collapse;
+    font-size: var(--text-xs);
+    align-self: flex-start;
+  }
+
+  .legend th {
+    text-align: left;
+    padding: var(--space-0) var(--space-2) var(--space-1);
+    color: var(--color-text-muted);
+    font-weight: 600;
+  }
+
+  .legend td {
+    padding: var(--space-0) var(--space-2);
+  }
+
+  .legend .num {
+    text-align: right;
+  }
+
+  .legend .mono {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+  }
+
+  .legend-type {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    background: none;
     border: none;
     padding: var(--space-0);
+    color: var(--color-text);
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
-  .bar-col.hovered {
-    background: var(--color-surface-raised);
+  .legend-type:hover {
+    color: var(--color-accent);
   }
 
-  .bar-stack {
-    width: 100%;
-    display: flex;
-    flex-direction: column-reverse;
-    min-height: var(--size-bar-min);
+  .dot {
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: var(--radius-pill);
+    flex-shrink: 0;
   }
 
-  .bar-stripe {
-    width: 100%;
-    min-height: var(--size-bar-min);
-  }
-
-  .bar-stripe[data-kind='success'] {
-    background: var(--color-success);
-  }
-
-  .bar-stripe[data-kind='warning'] {
-    background: var(--color-warning);
-  }
-
-  .bar-stripe[data-kind='danger'] {
-    background: var(--color-danger);
-  }
-
-  .bar-stripe[data-kind='accent'] {
-    background: var(--color-accent);
-  }
-
-  .bar-stripe[data-kind='neutral'] {
-    background: var(--color-text-muted);
+  .view-all {
+    padding-top: var(--space-1);
+    color: var(--color-accent);
+    cursor: pointer;
   }
 </style>

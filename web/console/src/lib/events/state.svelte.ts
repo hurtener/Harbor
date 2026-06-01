@@ -29,6 +29,7 @@ import {
 	toggleEventType,
 	type EventFacetState
 } from './filters.js';
+import { EVENT_TYPES } from './taxonomy.js';
 
 /** The auth scope claims that authorise cross-tenant event viewing (D-079). */
 export const ADMIN_SCOPES = ['admin', 'console:fleet'] as const;
@@ -58,10 +59,19 @@ export class EventsPageState {
 	/** Page size (Console-local — 50 / 100 / 250 per page-events.md §12). */
 	pageSize = $state<number>(50);
 
-	/** The live SSE table feed. Null until the connection resolves. */
-	subscription: EventsSubscription | null = null;
-	/** The sparkline aggregate feed. Null until the connection resolves. */
-	aggregator: EventsAggregator | null = null;
+	/**
+	 * The live SSE table feed. Null until the connection resolves. MUST be
+	 * `$state`: `load()` assigns it AFTER first render (it's async, in
+	 * onMount), so a plain field never triggers the reactive re-read that
+	 * surfaces live events in the table — the table would stay empty in
+	 * production even while the bus fires (masked in tests because the mock
+	 * EventSource factory dispatches synchronously inside `open()`, before
+	 * the first render). Phase 108h §17.6 fix.
+	 */
+	subscription = $state<EventsSubscription | null>(null);
+	/** The sparkline aggregate feed. Null until the connection resolves.
+	 * `$state` for the same reason as {@link subscription}. */
+	aggregator = $state<EventsAggregator | null>(null);
 	/** The `artifacts.*` namespace — resolves heavy payloads (D-026). Null
 	 * until the connection resolves. */
 	artifacts: ArtifactsNamespace | null = null;
@@ -124,6 +134,23 @@ export class EventsPageState {
 	}
 
 	/**
+	 * The status the `<PageState>` boundary should render. `loading` /
+	 * `error` / `disconnected` pass through unchanged; the ready/empty
+	 * split is derived LIVE from the subscription's event count so the
+	 * table appears the moment events stream in. The plain `status` field
+	 * is only updated at load / re-filter time, so reading it directly
+	 * would keep the page stuck on `empty` while the SSE fills (the table
+	 * was hidden behind the empty-state even though events arrived) —
+	 * Phase 108h §17.6 fix.
+	 */
+	get displayStatus(): PageStatus {
+		if (this.status === 'loading' || this.status === 'error' || this.status === 'disconnected') {
+			return this.status;
+		}
+		return this.visibleEvents.length > 0 ? 'ready' : 'empty';
+	}
+
+	/**
 	 * Resolves the connection, wires the subscription + aggregator, and
 	 * opens both feeds. On a null connection the page renders the
 	 * Disconnected state — NEVER an Error (CONVENTIONS.md §4/§8).
@@ -158,9 +185,22 @@ export class EventsPageState {
 			return;
 		}
 		const filter: EventFilter = compileFilter(this.facets);
+		// An empty type facet means "all types". The SSE transport needs a
+		// NAMED listener per subscribed type (the runtime emits `event:
+		// <type>` frames — subscription.svelte.ts); subscribing with an
+		// empty list registers NO listeners, so the table would stay empty
+		// even while the bus fires. Default to the full taxonomy so the
+		// unfiltered firehose actually streams (Phase 108h — §17.6 fix).
+		const types =
+			this.facets.eventTypes.length > 0 ? this.facets.eventTypes : [...EVENT_TYPES];
 		this.subscription.open({
-			eventTypes: this.facets.eventTypes,
-			admin: this.crossTenant
+			eventTypes: types,
+			admin: this.crossTenant,
+			// The Session facet re-scopes the live table feed to that session
+			// (Phase 108h — previously the facet only re-scoped the aggregate,
+			// so the table could not be filtered to a session). Null = the
+			// connection's default session.
+			session: this.facets.session ?? undefined
 		});
 		this.aggregator.window = this.facets.window;
 		this.aggregator.setFilter(filter);

@@ -397,7 +397,7 @@ export class EventsNamespace {
 	 * token rides as `access_token` — `EventSource` cannot carry an
 	 * `Authorization` header.
 	 */
-	subscribeURL(opts: { eventTypes?: string[]; admin?: boolean } = {}): string {
+	subscribeURL(opts: { eventTypes?: string[]; admin?: boolean; session?: string } = {}): string {
 		const url = new URL(`${this.#t.baseURL}/v1/events`);
 		for (const t of opts.eventTypes ?? []) {
 			url.searchParams.append('type', t);
@@ -408,12 +408,15 @@ export class EventsNamespace {
 		url.searchParams.set('access_token', this.#t.token);
 		// D-171 — EventSource cannot set the `X-Harbor-Session` header, so
 		// the conversation session rides as a `?session=` query param the
-		// SSE shim promotes to the header (header-precedence). The session
-		// is the client's identity.session (the page builds a per-session
-		// client whose identity.session is the conversation id). Empty is
-		// omitted — the runtime then uses the token's default session.
-		if (this.#t.identity.session !== '') {
-			url.searchParams.set('session', this.#t.identity.session);
+		// SSE shim promotes to the header (header-precedence). `opts.session`
+		// (the Events page's Session facet) overrides the client's default
+		// identity.session, letting the operator pivot the stream to any
+		// session in scope without rebuilding the client; it falls back to
+		// the client's own session, then the token default when both empty.
+		const sess =
+			opts.session !== undefined && opts.session !== '' ? opts.session : this.#t.identity.session;
+		if (sess !== '') {
+			url.searchParams.set('session', sess);
 		}
 		return url.toString();
 	}

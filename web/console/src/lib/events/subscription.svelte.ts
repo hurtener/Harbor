@@ -63,6 +63,13 @@ export interface OpenOptions {
 	eventTypes?: string[];
 	/** Request cross-tenant fan-in (runtime gates on admin scope, D-079). */
 	admin?: boolean;
+	/**
+	 * Override the streamed session (the Events page's Session facet). When
+	 * set, the SSE scopes to this session instead of the client's default
+	 * identity.session — letting the operator pivot the table to any session
+	 * in scope (D-171; the `?session=` param promotes to X-Harbor-Session).
+	 */
+	session?: string;
 }
 
 /**
@@ -104,7 +111,11 @@ export class EventsSubscription {
 		this.cursor = 0;
 		this.droppedCount = 0;
 		this.state = 'connecting';
-		const url = this.#ns.subscribeURL({ eventTypes: opts.eventTypes, admin: opts.admin });
+		const url = this.#ns.subscribeURL({
+			eventTypes: opts.eventTypes,
+			admin: opts.admin,
+			session: opts.session
+		});
 		const src = this.#factory(url);
 		src.onopen = () => {
 			this.state = 'open';
