@@ -154,3 +154,55 @@ Reconciliation of `docs/rfc/assets/console-tasks-page.png` against §3-§7.
 - **D-061** — task list / detail / cost all source from Protocol; saved filters are Console-local.
 - **D-066** — Pause/Resume/Cancel/Prioritize/Approve/Reject buttons are control-scope-gated; mockup shows elevated-operator view.
 - **D-047** — Kanban columns include Pending (covers spawned-but-not-acquired) — matches D-047's TaskRegistry state machine.
+
+## 13. Phase 108i reframe (carded mode-switch rebuild — D-181)
+
+Phase 108i (D-181) rebuilds this page to the carded, viewport-locked composition
+the six done pages set (Overview 108c, Live Runtime 108e, Settings 108f,
+Playground, Sessions 108g, Events 108h), superseding the §4 page-anatomy's
+simultaneous board + detail-bar + bottom-dock + right-rail stack. Reframes:
+
+- **Route / chrome.** The slug + IA are unchanged, but the **route is `/tasks`**
+  (no `/console/` prefix — CONVENTIONS.md §1; the §1 header's `/console/tasks` is
+  pre-chrome). The breadcrumb / ⌘K search / footer are the 108b app-shell chrome;
+  the page renders NO per-page `PageHeader` (the §4 "Top bar (shared)" is chrome).
+
+- **Single-page mode-switch (not a simultaneous stack).** The mock crams the
+  board, the selected-task detail bar, the bottom dock, and the right rail into
+  one frame, which cannot fit one viewport without a page scroll. The page is
+  composed as a viewport-locked mode-switch: **board/list** is the default (the
+  faceted filter strip + the board columns / list table filling the viewport + a
+  right-rail live board summary); clicking a card swaps the SAME page's main
+  region to **detail** mode (a compact task header + the real action bar + the
+  bottom-dock tabs in one internally-scrolling card) and swaps the rail to
+  Summary / Parent Session / Cost; a `← Board` affordance returns. No route nav.
+
+- **The bottom dock is live run-scoped event data.** The §5 / §12 dock tabs
+  (Events / Control History / Interventions / Group / Cost) render a RUN-scoped
+  projection of the shipped `events.subscribe` SSE (the Sessions `BottomDockTabs`
+  pattern), filtered to the task's run by
+  `e.run === taskID || payload.TaskID === taskID || payload.Identity.RunID ===
+  taskID` — the `task.*` lifecycle events carry the id in PascalCase
+  `payload.TaskID`, not the top-level `run`. Details / Input / Output render
+  `tasks.get`. The **Logs tab** needs the Phase 73 `state.history` surface (still
+  Pending) and renders an honest empty state.
+
+- **Cost Breakdown by token type (not LLM/Tools/Embeddings/Overhead).** The §12
+  Cost Breakdown card's four-category split (LLM / Tools / Embeddings / Overhead)
+  has no wire source — `llm.cost.recorded` carries Model + token-type costs only.
+  The card renders by **token type** (Input / Output / Reasoning / Total — the
+  real `payload.Cost` fields), aggregated client-side from the run-scoped cost
+  events (`tasks.get.cost` comes back all-zero). The Summary cost/tokens figures
+  share that source.
+
+- **Honest renders for the unsourced mock details.** Task rows carry no
+  `agent_name`, so the card shows the parent session id + the query snippet
+  instead of the mock's "Research Agent" line; `tasks.get.parent_session` is
+  sparse from the registry, so the Parent Session card shows the real id + link
+  and `—` for the empty fields. Board drag-to-transition maps only where a real
+  control verb exists (running→paused / paused→running / running→failed); the
+  board is primarily click-to-select.
+
+The §3 functionality matrix, the §5 component data-sources, the §6 controls, and
+the §7–§11 state / isolation / scope-claim semantics are otherwise authoritative
+and unchanged.
