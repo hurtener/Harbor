@@ -66,8 +66,12 @@ assert_grep_present \
     "case 'complete':" \
     'web/console/src/lib/components/tasks/KanbanBoard.svelte' \
     'W7 KanbanBoard.columnCount switch handles complete'
+# Phase 108i (D-181): the board grid uses `repeat(5, minmax(0, 1fr))` so
+# the columns can shrink to scroll internally (viewport-lock) — still five
+# columns. The pattern matches both the original `1fr` and the `minmax(0,
+# 1fr)` form.
 assert_grep_present \
-    'grid-template-columns: repeat\(5, 1fr\)' \
+    'grid-template-columns: repeat\(5,' \
     'web/console/src/lib/components/tasks/KanbanBoard.svelte' \
     'W7 Kanban grid widened to five columns'
 

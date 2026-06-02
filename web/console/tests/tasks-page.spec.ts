@@ -1,4 +1,12 @@
-// Harbor Console e2e — Tasks page per-page spec (Phase 73d / D-123).
+// Harbor Console e2e — Tasks page per-page spec (Phase 73d / D-123;
+// Phase 108i / D-181 rebuild — carded viewport-locked mode-switch).
+//
+// Phase 108i recomposes the page as a single-page mode-switch: board/list
+// is the default; clicking a card swaps the SAME page to a per-task detail
+// (compact header + the live run-scoped bottom dock); `← Board` returns.
+// Test (f) covers that mode-switch; (a)–(e) cover the board / list / bulk /
+// gating / disconnected surfaces against the boot-seeded fixture set
+// (HARBOR_DEV_SEED_FIXTURES — Phase 75a / D-131).
 //
 // Covers the Tasks page built on the D-121 design-system foundation:
 //   (a) the kanban 5-column board renders (Pending / Running / Paused /
@@ -126,13 +134,17 @@ test.describe("Console Tasks page", () => {
 
     await expect(page.locator("[data-testid='kanban-board']")).toBeVisible();
 
-    // Toggle to list mode — the DataTable replaces the board.
-    await page.locator("[data-testid='tasks-mode-toggle']").click();
+    // Phase 108i: the toggle is a two-button segmented control (Board /
+    // List). Switching to List swaps the board for the shared DataTable.
+    await page.locator("[data-testid='tasks-mode-list']").click();
     await page.waitForLoadState("load");
     await expect(
       page.locator("[data-testid='kanban-board']"),
       "the board is hidden in list mode",
     ).toBeHidden();
+    // Switch back to Board.
+    await page.locator("[data-testid='tasks-mode-board']").click();
+    await expect(page.locator("[data-testid='kanban-board']")).toBeVisible();
   });
 
   test("(c) selecting task cards reveals the shared BulkActionBar", async ({
@@ -153,8 +165,8 @@ test.describe("Console Tasks page", () => {
     await checks.nth(1).check();
 
     await expect(
-      page.locator("[data-testid='bulk-selection-count']"),
-      "the BulkActionBar shows the selection count",
+      page.locator("[data-testid='tasks-bulk-bar']"),
+      "the bulk-action bar appears with ≥1 selection",
     ).toBeVisible();
     await expect(
       page.locator("[data-testid='tasks-bulk-pause']"),
@@ -201,5 +213,38 @@ test.describe("Console Tasks page", () => {
     await expect
       .poll(() => new URL(page.url()).pathname, { timeout: 5000 })
       .toMatch(/^\/settings(\/.*)?$/);
+  });
+
+  test("(f) opening a card swaps the page to detail mode and back (Phase 108i)", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    // Phase 108i mode-switch: clicking a card opens the per-task detail in
+    // the SAME page (the compact header + the live bottom dock); `← Board`
+    // returns to the board. No route navigation.
+    await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
+    await helpers.gotoPage("tasks");
+    await page.waitForLoadState("load");
+
+    const opener = page.locator("[data-testid='task-card-open']").first();
+    const openable = await opener.count();
+    test.skip(openable < 1, "no tasks in the runtime fixture");
+
+    await opener.click();
+    await expect(
+      page.locator("[data-testid='task-detail-header']"),
+      "the detail header renders in detail mode",
+    ).toBeVisible();
+    await expect(
+      page.locator("[data-testid='task-bottom-dock']"),
+      "the per-task bottom dock renders in detail mode",
+    ).toBeVisible();
+
+    // `← Board` returns to the board, no navigation away from /tasks.
+    await page.locator("[data-testid='task-detail-back']").click();
+    await expect(page.locator("[data-testid='kanban-board']")).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/tasks");
   });
 });

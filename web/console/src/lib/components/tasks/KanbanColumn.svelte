@@ -79,10 +79,10 @@
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-2);
-    background: var(--color-surface);
+    background: var(--color-bg);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
-    min-height: var(--space-12);
+    min-height: 0;
   }
 
   .kanban-column.drag-over {
@@ -93,6 +93,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-shrink: 0;
   }
 
   .col-title {
@@ -114,5 +115,8 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 </style>

@@ -114,13 +114,15 @@
   .card-head {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
   }
 
   .kind {
     font-size: var(--text-xs);
     color: var(--color-text-muted);
     margin-left: auto;
+    text-transform: capitalize;
   }
 
   .card-body {

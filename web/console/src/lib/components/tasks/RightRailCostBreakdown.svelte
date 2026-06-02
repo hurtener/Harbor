@@ -1,36 +1,72 @@
 <script lang="ts">
-  // Harbor Console — Tasks page right-rail Cost Breakdown card body
-  // (Phase 73d / D-123). Renders the `tasks.get` per-step cost rollup
-  // aggregated from `llm.cost.recorded` events. Page-specific; design
-  // tokens only.
-  import type { TaskDetail } from '$lib/protocol/tasks.js';
+  // Harbor Console — Tasks page right-rail Cost Breakdown (Phase 108i /
+  // D-181). Renders the per-task cost broken down BY TOKEN TYPE (Input /
+  // Output / Reasoning / Total) — the real fields on the run's
+  // `llm.cost.recorded` events. The mock's LLM / Tools / Embeddings /
+  // Overhead split has no wire source; per the operator's D-181 sign-off
+  // this token-type axis keeps the four-row visual while staying wire-real
+  // (never a fabricated category). Source is the live stream, NOT
+  // `tasks.get.cost` (which comes back all-zero).
+  //
+  // Each row carries BOTH the token COUNT and the cost: live verification
+  // found some providers populate only `Cost.TotalCost` (the per-type
+  // `Input/Output/ReasoningTokensCost` come back 0), so the token counts
+  // (`Usage.{Prompt,Completion,Reasoning}Tokens`, always populated) are
+  // the meaningful per-type signal — the cost column stays honest at the
+  // value the wire actually carries. Tokens-specific; tokens only.
+  import type { RunCost } from '$lib/tasks/run-events.js';
 
-  let { detail }: { detail: TaskDetail | null } = $props();
+  let { cost }: { cost: RunCost } = $props();
+
+  const rows = $derived([
+    { label: 'Input', usd: cost.inputUSD, tokens: cost.promptTokens },
+    { label: 'Output', usd: cost.outputUSD, tokens: cost.outputTokens },
+    { label: 'Reasoning', usd: cost.reasoningUSD, tokens: cost.reasoningTokens }
+  ]);
+
+  /**
+   * A USD cost cell. Renders `—` (not `$0.0000`) when the wire value is 0 —
+   * some providers populate only `Cost.TotalCost`, leaving the per-type
+   * costs unreported; a dash reads as "not reported" rather than a
+   * misleading hard zero, while the token counts carry the real per-type
+   * signal.
+   */
+  function usdCell(v: number): string {
+    return v > 0 ? `$${v.toFixed(4)}` : '—';
+  }
 </script>
 
-{#if detail !== null}
+{#if cost.events === 0}
+  <p class="muted" data-testid="rail-cost-breakdown-empty">
+    No <code>llm.cost.recorded</code> events for this task in the live stream yet.
+  </p>
+{:else}
   <div class="cost-card" data-testid="rail-cost-breakdown">
-    <dl class="totals">
-      <div><dt>Total tokens</dt><dd>{detail.cost.total_tokens}</dd></div>
-      <div><dt>Prompt</dt><dd>{detail.cost.prompt_tokens}</dd></div>
-      <div><dt>Output</dt><dd>{detail.cost.output_tokens}</dd></div>
-      <div><dt>USD</dt><dd>${detail.cost.usd.toFixed(4)}</dd></div>
-    </dl>
-    {#if (detail.cost.per_step?.length ?? 0) > 0}
-      <ul class="steps">
-        {#each detail.cost.per_step ?? [] as step (step.step_index)}
-          <li>
-            <span>Step {step.step_index}</span>
-            <span>{step.tokens} tok · ${step.usd.toFixed(4)}</span>
-          </li>
+    <table class="cost-table">
+      <thead>
+        <tr><th>Type</th><th class="num">Tokens</th><th class="num">Cost</th></tr>
+      </thead>
+      <tbody>
+        {#each rows as r (r.label)}
+          <tr>
+            <td>{r.label}</td>
+            <td class="num mono">{r.tokens.toLocaleString()}</td>
+            <td class="num mono">{usdCell(r.usd)}</td>
+          </tr>
         {/each}
-      </ul>
-    {:else}
-      <p class="muted">No per-step cost recorded.</p>
+        <tr class="total-row">
+          <td>Total</td>
+          <td class="num mono">{cost.totalTokens.toLocaleString()}</td>
+          <td class="num mono">{usdCell(cost.totalUSD)}</td>
+        </tr>
+      </tbody>
+    </table>
+    {#if cost.models.length > 0}
+      <p class="models" title="Models seen on this run's cost events">
+        {cost.models.join(' · ')}
+      </p>
     {/if}
   </div>
-{:else}
-  <p class="muted">Select a task to see its cost rollup.</p>
 {/if}
 
 <style>
@@ -40,49 +76,55 @@
     gap: var(--space-2);
   }
 
-  .totals {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: var(--space-0);
+  .cost-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
   }
 
-  .totals div {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-2);
-  }
-
-  .totals dt {
+  .cost-table th {
+    padding: var(--space-0) var(--space-0) var(--space-1);
     font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-align: left;
+    border-bottom: var(--border-hairline);
+  }
+
+  .cost-table td {
+    padding: var(--space-1) var(--space-0);
+    color: var(--color-text);
+  }
+
+  .cost-table .num {
+    text-align: right;
+  }
+
+  .total-row td {
+    border-top: var(--border-hairline);
+    font-weight: 600;
+    padding-top: var(--space-2);
+  }
+
+  .models {
+    margin: var(--space-0);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
     color: var(--color-text-muted);
   }
 
-  .totals dd {
-    margin: var(--space-0);
-    font-size: var(--text-xs);
-  }
-
-  .steps {
-    list-style: none;
-    margin: var(--space-0);
-    padding: var(--space-0);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .steps li {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    color: var(--color-text);
+  .mono {
+    font-family: var(--font-mono);
   }
 
   .muted {
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
   }
 </style>

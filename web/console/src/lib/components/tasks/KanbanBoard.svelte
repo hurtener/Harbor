@@ -105,12 +105,15 @@
 
 <style>
   .kanban-board {
-    /* W7 (Phase 83x): the board now carries five columns
-       (Pending / Running / Paused / Complete / Failed). */
+    /* W7 (Phase 83x): five columns (Pending / Running / Paused / Complete
+       / Failed). Phase 108i: the board fills the card and each column
+       scrolls INTERNALLY — the document never full-page-scrolls. */
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: var(--space-3);
-    align-items: start;
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
   }
 
   .card-drag {

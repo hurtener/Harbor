@@ -107,7 +107,10 @@ test.describe("Console disconnected-state contract (Phase 83r/83s + Phase 105 re
       // the mocks have no saved-view strip on those pages — so neither appears
       // in this per-page Save-view label check.
       { slug: "sessions", testid: "sessions-save-view" },
-      { slug: "tasks", testid: "tasks-save-filter" },
+      // Phase 108i (D-181): the Tasks rebuild adopted the Sessions saved-view
+      // UX — a `tasks-save-view` button labelled "Save view" (the old
+      // `tasks-save-filter` rename-input is gone).
+      { slug: "tasks", testid: "tasks-save-view" },
       { slug: "agents", testid: "agents-save-view" },
       { slug: "tools", testid: "tools-save-filter" },
       { slug: "events", testid: "save-view" },
