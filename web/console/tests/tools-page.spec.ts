@@ -1,16 +1,25 @@
-// Harbor Console e2e — Tools page per-page spec (Phase 73f / D-116;
-// refactored onto the D-121 design-system foundation).
+// Harbor Console e2e — Tools page per-page spec (Phase 108k / D-183;
+// the carded, viewport-locked rebuild of the Phase 73f / D-116 page).
 //
-// Covers the refactored Tools page:
-//   (a) the catalog `DataTable` renders rows with the mockup columns,
+// Covers the rebuilt Tools page:
+//   (a) the catalog `DataTable` (now `ToolCatalogTable`) renders rows with
+//       the mockup columns,
 //   (b) a facet chip toggle re-issues `tools.list` and re-renders,
-//   (c) a selected-tool drill-down opens the `ToolDetailTabs` panel,
+//   (c) a selected-tool drill-down opens the right-rail detail
+//       (`ToolDetailRail`) — the per-tool descriptor + tabs,
 //   (d) the Approval tab's Approve / Reject controls call the REAL
 //       `tools.set_approval_policy` Protocol method, or render
 //       disabled-with-tooltip when the connection lacks the admin scope
 //       (CONVENTIONS.md §5 — no stubbed action presented as done).
-//   (e) the four-state `<PageState>` Disconnected branch renders when
-//       no Runtime connection is configured.
+//   (e) the four-state `<PageState>` Disconnected branch / redirect.
+//
+// Phase 108k rethemed the page to the Events-108h / Background-Jobs-108j
+// composition: TABLE-primary on the left + a right-rail detail on the
+// right (the rail shows the catalog overview idle state until a tool is
+// selected, then the full per-tool detail). The per-page header is gone
+// (app-shell chrome, 108b) and the king file is refactored into a
+// `ToolsPageState` controller + pure `derive.ts` + the focused
+// `ToolCatalogTable` / `ToolDetailRail` components.
 //
 // SKIP semantics (mirrors `harness.spec.ts`): the `harbor console`
 // subcommand lands in Phase 73m (Stage 2.3). Until then the `runtime`
@@ -78,6 +87,13 @@ test.describe("Console Tools page", () => {
     await expect(
       page.locator("[data-testid='tools-page']"),
       "the Tools page root is present",
+    ).toBeVisible();
+
+    // With nothing selected, the right rail shows the catalog-overview idle
+    // state (the carded rebuild — the rail replaces the old in-column tabs).
+    await expect(
+      page.locator("[data-testid='tools-rail-idle']"),
+      "the right rail shows the catalog-overview idle state before selection",
     ).toBeVisible();
   });
 
@@ -169,10 +185,10 @@ test.describe("Console Tools page", () => {
     await firstRow.click();
     await expect(
       page.locator("[data-testid='tools-detail-name']"),
-      "the detail panel header shows the selected tool",
+      "the right-rail detail header shows the selected tool",
     ).toBeVisible();
 
-    // The `ToolDetailTabs` panel exposes the tabbed surface.
+    // The `ToolDetailRail` exposes the tabbed descriptor surface.
     await expect(
       page.locator("[data-testid='tools-detail-tab'][data-tab='approval']"),
       "the Approval tab is present",

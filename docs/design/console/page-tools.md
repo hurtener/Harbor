@@ -151,3 +151,47 @@ Reconciliation of `docs/rfc/assets/console-tools-page.png` against §3-§7.
 - **D-066 (control-scope claims).** Approve / Reject and every bulk admin action are gated by the appropriate claim (`tools.approve`, `tools.admin`) and degrade to disabled-with-tooltip when missing; observation (catalog, status, run history) requires only the read scope.
 - **D-091 (`harbor console` deployment).** The footer's Protocol version + Console version + connected-runtime fields confirm the Console is talking to a Runtime over the Protocol — no embedded `harbor dev` path.
 - **§13 forbidden practices.** No hand-rolled renderers for MCP-sourced tool output; no `DisplayMode` toggle outside the canonical registry; no Console-side mutation of identity-scoped fields; no parallel implementations of approval (the Approve / Reject buttons here invoke the same `approve` / `reject` Protocol methods as the session/task views).
+
+## 13. Reframe — Phase 108k carded, viewport-locked retheme (2026-06-02, D-183)
+
+Phase 108k brings this page to the carded, viewport-locked composition the
+page-polish series established (Events-108h / Background-Jobs-108j). It is a
+**retheme + viewport-lock + deepen-the-rail + king-file refactor** pass over the
+Phase 73f (D-116) wiring, not a re-spec — the seven `tools.*` methods, the
+Console-DB saved filters, and the admin verbs are unchanged. The composition
+changes recorded here **supersede** the layout halves of §4 / §12 (and D-116):
+
+- **Composition.** The per-page `PageHeader` is dropped (the breadcrumb / ⌘K /
+  footer are app-shell chrome, Phase 108b). The page is a carded
+  `<section class="panel card">` filter strip + a viewport-locked layout of
+  TABLE-primary on the left (the catalog fills the viewport and scrolls
+  internally behind a sticky `<thead>`) + a right-rail detail on the right. The
+  document never full-page-scrolls.
+
+- **One consolidated rail.** §4 / §12's separate "rail cards" (Tool overview,
+  Status / error rate, Content size) and the bottom "Selected tool detail panel"
+  and "Run history" panel are consolidated into ONE packed, internally-scrolling
+  right rail. With nothing selected the rail shows the **catalog overview** (the
+  view-level aggregate counters — `Total`, `In-flight (now)`, `Pending approval`,
+  `Awaiting OAuth`) plus an idle hint. With a tool selected it shows the full
+  detail: descriptor header (name, transport/scope, side-effect / OAuth /
+  approval badges, copy, close), the tab strip (Manifest | Inputs | Outputs |
+  Recent invocations | Approval), then the Statistics / Content size & display
+  mode / Source provenance / Run history sections.
+
+- **"Try this tool" is omitted (operator sign-off, D-183).** §3 and §5's "Try
+  this tool" form depends on a `tools.invoke` Protocol method that is NOT shipped
+  at V1 (D-132; a live probe confirmed only the seven canonical `tools.*` methods
+  exist). The Phase 73f page surfaced a disabled-with-tooltip `tools-try-tool`
+  affordance naming the deferral; per operator decision the 108k rebuild **omits
+  the affordance entirely** rather than carrying a disabled stub. This supersedes
+  the §3 sentence "the Wave 13 Tools page surfaces the affordance as a
+  disabled-with-tooltip … rather than silently omitting it" — the method deferral
+  (D-132) stands; the in-page affordance no longer renders.
+
+- **King-file refactor.** The ~847-line `+page.svelte` is decomposed into a
+  `ToolsPageState` controller (`lib/tools/state.svelte.ts`) + pure `derive.ts`
+  projections (with `derive.test.ts`) + focused `ToolCatalogTable.svelte` /
+  `ToolDetailRail.svelte` components; the pre-chrome `ToolDetailTabs.svelte` is
+  deleted. The existing body-only stat cards, `ToolOverviewCard`, `ToolFacetChips`,
+  and `lib/tools/export.ts` are reused.
