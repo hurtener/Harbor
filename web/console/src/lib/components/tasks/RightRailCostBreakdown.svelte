@@ -23,6 +23,17 @@
     { label: 'Output', usd: cost.outputUSD, tokens: cost.outputTokens },
     { label: 'Reasoning', usd: cost.reasoningUSD, tokens: cost.reasoningTokens }
   ]);
+
+  /**
+   * A USD cost cell. Renders `—` (not `$0.0000`) when the wire value is 0 —
+   * some providers populate only `Cost.TotalCost`, leaving the per-type
+   * costs unreported; a dash reads as "not reported" rather than a
+   * misleading hard zero, while the token counts carry the real per-type
+   * signal.
+   */
+  function usdCell(v: number): string {
+    return v > 0 ? `$${v.toFixed(4)}` : '—';
+  }
 </script>
 
 {#if cost.events === 0}
@@ -40,13 +51,13 @@
           <tr>
             <td>{r.label}</td>
             <td class="num mono">{r.tokens.toLocaleString()}</td>
-            <td class="num mono">${r.usd.toFixed(4)}</td>
+            <td class="num mono">{usdCell(r.usd)}</td>
           </tr>
         {/each}
         <tr class="total-row">
           <td>Total</td>
           <td class="num mono">{cost.totalTokens.toLocaleString()}</td>
-          <td class="num mono">${cost.totalUSD.toFixed(4)}</td>
+          <td class="num mono">{usdCell(cost.totalUSD)}</td>
         </tr>
       </tbody>
     </table>
