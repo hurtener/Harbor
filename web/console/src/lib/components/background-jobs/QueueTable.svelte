@@ -12,6 +12,7 @@
   import DataTable, { type DataTableColumn } from '$lib/components/ui/DataTable.svelte';
   import StatusChip, { type StatusKind } from '$lib/components/ui/StatusChip.svelte';
   import OrphanBadge from './OrphanBadge.svelte';
+  import { deriveJobType } from '$lib/background-jobs/derive.js';
   import type { TaskRow } from '$lib/protocol/tasks.js';
 
   let {
@@ -82,8 +83,16 @@
     const clamped = Math.max(0, Math.min(1, p));
     return Math.round(clamped * 100);
   }
+
+  // The mockup renders a SHORT hash for the Job ID (§12) — the full ULID
+  // would push the dense 8-column table past the card width. The cell
+  // carries the full id in `data-job-id` + the `title` for copy / inspect.
+  function shortId(id: string): string {
+    return id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+  }
 </script>
 
+<div class="queue-table">
 <DataTable
   columns={COLUMNS}
   rows={rows}
@@ -101,8 +110,9 @@
       class:row-active={job.id === activeId}
       data-testid="bg-job-row"
       data-job-id={job.id}
+      title={job.id}
     >
-      <code>{job.id}</code>
+      <code>{shortId(job.id)}</code>
     </td>
     <td class="cell-title" data-testid="bg-job-title">
       {job.description || job.query || '—'}
@@ -134,6 +144,9 @@
     <td>{relativeLabel(job.last_activity_at)}</td>
     <td data-testid="bg-job-tags">
       <span class="tag-row">
+        <span class="tag type" data-testid="bg-job-type" title="Derived job type (planner tag / spawn description)">
+          {deriveJobType(job)}
+        </span>
         {#each job.tags ?? [] as tag (tag)}
           <span class="tag">{tag}</span>
         {/each}
@@ -142,8 +155,24 @@
     </td>
   {/snippet}
 </DataTable>
+</div>
 
 <style>
+  /* Compact the shared DataTable's header padding to match the body cells
+     so the dense 8-column queue packs into the card without a horizontal
+     scroll (the default header padding pushed the natural width past the
+     card). Header + body stay column-aligned at the same horizontal pad.
+     Scoped to THIS queue table (the `.queue-table` wrapper) so it never
+     reaches another page's DataTable. */
+  .queue-table :global(.data-table thead th) {
+    padding: var(--space-2) var(--space-2);
+  }
+
+  td {
+    padding: var(--space-2) var(--space-2);
+    vertical-align: middle;
+  }
+
   .cell-id code {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
@@ -156,7 +185,7 @@
   }
 
   .cell-title {
-    max-width: var(--size-card-min);
+    max-width: var(--size-search-min);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -208,5 +237,10 @@
     background: var(--color-surface-raised);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
+  }
+
+  .tag.type {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
   }
 </style>

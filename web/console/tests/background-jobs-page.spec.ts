@@ -1,42 +1,34 @@
-// Harbor Console e2e — Background Jobs page per-page spec (Phase 73h /
-// D-128).
+// Harbor Console e2e — Background Jobs page per-page spec (Phase 108j /
+// D-182; supersedes the Phase 73h / D-128 pre-chrome spec).
 //
-// Covers the Background Jobs page built on the D-121 design-system
-// foundation:
+// Covers the rebuilt Background Jobs page — the carded, viewport-locked
+// Events-108h composition (TABLE-primary + a right-rail detail; no
+// mode-switch):
 //   (a) the page route serves + hydrates inside the shared app shell,
-//   (b) the queue table renders with the sub-header filter chips,
-//   (c) the background-kind facet is the page's binding — the queue is
-//       always the `kinds: ['background']` projection,
-//   (d) bulk-select reveals the shared `BulkActionBar` + the bulk
-//       Cancel / Pause / Resume / Prioritize toolbar,
-//   (e) the right-rail tab strip navigates,
+//   (b) the carded filter strip renders the saved-filter + faceted chips,
+//   (c) the queue is the `kinds: ['background']` projection (TABLE-primary),
+//   (d) bulk-select reveals the shared BulkActionBar + the bulk toolbar,
+//   (e) clicking a row opens the right-rail detail + its tab strip navigates,
 //   (f) an orphan badge renders for a planted orphan row,
-//   (g) the bulk toolbar renders disabled-with-tooltip when the
-//       connection lacks the `tasks.control` scope claim (CONVENTIONS.md
-//       §5 — no stubbed action presented as done; the toolbar consumes
-//       the SHIPPED Phase 54 verbs — §13 / D-128),
-//   (h) the four-state `<PageState>` Disconnected branch renders when
-//       no Runtime connection is configured.
+//   (g) the bulk toolbar renders disabled-with-tooltip without the control
+//       scope claim (CONVENTIONS.md §5 — no stubbed action; the toolbar
+//       consumes the SHIPPED Phase 54 verbs — §13 / D-128),
+//   (h) the document is viewport-locked (no full-page scroll),
+//   (i) a disconnected Console redirects to /settings (Phase 105).
 //
-// SKIP semantics (mirrors `harness.spec.ts` + `tasks-page.spec.ts`):
-// the `harbor console` subcommand lands in Phase 73m (Stage 2.3). Until
-// then the `runtime` fixture reports `available: false` and the whole
-// describe block SKIPs at collection time — keeping the harness
-// baseline green. Once 73m merges, the suite runs against a live
-// Runtime + Console.
-//
-// The Phase 75a wave-end aggregator enumerates the 14 page slugs and
-// asserts a matching `<slug>-page.spec.ts` exists; this file is the
-// `background-jobs` slug's entry.
+// SKIP semantics (mirrors `harness.spec.ts` + `tasks-page.spec.ts`): the
+// `harbor console` subcommand lands in Phase 73m; until then the `runtime`
+// fixture reports `available: false` and the describe block SKIPs at
+// collection time. The `<slug>-page.spec.ts` aggregator (Phase 75a)
+// expects this file for the `background-jobs` slug.
 
 import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
-// The Console resolves its Runtime connection via `connection.ts`,
-// which reads the `harbor.runtime.*` storage convention. This helper
-// seeds the connection triple so the page resolves a live connection
-// rather than rendering the Disconnected `PageState`.
+// The Console resolves its Runtime connection via `connection.ts`, which
+// reads the `harbor.runtime.*` storage convention. Seed the triple so the
+// page resolves a live connection rather than the Disconnected redirect.
 async function seedConnection(
   page: import("@playwright/test").Page,
   baseURL: string,
@@ -75,18 +67,12 @@ test.describe("Console Background Jobs page", () => {
     ).toBeVisible();
   });
 
-  test("(b) the queue renders with the sub-header filter chips", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
+  test("(b) the carded filter strip renders the chips", async ({ page, runtime, helpers }) => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
     await page.waitForLoadState("load");
 
-    // The saved-filter chip strip (Active only / High-priority /
-    // Stuck > 1h / Recently failed) is the sub-header.
     await expect(
       page.locator("[data-testid='bg-saved-filter-chips']"),
       "the saved-filter chip strip renders",
@@ -95,39 +81,32 @@ test.describe("Console Background Jobs page", () => {
       page.locator("[data-testid='bg-chip-stuck-1h']"),
       "the Stuck > 1h derived chip renders",
     ).toBeVisible();
-    // The faceted status chips render.
     await expect(
       page.locator("[data-testid='bg-facets']"),
       "the faceted filter chips render",
     ).toBeVisible();
+    // The idle right rail renders its hint until a row is selected.
+    await expect(
+      page.locator("[data-testid='bg-rail-idle']").or(page.locator("[data-testid='bg-right-rail']")).first(),
+      "the right column renders the idle hint or a selected-job detail",
+    ).toBeVisible();
   });
 
-  test("(c) the background-kind facet returns only background rows", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
+  test("(c) the queue is the background-kind projection", async ({ page, runtime, helpers }) => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
     await page.waitForLoadState("load");
 
-    // Every queue row is a background job — the page's `kinds:
-    // ['background']` binding. A row carrying a foreground kind is a
-    // cross-kind contamination bug.
     const rows = page.locator("[data-testid='bg-job-row']");
     const count = await rows.count();
-    test.skip(count < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
-    // The page is the queue projection — its presence proves the
-    // background-kind binding is wired.
+    test.skip(count < 1, "no background jobs in the runtime fixture (seed with HARBOR_DEV_SEED_FIXTURES=1)");
     await expect(rows.first()).toBeVisible();
+    // Every row carries a derived type badge (honest — never a fabricated agent).
+    await expect(page.locator("[data-testid='bg-job-type']").first()).toBeVisible();
   });
 
-  test("(d) selecting rows reveals the bulk-action toolbar", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
+  test("(d) selecting rows reveals the bulk-action toolbar", async ({ page, runtime, helpers }) => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
@@ -135,24 +114,18 @@ test.describe("Console Background Jobs page", () => {
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();
-    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
+    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seed with HARBOR_DEV_SEED_FIXTURES=1)");
 
     await checks.nth(0).check();
     await expect(
       page.locator("[data-testid='bg-bulk-toolbar']"),
       "the bulk-action toolbar surfaces on selection",
     ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='bg-bulk-cancel']"),
-      "the bulk Cancel action is present",
-    ).toBeVisible();
-    await expect(
-      page.locator("[data-testid='bg-bulk-prioritize']"),
-      "the bulk Prioritize action is present",
-    ).toBeVisible();
+    await expect(page.locator("[data-testid='bg-bulk-cancel']")).toBeVisible();
+    await expect(page.locator("[data-testid='bg-bulk-prioritize']")).toBeVisible();
   });
 
-  test("(e) the right-rail tab strip navigates", async ({
+  test("(e) clicking a row opens the right-rail detail + tabs navigate", async ({
     page,
     runtime,
     helpers,
@@ -164,61 +137,40 @@ test.describe("Console Background Jobs page", () => {
 
     const rows = page.locator("[data-testid='bg-job-row']");
     const count = await rows.count();
-    test.skip(count < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
+    test.skip(count < 1, "no background jobs in the runtime fixture (seed with HARBOR_DEV_SEED_FIXTURES=1)");
 
     await rows.first().click();
-    await page.waitForLoadState("load");
-
     await expect(
       page.locator("[data-testid='bg-right-rail']"),
       "the per-job right-rail opens on row click",
     ).toBeVisible();
-    // Navigate to the Related Sessions tab.
-    await page.locator("[data-testid='bg-rail-tab-related']").click();
-    await expect(
-      page.locator("[data-testid='bg-rail-panel-related']"),
-      "the Related Sessions panel renders",
-    ).toBeVisible();
+    // Navigate to the Progress tab, then Events.
+    await page.locator("[data-testid='bg-rail-tab-progress']").click();
+    await expect(page.locator("[data-testid='bg-rail-panel-progress']")).toBeVisible();
+    await page.locator("[data-testid='bg-rail-tab-events']").click();
+    await expect(page.locator("[data-testid='bg-rail-panel-events']")).toBeVisible();
   });
 
-  test("(f) an orphan badge renders for a planted orphan row", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
+  test("(f) an orphan badge renders for a planted orphan row", async ({ page, runtime, helpers }) => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
     await page.waitForLoadState("load");
 
-    // The orphan detector is a pure Console-side cross-check (D-128).
-    // It flags a background job whose parent task is absent from the
-    // same `tasks.list` snapshot. The badge renders only when at least
-    // one orphan exists in the fixture.
     const badges = page.locator("[data-testid='orphan-badge']");
     const badgeCount = await badges.count();
-    test.skip(badgeCount < 1, "no orphaned background jobs in the fixture (seeding tracked in issue #178)");
+    test.skip(badgeCount < 1, "no orphaned background jobs in the fixture (seed with HARBOR_DEV_SEED_FIXTURES=1)");
 
     await badges.first().click();
-    await expect(
-      page.locator("[data-testid='orphan-dialog']"),
-      "the orphan diagnostic dialog opens",
-    ).toBeVisible();
+    await expect(page.locator("[data-testid='orphan-dialog']")).toBeVisible();
     await page.locator("[data-testid='orphan-dialog-close']").click();
-    await expect(
-      page.locator("[data-testid='orphan-dialog']"),
-      "the orphan dialog closes",
-    ).toBeHidden();
+    await expect(page.locator("[data-testid='orphan-dialog']")).toBeHidden();
   });
 
-  test("(g) the bulk toolbar gates on the control scope claim", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
+  test("(g) the bulk toolbar gates on the control scope claim", async ({ page, runtime, helpers }) => {
     // The connection seeded here carries NO `admin` scope claim, so the
-    // bulk control verbs must render disabled-with-tooltip — never a
-    // fake success (CONVENTIONS.md §5; CLAUDE.md §13; D-128).
+    // bulk control verbs must render disabled-with-tooltip — never a fake
+    // success (CONVENTIONS.md §5; CLAUDE.md §13; D-128).
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("background-jobs");
@@ -226,11 +178,11 @@ test.describe("Console Background Jobs page", () => {
 
     const checks = page.getByLabel("Select row");
     const checkCount = await checks.count();
-    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seeding tracked in issue #178)");
+    test.skip(checkCount < 1, "no background jobs in the runtime fixture (seed with HARBOR_DEV_SEED_FIXTURES=1)");
 
     await checks.nth(0).check();
     const bulkCancel = page.locator("[data-testid='bg-bulk-cancel']");
-    await expect(bulkCancel, "the bulk Cancel control surfaces").toBeVisible();
+    await expect(bulkCancel).toBeVisible();
     const disabled = await bulkCancel.isDisabled();
     const tip = await bulkCancel.getAttribute("title");
     expect(
@@ -239,13 +191,27 @@ test.describe("Console Background Jobs page", () => {
     ).toBe(true);
   });
 
-  test("(h) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
+  test("(h) the page is viewport-locked (no full-page scroll)", async ({ page, runtime, helpers }) => {
+    await helpers.seedAuth(runtime.token);
+    await seedConnection(page, runtime.baseURL, runtime.token);
+    await helpers.gotoPage("background-jobs");
+    await page.waitForLoadState("load");
+    await expect(page.locator("[data-testid='background-jobs-page']")).toBeVisible();
+
+    // The document must not full-page-scroll — only the page's own regions
+    // (the queue table + the right rail) scroll internally (PAGE-POLISH §6).
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollHeight - document.documentElement.clientHeight,
+    );
+    expect(overflow, "the document does not full-page-scroll").toBeLessThanOrEqual(2);
+  });
+
+  test("(i) a disconnected Console redirects to /settings to connect (Phase 105)", async ({
     page,
     helpers,
   }) => {
-    // No connection seeded — connection.ts returns null. Phase 105
-    // (V1.2): the app shell redirects a disconnected Console to /settings
-    // (the connect surface) rather than stranding the operator.
+    // No connection seeded — connection.ts returns null. The app shell
+    // redirects a disconnected Console to /settings rather than stranding it.
     await helpers.gotoPage("background-jobs");
     await expect
       .poll(() => new URL(page.url()).pathname, { timeout: 5000 })

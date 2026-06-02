@@ -147,3 +147,53 @@ Reconciliation of `docs/rfc/assets/console-background-jobs-page.png` against §3
 - **D-066 (control-scope claims).** Cancel / Pause / Resume / Prioritize / Approve / Reject are all gated by the appropriate claim and disabled-with-tooltip when missing; observation (list, detail, logs, artifacts) requires only the read scope.
 - **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
 - **§13 forbidden practices.** The bulk control verbs invoke the same Phase 54 Protocol methods as the task / session views (no parallel implementation); approvals route through `approve` / `reject` (no shadow approval queue); the heavy-content threshold is respected for artifact rendering (`artifacts.get` link, no inline bytes — closes D-026).
+
+## 13. Phase 108j reframe (carded, viewport-locked rebuild — D-182)
+
+Phase 108j (D-182) rebuilds this page to the carded, viewport-locked composition
+the seven done pages set (Overview 108c, Live Runtime 108e, Settings 108f,
+Playground, Sessions 108g, Events 108h, Tasks 108i), superseding the §4 / §12
+page-anatomy's mode-switched board+detail framing. Reframes:
+
+- **Route / chrome.** The slug + IA are unchanged, but the **route is
+  `/background-jobs`** (no `/console/` prefix — CONVENTIONS.md §1; the §1 header's
+  `/console/background-jobs` is pre-chrome). The breadcrumb / ⌘K search / footer
+  are the 108b app-shell chrome; the page renders NO per-page `PageHeader` (the §4
+  "Top bar (shared)" is chrome).
+
+- **Events-108h shape, not a mode-switch.** The page is TABLE-primary on the left
+  (the `kinds: ['background']` queue fills the viewport and scrolls internally
+  behind a sticky `<thead>`) + a right-rail detail on the right. The table stays
+  visible at all times; the rail shows the selected job's detail or an idle
+  "select a job" hint — there is no Tasks-style full-page mode-switch. The
+  document is viewport-locked: only the table + the rail scroll internally.
+
+- **The right rail is deepened to live data (was placeholder prose).** The §12
+  rail tabs are reduced to the four the wire actually feeds — **Details |
+  Progress | Events | Control History** — plus the sections **Artifacts for this
+  Job / Parent task / Related Sessions**, packed into ONE internally-scrolling
+  card. Details / Parent task render `tasks.get`; Events / Control History render
+  a RUN-scoped `events.subscribe` projection (the reused Tasks-108i
+  `TaskRunStream` / `run-events`, filtered to the job's run by
+  `e.run === id || payload.TaskID === id`); Artifacts render `artifacts.list`
+  scoped to the job's `(tenant, user, session, task=run-id)`; Related Sessions
+  render `tasks.list?group_id` siblings. The §12 **Logs** and **Pending
+  approvals** tabs are folded away: Logs IS the Events tab (the live `task.*` /
+  `tool.*` stream), and a job's open approval surfaces in the live event stream +
+  the shipped `approve` / `reject` verbs (no shadow approval queue).
+
+- **ETA / type / timeline are honest derivations (no wire field).** ETA is the
+  planner's own `task.progress` hint projected over elapsed wall time, labelled an
+  estimate, reading **"Unknown"** when no hint was emitted (never a fabricated
+  value). The per-row type badge is the first planner tag, else a keyword match
+  over the spawn description (Indexer / Report / Long Poll), else **"Job"** (no
+  fabricated agent — the §3 "spawned-by" shows `parent_task_id` or "—"). The
+  Progress state-transition timeline is the run's real `task.*` lifecycle events;
+  the run-scoped SSE is live-only, so the Events / Control / timeline render
+  honest-empty for a quiet or already-finished run.
+
+- **King-file refactor.** The page logic moves into a `BackgroundJobsPageState`
+  controller (`lib/background-jobs/state.svelte.ts`) + pure unit-tested
+  projections (`derive.ts` / `orphan-detector.ts`) + focused rail components
+  (`JobDetailRail` / `JobProgressTab`); the pre-chrome `RightRail.svelte` is
+  deleted. The page ships NO new Protocol method.
