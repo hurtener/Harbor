@@ -137,6 +137,7 @@ describe('projectActivity', () => {
   it('filters to the target agent, newest-first, preserving order', () => {
     const rows = projectActivity(events, 'a');
     expect(rows.map((r) => r.type)).toEqual(['agent.paused', 'agent.registered']);
+    expect(rows.map((r) => r.sequence)).toEqual([3, 1]);
     expect(rows[0].at).toBe('2026-06-03T12:02:00Z');
     expect(rows[0].summary).toBe('Pause issued');
   });

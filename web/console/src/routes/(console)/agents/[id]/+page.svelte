@@ -28,7 +28,6 @@
   //
   // Svelte 5 runes (D-092); design tokens only; HarborClient + connection.ts
   // only — no hand-rolled fetch (CONVENTIONS.md §6).
-  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { PageState } from '$lib/components/ui';
   import DetailHeader from '$lib/components/agents/DetailHeader.svelte';
@@ -62,8 +61,14 @@
   // non-null `AgentGetResponse` for the child props (svelte-check).
   const detail = $derived(state.detail);
 
-  onMount(() => {
-    state.load(agentID, injectedClient);
+  // Keyed on agentID so the detail reloads + re-opens its activity
+  // subscription on a client-side param change too — SvelteKit reuses the
+  // `[id]` component across param changes, so an onMount-only load would
+  // fire once and strand the page on the first agent. The cleanup closes
+  // the prior subscription before each reload and on unmount.
+  $effect(() => {
+    const id = agentID;
+    state.load(id, injectedClient);
     return () => state.close();
   });
 </script>

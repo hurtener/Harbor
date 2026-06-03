@@ -186,7 +186,12 @@ export function projectActivity(events: Event[], agentID: string): ActivityEntry
   const out: ActivityEntry[] = [];
   for (const ev of events) {
     if (extractAgentID(ev.payload) !== agentID) continue;
-    out.push({ type: ev.type, at: ev.occurred_at, summary: summarizeAgentEvent(ev) });
+    out.push({
+      sequence: ev.sequence,
+      type: ev.type,
+      at: ev.occurred_at,
+      summary: summarizeAgentEvent(ev)
+    });
   }
   return out;
 }

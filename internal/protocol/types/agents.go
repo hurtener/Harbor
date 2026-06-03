@@ -436,12 +436,21 @@ type AgentControlRequest struct {
 }
 
 // AgentControlResponse is the shared reply for the five fleet-control
-// verbs. Status is the verb's deterministic post-state (pause→paused,
-// drain→drained, restart→active, force_stop→force_stopped,
-// deregister→deregistered) — the registry has applied the command and
-// emitted the matching `agent.*` event, which is the authoritative
-// observation surface the Console also subscribes to (no fabrication;
-// CLAUDE.md §13).
+// verbs. Status is the ACTUAL post-control status the registry re-read
+// after applying the command — NOT the verb's nominal intent (no
+// fabrication; CLAUDE.md §13). The V1 registry's Health enum has no
+// "paused" state, and `pause` / `restart` do not transition Health, so:
+//   - pause      → the agent's prior status, unchanged (active for a
+//                  healthy agent — there is no "paused" status);
+//   - restart    → the agent's prior status, unchanged (restart bumps the
+//                  incarnation but does NOT clear a prior drain/stop
+//                  Health, so a restarted-after-drain agent reads
+//                  `drained`, not `active`);
+//   - drain      → drained;
+//   - force_stop → force_stopped;
+//   - deregister → deregistered (the record is gone; not re-read).
+// In every case the registry emitted the matching `agent.*` event, which
+// is the authoritative observation surface the Console also subscribes to.
 type AgentControlResponse struct {
 	// AgentID echoes the controlled agent_id.
 	AgentID string `json:"agent_id"`

@@ -194,8 +194,13 @@ export class AgentDetailPageState {
       this.status = 'ready';
     } catch (err) {
       this.detail = null;
-      this.detailError = toPageError(err);
-      this.status = 'error';
+      const e = toPageError(err);
+      this.detailError = e;
+      // A not-found (a deregistered / mistyped id deep-link) is NOT a
+      // runtime error — it routes to the friendlier Empty state ("Agent
+      // not found — perhaps it was deregistered") rather than a raw error
+      // card. Everything else is a genuine error (CONVENTIONS.md §4).
+      this.status = e.code === 'not_found' ? 'empty' : 'error';
     }
   }
 
@@ -313,8 +318,12 @@ export class AgentDetailPageState {
       const resp = await this.#invoke(verb);
       this.controlResult = { ok: true, message: controlResultMessage(verb, resp.status) };
       if (verb === 'deregister') {
-        // The record is gone — a re-read would 404. Show the removed banner.
+        // The record is gone — a re-read would 404. Show the removed banner
+        // and tear down the now-orphaned activity subscription (the canvas
+        // unmounts, so nothing reads the stream anymore — don't leave a
+        // dangling open EventSource until route-unmount).
         this.deregistered = true;
+        this.close();
       } else {
         await this.loadDetail();
       }

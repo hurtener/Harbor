@@ -466,11 +466,19 @@ func (s *Service) doControl(
 	}
 	// Re-read the ACTUAL post-control status (no fabrication). A racing
 	// deregister between the control and the re-read leaves the agent
-	// gone — report the honest terminal state rather than failing.
+	// gone — report the honest terminal state. But ONLY the not-found
+	// case collapses to `deregistered`: any OTHER re-read error (a
+	// transient StateStore failure, an unmarshal error) must surface
+	// loudly rather than masquerade as a successful deregister
+	// (CLAUDE.md §13 — no silent degradation, no fabricated terminal
+	// status). The control command itself already succeeded.
 	got, gerr := s.projector.GetAgent(ctx, id, req.ID)
 	if gerr != nil {
-		resp.Status = prototypes.AgentStatusDeregistered
-		return resp, nil
+		if errors.Is(gerr, ErrAgentNotFound) {
+			resp.Status = prototypes.AgentStatusDeregistered
+			return resp, nil
+		}
+		return prototypes.AgentControlResponse{}, mapProjectorErr(gerr)
 	}
 	resp.Status = got.Agent.Status
 	return resp, nil

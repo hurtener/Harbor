@@ -15,6 +15,8 @@
 
   /** One projected `agent.*` lifecycle event row. */
   export interface ActivityEntry {
+    /** The per-bus monotonic sequence — the stable keyed-each key. */
+    sequence: number;
     /** The event type, e.g. `agent.registered`. */
     type: string;
     /** RFC3339 timestamp of the event. */
@@ -41,7 +43,9 @@
       data-testid="agent-activity-stream-state"
       title={`stream: ${streamState}`}
     ></span>
-    <span class="live-label">{streamState === 'open' ? 'Live' : streamState}</span>
+    <span class="live-label">
+      {streamState === 'open' ? 'Live' : streamState === 'error' ? 'reconnecting…' : streamState}
+    </span>
   </div>
   {#if entries.length === 0}
     <p class="empty">
@@ -50,7 +54,7 @@
     </p>
   {:else}
     <ul>
-      {#each entries as entry, i (i)}
+      {#each entries as entry (entry.sequence)}
         <li data-testid="agent-activity-row">
           <span class="event-type mono">{entry.type}</span>
           <span class="event-summary">{entry.summary}</span>
