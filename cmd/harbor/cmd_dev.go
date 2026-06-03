@@ -983,6 +983,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	agentsService, err := agentsprotocol.NewService(agentsProjector,
 		agentsprotocol.WithLogger(opts.logger),
+		// Phase 108l (D-184): inject the in-process registry as the
+		// fleet-control mutate seam so the five agents.* control verbs
+		// (pause / drain / restart / force_stop / deregister) drive the
+		// real registry behind the admin-gated Protocol surface.
+		agentsprotocol.WithController(agentRegistry),
 	)
 	if err != nil {
 		closeAll(ctx)

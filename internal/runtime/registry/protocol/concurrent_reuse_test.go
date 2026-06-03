@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"strconv"
 	"sync"
@@ -28,7 +29,10 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistryProjector: %v", err)
 	}
-	svc, err := agentsprotocol.NewService(proj)
+	// Wire the controller so the five fleet-control verbs are exercised
+	// against the shared instance too (Phase 108l / D-184 — the control
+	// path is the part most likely to race on the registry's RMW mutex).
+	svc, err := agentsprotocol.NewService(proj, agentsprotocol.WithController(reg))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -111,6 +115,29 @@ func TestService_ConcurrentReuse_N100(t *testing.T) {
 			}
 			if mResp.Metrics.ActiveAgents != 1 {
 				errCh <- &countErr{got: mResp.Metrics.ActiveAgents, want: 1, op: "Metrics.ActiveAgents"}
+				return
+			}
+
+			// Fleet control — exercise the shared doControl + WithController
+			// + registry-mutex RMW path under -race (D-184). Pause and
+			// Restart are chosen because they leave the agent's status
+			// `active` (the registry has no "paused" state and restart does
+			// not clear Health), so the per-tenant active-agent invariant
+			// above still holds; they traverse the identical shared control
+			// path as drain/force_stop. controlScoped=true → doControl
+			// attaches registry.WithControlScope.
+			ctlReq := prototypes.AgentControlRequest{Identity: fx.scope, ID: fx.agentID}
+			pResp, pErr := svc.Pause(fx.ctx, ctlReq, true)
+			if pErr != nil {
+				errCh <- pErr
+				return
+			}
+			if pResp.Status != prototypes.AgentStatusActive {
+				errCh <- fmt.Errorf("Pause re-read status = %q, want active (pause must not transition status)", pResp.Status)
+				return
+			}
+			if _, rErr := svc.Restart(fx.ctx, ctlReq, true); rErr != nil {
+				errCh <- rErr
 				return
 			}
 		}(fixtures[i])

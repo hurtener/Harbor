@@ -181,6 +181,13 @@ var CanonicalMethods = map[string]struct{}{
 	"agents.skills":      {}, // Phase 73e / D-124
 	"agents.permissions": {}, // Phase 73e / D-124
 	"agents.metrics":     {}, // Phase 73e / D-124
+	// Phase 108l (D-184) Console-Agents fleet-control verbs — five admin-
+	// gated methods wrapping the in-process registry.* control verbs.
+	"agents.pause":      {}, // Phase 108l / D-184
+	"agents.drain":      {}, // Phase 108l / D-184
+	"agents.restart":    {}, // Phase 108l / D-184
+	"agents.force_stop": {}, // Phase 108l / D-184
+	"agents.deregister": {}, // Phase 108l / D-184
 }
 
 // CanonicalWireTypes maps each canonical Protocol message struct type
@@ -422,6 +429,10 @@ var CanonicalWireTypes = map[string]string{
 	"AgentMetricsRequest":      "types",
 	"AgentMetrics":             "types",
 	"AgentMetricsResponse":     "types",
+	// Phase 108l (D-184) fleet-control wire types — the shared control
+	// request/response (internal/protocol/types/agents.go).
+	"AgentControlRequest":  "types",
+	"AgentControlResponse": "types",
 	// Phase 73c (D-122) Console Sessions-page wire types — all live in
 	// internal/protocol/types (internal/protocol/types/sessions.go).
 	// SessionStatus / SessionSort are string-enum types (like

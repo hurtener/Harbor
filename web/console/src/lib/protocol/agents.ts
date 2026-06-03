@@ -208,6 +208,19 @@ export interface AgentMetricsResponse {
 }
 
 /**
+ * The shared reply for the five fleet-control verbs (Phase 108l / D-184).
+ * `status` is the agent's ACTUAL post-control status (re-read server-side,
+ * not the command's intent): the V1 registry has no "paused" state, so
+ * pause/restart leave status `active` and emit their `agent.*` event,
+ * while drain→drained, force_stop→force_stopped, deregister→deregistered.
+ */
+export interface AgentControlResponse {
+  agent_id: string;
+  command: string;
+  status: AgentStatus;
+}
+
+/**
  * `AgentsProtocol` is the typed Agents-page view over the unified
  * `HarborClient.agents` namespace. The page constructs one over an
  * injected {@link ProtocolClient} and calls its typed methods; the
@@ -261,5 +274,30 @@ export class AgentsProtocol {
   /** `agents.metrics` — the registry-wide rollup. */
   metrics(): Promise<AgentMetricsResponse> {
     return this.#client.agents.metrics<AgentMetricsResponse>();
+  }
+
+  /** `agents.pause` — fleet control (admin-gated). */
+  pause(id: string, reason = ''): Promise<AgentControlResponse> {
+    return this.#client.agents.pause<AgentControlResponse>(id, reason);
+  }
+
+  /** `agents.drain` — fleet control (admin-gated). */
+  drain(id: string, reason = ''): Promise<AgentControlResponse> {
+    return this.#client.agents.drain<AgentControlResponse>(id, reason);
+  }
+
+  /** `agents.restart` — fleet control (admin-gated). */
+  restart(id: string, reason = ''): Promise<AgentControlResponse> {
+    return this.#client.agents.restart<AgentControlResponse>(id, reason);
+  }
+
+  /** `agents.force_stop` — fleet control (admin-gated). */
+  forceStop(id: string, reason = ''): Promise<AgentControlResponse> {
+    return this.#client.agents.forceStop<AgentControlResponse>(id, reason);
+  }
+
+  /** `agents.deregister` — fleet control (admin-gated). */
+  deregister(id: string, reason = ''): Promise<AgentControlResponse> {
+    return this.#client.agents.deregister<AgentControlResponse>(id, reason);
   }
 }

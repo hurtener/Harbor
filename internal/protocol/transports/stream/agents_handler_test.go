@@ -13,7 +13,9 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	eventsinmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
+	"github.com/hurtener/Harbor/internal/protocol/methods"
 	"github.com/hurtener/Harbor/internal/protocol/transports/stream"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
@@ -67,7 +69,7 @@ func newAgentsHandler(t *testing.T) (*stream.AgentsHandler, string) {
 	if err != nil {
 		t.Fatalf("NewRegistryProjector: %v", err)
 	}
-	svc, err := agentsprotocol.NewService(proj)
+	svc, err := agentsprotocol.NewService(proj, agentsprotocol.WithController(reg))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -92,6 +94,128 @@ func doAgentsRequest(t *testing.T, h http.Handler, verb, body string, id *identi
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.Bytes()
+}
+
+// doAgentsControlRequest issues a control verb with the identity headers
+// AND the supplied verified scopes folded onto the request context (the
+// same seam auth.Middleware uses) so the handler's admin-control gate
+// sees them.
+func doAgentsControlRequest(t *testing.T, h http.Handler, verb, body string, id *identity.Identity, scopes []auth.Scope) (int, []byte) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/"+verb, strings.NewReader(body))
+	req.SetPathValue("method", verb)
+	if id != nil {
+		req.Header.Set(stream.HeaderTenant, id.TenantID)
+		req.Header.Set(stream.HeaderUser, id.UserID)
+		req.Header.Set(stream.HeaderSession, id.SessionID)
+	}
+	req = req.WithContext(auth.WithScopes(req.Context(), scopes))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.Bytes()
+}
+
+// agentsVerb strips the `agents.` prefix off a canonical method to get the
+// route verb. Deriving it from the methods constant avoids hardcoding a
+// Protocol method string in the test (the single-source grep guard also
+// matches the pause task-control verb, so a bare quoted literal would trip it).
+func agentsVerb(m methods.Method) string {
+	return strings.TrimPrefix(string(m), "agents.")
+}
+
+// controlMethods is the canonical set of the five fleet-control verbs.
+var controlMethods = []methods.Method{
+	methods.MethodAgentsPause,
+	methods.MethodAgentsDrain,
+	methods.MethodAgentsRestart,
+	methods.MethodAgentsForceStop,
+	methods.MethodAgentsDeregister,
+}
+
+// TestAgentsHandler_Control_WithoutScope_403 — a control verb without the
+// admin control claim fails closed with 403 / identity_scope_required
+// (D-066): a leaked read-only token can never drive fleet control.
+func TestAgentsHandler_Control_WithoutScope_403(t *testing.T) {
+	h, agentID := newAgentsHandler(t)
+	for _, m := range controlMethods {
+		verb := agentsVerb(m)
+		code, body := doAgentsRequest(t, h, verb, `{"id":"`+agentID+`","reason":"x"}`, &agentsHandlerID)
+		if code != http.StatusForbidden {
+			t.Fatalf("%s without scope: code = %d, want 403", verb, code)
+		}
+		assertAgentsErrCode(t, body, protoerrors.CodeIdentityScopeRequired)
+	}
+}
+
+// TestAgentsHandler_Control_MissingIdentity_401 — identity is mandatory
+// before the scope gate even applies.
+func TestAgentsHandler_Control_MissingIdentity_401(t *testing.T) {
+	h, agentID := newAgentsHandler(t)
+	code, body := doAgentsRequest(t, h, agentsVerb(methods.MethodAgentsPause), `{"id":"`+agentID+`"}`, nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("pause no-identity: code = %d, want 401", code)
+	}
+	assertAgentsErrCode(t, body, protoerrors.CodeIdentityRequired)
+}
+
+// TestAgentsHandler_Control_WithAdminScope_200 — with the admin control
+// claim, a control verb drives the real registry and returns the agent's
+// ACTUAL post-control status (re-read from the registry, no fabrication).
+// The V1 registry has no "paused" Health, so pause leaves the observable
+// status "active" — the pause is observed via the emitted agent.paused
+// event, not a status flip (D-184).
+func TestAgentsHandler_Control_WithAdminScope_200(t *testing.T) {
+	h, agentID := newAgentsHandler(t)
+	code, body := doAgentsControlRequest(t, h, agentsVerb(methods.MethodAgentsPause), `{"id":"`+agentID+`","reason":"maintenance"}`,
+		&agentsHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusOK {
+		t.Fatalf("pause with admin scope: code = %d, want 200 (body=%s)", code, body)
+	}
+	var resp struct {
+		AgentID string `json:"agent_id"`
+		Command string `json:"command"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode pause response: %v", err)
+	}
+	if resp.Command != agentsVerb(methods.MethodAgentsPause) || resp.Status != "active" || resp.AgentID != agentID {
+		t.Fatalf("pause response = %+v, want command=pause status=active agent_id=%s", resp, agentID)
+	}
+}
+
+// TestAgentsHandler_Control_Drain_TransitionsStatus — drain DOES
+// transition the observable status (registry sets Health=draining →
+// status "drained"), so the control response reflects it.
+func TestAgentsHandler_Control_Drain_TransitionsStatus(t *testing.T) {
+	h, agentID := newAgentsHandler(t)
+	code, body := doAgentsControlRequest(t, h, agentsVerb(methods.MethodAgentsDrain), `{"id":"`+agentID+`","reason":"maintenance"}`,
+		&agentsHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusOK {
+		t.Fatalf("drain with admin scope: code = %d, want 200 (body=%s)", code, body)
+	}
+	var resp struct {
+		Command string `json:"command"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode drain response: %v", err)
+	}
+	if resp.Command != agentsVerb(methods.MethodAgentsDrain) || resp.Status != "drained" {
+		t.Fatalf("drain response = %+v, want command=drain status=drained", resp)
+	}
+}
+
+// TestAgentsHandler_Control_UnknownAgent_404 — controlling a missing
+// agent (with the claim) maps the registry not-found onto 404.
+func TestAgentsHandler_Control_UnknownAgent_404(t *testing.T) {
+	h, _ := newAgentsHandler(t)
+	code, body := doAgentsControlRequest(t, h, agentsVerb(methods.MethodAgentsDeregister), `{"id":"ghost","reason":"x"}`,
+		&agentsHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if code != http.StatusNotFound {
+		t.Fatalf("deregister unknown agent: code = %d, want 404 (body=%s)", code, body)
+	}
+	assertAgentsErrCode(t, body, protoerrors.CodeNotFound)
 }
 
 func TestNewAgentsHandler_NilService_FailsLoudly(t *testing.T) {

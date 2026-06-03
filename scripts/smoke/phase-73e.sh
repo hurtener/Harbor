@@ -165,6 +165,38 @@ else
     fail "phase 73e: agents.metrics expected 200, got ${metrics_status}"
 fi
 
+# 2d-bis. The five fleet-control verbs (Phase 108l / D-184) are mounted +
+# admin-gated. The dev token carries the admin control claim, so an
+# unknown id passes the control-scope gate and resolves to 404 (route
+# mounted + control-scope satisfied + agent resolution applied). The
+# 403-without-claim and 200-on-a-real-agent paths are covered by the Go
+# unit + handler tests (agents_handler_test.go / control_test.go) — the
+# preflight dev stack registers no agent to drive a live 200.
+for verb in pause drain restart force_stop deregister; do
+    cst=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -X POST "$(api_url "/v1/agents/${verb}")" \
+        -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"id":"smoke-unknown-agent","reason":"smoke"}' \
+        2>/dev/null || echo '000')
+    if [[ "${cst}" == "404" ]]; then
+        ok "phase 108l: agents.${verb} mounted + admin-gated (404 on unknown id with the control claim)"
+    else
+        fail "phase 108l: agents.${verb} expected 404 on unknown id, got ${cst}"
+    fi
+done
+
+# 2d-ter. A control verb WITHOUT identity -> 401 identity_required (the
+# scope gate is never even reached without a valid identity triple).
+ctl_noident=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "Content-Type: application/json" \
+    -X POST "$(api_url /v1/agents/pause)" -d '{"id":"smoke-unknown-agent"}' 2>/dev/null || echo '000')
+if [[ "${ctl_noident}" == "401" ]]; then
+    ok 'phase 108l: agents.pause without identity -> 401'
+else
+    fail "phase 108l: agents.pause without identity expected 401, got ${ctl_noident}"
+fi
+
 # 2e. agents.list without identity -> 401 identity_required.
 noident_body=$(curl -s --max-time 5 \
     -H "Content-Type: application/json" \

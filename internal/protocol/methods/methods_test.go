@@ -82,6 +82,11 @@ var wantMethods = []methods.Method{
 	methods.MethodAgentsSkills,
 	methods.MethodAgentsPermissions,
 	methods.MethodAgentsMetrics,
+	methods.MethodAgentsPause,
+	methods.MethodAgentsDrain,
+	methods.MethodAgentsRestart,
+	methods.MethodAgentsForceStop,
+	methods.MethodAgentsDeregister,
 	methods.MethodSessionsList,
 	methods.MethodSessionsInspect,
 	methods.MethodRunsSetOverrides,
@@ -98,9 +103,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
-	// Phase 73m auth.rotate_token one = 71.
-	if len(got) != 71 {
-		t.Fatalf("Methods() returned %d methods, want 71", len(got))
+	// Phase 73m auth.rotate_token one + Phase 108l agents-control five = 76.
+	if len(got) != 76 {
+		t.Fatalf("Methods() returned %d methods, want 76", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
