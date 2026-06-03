@@ -266,6 +266,14 @@
     gap: var(--space-3);
     min-height: 0;
     overflow-y: auto;
+    /* The `.card` padding in +page.svelte is Svelte-scoped to that
+       component, so it never reaches this child — give the rail its own
+       inset (matching the other cards). `scrollbar-gutter: stable`
+       reserves the classic-scrollbar gutter so it never overlays the
+       right-aligned detail-list / artifact values (the same fix learned in
+       the Tools-108k ToolDetailRail). */
+    padding: var(--space-3);
+    scrollbar-gutter: stable;
   }
 
   .rail-header {
