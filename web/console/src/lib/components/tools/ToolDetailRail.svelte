@@ -295,6 +295,15 @@
     gap: var(--space-3);
     min-height: 0;
     overflow-y: auto;
+    /* The `.card` padding in +page.svelte is Svelte-scoped to that
+       component, so it never reaches this child component — give the rail
+       its own inset (matching the other cards). Without it the
+       right-aligned Statistics values + the Source-provenance column sit
+       flush against the edge. `scrollbar-gutter: stable` additionally
+       reserves the classic-scrollbar gutter so the scrollbar never
+       overlays those right-aligned values. */
+    padding: var(--space-3);
+    scrollbar-gutter: stable;
   }
 
   .rail-header {
