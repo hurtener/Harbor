@@ -165,10 +165,13 @@ assert_grep_present \
     'size-col-reliability' \
     'web/console/src/lib/tokens.css' \
     'N13 size-col-reliability token is defined'
+# Phase 108k (D-183) moved the catalog table out of +page.svelte into the
+# focused ToolCatalogTable component (king-file refactor); the Reliability
+# column width token travelled with it (§17.6 — fix the moved-surface grep).
 assert_grep_present \
     'width: .var\(--size-col-reliability\)' \
-    'web/console/src/routes/(console)/tools/+page.svelte' \
-    'N13 Tools page Reliability column uses the size-col-reliability token'
+    'web/console/src/lib/components/tools/ToolCatalogTable.svelte' \
+    'N13 Tools Reliability column uses the size-col-reliability token (ToolCatalogTable)'
 
 # -----------------------------------------------------------------------------
 # N14 — Live Runtime status-counter strip pillars carry the "(now)"
