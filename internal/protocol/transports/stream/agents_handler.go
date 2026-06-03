@@ -34,6 +34,7 @@
 package stream
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,7 @@ import (
 	"strings"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
@@ -163,6 +165,14 @@ func (h *AgentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Session: id.SessionID,
 	}
 
+	// The fleet-control verbs MUTATE registry state and require the
+	// verified `auth.ScopeAdmin` control claim (D-066 / D-184) — the same
+	// admin gate the tools admin verbs use. The read methods skip the
+	// check. The service is the authoritative gate (it fails closed
+	// without the bool); this is the verified-JWT scope decision passed
+	// into it.
+	controlScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
+
 	switch method {
 	case methods.MethodAgentsList:
 		h.serveList(w, r, body, wireScope)
@@ -180,6 +190,16 @@ func (h *AgentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.servePermissions(w, r, body, wireScope)
 	case methods.MethodAgentsMetrics:
 		h.serveMetrics(w, r, body, wireScope)
+	case methods.MethodAgentsPause:
+		h.serveControl(w, r, body, wireScope, methods.MethodAgentsPause, controlScoped, h.service.Pause)
+	case methods.MethodAgentsDrain:
+		h.serveControl(w, r, body, wireScope, methods.MethodAgentsDrain, controlScoped, h.service.Drain)
+	case methods.MethodAgentsRestart:
+		h.serveControl(w, r, body, wireScope, methods.MethodAgentsRestart, controlScoped, h.service.Restart)
+	case methods.MethodAgentsForceStop:
+		h.serveControl(w, r, body, wireScope, methods.MethodAgentsForceStop, controlScoped, h.service.ForceStop)
+	case methods.MethodAgentsDeregister:
+		h.serveControl(w, r, body, wireScope, methods.MethodAgentsDeregister, controlScoped, h.service.Deregister)
 	default:
 		// Unreachable — IsAgentsMethod gated the switch above.
 		writeAgentsError(w, protoerrors.CodeUnknownMethod, http.StatusNotFound,
@@ -327,6 +347,37 @@ func (h *AgentsHandler) serveMetrics(w http.ResponseWriter, r *http.Request, bod
 	writeAgentsJSON(w, h.logger, r, resp)
 }
 
+// serveControl is the shared wire adapter for the five fleet-control
+// verbs (Phase 108l / D-184). It decodes the shared AgentControlRequest,
+// overlays the verified identity, and dispatches into the matching
+// Service control method, passing the verified-JWT control-scope
+// decision. The Service is the authoritative gate — it fails closed with
+// ErrControlScopeRequired when controlScoped is false (classified to 403
+// below), so a leaked read-only token can never drive a control verb.
+func (h *AgentsHandler) serveControl(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	scope prototypes.IdentityScope,
+	method methods.Method,
+	controlScoped bool,
+	invoke func(context.Context, prototypes.AgentControlRequest, bool) (prototypes.AgentControlResponse, error),
+) {
+	var req prototypes.AgentControlRequest
+	if err := decodeAgentsBody(body, &req); err != nil {
+		writeAgentsError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			"failed to decode "+string(method)+" request: "+err.Error())
+		return
+	}
+	req.Identity = scope
+	resp, err := invoke(r.Context(), req, controlScoped)
+	if err != nil {
+		h.writeServiceError(w, r, method, err)
+		return
+	}
+	writeAgentsJSON(w, h.logger, r, resp)
+}
+
 // writeServiceError maps an agentsprotocol.Service sentinel error onto a
 // canonical Protocol Code + HTTP status + safe operator-facing message.
 func (h *AgentsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, method methods.Method, err error) {
@@ -353,6 +404,12 @@ func classifyAgentsError(method methods.Method, err error) (protoerrors.Code, in
 	case errors.Is(err, agentsprotocol.ErrInvalidRequest):
 		return protoerrors.CodeInvalidRequest, http.StatusBadRequest,
 			m + ": invalid request — " + err.Error()
+	case errors.Is(err, agentsprotocol.ErrControlScopeRequired):
+		return protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
+			m + ": fleet control requires the elevated admin control claim (D-066)"
+	case errors.Is(err, agentsprotocol.ErrControlUnsupported):
+		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
+			m + ": fleet control is not wired on this runtime"
 	default:
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			m + ": request failed"

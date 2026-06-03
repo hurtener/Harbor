@@ -418,3 +418,36 @@ type AgentMetricsResponse struct {
 	// Metrics is the registry-wide rollup.
 	Metrics AgentMetrics `json:"metrics"`
 }
+
+// AgentControlRequest is the shared request body for the five fleet-
+// control verbs (`agents.pause` / `agents.drain` / `agents.restart` /
+// `agents.force_stop` / `agents.deregister`) — Phase 108l / D-184. Every
+// control verb mutates registry state and requires the elevated
+// `auth.ScopeAdmin` control claim (D-066). `Reason` is operator-supplied
+// free text the registry redacts through `audit.Redactor` before it
+// reaches the `agent.*` event; `agents.deregister` ignores it.
+type AgentControlRequest struct {
+	// Identity is the (tenant, user, session) scope. Mandatory.
+	Identity IdentityScope `json:"identity"`
+	// ID is the agent_id to control.
+	ID string `json:"id"`
+	// Reason is the operator-supplied control reason (redacted, audited).
+	Reason string `json:"reason,omitempty"`
+}
+
+// AgentControlResponse is the shared reply for the five fleet-control
+// verbs. Status is the verb's deterministic post-state (pause→paused,
+// drain→drained, restart→active, force_stop→force_stopped,
+// deregister→deregistered) — the registry has applied the command and
+// emitted the matching `agent.*` event, which is the authoritative
+// observation surface the Console also subscribes to (no fabrication;
+// CLAUDE.md §13).
+type AgentControlResponse struct {
+	// AgentID echoes the controlled agent_id.
+	AgentID string `json:"agent_id"`
+	// Command is the applied control verb ("pause" / "drain" / "restart"
+	// / "force_stop" / "deregister").
+	Command string `json:"command"`
+	// Status is the agent's post-control lifecycle status.
+	Status AgentStatus `json:"status"`
+}

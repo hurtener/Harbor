@@ -515,6 +515,31 @@ const (
 	// the caller's identity scope. Powers the Agents page hero numbers.
 	MethodAgentsMetrics Method = "agents.metrics"
 
+	// MethodAgentsPause — Phase 108l (D-184). The fleet-control verb that
+	// pauses an agent (stop accepting new tasks until Resume). Wraps the
+	// shipped `registry.Pause` in-process control verb behind a Protocol
+	// method so the Console can drive it. MUTATES registry state and
+	// therefore requires the elevated `auth.ScopeAdmin` control claim
+	// (D-066); emits `agent.paused`. `IsAgentsControlMethod` returns true.
+	// Supersedes the D-132/F4 deferral.
+	MethodAgentsPause Method = "agents.pause"
+	// MethodAgentsDrain — Phase 108l. Gracefully drains an agent (accept
+	// no new tasks, finish existing). Wraps `registry.Drain`; emits
+	// `agent.drained`. Control-scope gated (D-066).
+	MethodAgentsDrain Method = "agents.drain"
+	// MethodAgentsRestart — Phase 108l. Restarts an agent (bump
+	// incarnation; rehydrate from StateStore). Wraps `registry.Restart`;
+	// emits `agent.restart_requested`. Control-scope gated (D-066).
+	MethodAgentsRestart Method = "agents.restart"
+	// MethodAgentsForceStop — Phase 108l. Hard-stops an agent. Wraps
+	// `registry.ForceStop`; emits `agent.force_stopped`. Control-scope
+	// gated (D-066).
+	MethodAgentsForceStop Method = "agents.force_stop"
+	// MethodAgentsDeregister — Phase 108l. Removes an agent from the
+	// registry (irreversible). Wraps `registry.Deregister`; emits
+	// `agent.deregistered`. Control-scope gated (D-066).
+	MethodAgentsDeregister Method = "agents.deregister"
+
 	// MethodAuthRotateToken — Phase 73m (Wave 13 / D-129). Rotates the
 	// operator's current Protocol-auth token: the Runtime re-mints a
 	// JWT for the caller's already-verified `(tenant, user, session)`
@@ -661,17 +686,22 @@ var canonicalMethods = map[Method]struct{}{
 	MethodAgentsSkills:      {},
 	MethodAgentsPermissions: {},
 	MethodAgentsMetrics:     {},
+	MethodAgentsPause:       {},
+	MethodAgentsDrain:       {},
+	MethodAgentsRestart:     {},
+	MethodAgentsForceStop:   {},
+	MethodAgentsDeregister:  {},
 }
 
-// canonicalAgentsMethods is the closed sub-set of the eight `agents.*`
-// methods landed in Phase 73e (Wave 13 / D-124) — all eight are
-// read-only projections of the Agent Registry. IsAgentsMethod is O(1);
-// the wire handler branches on it to route the request through the
-// agents dispatcher instead of the task-control surface. The five
-// agent-control verbs (Pause / Drain / Restart / ForceStop /
-// Deregister) are NOT `agents.*` methods — they are the EXISTING
-// shipped `registry.*` control verbs (D-066), invoked through their own
-// surface; Phase 73e mints no control method.
+// canonicalAgentsMethods is the closed set of the thirteen `agents.*`
+// methods: the eight read-only projections landed in Phase 73e (Wave 13
+// / D-124) plus the five fleet-control verbs (Pause / Drain / Restart /
+// ForceStop / Deregister) landed in Phase 108l (D-184). IsAgentsMethod
+// is O(1); the wire handler branches on it to route the request through
+// the agents dispatcher instead of the task-control surface. The five
+// control verbs wrap the shipped `registry.*` in-process control verbs
+// (D-066) behind a Protocol method — Phase 108l supersedes the D-132/F4
+// deferral that previously kept them off the Protocol surface.
 var canonicalAgentsMethods = map[Method]struct{}{
 	MethodAgentsList:        {},
 	MethodAgentsGet:         {},
@@ -681,16 +711,46 @@ var canonicalAgentsMethods = map[Method]struct{}{
 	MethodAgentsSkills:      {},
 	MethodAgentsPermissions: {},
 	MethodAgentsMetrics:     {},
+	MethodAgentsPause:       {},
+	MethodAgentsDrain:       {},
+	MethodAgentsRestart:     {},
+	MethodAgentsForceStop:   {},
+	MethodAgentsDeregister:  {},
 }
 
-// IsAgentsMethod reports whether m is one of the eight canonical
-// `agents.*` methods (Phase 73e / D-124). The wire handler branches on
-// this to route the request through the agents dispatcher instead of
-// the task-control / search / posture / topology surfaces. NOT a
-// control method — a new non-control method extends THIS predicate,
-// never the steering inbox.
+// canonicalAgentsControlMethods is the closed sub-set of the five
+// `agents.*` fleet-control verbs that MUTATE registry state and
+// therefore require the verified `auth.ScopeAdmin` control claim
+// (D-066, Phase 108l / D-184). The Agents wire handler uses this to gate
+// the control path: a read method skips the scope check; a control
+// method without the claim fails closed with CodeIdentityScopeRequired
+// (HTTP 403). There is NO `agents.admin` scope — the closed two-scope
+// set (`admin` + `console:fleet`) is the only admit surface.
+var canonicalAgentsControlMethods = map[Method]struct{}{
+	MethodAgentsPause:      {},
+	MethodAgentsDrain:      {},
+	MethodAgentsRestart:    {},
+	MethodAgentsForceStop:  {},
+	MethodAgentsDeregister: {},
+}
+
+// IsAgentsMethod reports whether m is one of the thirteen canonical
+// `agents.*` methods (Phase 73e / D-124 + Phase 108l / D-184). The wire
+// handler branches on this to route the request through the agents
+// dispatcher instead of the task-control / search / posture / topology
+// surfaces.
 func IsAgentsMethod(m Method) bool {
 	_, ok := canonicalAgentsMethods[m]
+	return ok
+}
+
+// IsAgentsControlMethod reports whether m is one of the five mutating
+// `agents.*` fleet-control verbs (`agents.pause` / `agents.drain` /
+// `agents.restart` / `agents.force_stop` / `agents.deregister`) that
+// require the verified `auth.ScopeAdmin` control claim (D-066). The
+// Agents wire handler uses this to decide whether to enforce the gate.
+func IsAgentsControlMethod(m Method) bool {
+	_, ok := canonicalAgentsControlMethods[m]
 	return ok
 }
 

@@ -623,8 +623,8 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
 	// Phase 73m auth.rotate_token one = 71.
-	if len(got) != 71 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 71 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one)", len(got))
+	if len(got) != 76 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 76 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one + Phase 108l agents-control five)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:             {},
@@ -699,6 +699,11 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodAgentsSkills:      {},
 		methods.MethodAgentsPermissions: {},
 		methods.MethodAgentsMetrics:     {},
+		methods.MethodAgentsPause:       {},
+		methods.MethodAgentsDrain:       {},
+		methods.MethodAgentsRestart:     {},
+		methods.MethodAgentsForceStop:   {},
+		methods.MethodAgentsDeregister:  {},
 
 		methods.MethodSessionsList:    {},
 		methods.MethodSessionsInspect: {},

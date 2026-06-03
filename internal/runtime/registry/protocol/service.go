@@ -10,6 +10,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/registry"
 )
 
 // Sentinel errors the Service returns. The wire handler maps each onto
@@ -27,6 +28,15 @@ var (
 	ErrInvalidRequest = errors.New("registry/protocol: invalid request")
 	// ErrMisconfigured — NewService was called with a nil Projector.
 	ErrMisconfigured = errors.New("registry/protocol: NewService missing a mandatory dependency")
+	// ErrControlScopeRequired — a fleet-control verb (Pause / Drain /
+	// Restart / ForceStop / Deregister) was called without the elevated
+	// `auth.ScopeAdmin` control claim (D-066). Fails closed.
+	ErrControlScopeRequired = errors.New("registry/protocol: fleet-control requires the elevated control-scope claim")
+	// ErrControlUnsupported — a fleet-control verb was called on a Service
+	// built without a Controller (WithController). The dev/server wiring
+	// always injects one; this guards a misconfiguration rather than
+	// nil-panicking (CLAUDE.md §5).
+	ErrControlUnsupported = errors.New("registry/protocol: fleet-control not wired on this Service")
 )
 
 // Projector is the read seam the Service depends on. The V1 production
@@ -58,11 +68,28 @@ type Projector interface {
 	Metrics(ctx context.Context, id identity.Identity) (prototypes.AgentMetrics, error)
 }
 
-// Service implements the eight `agents.*` Protocol methods. It is a
-// D-025-safe compiled artifact — immutable after NewService.
+// Controller is the mutate seam the five fleet-control verbs depend on
+// (Phase 108l / D-184). The V1 production implementation is the
+// in-process `*registry.Registry`, whose control methods self-enforce
+// `registry.HasControlScope(ctx)` and emit the `agent.*` events. Every
+// method takes the verified identity (folded into ctx by the handler)
+// plus the control-scope claim (attached by the Service before the call)
+// — agent_id is the target handle, never an isolation key (D-059).
+type Controller interface {
+	Pause(ctx context.Context, agentID, reason string) error
+	Drain(ctx context.Context, agentID, reason string) error
+	Restart(ctx context.Context, agentID, reason string) error
+	ForceStop(ctx context.Context, agentID, reason string) error
+	Deregister(ctx context.Context, agentID string) error
+}
+
+// Service implements the thirteen `agents.*` Protocol methods (the eight
+// read projections + the five fleet-control verbs). It is a D-025-safe
+// compiled artifact — immutable after NewService.
 type Service struct {
-	projector Projector
-	logger    *slog.Logger
+	projector  Projector
+	controller Controller
+	logger     *slog.Logger
 }
 
 // Option configures NewService.
@@ -74,6 +101,18 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Service) {
 		if l != nil {
 			s.logger = l
+		}
+	}
+}
+
+// WithController injects the fleet-control mutate seam (Phase 108l /
+// D-184). Without it, the five control verbs fail closed with
+// ErrControlUnsupported. The production wiring passes the in-process
+// `*registry.Registry`.
+func WithController(c Controller) Option {
+	return func(s *Service) {
+		if c != nil {
+			s.controller = c
 		}
 	}
 }
@@ -340,6 +379,114 @@ func (s *Service) Metrics(ctx context.Context, req prototypes.AgentMetricsReques
 		return prototypes.AgentMetricsResponse{}, fmt.Errorf("registry/protocol: metrics: %w", err)
 	}
 	return prototypes.AgentMetricsResponse{Metrics: m}, nil
+}
+
+// Pause implements the `agents.pause` fleet-control verb (Phase 108l).
+func (s *Service) Pause(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	return s.doControl(ctx, req, controlScoped, "pause",
+		func(c context.Context, id string) error { return s.controller.Pause(c, id, req.Reason) })
+}
+
+// Drain implements the `agents.drain` fleet-control verb (Phase 108l).
+func (s *Service) Drain(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	return s.doControl(ctx, req, controlScoped, "drain",
+		func(c context.Context, id string) error { return s.controller.Drain(c, id, req.Reason) })
+}
+
+// Restart implements the `agents.restart` fleet-control verb (Phase 108l).
+func (s *Service) Restart(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	return s.doControl(ctx, req, controlScoped, "restart",
+		func(c context.Context, id string) error { return s.controller.Restart(c, id, req.Reason) })
+}
+
+// ForceStop implements the `agents.force_stop` fleet-control verb (Phase 108l).
+func (s *Service) ForceStop(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	return s.doControl(ctx, req, controlScoped, "force_stop",
+		func(c context.Context, id string) error { return s.controller.ForceStop(c, id, req.Reason) })
+}
+
+// Deregister implements the `agents.deregister` fleet-control verb
+// (Phase 108l). Irreversible; the reason is not carried to the registry
+// (registry.Deregister takes no reason).
+func (s *Service) Deregister(ctx context.Context, req prototypes.AgentControlRequest, controlScoped bool) (prototypes.AgentControlResponse, error) {
+	return s.doControl(ctx, req, controlScoped, "deregister",
+		func(c context.Context, id string) error { return s.controller.Deregister(c, id) })
+}
+
+// doControl is the shared body of the five fleet-control verbs: validate
+// identity, reject an empty id, fail closed without the control claim
+// (BEFORE touching the registry), attach the registry control-scope
+// claim, invoke the registry, then report the agent's ACTUAL post-control
+// status.
+//
+// No fabrication (CLAUDE.md §13): the returned Status is re-read from the
+// registry via the projector, NOT the command's intended effect. This
+// matters because the V1 registry has no "paused" Health state — `pause`
+// and `restart` emit their `agent.*` event (the Console's observation
+// surface) but leave the observable status `active`; only `drain`
+// (→drained), `force_stop` (→force_stopped) and `deregister` (→gone)
+// transition the stored status. Reporting the real status keeps the
+// control response consistent with what `agents.list` / `agents.get`
+// show. `deregister` removes the agent, so its terminal status is
+// `deregistered` (no re-read — the agent is gone).
+func (s *Service) doControl(
+	ctx context.Context,
+	req prototypes.AgentControlRequest,
+	controlScoped bool,
+	command string,
+	invoke func(ctx context.Context, agentID string) error,
+) (prototypes.AgentControlResponse, error) {
+	id, err := validIdentity(req.Identity)
+	if err != nil {
+		return prototypes.AgentControlResponse{}, err
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		return prototypes.AgentControlResponse{}, fmt.Errorf("%w: agent id is empty", ErrInvalidRequest)
+	}
+	// Fleet control is a more-elevated privilege tier than observation
+	// (D-066). Fail closed without the claim — before touching the
+	// registry.
+	if !controlScoped {
+		return prototypes.AgentControlResponse{}, fmt.Errorf("%w: command=%q", ErrControlScopeRequired, command)
+	}
+	if s.controller == nil {
+		return prototypes.AgentControlResponse{}, ErrControlUnsupported
+	}
+	// Attach the registry's control-scope claim its own HasControlScope
+	// gate requires. The identity triple is already on ctx (folded by the
+	// handler); the registry scopes by it, never by agent_id (D-059).
+	if err := invoke(registry.WithControlScope(ctx), req.ID); err != nil {
+		return prototypes.AgentControlResponse{}, mapControlErr(err)
+	}
+	resp := prototypes.AgentControlResponse{AgentID: req.ID, Command: command}
+	if command == "deregister" {
+		// The agent is gone — re-reading would 404. Its terminal status.
+		resp.Status = prototypes.AgentStatusDeregistered
+		return resp, nil
+	}
+	// Re-read the ACTUAL post-control status (no fabrication). A racing
+	// deregister between the control and the re-read leaves the agent
+	// gone — report the honest terminal state rather than failing.
+	got, gerr := s.projector.GetAgent(ctx, id, req.ID)
+	if gerr != nil {
+		resp.Status = prototypes.AgentStatusDeregistered
+		return resp, nil
+	}
+	resp.Status = got.Agent.Status
+	return resp, nil
+}
+
+// mapControlErr maps a registry control error onto the Service sentinel
+// set so the wire handler can branch on a stable error.
+func mapControlErr(err error) error {
+	switch {
+	case errors.Is(err, registry.ErrAgentNotFound):
+		return ErrAgentNotFound
+	case errors.Is(err, registry.ErrControlScopeRequired):
+		return ErrControlScopeRequired
+	default:
+		return fmt.Errorf("registry/protocol: control: %w", err)
+	}
 }
 
 // mapProjectorErr maps a Projector error onto the Service sentinel set
