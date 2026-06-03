@@ -563,12 +563,13 @@ export class ControlNamespace {
 }
 
 /**
- * The `agents.*` namespace (Phase 73e / D-124). The Runtime mounts these
- * at `POST /v1/agents/{verb}` (the same one-shot request/response shape
- * as `tools.*`). All eight methods are READ-ONLY projections of the
- * Agent Registry; the five agent-control verbs the Agents page exposes
- * (Pause / Drain / Restart / Force-Stop / Deregister) are the EXISTING
- * shipped `registry.*` control verbs (D-066), not part of this surface.
+ * The `agents.*` namespace (Phase 73e / D-124 + Phase 108l / D-184). The
+ * Runtime mounts these at `POST /v1/agents/{verb}` (the same one-shot
+ * request/response shape as `tools.*`). Eight methods are READ-ONLY
+ * projections of the Agent Registry; the five fleet-control verbs (pause
+ * / drain / restart / force_stop / deregister) MUTATE registry state and
+ * require the admin control claim (D-066) — Phase 108l (D-184) lands them
+ * as real Protocol methods, superseding the D-132/F4 deferral.
  */
 export class AgentsNamespace {
 	readonly #t: Transport;
@@ -606,6 +607,26 @@ export class AgentsNamespace {
 	/** `agents.metrics` — the registry-wide rollup the page hero shows. */
 	metrics<R = unknown>(): Promise<R> {
 		return this.#t.request<R>('/v1/agents/metrics', {});
+	}
+	/** `agents.pause` — fleet control (admin); emits agent.paused. */
+	pause<R = unknown>(id: string, reason = ''): Promise<R> {
+		return this.#t.request<R>('/v1/agents/pause', { id, reason });
+	}
+	/** `agents.drain` — fleet control (admin); emits agent.drained. */
+	drain<R = unknown>(id: string, reason = ''): Promise<R> {
+		return this.#t.request<R>('/v1/agents/drain', { id, reason });
+	}
+	/** `agents.restart` — fleet control (admin); emits agent.restart_requested. */
+	restart<R = unknown>(id: string, reason = ''): Promise<R> {
+		return this.#t.request<R>('/v1/agents/restart', { id, reason });
+	}
+	/** `agents.force_stop` — fleet control (admin); emits agent.force_stopped. */
+	forceStop<R = unknown>(id: string, reason = ''): Promise<R> {
+		return this.#t.request<R>('/v1/agents/force_stop', { id, reason });
+	}
+	/** `agents.deregister` — fleet control (admin); emits agent.deregistered. */
+	deregister<R = unknown>(id: string, reason = ''): Promise<R> {
+		return this.#t.request<R>('/v1/agents/deregister', { id, reason });
 	}
 }
 

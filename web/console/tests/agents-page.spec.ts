@@ -234,11 +234,13 @@ test.describe("Console Agents page", () => {
       "the control button group renders",
     ).toBeVisible();
 
-    // Each of the five control verbs is present. D-132 / F4: there is
-    // no `registry.*` Protocol surface, so every control button is
-    // rendered DISABLED-WITH-TOOLTIP regardless of scope claim — it is
-    // NEVER a stubbed action that fakes a success (CONVENTIONS.md §5,
-    // CLAUDE.md §13). The tooltip names the missing Protocol surface.
+    // Each of the five control verbs is present and is a CONTROL-SCOPE
+    // degradation surface (Phase 108l / D-184, supersedes D-132/F4). The
+    // five `agents.*` fleet-control Protocol methods now exist and are
+    // admin-gated: with the `admin` claim the button is enabled and calls
+    // the real method; without it the button is DISABLED-WITH-TOOLTIP
+    // naming the admin control claim — NEVER a stubbed action that fakes a
+    // success (CONVENTIONS.md §5, CLAUDE.md §13).
     for (const verb of [
       "pause",
       "drain",
@@ -248,15 +250,13 @@ test.describe("Console Agents page", () => {
     ]) {
       const btn = page.locator(`[data-testid='agent-control-${verb}']`);
       await expect(btn, `the ${verb} control button renders`).toBeVisible();
-      await expect(
-        btn,
-        `the ${verb} control button is disabled (no registry.* Protocol surface)`,
-      ).toBeDisabled();
-      const title = await btn.getAttribute("title");
-      expect(
-        (title ?? "").toLowerCase(),
-        `the disabled ${verb} button names the missing fleet-control Protocol surface`,
-      ).toContain("protocol surface");
+      if (await btn.isDisabled()) {
+        const title = (await btn.getAttribute("title")) ?? "";
+        expect(
+          title.toLowerCase(),
+          `the disabled ${verb} button names the required admin control claim`,
+        ).toContain("admin");
+      }
     }
   });
 

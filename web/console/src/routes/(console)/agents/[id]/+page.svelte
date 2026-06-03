@@ -1,59 +1,36 @@
 <script lang="ts">
-  // Harbor Console — Agent detail page (`/agents/<id>`), Phase 73e /
-  // D-124, built against the D-121 design-system foundation.
+  // Harbor Console — Agent detail page (`/agents/<id>`) — Phase 108l
+  // rebuild (D-184; supersedes the Phase 73e / D-124 pre-chrome layout +
+  // the D-132/F4 disabled-control stub).
   //
-  // The detail-mode view for one agent: the `DetailHeader` (status badge
-  // + version_hash + the five fleet-control buttons) + a six-tab strip
-  // (Identity / Autonomy / Tools / Memory / Cost / Skills) + a
-  // `DetailRail` of `RailCard`s (topology mini-graph, connected tools,
-  // recent activity). Read-only inspector (page-agents.md §10).
+  // The detail-mode view for one agent, rethemed to the carded,
+  // viewport-locked THREE-COLUMN main canvas the mock + page-agents.md §4
+  // pin (NOT a right rail):
+  //   - Row 1 — header card: name + health + status pill + version_hash +
+  //     the five LIVE fleet-control buttons + Open-in-Playground + copy-id.
+  //   - Row 2, left column — the six-tab detail strip (Identity / Autonomy /
+  //     Tools / Memory / Cost / Skills), each tab its OWN nested PageState.
+  //   - Row 2, center column — the topology mini-graph.
+  //   - Row 2, right column — the LIVE activity feed + connected tools +
+  //     memory summary + permissions.
+  // The ~481-line king file is refactored into an `AgentDetailPageState`
+  // controller + pure `derive.ts` projections. Drops the per-page header
+  // (breadcrumb / ⌘K / footer are app-shell chrome, 108b).
   //
-  // # Console consistency (CONVENTIONS.md §9)
+  // # Fleet control is LIVE (D-184, supersedes D-132/F4)
   //
-  // - Routes under `(console)/agents/[id]` — a NEW detail route, so the
-  //   segment is `[id]` (§1); no `/console/` URL prefix.
-  // - Renders inside the app shell (§2).
-  // - Composes the `ui/` inventory: `PageHeader`, `DetailRail`/`RailCard`,
-  //   `PageState` (§3/§4). Agents-specific pieces stay in
-  //   `components/agents/` (§3).
-  // - Routes async state through the four-state `<PageState>` (§4); each
-  //   detail tab + rail card flows through its OWN nested `<PageState>`.
-  // - Talks to the Runtime only through `HarborClient` + `connection.ts`
-  //   (§6) — no hand-rolled `fetch`. Design tokens only (§7).
+  // The five verbs call the REAL admin-gated `agents.*` Protocol methods,
+  // control-scope gated (disabled-with-tooltip without `admin`, never a fake
+  // success — §13). The honest result reports the ACTUAL re-read status: the
+  // registry has no "paused" state, so pause/restart leave status `active`
+  // and emit their `agent.*` event; only drain/force_stop/deregister
+  // transition it. The activity feed observes the emitted event live.
   //
-  // # Control verbs (page-agents.md §9, D-066, D-132)
-  //
-  // The five fleet-control verbs (Pause / Drain / Restart / Force-Stop /
-  // Deregister) are exposed by the shipped `registry.*` IN-PROCESS Go
-  // API — there is NO Protocol method a Console client can call. The
-  // Wave 13 §17.5 checkpoint (D-132 / F4) pinned that the previous
-  // `controlFeedback`-string wiring was a fake-success path. Until a
-  // `registry.*` Protocol surface exists, the buttons are rendered
-  // disabled-with-tooltip by `ControlButtons.svelte` — regardless of
-  // scope claim. The page wires no control handler.
+  // Svelte 5 runes (D-092); design tokens only; HarborClient + connection.ts
+  // only — no hand-rolled fetch (CONVENTIONS.md §6).
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError } from '$lib/protocol/errors.js';
-  import {
-    AgentsProtocol,
-    type AgentGetResponse,
-    type AgentGovernance,
-    type AgentMemoryBinding,
-    type AgentPermissions,
-    type AgentSkillBinding,
-    type AgentToolBinding
-  } from '$lib/protocol/agents.js';
-  import {
-    resolveConnection,
-    type RuntimeConnection
-  } from '$lib/connection.js';
-  import {
-    DetailRail,
-    RailCard,
-    PageState,
-    type PageStatus
-  } from '$lib/components/ui';
+  import { PageState } from '$lib/components/ui';
   import DetailHeader from '$lib/components/agents/DetailHeader.svelte';
   import IdentityTab from '$lib/components/agents/IdentityTab.svelte';
   import AutonomyTab from '$lib/components/agents/AutonomyTab.svelte';
@@ -62,18 +39,14 @@
   import CostTab from '$lib/components/agents/CostTab.svelte';
   import SkillsTab from '$lib/components/agents/SkillsTab.svelte';
   import TopologyMiniGraph from '$lib/components/agents/TopologyMiniGraph.svelte';
-  import AgentActivityFeed, {
-    type ActivityEntry
-  } from '$lib/components/agents/AgentActivityFeed.svelte';
+  import AgentActivityFeed from '$lib/components/agents/AgentActivityFeed.svelte';
+  import { AgentDetailPageState, type DetailTabId } from '$lib/agents/detail-state.svelte.js';
+  import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
-  interface AgentsPageGlobals {
-    __HARBOR_PROTOCOL_CLIENT__?: ProtocolClient;
-  }
-  const injected = globalThis as unknown as AgentsPageGlobals;
+  let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
-  /** The closed set of detail tabs (page-agents.md §4). */
-  type TabId = 'identity' | 'autonomy' | 'tools' | 'memory' | 'cost' | 'skills';
-  const TABS: { id: TabId; label: string }[] = [
+  /** The six detail tabs (page-agents.md §4). */
+  const TABS: { id: DetailTabId; label: string }[] = [
     { id: 'identity', label: 'Identity' },
     { id: 'autonomy', label: 'Autonomy' },
     { id: 'tools', label: 'Tools' },
@@ -84,194 +57,14 @@
 
   const agentID = $derived(page.params.id ?? '');
 
-  let connection = $state<RuntimeConnection | null>(null);
-  let agentsApi = $state<AgentsProtocol | null>(null);
-
-  let activeTab = $state<TabId>('identity');
-
-  // ---- primary (agents.get) async state ---------------------------
-  let status = $state<PageStatus>('loading');
-  let detailError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let detail = $state<AgentGetResponse | null>(null);
-
-  // ---- per-tab async state (each its OWN nested PageState) --------
-  let toolsStatus = $state<PageStatus>('loading');
-  let toolsError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let toolBindings = $state<AgentToolBinding[]>([]);
-
-  let memoryStatus = $state<PageStatus>('loading');
-  let memoryError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let memoryBinding = $state<AgentMemoryBinding | null>(null);
-
-  let costStatus = $state<PageStatus>('loading');
-  let costError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let governance = $state<AgentGovernance | null>(null);
-
-  let skillsStatus = $state<PageStatus>('loading');
-  let skillsError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let skills = $state<AgentSkillBinding[]>([]);
-
-  let permsStatus = $state<PageStatus>('loading');
-  let permsError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let permissions = $state<AgentPermissions | null>(null);
-
-  // ---- recent activity (events stream — a later wave wires it) ----
-  const activityEntries = $state<ActivityEntry[]>([]);
-
-  /** Maps a thrown error into `<PageState>`'s Error shape. */
-  function asPageError(
-    err: unknown
-  ): ProtocolError | { code: string; message: string } {
-    if (err instanceof ProtocolError) return err;
-    return {
-      code: 'runtime_error',
-      message: err instanceof Error ? err.message : String(err)
-    };
-  }
-
-  /** Loads the primary `agents.get` projection — the Retry target. */
-  async function loadDetail(): Promise<void> {
-    if (agentsApi === null) {
-      status = 'disconnected';
-      return;
-    }
-    status = 'loading';
-    detailError = null;
-    try {
-      detail = await agentsApi.get(agentID);
-      status = 'ready';
-    } catch (err) {
-      detail = null;
-      detailError = asPageError(err);
-      status = 'error';
-    }
-  }
-
-  /** Loads the Tools tab — its own nested PageState (§4). */
-  async function loadTools(): Promise<void> {
-    if (agentsApi === null) {
-      toolsStatus = 'disconnected';
-      return;
-    }
-    toolsStatus = 'loading';
-    toolsError = null;
-    try {
-      const resp = await agentsApi.tools(agentID);
-      toolBindings = resp.bindings;
-      toolsStatus = resp.bindings.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      toolBindings = [];
-      toolsError = asPageError(err);
-      toolsStatus = 'error';
-    }
-  }
-
-  /** Loads the Memory tab — its own nested PageState (§4). */
-  async function loadMemory(): Promise<void> {
-    if (agentsApi === null) {
-      memoryStatus = 'disconnected';
-      return;
-    }
-    memoryStatus = 'loading';
-    memoryError = null;
-    try {
-      const resp = await agentsApi.memory(agentID);
-      memoryBinding = resp.binding;
-      memoryStatus = 'ready';
-    } catch (err) {
-      memoryBinding = null;
-      memoryError = asPageError(err);
-      memoryStatus = 'error';
-    }
-  }
-
-  /** Loads the Cost tab — its own nested PageState (§4). */
-  async function loadCost(): Promise<void> {
-    if (agentsApi === null) {
-      costStatus = 'disconnected';
-      return;
-    }
-    costStatus = 'loading';
-    costError = null;
-    try {
-      const resp = await agentsApi.governance(agentID);
-      governance = resp.governance;
-      costStatus = 'ready';
-    } catch (err) {
-      governance = null;
-      costError = asPageError(err);
-      costStatus = 'error';
-    }
-  }
-
-  /** Loads the Skills tab — its own nested PageState (§4). */
-  async function loadSkills(): Promise<void> {
-    if (agentsApi === null) {
-      skillsStatus = 'disconnected';
-      return;
-    }
-    skillsStatus = 'loading';
-    skillsError = null;
-    try {
-      const resp = await agentsApi.skills(agentID);
-      skills = resp.skills;
-      skillsStatus = resp.skills.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      skills = [];
-      skillsError = asPageError(err);
-      skillsStatus = 'error';
-    }
-  }
-
-  /** Loads the agent's permission model for the rail's Permissions card. */
-  async function loadPermissions(): Promise<void> {
-    if (agentsApi === null) {
-      permsStatus = 'disconnected';
-      return;
-    }
-    permsStatus = 'loading';
-    permsError = null;
-    try {
-      const resp = await agentsApi.permissions(agentID);
-      permissions = resp.permissions;
-      permsStatus = 'ready';
-    } catch (err) {
-      permissions = null;
-      permsError = asPageError(err);
-      permsStatus = 'error';
-    }
-  }
-
-  function selectTab(id: TabId): void {
-    activeTab = id;
-  }
+  const state = new AgentDetailPageState();
+  // A local derived so the `{#if detail}` block narrows cleanly to a
+  // non-null `AgentGetResponse` for the child props (svelte-check).
+  const detail = $derived(state.detail);
 
   onMount(() => {
-    connection = resolveConnection();
-    if (injected.__HARBOR_PROTOCOL_CLIENT__) {
-      agentsApi = new AgentsProtocol(injected.__HARBOR_PROTOCOL_CLIENT__);
-    } else if (connection !== null) {
-      agentsApi = new AgentsProtocol(new HarborClient({ connection }));
-    }
-
-    void loadDetail();
-    void loadTools();
-    void loadMemory();
-    void loadCost();
-    void loadSkills();
-    void loadPermissions();
+    state.load(agentID, injectedClient);
+    return () => state.close();
   });
 </script>
 
@@ -279,8 +72,8 @@
   <title>Agent · Harbor Console</title>
 </svelte:head>
 
-<div class="agent-detail" data-testid="agent-detail-page">
-  <PageState {status} error={detailError} onretry={() => void loadDetail()}>
+<section class="agent-detail" data-testid="agent-detail-page">
+  <PageState status={state.status} error={state.detailError} onretry={() => void state.loadDetail()}>
     {#snippet skeleton()}
       <div class="detail-skeleton" aria-hidden="true">
         <span class="skeleton-bar"></span>
@@ -288,24 +81,42 @@
       </div>
     {/snippet}
     {#snippet empty()}
-      <p class="empty-detail">Agent not found — perhaps it was deregistered.</p>
-      <a class="back-link" href="/agents">← Back to Agents</a>
+      <div class="not-found">
+        <p class="empty-detail">Agent not found — perhaps it was deregistered.</p>
+        <a class="back-link" href="/agents">← Back to Agents</a>
+      </div>
     {/snippet}
 
-    {#if detail}
-      <DetailHeader agent={detail.agent} />
+    {#if state.deregistered}
+      <div class="not-found" data-testid="agent-deregistered">
+        <p class="empty-detail">
+          This agent was deregistered — its record was removed from the registry.
+        </p>
+        <a class="back-link" href="/agents">← Back to Agents</a>
+      </div>
+    {:else if detail}
+      <section class="panel card header-card">
+        <DetailHeader
+          agent={detail.agent}
+          canControl={state.canControl}
+          controlBusy={state.controlBusy}
+          controlResult={state.controlResult}
+          onverb={(verb) => void state.control(verb)}
+        />
+      </section>
 
-      <div class="detail-body">
-        <main class="tab-column">
+      <div class="canvas">
+        <!-- Left column — the tabbed detail. -->
+        <section class="panel card tab-column">
           <nav class="tab-strip" data-testid="agent-tab-strip">
             {#each TABS as tab (tab.id)}
               <button
                 type="button"
                 class="tab"
-                class:active={activeTab === tab.id}
+                class:active={state.activeTab === tab.id}
                 data-testid={`agent-tab-${tab.id}`}
-                aria-pressed={activeTab === tab.id}
-                onclick={() => selectTab(tab.id)}
+                aria-pressed={state.activeTab === tab.id}
+                onclick={() => state.selectTab(tab.id)}
               >
                 {tab.label}
               </button>
@@ -313,101 +124,164 @@
           </nav>
 
           <section class="tab-body" data-testid="agent-tab-body">
-            {#if activeTab === 'identity'}
+            {#if state.activeTab === 'identity'}
               <IdentityTab {detail} />
-            {:else if activeTab === 'autonomy'}
+            {:else if state.activeTab === 'autonomy'}
               <AutonomyTab config={detail.config} />
-            {:else if activeTab === 'tools'}
-              <PageState
-                status={toolsStatus}
-                error={toolsError}
-                onretry={() => void loadTools()}
-              >
+            {:else if state.activeTab === 'tools'}
+              <PageState status={state.toolsStatus} error={state.toolsError} onretry={() => void state.loadTools()}>
                 {#snippet empty()}
                   <p class="tab-empty">No tool bindings configured.</p>
                 {/snippet}
-                <ToolsTab bindings={toolBindings} />
+                <ToolsTab bindings={state.toolBindings} />
               </PageState>
-            {:else if activeTab === 'memory'}
-              <PageState
-                status={memoryStatus}
-                error={memoryError}
-                onretry={() => void loadMemory()}
-              >
-                {#if memoryBinding}
-                  <MemoryTab binding={memoryBinding} />
+            {:else if state.activeTab === 'memory'}
+              <PageState status={state.memoryStatus} error={state.memoryError} onretry={() => void state.loadMemory()}>
+                {#if state.memoryBinding}
+                  <MemoryTab binding={state.memoryBinding} />
                 {/if}
               </PageState>
-            {:else if activeTab === 'cost'}
-              <PageState
-                status={costStatus}
-                error={costError}
-                onretry={() => void loadCost()}
-              >
-                {#if governance}
-                  <CostTab {governance} />
+            {:else if state.activeTab === 'cost'}
+              <PageState status={state.costStatus} error={state.costError} onretry={() => void state.loadCost()}>
+                {#if state.governance}
+                  <CostTab governance={state.governance} />
                 {/if}
               </PageState>
             {:else}
-              <PageState
-                status={skillsStatus}
-                error={skillsError}
-                onretry={() => void loadSkills()}
-              >
+              <PageState status={state.skillsStatus} error={state.skillsError} onretry={() => void state.loadSkills()}>
                 {#snippet empty()}
                   <p class="tab-empty">No skills attached.</p>
                 {/snippet}
-                <SkillsTab {skills} />
+                <SkillsTab skills={state.skills} />
               </PageState>
             {/if}
           </section>
-        </main>
+        </section>
 
-        <DetailRail>
-          <RailCard title="Topology">
-            <TopologyMiniGraph bindings={toolBindings} />
-          </RailCard>
-          <RailCard title="Recent activity">
-            <AgentActivityFeed entries={activityEntries} />
-          </RailCard>
-          <RailCard title="Permissions">
-            <PageState
-              status={permsStatus}
-              error={permsError}
-              onretry={() => void loadPermissions()}
-            >
-              {#if permissions}
+        <!-- Center column — the topology mini-graph. -->
+        <section class="panel card topology-column">
+          <h2 class="panel-title">Topology</h2>
+          <TopologyMiniGraph bindings={state.toolBindings} />
+        </section>
+
+        <!-- Right column — live activity + connected tools + memory + perms. -->
+        <section class="panel card activity-column">
+          <div class="rail-block">
+            <h2 class="panel-title">Live activity</h2>
+            <AgentActivityFeed entries={state.activityEntries} streamState={state.streamState} />
+          </div>
+
+          <div class="rail-block">
+            <h2 class="panel-title">Connected tools</h2>
+            {#if state.toolBindings.length === 0}
+              <p class="rail-empty">No tools connected.</p>
+            {:else}
+              <ul class="connected-tools" data-testid="agent-connected-tools">
+                {#each state.toolBindings as binding (binding.tool_id)}
+                  <li>
+                    <a class="tool-link" href={`/tools/${binding.tool_id}`}>
+                      {binding.tool_name || binding.tool_id}
+                    </a>
+                    <span class="tool-transport">{binding.transport}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
+          <div class="rail-block">
+            <h2 class="panel-title">Memory</h2>
+            {#if state.memoryBinding && state.memoryBinding.strategy_id}
+              <dl class="rail-kv">
+                <dt>Strategy</dt>
+                <dd>{state.memoryBinding.strategy_id}</dd>
+                <dt>Scope</dt>
+                <dd>{state.memoryBinding.scope || '—'}</dd>
+              </dl>
+            {:else}
+              <p class="rail-empty">No memory strategy configured.</p>
+            {/if}
+          </div>
+
+          <div class="rail-block">
+            <h2 class="panel-title">Permissions</h2>
+            <PageState status={state.permsStatus} error={state.permsError} onretry={() => void state.loadPermissions()}>
+              {#if state.permissions}
                 <p class="perm-model" data-testid="agent-permissions-model">
-                  {permissions.model}
+                  {state.permissions.model}
                 </p>
-                <p class="perm-desc">{permissions.description}</p>
+                <p class="perm-desc">{state.permissions.description}</p>
               {/if}
             </PageState>
-          </RailCard>
-        </DetailRail>
+          </div>
+        </section>
       </div>
     {/if}
   </PageState>
-</div>
+</section>
 
 <style>
+  /* Viewport-locked: the page fills the shell content region and never
+     full-page-scrolls; each of the three columns scrolls INTERNALLY
+     (PAGE-POLISH §6). */
   .agent-detail {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    height: 100%;
+    min-height: 0;
+    padding: var(--space-3);
+    overflow: hidden;
   }
 
-  .detail-body {
-    display: flex;
-    gap: var(--space-4);
-    align-items: flex-start;
-  }
-
-  .tab-column {
+  .agent-detail :global(.page-state) {
     flex: 1;
-    min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .card {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    min-width: 0;
+  }
+
+  .panel-title {
+    margin: var(--space-0) var(--space-0) var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
+  }
+
+  .header-card {
+    flex-shrink: 0;
+  }
+
+  /* The three-column canvas fills the remaining height; every column scrolls
+     internally with its own padding + a stable scrollbar gutter so
+     right-aligned values never clip (the Tools/BG rail lesson). */
+  .canvas {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) var(--size-rail);
+    gap: var(--space-3);
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .tab-column,
+  .topology-column,
+  .activity-column {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
     gap: var(--space-3);
   }
 
@@ -416,6 +290,7 @@
     flex-wrap: wrap;
     gap: var(--space-1);
     border-bottom: var(--border-hairline);
+    flex-shrink: 0;
   }
 
   .tab {
@@ -434,13 +309,70 @@
   }
 
   .tab-body {
-    padding: var(--space-3) var(--space-0);
+    padding: var(--space-1) var(--space-0);
   }
 
   .tab-empty {
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+  }
+
+  .rail-block {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rail-empty {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+  }
+
+  .connected-tools {
+    list-style: none;
+    margin: var(--space-0);
+    padding: var(--space-0);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .connected-tools li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .tool-link {
+    font-size: var(--text-sm);
+    color: var(--color-accent);
+  }
+
+  .tool-transport {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .rail-kv {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-1) var(--space-3);
+    margin: var(--space-0);
+  }
+
+  .rail-kv dt {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+  }
+
+  .rail-kv dd {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
+    color: var(--color-text);
   }
 
   .perm-model {
@@ -466,6 +398,12 @@
     height: var(--size-progress-track);
     background: var(--color-surface-raised);
     border-radius: var(--radius-sm);
+  }
+
+  .not-found {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
   }
 
   .empty-detail {
