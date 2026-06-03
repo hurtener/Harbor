@@ -1,20 +1,22 @@
 <script lang="ts">
   // Harbor Console — Agents detail recent-activity feed (Phase 73e /
-  // D-124). The agent's last N `agent.*` lifecycle events (registered /
-  // restarted / health / drained / deregistered / paused /
-  // restart_requested / force_stopped).
+  // D-124; wired live in Phase 108l / D-184). The agent's `agent.*`
+  // lifecycle events (registered / restarted / health / drained /
+  // deregistered / paused / restart_requested / force_stopped).
   //
-  // # Honest empty state (CLAUDE.md §13)
+  // # Live `events.subscribe` projection + honest empty state (§13)
   //
-  // The activity feed is fed by an `events.subscribe` stream filtered to
-  // this agent's events — a streaming surface a later wave wires into the
-  // detail route. Until that subscription is wired, the feed renders an
-  // HONEST "no recent activity" empty state; it is NOT faked with
-  // synthetic rows. The `entries` prop is the seam the streaming consumer
-  // fills.
+  // The feed is fed by the detail controller's `events.subscribe` stream
+  // filtered to this agent's events (D-184 wires it). It is a LIVE-only
+  // view — the runtime has no durable event read-back — so it renders an
+  // HONEST "no recent activity" empty state when the stream is quiet; it is
+  // NEVER faked with synthetic rows. `entries` is the projected page the
+  // controller supplies; `streamState` drives the live indicator.
 
   /** One projected `agent.*` lifecycle event row. */
   export interface ActivityEntry {
+    /** The per-bus monotonic sequence — the stable keyed-each key. */
+    sequence: number;
     /** The event type, e.g. `agent.registered`. */
     type: string;
     /** RFC3339 timestamp of the event. */
@@ -23,10 +25,28 @@
     summary: string;
   }
 
-  let { entries }: { entries: ActivityEntry[] } = $props();
+  let {
+    entries,
+    streamState = 'idle'
+  }: {
+    entries: ActivityEntry[];
+    /** The SSE connection state — drives the live dot ('open' = live). */
+    streamState?: string;
+  } = $props();
 </script>
 
 <div class="activity-feed" data-testid="agent-activity-feed">
+  <div class="feed-head">
+    <span
+      class="live-dot"
+      class:live={streamState === 'open'}
+      data-testid="agent-activity-stream-state"
+      title={`stream: ${streamState}`}
+    ></span>
+    <span class="live-label">
+      {streamState === 'open' ? 'Live' : streamState === 'error' ? 'reconnecting…' : streamState}
+    </span>
+  </div>
   {#if entries.length === 0}
     <p class="empty">
       No recent activity. Agent lifecycle events surface here as they
@@ -34,7 +54,7 @@
     </p>
   {:else}
     <ul>
-      {#each entries as entry, i (i)}
+      {#each entries as entry (entry.sequence)}
         <li data-testid="agent-activity-row">
           <span class="event-type mono">{entry.type}</span>
           <span class="event-summary">{entry.summary}</span>
@@ -50,6 +70,30 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .feed-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .live-dot {
+    width: var(--space-2);
+    height: var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--color-text-muted);
+  }
+
+  .live-dot.live {
+    background: var(--color-success);
+  }
+
+  .live-label {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
   }
 
   ul {

@@ -418,3 +418,46 @@ type AgentMetricsResponse struct {
 	// Metrics is the registry-wide rollup.
 	Metrics AgentMetrics `json:"metrics"`
 }
+
+// AgentControlRequest is the shared request body for the five fleet-
+// control verbs (`agents.pause` / `agents.drain` / `agents.restart` /
+// `agents.force_stop` / `agents.deregister`) — Phase 108l / D-184. Every
+// control verb mutates registry state and requires the elevated
+// `auth.ScopeAdmin` control claim (D-066). `Reason` is operator-supplied
+// free text the registry redacts through `audit.Redactor` before it
+// reaches the `agent.*` event; `agents.deregister` ignores it.
+type AgentControlRequest struct {
+	// Identity is the (tenant, user, session) scope. Mandatory.
+	Identity IdentityScope `json:"identity"`
+	// ID is the agent_id to control.
+	ID string `json:"id"`
+	// Reason is the operator-supplied control reason (redacted, audited).
+	Reason string `json:"reason,omitempty"`
+}
+
+// AgentControlResponse is the shared reply for the five fleet-control
+// verbs. Status is the ACTUAL post-control status the registry re-read
+// after applying the command — NOT the verb's nominal intent (no
+// fabrication; CLAUDE.md §13). The V1 registry's Health enum has no
+// "paused" state, and `pause` / `restart` do not transition Health, so:
+//   - pause      → the agent's prior status, unchanged (active for a
+//     healthy agent — there is no "paused" status);
+//   - restart    → the agent's prior status, unchanged (restart bumps the
+//     incarnation but does NOT clear a prior drain/stop
+//     Health, so a restarted-after-drain agent reads
+//     `drained`, not `active`);
+//   - drain      → drained;
+//   - force_stop → force_stopped;
+//   - deregister → deregistered (the record is gone; not re-read).
+//
+// In every case the registry emitted the matching `agent.*` event, which
+// is the authoritative observation surface the Console also subscribes to.
+type AgentControlResponse struct {
+	// AgentID echoes the controlled agent_id.
+	AgentID string `json:"agent_id"`
+	// Command is the applied control verb: pause / drain / restart /
+	// force_stop / deregister.
+	Command string `json:"command"`
+	// Status is the agent's post-control lifecycle status.
+	Status AgentStatus `json:"status"`
+}

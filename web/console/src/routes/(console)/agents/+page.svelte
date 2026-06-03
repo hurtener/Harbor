@@ -1,275 +1,50 @@
 <script lang="ts">
-  // Harbor Console — Agents page (`/agents`), list mode. Phase 73e /
-  // D-124, built against the D-121 design-system foundation
-  // (docs/design/console/CONVENTIONS.md).
+  // Harbor Console — Agents page (`/agents`), list mode — Phase 108l
+  // rebuild (D-184; supersedes the Phase 73e / D-124 pre-chrome layout).
   //
-  // Console consistency (CONVENTIONS.md §9):
-  //  - routes under `(console)/agents/` with no `/console/` URL prefix
-  //    (§1); the detail route is `(console)/agents/[id]/` (§1 — a new
-  //    detail route uses the `[id]` segment);
-  //  - renders inside the shared app shell (§2);
-  //  - composes the `components/ui/` inventory — PageHeader, FilterBar,
-  //    SavedViewChips, Pagination, StatusChip, PageState — and never
-  //    forks a primitive; Agents-specific pieces (cards grid, metrics
-  //    rollup) live in `components/agents/` (§3);
-  //  - routes ALL async state through the four-state `<PageState>` (§4)
-  //    — Disconnected is its OWN state, never conflated with Error;
-  //  - clears the §5 depth bar: PageHeader / FilterBar / a primary
-  //    canvas (the cards grid) / a tabbed detail route / Console-DB
-  //    SavedViewChips / real prev-next Pagination / ConnectionFooter
-  //    (shell) / four-state PageState;
-  //  - talks to the Runtime ONLY through `HarborClient` + `connection.ts`
-  //    (§6) — zero hand-rolled `fetch`;
-  //  - introduces no raw token literals (§7).
+  // The registered-agent catalog browser. Phase 108l rethemes it to the
+  // carded, viewport-locked Events-108h / Background-Jobs-108j / Tools-108k
+  // composition (a hero rollup + a filter card + a cards canvas that scrolls
+  // internally) and refactors the ~503-line king file into an
+  // `AgentsListPageState` controller + pure `derive.ts` projections. It drops
+  // the per-page header (the breadcrumb / ⌘K / footer are app-shell chrome,
+  // 108b).
   //
-  // V1 is INSPECTOR-ONLY for authoring (page-agents.md §10): the Console
-  // never creates/edits agents — that is CLI-side (RFC §7.4). The five
-  // fleet-control verbs live on the detail route. Svelte 5 runes (D-092).
+  // Every datum + action is real-wired (PAGE-POLISH §3 — live-verified against
+  // the validation runtime's seeded registry):
+  //   - hero rollup ← `agents.metrics` (registry-wide)
+  //   - cards + the filtered total ← `agents.list`
+  //   - status / planner facets + search re-issue `agents.list`
+  //   - saved-view chips ← Console-local (D-061)
+  //
+  // V1 is INSPECTOR-ONLY for authoring (page-agents.md §10): the Console never
+  // creates/edits agents — that is CLI-side (RFC §7.4). The five fleet-control
+  // verbs live on the detail route (now LIVE — D-184). Svelte 5 runes (D-092);
+  // design tokens only; HarborClient + connection.ts only (CONVENTIONS.md §6).
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { HarborClient, type ProtocolClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError } from '$lib/protocol/errors.js';
-  import {
-    AgentsProtocol,
-    type Agent,
-    type AgentFilter,
-    type AgentListResponse,
-    type AgentMetrics,
-    type AgentStatus
-  } from '$lib/protocol/agents.js';
-  import {
-    resolveConnection,
-    DISCONNECTED_TOOLTIP,
-    type RuntimeConnection
-  } from '$lib/connection.js';
-  import { openListPageDB } from '$lib/db/console_db.js';
-  import { operatorIdOf } from '$lib/db/schema.js';
-  import { AgentsSavedFilters } from '$lib/db/saved_filters_agents.js';
-  import {
-    PageHeader,
-    FilterBar,
-    SavedViewChips,
-    Pagination,
-    PageState,
-    type PageStatus,
-    type SavedView
-  } from '$lib/components/ui';
+  import { FilterBar, SavedViewChips, Pagination, PageState } from '$lib/components/ui';
+  import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import TopMetricsRollup from '$lib/components/agents/TopMetricsRollup.svelte';
   import CardsGrid from '$lib/components/agents/CardsGrid.svelte';
+  import { AgentsListPageState } from '$lib/agents/state.svelte.js';
+  import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
-  // ---- test-injection seam (CONVENTIONS.md §6) ---------------------
-  // The Playwright harness MAY inject a deterministic `ProtocolClient`
-  // so the page is exercised without a live Runtime. Production resolves
-  // its own.
-  interface AgentsPageGlobals {
-    __HARBOR_PROTOCOL_CLIENT__?: ProtocolClient;
-  }
-  const injected = globalThis as unknown as AgentsPageGlobals;
+  let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
-  // ---- connection + client ----------------------------------------
-  let connection = $state<RuntimeConnection | null>(null);
-  let agentsApi = $state<AgentsProtocol | null>(null);
-  // The Phase 83r W3 disconnected predicate — drives Refresh / Clear /
-  // Save view + filter facet selects.
-  let disconnected = $derived(connection === null);
-
-  // ---- primary async state (the four-state contract) --------------
-  let status = $state<PageStatus>('loading');
-  let listError = $state<ProtocolError | { code: string; message: string } | null>(
-    null
-  );
-  let listResp = $state<AgentListResponse | null>(null);
-  let metrics = $state<AgentMetrics | null>(null);
-
-  // ---- pagination -------------------------------------------------
-  let pageNum = $state(1);
-  let pageSize = $state(50);
-
-  // ---- filters ----------------------------------------------------
-  let searchText = $state('');
-  let statusFacet = $state('');
-  let plannerFacet = $state('');
-
-  // ---- saved views (Console-DB-backed, D-061) ---------------------
-  let savedFilters = $state<AgentsSavedFilters | null>(null);
-  let savedViews = $state<SavedView[]>([]);
-  let savedFilterSpecs = $state<Map<string, AgentFilter>>(new Map());
-  let activeViewId = $state<string | null>(null);
-
-  const agents = $derived<Agent[]>(listResp?.agents ?? []);
-  const totalRows = $derived(listResp?.total_rows ?? 0);
+  const state = new AgentsListPageState();
+  const disconnected = $derived(state.disconnected);
 
   /** Six card indices for the loading skeleton. */
   const SKELETON_CARDS = [0, 1, 2, 3, 4, 5];
-
-  /** Assembles the `AgentFilter` from the live filter controls. */
-  function currentFilter(): AgentFilter {
-    const f: AgentFilter = {};
-    if (searchText) f.search = searchText;
-    if (statusFacet) f.status = [statusFacet as AgentStatus];
-    if (plannerFacet) f.planner_type = [plannerFacet];
-    return f;
-  }
-
-  /** Maps a thrown error into `<PageState>`'s Error shape. */
-  function asPageError(
-    err: unknown
-  ): ProtocolError | { code: string; message: string } {
-    if (err instanceof ProtocolError) return err;
-    return {
-      code: 'runtime_error',
-      message: err instanceof Error ? err.message : String(err)
-    };
-  }
-
-  /**
-   * Loads the agent catalog + the metrics rollup for the current filter
-   * / page. The loader is the single re-invocation target the Error
-   * state's Retry button calls (CONVENTIONS.md §4 / §8).
-   */
-  async function loadAgents(): Promise<void> {
-    // Disconnected is its OWN state — NEVER the Error UI (CONVENTIONS.md
-    // §4 state 1).
-    if (agentsApi === null) {
-      status = 'disconnected';
-      return;
-    }
-    status = 'loading';
-    listError = null;
-    try {
-      const [list, metricsResp] = await Promise.all([
-        agentsApi.list({
-          filter: currentFilter(),
-          page: pageNum,
-          page_size: pageSize
-        }),
-        agentsApi.metrics()
-      ]);
-      listResp = list;
-      metrics = metricsResp.metrics;
-      status = list.agents.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      // The Error state suppresses any stale primary view (§4 state 3).
-      listResp = null;
-      metrics = null;
-      listError = asPageError(err);
-      status = 'error';
-    }
-  }
 
   function openAgent(id: string): void {
     void goto(`/agents/${encodeURIComponent(id)}`);
   }
 
-  // ---- filter handlers (each resets to page 1 + reloads) ----------
-  function applySearch(value: string): void {
-    searchText = value;
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  function applyStatusFacet(value: string): void {
-    statusFacet = value;
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  function applyPlannerFacet(value: string): void {
-    plannerFacet = value;
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  function clearFilters(): void {
-    searchText = '';
-    statusFacet = '';
-    plannerFacet = '';
-    activeViewId = null;
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  // ---- pagination handlers ----------------------------------------
-  function onPage(p: number): void {
-    pageNum = p;
-    void loadAgents();
-  }
-
-  function onPageSize(size: number): void {
-    pageSize = size;
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  // ---- saved views (Console-DB-backed, D-061) ---------------------
-  async function refreshSavedViews(): Promise<void> {
-    if (savedFilters === null) return;
-    try {
-      const records = await savedFilters.list();
-      savedViews = records.map((r) => ({ id: r.id, name: r.name }));
-      savedFilterSpecs = new Map(records.map((r) => [r.id, r.filterSpec]));
-    } catch {
-      // A Console-DB read failure leaves the chips empty; the page still
-      // works (CLAUDE.md §13 — honest, not a fake set).
-      savedViews = [];
-      savedFilterSpecs = new Map();
-    }
-  }
-
-  function applySavedView(id: string): void {
-    const spec = savedFilterSpecs.get(id);
-    if (spec === undefined) return;
-    activeViewId = id;
-    searchText = spec.search ?? '';
-    statusFacet = spec.status?.[0] ?? '';
-    plannerFacet = spec.planner_type?.[0] ?? '';
-    pageNum = 1;
-    void loadAgents();
-  }
-
-  async function deleteSavedView(id: string): Promise<void> {
-    if (savedFilters === null) return;
-    await savedFilters.delete(id);
-    if (activeViewId === id) activeViewId = null;
-    await refreshSavedViews();
-  }
-
-  async function saveCurrentView(): Promise<void> {
-    if (savedFilters === null) return;
-    const name = globalThis.prompt?.('Name this saved view');
-    if (!name) return;
-    const record = await savedFilters.create(name, currentFilter());
-    activeViewId = record.id;
-    await refreshSavedViews();
-  }
-
-  // ---- boot --------------------------------------------------------
   onMount(() => {
-    connection = resolveConnection();
-    if (injected.__HARBOR_PROTOCOL_CLIENT__) {
-      agentsApi = new AgentsProtocol(injected.__HARBOR_PROTOCOL_CLIENT__);
-    } else if (connection !== null) {
-      agentsApi = new AgentsProtocol(new HarborClient({ connection }));
-    }
-    void loadAgents();
-
-    // Wire the Console-DB-backed saved-view store (D-061). Best-effort:
-    // a failure leaves the chips empty but the page works.
-    if (connection !== null) {
-      void (async () => {
-        try {
-          const db = await openListPageDB(connection!);
-          const operator = await operatorIdOf(
-            connection!.identity.tenant,
-            connection!.identity.user
-          );
-          savedFilters = new AgentsSavedFilters(db, operator);
-          await refreshSavedViews();
-        } catch {
-          savedFilters = null;
-        }
-      })();
-    }
+    state.load(injectedClient);
+    return () => state.close();
   });
 </script>
 
@@ -277,156 +52,209 @@
   <title>Agents · Harbor Console</title>
 </svelte:head>
 
-<div class="agents-page" data-testid="agents-page">
-  <PageHeader
-    title="Agents"
-    subtitle="Fleet management for the runtime's registered agents."
-  />
+<section class="agents-page" data-testid="agents-page">
+  <section class="panel card hero-card">
+    <TopMetricsRollup metrics={state.metrics} />
+  </section>
 
-  <TopMetricsRollup {metrics} />
+  <section class="panel card filter-card">
+    <FilterBar>
+      {#snippet saved()}
+        <SavedViewChips
+          views={state.savedViews}
+          activeId={state.activeSavedId}
+          onselect={(id) => state.applySavedView(id)}
+          ondelete={(id) => void state.deleteSavedView(id)}
+        />
+        <input
+          class="bar-input save-input"
+          type="text"
+          placeholder="Save current as…"
+          bind:value={state.saveName}
+          data-testid="agents-save-view-name"
+          disabled={state.savedFilters === null || disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onkeydown={(e) => e.key === 'Enter' && void state.saveCurrentView()}
+        />
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="agents-save-view"
+          disabled={state.savedFilters === null || state.saveName.trim().length === 0 || disconnected}
+          title={disconnected
+            ? DISCONNECTED_TOOLTIP
+            : state.savedFilters === null
+              ? 'Saved views need a Console profile'
+              : 'Save the current filter as a view'}
+          onclick={() => void state.saveCurrentView()}
+        >
+          Save view
+        </button>
+      {/snippet}
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeViewId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <button
-        type="button"
-        class="action"
-        data-testid="agents-save-view"
-        disabled={savedFilters === null || disconnected}
-        title={disconnected
-          ? DISCONNECTED_TOOLTIP
-          : savedFilters === null
-            ? 'Saved views need a Console profile'
-            : 'Save the current filter as a view'}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
+      {#snippet facets()}
+        <label class="facet">
+          <span>Status</span>
+          <select
+            value={state.statusFacet}
+            data-testid="agents-status-facet"
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+            onchange={(e) => state.applyStatusFacet(e.currentTarget.value)}
+          >
+            <option value="">All</option>
+            <option value="active">active</option>
+            <option value="paused">paused</option>
+            <option value="drained">drained</option>
+            <option value="force_stopped">force_stopped</option>
+          </select>
+        </label>
+        <label class="facet">
+          <span>Planner</span>
+          <select
+            value={state.plannerFacet}
+            data-testid="agents-planner-facet"
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+            onchange={(e) => state.applyPlannerFacet(e.currentTarget.value)}
+          >
+            <option value="">All</option>
+            <option value="react">react</option>
+            <option value="deterministic">deterministic</option>
+          </select>
+        </label>
+      {/snippet}
 
-    {#snippet facets()}
-      <label class="facet">
-        <span>Status</span>
-        <select
-          value={statusFacet}
-          data-testid="agents-status-facet"
+      {#snippet search()}
+        <input
+          class="bar-input search-input"
+          type="search"
+          placeholder="Search agents by name…"
+          value={state.searchText}
+          data-testid="agents-search"
           disabled={disconnected}
           title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-          onchange={(e) => applyStatusFacet(e.currentTarget.value)}
-        >
-          <option value="">All</option>
-          <option value="active">active</option>
-          <option value="paused">paused</option>
-          <option value="drained">drained</option>
-          <option value="force_stopped">force_stopped</option>
-        </select>
-      </label>
-      <label class="facet">
-        <span>Planner</span>
-        <select
-          value={plannerFacet}
-          data-testid="agents-planner-facet"
+          onchange={(e) => {
+            state.setSearch(e.currentTarget.value);
+            state.submitSearch();
+          }}
+        />
+      {/snippet}
+
+      {#snippet actions()}
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="agents-clear-filters"
           disabled={disconnected}
           title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-          onchange={(e) => applyPlannerFacet(e.currentTarget.value)}
+          onclick={() => state.clearFilters()}
         >
-          <option value="">All</option>
-          <option value="react">react</option>
-          <option value="deterministic">deterministic</option>
-        </select>
-      </label>
-    {/snippet}
+          Clear
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="agents-refresh"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => state.refresh()}
+        >
+          Refresh
+        </button>
+      {/snippet}
+    </FilterBar>
+  </section>
 
-    {#snippet search()}
-      <input
-        class="search-input"
-        type="search"
-        placeholder="Search agents by name…"
-        data-testid="agents-search"
-        value={searchText}
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onchange={(e) => applySearch(e.currentTarget.value)}
-      />
-    {/snippet}
+  <section class="panel card grid-card">
+    <PageState status={state.displayStatus} error={state.pageError} onretry={() => state.refresh()}>
+      {#snippet skeleton()}
+        <div class="cards-skeleton" aria-hidden="true">
+          {#each SKELETON_CARDS as i (i)}
+            <span class="skeleton-card"></span>
+          {/each}
+        </div>
+      {/snippet}
+      {#snippet empty()}
+        <!-- W11 (Phase 83x): the Agents page reads from the AgentRegistry,
+             which carries zero rows until something explicitly registers an
+             agent. The runtime still runs a SYNTHETIC "default agent" for the
+             dev token's identity scope (Live Runtime surfaces it under that
+             label) — but that synthetic is NOT a registered row and is
+             intentionally invisible here. -->
+        <div class="empty-block" data-testid="agents-catalog-empty">
+          <p class="empty-headline">No agents match these filters</p>
+          <p class="empty-detail">
+            The registry has 0 registered agents matching the current view. The
+            runtime still runs a synthetic <strong>default agent</strong> for
+            the dev token's identity scope (visible on
+            <a href="/live-runtime">Live Runtime</a>) — that synthetic is not a
+            registered row and does not appear here. To register a named agent,
+            scaffold one with <code>harbor scaffold</code> and run it with
+            <code>harbor dev</code>.
+          </p>
+          <button type="button" class="bar-action" onclick={() => state.clearFilters()}>
+            Clear filters
+          </button>
+        </div>
+      {/snippet}
 
-    {#snippet actions()}
-      <button
-        type="button"
-        class="action"
-        data-testid="agents-clear-filters"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={clearFilters}
-      >
-        Clear
-      </button>
-      <button
-        type="button"
-        class="action"
-        data-testid="agents-refresh"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void loadAgents()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-  </FilterBar>
-
-  <PageState {status} error={listError} onretry={() => void loadAgents()}>
-    {#snippet skeleton()}
-      <div class="cards-skeleton" aria-hidden="true">
-        {#each SKELETON_CARDS as i (i)}
-          <span class="skeleton-card"></span>
-        {/each}
+      <div class="cards-scroll">
+        <CardsGrid agents={state.agents} onopen={openAgent} />
       </div>
-    {/snippet}
-    {#snippet empty()}
-      <!-- W11 (Phase 83x): the Agents page reads from the AgentRegistry,
-           which carries zero rows until something explicitly registers
-           an agent. The runtime still runs a SYNTHETIC "default agent"
-           for the dev token's identity scope (the Live Runtime page
-           surfaces it under that label) — but that synthetic is NOT a
-           registered row and is intentionally invisible here. The
-           legacy "scaffold one" copy did not explain that two-surfaces
-           reality; the new copy names the synthetic-default posture so
-           the operator stops chasing a phantom mismatch with Live
-           Runtime. -->
-      <p class="empty-headline">No agents match these filters</p>
-      <p class="empty-detail">
-        The registry has 0 registered agents. The runtime still runs a
-        synthetic <strong>default agent</strong> for the dev token's
-        identity scope (visible on <a href="/live-runtime">Live Runtime</a>)
-        — that synthetic is not a registered row and does not appear
-        here. To register a named agent, scaffold one with
-        <code>harbor scaffold</code> and run it with
-        <code>harbor dev</code>.
-      </p>
-    {/snippet}
+    </PageState>
 
-    <CardsGrid {agents} onopen={openAgent} />
-  </PageState>
-
-  <Pagination
-    page={pageNum}
-    {pageSize}
-    total={totalRows}
-    onpage={onPage}
-    onpagesize={onPageSize}
-  />
-</div>
+    {#if state.displayStatus === 'ready' || state.displayStatus === 'empty'}
+      <Pagination
+        page={state.page}
+        pageSize={state.pageSize}
+        total={state.totalRows}
+        onpage={(p) => state.changePage(p)}
+        onpagesize={(s) => state.changePageSize(s)}
+      />
+    {/if}
+  </section>
+</section>
 
 <style>
+  /* Viewport-locked: the page fills the shell content region and never
+     full-page-scrolls; only the cards canvas scrolls internally (PAGE-POLISH
+     §6 — the Events / Background-Jobs / Tools pattern). */
   .agents-page {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    height: 100%;
+    min-height: 0;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    overflow: hidden;
+  }
+
+  .card {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    min-width: 0;
+  }
+
+  .hero-card {
+    flex-shrink: 0;
+  }
+
+  .filter-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    flex-shrink: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  /* Kill the shared FilterBar's own vertical padding so the strip packs
+     tight (the card already supplies the padding — Events-108h pattern). */
+  .filter-card :global(.filter-bar) {
+    padding: var(--space-1) var(--space-0);
+    gap: var(--space-2);
   }
 
   .facet {
@@ -438,7 +266,7 @@
   }
 
   .facet select {
-    background: var(--color-surface);
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
@@ -446,29 +274,61 @@
     font-size: var(--text-sm);
   }
 
-  .search-input {
-    width: 100%;
-    background: var(--color-surface);
-    color: var(--color-text);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-  }
-
-  .action {
-    background: var(--color-surface-raised);
+  .bar-input {
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-sm);
-    cursor: pointer;
   }
 
-  .action:disabled {
+  .search-input {
+    flex: 1;
+    min-width: var(--size-input-compact);
+  }
+
+  .save-input {
+    width: var(--size-input-compact);
+  }
+
+  .bar-action {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .bar-action:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* The cards canvas fills the remaining height + scrolls internally. */
+  .grid-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: var(--space-3);
+  }
+
+  .grid-card :global(.page-state) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .cards-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .cards-skeleton {
@@ -483,6 +343,15 @@
     border-radius: var(--radius-md);
   }
 
+  .empty-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-4);
+    text-align: center;
+  }
+
   .empty-headline {
     margin: var(--space-0);
     font-size: var(--text-lg);
@@ -494,6 +363,7 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+    max-width: var(--size-modal-width);
   }
 
   code {
