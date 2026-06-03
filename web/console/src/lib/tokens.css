@@ -157,6 +157,10 @@
   --size-sr-square: 1px;
   --size-value-viewer-max: 16rem;
   --size-search-min: 12rem;
+  /* Phase 108k — a compact input width for the Tools filter strip so the
+     dense saved-view + facet + search row fits one viewport-locked card
+     without a horizontal scroll. */
+  --size-input-compact: 8rem;
   /* Phase 108b — the top-bar ⌘K global-search command palette. */
   --size-palette-width: 36rem;
   --size-palette-max-height: 24rem;

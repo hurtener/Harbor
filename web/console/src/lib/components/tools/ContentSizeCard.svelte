@@ -17,10 +17,15 @@
     return `${n}B`;
   }
 
+  // The Runtime marshals a nil Go slice/map as JSON `null` (the live probe
+  // returned `histogram: []` but `negotiated_display: null` for a
+  // never-invoked tool). The wire type declares non-null shapes, so guard
+  // both here — `Object.keys(null)` / `null.reduce` would throw (§17.6).
+  let histogram = $derived(stats?.histogram ?? []);
+  let displayModes = $derived(stats?.negotiated_display ?? {});
+
   let maxCount = $derived(
-    stats === null
-      ? 0
-      : stats.histogram.reduce((m, b) => Math.max(m, b.count), 0)
+    histogram.reduce((m, b) => Math.max(m, b.count), 0)
   );
 
   function barWidth(count: number): string {
@@ -37,11 +42,11 @@
       Heavy threshold: <strong>{fmtBytes(stats.heavy_threshold_bytes)}</strong>
       · heavy results: <strong>{stats.heavy_count}</strong>
     </p>
-    {#if stats.histogram.length === 0}
+    {#if histogram.length === 0}
       <p class="muted">No recent invocations recorded.</p>
     {:else}
       <ul class="histogram">
-        {#each stats.histogram as bucket (bucket.max_bytes)}
+        {#each histogram as bucket (bucket.max_bytes)}
           <li>
             <span class="bucket-label">≤{fmtBytes(bucket.max_bytes)}</span>
             <span class="bar-track">
@@ -52,10 +57,10 @@
         {/each}
       </ul>
     {/if}
-    {#if Object.keys(stats.negotiated_display).length > 0}
+    {#if Object.keys(displayModes).length > 0}
       <h4>Negotiated display modes</h4>
       <ul class="display-modes">
-        {#each Object.entries(stats.negotiated_display) as [mime, mode] (mime)}
+        {#each Object.entries(displayModes) as [mime, mode] (mime)}
           <li><code>{mime}</code> → <StatusChip kind="accent" label={mode} /></li>
         {/each}
       </ul>
