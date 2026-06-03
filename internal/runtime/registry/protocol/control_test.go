@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
-	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
+	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 )
 
 // fakeController is an in-test Controller — a deterministic fixture for

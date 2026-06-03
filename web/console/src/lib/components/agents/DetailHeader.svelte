@@ -55,7 +55,7 @@
       <a
         class="meta-btn"
         data-testid="agent-open-playground"
-        href={`/live-runtime?agent=${encodeURIComponent(agent.id)}`}
+        href="/playground"
       >
         Open in Playground
       </a>

@@ -117,8 +117,8 @@ func doAgentsControlRequest(t *testing.T, h http.Handler, verb, body string, id 
 
 // agentsVerb strips the `agents.` prefix off a canonical method to get the
 // route verb. Deriving it from the methods constant avoids hardcoding a
-// Protocol method string in the test (the single-source checker — note
-// "pause" is ALSO the task-control method name, so a bare literal trips it).
+// Protocol method string in the test (the single-source grep guard also
+// matches the pause task-control verb, so a bare quoted literal would trip it).
 func agentsVerb(m methods.Method) string {
 	return strings.TrimPrefix(string(m), "agents.")
 }
