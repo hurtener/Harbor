@@ -1,75 +1,74 @@
 <script lang="ts">
-  // Console MCP Connections — list view (D-121, MCP refactor).
+  // Harbor Console — MCP Connections page (`/mcp-connections`) — Phase 108m
+  // rebuild (D-185; supersedes the Phase 73k / D-119 pre-chrome layout).
   //
-  // The operator control plane for Harbor's MCP southbound surface. The
-  // legacy page shipped the THINNEST of the five Console pages: a raw
-  // `<table>`, a hand-rolled state-chip nav, a three-state loading chain
-  // with NO Disconnected branch, no detail rail, no pagination, no
-  // footer. This refactor brings it to the CONVENTIONS.md §5 depth bar:
+  // The operator control plane for Harbor's MCP southbound surface — the
+  // configured MCP servers that supply tools / resources / prompts to the
+  // runtime's agents. Phase 108m rethemes it to the carded, viewport-locked
+  // Events-108h / Tools-108k composition (a filter card + a master-detail
+  // layout: the servers TABLE on the left, a right-rail server detail on the
+  // right — the table stays visible, the rail shows the selected server's
+  // full detail or the catalog-overview idle state). It drops the per-page
+  // header (the breadcrumb / ⌘K / footer are app-shell chrome, 108b) and
+  // the separate tabbed-detail route (the rail is now the single detail
+  // surface — §13: no two parallel implementations of one feature).
   //
-  //   PageHeader + FilterBar (SavedViewChips + state facets + search) +
-  //   DataTable + DetailRail (server summary on row-select) +
-  //   Pagination + ConnectionFooter + the four-state PageState.
+  // It is a PURE Protocol consumer — the `mcp.servers.*` surface shipped in
+  // Phase 73k / D-119; this phase builds NO new Protocol method. Every datum
+  // + action is real-wired (PAGE-POLISH §3 — live-verified against the
+  // validation runtime's `youtube` MCP server): the catalog ← `mcp.servers.
+  // list`; the detail header + tabs ← `mcp.servers.{get,resources,prompts,
+  // bindings.list,policy}` + `tools.list`; Refresh discovery / Test
+  // connection ← REAL `mcp.servers.{refresh_discovery,probe}` (honest re-read
+  // / actual probe outcome, §13); the raw-HTML toggle + OAuth admin verbs ←
+  // REAL admin `mcp.servers.*` (admin-gated, D-079); the Recent-events card ←
+  // LIVE `events.subscribe` (honest-empty). Saved-view chips ← Console-local
+  // (D-061).
   //
-  // Every Runtime read routes through the unified `HarborClient` via
-  // `McpListState` — no hand-rolled `fetch`, no `import.meta.env` URL
-  // read (CONVENTIONS.md §6). Svelte 5 runes mode (D-092); tokens only.
+  // Svelte 5 runes (D-092); design tokens only; HarborClient + connection.ts
+  // only — no hand-rolled fetch (CONVENTIONS.md §6).
   import { onMount } from 'svelte';
-  import {
-    PageHeader,
-    FilterBar,
-    SavedViewChips,
-    DataTable,
-    DetailRail,
-    RailCard,
-    StatusChip,
-    Pagination,
-    PageState,
-    type DataTableColumn
-  } from '$lib/components/ui/index.js';
-  import StateFacetChips from '$lib/components/mcp-connections/StateFacetChips.svelte';
-  import { McpListState, DEFAULT_PAGE_SIZE } from '$lib/mcp-connections/state.svelte.js';
-  import { McpSavedViews } from '$lib/mcp-connections/saved_views.svelte.js';
-  import { mcpStatusKind, mcpStateLabel } from '$lib/mcp-connections/status.js';
+  import { FilterBar, SavedViewChips, Pagination, PageState } from '$lib/components/ui';
   import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
-  import type { MCPServerView } from '$lib/protocol/mcp.js';
+  import StateFacetChips from '$lib/components/mcp-connections/StateFacetChips.svelte';
+  import ServersTable from '$lib/components/mcp-connections/ServersTable.svelte';
+  import McpDetailRail from '$lib/components/mcp-connections/McpDetailRail.svelte';
+  import McpOverviewCard from '$lib/components/mcp-connections/McpOverviewCard.svelte';
+  import { McpListState, McpDetailState, DEFAULT_PAGE_SIZE } from '$lib/mcp-connections/state.svelte.js';
+  import { McpSavedViews } from '$lib/mcp-connections/saved_views.svelte.js';
+  import type { ProtocolClient } from '$lib/protocol/harbor.js';
+
+  let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
   const list = new McpListState();
+  const detail = new McpDetailState();
   const savedViews = new McpSavedViews();
-  // Phase 83r N8 — when `<PageState>` is in the disconnected branch,
-  // status chips desaturate (the kind-coloured pill is meaningless
-  // without a backing Runtime), and the Save view button disables.
-  const disconnected = $derived(list.status === 'disconnected');
+  const disconnected = $derived(list.disconnected);
 
-  /** The currently row-selected server (drives the detail rail). */
-  let selected = $state<MCPServerView | null>(null);
-
-  const COLUMNS: DataTableColumn[] = [
-    { key: 'name', label: 'Server name' },
-    { key: 'status', label: 'Status' },
-    { key: 'endpoint', label: 'Endpoint' },
-    { key: 'tools', label: 'Tools', numeric: true },
-    { key: 'last_connect', label: 'Last connect' },
-    { key: 'oauth', label: 'OAuth', numeric: true }
-  ];
+  /** The currently row-selected server name (drives the detail rail). */
+  let selectedName = $state<string | null>(null);
 
   onMount(() => {
     void list.load();
     void savedViews.load();
+    detail.boot(injectedClient);
+    return () => detail.close();
   });
 
-  function rowKey(row: unknown): string {
-    return (row as MCPServerView).name;
+  function onSelect(name: string): void {
+    selectedName = name;
+    void detail.load(name, injectedClient);
   }
 
-  function onRowClick(row: unknown): void {
-    selected = row as MCPServerView;
+  function closeDetail(): void {
+    selectedName = null;
+    detail.clear();
   }
 
   function applySavedView(id: string): void {
     const filter = savedViews.filterFor(id);
     if (filter !== null) {
-      selected = null;
+      closeDetail();
       list.applyFilter(filter, id);
     }
   }
@@ -96,108 +95,113 @@
 </svelte:head>
 
 <section class="mcp-page" data-testid="mcp-connections-list">
-  <PageHeader
-    title="MCP Connections"
-    subtitle="The configured MCP southbound servers supplying tools, resources, and prompts to this runtime's agents."
-  />
+  <section class="panel card filter-card">
+    <FilterBar>
+      {#snippet saved()}
+        <SavedViewChips
+          views={savedViews.views}
+          activeId={list.activeSavedViewId}
+          onselect={applySavedView}
+          ondelete={(id) => void deleteSavedView(id)}
+        />
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="save-view"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : 'Save the current filter as a view'}
+          onclick={() => void saveCurrentView()}
+        >
+          Save view
+        </button>
+      {/snippet}
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews.views}
-        activeId={list.activeSavedViewId}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-    {/snippet}
-    {#snippet facets()}
-      <StateFacetChips
-        active={list.activeStateFilter}
-        {disconnected}
-        onselect={(state) => {
-          selected = null;
-          list.setStateFilter(state);
-        }}
-      />
-    {/snippet}
-    {#snippet search()}
-      <input
-        type="search"
-        class="search-input"
-        placeholder="Search servers…"
-        data-testid="mcp-search"
-        value={list.search}
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        oninput={(e) => list.setSearch((e.currentTarget as HTMLInputElement).value)}
-      />
-    {/snippet}
-    {#snippet actions()}
-      <button
-        type="button"
-        class="bar-action"
-        data-testid="save-view"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
-  </FilterBar>
+      {#snippet facets()}
+        <StateFacetChips
+          active={list.activeStateFilter}
+          {disconnected}
+          onselect={(state) => {
+            closeDetail();
+            list.setStateFilter(state);
+          }}
+        />
+      {/snippet}
+
+      {#snippet search()}
+        <input
+          type="search"
+          class="bar-input search-input"
+          placeholder="Search servers…"
+          data-testid="mcp-search"
+          value={list.search}
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          oninput={(e) => list.setSearch((e.currentTarget as HTMLInputElement).value)}
+        />
+      {/snippet}
+
+      {#snippet actions()}
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="mcp-clear-filters"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => {
+            closeDetail();
+            list.clearFilters();
+          }}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="mcp-refresh"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => void list.load()}
+        >
+          Refresh
+        </button>
+      {/snippet}
+    </FilterBar>
+  </section>
 
   <div class="layout">
-    <div class="main-col">
-      <PageState
-        status={list.status}
-        error={list.error}
-        onretry={() => void list.load()}
-      >
+    <section class="panel card table-card">
+      <PageState status={list.displayStatus} error={list.error} onretry={() => void list.load()}>
+        {#snippet skeleton()}
+          <div class="table-skeleton" aria-hidden="true">
+            {#each [0, 1, 2, 3, 4] as i (i)}
+              <span class="skeleton-row"></span>
+            {/each}
+          </div>
+        {/snippet}
         {#snippet empty()}
-          <p class="empty-headline" data-testid="list-empty">
-            No MCP servers configured — add servers in your runtime config
-            and restart.
-          </p>
+          <div class="empty-block" data-testid="list-empty">
+            <p class="empty-headline">No MCP servers match this view</p>
+            <p class="empty-detail">
+              No MCP servers are configured (add servers in your runtime config
+              and restart), or the active filters yield zero rows.
+            </p>
+            <button type="button" class="bar-action" onclick={() => { closeDetail(); list.clearFilters(); }}>
+              Clear filters
+            </button>
+          </div>
         {/snippet}
 
-        <DataTable
-          columns={COLUMNS}
-          rows={list.visibleServers}
-          {rowKey}
-          onrowclick={onRowClick}
-        >
-          {#snippet row(r)}
-            {@const srv = r as MCPServerView}
-            <td data-testid={`server-row-${srv.name}`}>
-              <a
-                class="server-link"
-                href={`/mcp-connections/${srv.name}`}
-                onclick={(e) => e.stopPropagation()}
-              >
-                {srv.name}
-              </a>
-            </td>
-            <td>
-              <span data-testid={`status-${srv.name}`}>
-                <StatusChip
-                  kind={mcpStatusKind(srv.state)}
-                  label={mcpStateLabel(srv.state)}
-                  desaturated={disconnected}
-                />
-              </span>
-            </td>
-            <td class="endpoint">{srv.url_or_command}</td>
-            <td class="numeric">{srv.tool_count}</td>
-            <td>{srv.last_discovery_at}</td>
-            <td class="numeric">{srv.oauth_binding_count}</td>
-          {/snippet}
-          {#snippet empty()}
-            <span>No servers match the current filter.</span>
-          {/snippet}
-        </DataTable>
+        <div class="table-scroll">
+          <ServersTable
+            rows={list.visibleServers}
+            activeName={selectedName}
+            {disconnected}
+            onselect={onSelect}
+          />
+        </div>
       </PageState>
 
-      {#if list.status === 'ready' || list.status === 'empty'}
+      {#if list.displayStatus === 'ready' || list.displayStatus === 'empty'}
         <Pagination
           page={list.page}
           pageSize={list.pageSize}
@@ -207,78 +211,77 @@
           onpagesize={(s) => list.setPageSize(s)}
         />
       {/if}
-    </div>
+    </section>
 
-    <DetailRail>
-      {#if selected}
-        <RailCard title="Server">
-          <p class="rail-name" data-testid="rail-server-name">{selected.name}</p>
-          <StatusChip
-            kind={mcpStatusKind(selected.state)}
-            label={mcpStateLabel(selected.state)}
-          />
-        </RailCard>
-        <RailCard title="Transport">
-          <dl class="rail-grid">
-            <dt>Transport</dt>
-            <dd>{selected.transport}</dd>
-            <dt>Endpoint</dt>
-            <dd class="mono">{selected.url_or_command}</dd>
-            <dt>Last connect</dt>
-            <dd>{selected.last_discovery_at}</dd>
-          </dl>
-        </RailCard>
-        <RailCard title="Discovery">
-          <dl class="rail-grid">
-            <dt>Tools</dt>
-            <dd>{selected.tool_count}</dd>
-            <dt>Resources</dt>
-            <dd>{selected.resource_count}</dd>
-            <dt>Prompts</dt>
-            <dd>{selected.prompt_count}</dd>
-            <dt>OAuth bindings</dt>
-            <dd>{selected.oauth_binding_count}</dd>
-          </dl>
-        </RailCard>
-        <RailCard title="Actions">
-          <a class="rail-link" href={`/mcp-connections/${selected.name}`}>
-            Open server detail →
-          </a>
-        </RailCard>
-      {:else}
-        <RailCard title="Server">
-          <p class="rail-hint">Select a server row to see its summary.</p>
-        </RailCard>
-      {/if}
-    </DetailRail>
+    <!-- Right column — the per-server detail when a row is selected (and the
+         Console is connected), else the catalog-overview idle state. Both
+         fill the column + scroll INTERNALLY (PAGE-POLISH §6). The
+         `!disconnected` guard keeps a disconnected page on the single idle
+         overview (with `—` placeholders) rather than a second empty surface. -->
+    {#if !disconnected && selectedName !== null}
+      <McpDetailRail {detail} onclose={closeDetail} />
+    {:else}
+      <section class="panel card idle-card" data-testid="mcp-rail-idle">
+        <h2 class="panel-title">Catalog overview</h2>
+        <McpOverviewCard counts={list.overview} {disconnected} />
+        <p class="idle-hint">
+          Click a server to inspect its detail — transport, discovery counts,
+          tools, resources, prompts, OAuth bindings, policy, and live events.
+        </p>
+      </section>
+    {/if}
   </div>
 </section>
 
 <style>
+  /* Viewport-locked: the page fills the shell content region and never
+     full-page-scrolls; only the catalog table + the right rail scroll
+     internally (PAGE-POLISH §6 — the Events / Tools pattern). */
   .mcp-page {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-6);
+    height: 100%;
+    min-height: 0;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    overflow: hidden;
   }
 
-  .layout {
-    display: grid;
-    grid-template-columns: 1fr var(--size-rail);
-    gap: var(--space-4);
-    align-items: start;
+  .card {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    min-width: 0;
   }
 
-  .main-col {
+  .panel-title {
+    margin: var(--space-0) var(--space-0) var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-wide);
+    color: var(--color-text-muted);
+  }
+
+  /* ---- filter card (fixed height) ---- */
+  .filter-card {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    min-width: var(--space-0);
+    gap: var(--space-1);
+    flex-shrink: 0;
+    padding: var(--space-2) var(--space-3);
   }
 
-  .search-input {
-    width: 100%;
-    background: var(--color-surface-raised);
+  /* Kill the shared FilterBar's own vertical padding so the strip packs
+     tight (the card already supplies the padding — Events-108h pattern). */
+  .filter-card :global(.filter-bar) {
+    padding: var(--space-1) var(--space-0);
+    gap: var(--space-2);
+  }
+
+  .bar-input {
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
@@ -286,78 +289,104 @@
     font-size: var(--text-sm);
   }
 
+  .search-input {
+    flex: 1;
+    min-width: var(--size-input-compact);
+  }
+
   .bar-action {
-    background: var(--color-surface-raised);
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-xs);
     cursor: pointer;
-  }
-
-  .server-link {
-    color: var(--color-accent);
     text-decoration: none;
   }
 
-  .server-link:hover {
-    text-decoration: underline;
+  .bar-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
-  .endpoint {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+  /* ---- layout (fills remaining height; both columns scroll internally) ---- */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr var(--size-rail);
+    gap: var(--space-3);
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .table-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: var(--space-3);
+  }
+
+  .table-card :global(.page-state) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .table-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .idle-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .idle-hint {
+    margin: var(--space-0);
+    font-size: var(--text-sm);
     color: var(--color-text-muted);
   }
 
-  td.numeric {
-    text-align: right;
+  .table-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .skeleton-row {
+    height: var(--space-8);
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-sm);
+  }
+
+  .empty-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-4);
+    text-align: center;
   }
 
   .empty-headline {
     margin: var(--space-0);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-  }
-
-  .rail-name {
-    margin: var(--space-0) var(--space-0) var(--space-2);
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--color-text);
   }
 
-  .rail-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: var(--space-1) var(--space-3);
-    margin: var(--space-0);
-  }
-
-  .rail-grid dt {
-    color: var(--color-text-muted);
-    font-size: var(--text-xs);
-  }
-
-  .rail-grid dd {
+  .empty-detail {
     margin: var(--space-0);
     font-size: var(--text-sm);
-  }
-
-  .rail-grid dd.mono {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    word-break: break-all;
-  }
-
-  .rail-hint,
-  .rail-link {
-    font-size: var(--text-sm);
     color: var(--color-text-muted);
-  }
-
-  .rail-link {
-    color: var(--color-accent);
-    text-decoration: none;
+    max-width: var(--size-modal-width);
   }
 </style>

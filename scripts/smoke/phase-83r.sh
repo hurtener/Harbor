@@ -99,9 +99,12 @@ assert_grep_present \
     'desaturated' \
     'web/console/src/lib/components/ui/StatusChip.svelte' \
     'StatusChip accepts the desaturated prop (N8)'
+# Phase 108m (D-185) moved the servers table + its status chips into the
+# ServersTable component; the page threads `disconnected` to it, which threads
+# it onto the chip's `desaturated` prop. Assert at the chip's new home.
 assert_grep_present \
     'desaturated={disconnected}' \
-    'web/console/src/routes/(console)/mcp-connections/+page.svelte' \
+    'web/console/src/lib/components/mcp-connections/ServersTable.svelte' \
     'MCP Connections threads disconnected into the status chips (N8)'
 
 # -----------------------------------------------------------------------------

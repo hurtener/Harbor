@@ -166,3 +166,47 @@ Reconciliation of `docs/rfc/assets/console-mcp-connections-page.png` against §3
 - **D-083 (tool-side OAuth — `auth.BindingScope`).** The OAuth & Auth tab surfaces binding-scope chips per principal (per-user / per-session / per-tenant) consistent with D-083; no parallel binding-state model in the Console.
 - **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
 - **§13 forbidden practices.** No hand-rolled MCP-Apps renderer; OAuth admin actions invoke shipped/extended Protocol methods (no Console-side shadow binding store); audit events come from the shipped `audit.subscribe` surface (no parallel audit log).
+
+## 13. Reframe — Phase 108m carded, viewport-locked master-detail retheme (2026-06-04, D-185)
+
+Phase 108m brings this page to the carded, viewport-locked composition the
+page-polish series established (Events-108h / Tools-108k). It is a **retheme +
+viewport-lock + deepen-the-rail + king-file refactor** pass over the Phase 73k
+(D-119) wiring, not a re-spec — the `mcp.servers.*` methods, the Console-DB
+saved filters, and the admin verbs are unchanged. The composition changes
+recorded here **supersede** the layout halves of §4 / §12 (and D-119):
+
+- **Composition.** The per-page `PageHeader` is dropped (the breadcrumb / ⌘K /
+  footer are app-shell chrome, Phase 108b). The page is a carded
+  `<section class="panel card">` filter strip + a viewport-locked layout of
+  TABLE-primary on the left (the servers catalog fills the viewport and scrolls
+  internally behind a sticky `<thead>`) + a right-rail detail on the right. The
+  document never full-page-scrolls.
+
+- **One consolidated rail — the single detail surface.** §4 / §12's separate
+  "selected server detail panel (full width below the table)" + the stacked
+  right-rail status cards, AND the separate `/mcp-connections/[server]`
+  tabbed-detail route, are consolidated into ONE packed, internally-scrolling
+  right rail (the Tools-108k pattern, NOT a 3-column canvas or a mode-switch).
+  The standalone detail route is **removed** — keeping both a rail and a route
+  would be two parallel implementations of one feature (CLAUDE.md §13). With
+  nothing selected the rail shows the **catalog overview** (per-state counts +
+  an idle hint). With a server selected it shows the full detail: header (name +
+  state badge + transport + endpoint + last-discovery + tool/resource/prompt/
+  OAuth counts + Refresh discovery / Test connection / raw-HTML toggle), the tab
+  strip, then the Recent-events card + binding-scope summary + content-shapes
+  sections.
+
+- **Five tabs, not six.** The detail tab strip is **Tools | Resources | Prompts
+  | OAuth bindings | Policy** (the §12 Health tab is dropped from this page;
+  `mcp.servers.health` stays a shipped method, unconsumed here). The Tools tab
+  lists the server's tools (`tools.list` filtered on `owner === name`) with
+  approval + OAuth chips and deep-links to `/tools?server=<name>`; OAuth admin
+  verbs deep-link to the Tools binding surface (no parallel OAuth path, D-083).
+
+- **Honest live wiring (§13).** Refresh discovery re-reads the runtime; Test
+  connection shows the actual `mcp.servers.probe` outcome; the raw-HTML toggle
+  is admin-gated (D-079) and audited; the Recent-events card is a LIVE-only
+  `events.subscribe` projection (`mcp.resource_updated` + `tool.auth_required` +
+  the transport-error subset of `tool.failed`) attributed to the server, honest-
+  empty until events stream in. See D-185 for the full live-wire verification.

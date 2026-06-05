@@ -21,7 +21,7 @@
 
 <script lang="ts">
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
-  import { mcpStatusKind } from '$lib/mcp-connections/status.js';
+  import { mcpStatusKind } from '$lib/mcp-connections/derive.js';
 
   let {
     active,
