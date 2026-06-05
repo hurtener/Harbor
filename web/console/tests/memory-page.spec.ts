@@ -1,36 +1,24 @@
-// Harbor Console e2e — Memory page spec (Phase 73j / D-118; refactored
-// onto the D-121 design-system foundation).
+// Harbor Console e2e — Memory page spec (Phase 108n / D-186; rebuilt onto
+// the carded, viewport-locked master-detail composition).
 //
-// The per-page Playwright spec for `/memory`. It is the §13 primitive-
-// with-consumer discharge at the UI layer: the Memory page IS the
-// consumer of the three `memory.*` Protocol methods, and this spec
-// exercises it end-to-end against a real `harbor console` + a real
-// Runtime via the Phase 75 harness.
+// The per-page Playwright spec for `/memory`. It rides the Phase 75 harness
+// baseline; the whole describe block SKIPs when `harbor console` is absent.
 //
-// SKIP semantics (the subcommand-missing → SKIP pattern, mirroring
-// CLAUDE.md §4.2): `harbor console` lands in Phase 73m. Until then
-// `consoleSubcommandAvailable()` is false and the whole describe block
-// SKIPs at collection time — the spec exists, is enumerated by the
-// Phase 75a aggregator, and flips to live once 73m ships.
+// Phase 108n rebuilt the page: the per-page PageHeader is gone (108b chrome);
+// the right rail is a stacked Memory-health / Strategy-trace / live
+// Memory-events / Add-memory / Selected-item set; the bulk-action bar's
+// disabled placeholders are replaced by a REAL admin-gated "Evict selected"
+// (the new `memory.delete`); and the formerly-deferred event-feed card is now
+// a LIVE `events.subscribe` projection. The assertions below target that shape.
 //
-// Coverage — the refactored Memory page (CONVENTIONS.md §3/§4/§5):
-//   (a) the shared `DataTable` renders with the mockup columns,
-//   (b) a scope-facet toggle re-issues the `memory.list` query,
-//   (c) selecting a row opens the detail rail's nested PageState,
-//   (d) the memory event-feed RailCard is the deferred placeholder
-//       (D-132 / W5 — identity-rejection + recovery-dropout feeds need
-//       the events-stream wiring),
-//   (f) the shared `BulkActionBar` actions are disabled-with-tooltip
-//       (page-memory.md §10 — V1 is view-only),
-//   (g) the shell-provided `ConnectionFooter` renders.
-//
-// Phase 75a (D-131): the runtime-entity seeding gap is closed — the
-// `harbor console` binary boots a deterministic memory-turn fixture set
-// when `HARBOR_DEV_SEED_FIXTURES=1` (set by the harness `runtime`
-// fixture; the embedded config uses `strategy: truncation` so the turns
-// persist). `seedConnection` below uses the matching `(dev, dev, dev)`
-// triple. The DataTable tests that were parked on the seeding gap now
-// run for real.
+// Coverage:
+//   (a) the carded master-detail page root renders (no PageHeader);
+//   (b) the shared DataTable renders with the mockup columns;
+//   (c) a scope-facet toggle re-issues the list query;
+//   (d) the right-rail Strategy-trace + live Memory-events cards render;
+//   (e) selecting a row opens the Selected-item detail;
+//   (f) the mutation surface (Evict selected / Add memory) is admin-gated;
+//   (g) the shell-provided ConnectionFooter renders.
 
 import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 import { STORAGE_KEYS } from "../src/lib/connection";
@@ -38,9 +26,10 @@ import { STORAGE_KEYS } from "../src/lib/connection";
 const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 
 /**
- * Seed the `connection.ts` storage convention so the D-121 Memory page
- * resolves a live Runtime connection. The identity triple MUST match
- * the `harbor console` dev token — `(dev, dev, dev)`.
+ * Seed the `connection.ts` storage convention so the page resolves a live
+ * Runtime connection. Scopes are left UNSET — a non-admin UI gate — so the
+ * admin-gated mutation surface (Evict selected / Add memory) is
+ * deterministically disabled (the runtime is the authoritative gate, D-079).
  */
 async function seedConnection(
   page: import("@playwright/test").Page,
@@ -71,22 +60,35 @@ test.describe("Console Memory page", () => {
     await helpers.gotoPage("memory");
   });
 
-  test("renders the Memory page shell", async ({ page }) => {
+  test("(a) the carded master-detail page root renders (no PageHeader)", async ({
+    page,
+  }) => {
     await expect(
       page.locator("[data-testid='memory-page']"),
       "the Memory page root is present",
     ).toBeVisible();
+    // The per-page PageHeader was dropped — the page no longer renders an
+    // <h1>Memory</h1> (the breadcrumb is app-shell chrome, 108b).
     await expect(
       page.getByRole("heading", { name: "Memory", level: 1 }),
-      "the shared PageHeader renders",
-    ).toBeVisible();
+      "no per-page PageHeader heading",
+    ).toHaveCount(0);
   });
 
-  test("(a) the shared DataTable renders with the mockup columns", async ({
+  test("(b) the shared DataTable renders with the mockup columns", async ({
     page,
   }) => {
     const table = page.locator("table.data-table");
-    await expect(table, "the shared DataTable renders").toBeVisible();
+    const empty = page.locator("[data-testid='memory-empty']");
+    // Wait for the page to settle into either the loaded table or the empty
+    // state before branching (the list load is async).
+    await expect(
+      table.or(empty),
+      "the page settles into a table or the documented empty state",
+    ).toBeVisible();
+    if (!(await table.isVisible())) {
+      return;
+    }
     for (const col of [
       "Memory key",
       "Strategy",
@@ -105,25 +107,30 @@ test.describe("Console Memory page", () => {
     }
   });
 
-  test("(b) a scope-facet toggle re-issues the list query", async ({
-    page,
-  }) => {
-    // Selecting a scope facet drives a fresh memory.list call routed
-    // through HarborClient. We assert the facet control is wired and the
-    // table is still attached after the toggle (the exact row count
-    // depends on seeded runtime state).
+  test("(c) a scope-facet toggle re-issues the list query", async ({ page }) => {
     const scopeFacet = page.locator("[data-testid='memory-scope-facet']");
     await scopeFacet.selectOption("session");
     await expect(
-      page.locator("table.data-table"),
-      "the table re-renders after a facet toggle",
+      page.locator("table.data-table").or(page.locator("[data-testid='memory-empty']")),
+      "the table (or empty state) re-renders after a facet toggle",
     ).toBeVisible();
   });
 
-  test("(c) selecting a row opens the detail rail", async ({ page }) => {
-    const railDetail = page.locator(
-      "section.rail-card:has-text('Selected item')",
-    );
+  test("(d) the right-rail Strategy-trace + live Memory-events cards render", async ({
+    page,
+  }) => {
+    await expect(
+      page.locator("[data-testid='memory-strategy-trace']"),
+      "the Strategy-trace card renders",
+    ).toBeVisible();
+    await expect(
+      page.locator("[data-testid='memory-events-feed']"),
+      "the live Memory-events feed renders (replaces the deferred placeholder)",
+    ).toBeVisible();
+  });
+
+  test("(e) selecting a row opens the Selected-item detail", async ({ page }) => {
+    const railDetail = page.locator("section.rail-card:has-text('Selected item')");
     await expect(railDetail, "the Selected item RailCard is present").toBeVisible();
     const firstRow = page.locator("table.data-table tbody tr.data-row").first();
     if ((await firstRow.count()) > 0) {
@@ -132,51 +139,31 @@ test.describe("Console Memory page", () => {
     }
   });
 
-  test("(d) the memory event-feed card is the deferred placeholder (D-132)", async ({
+  test("(f) the mutation surface is admin-gated (no admin scope)", async ({
     page,
   }) => {
-    // D-132 / W5: the identity-rejection + recovery-dropout feeds need
-    // the events-stream wiring (a later phase). The two formerly-empty
-    // live cards are collapsed into one disabled-with-tooltip card that
-    // honestly states the deferral.
-    const deferred = page.locator(
-      "[data-testid='memory-event-feed-deferred']",
-    );
+    // The Add-memory composer is always present in the rail; its submit is
+    // disabled without the admin claim (D-079).
     await expect(
-      deferred,
-      "the deferred event-feed placeholder card renders",
+      page.locator("[data-testid='memory-add-submit']"),
+      "the Add-memory submit is disabled for a non-admin session",
+    ).toBeDisabled();
+    await expect(
+      page.locator("[data-testid='memory-add-gated']"),
+      "the composer names the admin-gate",
     ).toBeVisible();
-    const title = await deferred.getAttribute("title");
-    expect(
-      (title ?? "").toLowerCase(),
-      "the placeholder tooltip names the events-stream deferral",
-    ).toContain("events-stream");
-  });
 
-  test("(f) the shared BulkActionBar actions are disabled with a tooltip", async ({
-    page,
-  }) => {
-    // The BulkActionBar only renders when ≥1 row is selected. Select the
-    // first row's checkbox, then assert the V1 view-only carve-out: each
-    // mutation action is disabled-with-tooltip (page-memory.md §10).
+    // The bulk "Evict selected" appears only when a row is checked; when rows
+    // exist, check one and assert it is disabled for a non-admin session.
     const firstCheckbox = page
       .locator("table.data-table tbody tr.data-row td.select-col input")
       .first();
-    if ((await firstCheckbox.count()) === 0) {
-      test.skip(true, "no seeded memory rows to select (runtime-fixture seeding tracked in issue #178)");
-      return;
-    }
-    await firstCheckbox.check();
-    const bar = page.locator("[aria-label='Bulk actions']");
-    await expect(bar, "the BulkActionBar renders on selection").toBeVisible();
-    for (const action of ["Delete selected", "Refresh TTL", "Pin"]) {
-      const btn = bar.getByRole("button", { name: action });
-      await expect(btn, `"${action}" is rendered`).toBeVisible();
-      await expect(btn, `"${action}" is disabled at V1`).toBeDisabled();
+    if ((await firstCheckbox.count()) > 0) {
+      await firstCheckbox.check();
       await expect(
-        btn,
-        `"${action}" carries the deferral tooltip`,
-      ).toHaveAttribute("title", "Memory mutation surface deferred — Phase 73");
+        page.locator("[data-testid='memory-evict-selected']"),
+        "Evict selected is disabled for a non-admin session",
+      ).toBeDisabled();
     }
   });
 

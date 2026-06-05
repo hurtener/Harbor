@@ -141,3 +141,38 @@ export interface MemoryHealthResponse {
 	aggregate: MemoryHealthAggregate;
 	protocol_version: string;
 }
+
+/** Live strategy-compaction projection — mirrors `types.MemoryStrategyTrace`
+ * (Phase 108n / D-186). */
+export interface MemoryStrategyTrace {
+	strategy: string;
+	summary: string;
+	recent_turn_count: number;
+	estimated_tokens: number;
+	health: string;
+}
+
+/** The `memory.strategy_trace` response. */
+export interface MemoryStrategyTraceResponse {
+	trace: MemoryStrategyTrace;
+	protocol_version: string;
+}
+
+/** An operator-supplied turn for `memory.put` — mirrors `types.MemoryTurnInput`. */
+export interface MemoryTurnInput {
+	user_text: string;
+	assistant_text: string;
+}
+
+/** The `memory.put` response — the appended turn's resolvable key. */
+export interface MemoryPutResponse {
+	key: string;
+	protocol_version: string;
+}
+
+/** The `memory.delete` response. */
+export interface MemoryDeleteResponse {
+	deleted: boolean;
+	remaining_turns: number;
+	protocol_version: string;
+}

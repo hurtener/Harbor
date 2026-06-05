@@ -225,6 +225,21 @@ export class MemoryNamespace {
 	health(): Promise<MemoryHealthResponse> {
 		return this.#t.request<MemoryHealthResponse>('/v1/memory/health', {});
 	}
+	/** `memory.strategy_trace` — the live strategy-compaction projection
+	 * (Phase 108n / D-186). Read scope (no admin claim). */
+	strategyTrace<R = unknown>(): Promise<R> {
+		return this.#t.request<R>('/v1/memory/strategy_trace', {});
+	}
+	/** `memory.put` — admin-gated "add a memory turn" mutation (D-079). */
+	put<R = unknown>(userMessage: string, assistantResponse: string): Promise<R> {
+		return this.#t.request<R>('/v1/memory/put', {
+			turn: { user_text: userMessage, assistant_text: assistantResponse }
+		});
+	}
+	/** `memory.delete` — admin-gated "evict a memory turn" mutation (D-079). */
+	delete<R = unknown>(key: string): Promise<R> {
+		return this.#t.request<R>('/v1/memory/delete', { key });
+	}
 }
 
 /**

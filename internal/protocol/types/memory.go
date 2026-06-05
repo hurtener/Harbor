@@ -365,3 +365,107 @@ type MemoryHealthResponse struct {
 	// under so a client can detect a version skew.
 	ProtocolVersion string `json:"protocol_version"`
 }
+
+// MemoryStrategyTraceRequest is the wire request for the
+// `memory.strategy_trace` method (Phase 108n / D-186). Identity is
+// mandatory; the verified identity in ctx is preferred and the body
+// Identity is defended against it.
+type MemoryStrategyTraceRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory;
+	// an incomplete triple fails closed with CodeIdentityRequired (401).
+	Identity IdentityScope `json:"identity"`
+}
+
+// MemoryStrategyTrace is the wire projection of how the configured memory
+// strategy is compacting the caller's session memory RIGHT NOW (Phase
+// 108n / D-186). It is the honest, read-only projection of the strategy's
+// live `GetLLMContext` + `Health` output — NOT a fabricated per-step
+// "selection with rejections" (the `rolling_summary` strategy summarises;
+// it does not select-and-reject candidates). Every field is real runtime
+// state; an empty session projects an empty trace, never a synthesised one
+// (CLAUDE.md §13).
+type MemoryStrategyTrace struct {
+	// Strategy is the configured memory strategy — one of the
+	// MemoryStrategyName values.
+	Strategy string `json:"strategy"`
+	// Summary is the rolling-summary text the strategy injects into the
+	// planner's LLM call — the compaction OUTPUT. Empty under `none` /
+	// `truncation` (which keep no rolling summary) or before any
+	// compaction has occurred.
+	Summary string `json:"summary"`
+	// RecentTurnCount is the number of conversation turns the strategy
+	// currently keeps verbatim (NOT folded into the summary).
+	RecentTurnCount int `json:"recent_turn_count"`
+	// EstimatedTokens is the strategy's current estimate of the tokens
+	// `GetLLMContext` would inject — the planner compares this against its
+	// context-window budget.
+	EstimatedTokens int `json:"estimated_tokens"`
+	// Health is the memory FSM health state for this identity —
+	// "healthy" | "degraded" | "recovering".
+	Health string `json:"health"`
+}
+
+// MemoryStrategyTraceResponse is the wire response for the
+// `memory.strategy_trace` method.
+type MemoryStrategyTraceResponse struct {
+	// Trace is the live strategy-compaction projection.
+	Trace MemoryStrategyTrace `json:"trace"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// MemoryTurnInput is the operator-supplied conversation turn the
+// `memory.put` admin method appends (Phase 108n / D-186). It carries only
+// the user / assistant text — never trajectory internals; the runtime owns
+// the timestamp.
+type MemoryTurnInput struct {
+	// UserMessage is the turn's user message text.
+	UserMessage string `json:"user_text"`
+	// AssistantResponse is the turn's assistant response text.
+	AssistantResponse string `json:"assistant_text"`
+}
+
+// MemoryPutRequest is the wire request for the `memory.put` method (Phase
+// 108n / D-186) — the admin-gated, audited "add a memory turn" mutation.
+// Identity is mandatory; admin scope is required (D-079).
+type MemoryPutRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory.
+	Identity IdentityScope `json:"identity"`
+	// Turn is the conversation turn to append.
+	Turn MemoryTurnInput `json:"turn"`
+}
+
+// MemoryPutResponse is the wire response for the `memory.put` method.
+type MemoryPutResponse struct {
+	// Key is the deterministic key of the appended turn — the value a
+	// subsequent `memory.get` resolves.
+	Key string `json:"key"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}
+
+// MemoryDeleteRequest is the wire request for the `memory.delete` method
+// (Phase 108n / D-186) — the admin-gated, audited "evict a memory turn"
+// mutation. Identity is mandatory; admin scope is required (D-079).
+type MemoryDeleteRequest struct {
+	// Identity is the request's identity scope. The triple is mandatory.
+	Identity IdentityScope `json:"identity"`
+	// Key is the memory turn key to evict — a value carried on a
+	// `MemoryItem.Key` returned by `memory.list`.
+	Key string `json:"key"`
+}
+
+// MemoryDeleteResponse is the wire response for the `memory.delete`
+// method.
+type MemoryDeleteResponse struct {
+	// Deleted is true when the keyed turn was found and evicted.
+	Deleted bool `json:"deleted"`
+	// RemainingTurns is the turn count remaining in the session record
+	// after the eviction (the Console re-reads the list to refresh).
+	RemainingTurns int `json:"remaining_turns"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}

@@ -102,38 +102,41 @@ const (
 // tree where methods/ itself is the thing under audit), so the set is
 // duplicated here and the test pins the duplication.
 var CanonicalMethods = map[string]struct{}{
-	"start":              {},
-	"cancel":             {},
-	"pause":              {},
-	"resume":             {},
-	"redirect":           {},
-	"inject_context":     {},
-	"approve":            {},
-	"reject":             {},
-	"prioritize":         {},
-	"user_message":       {},
-	"events.subscribe":   {}, // Phase 72 / D-105
-	"events.aggregate":   {}, // Phase 72a / D-106
-	"search.query":       {}, // Phase 72c / D-108
-	"search.sessions":    {}, // Phase 72c / D-108
-	"search.tasks":       {}, // Phase 72c / D-108
-	"search.events":      {}, // Phase 72c / D-108
-	"search.artifacts":   {}, // Phase 72c / D-108
-	"runtime.info":       {}, // Phase 72f / D-111
-	"runtime.health":     {}, // Phase 72f / D-111
-	"runtime.counters":   {}, // Phase 72f / D-111
-	"runtime.drivers":    {}, // Phase 72f / D-111
-	"metrics.snapshot":   {}, // Phase 72f / D-111
-	"governance.posture": {}, // Phase 72g / D-112
-	"llm.posture":        {}, // Phase 72g / D-112
-	"pause.list":         {}, // Phase 72e / D-110
-	"topology.snapshot":  {}, // Phase 74 / D-114
-	"artifacts.list":     {}, // Phase 73l / D-120
-	"artifacts.put":      {}, // Phase 73l / D-120
-	"artifacts.get_ref":  {}, // Phase 73l / D-120
-	"memory.list":        {}, // Phase 73j / D-118
-	"memory.get":         {}, // Phase 73j / D-118
-	"memory.health":      {}, // Phase 73j / D-118
+	"start":                 {},
+	"cancel":                {},
+	"pause":                 {},
+	"resume":                {},
+	"redirect":              {},
+	"inject_context":        {},
+	"approve":               {},
+	"reject":                {},
+	"prioritize":            {},
+	"user_message":          {},
+	"events.subscribe":      {}, // Phase 72 / D-105
+	"events.aggregate":      {}, // Phase 72a / D-106
+	"search.query":          {}, // Phase 72c / D-108
+	"search.sessions":       {}, // Phase 72c / D-108
+	"search.tasks":          {}, // Phase 72c / D-108
+	"search.events":         {}, // Phase 72c / D-108
+	"search.artifacts":      {}, // Phase 72c / D-108
+	"runtime.info":          {}, // Phase 72f / D-111
+	"runtime.health":        {}, // Phase 72f / D-111
+	"runtime.counters":      {}, // Phase 72f / D-111
+	"runtime.drivers":       {}, // Phase 72f / D-111
+	"metrics.snapshot":      {}, // Phase 72f / D-111
+	"governance.posture":    {}, // Phase 72g / D-112
+	"llm.posture":           {}, // Phase 72g / D-112
+	"pause.list":            {}, // Phase 72e / D-110
+	"topology.snapshot":     {}, // Phase 74 / D-114
+	"artifacts.list":        {}, // Phase 73l / D-120
+	"artifacts.put":         {}, // Phase 73l / D-120
+	"artifacts.get_ref":     {}, // Phase 73l / D-120
+	"memory.list":           {}, // Phase 73j / D-118
+	"memory.get":            {}, // Phase 73j / D-118
+	"memory.health":         {}, // Phase 73j / D-118
+	"memory.strategy_trace": {}, // Phase 108n / D-186
+	"memory.put":            {}, // Phase 108n / D-186
+	"memory.delete":         {}, // Phase 108n / D-186
 	// Phase 73k (D-119) MCP-Connections-page cluster — twelve methods.
 	"mcp.servers.list":               {}, // Phase 73k / D-119
 	"mcp.servers.get":                {}, // Phase 73k / D-119
@@ -294,6 +297,15 @@ var CanonicalWireTypes = map[string]string{
 	"MemoryHealthRequest":   "types",
 	"MemoryHealthAggregate": "types",
 	"MemoryHealthResponse":  "types",
+	// Phase 108n (D-186) strategy-trace + mutation wire types.
+	"MemoryStrategyTraceRequest":  "types",
+	"MemoryStrategyTrace":         "types",
+	"MemoryStrategyTraceResponse": "types",
+	"MemoryTurnInput":             "types",
+	"MemoryPutRequest":            "types",
+	"MemoryPutResponse":           "types",
+	"MemoryDeleteRequest":         "types",
+	"MemoryDeleteResponse":        "types",
 	// Phase 73k (D-119) MCP-Connections-page wire types — all live in
 	// internal/protocol/types/mcp_servers.go. MCPServerStateView is a
 	// string-enum type (like methods.Method / errors.Code) and is NOT
