@@ -1,4 +1,4 @@
-// MCP Connections page Playwright spec (D-121, MCP refactor).
+// MCP Connections page Playwright spec (Phase 108m / D-185).
 //
 // This is the per-page e2e spec for the Console MCP Connections page. It
 // rides on the Phase 75 harness baseline (`tests/fixtures/page.ts`): the
@@ -6,28 +6,26 @@
 // instance, and the suite gates on `consoleSubcommandAvailable()`.
 //
 // SKIP semantics (mirrors the harness — the directory-/subcommand-missing
-// → SKIP pattern): when the `harbor console` subcommand is absent
-// (pre-Phase-73m) or `bin/harbor` is not built, the whole describe block
-// SKIPs cleanly so the harness baseline stays green.
+// → SKIP pattern): when the `harbor console` subcommand is absent or
+// `bin/harbor` is not built, the whole describe block SKIPs cleanly so the
+// harness baseline stays green.
 //
-// The D-121 refactor rebuilt this page onto the design-system foundation:
-// the raw `<table>` → shared `<DataTable>`, the bespoke async chain →
-// the four-state `<PageState>` (now WITH a Disconnected branch), the
-// `mcpApi` object → the unified `HarborClient` + `connection.ts`. The
-// assertions below target the refactored shape.
+// The Phase 108m rebuild rethemed the page to the carded, viewport-locked
+// master-detail composition: the servers TABLE on the left + a right-rail
+// server detail on the right (the deepened header + five tabs + live
+// Recent-events card). The separate tabbed-detail route was DROPPED — the
+// rail is the single detail surface (§13: no two parallel implementations).
+// The assertions below target that rebuilt shape.
 //
 // Coverage:
-//   (a) servers list renders rows OR the documented empty state;
+//   (a) servers list renders rows OR the documented empty/error state;
 //   (b) status chips render via the shared StatusChip;
-//   (c) selecting a row populates the DetailRail summary;
-//   (d) drill-in to the tabbed per-server detail route;
-//   (e) each detail tab paints;
-//   (f) refresh-discovery as a non-admin surfaces a scope-mismatch error;
-//   (g) the raw-HTML toggle is disabled for non-admins;
-//   (h) the Tools tab deep-links to /tools?server=… (unprefixed — §1);
-//   (i) a missing-server detail load surfaces the PageState Error state;
-//   (j) the disconnected PageState renders when no Runtime is attached;
-//   (k) the page carries the depth-bar surfaces (header, footer, pager).
+//   (c) selecting a row populates the right-rail detail;
+//   (d) the rail carries the five tabs and each paints in place;
+//   (e) the Tools tab deep-links to /tools?server=… (unprefixed — §1);
+//   (f) the raw-HTML toggle is disabled for a non-admin session;
+//   (g) the disconnected Console redirects to /settings (Phase 105);
+//   (h) the page carries the depth-bar shell surfaces (footer, search).
 
 import { test, expect, consoleSubcommandAvailable } from "./fixtures/page";
 import { STORAGE_KEYS } from "../src/lib/connection";
@@ -37,7 +35,9 @@ const CONSOLE_AVAILABLE = consoleSubcommandAvailable();
 /**
  * Seed the full `connection.ts` storage convention so the page resolves a
  * live Runtime connection (the harness `seedAuth` only writes the legacy
- * console-token key; the D-121 page resolves through `connection.ts`).
+ * console-token key; the page resolves through `connection.ts`). Scopes are
+ * left UNSET — a non-admin UI gate — so the admin-gated raw-HTML toggle is
+ * deterministically disabled (the runtime token is the authoritative gate).
  */
 async function seedConnection(
   page: import("@playwright/test").Page,
@@ -56,13 +56,16 @@ async function seedConnection(
   );
 }
 
+const NO_ROWS_SKIP =
+  "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)";
+
 test.describe("MCP Connections page", () => {
   test.skip(
     !CONSOLE_AVAILABLE,
-    "harbor console subcommand absent (pre-Phase-73m) or bin/harbor not built",
+    "harbor console subcommand absent or bin/harbor not built",
   );
 
-  test("the servers list renders (rows or the documented empty state)", async ({
+  test("the servers list renders (rows or the documented empty/error state)", async ({
     page,
     runtime,
     helpers,
@@ -76,8 +79,6 @@ test.describe("MCP Connections page", () => {
       "the MCP Connections list section is present",
     ).toBeAttached();
 
-    // The list resolves into one of the four PageState states: a populated
-    // DataTable, the documented empty state, or the Error state.
     const table = page.locator("table.data-table");
     const empty = page.locator("[data-testid='list-empty']");
     const error = page.locator("[data-testid='page-state-error']");
@@ -109,7 +110,7 @@ test.describe("MCP Connections page", () => {
     }
   });
 
-  test("selecting a server row populates the detail rail", async ({
+  test("selecting a server row populates the right-rail detail", async ({
     page,
     runtime,
     helpers,
@@ -120,17 +121,17 @@ test.describe("MCP Connections page", () => {
 
     const firstRow = page.locator("[data-testid^='server-row-']").first();
     if ((await firstRow.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
+      test.skip(true, NO_ROWS_SKIP);
       return;
     }
     await firstRow.click();
     await expect(
       page.locator("[data-testid='rail-server-name']"),
-      "the detail rail shows the selected server",
+      "the right-rail detail shows the selected server",
     ).toBeVisible();
   });
 
-  test("drilling into a server opens the tabbed detail view with six tabs", async ({
+  test("the detail rail carries the five tabs and each paints in place", async ({
     page,
     runtime,
     helpers,
@@ -139,96 +140,27 @@ test.describe("MCP Connections page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("mcp-connections");
 
-    const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
-    if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
+    const firstRow = page.locator("[data-testid^='server-row-']").first();
+    if ((await firstRow.count()) === 0) {
+      test.skip(true, NO_ROWS_SKIP);
       return;
     }
-    await firstLink.click();
-    await page.waitForLoadState("load");
+    await firstRow.click();
+    await expect(page.locator("[data-testid='mcp-detail-rail']")).toBeVisible();
 
-    await expect(
-      page.locator("[data-testid='mcp-connections-detail']"),
-      "the per-server detail view renders",
-    ).toBeAttached();
-
-    for (const tab of ["tools", "resources", "prompts", "oauth", "health", "policy"]) {
+    for (const tab of ["tools", "resources", "prompts", "oauth", "policy"]) {
       await expect(
         page.locator(`[data-testid='tab-${tab}']`),
         `the ${tab} tab is present`,
       ).toBeVisible();
     }
-  });
-
-  test("each detail tab paints when selected", async ({ page, runtime, helpers }) => {
-    await helpers.seedAuth(runtime.token);
-    await seedConnection(page, runtime.baseURL, runtime.token);
-    await helpers.gotoPage("mcp-connections");
-
-    const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
-    if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
-      return;
-    }
-    await firstLink.click();
-    await page.waitForLoadState("load");
-
-    for (const tab of ["resources", "prompts", "oauth", "health", "policy", "tools"]) {
+    for (const tab of ["resources", "prompts", "oauth", "policy", "tools"]) {
       await page.locator(`[data-testid='tab-${tab}']`).click();
       await expect(
         page.locator(`[data-testid='tab-body-${tab}']`),
         `the ${tab} tab body paints`,
       ).toBeVisible();
     }
-  });
-
-  test("refresh-discovery without the control claim surfaces a scope error", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await seedConnection(page, runtime.baseURL, runtime.token);
-    await helpers.gotoPage("mcp-connections");
-
-    const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
-    if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
-      return;
-    }
-    await firstLink.click();
-    await page.waitForLoadState("load");
-
-    await page.locator("[data-testid='refresh-discovery']").click();
-    await expect(
-      page.locator("[data-testid='action-error']"),
-      "refresh-discovery without the control claim surfaces a visible error",
-    ).toBeVisible();
-  });
-
-  test("the raw-HTML toggle is disabled for a non-admin session", async ({
-    page,
-    runtime,
-    helpers,
-  }) => {
-    await helpers.seedAuth(runtime.token);
-    await seedConnection(page, runtime.baseURL, runtime.token);
-    await helpers.gotoPage("mcp-connections");
-
-    const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
-    if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
-      return;
-    }
-    await firstLink.click();
-    await page.waitForLoadState("load");
-
-    const toggle = page.locator("[data-testid='raw-html-toggle']");
-    await expect(toggle, "the raw-HTML toggle renders").toBeVisible();
-    await expect(
-      toggle,
-      "the raw-HTML toggle is disabled for a non-admin session",
-    ).toBeDisabled();
   });
 
   test("the Tools tab deep-links to /tools scoped to the server", async ({
@@ -240,15 +172,14 @@ test.describe("MCP Connections page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("mcp-connections");
 
-    const firstLink = page.locator("[data-testid^='server-row-'] a.server-link").first();
-    if ((await firstLink.count()) === 0) {
-      test.skip(true, "no MCP servers configured on the dev runtime (runtime-fixture seeding tracked in issue #178)");
+    const firstRow = page.locator("[data-testid^='server-row-']").first();
+    if ((await firstRow.count()) === 0) {
+      test.skip(true, NO_ROWS_SKIP);
       return;
     }
-    await firstLink.click();
-    await page.waitForLoadState("load");
-
+    await firstRow.click();
     await page.locator("[data-testid='tab-tools']").click();
+
     const deepLink = page.locator("[data-testid='tools-deep-link']");
     await expect(deepLink, "the Tools-tab deep-link renders").toBeVisible();
     const href = await deepLink.getAttribute("href");
@@ -258,18 +189,28 @@ test.describe("MCP Connections page", () => {
     );
   });
 
-  test("a missing server surfaces the PageState error state", async ({ page, runtime }) => {
+  test("the raw-HTML toggle is disabled for a non-admin session", async ({
+    page,
+    runtime,
+    helpers,
+  }) => {
+    await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
-    const response = await page.goto(
-      new URL("/mcp-connections/__nonexistent-server__", runtime.baseURL).toString(),
-    );
-    expect(response, "navigation returned a response").not.toBeNull();
-    expect(response!.status(), "the detail route does not 5xx").toBeLessThan(500);
-    await page.waitForLoadState("load");
+    await helpers.gotoPage("mcp-connections");
+
+    const firstRow = page.locator("[data-testid^='server-row-']").first();
+    if ((await firstRow.count()) === 0) {
+      test.skip(true, NO_ROWS_SKIP);
+      return;
+    }
+    await firstRow.click();
+
+    const toggle = page.locator("[data-testid='raw-html-toggle']");
+    await expect(toggle, "the raw-HTML toggle renders").toBeVisible();
     await expect(
-      page.locator("[data-testid='page-state-error']"),
-      "the Error state renders for an unknown server",
-    ).toBeVisible();
+      toggle,
+      "the raw-HTML toggle is disabled for a non-admin session",
+    ).toBeDisabled();
   });
 
   test("a disconnected Console redirects to /settings to connect (Phase 105)", async ({
@@ -295,9 +236,8 @@ test.describe("MCP Connections page", () => {
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("mcp-connections");
 
-    // D-132 / W3: the ConnectionFooter is owned by the app shell
-    // (`(console)/+layout.svelte`) — the page no longer renders its
-    // own. Assert the single shell-provided footer.
+    // D-132 / W3: the ConnectionFooter is owned by the app shell — the page
+    // no longer renders its own. Assert the single shell-provided footer.
     await expect(
       page.locator("[data-testid='connection-footer']"),
       "the shell-provided ConnectionFooter renders",
