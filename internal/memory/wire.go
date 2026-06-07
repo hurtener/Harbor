@@ -37,4 +37,13 @@ const KindMemoryState = "memory.state"
 type Record struct {
 	Strategy Strategy           `json:"strategy"`
 	Turns    []ConversationTurn `json:"turns,omitempty"`
+	// Summary is the rolling-summary text the `rolling_summary` strategy
+	// folds compacted turns into. Added in Phase 108n (D-186) so a
+	// Snapshot → drop-turn → Restore read-modify-write (the `memory.delete`
+	// mutation) round-trips the summary LOSSLESSLY rather than dropping it.
+	// The json tag matches the strategy's persisted `memoryStateRecord`
+	// (`internal/memory/strategy`), so decoding a real snapshot into this
+	// envelope and re-marshalling preserves every field. `omitempty` keeps
+	// it byte-compatible with pre-108n records that never wrote a summary.
+	Summary string `json:"summary,omitempty"`
 }

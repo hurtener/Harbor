@@ -150,3 +150,45 @@ Reconciliation of `docs/rfc/assets/console-memory-page.png` against §3-§7.
 - **D-066 (control-scope claims).** All mutation surfaces are disabled-with-tooltip at V1; observation requires the `memory.read` scope; cross-tenant inspection requires `memory.crosstenant` per D-079 and gates the `Tenant ▾` facet list to scope-authorised tenants only.
 - **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
 - **§13 forbidden practices.** Heavy memory values route through `artifacts.get` rather than inlining (closes D-026); the Console never bypasses identity rejection (no UI affordance to "view rejected memory anyway"); no parallel implementation of memory mutation (the deferred bulk actions are explicitly disabled until Phase 73 lands the Protocol surface).
+
+## 13. Reframe — Phase 108n carded retheme + the real strategy-trace / mutation surface (2026-06-05, D-186)
+
+Phase 108n brings this page to the carded, viewport-locked master-detail
+composition (Tools-108k / MCP-108m) AND lands the Protocol surface that lets it
+stop deferring features. It is a **retheme + king-file refactor + a real
+primitive-with-consumer wave** (D-184 pattern), not a re-spec — the
+`memory.{list,get,health}` read layer + the Console-local saved filters are
+unchanged. The changes here **supersede** the layout + read-only halves of §4 /
+§12 (and D-118):
+
+- **Composition.** The per-page `PageHeader` is dropped (108b chrome). The page
+  is a carded filter strip + a viewport-locked TABLE-left (records scroll
+  internally behind a sticky `<thead>`) + a stacked right rail (Memory health /
+  Strategy trace / live Memory events / Add memory / Selected item). The king
+  file is refactored into a `MemoryPageState` controller + a pure `derive.ts`.
+
+- **Strategy trace is REAL, not a fabricated selection trace.** §3 / §4's
+  "Strategy trace tab" asked for a per-step selection with rejected items. The
+  `rolling_summary` strategy summarises (no candidate selection), so
+  `memory.strategy_trace` ships the honest form: the strategy's live
+  `GetLLMContext` (the rolling-summary text + verbatim-turn count + token
+  estimate) + `Health`. Real runtime state; empty session → empty trace (§13).
+
+- **The mutation surface is LIVE (admin-gated).** §3 / §12's deferred
+  disabled-with-tooltip bulk actions are replaced by the REAL admin
+  `memory.put` (Add memory composer) + `memory.delete` (Evict selected / the
+  selected-item Evict button) — `auth.ScopeAdmin`-gated (D-079), audited
+  (`memory.item_put` / `memory.item_deleted`), backed by the existing
+  `MemoryStore` interface. "Refresh TTL" / "Pin" stay absent (D-065 — no
+  priority/pin dimension; no fabricated buttons).
+
+- **`memory.promotions` stays deferred (honest finding).** The Promotions tab
+  is NOT shipped — cross-session memory promotion is unimplemented in the
+  runtime, so a method would be a hollow stub (§13 / PAGE-POLISH §1). It awaits
+  the promotion subsystem (an RFC-level addition).
+
+- **Wire-shape fix + live event feed.** The selected-item value viewer now
+  base64-decodes the `memory.get` value (it is a Go `[]byte` → base64; the
+  pre-chrome viewer rendered gibberish). The deferred event-feed card is a LIVE
+  `events.subscribe` projection of the three `memory.*` events, honest-empty.
+  See D-186 for the full live-wire verification.

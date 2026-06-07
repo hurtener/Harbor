@@ -32,10 +32,39 @@ const EventTypeMemoryHealthChanged events.EventType = "memory.health_changed"
 // D-035 (bounded recovery loop).
 const EventTypeMemoryRecoveryDropped events.EventType = "memory.recovery_dropped"
 
+// EventTypeMemoryItemPut is emitted on the events bus when an admin adds
+// a memory turn through the `memory.put` Protocol method (Phase 108n /
+// D-186). It is the audit trail for the mutation: the Console / audit
+// pipeline observes who added what (by key) and when. SafePayload by
+// construction — it carries the deterministic (hashed) turn key only,
+// never the operator-supplied turn text.
+const EventTypeMemoryItemPut events.EventType = "memory.item_put"
+
+// EventTypeMemoryItemDeleted is emitted on the events bus when an admin
+// evicts a memory turn through the `memory.delete` Protocol method (Phase
+// 108n / D-186). The audit trail for the eviction. SafePayload — the
+// hashed key only, never any record value bytes.
+const EventTypeMemoryItemDeleted events.EventType = "memory.item_deleted"
+
 func init() {
 	events.RegisterEventType(EventTypeMemoryIdentityRejected)
 	events.RegisterEventType(EventTypeMemoryHealthChanged)
 	events.RegisterEventType(EventTypeMemoryRecoveryDropped)
+	events.RegisterEventType(EventTypeMemoryItemPut)
+	events.RegisterEventType(EventTypeMemoryItemDeleted)
+}
+
+// MemoryMutationPayload is the audit payload for the `memory.item_put` /
+// `memory.item_deleted` events (Phase 108n / D-186). SafePayload by
+// construction: `Operation` is a bounded enumerable string ("put" /
+// "delete"); `Key` is the deterministic content-addressed turn key (a
+// sha256 prefix), never operator-supplied bytes. The record value text is
+// NEVER carried here — it is caller-controlled and would require redaction;
+// the audit trail records THAT a mutation happened, by key, not its bytes.
+type MemoryMutationPayload struct {
+	events.SafeSealed
+	Operation string
+	Key       string
 }
 
 // MemoryIdentityRejectedPayload reports a missing-identity

@@ -49,9 +49,12 @@ import (
 // internal/protocol/transports can mount each route under the same
 // pattern it documents.
 const (
-	MemoryListRoutePattern   = "POST /v1/memory/list"
-	MemoryGetRoutePattern    = "POST /v1/memory/get"
-	MemoryHealthRoutePattern = "POST /v1/memory/health"
+	MemoryListRoutePattern          = "POST /v1/memory/list"
+	MemoryGetRoutePattern           = "POST /v1/memory/get"
+	MemoryHealthRoutePattern        = "POST /v1/memory/health"
+	MemoryStrategyTraceRoutePattern = "POST /v1/memory/strategy_trace"
+	MemoryPutRoutePattern           = "POST /v1/memory/put"
+	MemoryDeleteRoutePattern        = "POST /v1/memory/delete"
 )
 
 // maxMemoryBodyBytes bounds a memory request body. The wire payload is
@@ -75,6 +78,7 @@ type MemoryHandler struct {
 	store      memory.MemoryStore
 	artifacts  artifacts.ArtifactStore
 	aggregator *events.Aggregator // optional — nil ⇒ 24h counters report 0
+	bus        events.EventBus    // optional — nil ⇒ mutation audit events not emitted
 	logger     *slog.Logger
 	threshold  int
 	driverName string
@@ -105,6 +109,20 @@ func WithMemoryAggregator(a *events.Aggregator) MemoryOption {
 	return func(h *MemoryHandler) {
 		if a != nil {
 			h.aggregator = a
+		}
+	}
+}
+
+// WithMemoryBus wires the events bus the admin mutation methods
+// (`memory.put` / `memory.delete`) publish their audit events on
+// (`memory.item_put` / `memory.item_deleted`). OPTIONAL — when not
+// supplied, the mutations still apply but emit no audit event; the
+// production wiring (`harbor dev`) always supplies it so the mutation is
+// audited (page-memory.md §9). A nil bus is treated as "not supplied".
+func WithMemoryBus(b events.EventBus) MemoryOption {
+	return func(h *MemoryHandler) {
+		if b != nil {
+			h.bus = b
 		}
 	}
 }
@@ -166,6 +184,147 @@ func (h *MemoryHandler) GetHandler() http.Handler {
 // HealthHandler returns the http.Handler for `POST /v1/memory/health`.
 func (h *MemoryHandler) HealthHandler() http.Handler {
 	return http.HandlerFunc(h.serveHealth)
+}
+
+// StrategyTraceHandler returns the http.Handler for
+// `POST /v1/memory/strategy_trace`.
+func (h *MemoryHandler) StrategyTraceHandler() http.Handler {
+	return http.HandlerFunc(h.serveStrategyTrace)
+}
+
+// PutHandler returns the http.Handler for `POST /v1/memory/put`.
+func (h *MemoryHandler) PutHandler() http.Handler {
+	return http.HandlerFunc(h.servePut)
+}
+
+// DeleteHandler returns the http.Handler for `POST /v1/memory/delete`.
+func (h *MemoryHandler) DeleteHandler() http.Handler {
+	return http.HandlerFunc(h.serveDelete)
+}
+
+// serveStrategyTrace answers `POST /v1/memory/strategy_trace` — a read
+// method (same read-scope contract as memory.list; no admin claim).
+func (h *MemoryHandler) serveStrategyTrace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusMethodNotAllowed,
+			"memory.strategy_trace accepts POST only")
+		return
+	}
+	id, perr := h.resolveAndDecode(w, r)
+	if perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	var req prototypes.MemoryStrategyTraceRequest
+	if perr := decodeMemoryBody(w, r, &req); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	resp, err := memprotocol.StrategyTrace(r.Context(), memprotocol.StrategyTraceDeps{Store: h.store},
+		identity.Quadruple{Identity: id})
+	if err != nil {
+		code, status, msg := classifyMemoryError(err)
+		writeMemoryError(w, code, status, msg)
+		return
+	}
+	h.encode(r.Context(), w, id, &resp)
+}
+
+// servePut answers `POST /v1/memory/put` — the admin-gated, audited
+// "add a memory turn" mutation (D-079).
+func (h *MemoryHandler) servePut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusMethodNotAllowed,
+			"memory.put accepts POST only")
+		return
+	}
+	id, perr := h.resolveAndDecode(w, r)
+	if perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	var req prototypes.MemoryPutRequest
+	if perr := decodeMemoryBody(w, r, &req); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if perr := assertMemoryAdmin(r.Context()); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	resp, err := memprotocol.Put(r.Context(), memprotocol.PutDeps{Store: h.store, Bus: h.bus},
+		req, identity.Quadruple{Identity: id})
+	if err != nil {
+		code, status, msg := classifyMemoryError(err)
+		writeMemoryError(w, code, status, msg)
+		return
+	}
+	h.encode(r.Context(), w, id, &resp)
+}
+
+// serveDelete answers `POST /v1/memory/delete` — the admin-gated, audited
+// "evict a memory turn" mutation (D-079).
+func (h *MemoryHandler) serveDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusMethodNotAllowed,
+			"memory.delete accepts POST only")
+		return
+	}
+	id, perr := h.resolveAndDecode(w, r)
+	if perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	var req prototypes.MemoryDeleteRequest
+	if perr := decodeMemoryBody(w, r, &req); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if perr := assertMemoryBodyMatchesIdentity(req.Identity, id); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if perr := assertMemoryAdmin(r.Context()); perr != nil {
+		writeMemoryError(w, perr.code, perr.status, perr.message)
+		return
+	}
+	if req.Key == "" {
+		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusBadRequest,
+			"memory.delete requires a non-empty key")
+		return
+	}
+	resp, err := memprotocol.Delete(r.Context(), memprotocol.DeleteDeps{Store: h.store, Bus: h.bus},
+		req, identity.Quadruple{Identity: id})
+	if err != nil {
+		code, status, msg := classifyMemoryError(err)
+		writeMemoryError(w, code, status, msg)
+		return
+	}
+	h.encode(r.Context(), w, id, &resp)
+}
+
+// assertMemoryAdmin gates a mutation method on the verified `admin` scope
+// claim (D-079). Unlike the cross-tenant READ gate (which admits `admin`
+// OR `console:fleet`), a runtime-state MUTATION requires `admin` strictly —
+// `console:fleet` is a cross-runtime observation claim, never a write
+// entitlement. Fails closed with CodeIdentityScopeRequired (403).
+func assertMemoryAdmin(ctx context.Context) *memoryError {
+	if auth.HasScope(ctx, auth.ScopeAdmin) {
+		return nil
+	}
+	return &memoryError{
+		code:    protoerrors.CodeIdentityScopeRequired,
+		status:  http.StatusForbidden,
+		message: "this memory mutation requires the verified `admin` scope claim",
+	}
 }
 
 // serveList answers `POST /v1/memory/list`.

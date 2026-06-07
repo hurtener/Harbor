@@ -47,6 +47,9 @@ var wantMethods = []methods.Method{
 	methods.MethodMemoryList,
 	methods.MethodMemoryGet,
 	methods.MethodMemoryHealth,
+	methods.MethodMemoryStrategyTrace,
+	methods.MethodMemoryPut,
+	methods.MethodMemoryDelete,
 	methods.MethodMCPServersList,
 	methods.MethodMCPServersGet,
 	methods.MethodMCPServersResources,
@@ -103,9 +106,10 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
-	// Phase 73m auth.rotate_token one + Phase 108l agents-control five = 76.
-	if len(got) != 76 {
-		t.Fatalf("Methods() returned %d methods, want 76", len(got))
+	// Phase 73m auth.rotate_token one + Phase 108l agents-control five +
+	// Phase 108n memory-mutation/trace three = 79.
+	if len(got) != 79 {
+		t.Fatalf("Methods() returned %d methods, want 79", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -138,38 +142,41 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// `search.<index>` shape — both match the canonical event-type
 	// naming convention (`tool.failed`, `runtime.error`, etc.).
 	wireStrings := map[methods.Method]string{
-		methods.MethodStart:             "start",
-		methods.MethodCancel:            "cancel",
-		methods.MethodPause:             "pause",
-		methods.MethodResume:            "resume",
-		methods.MethodRedirect:          "redirect",
-		methods.MethodInjectContext:     "inject_context",
-		methods.MethodApprove:           "approve",
-		methods.MethodReject:            "reject",
-		methods.MethodPrioritize:        "prioritize",
-		methods.MethodUserMessage:       "user_message",
-		methods.MethodEventsSubscribe:   "events.subscribe",
-		methods.MethodEventsAggregate:   "events.aggregate",
-		methods.MethodSearchQuery:       "search.query",
-		methods.MethodSearchSessions:    "search.sessions",
-		methods.MethodSearchTasks:       "search.tasks",
-		methods.MethodSearchEvents:      "search.events",
-		methods.MethodSearchArtifacts:   "search.artifacts",
-		methods.MethodRuntimeInfo:       "runtime.info",
-		methods.MethodRuntimeHealth:     "runtime.health",
-		methods.MethodRuntimeCounters:   "runtime.counters",
-		methods.MethodRuntimeDrivers:    "runtime.drivers",
-		methods.MethodMetricsSnapshot:   "metrics.snapshot",
-		methods.MethodGovernancePosture: "governance.posture",
-		methods.MethodLLMPosture:        "llm.posture",
-		methods.MethodPauseList:         "pause.list",
-		methods.MethodTopologySnapshot:  "topology.snapshot",
-		methods.MethodArtifactsList:     "artifacts.list",
-		methods.MethodArtifactsPut:      "artifacts.put",
-		methods.MethodArtifactsGetRef:   "artifacts.get_ref",
-		methods.MethodMemoryList:        "memory.list",
-		methods.MethodMemoryGet:         "memory.get",
-		methods.MethodMemoryHealth:      "memory.health",
+		methods.MethodStart:               "start",
+		methods.MethodCancel:              "cancel",
+		methods.MethodPause:               "pause",
+		methods.MethodResume:              "resume",
+		methods.MethodRedirect:            "redirect",
+		methods.MethodInjectContext:       "inject_context",
+		methods.MethodApprove:             "approve",
+		methods.MethodReject:              "reject",
+		methods.MethodPrioritize:          "prioritize",
+		methods.MethodUserMessage:         "user_message",
+		methods.MethodEventsSubscribe:     "events.subscribe",
+		methods.MethodEventsAggregate:     "events.aggregate",
+		methods.MethodSearchQuery:         "search.query",
+		methods.MethodSearchSessions:      "search.sessions",
+		methods.MethodSearchTasks:         "search.tasks",
+		methods.MethodSearchEvents:        "search.events",
+		methods.MethodSearchArtifacts:     "search.artifacts",
+		methods.MethodRuntimeInfo:         "runtime.info",
+		methods.MethodRuntimeHealth:       "runtime.health",
+		methods.MethodRuntimeCounters:     "runtime.counters",
+		methods.MethodRuntimeDrivers:      "runtime.drivers",
+		methods.MethodMetricsSnapshot:     "metrics.snapshot",
+		methods.MethodGovernancePosture:   "governance.posture",
+		methods.MethodLLMPosture:          "llm.posture",
+		methods.MethodPauseList:           "pause.list",
+		methods.MethodTopologySnapshot:    "topology.snapshot",
+		methods.MethodArtifactsList:       "artifacts.list",
+		methods.MethodArtifactsPut:        "artifacts.put",
+		methods.MethodArtifactsGetRef:     "artifacts.get_ref",
+		methods.MethodMemoryList:          "memory.list",
+		methods.MethodMemoryGet:           "memory.get",
+		methods.MethodMemoryHealth:        "memory.health",
+		methods.MethodMemoryStrategyTrace: "memory.strategy_trace",
+		methods.MethodMemoryPut:           "memory.put",
+		methods.MethodMemoryDelete:        "memory.delete",
 
 		methods.MethodMCPServersList:             "mcp.servers.list",
 		methods.MethodMCPServersGet:              "mcp.servers.get",
@@ -266,6 +273,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// through their own handlers, NOT the steering inbox.
 	for _, m := range []methods.Method{
 		methods.MethodMemoryList, methods.MethodMemoryGet, methods.MethodMemoryHealth,
+		methods.MethodMemoryStrategyTrace, methods.MethodMemoryPut, methods.MethodMemoryDelete,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — memory.* methods are read-only, not steering controls", m)
@@ -563,9 +571,12 @@ func TestIsTopologyMethod(t *testing.T) {
 // IsValidMethod recognises every wire string.
 func TestIsMemoryMethod(t *testing.T) {
 	memoryMethods := map[methods.Method]string{
-		methods.MethodMemoryList:   "memory.list",
-		methods.MethodMemoryGet:    "memory.get",
-		methods.MethodMemoryHealth: "memory.health",
+		methods.MethodMemoryList:          "memory.list",
+		methods.MethodMemoryGet:           "memory.get",
+		methods.MethodMemoryHealth:        "memory.health",
+		methods.MethodMemoryStrategyTrace: "memory.strategy_trace",
+		methods.MethodMemoryPut:           "memory.put",
+		methods.MethodMemoryDelete:        "memory.delete",
 	}
 	for m, wire := range memoryMethods {
 		if string(m) != wire {
