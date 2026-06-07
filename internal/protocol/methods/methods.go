@@ -364,6 +364,32 @@ const (
 	// MethodMemoryList.
 	MethodMemoryHealth Method = "memory.health"
 
+	// MethodMemoryStrategyTrace — Phase 108n (D-186). Returns the live
+	// read-only projection of how the configured memory strategy is
+	// compacting the caller's session memory right now (the rolling-
+	// summary text + the verbatim-turn count + the token estimate +
+	// health) — the strategy's real `GetLLMContext` + `Health` output, not
+	// a fabricated selection trace. The wire-transport route is
+	// `POST /v1/memory/strategy_trace`. Same identity-scope contract as
+	// MethodMemoryList (read scope; no admin claim).
+	MethodMemoryStrategyTrace Method = "memory.strategy_trace"
+
+	// MethodMemoryPut — Phase 108n (D-186). The admin-gated, audited
+	// "add a memory turn" mutation: appends an operator-supplied
+	// conversation turn to the caller's session memory via the shipped
+	// `MemoryStore.AddTurn`. Requires the verified `admin` scope claim
+	// (D-079); fails closed without it. The wire-transport route is
+	// `POST /v1/memory/put`.
+	MethodMemoryPut Method = "memory.put"
+
+	// MethodMemoryDelete — Phase 108n (D-186). The admin-gated, audited
+	// "evict a memory turn" mutation: removes the keyed turn from the
+	// caller's session memory via a `Snapshot` → drop-turn → `Restore`
+	// read-modify-write on the shipped MemoryStore. Requires the verified
+	// `admin` scope claim (D-079); fails closed without it. The
+	// wire-transport route is `POST /v1/memory/delete`.
+	MethodMemoryDelete Method = "memory.delete"
+
 	// The Wave 13 (Phase 73k / D-119) MCP-Connections-page method
 	// cluster. Twelve `mcp.servers.*` methods — nine read methods and
 	// three admin verbs — that back the Console MCP Connections page.
@@ -606,38 +632,41 @@ const (
 // The map exists so IsValidMethod is O(1) and Methods returns a
 // deterministic snapshot.
 var canonicalMethods = map[Method]struct{}{
-	MethodStart:             {},
-	MethodCancel:            {},
-	MethodPause:             {},
-	MethodResume:            {},
-	MethodRedirect:          {},
-	MethodInjectContext:     {},
-	MethodApprove:           {},
-	MethodReject:            {},
-	MethodPrioritize:        {},
-	MethodUserMessage:       {},
-	MethodEventsSubscribe:   {},
-	MethodEventsAggregate:   {},
-	MethodSearchQuery:       {},
-	MethodSearchSessions:    {},
-	MethodSearchTasks:       {},
-	MethodSearchEvents:      {},
-	MethodSearchArtifacts:   {},
-	MethodRuntimeInfo:       {},
-	MethodRuntimeHealth:     {},
-	MethodRuntimeCounters:   {},
-	MethodRuntimeDrivers:    {},
-	MethodMetricsSnapshot:   {},
-	MethodGovernancePosture: {},
-	MethodLLMPosture:        {},
-	MethodPauseList:         {},
-	MethodTopologySnapshot:  {},
-	MethodArtifactsList:     {},
-	MethodArtifactsPut:      {},
-	MethodArtifactsGetRef:   {},
-	MethodMemoryList:        {},
-	MethodMemoryGet:         {},
-	MethodMemoryHealth:      {},
+	MethodStart:               {},
+	MethodCancel:              {},
+	MethodPause:               {},
+	MethodResume:              {},
+	MethodRedirect:            {},
+	MethodInjectContext:       {},
+	MethodApprove:             {},
+	MethodReject:              {},
+	MethodPrioritize:          {},
+	MethodUserMessage:         {},
+	MethodEventsSubscribe:     {},
+	MethodEventsAggregate:     {},
+	MethodSearchQuery:         {},
+	MethodSearchSessions:      {},
+	MethodSearchTasks:         {},
+	MethodSearchEvents:        {},
+	MethodSearchArtifacts:     {},
+	MethodRuntimeInfo:         {},
+	MethodRuntimeHealth:       {},
+	MethodRuntimeCounters:     {},
+	MethodRuntimeDrivers:      {},
+	MethodMetricsSnapshot:     {},
+	MethodGovernancePosture:   {},
+	MethodLLMPosture:          {},
+	MethodPauseList:           {},
+	MethodTopologySnapshot:    {},
+	MethodArtifactsList:       {},
+	MethodArtifactsPut:        {},
+	MethodArtifactsGetRef:     {},
+	MethodMemoryList:          {},
+	MethodMemoryGet:           {},
+	MethodMemoryHealth:        {},
+	MethodMemoryStrategyTrace: {},
+	MethodMemoryPut:           {},
+	MethodMemoryDelete:        {},
 
 	MethodFlowsList:         {},
 	MethodFlowsDescribe:     {},
@@ -1056,25 +1085,32 @@ func IsTopologyMethod(m Method) bool {
 	return ok
 }
 
-// canonicalMemoryMethods is the closed sub-set of the three Phase 73j
-// (Wave 13 / D-118) `memory.*` read methods. IsMemoryMethod is O(1);
-// the transport adapter uses it to branch the request through the
-// memory-inspection handlers instead of the task-control surface. The
-// set is closed — the V1 memory-page surface is read-only (`memory.list`
-// / `memory.get` / `memory.health`); the mutation methods (`memory.put`
-// / `memory.delete`) are deferred to Phase 73 / post-V1.
+// canonicalMemoryMethods is the closed set of `memory.*` methods that
+// route through the memory stream handlers: the three Phase 73j (Wave 13
+// / D-118) read methods (`memory.list` / `memory.get` / `memory.health`),
+// the Phase 108n (D-186) read `memory.strategy_trace`, and the Phase 108n
+// admin-gated mutation pair (`memory.put` / `memory.delete`).
+// IsMemoryMethod is O(1); the transport adapter uses it to branch the
+// request through the memory handlers instead of the task-control
+// surface. The mutation methods gate on the verified `admin` scope claim
+// at the handler edge (D-079) — the predicate only governs routing.
 var canonicalMemoryMethods = map[Method]struct{}{
-	MethodMemoryList:   {},
-	MethodMemoryGet:    {},
-	MethodMemoryHealth: {},
+	MethodMemoryList:          {},
+	MethodMemoryGet:           {},
+	MethodMemoryHealth:        {},
+	MethodMemoryStrategyTrace: {},
+	MethodMemoryPut:           {},
+	MethodMemoryDelete:        {},
 }
 
-// IsMemoryMethod reports whether m is one of the three canonical
-// `memory.*` read methods landed in Phase 73j (Wave 13 / D-118). The
-// control transport branches on this to route the request through the
-// memory-inspection handlers instead of the task-control / search /
-// posture / pause / topology surfaces. NOT a control method — a new
-// non-control method extends THIS predicate, never the steering inbox.
+// IsMemoryMethod reports whether m is one of the canonical `memory.*`
+// methods — the Phase 73j (Wave 13 / D-118) read trio plus the Phase 108n
+// (D-186) `memory.strategy_trace` read + `memory.put` / `memory.delete`
+// admin mutation pair. The control transport branches on this to route the
+// request through the memory handlers instead of the task-control / search
+// / posture / pause / topology surfaces. NOT a control method — a new
+// non-control memory method extends THIS predicate, never the steering
+// inbox; the mutation methods gate on `admin` at the handler edge (D-079).
 func IsMemoryMethod(m Method) bool {
 	_, ok := canonicalMemoryMethods[m]
 	return ok

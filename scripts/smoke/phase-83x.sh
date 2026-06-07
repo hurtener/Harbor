@@ -19,15 +19,17 @@ source "scripts/smoke/common.sh"
 
 # -----------------------------------------------------------------------------
 # W4 — Memory page MEMORY KEY column renders single-line ellipsis instead
-# of per-character vertical wrap.
+# of per-character vertical wrap. Phase 108n (D-186) moved the records table
+# into the MemoryTable component; the key-ellipsis + hover-title contract
+# lives there now (§17.6 — assert at the contract's new home).
 # -----------------------------------------------------------------------------
 assert_grep_present \
     'text-overflow: ellipsis' \
-    'web/console/src/routes/(console)/memory/+page.svelte' \
+    'web/console/src/lib/components/memory/MemoryTable.svelte' \
     'W4 Memory page key column uses single-line ellipsis (no per-glyph wrap)'
 assert_grep_present \
     'title=\{item.key\}' \
-    'web/console/src/routes/(console)/memory/+page.svelte' \
+    'web/console/src/lib/components/memory/MemoryTable.svelte' \
     'W4 Memory page key cell carries a hover-title for full-key reveal'
 
 # -----------------------------------------------------------------------------

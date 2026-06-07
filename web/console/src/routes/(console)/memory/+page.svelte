@@ -1,319 +1,91 @@
 <script lang="ts">
-  // Harbor Console — Memory page (`/memory`), refactored onto the D-121
-  // design-system foundation (docs/design/console/CONVENTIONS.md).
+  // Harbor Console — Memory page (`/memory`) — Phase 108n rebuild (D-186;
+  // supersedes the Phase 73j / D-118 pre-chrome layout).
   //
-  // Console consistency (CONVENTIONS.md §9):
-  //  - routes under `(console)/` with no `/console/` URL prefix (§1);
-  //  - renders inside the shared app shell (§2);
-  //  - composes the `components/ui/` inventory — PageHeader, FilterBar,
-  //    SavedViewChips, DataTable, BulkActionBar, DetailRail, RailCard,
-  //    StatusChip, Pagination, ConnectionFooter, PageState (§3);
-  //  - routes ALL async state through the four-state `<PageState>` (§4) —
-  //    Disconnected is its OWN state, never conflated with Error;
-  //  - clears the §5 depth bar (header / filter bar / table / detail rail /
-  //    Console-DB-backed saved views / real prev-next pagination / footer /
-  //    four-state PageState);
-  //  - talks to the Runtime ONLY through `HarborClient` + `connection.ts`
-  //    (§6) — zero hand-rolled `fetch`;
-  //  - introduces no raw token literals (§7).
+  // The per-identity inspector for the runtime's memory subsystem. Phase 108n
+  // rethemes it to the carded, viewport-locked Tools-108k / MCP-108m
+  // composition (a filter card + a TABLE-left + a stacked right-rail of
+  // health / live-events / selected-item cards), refactors the ~728-line king
+  // file into a `MemoryPageState` controller + pure `derive.ts` projections +
+  // focused `MemoryTable` / `MemoryEventsCard` components, and drops the
+  // per-page page header (the breadcrumb / ⌘K / footer are app-shell chrome,
+  // 108b).
   //
-  // V1 is VIEW-ONLY: the bulk-action bar renders disabled-with-tooltip;
-  // the memory mutation surface is deferred to Phase 73 (page-memory.md
-  // §10). Svelte 5 runes mode (D-092).
+  // Every datum + action is real-wired (PAGE-POLISH §3 — live-verified against
+  // the validation runtime's real `sqlite` / `rolling_summary` memory):
+  //   - records + aggregates ← `memory.list`
+  //   - selected-record detail ← `memory.get` (the value is base64-decoded —
+  //     the pre-chrome viewer rendered raw base64; fixed in `derive.ts`)
+  //   - right-rail health ← `memory.health`
+  //   - right-rail event feed ← LIVE `events.subscribe` (`memory.identity_
+  //     rejected` + `memory.health_changed` + `memory.recovery_dropped`) —
+  //     this UPGRADES the pre-chrome deferred placeholder (D-132/W5) to a real
+  //     live feed; honest-empty when quiet (§13)
+  //   - saved-view chips + NDJSON/CSV export ← Console-local (D-061)
+  //
+  // V1 is VIEW-ONLY: the memory mutation surface (add / edit / evict) is NOT
+  // shipped (page-memory.md §10), so the bulk-action bar stays disabled-with-
+  // tooltip — never a fabricated action (§13). Strategy-trace + Promotions are
+  // not shipped Protocol methods (a live probe returned 404), so this page
+  // surfaces no fabricated tabs for them.
+  //
+  // Svelte 5 runes (D-092); design tokens only; HarborClient + connection.ts
+  // only — no hand-rolled fetch (CONVENTIONS.md §6).
   import { onMount } from 'svelte';
-  import { HarborClient, ProtocolError, type ProtocolClient } from '$lib/protocol/harbor.js';
   import {
-    DEFAULT_MEMORY_LIST_PAGE_SIZE,
-    type MemoryItem,
-    type MemoryItemDetail,
-    type MemoryFilter,
-    type MemoryHealthAggregate,
-    type MemoryStrategyName,
-    type MemoryListResponse
-  } from '$lib/protocol/memory-types.js';
-  import {
-    resolveConnection,
-    DISCONNECTED_TOOLTIP,
-    type RuntimeConnection
-  } from '$lib/connection.js';
-  import { openMemorySavedFilters } from '$lib/memory/saved_views.js';
-  import type { MemorySavedFilters } from '$lib/db/saved_filters_memory.js';
-  import {
-    PageHeader,
     FilterBar,
     SavedViewChips,
-    DataTable,
     BulkActionBar,
     DetailRail,
     RailCard,
-    StatusChip,
     Pagination,
-    PageState,
-    type DataTableColumn,
-    type PageStatus,
-    type SavedView,
-    type StatusKind
+    PageState
   } from '$lib/components/ui';
-  import SelectedItemDetail from '$lib/components/memory/SelectedItemDetail.svelte';
+  import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
+  import MemoryTable from '$lib/components/memory/MemoryTable.svelte';
   import MemoryHealthCard from '$lib/components/memory/MemoryHealthCard.svelte';
+  import MemoryEventsCard from '$lib/components/memory/MemoryEventsCard.svelte';
+  import SelectedItemDetail from '$lib/components/memory/SelectedItemDetail.svelte';
+  import StrategyTraceCard from '$lib/components/memory/StrategyTraceCard.svelte';
+  import AddMemoryComposer from '$lib/components/memory/AddMemoryComposer.svelte';
   import StrategyOverlayChipRow from '$lib/components/memory/StrategyOverlayChipRow.svelte';
+  import { MemoryPageState } from '$lib/memory/state.svelte.js';
+  import type { MemoryItem } from '$lib/protocol/memory-types.js';
+  import type { ProtocolClient } from '$lib/protocol/harbor.js';
 
-  // ---- test-injection seam (CONVENTIONS.md §6) ---------------------
-  // A host harness MAY inject a deterministic `ProtocolClient` and a
-  // `MemorySavedFilters` facade so the page is exercised without a live
-  // Runtime / a real IndexedDB. Production resolves both itself.
-  interface MemoryPageGlobals {
-    __HARBOR_PROTOCOL_CLIENT__?: ProtocolClient;
-    __HARBOR_MEMORY_SAVED_FILTERS__?: MemorySavedFilters;
-  }
-  const injected = globalThis as unknown as MemoryPageGlobals;
+  let { client: injectedClient }: { client?: ProtocolClient } = $props();
 
-  // ---- connection + client ----------------------------------------
-  let connection = $state<RuntimeConnection | null>(null);
-  let client = $state<ProtocolClient | null>(null);
-  // Phase 83r disconnected predicate.
-  let disconnected = $derived(connection === null);
-
-  // ---- primary-table async state (the four-state contract) --------
-  let status = $state<PageStatus>('loading');
-  let listError = $state<ProtocolError | { code: string; message: string } | null>(null);
-  let listResp = $state<MemoryListResponse | null>(null);
-
-  // ---- detail-rail async state (its OWN nested PageState) ---------
-  let detailStatus = $state<PageStatus>('empty');
-  let detailError = $state<ProtocolError | { code: string; message: string } | null>(null);
-  let selectedKey = $state<string | null>(null);
-  let selectedDetail = $state<MemoryItemDetail | null>(null);
-
-  let health = $state<MemoryHealthAggregate | null>(null);
-  let checkedKeys = $state<Set<string>>(new Set());
-
-  // ---- pagination -------------------------------------------------
-  let pageNum = $state(1);
-  let pageSize = $state(DEFAULT_MEMORY_LIST_PAGE_SIZE);
-
-  // ---- filters ----------------------------------------------------
-  let contentSearch = $state('');
-  let scopeFacet = $state('');
-  let driverFacet = $state('');
-  let strategyOverlay = $state<MemoryStrategyName | null>(null);
-
-  // ---- saved views (Console-DB-backed, D-061) ---------------------
-  let savedFiltersDB = $state<MemorySavedFilters | null>(null);
-  let savedViews = $state<SavedView[]>([]);
-  let activeViewId = $state<string | null>(null);
-
-  const items = $derived<MemoryItem[]>(listResp?.items ?? []);
-  const totalRows = $derived(listResp?.total_rows ?? 0);
+  const mem = new MemoryPageState();
+  const disconnected = $derived(mem.disconnected);
+  let saveName = $state('');
 
   /** Six row indices for the loading skeleton. */
   const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 
-  const columns: DataTableColumn[] = [
-    { key: 'key', label: 'Memory key' },
-    { key: 'strategy', label: 'Strategy' },
-    { key: 'scope', label: 'Scope' },
-    { key: 'owner', label: 'Owner' },
-    { key: 'created', label: 'Created' },
-    { key: 'updated', label: 'Last updated' },
-    { key: 'ttl', label: 'TTL / Expires' },
-    { key: 'size', label: 'Size', numeric: true },
-    { key: 'driver', label: 'Driver' }
-  ];
+  onMount(() => {
+    mem.load(injectedClient);
+    // The live event subscription opens in load() only for the production
+    // client; with an injected harness client the page opens it here so the
+    // feed is exercised end-to-end without forcing an EventSource in unit tests.
+    if (injectedClient !== undefined) mem.openEvents();
+    return () => mem.close();
+  });
 
-  /** Maps a memory strategy onto a `StatusChip` kind. */
-  function strategyKind(strategy: string): StatusKind {
-    if (strategy === 'rolling_summary') return 'success';
-    if (strategy === 'truncation') return 'accent';
-    return 'neutral';
-  }
-
-  /** Short, stable timestamp label (no priority dimension — D-065). */
-  function shortTime(iso: string | undefined): string {
-    if (!iso) return '—';
-    // Round-6 F9 — Go's `time.Time` zero value serializes to
-    // `0001-01-01T00:00:00Z` and leaks through the wire for nullable
-    // timestamps that have no value (memory records under the
-    // `truncation` strategy carry no expires_at). The presentation
-    // layer is responsible for rendering "no value" as "—"; do not
-    // print a literal year-1 date.
-    if (iso.startsWith('0001-01-01')) return '—';
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime())
-      ? '—'
-      : d.toISOString().slice(0, 19).replace('T', ' ');
-  }
-
-  /** Assembles the `MemoryFilter` from the live filter controls. */
-  function currentFilter(): MemoryFilter {
-    const f: MemoryFilter = {};
-    if (contentSearch) f.content_search = contentSearch;
-    if (scopeFacet) f.scopes = [scopeFacet];
-    if (driverFacet) f.drivers = [driverFacet];
-    if (strategyOverlay) f.strategies = [strategyOverlay];
-    return f;
-  }
-
-  /** Maps a thrown error into `<PageState>`'s Error shape. */
-  function asPageError(
-    err: unknown
-  ): ProtocolError | { code: string; message: string } {
-    if (err instanceof ProtocolError) return err;
-    return {
-      code: 'runtime_error',
-      message: err instanceof Error ? err.message : String(err)
-    };
-  }
-
-  /**
-   * Loads the memory list + health for the current filter / page. The
-   * loader is the single re-invocation target the Error-state Retry
-   * button calls (CONVENTIONS.md §4 / §8).
-   */
-  async function loadList(): Promise<void> {
-    // Disconnected is its OWN state — NEVER the Error UI (CONVENTIONS.md
-    // §4 state 1). connection.ts returning null is the honest "no
-    // Runtime" signal, not a request failure.
-    if (client === null) {
-      status = 'disconnected';
-      return;
-    }
-    status = 'loading';
-    listError = null;
-    try {
-      const [list, healthResp] = await Promise.all([
-        client.memory.list({
-          filter: currentFilter(),
-          page: pageNum,
-          page_size: pageSize
-        }),
-        client.memory.health()
-      ]);
-      listResp = list;
-      health = healthResp.aggregate;
-      status = list.items.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      // The Error state suppresses any stale primary view (§4 state 3).
-      listResp = null;
-      health = null;
-      listError = asPageError(err);
-      status = 'error';
-    }
-  }
-
-  /** Loads one record's detail into the rail's nested `<PageState>`. */
-  async function loadDetail(key: string): Promise<void> {
-    selectedKey = key;
-    if (client === null) {
-      detailStatus = 'disconnected';
-      return;
-    }
-    detailStatus = 'loading';
-    detailError = null;
-    selectedDetail = null;
-    try {
-      const resp = await client.memory.get(key);
-      selectedDetail = resp.detail;
-      detailStatus = 'ready';
-    } catch (err) {
-      detailError = asPageError(err);
-      detailStatus = 'error';
-    }
-  }
-
-  function onSelectionChange(next: Set<string>): void {
-    checkedKeys = next;
-  }
-
-  function onRowClick(row: unknown): void {
-    void loadDetail((row as MemoryItem).key);
-  }
-
-  // ---- filter handlers (each resets to page 1 + reloads) ----------
-  function applyContentSearch(value: string): void {
-    contentSearch = value;
-    pageNum = 1;
-    void loadList();
-  }
-
-  function applyScopeFacet(value: string): void {
-    scopeFacet = value;
-    pageNum = 1;
-    void loadList();
-  }
-
-  function applyDriverFacet(value: string): void {
-    driverFacet = value;
-    pageNum = 1;
-    void loadList();
-  }
-
-  function applyStrategyOverlay(s: MemoryStrategyName | null): void {
-    strategyOverlay = s;
-    pageNum = 1;
-    void loadList();
-  }
-
-  // ---- pagination handlers ----------------------------------------
-  function onPage(p: number): void {
-    pageNum = p;
-    void loadList();
-  }
-
-  function onPageSize(size: number): void {
-    pageSize = size;
-    pageNum = 1;
-    void loadList();
-  }
-
-  // ---- saved views (Console-DB-backed, D-061) ---------------------
-  async function refreshSavedViews(): Promise<void> {
-    if (savedFiltersDB === null) return;
-    const rows = await savedFiltersDB.list();
-    savedViews = rows.map((r) => ({ id: r.id, name: r.name }));
-  }
-
-  async function applySavedView(id: string): Promise<void> {
-    if (savedFiltersDB === null) return;
-    const saved = await savedFiltersDB.get(id);
-    if (saved === null) return;
-    activeViewId = id;
-    contentSearch = saved.filter.content_search ?? '';
-    scopeFacet = saved.filter.scopes?.[0] ?? '';
-    driverFacet = saved.filter.drivers?.[0] ?? '';
-    strategyOverlay = (saved.filter.strategies?.[0] as MemoryStrategyName) ?? null;
-    pageNum = 1;
-    void loadList();
-  }
-
-  async function deleteSavedView(id: string): Promise<void> {
-    if (savedFiltersDB === null) return;
-    await savedFiltersDB.delete(id);
-    if (activeViewId === id) activeViewId = null;
-    await refreshSavedViews();
-  }
-
-  async function saveCurrentView(): Promise<void> {
-    if (savedFiltersDB === null) return;
-    const name = globalThis.prompt?.('Name this saved view');
-    if (!name) return;
-    const id = `mem-view-${Date.now()}`;
-    await savedFiltersDB.put({ id, name, filter: currentFilter() });
-    await refreshSavedViews();
-    activeViewId = id;
+  function onSaveView(): void {
+    void mem.saveCurrentView(saveName);
+    saveName = '';
   }
 
   /** Console-local NDJSON / CSV export of the current page (D-061). */
   function exportSnapshot(format: 'ndjson' | 'csv'): void {
     if (typeof globalThis.document === 'undefined') return;
+    const items: MemoryItem[] = mem.items;
     let body: string;
     if (format === 'ndjson') {
       body = items.map((it) => JSON.stringify(it)).join('\n');
     } else {
       const header = 'key,strategy,scope,driver,size_bytes';
-      const rows = items.map(
-        (it) => `${it.key},${it.strategy},${it.scope},${it.driver},${it.size_bytes}`
-      );
+      const rows = items.map((it) => `${it.key},${it.strategy},${it.scope},${it.driver},${it.size_bytes}`);
       body = [header, ...rows].join('\n');
     }
     const blob = new globalThis.Blob([body], {
@@ -326,174 +98,178 @@
     a.click();
     globalThis.URL.revokeObjectURL(url);
   }
-
-  // ---- boot --------------------------------------------------------
-  onMount(() => {
-    connection = resolveConnection();
-    if (injected.__HARBOR_PROTOCOL_CLIENT__) {
-      client = injected.__HARBOR_PROTOCOL_CLIENT__;
-    } else if (connection !== null) {
-      client = new HarborClient({ connection });
-    }
-    void loadList();
-
-    // Resolve the Console-DB-backed saved-view facade. An injected
-    // facade wins (tests); otherwise open the real IndexedDB store.
-    if (injected.__HARBOR_MEMORY_SAVED_FILTERS__) {
-      savedFiltersDB = injected.__HARBOR_MEMORY_SAVED_FILTERS__;
-      void refreshSavedViews();
-    } else if (connection !== null) {
-      void openMemorySavedFilters(connection).then((facade) => {
-        savedFiltersDB = facade;
-        void refreshSavedViews();
-      });
-    }
-  });
 </script>
 
 <svelte:head>
   <title>Memory · Harbor Console</title>
 </svelte:head>
 
-<div class="memory-page" data-testid="memory-page">
-  <PageHeader
-    title="Memory"
-    subtitle="Per-identity inspector for the runtime's memory subsystem."
-  >
-    {#snippet actions()}
-      <button
-        type="button"
-        class="action"
-        data-testid="memory-export-ndjson"
-        disabled={items.length === 0}
-        onclick={() => exportSnapshot('ndjson')}
-      >
-        Export NDJSON
-      </button>
-      <button
-        type="button"
-        class="action"
-        data-testid="memory-export-csv"
-        disabled={items.length === 0}
-        onclick={() => exportSnapshot('csv')}
-      >
-        Export CSV
-      </button>
-    {/snippet}
-  </PageHeader>
-
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedViews}
-        activeId={activeViewId}
-        onselect={(id) => void applySavedView(id)}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <button
-        type="button"
-        class="action save-view"
-        data-testid="memory-save-view"
-        disabled={savedFiltersDB === null || disconnected}
-        title={disconnected
-          ? DISCONNECTED_TOOLTIP
-          : savedFiltersDB === null
-            ? 'Saved views need a profile unlocked in Settings'
-            : 'Save the current filter as a view'}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
-
-    {#snippet facets()}
-      <label class="facet">
-        <span>Scope</span>
-        <select
-          value={scopeFacet}
-          data-testid="memory-scope-facet"
-          disabled={disconnected}
+<section class="memory-page" data-testid="memory-page">
+  <section class="panel card filter-card">
+    <FilterBar>
+      {#snippet saved()}
+        <SavedViewChips
+          views={mem.savedViews}
+          activeId={mem.activeViewId}
+          onselect={(id) => void mem.applySavedView(id)}
+          ondelete={(id) => void mem.deleteSavedView(id)}
+        />
+        <input
+          class="bar-input save-input"
+          type="text"
+          placeholder="Save current as…"
+          bind:value={saveName}
+          data-testid="memory-save-view-name"
+          disabled={mem.savedFiltersDB === null || disconnected}
           title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-          onchange={(e) => applyScopeFacet(e.currentTarget.value)}
-        >
-          <option value="">All</option>
-          <option value="session">session</option>
-          <option value="user">user</option>
-          <option value="tenant">tenant</option>
-        </select>
-      </label>
-      <label class="facet">
-        <span>Driver</span>
-        <select
-          value={driverFacet}
-          data-testid="memory-driver-facet"
-          disabled={disconnected}
-          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-          onchange={(e) => applyDriverFacet(e.currentTarget.value)}
-        >
-          <option value="">All</option>
-          <option value="inmem">inmem</option>
-          <option value="sqlite">sqlite</option>
-          <option value="postgres">postgres</option>
-        </select>
-      </label>
-    {/snippet}
-
-    {#snippet search()}
-      <input
-        class="search-input"
-        type="search"
-        placeholder="Search memory content…"
-        data-testid="memory-content-search"
-        value={contentSearch}
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onchange={(e) => applyContentSearch(e.currentTarget.value)}
-      />
-    {/snippet}
-
-    {#snippet actions()}
-      <button
-        type="button"
-        class="action"
-        data-testid="memory-refresh"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void loadList()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-  </FilterBar>
-
-  <StrategyOverlayChipRow
-    selected={strategyOverlay}
-    onSelect={applyStrategyOverlay}
-  />
-
-  <BulkActionBar count={checkedKeys.size} onclear={() => (checkedKeys = new Set())}>
-    {#snippet actions()}
-      <!-- V1 is read-only: the memory mutation surface lands in Phase 73
-           (page-memory.md §10). Each action is disabled-with-tooltip,
-           NOT hidden — a screen-reader user hears the deferral, and the
-           button wires to no Protocol call (CONVENTIONS.md §5, §13). -->
-      {#each ['Delete selected', 'Refresh TTL', 'Pin'] as label (label)}
+          onkeydown={(e) => e.key === 'Enter' && onSaveView()}
+        />
         <button
           type="button"
-          class="action"
-          disabled
-          aria-disabled="true"
-          title="Memory mutation surface deferred — Phase 73"
+          class="bar-action"
+          data-testid="memory-save-view"
+          disabled={mem.savedFiltersDB === null || saveName.trim().length === 0 || disconnected}
+          title={disconnected
+            ? DISCONNECTED_TOOLTIP
+            : mem.savedFiltersDB === null
+              ? 'Saved views need a profile unlocked in Settings'
+              : 'Save the current filter as a view'}
+          onclick={onSaveView}
         >
-          {label}
+          Save view
         </button>
-      {/each}
-    {/snippet}
-  </BulkActionBar>
+      {/snippet}
+
+      {#snippet facets()}
+        <label class="facet">
+          <span>Scope</span>
+          <select
+            value={mem.scopeFacet}
+            data-testid="memory-scope-facet"
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+            onchange={(e) => mem.applyScopeFacet(e.currentTarget.value)}
+          >
+            <option value="">All</option>
+            <option value="session">session</option>
+            <option value="user">user</option>
+            <option value="tenant">tenant</option>
+          </select>
+        </label>
+        <label class="facet">
+          <span>Driver</span>
+          <select
+            value={mem.driverFacet}
+            data-testid="memory-driver-facet"
+            disabled={disconnected}
+            title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+            onchange={(e) => mem.applyDriverFacet(e.currentTarget.value)}
+          >
+            <option value="">All</option>
+            <option value="inmem">inmem</option>
+            <option value="sqlite">sqlite</option>
+            <option value="postgres">postgres</option>
+          </select>
+        </label>
+      {/snippet}
+
+      {#snippet search()}
+        <input
+          class="bar-input search-input"
+          type="search"
+          placeholder="Search memory content…"
+          data-testid="memory-content-search"
+          value={mem.contentSearch}
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onchange={(e) => mem.applyContentSearch(e.currentTarget.value)}
+        />
+      {/snippet}
+
+      {#snippet actions()}
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="memory-clear-filters"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => mem.clearFilters()}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="memory-refresh"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => mem.refresh()}
+        >
+          Refresh
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="memory-export-ndjson"
+          disabled={mem.items.length === 0}
+          onclick={() => exportSnapshot('ndjson')}
+        >
+          Export NDJSON
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="memory-export-csv"
+          disabled={mem.items.length === 0}
+          onclick={() => exportSnapshot('csv')}
+        >
+          Export CSV
+        </button>
+      {/snippet}
+    </FilterBar>
+
+    <StrategyOverlayChipRow
+      selected={mem.strategyOverlay}
+      onSelect={(s) => mem.applyStrategyOverlay(s)}
+    />
+
+    <BulkActionBar count={mem.checkedKeys.size} onclear={() => mem.setSelection(new Set())}>
+      {#snippet actions()}
+        <!-- Phase 108n (D-186): the memory mutation surface is now LIVE.
+             "Evict selected" calls the REAL admin `memory.delete` per checked
+             turn (D-079) — disabled-with-tooltip without the admin claim, never
+             a fabricated success (§13). "Refresh TTL" / "Pin" remain absent:
+             TTL refresh + a pin dimension are not shipped Protocol surfaces
+             (D-065 — no priority/pin field), so no fabricated buttons. -->
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="memory-evict-selected"
+          disabled={!mem.canAdmin || mem.mutationBusy}
+          title={mem.canAdmin
+            ? 'Evict the selected memory turns (audited)'
+            : 'Requires the admin scope claim — memory.delete is an admin Protocol method (D-079).'}
+          onclick={() => void mem.evictSelected()}
+        >
+          {mem.mutationBusy ? 'Evicting…' : 'Evict selected'}
+        </button>
+      {/snippet}
+    </BulkActionBar>
+    {#if mem.mutationResult !== null}
+      <p
+        class="inline-result"
+        class:ok={mem.mutationResult.ok}
+        class:err={!mem.mutationResult.ok}
+        data-testid="memory-mutation-result"
+      >
+        {mem.mutationResult.message}
+      </p>
+    {/if}
+  </section>
 
   <div class="layout">
-    <main class="main">
-      <PageState status={status} error={listError} onretry={() => void loadList()}>
+    <section class="panel card table-card">
+      <PageState status={mem.displayStatus} error={mem.pageError} onretry={() => mem.refresh()}>
         {#snippet skeleton()}
           <div class="table-skeleton" aria-hidden="true">
             {#each SKELETON_ROWS as i (i)}
@@ -502,110 +278,115 @@
           </div>
         {/snippet}
         {#snippet empty()}
-          <p class="empty-headline">No memory items in this scope</p>
-          <p class="empty-detail">
-            Memory builds up during runs — open
-            <a href="/live-runtime">Live Runtime</a> to start one.
-          </p>
+          <div class="empty-block" data-testid="memory-empty">
+            <p class="empty-headline">No memory items in this scope</p>
+            <p class="empty-detail">
+              Memory builds up during runs — open
+              <a href="/live-runtime">Live Runtime</a> to start one, or clear the
+              active filters.
+            </p>
+            <button type="button" class="bar-action" onclick={() => mem.clearFilters()}>
+              Clear filters
+            </button>
+          </div>
         {/snippet}
 
-        <DataTable
-          {columns}
-          rows={items}
-          rowKey={(r) => (r as MemoryItem).key}
-          selectable
-          selected={checkedKeys}
-          onselectionchange={onSelectionChange}
-          onrowclick={onRowClick}
-        >
-          {#snippet row(r)}
-            {@const item = r as MemoryItem}
-            <!-- W4 (Phase 83x): the legacy `overflow-wrap: anywhere`
-                 broke real (mid-length, unbroken) keys into one-glyph-
-                 per-line vertical wraps that destroyed the row's
-                 horizontal rhythm. Switch to single-line ellipsis +
-                 title tooltip so the full key is still reachable by
-                 hover (and accessible to screen readers via title). -->
-            <td class="mono key" title={item.key}>{item.key}</td>
-            <td>
-              <StatusChip kind={strategyKind(item.strategy)} label={item.strategy} />
-            </td>
-            <td><StatusChip kind="neutral" label={item.scope} /></td>
-            <td class="owner mono">
-              {item.identity.tenant} / {item.identity.user} / {item.identity.session}
-            </td>
-            <td>{shortTime(item.created_at)}</td>
-            <td>{shortTime(item.last_updated_at)}</td>
-            <td>{shortTime(item.expires_at)}</td>
-            <td class="numeric">{item.size_bytes}</td>
-            <td><StatusChip kind="neutral" label={item.driver} /></td>
-          {/snippet}
-        </DataTable>
+        <div class="table-scroll">
+          <MemoryTable
+            rows={mem.items}
+            selected={mem.checkedKeys}
+            activeKey={mem.selectedKey}
+            onselect={(key) => void mem.loadDetail(key)}
+            onselectionchange={(s) => mem.setSelection(s)}
+          />
+        </div>
       </PageState>
 
-      <Pagination
-        page={pageNum}
-        {pageSize}
-        total={totalRows}
-        onpage={onPage}
-        onpagesize={onPageSize}
-      />
-    </main>
+      {#if mem.displayStatus === 'ready' || mem.displayStatus === 'empty'}
+        <Pagination
+          page={mem.page}
+          pageSize={mem.pageSize}
+          total={mem.totalRows}
+          onpage={(p) => mem.changePage(p)}
+          onpagesize={(s) => mem.changePageSize(s)}
+        />
+      {/if}
+    </section>
 
     <DetailRail>
       <RailCard title="Memory health">
-        <MemoryHealthCard aggregate={health} />
+        <MemoryHealthCard aggregate={mem.health} />
       </RailCard>
-      <RailCard title="Memory event feed">
-        <!-- D-132 / W5: the "Recent identity rejections" + "Recovery
-             dropouts" feeds need the events-stream wiring (a later
-             phase). Rather than render two permanently-empty live
-             cards, one disabled-with-tooltip card honestly states the
-             deferral (CONVENTIONS.md §5, CLAUDE.md §13). -->
-        <p
-          class="rail-deferred"
-          data-testid="memory-event-feed-deferred"
-          title="Identity-rejection + recovery-dropout feeds need the events-stream wiring — deferred to a later phase (D-132)"
-        >
-          Identity-rejection and recovery-dropout feeds are deferred —
-          they require the events-stream wiring (a later phase).
-        </p>
+      <RailCard title="Strategy trace">
+        <StrategyTraceCard trace={mem.strategyTrace} />
+      </RailCard>
+      <RailCard title="Memory events">
+        <MemoryEventsCard entries={mem.recentEvents} streamState={mem.streamState} />
+      </RailCard>
+      <RailCard title="Add memory">
+        <AddMemoryComposer
+          canAdmin={mem.canAdmin}
+          busy={mem.mutationBusy}
+          onadd={(u, a) => void mem.addTurn(u, a)}
+        />
       </RailCard>
       <RailCard title="Selected item">
-        <!-- The rail gets its OWN nested <PageState> (CONVENTIONS.md §4):
-             a rail-load failure surfaces in the rail, not the whole page. -->
-        <PageState status={detailStatus} error={detailError}
-          onretry={() => selectedKey && void loadDetail(selectedKey)}>
+        <!-- The rail gets its OWN nested <PageState> (CONVENTIONS.md §4): a
+             rail-load failure surfaces in the rail, not the whole page. -->
+        <PageState
+          status={mem.detailStatus}
+          error={mem.detailError}
+          onretry={() => mem.selectedKey && void mem.loadDetail(mem.selectedKey)}
+        >
           {#snippet empty()}
             <p class="rail-empty">Select a memory row to inspect its detail.</p>
           {/snippet}
-          {#if selectedDetail}
-            <SelectedItemDetail detail={selectedDetail} />
+          {#if mem.detail}
+            <SelectedItemDetail
+              detail={mem.detail}
+              canEvict={mem.canAdmin}
+              onEvict={(key) => void mem.evict(key)}
+            />
           {/if}
         </PageState>
       </RailCard>
     </DetailRail>
   </div>
-</div>
+</section>
 
 <style>
+  /* Viewport-locked: the page fills the shell content region and never
+     full-page-scrolls; only the records table + the right rail scroll
+     internally (PAGE-POLISH §6 — the Tools / MCP pattern). */
   .memory-page {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    height: 100%;
+    min-height: 0;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    overflow: hidden;
   }
 
-  .layout {
-    display: flex;
-    gap: var(--space-4);
-    align-items: flex-start;
-  }
-
-  .main {
-    flex: 1;
+  .card {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
     min-width: 0;
+  }
+
+  /* ---- filter card (fixed height) ---- */
+  .filter-card {
     display: flex;
     flex-direction: column;
+    gap: var(--space-2);
+    flex-shrink: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .filter-card :global(.filter-bar) {
+    padding: var(--space-1) var(--space-0);
     gap: var(--space-2);
   }
 
@@ -618,7 +399,7 @@
   }
 
   .facet select {
-    background: var(--color-surface);
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
@@ -626,74 +407,111 @@
     font-size: var(--text-sm);
   }
 
-  .search-input {
-    width: 100%;
-    background: var(--color-surface);
-    color: var(--color-text);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-  }
-
-  .action {
-    background: var(--color-surface-raised);
+  .bar-input {
+    background: var(--color-bg);
     color: var(--color-text);
     border: var(--border-hairline);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-sm);
-    cursor: pointer;
   }
 
-  .action:disabled {
+  .search-input {
+    flex: 1;
+    min-width: var(--size-input-compact);
+  }
+
+  .save-input {
+    width: var(--size-input-compact);
+  }
+
+  .bar-action {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .bar-action:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .save-view {
+  .inline-result {
+    margin: var(--space-0);
     font-size: var(--text-xs);
-  }
-
-  .mono {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-
-  .key {
-    /* W4 (Phase 83x): single-line ellipsis prevents per-character
-       vertical wrap on mid-length keys. The full key is available via
-       the row's title attribute on hover. */
-    max-width: var(--size-rail);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .owner {
     color: var(--color-text-muted);
   }
 
-  td {
-    padding: var(--space-2) var(--space-3);
+  .inline-result.ok {
+    color: var(--color-success);
   }
 
-  td.numeric {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
+  .inline-result.err {
+    color: var(--color-danger);
+  }
+
+  /* ---- layout (fills remaining height; both columns scroll internally) ---- */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr var(--size-rail);
+    gap: var(--space-3);
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .table-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: var(--space-3);
+  }
+
+  .table-card :global(.page-state) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .table-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  /* The DetailRail fills the column height + scrolls its stacked cards. */
+  .layout :global(.detail-rail) {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .table-skeleton {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    padding: var(--space-4) var(--space-0);
   }
 
   .skeleton-row {
     height: var(--layout-table-row-height);
     background: var(--color-surface-raised);
     border-radius: var(--radius-sm);
+  }
+
+  .empty-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-4);
+    text-align: center;
   }
 
   .empty-headline {
@@ -707,6 +525,7 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+    max-width: var(--size-modal-width);
   }
 
   .empty-detail a {
@@ -717,12 +536,5 @@
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
-  }
-
-  .rail-deferred {
-    margin: var(--space-0);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    opacity: 0.7;
   }
 </style>

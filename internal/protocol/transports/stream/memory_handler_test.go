@@ -37,9 +37,12 @@ const memHandlerThreshold = 4096
 // Bare URL paths (the route patterns carry the `POST ` ServeMux method
 // prefix, which httptest.NewRequest cannot parse as a target).
 const (
-	memListPath   = "/v1/memory/list"
-	memGetPath    = "/v1/memory/get"
-	memHealthPath = "/v1/memory/health"
+	memListPath          = "/v1/memory/list"
+	memGetPath           = "/v1/memory/get"
+	memHealthPath        = "/v1/memory/health"
+	memStrategyTracePath = "/v1/memory/strategy_trace"
+	memPutPath           = "/v1/memory/put"
+	memDeletePath        = "/v1/memory/delete"
 )
 
 // memHandlerFixture bundles the memory handler + the live memory store
@@ -469,5 +472,115 @@ func assertMemErrCode(t *testing.T, body []byte, want protoerrors.Code) {
 	}
 	if e.Code != want {
 		t.Errorf("error Code = %q, want %q; body=%s", e.Code, want, body)
+	}
+}
+
+// --- Phase 108n (D-186): strategy_trace read + admin mutation pair -------
+
+func TestMemoryHandler_StrategyTraceHappyPath(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	f.seedTurn(t, memHandlerID, "u", "a")
+	status, body := doMemReq(t, f.handler.StrategyTraceHandler(), memStrategyTracePath, `{}`, &memHandlerID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("strategy_trace status = %d, want 200 (body %s)", status, body)
+	}
+	var resp prototypes.MemoryStrategyTraceResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Trace.Strategy != string(prototypes.MemoryStrategyTruncation) {
+		t.Errorf("Strategy = %q, want truncation", resp.Trace.Strategy)
+	}
+	if resp.Trace.RecentTurnCount != 1 {
+		t.Errorf("RecentTurnCount = %d, want 1", resp.Trace.RecentTurnCount)
+	}
+}
+
+func TestMemoryHandler_StrategyTraceRejectsMissingIdentity(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	status, _ := doMemReq(t, f.handler.StrategyTraceHandler(), memStrategyTracePath, `{}`, nil, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("strategy_trace (no id) status = %d, want 401", status)
+	}
+}
+
+func TestMemoryHandler_PutRequiresAdminScope(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	body := `{"turn":{"user_text":"q","assistant_text":"a"}}`
+	status, respBody := doMemReq(t, f.handler.PutHandler(), memPutPath, body, &memHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("put (no admin) status = %d, want 403 (body %s)", status, respBody)
+	}
+	var e protoerrors.Error
+	if err := json.Unmarshal(respBody, &e); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if e.Code != protoerrors.CodeIdentityScopeRequired {
+		t.Errorf("code = %q, want identity_scope_required", e.Code)
+	}
+}
+
+func TestMemoryHandler_PutWithAdminAppends(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	body := `{"turn":{"user_text":"operator-q","assistant_text":"operator-a"}}`
+	status, respBody := doMemReq(t, f.handler.PutHandler(), memPutPath, body,
+		&memHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("put (admin) status = %d, want 200 (body %s)", status, respBody)
+	}
+	var resp prototypes.MemoryPutResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Key == "" {
+		t.Error("put returned an empty key")
+	}
+}
+
+func TestMemoryHandler_DeleteRequiresAdminScope(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	status, _ := doMemReq(t, f.handler.DeleteHandler(), memDeletePath,
+		`{"key":"mem_x"}`, &memHandlerID, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("delete (no admin) status = %d, want 403", status)
+	}
+}
+
+func TestMemoryHandler_DeleteRejectsMissingKey(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	status, _ := doMemReq(t, f.handler.DeleteHandler(), memDeletePath,
+		`{}`, &memHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusBadRequest {
+		t.Fatalf("delete (empty key) status = %d, want 400", status)
+	}
+}
+
+func TestMemoryHandler_DeleteWithAdminEvicts(t *testing.T) {
+	f := newMemHandlerFixture(t)
+	f.seedTurn(t, memHandlerID, "u1", "a1")
+	f.seedTurn(t, memHandlerID, "u2", "a2")
+
+	// List to obtain a real key.
+	_, listBody := doMemReq(t, f.handler.ListHandler(), memListPath, `{}`, &memHandlerID, nil)
+	var list prototypes.MemoryListResponse
+	if err := json.Unmarshal(listBody, &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 2 {
+		t.Fatalf("seeded list = %d, want 2", len(list.Items))
+	}
+
+	body := `{"key":"` + list.Items[0].Key + `"}`
+	status, respBody := doMemReq(t, f.handler.DeleteHandler(), memDeletePath, body,
+		&memHandlerID, []auth.Scope{auth.ScopeAdmin})
+	if status != http.StatusOK {
+		t.Fatalf("delete (admin) status = %d, want 200 (body %s)", status, respBody)
+	}
+	var resp prototypes.MemoryDeleteResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Deleted || resp.RemainingTurns != 1 {
+		t.Errorf("delete resp = %+v, want {deleted:true, remaining:1}", resp)
 	}
 }

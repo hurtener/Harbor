@@ -713,6 +713,10 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 			stream.WithMemoryLogger(cfg.logger),
 			stream.WithMemoryAggregator(aggregator),
 			stream.WithMemoryDriverName(cfg.memoryDriverName),
+			// Phase 108n (D-186): the mutation methods (memory.put /
+			// memory.delete) publish their audit events on the same bus the
+			// Mux is built over.
+			stream.WithMemoryBus(bus),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("transports: build memory handler: %w", err)
@@ -874,6 +878,11 @@ func NewMux(cs *protocol.ControlSurface, bus events.EventBus, opts ...Option) (*
 		mountMemory(stream.MemoryListRoutePattern, memoryHandler.ListHandler())
 		mountMemory(stream.MemoryGetRoutePattern, memoryHandler.GetHandler())
 		mountMemory(stream.MemoryHealthRoutePattern, memoryHandler.HealthHandler())
+		// Phase 108n (D-186): the strategy-trace read + the admin-gated
+		// mutation pair. Same mount family as the read trio.
+		mountMemory(stream.MemoryStrategyTraceRoutePattern, memoryHandler.StrategyTraceHandler())
+		mountMemory(stream.MemoryPutRoutePattern, memoryHandler.PutHandler())
+		mountMemory(stream.MemoryDeleteRoutePattern, memoryHandler.DeleteHandler())
 	}
 
 	if toolsHandler != nil {
