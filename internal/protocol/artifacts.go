@@ -142,10 +142,25 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 // 6: the audit-visible record of an operator upload).
 const EventTypeArtifactUploaded events.EventType = "artifacts.uploaded"
 
+// EventTypeArtifactDeleted is the canonical event type the
+// artifacts.delete success path publishes onto the bus (Phase 108o /
+// D-187) — the audit-visible record of an admin eviction.
+const EventTypeArtifactDeleted events.EventType = "artifacts.deleted"
+
 func init() {
-	// Register the artifacts.uploaded event type so the bus accepts it
-	// (the events package fails loud on an unregistered type).
+	// Register the artifacts.* event types so the bus accepts them (the
+	// events package fails loud on an unregistered type).
 	events.RegisterEventType(EventTypeArtifactUploaded)
+	events.RegisterEventType(EventTypeArtifactDeleted)
+}
+
+// ArtifactDeletedPayload is the typed payload of an artifacts.deleted
+// event (Phase 108o / D-187). SafePayload — it carries the
+// content-addressed artifact id only, never any artifact bytes (D-026).
+type ArtifactDeletedPayload struct {
+	events.SafeSealed
+	// ArtifactID is the content-addressed identifier of the evicted artifact.
+	ArtifactID string `json:"artifact_id"`
 }
 
 // ArtifactUploadedPayload is the typed payload of an artifacts.uploaded
@@ -208,6 +223,13 @@ func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, 
 				"method %q: request is nil or not a *types.ArtifactsGetRefRequest", string(method))
 		}
 		return s.handleGetRef(ctx, gr)
+	case methods.MethodArtifactsDelete:
+		dr, ok := req.(*types.ArtifactsDeleteRequest)
+		if !ok || dr == nil {
+			return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+				"method %q: request is nil or not a *types.ArtifactsDeleteRequest", string(method))
+		}
+		return s.handleDelete(ctx, dr)
 	default:
 		// Unreachable: IsArtifactsMethod already gated the method set.
 		return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
@@ -505,6 +527,70 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 		Ref:             projectRef(*ref),
 		PresignedURL:    url,
 		ExpiresAt:       s.clock().Add(expiry),
+		ProtocolVersion: types.ProtocolVersion,
+	}, nil
+}
+
+// handleDelete serves artifacts.delete (Phase 108o / D-187). It validates
+// the full identity triple, gates STRICTLY on the verified admin scope (a
+// mutation requires admin — console:fleet is an observation claim, never a
+// write entitlement; page-artifacts §9), evicts via the shipped idempotent
+// ArtifactStore.Delete, and emits artifacts.deleted for audit.
+func (s *ArtifactsSurface) handleDelete(ctx context.Context, req *types.ArtifactsDeleteRequest) (any, error) {
+	m := string(methods.MethodArtifactsDelete)
+
+	scope := artifacts.ArtifactScope{
+		TenantID:  req.Scope.Tenant,
+		UserID:    req.Scope.User,
+		SessionID: req.Scope.Session,
+		TaskID:    req.Scope.Task,
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, protoerrors.Newf(protoerrors.CodeIdentityRequired,
+			"method %q: identity scope incomplete: %v", m, err)
+	}
+	if req.ID == "" {
+		return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+			"method %q: artifact id is required", m)
+	}
+
+	// Admin gate (D-079). Unlike the cross-tenant READ gate (admin OR
+	// console:fleet), a runtime-state MUTATION requires admin strictly.
+	if !auth.HasScope(ctx, auth.ScopeAdmin) {
+		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
+			"method %q: artifact delete requires the verified `admin` scope claim", m)
+	}
+
+	deleted, err := s.store.Delete(ctx, scope, req.ID)
+	if err != nil {
+		return nil, mapArtifactsError(m, err)
+	}
+
+	// Emit artifacts.deleted only when something was actually evicted (an
+	// idempotent no-op delete is not an audit-worthy state change). A
+	// publish failure fails loud — the eviction already happened, so the
+	// operator MUST see the audit drift.
+	if deleted {
+		ev := events.Event{
+			Type: EventTypeArtifactDeleted,
+			Identity: identity.Quadruple{
+				Identity: identity.Identity{
+					TenantID:  scope.TenantID,
+					UserID:    scope.UserID,
+					SessionID: scope.SessionID,
+				},
+			},
+			OccurredAt: s.clock(),
+			Payload:    ArtifactDeletedPayload{ArtifactID: req.ID},
+		}
+		if perr := s.bus.Publish(ctx, ev); perr != nil {
+			return nil, protoerrors.Newf(protoerrors.CodeRuntimeError,
+				"method %q: delete succeeded but audit emit failed: %v", m, perr)
+		}
+	}
+
+	return &types.ArtifactsDeleteResponse{
+		Deleted:         deleted,
 		ProtocolVersion: types.ProtocolVersion,
 	}, nil
 }

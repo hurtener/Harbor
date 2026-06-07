@@ -333,6 +333,15 @@ const (
 	// expiry is bounded [1m, 7d].
 	MethodArtifactsGetRef Method = "artifacts.get_ref"
 
+	// MethodArtifactsDelete — Phase 108o (D-187). The admin-gated, audited
+	// "evict an artifact" mutation: removes the keyed artifact from the
+	// scope via the shipped `ArtifactStore.Delete` (idempotent). Requires
+	// the verified `admin` scope claim (D-079 / page-artifacts §9 — Delete
+	// is a mutating verb, strictly more than the read scope); fails closed
+	// without it. Emits `artifacts.deleted` for audit. Routes through the
+	// control surface at `POST /v1/control/artifacts.delete`.
+	MethodArtifactsDelete Method = "artifacts.delete"
+
 	// MethodMemoryList — Phase 73j (Wave 13 / D-118). Returns the
 	// paginated, identity-scope-filtered set of memory records the
 	// Console Memory page renders. Read-only — it composes over the
@@ -661,6 +670,7 @@ var canonicalMethods = map[Method]struct{}{
 	MethodArtifactsList:       {},
 	MethodArtifactsPut:        {},
 	MethodArtifactsGetRef:     {},
+	MethodArtifactsDelete:     {},
 	MethodMemoryList:          {},
 	MethodMemoryGet:           {},
 	MethodMemoryHealth:        {},
@@ -783,21 +793,24 @@ func IsAgentsControlMethod(m Method) bool {
 	return ok
 }
 
-// canonicalArtifactsMethods is the closed sub-set of the three artifacts
-// methods landed in Phase 73l (Wave 13 / D-120). IsArtifactsMethod is
+// canonicalArtifactsMethods is the closed set of the artifacts methods —
+// the Phase 73l (D-120) read/put trio plus the Phase 108o (D-187)
+// admin `artifacts.delete` mutation. IsArtifactsMethod is
 // O(1); the control transport branches on it to route the request
 // through the artifacts dispatcher instead of the task-control surface.
 var canonicalArtifactsMethods = map[Method]struct{}{
 	MethodArtifactsList:   {},
 	MethodArtifactsPut:    {},
 	MethodArtifactsGetRef: {},
+	MethodArtifactsDelete: {},
 }
 
-// IsArtifactsMethod reports whether m is one of the three canonical
-// artifacts methods (Phase 73l / D-120 — `artifacts.list`,
-// `artifacts.put`, `artifacts.get_ref`). The control transport branches
-// on this to route the request through the artifacts dispatcher instead
-// of the task-control / search / posture surfaces. NOT a control
+// IsArtifactsMethod reports whether m is one of the canonical artifacts
+// methods (Phase 73l / D-120 — `artifacts.list` / `artifacts.put` /
+// `artifacts.get_ref` — plus the Phase 108o / D-187 admin
+// `artifacts.delete` mutation). The control transport branches on this to
+// route the request through the artifacts dispatcher instead of the
+// task-control / search / posture surfaces. NOT a control
 // method — a new non-control method extends THIS predicate, never the
 // steering inbox.
 func IsArtifactsMethod(m Method) bool {
