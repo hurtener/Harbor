@@ -105,6 +105,15 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 			}
 		}
 		return req, &req.Scope, nil
+	case methods.MethodArtifactsDelete:
+		req := &types.ArtifactsDeleteRequest{}
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, req); err != nil {
+				return nil, nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+					"method %q: request body is not a valid ArtifactsDeleteRequest", string(method))
+			}
+		}
+		return req, &req.Scope, nil
 	default:
 		return nil, nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
 			"method %q is not a canonical Protocol artifacts method", string(method))

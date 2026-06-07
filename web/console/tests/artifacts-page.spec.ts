@@ -168,9 +168,12 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
       pageSrc.includes("dev-tenant"),
       "+page.svelte must not hardcode a dev identity",
     ).toBe(false);
+    // Phase 108o (D-187): the king-file refactor moved the connection
+    // resolution into the ArtifactsPageState controller (which calls
+    // resolveConnection); the page composes that controller.
     expect(
-      pageSrc.includes("resolveConnection"),
-      "+page.svelte resolves its connection through connection.ts",
+      pageSrc.includes("ArtifactsPageState"),
+      "+page.svelte composes the ArtifactsPageState controller (which resolves the connection through connection.ts)",
     ).toBe(true);
   });
 
@@ -182,11 +185,14 @@ test.describe("Console Artifacts page — renderer-registry discipline", () => {
     );
     // D-132 / W3: ConnectionFooter is NOT in this list — it is owned by
     // the app shell (`(console)/+layout.svelte`), not composed per-page.
+    // Phase 108o (D-187) dropped the per-page PageHeader (breadcrumb is
+    // app-shell chrome, 108b) and moved the records table into the
+    // ArtifactsTable component (so `DataTable` lives there now); the page
+    // composes the remaining shared inventory directly.
     for (const primitive of [
-      "PageHeader",
       "FilterBar",
       "SavedViewChips",
-      "DataTable",
+      "ArtifactsTable",
       "BulkActionBar",
       "DetailRail",
       "RailCard",
@@ -294,7 +300,7 @@ test.describe("Console Artifacts page — live e2e", () => {
     ).toBeAttached();
   });
 
-  test("Delete and Set retention render disabled-with-tooltip", async ({
+  test("bulk Delete is admin-gated (disabled without the admin claim)", async ({
     page,
     runtime,
     helpers,
@@ -302,22 +308,21 @@ test.describe("Console Artifacts page — live e2e", () => {
     await helpers.seedAuth(runtime.token);
     await seedConnection(page, runtime.baseURL, runtime.token);
     await helpers.gotoPage("artifacts");
-    // The bulk Delete / Set retention surfaces are deferred (page-
-    // artifacts.md §10) — they render aria-disabled with the deferred
-    // tooltip. The bulk action bar only shows when a row is checked.
+    // Phase 108o (D-187): the bulk Delete surface is now the REAL admin
+    // `artifacts.delete` — disabled-with-tooltip without the admin claim
+    // (the spec's seedConnection omits scopes → non-admin), naming the
+    // D-079 admin gate (NOT the old "Deferred" tooltip). The bulk action
+    // bar only shows when a row is checked.
     const firstCheckbox = page
       .locator("tbody tr.data-row input[type='checkbox']")
       .first();
     if ((await firstCheckbox.count()) > 0) {
       await firstCheckbox.check();
       const del = page.locator("[data-testid='bulk-delete']");
-      await expect(del, "bulk Delete is disabled").toHaveAttribute(
-        "aria-disabled",
-        "true",
-      );
-      await expect(del, "bulk Delete carries the deferred tooltip").toHaveAttribute(
+      await expect(del, "bulk Delete is disabled for a non-admin session").toBeDisabled();
+      await expect(del, "bulk Delete names the admin gate").toHaveAttribute(
         "title",
-        /Deferred/,
+        /admin scope claim/,
       );
     }
   });

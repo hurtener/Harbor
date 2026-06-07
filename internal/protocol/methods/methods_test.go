@@ -44,6 +44,7 @@ var wantMethods = []methods.Method{
 	methods.MethodArtifactsList,
 	methods.MethodArtifactsPut,
 	methods.MethodArtifactsGetRef,
+	methods.MethodArtifactsDelete,
 	methods.MethodMemoryList,
 	methods.MethodMemoryGet,
 	methods.MethodMemoryHealth,
@@ -107,9 +108,9 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
 	// Phase 73m auth.rotate_token one + Phase 108l agents-control five +
-	// Phase 108n memory-mutation/trace three = 79.
-	if len(got) != 79 {
-		t.Fatalf("Methods() returned %d methods, want 79", len(got))
+	// Phase 108n memory-mutation/trace three + Phase 108o artifacts.delete one = 80.
+	if len(got) != 80 {
+		t.Fatalf("Methods() returned %d methods, want 80", len(got))
 	}
 	if len(got) != len(wantMethods) {
 		t.Fatalf("Methods() count %d != wantMethods count %d", len(got), len(wantMethods))
@@ -171,6 +172,7 @@ func TestMethods_ExhaustivenessAndWireStrings(t *testing.T) {
 		methods.MethodArtifactsList:       "artifacts.list",
 		methods.MethodArtifactsPut:        "artifacts.put",
 		methods.MethodArtifactsGetRef:     "artifacts.get_ref",
+		methods.MethodArtifactsDelete:     "artifacts.delete",
 		methods.MethodMemoryList:          "memory.list",
 		methods.MethodMemoryGet:           "memory.get",
 		methods.MethodMemoryHealth:        "memory.health",
@@ -263,7 +265,7 @@ func TestIsControlMethod_StartAndEventsSubscribeAreNotControls(t *testing.T) {
 	// Phase 73l (D-120): the three artifacts methods route through the
 	// ArtifactsSurface, NOT the steering inbox.
 	for _, m := range []methods.Method{
-		methods.MethodArtifactsList, methods.MethodArtifactsPut, methods.MethodArtifactsGetRef,
+		methods.MethodArtifactsList, methods.MethodArtifactsPut, methods.MethodArtifactsGetRef, methods.MethodArtifactsDelete,
 	} {
 		if methods.IsControlMethod(m) {
 			t.Errorf("IsControlMethod(%q) = true, want false — artifacts methods route through the ArtifactsSurface", m)

@@ -108,13 +108,17 @@ assert_grep_present \
     'MCP Connections threads disconnected into the status chips (N8)'
 
 # -----------------------------------------------------------------------------
-# N9 — Artifacts page subtitle reads "no Runtime attached" when
-# disconnected, not "— 0 artifacts".
+# N9 — Artifacts page disconnected hygiene. Phase 108o (D-187) dropped the
+# per-page PageHeader (the breadcrumb/subtitle is app-shell chrome, 108b), so
+# the old "no Runtime attached" subtitle string is gone; the disconnected
+# state is now the layout redirect to /settings (Phase 105) PLUS the
+# disconnected-gated controls (§17.6 — assert the contract's new home: the
+# DISCONNECTED_TOOLTIP-gated controls, not a subtitle string).
 # -----------------------------------------------------------------------------
 assert_grep_present \
-    'no Runtime attached' \
+    'DISCONNECTED_TOOLTIP' \
     'web/console/src/routes/(console)/artifacts/+page.svelte' \
-    'Artifacts subtitle has the disconnected variant (N9)'
+    'Artifacts gates disconnected controls with the canonical tooltip (N9, post-108o)'
 
 # -----------------------------------------------------------------------------
 # N10 — PageState centres vertically in the disconnected / empty / error

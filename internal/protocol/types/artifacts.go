@@ -338,3 +338,27 @@ func (r ArtifactsListResponse) MarshalJSON() ([]byte, error) {
 	type alias ArtifactsListResponse
 	return json.Marshal(alias(r))
 }
+
+// ArtifactsDeleteRequest is the wire request for the `artifacts.delete`
+// method (Phase 108o / D-187) — the admin-gated "evict an artifact"
+// mutation. Identity is mandatory (full triple); admin scope is required
+// (D-079). Heavy bytes never cross the wire — only the scope + the
+// content-addressed id.
+type ArtifactsDeleteRequest struct {
+	// Scope is the artifact's isolation scope. The triple is mandatory.
+	Scope ArtifactScope `json:"scope"`
+	// ID is the content-addressed artifact id to evict.
+	ID string `json:"id"`
+}
+
+// ArtifactsDeleteResponse is the wire response for the `artifacts.delete`
+// method.
+type ArtifactsDeleteResponse struct {
+	// Deleted reports whether the artifact existed before the delete.
+	// Idempotent: deleting an absent artifact returns deleted=false with
+	// no error (CodeNotFound is NOT raised — delete is a no-op-safe verb).
+	Deleted bool `json:"deleted"`
+	// ProtocolVersion echoes the Protocol version the Runtime answered
+	// under so a client can detect a version skew.
+	ProtocolVersion string `json:"protocol_version"`
+}

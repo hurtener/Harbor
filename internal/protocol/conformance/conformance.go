@@ -617,14 +617,14 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 	// Phase 54 task-control ten + Wave 13 streaming-events two +
 	// Phase 72c search cluster five + Phase 72f posture cluster five +
 	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one + Phase 73l artifacts cluster three +
+	// 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 108o artifacts.delete one +
 	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
 	// Phase 73f tools cluster seven + Phase 73i flows-page six +
 	// Phase 73d tasks-page two + Phase 73e agents-page eight +
 	// Phase 73c sessions-page two + Phase 73n runs-page one +
 	// Phase 73m auth.rotate_token one = 71.
-	if len(got) != 79 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 79 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one + Phase 108l agents-control five + Phase 108n memory-mutation/trace three)", len(got))
+	if len(got) != 80 {
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 80 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 108o artifacts.delete one + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one + Phase 108l agents-control five + Phase 108n memory-mutation/trace three)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -656,6 +656,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 		methods.MethodArtifactsList:       {},
 		methods.MethodArtifactsPut:        {},
 		methods.MethodArtifactsGetRef:     {},
+		methods.MethodArtifactsDelete:     {},
 		methods.MethodMemoryList:          {},
 		methods.MethodMemoryGet:           {},
 		methods.MethodMemoryHealth:        {},
