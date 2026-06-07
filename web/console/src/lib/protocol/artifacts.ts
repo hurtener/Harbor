@@ -120,3 +120,15 @@ export interface ArtifactsGetRefResponse {
   expires_at: string;
   protocol_version: string;
 }
+
+/** The `artifacts.delete` request — admin-gated eviction (Phase 108o / D-187). */
+export interface ArtifactsDeleteRequest {
+  scope: ArtifactScope;
+  id: string;
+}
+
+/** The `artifacts.delete` response — idempotent eviction outcome. */
+export interface ArtifactsDeleteResponse {
+  deleted: boolean;
+  protocol_version: string;
+}

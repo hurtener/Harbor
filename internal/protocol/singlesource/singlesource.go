@@ -131,6 +131,7 @@ var CanonicalMethods = map[string]struct{}{
 	"artifacts.list":        {}, // Phase 73l / D-120
 	"artifacts.put":         {}, // Phase 73l / D-120
 	"artifacts.get_ref":     {}, // Phase 73l / D-120
+	"artifacts.delete":      {}, // Phase 108o / D-187
 	"memory.list":           {}, // Phase 73j / D-118
 	"memory.get":            {}, // Phase 73j / D-118
 	"memory.health":         {}, // Phase 73j / D-118
@@ -282,6 +283,8 @@ var CanonicalWireTypes = map[string]string{
 	"ArtifactsPutResponse":    "types",
 	"ArtifactsGetRefRequest":  "types",
 	"ArtifactsGetRefResponse": "types",
+	"ArtifactsDeleteRequest":  "types", // Phase 108o / D-187
+	"ArtifactsDeleteResponse": "types", // Phase 108o / D-187
 	// Phase 73j (D-118) Console-memory-page wire types — all live in
 	// internal/protocol/types alongside the rest of the Protocol shape.
 	"MemoryItem":            "types",

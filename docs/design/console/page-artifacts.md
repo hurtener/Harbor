@@ -154,3 +154,40 @@ Reconciliation of `docs/rfc/assets/console-artifacts-page.png` against §3-§7.
 - **D-066 (control-scope claims).** Upload requires `artifacts.write`; mutation surfaces (Delete / Set retention) are deferred per §10 and rendered disabled-with-tooltip; observation requires only the read scope; cross-tenant inspection gates the `Tenant ▾` facet by scope per D-079.
 - **D-091 (`harbor console` deployment).** Footer carries Protocol + Console versions and the connected-runtime label.
 - **§13 forbidden practices.** No hand-rolled per-mime renderer — the canonical renderer registry at `web/console/src/lib/chat/renderers/` is the only path (Brief 12); no parallel implementation of artifact mutation (deferred surfaces are explicitly disabled); no inline blob bytes anywhere — `PresignGet` is the only download path (closes D-026 leak shape).
+
+## 13. Reframe — Phase 108o carded retheme + the real admin `artifacts.delete` (2026-06-07, D-187)
+
+Phase 108o brings this page to the carded, viewport-locked master-detail
+composition (Tools-108k / Memory-108n) AND lands the admin mutation it had been
+deferring. It is a **retheme + king-file refactor + a real primitive-with-
+consumer wave** (D-184/D-186 pattern), not a re-spec — the `artifacts.{list,put,
+get_ref}` read/upload layer + the Console-local saved filters are unchanged. The
+changes here **supersede** the layout + read-only halves of §4 / §12 (and D-120):
+
+- **Composition.** The per-page `PageHeader` is dropped (108b chrome). The page
+  is a carded filter strip + a viewport-locked TABLE-left (the catalog scrolls
+  internally behind a sticky `<thead>`) + a stacked right rail (preview /
+  actions / metadata / tags). The king file is refactored into an
+  `ArtifactsPageState` controller + a pure `derive.ts` + the `ArtifactsTable`
+  component.
+
+- **Delete is LIVE (admin-gated).** §3 / §12's disabled-with-tooltip Delete (the
+  row action, the bulk bar, and the rail) are replaced by the REAL admin
+  `artifacts.delete` — `auth.ScopeAdmin`-gated strictly (D-079; a mutation does
+  not admit `console:fleet`), identity-mandatory, idempotent, audited
+  (`artifacts.deleted`), backed by the existing `ArtifactStore.Delete`. Without
+  the admin claim the Delete affordances are disabled-with-tooltip; never a
+  fabricated success (§13).
+
+- **`artifacts.usages` / `Set retention` stay deferred (honest findings).** The
+  "Where used" cross-reference needs a state-store join that is not a cheap
+  pure-consumer read; retention is the immutable-V1 carve-out (§10). They are
+  surfaced as honest gaps, not fabricated/empty surfaces — the rail carries
+  preview + actions + metadata + tags only.
+
+- **Heavy bytes by reference (D-026), preserved.** Catalog rows stay metadata-
+  only; preview + download route through the `artifacts.get_ref` presigned URL;
+  the CSV export is metadata-only; the delete carries only the scope + id. The
+  preview pane still dispatches through the canonical renderer registry
+  (`$lib/chat/renderers`) — no bespoke per-mime renderer. See D-187 for the full
+  live-wire verification.

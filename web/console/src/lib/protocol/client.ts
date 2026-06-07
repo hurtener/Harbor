@@ -299,6 +299,10 @@ export class ArtifactsNamespace {
 	getRef<R = unknown>(req: Record<string, unknown>): Promise<R> {
 		return this.#t.request<R>('/v1/control/artifacts.get_ref', req);
 	}
+	/** `artifacts.delete` — admin-gated, audited artifact eviction (Phase 108o / D-187). */
+	delete<R = unknown>(req: { scope: Record<string, unknown>; id: string }): Promise<R> {
+		return this.#t.request<R>('/v1/control/artifacts.delete', req as unknown as Record<string, unknown>);
+	}
 }
 
 /**
