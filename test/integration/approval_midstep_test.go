@@ -26,20 +26,13 @@
 //   - real `steering.Registry` + `steering.RunLoop` with
 //     `WithApprovalGates`; the APPROVE / REJECT is enqueued on the
 //     run's steering Inbox — the same path the Protocol edge's
-//     dispatchControl uses.
-//
-// KNOWN PRODUCTION GAP (§17.6): the ONE stand-in below is the
-// ToolExecutor. The production executor (`devToolExecutor`) is
-// unexported in `cmd/harbor` (package main), so it cannot be driven
-// from an integration test outside that package — the
-// SDK-friction audit pinned this as Pattern 1 / P1
-// (docs/notes/sdk-friction-audit.md); promoting the executor into an
-// importable runtime package is a separate wave. The test-local
-// executor below dispatches CallTool through the REAL catalog
-// descriptor's Invoke (so the real approval wrapper + gate are in the
-// invocation path), mirroring `devToolExecutor.callTool`'s
-// resolve-then-Invoke shape minus the D-026 heavy-content projection
-// (irrelevant to the deadlock under test).
+//     dispatchControl uses,
+//   - the REAL production ToolExecutor (`dispatch.NewToolExecutor`,
+//     promoted out of `package main` by Phase 110a — D-194), over a
+//     real inmem ArtifactStore + a real inprocess TaskRegistry — the
+//     §17.6 test-gap the pre-110a shim carried is closed: the gated
+//     CallTool is dispatched by the planner through the SAME executor
+//     production wires.
 
 package integration
 
@@ -47,13 +40,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
+	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
@@ -61,8 +55,13 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/deterministic"
+	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/state"
+	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
+	"github.com/hurtener/Harbor/internal/tasks"
+	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/approval"
 	"github.com/hurtener/Harbor/internal/tools/catalog"
@@ -90,6 +89,9 @@ type d192Env struct {
 	gates    map[string]*approval.ApprovalGate
 	steerReg *steering.Registry
 	runLoop  *steering.RunLoop
+	// executor is the REAL promoted production executor
+	// (dispatch.NewToolExecutor — Phase 110a / D-194).
+	executor steering.ToolExecutor
 	// toolRuns counts underlying tool-body executions (post-gate).
 	toolRuns *atomic.Int64
 	// seenIdentity records the identity the tool body read from ctx —
@@ -174,6 +176,34 @@ func buildD192Env(t *testing.T) *d192Env {
 	if err != nil {
 		t.Fatalf("steering.NewRunLoop: %v", err)
 	}
+
+	// The REAL production executor (Phase 110a — D-194): the same
+	// `dispatch.NewToolExecutor` cmd/harbor and devstack wire, over a
+	// real inmem ArtifactStore + a real inprocess TaskRegistry. The
+	// gated CallTool is dispatched planner→runloop→executor→approval
+	// wrapper→gate — the full production invocation path.
+	artStore, err := artifacts.Open(context.Background(), config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifacts.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = artStore.Close(context.Background()) })
+	stateStore, err := state.Open(context.Background(), config.StateConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = stateStore.Close(context.Background()) })
+	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
+		Store:    stateStore,
+		Bus:      bus,
+		Redactor: red,
+		Cfg:      config.TasksConfig{Driver: "inprocess"},
+	})
+	if err != nil {
+		t.Fatalf("tasks.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = taskReg.Close(context.Background()) })
+	executor := dispatch.NewToolExecutor(cat, artStore, taskReg)
+
 	return &d192Env{
 		cat:          cat,
 		bus:          bus,
@@ -181,34 +211,10 @@ func buildD192Env(t *testing.T) *d192Env {
 		gates:        gates,
 		steerReg:     steerReg,
 		runLoop:      rl,
+		executor:     executor,
 		toolRuns:     toolRuns,
 		seenIdentity: seenIdentity,
 	}
-}
-
-// d192Executor is the test-local ToolExecutor (see the top-of-file
-// KNOWN PRODUCTION GAP note — the production executor is unexported
-// in cmd/harbor). It dispatches CallTool through the REAL catalog
-// descriptor's Invoke, so the real approval wrapper + gate sit in the
-// invocation path.
-type d192Executor struct {
-	cat tools.ToolCatalog
-}
-
-func (e *d192Executor) ExecuteDecision(ctx context.Context, _ planner.RunContext, decision planner.Decision) (any, any, error) {
-	ct, ok := decision.(planner.CallTool)
-	if !ok {
-		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
-	}
-	desc, ok := e.cat.Resolve(ct.Tool)
-	if !ok {
-		return nil, nil, fmt.Errorf("%w: %q", tools.ErrToolNotFound, ct.Tool)
-	}
-	result, err := desc.Invoke(ctx, ct.Args)
-	if err != nil {
-		return nil, nil, fmt.Errorf("tool %q invoke: %w", ct.Tool, err)
-	}
-	return result.Value, result.Value, nil
 }
 
 // d192Planner builds a REAL deterministic planner: step 0 emits
@@ -245,7 +251,7 @@ func d192RunSpec(env *d192Env, t *testing.T, q identity.Quadruple) steering.RunS
 			Trajectory: &planner.Trajectory{},
 		},
 		MaxSteps:     8,
-		ToolExecutor: &d192Executor{cat: env.cat},
+		ToolExecutor: env.executor,
 	}
 }
 

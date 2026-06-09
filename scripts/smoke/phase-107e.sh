@@ -4,7 +4,8 @@
 # Phase 107e — SpawnTask + AwaitTask dev-executor dispatch (background-task execution).
 #
 # Surface under test:
-#   - cmd/harbor/cmd_dev_executor.go dispatches planner.SpawnTask + planner.AwaitTask
+#   - internal/runtime/dispatch (promoted from cmd/harbor by 110a / D-194)
+#     dispatches planner.SpawnTask + planner.AwaitTask
 #     through the tasks.TaskRegistry instead of returning ErrDecisionShapeUnsupported.
 #   - The per-task RunLoop driver drives KindBackground tasks (not just foreground),
 #     so a spawned background sub-goal actually runs and reaches a terminal status.
@@ -26,7 +27,8 @@ source "scripts/smoke/common.sh"
 # ----------------------------------------------------------------------------
 # Static: the dev executor no longer hard-rejects SpawnTask / AwaitTask.
 # ----------------------------------------------------------------------------
-EXEC_SRC="cmd/harbor/cmd_dev_executor.go"
+# Phase 110a (D-194) promoted the executor out of cmd/harbor.
+EXEC_SRC="internal/runtime/dispatch/dispatch.go"
 if [ -f "${EXEC_SRC}" ]; then
   if grep -qE 'SpawnTask \(background-task dispatcher lands post-V1\.1\)' "${EXEC_SRC}"; then
     fail "phase 107e: ${EXEC_SRC} still returns ErrDecisionShapeUnsupported for SpawnTask"
@@ -34,7 +36,7 @@ if [ -f "${EXEC_SRC}" ]; then
     ok "phase 107e: ${EXEC_SRC} no longer hard-rejects SpawnTask"
   fi
 else
-  skip "phase 107e: ${EXEC_SRC} absent (pre-107e build)"
+  skip "phase 107e: ${EXEC_SRC} absent (pre-110a build)"
 fi
 
 # ----------------------------------------------------------------------------

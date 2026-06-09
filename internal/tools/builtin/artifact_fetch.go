@@ -133,8 +133,8 @@ func artifactFetch(ctx context.Context, store artifacts.ArtifactStore, args Arti
 		SessionID: id.SessionID,
 		// TaskID intentionally left empty — the runtime tool-executor
 		// stamps artifacts WITHOUT a TaskID (it derives the scope from
-		// `rc.Quadruple` minus the RunID; see
-		// `cmd/harbor/cmd_dev_executor.go::projectForLLM`). Reading
+		// `rc.Quadruple` minus the RunID; see the heavy-result
+		// promotion in `internal/runtime/dispatch`). Reading
 		// back with the same shape avoids a scope mismatch.
 	}
 	ref, found, err := store.GetRef(ctx, scope, args.Ref)

@@ -19,7 +19,7 @@ contract, re-homes the catalog→planner view adapter, and converts `cmd/harbor`
 closing its documented D-026 / parallel / spawn capability drift in the same PR (§13
 primitive-with-consumer; §17.6 fix-both-sides). Part of the Wave B re-homing program
 (D-193, the program entry that lands with this band's PR); this phase's decision is
-**D-194 (reserved; logged when the phase ships)**.
+**D-194** (logged in `docs/decisions.md` with the shipping PR).
 
 ## RFC anchor
 

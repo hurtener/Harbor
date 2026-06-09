@@ -1160,8 +1160,9 @@ func renderNativeObservation(step planner.Step) string {
 //     plus the fetch hint so the LLM still sees the ref.
 //
 //  2. `map[string]any` carrying both `preview` and `artifact_ref`
-//     keys — the runtime tool-executor's `heavyTruncationSummary`
-//     shape (`cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`).
+//     keys — the runtime tool-executor's heavy-truncation-summary
+//     shape (`internal/runtime/dispatch.HeavyTruncationSummary`,
+//     the exported shape contract; Phase 110a — D-194).
 //     `preview` is the head bytes of the JSON-encoded payload;
 //     `truncated: true` is the executor's explicit signal that the
 //     full bytes live in the artifact store under `artifact_ref`.
@@ -1210,7 +1211,9 @@ func asString(v any) string {
 }
 
 // renderHeavyContentMap detects the runtime tool-executor's
-// `heavyTruncationSummary` shape and projects it for the LLM.
+// heavy-truncation-summary shape
+// (`internal/runtime/dispatch.HeavyTruncationSummary`) and projects it
+// for the LLM.
 // Returns (body, true) when the wrapper map carries a usable
 // `preview` and/or `artifact_ref`; (body, false) otherwise. Picks
 // the field-aware vs byte-truncation footer variant via

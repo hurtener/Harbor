@@ -1,4 +1,8 @@
-package main
+// internal/runtime/dispatch/dispatch_parallel_test.go — CallParallel
+// dispatch parity tests (Phase 107d — D-169; moved from cmd/harbor in
+// Phase 110a — D-194, names re-prefixed to TestExecutor_*).
+
+package dispatch
 
 import (
 	"context"
@@ -9,66 +13,28 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	artinmem "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
-// parallelTestID is the identity quadruple the dev-executor parallel
-// tests run under.
-func parallelTestQuad(runID string) identity.Quadruple {
-	return identity.Quadruple{
-		Identity: identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
-		RunID:    runID,
-	}
-}
-
-func parallelTestCtx(t *testing.T, q identity.Quadruple) context.Context {
-	t.Helper()
-	ctx, err := identity.WithRun(t.Context(), q.Identity, q.RunID)
-	if err != nil {
-		t.Fatalf("identity.WithRun: %v", err)
-	}
-	return ctx
-}
-
-// registerEcho registers a tool that echoes its args under
-// Value["echo"]=name.
-func registerEcho(t *testing.T, cat tools.ToolCatalog, name string) {
-	t.Helper()
-	if err := cat.Register(tools.ToolDescriptor{
-		Tool: tools.Tool{Name: name},
-		Invoke: func(_ context.Context, args json.RawMessage) (tools.ToolResult, error) {
-			return tools.ToolResult{Value: map[string]any{"echo": name, "args": string(args)}}, nil
-		},
-	}); err != nil {
-		t.Fatalf("register %q: %v", name, err)
-	}
-}
-
-func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*devToolExecutor, tools.ToolCatalog) {
+func newParallelTestExecutor(t *testing.T, heavyThreshold int) (*toolExecutor, tools.ToolCatalog) {
 	t.Helper()
 	cat := tools.NewCatalog()
-	artStore, err := artinmem.New(config.ArtifactsConfig{})
-	if err != nil {
-		t.Fatalf("artifacts inmem: %v", err)
-	}
 	// Phase 107e: the parallel-path tests do not exercise spawn/await, so
 	// a nil TaskRegistry + default depth cap is fine here.
-	exec := newDevToolExecutor(cat, artStore, nil, heavyThreshold, 0, nil)
+	exec := NewToolExecutor(cat, newTestArtifactStore(t), nil,
+		WithHeavyThreshold(heavyThreshold)).(*toolExecutor)
 	return exec, cat
 }
 
-// TestExecuteDecision_CallParallel_MixedSuccessFailure — AC-13 + AC-2:
+// TestExecutor_CallParallel_MixedSuccessFailure — AC-13 + AC-2:
 // a CallParallel with success / invoke-error / resolve-miss /
 // bad-args branches produces one aggregate outcome per branch keyed by
 // CallID; the bad-args + missing branches surface as errors while the
 // valid branches still dispatch (non-atomic).
-func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
+func TestExecutor_CallParallel_MixedSuccessFailure(t *testing.T) {
 	t.Parallel()
 	exec, cat := newParallelTestExecutor(t, 0)
 	registerEcho(t, cat, "good")
@@ -92,7 +58,7 @@ func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
 		t.Fatalf("register badargs: %v", err)
 	}
 
-	q := parallelTestQuad("r-mixed")
+	q := dispatchTestQuad("r-mixed")
 	rc := planner.RunContext{Quadruple: q}
 	decision := planner.CallParallel{
 		Branches: []planner.CallTool{
@@ -102,7 +68,7 @@ func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
 			{Tool: "badargs", Args: json.RawMessage(`{}`), CallID: "c3"},
 		},
 	}
-	rawAny, llmAny, err := exec.ExecuteDecision(parallelTestCtx(t, q), rc, decision)
+	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, decision)
 	if err != nil {
 		t.Fatalf("ExecuteDecision: unexpected whole-call err: %v", err)
 	}
@@ -141,12 +107,12 @@ func TestExecuteDecision_CallParallel_MixedSuccessFailure(t *testing.T) {
 	}
 }
 
-// TestExecuteDecision_CallParallel_HeavyBranchesProjected — AC-3: a
+// TestExecutor_CallParallel_HeavyBranchesProjected — AC-3: a
 // CallParallel with ≥2 heavy-output branches projects each branch to an
 // artifact-stub summary in the llmObservation independently; the raw
 // aggregate keeps the untruncated values. The llm aggregate stays well
 // under the heavy threshold.
-func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
+func TestExecutor_CallParallel_HeavyBranchesProjected(t *testing.T) {
 	t.Parallel()
 	const threshold = 256
 	exec, cat := newParallelTestExecutor(t, threshold)
@@ -161,7 +127,7 @@ func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
 		t.Fatalf("register heavy: %v", err)
 	}
 
-	q := parallelTestQuad("r-heavy")
+	q := dispatchTestQuad("r-heavy")
 	rc := planner.RunContext{Quadruple: q}
 	decision := planner.CallParallel{
 		Branches: []planner.CallTool{
@@ -169,7 +135,7 @@ func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
 			{Tool: "heavy", Args: json.RawMessage(`{}`), CallID: "h1"},
 		},
 	}
-	rawAny, llmAny, err := exec.ExecuteDecision(parallelTestCtx(t, q), rc, decision)
+	rawAny, llmAny, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, decision)
 	if err != nil {
 		t.Fatalf("ExecuteDecision: %v", err)
 	}
@@ -203,14 +169,14 @@ func TestExecuteDecision_CallParallel_HeavyBranchesProjected(t *testing.T) {
 	}
 }
 
-// TestExecuteDecision_CallParallel_ConcurrentReuse — AC-17 / D-025:
+// TestExecutor_CallParallel_ConcurrentReuse — AC-17 / D-025:
 // N≥100 concurrent ExecuteDecision(CallParallel) calls against ONE
-// shared devToolExecutor (and its one shared parallel.Executor), each
+// shared executor (and its one shared parallel.Executor), each
 // with its own identity quadruple + branch set, under -race. Asserts no
 // cross-talk (each run's branches carry its own run id), no data race,
 // and that the goroutine count returns to baseline after all runs
 // settle.
-func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
+func TestExecutor_CallParallel_ConcurrentReuse(t *testing.T) {
 	t.Parallel()
 	exec, cat := newParallelTestExecutor(t, 0)
 	// A tool that echoes the run id it observed via ctx identity, so we
@@ -231,15 +197,15 @@ func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 
-	const N = 128
+	const n = 128
 	var wg sync.WaitGroup
-	errCh := make(chan error, N)
-	for i := range N {
+	errCh := make(chan error, n)
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			runID := fmt.Sprintf("r-reuse-%d", idx)
-			q := parallelTestQuad(runID)
+			q := dispatchTestQuad(runID)
 			rc := planner.RunContext{Quadruple: q}
 			decision := planner.CallParallel{
 				Branches: []planner.CallTool{
@@ -247,7 +213,7 @@ func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
 					{Tool: "side", Args: json.RawMessage(`{}`), CallID: fmt.Sprintf("%d-b", idx)},
 				},
 			}
-			rawAny, _, err := exec.ExecuteDecision(parallelTestCtx(t, q), rc, decision)
+			rawAny, _, err := exec.ExecuteDecision(dispatchTestCtx(t, q), rc, decision)
 			if err != nil {
 				errCh <- fmt.Errorf("run %d: %w", idx, err)
 				return
@@ -270,13 +236,5 @@ func TestExecuteDecision_CallParallel_ConcurrentReuse(t *testing.T) {
 	for err := range errCh {
 		t.Error(err)
 	}
-
-	// Goroutine baseline: poll briefly so transient goroutines drain.
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > baseline+5 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := runtime.NumGoroutine(); got > baseline+5 {
-		t.Errorf("goroutine leak: baseline=%d, after=%d", baseline, got)
-	}
+	assertGoroutineBaseline(t, baseline)
 }

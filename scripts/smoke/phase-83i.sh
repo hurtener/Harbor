@@ -30,18 +30,22 @@ assert_grep_present 'spec\.Base\.Trajectory\.Steps = append' "internal/runtime/s
     "runloop appends trajectory.Step after each non-Finish step"
 
 # ----------------------------------------------------------------------------
-# Dev binary's executor + catalog view.
+# The production executor + catalog view. Phase 110a (D-194) promoted
+# both out of cmd/harbor: the executor lives in internal/runtime/dispatch
+# and the view is tools.PlannerView — the 83i guarantees (typed executor,
+# D-026 projectForLLM heavy promotion, identity-filtered view) hold at
+# the promoted homes.
 # ----------------------------------------------------------------------------
-assert_file "cmd/harbor/cmd_dev_executor.go" \
-    "devToolExecutor lives at the documented path"
-assert_grep_present 'type devToolExecutor struct' "cmd/harbor/cmd_dev_executor.go" \
-    "devToolExecutor type declared"
-assert_grep_present 'func.*projectForLLM' "cmd/harbor/cmd_dev_executor.go" \
-    "devToolExecutor projects heavy results via the artifact store"
-assert_file "cmd/harbor/cmd_dev_catalog_view.go" \
-    "runtimeCatalogView lives at the documented path"
-assert_grep_present 'type runtimeCatalogView struct' "cmd/harbor/cmd_dev_catalog_view.go" \
-    "runtimeCatalogView type declared"
+assert_file "internal/runtime/dispatch/dispatch.go" \
+    "production executor lives at the promoted path (110a / D-194)"
+assert_grep_present 'type toolExecutor struct' "internal/runtime/dispatch/dispatch.go" \
+    "promoted executor type declared"
+assert_grep_present 'func.*projectForLLM' "internal/runtime/dispatch/dispatch.go" \
+    "promoted executor projects heavy results via the artifact store"
+assert_file "internal/tools/planner_view.go" \
+    "catalog view lives at the promoted path (110a / D-194)"
+assert_grep_present 'type PlannerView struct' "internal/tools/planner_view.go" \
+    "promoted PlannerView type declared"
 
 # ----------------------------------------------------------------------------
 # runOne wiring.
@@ -58,12 +62,13 @@ assert_grep_present 'd\.memory\.AddTurn' "cmd/harbor/cmd_dev_runloop.go" \
     "memory.AddTurn writeback on FinishGoal"
 
 # ----------------------------------------------------------------------------
-# Devstack mirror (D-094).
+# Devstack parity (D-094 → 110a / D-194: the hand-maintained executor +
+# view mirrors are DELETED; devstack wires the promoted constructors).
 # ----------------------------------------------------------------------------
-assert_grep_present 'devStackToolExecutor' "harbortest/devstack/devstack.go" \
-    "devstack mirror carries the executor (D-094)"
-assert_grep_present 'devStackCatalogView' "harbortest/devstack/devstack.go" \
-    "devstack mirror carries the catalog view (D-094)"
+assert_grep_present 'dispatch\.NewToolExecutor' "harbortest/devstack/devstack.go" \
+    "devstack wires the promoted executor (110a / D-194)"
+assert_grep_present 'tools\.NewPlannerView' "harbortest/devstack/devstack.go" \
+    "devstack wires the promoted catalog view (110a / D-194)"
 assert_grep_present 'd\.memory\.AddTurn' "harbortest/devstack/devstack.go" \
     "devstack mirror carries memory writeback (D-094)"
 
