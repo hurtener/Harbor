@@ -735,9 +735,12 @@ func (e *engine) incomingChannelsFor(name string) []chan messages.Envelope {
 // logWorkerError logs a worker-loop error via the engine's slog
 // logger AND fires the configured RunErrorHandler (Phase 11). The
 // slog path keeps internal failures visible to operators even when
-// no handler is installed; the handler is the seam production wiring
-// uses to route the structured RunError into the telemetry.Logger →
-// eventbus adapter → runtime.error bus event chain.
+// no handler is installed; the handler is the seam an engine-hosting
+// assembly uses to route the structured RunError into the
+// telemetry.Logger → eventbus adapter → runtime.error bus event
+// chain. No production assembly installs a handler today (`harbor
+// dev` boots no engine graph — docs/notes/sdk-friction-audit.md §3),
+// so the slog path is the only live consumer.
 //
 // The handler call is best-effort: a panic is recovered and logged.
 // Bus-emit failures must not crash the worker.

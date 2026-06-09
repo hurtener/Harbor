@@ -25,9 +25,11 @@
 //     under Tenant A then attempted under Tenant B returns
 //     ErrSessionIDReuse, even though the StateStore key (which
 //     contains the full Quadruple) would not naturally collide.
-//  4. GC never reaps a session with a RUNNING task — Phase 20
-//     (TaskRegistry) wires the real RunningProbe; Phase 08 ships a
-//     no-op default that returns (false, nil).
+//  4. GC never reaps a session with a RUNNING task — enforced when
+//     the TaskRegistry-backed probe (TaskRunningProbe) is wired via
+//     WithGCPolicy, as both reference assemblies do. The no-op
+//     default (returns false, nil) exists only for registries
+//     constructed without task awareness.
 //
 // Lifecycle events (`session.opened / .touched / .closed / .gc_reaped`)
 // land on the EventBus as `SafePayload` types — they're Harbor-internal
@@ -82,15 +84,18 @@ type SessionSnapshot struct {
 	Running bool
 }
 
-// RunningProbe is the seam Phase 20 (TaskRegistry) plugs into so GC
-// can honor "never reap a session with a RUNNING task." A nil probe
-// is treated as the no-op default (returns false, nil) — Phase 08
-// ships no task awareness, and the registry must work without it.
+// RunningProbe is the seam the GC sweeper consults so it can honor
+// "never reap a session with a RUNNING task" (RFC §6.9). The
+// TaskRegistry-backed implementation is TaskRunningProbe; both
+// reference assemblies wire it via WithGCPolicy. A nil probe is
+// treated as the no-op default (returns false, nil) — only for
+// registries constructed without task awareness.
 type RunningProbe func(ctx context.Context, q identity.Quadruple) (bool, error)
 
 // GCPolicy bundles the GC sweeper's tunables. Defaults match RFC §6.9:
 // IdleTTL 24h, HardCap 720h (30 days), SweepInterval 15m. The
-// RunningProbe is the seam Phase 20 plugs into; default is the no-op.
+// RunningProbe should be TaskRunningProbe wherever a TaskRegistry is
+// in scope; default is the no-op.
 type GCPolicy struct {
 	IdleTTL       time.Duration
 	HardCap       time.Duration

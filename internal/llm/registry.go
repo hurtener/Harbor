@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -423,6 +424,20 @@ func registeredNames() string {
 // driver: every `Complete` runs through `enforceContextSafety` BEFORE
 // the driver sees the request. This is mandatory by construction —
 // drivers cannot bypass it through the registry path.
+//
+// # Unseated wrapper hooks warn loudly
+//
+// The corrections / downgrade / retry / governance layers self-
+// register via init() in their own packages and are pulled in by
+// blank imports at the binary entry point. When a Disable* flag is
+// FALSE (production behaviour requested) but the corresponding hook
+// is nil (the blank import never fired), Open does NOT silently skip
+// the layer: it emits one slog warning per missing wrapper naming the
+// blank-import path that seats it (§13 — no silent degradation). The
+// warning is not an error because the mock-only test path legitimately
+// composes without wrappers; embedders that see the warning against a
+// live provider are missing production semantics and should add the
+// named import.
 func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	if deps.Artifacts == nil {
 		return nil, fmt.Errorf("%w: Deps.Artifacts is required (artifacts.ArtifactStore)", ErrInvalidConfig)
@@ -460,6 +475,8 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		correctionsWrapperMu.RUnlock()
 		if wrap != nil {
 			client = wrap(client, cfg)
+		} else {
+			warnUnseatedWrapper("corrections", "github.com/hurtener/Harbor/internal/llm/corrections")
 		}
 	}
 
@@ -473,6 +490,8 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		downgradeWrapperMu.RUnlock()
 		if wrap != nil {
 			client = wrap(client, cfg, deps)
+		} else {
+			warnUnseatedWrapper("downgrade", "github.com/hurtener/Harbor/internal/llm/output")
 		}
 	}
 
@@ -486,6 +505,8 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		retryWrapperMu.RUnlock()
 		if wrap != nil {
 			client = wrap(client, cfg, deps)
+		} else {
+			warnUnseatedWrapper("retry", "github.com/hurtener/Harbor/internal/llm/retry")
 		}
 	}
 
@@ -501,9 +522,24 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		governanceWrapperMu.RUnlock()
 		if wrap != nil {
 			client = wrap(client, cfg, deps)
+		} else {
+			warnUnseatedWrapper("governance", "github.com/hurtener/Harbor/internal/governance")
 		}
 	}
 	return client, nil
+}
+
+// warnUnseatedWrapper emits the boot-time "wrapper hook not seated"
+// warning Open's godoc documents. One call per missing wrapper, at
+// Open time. Uses slog.Default(): the LLM Deps deliberately carry no
+// logger (the client is stateless across calls, D-025), and a
+// boot-time composition warning is exactly what the process default
+// logger exists for.
+func warnUnseatedWrapper(layer, importPath string) {
+	slog.Warn("llm: wrapper hook not seated — composing client WITHOUT this production layer",
+		"layer", layer,
+		"missing_blank_import", importPath,
+	)
 }
 
 // applyDefaults populates zero-valued fields with the Phase 32

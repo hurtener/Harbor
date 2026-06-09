@@ -160,14 +160,19 @@ llm:
 governance:
   repair_attempts: 3
 
-  # Phase 36a + 36b — identity tier enforcement.
+  # Phase 36a + 36b — identity tier policy declarations.
+  #
+  # **ENFORCEMENT NOT YET WIRED** (SDK friction audit,
+  # docs/notes/sdk-friction-audit.md §1): a populated
+  # `identity_tiers` block currently drives ONLY the read-only
+  # `governance.posture` Protocol surface — no cost ceiling fires,
+  # no rate limit drains, no MaxTokens cap rejects, regardless of
+  # what you declare here. The runtime warns at boot when tiers are
+  # configured so the gap is visible. Enforcement wiring is tracked
+  # as Wave C follow-up work in the audit doc.
   #
   # **LATENT DEFAULT.** With the `identity_tiers` block omitted (or
-  # `default_tier` empty), every governance policy is a permit no-op:
-  # no cost ceilings fire, no rate limits drain, no MaxTokens cap
-  # rejects. Operators opt in by populating `identity_tiers` with
-  # one or more tiers and (optionally) naming a `default_tier` for
-  # identities not otherwise mapped.
+  # `default_tier` empty), the surface is fully latent.
   #
   # **Removed in D-081.** The pre-Phase-36a single-knob fields
   # `default_max_tokens`, `cost_ceiling_usd`, and `rate_limit_tps`
@@ -432,20 +437,20 @@ planner:
 #   dsn: /var/lib/harbor/skills.sqlite
 
 tools:
-  # Phase 27 HTTP tool driver. Each path points at a UTCP-style
-  # YAML manifest describing one or more HTTP endpoints as Harbor
-  # tools. Paths may be absolute (production deployment) or
-  # relative to the working directory (dev loop). Secrets in
-  # manifests MUST live in ${ENV_VAR} references — literal values
-  # are rejected at load time. Example shapes:
+  # Phase 27 HTTP tool driver manifests. NOT YET WIRED at boot (see
+  # docs/notes/sdk-friction-audit.md §1): no production path loads
+  # the listed manifests, so `harbor validate` REJECTS a non-empty
+  # list rather than silently accepting a knob that does nothing.
+  # Keep this empty until the boot loader lands; register HTTP tools
+  # programmatically via the Phase 27 driver in the meantime. The
+  # eventual shape (each path a UTCP-style YAML manifest; secrets as
+  # ${ENV_VAR} references — literal values rejected at load time):
   #
   #   http_manifests:
   #     - /etc/harbor/tools/weather.yaml
   #     - /etc/harbor/tools/github.yaml
   #
-  # An absent or empty `http_manifests` list is valid — operators
-  # with only in-process tools (registered via inproc.RegisterFunc)
-  # don't need a manifest.
+  # An absent or empty `http_manifests` list is valid.
   http_manifests: []
   # MCP southbound attachments (Phase 28). Each entry boots a
   # *mcp.Provider whose discovered tools / resources / prompts merge

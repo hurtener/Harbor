@@ -15,10 +15,15 @@ import (
 )
 
 // Manifest is the UTCP-style YAML schema describing one or more
-// HTTP tools as Harbor `Tool`s. Operators ship manifests via
-// `ToolsConfig.HTTPManifests` (paths to YAML files); Harbor loads
-// each at boot via `LoadManifest` and registers the tools via
-// `RegisterManifest`.
+// HTTP tools as Harbor `Tool`s. `LoadManifest` parses a manifest
+// file and `RegisterManifest` registers its tools onto a catalog.
+//
+// The boot-path wiring is NOT yet built: no production path reads
+// `ToolsConfig.HTTPManifests` and calls these (the config validator
+// rejects a populated list for exactly that reason — see
+// docs/notes/sdk-friction-audit.md §1). Until the loader lands,
+// embedders call `LoadManifest` + `RegisterManifest` (or the inline
+// `RegisterHTTPTool`) from their own assembly code.
 //
 // Schema (YAML):
 //

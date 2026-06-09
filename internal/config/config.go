@@ -293,15 +293,22 @@ type LLMCostOverridesConfig struct {
 }
 
 // GovernanceConfig holds the V1 governance policy surface — per-tier
-// cost ceilings, rate limits, and MaxTokens caps — all enforced
-// exclusively through `IdentityTiers` (Phase 36a + 36b). Hot-reload is
-// not yet wired; every field is restart-required.
+// cost ceilings, rate limits, and MaxTokens caps, declared through
+// `IdentityTiers` (Phase 36a + 36b). Hot-reload is not yet wired;
+// every field is restart-required.
+//
+// **Enforcement is NOT yet wired** (SDK friction audit,
+// docs/notes/sdk-friction-audit.md §1): no production path calls
+// `governance.SetFactory`, so a populated `IdentityTiers` map
+// currently drives ONLY the read-only `governance.posture` Protocol
+// surface — no request is throttled, budgeted, or token-capped. Both
+// reference assemblies emit a boot-time slog warning when
+// `IdentityTiers` is non-empty so the gap is visible. Enforcement
+// wiring is tracked as Wave C follow-up work in the audit doc.
 //
 // **Latent default (Wave 7b scoping):** an empty `IdentityTiers` map +
-// empty `DefaultTier` disables every per-policy enforcement. Operators
-// turn on enforcement per tier by populating `IdentityTiers` with at
-// least one `GovernanceTierConfig` entry and (optionally) setting
-// `DefaultTier`.
+// empty `DefaultTier` keeps the surface fully latent. Populating
+// `IdentityTiers` today changes posture display only (see above).
 //
 // **Removed in D-081 (chore/governance-config-consolidation):** the
 // pre-Phase-36a single-knob fields `default_max_tokens`,
@@ -322,10 +329,12 @@ type GovernanceConfig struct {
 	// no enforcement for unmatched identities (latent default).
 	DefaultTier string `yaml:"default_tier,omitempty"`
 
-	// IdentityTiers maps tier name to its policy bundle. Empty = no
-	// enforcement (latent default). Each entry's fields are
-	// independently opt-in — set `budget_ceiling_usd` only to enforce
-	// cost ceilings, leaving rate-limit + MaxTokens latent.
+	// IdentityTiers maps tier name to its policy bundle. Empty is the
+	// latent default. NOTE: populated tiers currently feed ONLY the
+	// read-only posture surface — enforcement is not yet wired (see
+	// the type godoc above). Each entry's fields are independently
+	// declared — `budget_ceiling_usd` for cost ceilings, plus
+	// rate-limit + MaxTokens fields.
 	IdentityTiers map[string]GovernanceTierConfig `yaml:"identity_tiers,omitempty"`
 }
 
@@ -561,10 +570,14 @@ type AuditConfig struct{}
 // The block is optional — operators who don't attach external tool
 // sources omit it entirely.
 //
-// `HTTPManifests` lists paths to UTCP-style YAML manifests loaded
-// at boot by Phase 27's HTTP driver. Paths may be absolute or
-// relative; the loader rejects empty strings and resolves each via
-// `filepath.Clean` before reading. An empty list is valid.
+// `HTTPManifests` lists paths to UTCP-style YAML manifests for
+// Phase 27's HTTP driver. The boot-path loader is NOT yet wired —
+// no production path calls `LoadManifest` / `RegisterManifest` —
+// so `Validate` REJECTS a non-empty list rather than letting a
+// populated knob silently do nothing (§13; SDK friction audit,
+// docs/notes/sdk-friction-audit.md §1). An empty list is valid and
+// is what the shipped examples carry. HTTP tools are registered
+// programmatically via the Phase 27 driver until the loader lands.
 //
 // `MCPServers` lists Phase 28's MCP southbound attachments. Each
 // entry boots a `*mcp.Provider` whose discovered tools / resources

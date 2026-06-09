@@ -121,18 +121,25 @@ skills:
 
 Per-identity cost ceilings + rate limits + max-token caps, keyed by tier.
 
+> **Enforcement is not yet wired.** Declared tiers currently drive only the
+> read-only `governance.posture` Protocol surface — no budget, rate limit, or
+> token cap fires yet, and the runtime warns at boot when tiers are
+> configured. Enforcement wiring is tracked follow-up work (see
+> `docs/notes/sdk-friction-audit.md`). The declaration shape below is stable;
+> tiers you declare today light up when enforcement lands.
+
 ```yaml
 governance:
   default_tier: free
   identity_tiers:
     free:
-      budget_ceiling_usd: 5.00                 # cap per (tenant, user) per billing window
-      max_tokens: 4096                         # planner enforced; tool calls counted
+      budget_ceiling_usd: 5.00                 # declared cap per (tenant, user) per billing window
+      max_tokens: 4096
       rate_limit:
         requests_per_minute: 30
 ```
 
-Empty `identity_tiers: {}` = no enforcement.
+Empty `identity_tiers: {}` = fully latent (the default).
 
 ## ADVANCED — every other lever
 

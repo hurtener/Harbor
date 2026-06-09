@@ -42,10 +42,12 @@ type RunCancelledNotice struct {
 }
 
 // RunCancelledHandler is the callback the engine fires after a Cancel
-// observed an active run. Same hook pattern as RunErrorHandler:
-// production wiring (cmd/harbor) installs a handler that publishes a
-// runtime.run_cancelled event on the bus; tests can install a
-// recording callback.
+// observed an active run. Same hook pattern as RunErrorHandler: the
+// seam exists for assemblies that host an engine graph to publish a
+// runtime.run_cancelled event on the bus. No production assembly
+// installs one today — `harbor dev` is planner/RunLoop-shaped and
+// boots no engine graph (see docs/notes/sdk-friction-audit.md §3).
+// Tests install recording callbacks.
 //
 // Best-effort: a panic is recovered; bus errors must not block Cancel
 // from returning.
@@ -112,10 +114,15 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 }
 
 // WithRunErrorHandler installs the callback the engine fires on
-// terminal node failure. Production wiring passes a callback that
-// invokes telemetry.Logger.Error so the wave-2 BusEmitter adapter
-// publishes a runtime.error event. Tests can install a recording
-// callback to assert the structured RunError shape directly.
+// terminal node failure. The intended wiring for an engine-hosting
+// assembly is a callback that invokes telemetry.Logger.Error so the
+// wave-2 BusEmitter adapter publishes a runtime.error event — but no
+// production assembly installs one today: `harbor dev` is
+// planner/RunLoop-shaped, boots no engine graph, and boots a bare
+// slog logger rather than telemetry.New (see
+// docs/notes/sdk-friction-audit.md §3). This option is the seam a
+// future engine-hosting runtime (or an embedder) fills. Tests install
+// recording callbacks to assert the structured RunError shape.
 //
 // When unset, the engine logs the failure via its slog.Logger only
 // (Phase 10 behavior). The handler is invoked AFTER the slog log so
@@ -127,9 +134,10 @@ func WithRunErrorHandler(h RunErrorHandler) Option {
 }
 
 // WithRunCancelledHandler installs the callback the engine fires
-// after Cancel(runID) observed an active run. Production wiring
-// translates the notice to a runtime.run_cancelled bus event;
-// tests can use a recording callback. Phase 13.
+// after Cancel(runID) observed an active run. The seam for an
+// engine-hosting assembly to translate the notice to a
+// runtime.run_cancelled bus event (none exists in production today —
+// see WithRunErrorHandler); tests use a recording callback. Phase 13.
 func WithRunCancelledHandler(h RunCancelledHandler) Option {
 	return func(cfg *engineConfig) {
 		cfg.runCancelledHandler = h

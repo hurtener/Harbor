@@ -641,33 +641,37 @@ func TestValidate_AcceptsAllAllowedAlgorithms(t *testing.T) {
 }
 
 func TestValidate_AcceptsEmptyTools(t *testing.T) {
-	// Tools section is optional; absent / empty is accepted.
+	// Tools section is optional; absent / empty is accepted. An empty
+	// http_manifests list is the shipped-example shape and stays valid.
 	cfg := mustLoadValid(t)
 	cfg.Tools = config.ToolsConfig{}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate rejected empty ToolsConfig: %v", err)
 	}
-	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
-		"/etc/harbor/tools/weather.yaml",
-		"/etc/harbor/tools/github.yaml",
-	}}
+	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{}}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate rejected populated ToolsConfig: %v", err)
+		t.Fatalf("Validate rejected empty http_manifests list: %v", err)
 	}
 }
 
-func TestValidate_RejectsEmptyToolsManifestPath(t *testing.T) {
+// TestValidate_RejectsPopulatedHTTPManifests — SDK friction audit
+// (docs/notes/sdk-friction-audit.md §1): the manifest loader has no
+// boot consumer, so a populated list is rejected loudly (§13 — no
+// silent degradation) instead of validating cleanly and doing nothing.
+func TestValidate_RejectsPopulatedHTTPManifests(t *testing.T) {
 	cfg := mustLoadValid(t)
 	cfg.Tools = config.ToolsConfig{HTTPManifests: []string{
 		"/etc/harbor/tools/weather.yaml",
-		"   ",
 	}}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("Validate accepted blank manifest path")
+		t.Fatal("Validate accepted populated http_manifests despite the surface being unwired")
 	}
-	if !strings.Contains(err.Error(), "tools.http_manifests[1]") {
-		t.Errorf("err missing path: %v", err)
+	if !strings.Contains(err.Error(), "tools.http_manifests") {
+		t.Errorf("err missing key name: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not wired") {
+		t.Errorf("err should explain the surface is not wired: %v", err)
 	}
 }
 

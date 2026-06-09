@@ -14,3 +14,10 @@ import "github.com/hurtener/Harbor/internal/config"
 func TryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	return tryAssemble(cfg, opts)
 }
+
+// PlannerConfigFromConfig re-exports the package-private projection so
+// the parity test can pin field-for-field agreement with production
+// (`cmd/harbor/cmd_dev.go::plannerConfigFromConfig`, D-094 / D-155 —
+// the SDK friction audit's B3 finding was this projection silently
+// dropping four planner fields).
+var PlannerConfigFromConfig = plannerConfigFromConfig
