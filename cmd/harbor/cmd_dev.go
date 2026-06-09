@@ -788,7 +788,18 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// reopen-after-close is forbidden). The registry's persistent catalog
 	// re-discovers sessions across restarts, so sessions.list / inspect /
 	// tasks-by-session keep working against an existing state dir.
-	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus)
+	// RFC §6.9: GC never reaps a session with a RUNNING task. The
+	// TaskRegistry-backed probe is the enforcement; without it the
+	// registry's no-op default reports "not running" and the sweeper
+	// can reap mid-flight sessions at the IdleTTL timescale (SDK
+	// friction audit B2, docs/notes/sdk-friction-audit.md §1).
+	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus,
+		sessions.WithGCPolicy(sessions.GCPolicy{
+			IdleTTL:       cfg.Sessions.IdleTTL,
+			HardCap:       cfg.Sessions.HardCap,
+			SweepInterval: cfg.Sessions.SweepInterval,
+			RunningProbe:  sessions.TaskRunningProbe(taskReg),
+		}))
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("sessions registry: %w", err)
@@ -1126,6 +1137,19 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// session registry's active-session count for Counters, and the
 	// MetricsRegistry's bus-fed counter snapshot for Metrics. They are
 	// NEVER an empty stub.
+	//
+	// SDK friction audit (docs/notes/sdk-friction-audit.md §1):
+	// populated `governance.identity_tiers` currently feeds ONLY this
+	// read-only posture provider — enforcement wiring
+	// (`governance.SetFactory`) has no production caller yet. Warn
+	// loudly so an operator who configured ceilings knows nothing is
+	// enforced (§13 — no silent degradation). Enforcement wiring is
+	// tracked as Wave C follow-up work in the audit doc.
+	if len(cfg.Governance.IdentityTiers) > 0 {
+		opts.logger.Warn("governance: identity_tiers configured but enforcement is NOT yet wired — tiers drive the read-only posture surface only",
+			"tiers", len(cfg.Governance.IdentityTiers),
+			"see", "docs/notes/sdk-friction-audit.md")
+	}
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
 			BuildVersion:   HarborVersion,

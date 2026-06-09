@@ -34,12 +34,17 @@ type TrajectorySummary = trajectory.Summary
 // runner is a reusable artifact per D-025; the summariser is called
 // under the run's ctx from MaybeCompress).
 //
-// Production wiring binds an LLM client + a compaction prompt; the
-// summariser invokes [llm.LLMClient.Complete] with the trajectory's
-// state and parses the response into the five [TrajectorySummary]
-// fields. Phase 46 ships the seam; the production LLM-backed
-// summariser lands when the runtime engine consumes the runner
-// (Phase 47+).
+// Production consumer pending: Phase 46 shipped the seam, but no
+// production path constructs a Summariser or calls
+// [CompressionRunner.MaybeCompress] today — the only implementations
+// are test-grade (SDK friction audit,
+// docs/notes/sdk-friction-audit.md §3). The intended production shape
+// binds an LLM client + a compaction prompt, invokes
+// [llm.LLMClient.Complete] with the trajectory's state, and parses
+// the response into the five [TrajectorySummary] fields; until that
+// lands (with a MaybeCompress call in the run loop gated on
+// Budget.TokenBudget > 0), trajectory compression does not run on any
+// shipped path.
 type Summariser interface {
 	Summarise(ctx context.Context, rc RunContext, tr *Trajectory) (*TrajectorySummary, error)
 }

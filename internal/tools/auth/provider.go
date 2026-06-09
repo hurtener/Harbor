@@ -517,6 +517,15 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 // CompleteFlow handles the callback. Exchanges (state, code) for
 // tokens; persists via TokenStore; resumes the parked run via the
 // coordinator; emits tool.auth_completed.
+//
+// CompleteFlow is the resume half of the tool-OAuth pause and the
+// exported seam an OAuth callback handler calls. No production
+// handler exists yet (SDK friction audit,
+// docs/notes/sdk-friction-audit.md §3) — embedders mount their own
+// endpoint at the configured RedirectURI and call this with the
+// returned (state, code). A bare Coordinator.Resume without
+// CompleteFlow re-parks the run immediately (the token is still
+// missing), so this method is the ONLY correct completion path.
 func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token, error) {
 	if p.closed.Load() {
 		return Token{}, ErrProviderClosed

@@ -98,6 +98,16 @@ import (
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
+
+	// LLM wrapper hooks — corrections / output-downgrade / retry.
+	// Blank-imported by the kit itself (not left to each test file)
+	// so a devstack-assembled LLM client composes the SAME wrapper
+	// chain as production `cmd/harbor/main.go` (SDK friction audit §7:
+	// the kit previously composed the client without these, invisible
+	// under the mock driver, divergent against live providers).
+	_ "github.com/hurtener/Harbor/internal/llm/corrections"
+	_ "github.com/hurtener/Harbor/internal/llm/output"
+	_ "github.com/hurtener/Harbor/internal/llm/retry"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -128,6 +138,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools/builtin"
 	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
+	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -438,6 +449,12 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 //	    _ "github.com/hurtener/Harbor/internal/llm/mock"
 //	)
 //
+// The LLM *wrapper hooks* (corrections / output-downgrade / retry /
+// governance) are NOT on that list: devstack imports them itself so
+// the assembled `llm.Open` chain matches the production
+// `cmd/harbor/main.go` composition. Tests do not opt in to the
+// production wrapper chain — they get it by construction.
+//
 // The helper opens the audit redactor by direct construction (the
 // patterns driver is the only V1 redactor; the seam is documented
 // future-proofing). All other layers use the factory `Open`.
@@ -663,7 +680,31 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 
 	// Catalog + Coordinator + Builder. Skip-aware.
 	if !opts.SkipCatalog {
-		cat := tools.NewCatalog()
+		// Phase 107c / D-167 — construct the tool SearchCache + attach
+		// it to the catalog, mirroring production cmd_dev.go (§17.6
+		// both-sides; SDK friction audit §2 mirror tax). Without it the
+		// `tool_search` / `skill_search` meta-tools return empty on a
+		// devstack-assembled stack while working in production.
+		searchCacheDSN := ":memory:"
+		if cfg.Tools.SearchCacheDSN != "" {
+			searchCacheDSN = cfg.Tools.SearchCacheDSN
+		}
+		searchCache, scErr := searchcache.New(searchcache.Config{DSN: searchCacheDSN})
+		if scErr != nil {
+			if opts.Logger != nil {
+				opts.Logger.Warn("tools/searchcache: disabled — discovery meta-tools will return empty",
+					"err", scErr.Error(),
+					"dsn", searchCacheDSN)
+			}
+			searchCache = nil
+		} else {
+			stack.closeFns = append(stack.closeFns, func(_ context.Context) error { return searchCache.Close() })
+		}
+		var catOpts []tools.CatalogOption
+		if searchCache != nil {
+			catOpts = append(catOpts, tools.WithSearchCache(searchCache))
+		}
+		cat := tools.NewCatalog(catOpts...)
 		for _, d := range opts.PreRegisterTools {
 			if regErr := cat.Register(d); regErr != nil {
 				return stack, fmt.Errorf("PreRegisterTools[%q]: %w", d.Tool.Name, regErr)
@@ -746,7 +787,16 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// and the `sessions.*` Protocol routes project over it. NOT
 	// force-Opened with a fixed session at boot (the production bug
 	// D-171 closes): sessions are per-request + create-on-first-use.
-	sessionRegistry, sessErr := sessions.New(stack.State, cfg.Sessions, bus)
+	// RFC §6.9: GC never reaps a session with a RUNNING task — wire
+	// the TaskRegistry-backed probe, mirroring production cmd/harbor
+	// boot (§17.6 both-sides; SDK friction audit B2).
+	sessionRegistry, sessErr := sessions.New(stack.State, cfg.Sessions, bus,
+		sessions.WithGCPolicy(sessions.GCPolicy{
+			IdleTTL:       cfg.Sessions.IdleTTL,
+			HardCap:       cfg.Sessions.HardCap,
+			SweepInterval: cfg.Sessions.SweepInterval,
+			RunningProbe:  sessions.TaskRunningProbe(stack.Tasks),
+		}))
 	if sessErr != nil {
 		return stack, fmt.Errorf("sessions.New: %w", sessErr)
 	}
@@ -958,6 +1008,20 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// the single posture surface so all seven posture methods route
 		// through it. §17.6 source-of-truth invariant: this helper
 		// tracks the production boot field-for-field.
+		//
+		// SDK friction audit (docs/notes/sdk-friction-audit.md §1):
+		// mirror production's honesty warning — populated
+		// `governance.identity_tiers` feeds ONLY the read-only posture
+		// provider; enforcement is not yet wired.
+		if len(cfg.Governance.IdentityTiers) > 0 {
+			govLogger := opts.Logger
+			if govLogger == nil {
+				govLogger = slog.Default()
+			}
+			govLogger.Warn("governance: identity_tiers configured but enforcement is NOT yet wired — tiers drive the read-only posture surface only",
+				"tiers", len(cfg.Governance.IdentityTiers),
+				"see", "docs/notes/sdk-friction-audit.md")
+		}
 		postureSurface, postErr := protocol.NewPostureSurface(protocol.PostureDeps{
 			Build: types.RuntimeInfo{
 				BuildVersion:   "devstack",
@@ -1257,9 +1321,16 @@ func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
 		}
 	}
 	return planner.PlannerConfig{
-		Driver:   driver,
-		MaxSteps: cfg.MaxSteps,
-		Extra:    extra,
+		Driver:                 driver,
+		MaxSteps:               cfg.MaxSteps,
+		ExtraGuidance:          cfg.ExtraGuidance,
+		ReasoningReplay:        planner.ReasoningReplayMode(cfg.ReasoningReplay),
+		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
+		// Phase 107d (D-169): pass the *bool through verbatim so the
+		// react factory distinguishes "unset" (nil → default true) from
+		// an explicit false (107c serialization opt-out).
+		ParallelToolCalls: cfg.ParallelToolCalls,
+		Extra:             extra,
 	}
 }
 

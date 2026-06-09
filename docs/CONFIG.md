@@ -256,8 +256,11 @@ identities). Validation: when set, MUST reference a key in
 ### governance.identity_tiers
 
 Per-tier policy bundle (cost ceiling, rate-limit token bucket,
-max-tokens cap). Default: empty (latent — no enforcement). See
-`GovernanceTierConfig` godoc for the full surface.
+max-tokens cap). Default: empty (latent). **Enforcement is not yet
+wired** — populated tiers currently feed only the read-only
+`governance.posture` surface, and the runtime warns at boot when
+tiers are configured (see `docs/notes/sdk-friction-audit.md` §1).
+See `GovernanceTierConfig` godoc for the full surface.
 
 ---
 
@@ -526,8 +529,12 @@ loaded config file's directory.
 
 ### tools.http_manifests
 
-Paths to UTCP-style YAML manifests loaded by the Phase 27 HTTP
-driver. Default: empty list. Validation: each path non-empty.
+Paths to UTCP-style YAML manifests for the Phase 27 HTTP driver.
+Default: empty list. **Not yet wired at boot** — no production path
+loads the listed manifests, so validation REJECTS a non-empty list
+(fail-loud per §13; see `docs/notes/sdk-friction-audit.md` §1). Keep
+the list empty until the boot loader lands; register HTTP tools
+programmatically via the Phase 27 driver in the meantime.
 
 ### tools.mcp_servers
 
