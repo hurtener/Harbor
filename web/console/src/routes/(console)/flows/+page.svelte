@@ -1,276 +1,66 @@
 <script lang="ts">
-  // Harbor Console — Flows catalog page (`/flows`), Phase 73i / D-117,
-  // refactored onto the design-system foundation (D-121).
+  // Harbor Console — Flows catalog page (`/flows`) — Phase 108p rebuild
+  // (D-188; supersedes the Phase 73i / D-117 pre-chrome layout).
   //
-  // The list-mode view: a searchable, sortable catalog of registered
-  // graph-family flows (`flows.list`) + the Flow Metrics card for the
-  // selected flow in a `DetailRail`. Selecting a flow row navigates to
-  // the detail route `/flows/<flow_id>`. The page is VIEW-ONLY (D-063)
-  // — the only mutating action is `Run flow`, gated on the `flows.run`
-  // scope claim (D-066).
+  // The list-mode view: a searchable catalog of registered flows (`flows.list`)
+  // + the Flow Metrics card for the selected flow in a `DetailRail`. Phase 108p
+  // rethemes it to the carded, viewport-locked composition (a filter card that
+  // does not scroll + a TABLE-left + a right rail, both scrolling internally),
+  // refactors the king file into a `FlowsListState` controller + pure
+  // `derive.ts` + the focused `FlowsTable` component, and drops the per-page
+  // page header (the breadcrumb / ⌘K / footer are app-shell chrome, 108b).
   //
-  // # Console consistency (CONVENTIONS.md)
+  // A flow is a composable engine-graph DAG registered as a TOOL (D-023) and
+  // invocable directly via `flows.run` — it is NOT planner-bound (the corrected
+  // empty-state copy, D-188). A row-click opens the detail route (mock-faithful
+  // — page-flows.md §6); the page is view-only (D-063) with `Run flow` the only
+  // mutating action, admin-gated (D-066 / D-079).
   //
-  // - Routes under `(console)/` with no `/console/` URL prefix (§1).
-  // - Renders inside the app shell — sidebar, breadcrumb, footer (§2).
-  // - Composes the `components/ui/` inventory: `PageHeader`, `FilterBar`,
-  //   `SavedViewChips`, `DataTable`, `DetailRail`/`RailCard`, `Pagination`,
-  //   `StatusChip` (§3). The Flows-specific `FlowMetricsCard` /
-  //   `RunFlowModal` stay in `components/flows/` (§3).
-  // - Routes all async state through the four-state `<PageState>` (§4),
-  //   including the new Empty state.
-  // - Talks to the Runtime only through `HarborClient` + `connection.ts`
-  //   (§6) — no hand-rolled `fetch`.
-  // - Design tokens only (§7).
+  // # Console consistency (CONVENTIONS.md / PAGE-POLISH-PROCEDURE.md)
+  //
+  // - Route under `(console)/` with no `/console/` URL prefix (§1); renders
+  //   inside the app shell — sidebar, breadcrumb, footer (§2).
+  // - Composes the `ui/` inventory: `FilterBar`, `SavedViewChips`, `DetailRail`/
+  //   `RailCard`, `Pagination`, `PageState` (§3). The Flows-specific
+  //   `FlowsTable` / `FlowMetricsCard` / `RunFlowModal` stay in their dirs (§3).
+  // - Routes all async state through the four-state `<PageState>` (§4).
+  // - Talks to the Runtime only through `HarborClient` + `connection.ts` via the
+  //   controller (§6) — no hand-rolled `fetch`. Design tokens only (§7).
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { HarborClient } from '$lib/protocol/harbor.js';
-  import { ProtocolError } from '$lib/protocol/errors.js';
-  import { FlowsProtocol } from '$lib/protocol/flows.js';
-  import { resolveConnection, hasScope, DISCONNECTED_TOOLTIP } from '$lib/connection.js';
   import {
-    PageHeader,
     FilterBar,
     SavedViewChips,
-    DataTable,
     DetailRail,
     RailCard,
-    StatusChip,
     Pagination,
-    PageState,
-    type DataTableColumn,
-    type PageStatus,
-    type SavedView
-  } from '$lib/components/ui/index.js';
+    PageState
+  } from '$lib/components/ui';
+  import { DISCONNECTED_TOOLTIP } from '$lib/connection.js';
+  import FlowsTable from '$lib/components/flows/FlowsTable.svelte';
   import FlowMetricsCard from '$lib/components/flows/FlowMetricsCard.svelte';
   import RunFlowModal from '$lib/components/flows/RunFlowModal.svelte';
-  import {
-    formatCost,
-    formatDurationMS,
-    formatRate,
-    formatRelative
-  } from '$lib/flows/format.js';
-  import type { Flow, FlowFilter, FlowMetrics } from '$lib/flows/types.js';
-  import { openListPageDB } from '$lib/db/console_db.js';
-  import { operatorIdOf } from '$lib/db/schema.js';
-  import {
-    FlowsSavedFilters,
-    type FlowsSavedFilter
-  } from '$lib/db/saved_filters_flows.js';
+  import { FlowsListState } from '$lib/flows/state.svelte.js';
+  import type { FlowsProtocol } from '$lib/protocol/flows.js';
+  import type { FlowsSavedFilters } from '$lib/db/saved_filters_flows.js';
 
-  // ---- Connection + typed client (CONVENTIONS.md §6) ----
-  const connection = resolveConnection();
-  const flowsClient =
-    connection !== null
-      ? new FlowsProtocol(new HarborClient({ connection }))
-      : null;
-  const canRun = hasScope(connection, 'admin');
-  // Phase 83r disconnected predicate.
-  const disconnected = connection === null;
+  let { flows: injectedFlows, savedViewStore: injectedStore }: {
+    flows?: FlowsProtocol;
+    savedViewStore?: FlowsSavedFilters;
+  } = $props();
 
-  // ---- Async-state model (CONVENTIONS.md §4) ----
-  let status = $state<PageStatus>(connection === null ? 'disconnected' : 'loading');
-  let loadError = $state<ProtocolError | null>(null);
+  const flows = new FlowsListState();
+  const disconnected = $derived(flows.disconnected);
 
-  // ---- Catalog data ----
-  let flows = $state<Flow[]>([]);
-  let totalRows = $state(0);
-  let pageNum = $state(1);
-  let pageSize = $state(50);
+  const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
-  // ---- Filter state ----
-  let query = $state('');
-
-  // ---- Selection + metrics rail ----
-  let selectedID = $state<string | null>(null);
-  let metrics = $state<FlowMetrics | null>(null);
-  let railStatus = $state<PageStatus>('empty');
-  let railError = $state<ProtocolError | null>(null);
-
-  // ---- Saved views (Console-DB-backed — D-061) ----
-  let savedFilters = $state<FlowsSavedFilter[]>([]);
-  let activeViewID = $state<string | null>(null);
-  let savedStore = $state<FlowsSavedFilters | null>(null);
-
-  // ---- Run-flow modal ----
-  let runFlowID = $state<string | null>(null);
-  let runPending = $state(false);
-  let runError = $state<string | null>(null);
-
-  /** The `FlowFilter` assembled from the live filter controls. */
-  function currentFilter(): FlowFilter {
-    const f: FlowFilter = {};
-    const q = query.trim();
-    if (q.length > 0) {
-      f.query = q;
-    }
-    return f;
-  }
-
-  /** Loads the flow catalog for the current filter + page. */
-  async function loadCatalog(): Promise<void> {
-    if (!flowsClient) {
-      status = 'disconnected';
-      return;
-    }
-    status = 'loading';
-    loadError = null;
-    try {
-      const resp = await flowsClient.list({
-        filter: currentFilter(),
-        page: pageNum,
-        page_size: pageSize
-      });
-      flows = resp.flows;
-      totalRows = resp.total_rows;
-      status = resp.flows.length === 0 ? 'empty' : 'ready';
-    } catch (err) {
-      flows = [];
-      totalRows = 0;
-      loadError =
-        err instanceof ProtocolError
-          ? err
-          : new ProtocolError('runtime_error', String(err), 0);
-      status = 'error';
-    }
-  }
-
-  /** Loads the saved-filter chips from the Console DB. */
-  async function loadSavedFilters(): Promise<void> {
-    try {
-      if (connection === null) {
-        return;
-      }
-      const db = await openListPageDB(connection);
-      const operatorID = await operatorIdOf(
-        connection.identity.tenant,
-        connection.identity.user
-      );
-      savedStore = new FlowsSavedFilters(db, operatorID);
-      savedFilters = await savedStore.list();
-    } catch {
-      // A Console-DB open failure is non-fatal for the catalog view —
-      // the saved-view chips simply render empty. The catalog itself
-      // (the Protocol surface) is unaffected; this is Console-local
-      // state only (D-061).
-      savedFilters = [];
-    }
-  }
-
-  /** Loads `flows.metrics` for a selected flow into the detail rail. */
-  async function selectFlow(id: string): Promise<void> {
-    selectedID = id;
-    if (!flowsClient) {
-      return;
-    }
-    railStatus = 'loading';
-    railError = null;
-    try {
-      metrics = await flowsClient.metrics({ flow_id: id });
-      railStatus = 'ready';
-    } catch (err) {
-      metrics = null;
-      railError =
-        err instanceof ProtocolError
-          ? err
-          : new ProtocolError('runtime_error', String(err), 0);
-      railStatus = 'error';
-    }
-  }
-
-  /** Persists the current filter as a named saved view (Console DB). */
-  async function saveCurrentView(): Promise<void> {
-    if (!savedStore) {
-      return;
-    }
-    const name = (query.trim() || 'All flows').slice(0, 60);
-    await savedStore.create(name, currentFilter());
-    savedFilters = await savedStore.list();
-  }
-
-  /** Applies a saved view's filter spec and reloads. */
-  function applySavedView(id: string): void {
-    const view = savedFilters.find((v) => v.id === id);
-    if (!view) {
-      return;
-    }
-    activeViewID = id;
-    query = view.filterSpec.query ?? '';
-    pageNum = 1;
-    void loadCatalog();
-  }
-
-  /** Deletes a saved view from the Console DB. */
-  async function deleteSavedView(id: string): Promise<void> {
-    if (!savedStore) {
-      return;
-    }
-    await savedStore.delete(id);
-    if (activeViewID === id) {
-      activeViewID = null;
-    }
-    savedFilters = await savedStore.list();
-  }
-
-  /** Submits a `flows.run` invocation from the runner modal. */
-  async function submitRun(inputs: Record<string, unknown>): Promise<void> {
-    if (!flowsClient || !runFlowID) {
-      return;
-    }
-    runPending = true;
-    runError = null;
-    try {
-      await flowsClient.run({ flow_id: runFlowID, inputs });
-      runFlowID = null;
-    } catch (err) {
-      runError =
-        err instanceof ProtocolError
-          ? `${err.code}: ${err.message}`
-          : 'Failed to start the flow run.';
-    } finally {
-      runPending = false;
-    }
-  }
-
-  function applySearch(): void {
-    activeViewID = null;
-    pageNum = 1;
-    void loadCatalog();
-  }
-
-  // ---- DataTable column config (CONVENTIONS.md §3) ----
-  const columns: DataTableColumn[] = [
-    { key: 'name', label: 'Flow' },
-    { key: 'owner', label: 'Owner' },
-    { key: 'version', label: 'Version' },
-    { key: 'runs_24h', label: 'Runs (24h)', numeric: true },
-    { key: 'latency', label: 'p50 / p95' },
-    { key: 'success', label: 'Success', numeric: true },
-    { key: 'last_run', label: 'Last run' },
-    { key: 'budget', label: 'Budget' },
-    { key: 'actions', label: '' }
-  ];
-
-  function flowKey(row: unknown): string {
-    return (row as Flow).id;
-  }
-
-  function successKind(rate: number, runs: number): 'success' | 'warning' | 'danger' | 'neutral' {
-    if (runs === 0) {
-      return 'neutral';
-    }
-    if (rate >= 0.95) {
-      return 'success';
-    }
-    if (rate >= 0.7) {
-      return 'warning';
-    }
-    return 'danger';
-  }
-
-  $effect(() => {
-    void loadCatalog();
-    void loadSavedFilters();
+  onMount(() => {
+    flows.load(injectedFlows, injectedStore);
   });
+
+  function openFlow(id: string): void {
+    void goto(`/flows/${encodeURIComponent(id)}`);
+  }
 </script>
 
 <svelte:head>
@@ -278,290 +68,301 @@
 </svelte:head>
 
 <section class="flows-page" data-testid="flows-page">
-  <PageHeader title="Flows" subtitle="Registered engine-graph flows — view-only (D-063).">
-    {#snippet actions()}
-      <button
-        type="button"
-        class="ghost"
-        data-testid="flows-refresh"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={() => void loadCatalog()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-  </PageHeader>
+  <section class="panel card filter-card">
+    <FilterBar>
+      {#snippet saved()}
+        <SavedViewChips
+          views={flows.savedViews}
+          activeId={flows.activeViewId}
+          onselect={(id) => void flows.applySavedView(id)}
+          ondelete={(id) => void flows.deleteSavedView(id)}
+        />
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="flows-save-view"
+          disabled={flows.savedViewStore === null || disconnected}
+          title={disconnected
+            ? DISCONNECTED_TOOLTIP
+            : flows.savedViewStore === null
+              ? 'Connect to a Runtime to save views'
+              : 'Save the current filter as a view'}
+          onclick={() => void flows.saveCurrentView()}
+        >
+          Save view
+        </button>
+      {/snippet}
 
-  <FilterBar>
-    {#snippet saved()}
-      <SavedViewChips
-        views={savedFilters as SavedView[]}
-        activeId={activeViewID}
-        onselect={applySavedView}
-        ondelete={(id) => void deleteSavedView(id)}
-      />
-      <button
-        type="button"
-        class="ghost small"
-        data-testid="flows-save-view"
-        disabled={savedStore === null || disconnected}
-        title={disconnected
-          ? DISCONNECTED_TOOLTIP
-          : savedStore === null
-            ? 'Connect to a Runtime to save views'
-            : 'Save the current filter as a view'}
-        onclick={() => void saveCurrentView()}
-      >
-        Save view
-      </button>
-    {/snippet}
-    {#snippet search()}
-      <input
-        type="search"
-        placeholder="Search flows…"
-        data-testid="flows-search"
-        bind:value={query}
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onkeydown={(e) => {
-          if (e.key === 'Enter') {
-            applySearch();
-          }
-        }}
-      />
-      <button
-        type="button"
-        class="ghost small"
-        data-testid="flows-search-apply"
-        disabled={disconnected}
-        title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
-        onclick={applySearch}
-      >
-        Apply
-      </button>
-    {/snippet}
-  </FilterBar>
-
-  <PageState {status} error={loadError} onretry={() => void loadCatalog()}>
-    {#snippet empty()}
-      <p class="headline">No flows registered</p>
-      <p class="detail">
-        Flows are defined in agents whose planner is Graph, Workflow, or
-        Deterministic. Register a graph-family agent, then refresh.
-      </p>
-      <button
-        type="button"
-        class="ghost"
-        data-testid="flows-empty-refresh"
-        onclick={() => void loadCatalog()}
-      >
-        Refresh
-      </button>
-    {/snippet}
-
-    <div class="catalog-grid">
-      <div class="catalog">
-        <DataTable {columns} rows={flows} rowKey={flowKey} onrowclick={(r) => void goto(`/flows/${encodeURIComponent((r as Flow).id)}`)}>
-          {#snippet row(r)}
-            {@const flow = r as Flow}
-            <td>
-              <span class="flow-name" data-testid="catalog-row" data-flow-id={flow.id}>
-                {flow.name}
-              </span>
-            </td>
-            <td>{flow.owner ?? '—'}</td>
-            <td class="mono">{flow.version ?? '—'}</td>
-            <td class="numeric">{flow.runs_24h}</td>
-            <td class="mono">
-              {formatDurationMS(flow.p50_latency_ms)} / {formatDurationMS(flow.p95_latency_ms)}
-            </td>
-            <td class="numeric">
-              <StatusChip
-                kind={successKind(flow.success_rate, flow.runs_24h)}
-                label={formatRate(flow.success_rate)}
-              />
-            </td>
-            <td>{formatRelative(flow.last_run)}</td>
-            <td class="mono">{formatCost(flow.budget.cost_cap_usd)} cap</td>
-            <td class="actions-cell">
-              <button
-                type="button"
-                class="run-btn"
-                data-testid="catalog-run"
-                disabled={!canRun}
-                title={canRun
-                  ? `Run ${flow.name}`
-                  : 'Running a flow requires the flows.run scope claim'}
-                onclick={(e) => {
-                  e.stopPropagation();
-                  runFlowID = flow.id;
-                  runError = null;
-                }}
-              >
-                Run flow ▶
-              </button>
-              <button
-                type="button"
-                class="ghost small"
-                data-testid="catalog-metrics"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  void selectFlow(flow.id);
-                }}
-              >
-                Metrics
-              </button>
-            </td>
-          {/snippet}
-        </DataTable>
-
-        <Pagination
-          page={pageNum}
-          {pageSize}
-          total={totalRows}
-          onpage={(p) => {
-            pageNum = p;
-            void loadCatalog();
-          }}
-          onpagesize={(s) => {
-            pageSize = s;
-            pageNum = 1;
-            void loadCatalog();
+      {#snippet search()}
+        <input
+          type="search"
+          placeholder="Search flows…"
+          data-testid="flows-search"
+          bind:value={flows.query}
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') flows.applySearch();
           }}
         />
-      </div>
+      {/snippet}
 
-      <DetailRail>
-        <RailCard title="Flow metrics">
-          <PageState status={railStatus} error={railError} onretry={() => selectedID && void selectFlow(selectedID)}>
-            {#snippet empty()}
-              <p class="detail" data-testid="rail-metrics-empty">
-                Select a flow's <strong>Metrics</strong> to preview its
-                sparkline aggregates here.
-              </p>
-            {/snippet}
-            <FlowMetricsCard {metrics} />
-          </PageState>
-        </RailCard>
-      </DetailRail>
-    </div>
-  </PageState>
+      {#snippet actions()}
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="flows-search-apply"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => flows.applySearch()}
+        >
+          Apply
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="flows-clear"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => flows.clearFilters()}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          class="bar-action"
+          data-testid="flows-refresh"
+          disabled={disconnected}
+          title={disconnected ? DISCONNECTED_TOOLTIP : undefined}
+          onclick={() => flows.refresh()}
+        >
+          Refresh
+        </button>
+      {/snippet}
+    </FilterBar>
+  </section>
+
+  <div class="layout">
+    <section class="panel card table-card">
+      <PageState status={flows.displayStatus} error={flows.pageError} onretry={() => flows.refresh()}>
+        {#snippet skeleton()}
+          <div class="table-skeleton" aria-hidden="true">
+            {#each SKELETON_ROWS as i (i)}<span class="skeleton-row"></span>{/each}
+          </div>
+        {/snippet}
+        {#snippet empty()}
+          <div class="empty-block" data-testid="flows-empty">
+            <p class="empty-headline">No flows registered</p>
+            <p class="empty-detail">
+              Flows are composable engine-graph DAGs — registered as
+              <strong>tools</strong> (usable by any planner) or invoked directly
+              via <code>flows.run</code>. The flow engine is a general runtime
+              primitive, not tied to a specific planner. Register a flow as a
+              tool, then refresh.
+            </p>
+            <button
+              type="button"
+              class="bar-action"
+              data-testid="flows-empty-refresh"
+              disabled={disconnected}
+              onclick={() => flows.refresh()}
+            >
+              Refresh
+            </button>
+          </div>
+        {/snippet}
+
+        <div class="table-scroll">
+          <FlowsTable
+            flows={flows.flows}
+            canRun={flows.canRun}
+            selectedId={flows.selectedId}
+            onopen={openFlow}
+            onmetrics={(id) => void flows.selectFlow(id)}
+            onrun={(id) => flows.openRun(id)}
+          />
+        </div>
+      </PageState>
+
+      {#if flows.displayStatus === 'ready' || flows.displayStatus === 'empty'}
+        <Pagination
+          page={flows.page}
+          pageSize={flows.pageSize}
+          total={flows.totalRows}
+          onpage={(p) => flows.changePage(p)}
+          onpagesize={(s) => flows.changePageSize(s)}
+        />
+      {/if}
+    </section>
+
+    <DetailRail>
+      <RailCard title="Flow metrics">
+        <PageState
+          status={flows.railStatus}
+          error={flows.railError}
+          onretry={() => flows.selectedId && void flows.selectFlow(flows.selectedId)}
+        >
+          {#snippet empty()}
+            <p class="rail-empty" data-testid="rail-metrics-empty">
+              Select a flow's <strong>Metrics</strong> to preview its sparkline
+              aggregates here.
+            </p>
+          {/snippet}
+          <FlowMetricsCard metrics={flows.metrics} />
+        </PageState>
+      </RailCard>
+    </DetailRail>
+  </div>
 </section>
 
 <RunFlowModal
-  flowID={runFlowID ?? ''}
-  open={runFlowID !== null}
-  pending={runPending}
-  errorMessage={runError}
-  onsubmit={(inputs) => void submitRun(inputs)}
-  oncancel={() => {
-    runFlowID = null;
-    runError = null;
-  }}
+  flowID={flows.runFlowId ?? ''}
+  open={flows.runFlowId !== null}
+  pending={flows.runPending}
+  errorMessage={flows.runError}
+  onsubmit={(inputs) => void flows.submitRun(inputs)}
+  oncancel={() => flows.cancelRun()}
 />
 
 <style>
+  /* Viewport-locked: only the catalog table + the right rail scroll internally
+     (PAGE-POLISH §6 — the Tools / Memory / Artifacts pattern). */
   .flows-page {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    height: 100%;
+    min-height: 0;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    overflow: hidden;
   }
 
-  .catalog-grid {
-    display: grid;
-    grid-template-columns: 1fr var(--size-rail);
-    gap: var(--space-4);
-    align-items: start;
-  }
-
-  .catalog {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
+  .card {
+    background: var(--color-surface);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
     min-width: 0;
   }
 
-  .flow-name {
-    color: var(--color-accent);
-    font-weight: 600;
-  }
-
-  .mono {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-
-  .numeric {
-    text-align: right;
-  }
-
-  td {
+  .filter-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    flex-shrink: 0;
     padding: var(--space-2) var(--space-3);
   }
 
-  .actions-cell {
-    display: flex;
+  .filter-card :global(.filter-bar) {
+    padding: var(--space-1) var(--space-0);
     gap: var(--space-2);
-    justify-content: flex-end;
   }
 
-  .headline {
+  .bar-action {
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .bar-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  input[type='search'] {
+    width: 100%;
+    background: var(--color-bg);
+    color: var(--color-text);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr var(--size-rail);
+    gap: var(--space-3);
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .table-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    gap: var(--space-3);
+  }
+
+  .table-card :global(.page-state) {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .table-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .layout :global(.detail-rail) {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .table-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .skeleton-row {
+    height: var(--layout-table-row-height);
+    background: var(--color-surface-raised);
+    border-radius: var(--radius-sm);
+  }
+
+  .empty-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-4);
+    text-align: center;
+  }
+
+  .empty-headline {
     margin: var(--space-0);
     font-size: var(--text-lg);
     font-weight: 600;
     color: var(--color-text);
   }
 
-  .detail {
+  .empty-detail {
     margin: var(--space-0);
     font-size: var(--text-sm);
     color: var(--color-text-muted);
+    max-width: var(--size-modal-width);
   }
 
-  input[type='search'] {
-    width: 100%;
-    background: var(--color-surface);
-    color: var(--color-text);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-  }
-
-  .ghost {
-    background: none;
-    color: var(--color-text);
-    border: var(--border-hairline);
-    border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
-    cursor: pointer;
-  }
-
-  .ghost.small {
-    padding: var(--space-1) var(--space-2);
+  .empty-detail code {
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
   }
 
-  .ghost:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .run-btn {
-    background: var(--color-accent);
-    color: var(--color-bg);
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-3);
-    font-size: var(--text-xs);
-    cursor: pointer;
-  }
-
-  .run-btn:disabled {
-    background: var(--color-surface-raised);
+  .rail-empty {
+    margin: var(--space-0);
     color: var(--color-text-muted);
-    cursor: not-allowed;
+    font-size: var(--text-sm);
   }
 </style>

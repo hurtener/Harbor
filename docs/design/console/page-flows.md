@@ -5,7 +5,7 @@
 
 ## 1. Purpose
 
-Flows is the read-only viewer for the runtime's engine graphs — the DAG structures graph-family planners (Graph / Workflow / Deterministic) run on (D-063). A "Flow" in the Console is exactly an `internal/runtime/engine/` node graph filtered to agents whose planner is graph-shaped; the page is the lens over it. The operator opens it to: inspect a flow's graph structure visually, see the flow's run history (every time it was executed, with timing + outcome), kick off a one-shot invocation of the flow via the standard `start` Protocol method, and drill into a specific historical run's per-node trace. V1 is intentionally scoped to read / run / inspect-history (D-063); authoring / versioning / import-export is post-V1 and may need a real subsystem behind it.
+Flows is the read-only viewer for the runtime's engine graphs — composable DAG structures the runtime executes (D-063). A "Flow" in the Console is an `internal/runtime/flow` / `internal/runtime/engine/` node graph. **Correction (D-188):** flows are NOT planner-bound — a flow is registered as a first-class **tool** (`flow.RegisterAsTool`, `Transport: TransportFlow` — D-023) and is invocable directly via `flows.run` with no planner in the loop; `PlannerFamily` ("graph" / "workflow" / "deterministic") is catalog metadata, never a runtime gate. The earlier "flows are defined in agents whose planner is graph-shaped" framing was inaccurate and has been corrected here and in the page's empty-state copy. The page is the lens over the registered flows. The operator opens it to: inspect a flow's graph structure visually, see the flow's run history (every time it was executed, with timing + outcome), kick off a one-shot invocation of the flow via the standard `start` Protocol method, and drill into a specific historical run's per-node trace. V1 is intentionally scoped to read / run / inspect-history (D-063); authoring / versioning / import-export is post-V1 and may need a real subsystem behind it.
 
 ## 2. Where it sits in the IA
 
@@ -76,7 +76,7 @@ Flows is the first entry under the **Resources** cluster (Resources → Flows, M
 
 | State | Trigger | What renders | Recovery action |
 |---|---|---|---|
-| Empty catalog | No flows registered | Empty-state: "No flows registered — flows are defined in agents whose planner is Graph/Workflow/Deterministic" + docs link | Visit docs |
+| Empty catalog | No flows registered | Empty-state (D-188 — corrected from the original planner-family wording, which was factually wrong): "No flows registered — flows are composable engine-graph DAGs, registered as **tools** (usable by any planner) or invoked directly via `flows.run`; the flow engine is a general runtime primitive, not planner-bound" + docs link | Visit docs |
 | Filtered empty | Filters yield zero | "No flows match these filters" + Clear | Clear |
 | Initial loading | `flows.list` in flight | Skeleton rows | Auto |
 | Protocol error — `CodeNotFound` on detail | Flow name unknown | "Flow not found"; back link | Back |
