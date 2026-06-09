@@ -820,11 +820,17 @@ func (c *Config) validateTools() error {
 			}
 		}
 	}
-	for i, p := range c.Tools.HTTPManifests {
-		if strings.TrimSpace(p) == "" {
-			return fieldError(fmt.Sprintf("tools.http_manifests[%d]", i),
-				"path must not be empty")
-		}
+	// SDK friction audit (docs/notes/sdk-friction-audit.md §1): the
+	// Phase 27 manifest loader (`LoadManifest` / `RegisterManifest`)
+	// has no boot-path consumer yet — a populated list would validate
+	// cleanly and then silently register nothing (§13 — no silent
+	// degradation). Fail loud until the boot wiring lands. An empty
+	// list stays valid (the shipped examples carry `http_manifests: []`).
+	if len(c.Tools.HTTPManifests) > 0 {
+		return fieldError("tools.http_manifests",
+			"declared manifests are not loaded at boot yet — the surface is not wired "+
+				"(see docs/notes/sdk-friction-audit.md §1); remove the entries until the "+
+				"boot loader lands, or register HTTP tools programmatically via the Phase 27 driver")
 	}
 	// Phase 83m (Item 6, D-156) — operator-declared granted scopes
 	// pass-through. The validator asserts only that each entry is a

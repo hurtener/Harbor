@@ -186,8 +186,14 @@ type OAuthConfig struct {
 	// Required when AuthorizeURL / TokenURL / RegistrationURL are
 	// empty and dynamic resolution is needed; optional otherwise.
 	ServerURL string
-	// RedirectURI is the redirect_uri the Harbor Protocol callback
-	// handler exposes. Required.
+	// RedirectURI is the redirect_uri the operator's callback
+	// endpoint exposes. Required. NOTE: Harbor does not yet ship a
+	// callback handler — `CompleteFlow` (the resume half of the
+	// flow) is the exported seam a handler will call, and it
+	// currently has no production caller (SDK friction audit,
+	// docs/notes/sdk-friction-audit.md §3). Until that handler
+	// lands, embedders mount their own endpoint that calls
+	// CompleteFlow(state, code).
 	RedirectURI string
 	// Scopes is the requested OAuth scopes list.
 	Scopes []string

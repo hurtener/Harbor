@@ -77,15 +77,21 @@ import (
 	// Skills planner tools — Phase 38 (`skill_search` / `skill_get` /
 	// `skill_list`). The package has no init-time registration
 	// (catalogs are constructed at boot, not from a factory registry);
-	// the blank import documents the package's presence in the binary
-	// so deployment-time reviewers can confirm it's wired. The Phase 60+
-	// bootstrap will call `skills/tools.Register(catalog, store, deps)`.
+	// the blank import documents the package's presence in the binary.
+	// HONESTY NOTE (SDK friction audit,
+	// docs/notes/sdk-friction-audit.md §3): `skills/tools.Register` is
+	// NOT called by any production path — the boot path registers the
+	// thinner `internal/tools/builtin` skill_search/skill_get instead.
+	// Picking ONE canonical skills-tool surface (builtin delegating to
+	// these rich handlers, or a decisions.md entry formally superseding
+	// Phase 38) is tracked Wave C follow-up work in the audit doc.
 	_ "github.com/hurtener/Harbor/internal/skills/tools"
 	// Skills generator — Phase 41 (`skill_propose(persist=true)`). The
 	// package has no init-time registration (the catalog is built at
 	// boot); the blank import documents the package's presence in the
-	// binary. The Phase 60+ bootstrap will call
-	// `skills/generator.Register(catalog, store, deps)`.
+	// binary. HONESTY NOTE: `skills/generator.Register` is NOT called
+	// by any production path — same canonical-surface decision as
+	// `skills/tools` above (docs/notes/sdk-friction-audit.md §3).
 	_ "github.com/hurtener/Harbor/internal/skills/generator"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
@@ -112,12 +118,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlpmetric"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/prometheus"
 
-	// Tools driver — Phase 29 A2A southbound ToolProvider. The package
-	// has no init-time registration (catalogs are constructed in code,
-	// not from a factory registry); the blank import documents the
-	// driver's presence in the binary so deployment-time reviewers can
-	// confirm it's wired.
-	_ "github.com/hurtener/Harbor/internal/tools/drivers/a2a"
 	// Tools OAuth driver — D-095 (closes issue #116). The `oauth2`
 	// driver self-registers under that name via init() so
 	// `tools.oauth_providers[].driver: oauth2` resolves at boot. New

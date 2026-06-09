@@ -86,7 +86,7 @@ Beyond the gates above, before deploying to a non-dev environment:
 - [ ] `memory.driver: sqlite` or `postgres` — same logic.
 - [ ] `artifacts.driver: fs` / `sqlite` / `postgres` — `inmem` artifacts vanish on restart.
 - [ ] `events.driver: sqlite` or `postgres` — for durable event replay.
-- [ ] `governance.identity_tiers` set with real budget ceilings — `{}` (the default) is no enforcement.
+- [ ] `governance.identity_tiers` declared with real budget ceilings — note enforcement is not yet wired (posture-only today; the runtime warns at boot — see `docs/notes/sdk-friction-audit.md`), so pair declared ceilings with provider-side limits until it lands.
 - [ ] `server.allowed_origins` lists every Console host that will attach.
 - [ ] `server.bind_addr` set (default `127.0.0.1:8080` only listens loopback).
 - [ ] `telemetry.log_format: json` (default) — for log aggregator ingestion.

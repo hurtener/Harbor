@@ -87,8 +87,12 @@ var (
 	// `oauth2` driver does NOT do discovery — the operator MUST
 	// declare both.
 	ErrMissingEndpoints = errors.New("auth/oauth2: both auth_url and token_url must be set (the oauth2 driver does not auto-discover endpoints — declare them in tools.oauth_providers[])")
-	// ErrMissingRedirectURL — `cfg.RedirectURL` was empty.
-	ErrMissingRedirectURL = errors.New("auth/oauth2: redirect_url must not be empty (the redirect_uri the Harbor Protocol callback handler exposes)")
+	// ErrMissingRedirectURL — `cfg.RedirectURL` was empty. The
+	// redirect_uri names the operator's callback endpoint; Harbor
+	// does not yet ship one — the endpoint calls
+	// `auth.Provider.CompleteFlow(state, code)` (the exported seam;
+	// see docs/notes/sdk-friction-audit.md §3).
+	ErrMissingRedirectURL = errors.New("auth/oauth2: redirect_url must not be empty (the redirect_uri your OAuth callback endpoint exposes)")
 )
 
 // init self-registers the `oauth2` driver under its canonical name.

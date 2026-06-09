@@ -34,8 +34,9 @@ func WithClock(c Clock) Option {
 
 // WithGCPolicy injects an explicit GCPolicy at construction. When
 // omitted, the GCPolicy is built from the SessionsConfig defaults +
-// the no-op RunningProbe. Phase 20 will replace the probe via this
-// option in production wiring.
+// the no-op RunningProbe. Production wiring (cmd/harbor and
+// harbortest/devstack) passes a policy whose RunningProbe is
+// TaskRunningProbe so GC honors RFC §6.9.
 func WithGCPolicy(p GCPolicy) Option {
 	return func(r *Registry) {
 		p = p.withDefaults()
@@ -84,8 +85,9 @@ type Registry struct {
 //
 // The sweeper goroutine starts immediately and runs at
 // gcPolicy.SweepInterval until CloseRegistry is called. The probe
-// defaults to no-op until Phase 20 (TaskRegistry) plugs the real one
-// via WithGCPolicy in production wiring.
+// defaults to no-op; assemblies that own a TaskRegistry MUST pass
+// TaskRunningProbe via WithGCPolicy (both reference assemblies do)
+// so GC never reaps a session with a RUNNING task.
 func New(store state.StateStore, cfg config.SessionsConfig, bus events.EventBus, opts ...Option) (*Registry, error) {
 	if store == nil {
 		return nil, fmt.Errorf("sessions: New requires a non-nil StateStore")

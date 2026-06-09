@@ -63,7 +63,7 @@ Every memory write/read is keyed by `(tenant_id, user_id, session_id)`. The plan
 
 Runtime skills are typed, token-savvy reusable patterns the planner can ask for by name mid-reasoning. They originate from two sources:
 
-- **Skills.md importer** — you write a `Skills.md` file with one `## skill-name` heading per skill, and `harbor` imports it into the skill catalog.
+- **Skills.md importer** — you write a `Skills.md` file with one `## skill-name` heading per skill, and the importer loads it into the skill catalog. NOTE: there is currently **no CLI ingestion verb** — the importer is a Go-level surface (`internal/skills/importer`); a `harbor skill import` verb is tracked as follow-up work (see `docs/notes/sdk-friction-audit.md` §3).
 - **In-runtime generator** — the planner itself can author a new skill at runtime (e.g. "this kind of question seems common — let me save the steps as a skill") and persist it.
 
 Both sources land in the same SQLite-backed catalog.
@@ -88,13 +88,9 @@ Classify a support ticket into {bug, feature, question} + recommend the next act
 3. If "bug", pull the last 5 PRs that touched the area.
 ```
 
-Import:
+Import — Go-level today (no CLI verb yet; see the note above). The surface is `internal/skills/importer`: construct an `Importer` with `importer.New(deps)` (the deps carry an `ArtifactStore` for skill attachments), call `Import` with the `Skills.md` source, then persist the returned `skills.Skill` through your `SkillStore` handle. The CLI verb that will wrap this flow end-to-end is tracked follow-up work.
 
-```bash
-harbor skill import ./Skills.md
-```
-
-The planner now sees both skills in its catalog. At reasoning time, it searches the catalog for relevant skill names and injects the matching skill body into the prompt — token-savvy because it doesn't carry every skill every turn, only the ones it actually pulls.
+Once the skills are in the catalog, the planner sees both at reasoning time: it searches the catalog for relevant skill names and injects the matching skill body into the prompt — token-savvy because it doesn't carry every skill every turn, only the ones it actually pulls.
 
 ### Yaml config
 
@@ -111,7 +107,7 @@ tools:
 
 ### LLM-side discovery via meta-tools (Phase 107c)
 
-After 107c the React planner runs on native provider tool-calling. The LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in meta-tool when it needs one. Opt those built-ins in (above) and the LLM gets a structured search surface backed by the FTS5 catalog. The meta-tools route through the SAME `SkillStore.Search` + `SkillStore.Get` path your operator-side `harbor skill import` populated, so there's no second-source-of-truth and identity-scoping (`(tenant, user, session)`) carries through.
+After 107c the React planner runs on native provider tool-calling. The LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in meta-tool when it needs one. Opt those built-ins in (above) and the LLM gets a structured search surface backed by the FTS5 catalog. The meta-tools route through the SAME `SkillStore.Search` + `SkillStore.Get` path your operator-side import populated, so there's no second-source-of-truth and identity-scoping (`(tenant, user, session)`) carries through.
 
 `skill_search(query, tags?, limit?)` returns ranked candidates (`{name, title, description, score}`); `skill_get(name)` returns the full body. Tag filter is intersection. The LLM typically searches once, picks one or two names, and pulls full bodies in the same or next turn.
 
@@ -135,7 +131,7 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 
 - **Memory blows the token budget mid-conversation.** Lower `budget_tokens` OR switch strategy from `truncation` to `rolling_summary`. The summariser uses ~1500 tokens of LLM per turn but saves ~5000 tokens of payload.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
-- **`harbor skill import ./Skills.md` says "duplicate skill name".** The catalog rejects duplicate names. Either rename the skill in the file OR remove the prior entry with `harbor skill rm <name>`.
+- **Importing a `Skills.md` fails with "duplicate skill name".** The catalog rejects duplicate names. Either rename the skill in the file OR delete the prior entry from the skill store (no CLI removal verb exists yet — manage entries through your store handle or the importer flow).
 - **The planner doesn't pick a skill I imported.** Either the skill body doesn't pattern-match the user's input (write more concrete trigger language) or `planner.max_steps` is too low to reach the skill-search turn.
 - **Cross-session memory leakage suspected.** It can't happen — the SQL filter is at the driver. If you see it, file a bug with the SQL trace from `telemetry.log_level: debug` — a leak would be a P0 security issue.
 

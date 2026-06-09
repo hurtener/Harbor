@@ -72,17 +72,28 @@ type Planner interface {
 // `Quadruple` for identity, and the view interfaces for tools / memory
 // / skills / artifacts is the entire API surface.
 //
-// The Runtime is responsible for:
+// The Runtime (assembler) is responsible for:
 //
 //   - Wiring `Catalog` to a visibility-filtered ToolCatalogView.
-//   - Wiring `Memory` to a declared-policy MemoryView.
-//   - Wiring `Skills` to the skills subsystem's lookup surface.
+//   - Populating `MemoryBlocks` + `SkillsContext` with pre-fetched,
+//     identity-scoped content (Phase 83d — D-146). These are the
+//     fields the shipped planner concretes actually read; see the
+//     note on `Memory` / `Skills` below.
 //   - Wiring `Artifacts` to the production ArtifactStore.
 //   - Populating `Control` with the accumulated steering signals.
 //   - Setting `Budget` from the per-run options.
 //   - Providing `Clock` (typically `time.Now`).
 //   - Providing `Emit` that publishes onto the EventBus with the
 //     run's identity quadruple attached.
+//
+// The `Memory` (MemoryView) and `Skills` (SkillLookup) view fields
+// are reserved for future planner drivers that pull memory / skills
+// mid-run: NO shipped planner concrete reads them today (the react
+// planner consumes only the pre-fetched `MemoryBlocks` /
+// `SkillsContext` — SDK friction audit,
+// docs/notes/sdk-friction-audit.md §3). Assemblers should populate
+// the 83d fields; wiring the views is optional until a driver
+// consumes them.
 //
 // The Planner is responsible for:
 //
@@ -160,13 +171,20 @@ type RunContext struct {
 	// runtime engine phase wires a ToolCatalogView adapter.
 	Catalog ToolCatalogView
 
-	// Memory is the declared-policy memory view. The runtime engine
-	// phase wires a MemoryView adapter over the production MemoryStore.
+	// Memory is the declared-policy memory view. RESERVED for future
+	// planner drivers that pull memory mid-run — no shipped planner
+	// concrete reads it (the react planner consumes the pre-fetched
+	// `MemoryBlocks` instead; see the type godoc + SDK friction audit
+	// §3). Assemblers populate `MemoryBlocks`; wiring this view is
+	// optional until a driver consumes it.
 	Memory MemoryView
 
-	// Skills is the skills subsystem's search/get surface. Phase 37
-	// (parallel to Phase 42 — Wave 8 Stage A) ships the production
-	// surface; Phase 42 declares the planner-facing view.
+	// Skills is the skills subsystem's search/get surface. RESERVED
+	// for future planner drivers that search skills mid-run — no
+	// shipped planner concrete reads it (the react planner consumes
+	// the pre-fetched `SkillsContext` instead). Assemblers populate
+	// `SkillsContext`; wiring this view is optional until a driver
+	// consumes it.
 	Skills SkillLookup
 
 	// Artifacts is the artifact store. Heavy outputs MUST round-trip
@@ -564,12 +582,17 @@ type Budget struct {
 	// trajectory summariser (Phase 46). Zero means no token-budget
 	// enforcement; the trajectory grows unbounded.
 	//
-	// The runtime's [trajectory.CompressionRunner] reads this field
-	// and, when exceeded, invokes the configured [trajectory.Summariser]
-	// to produce a [trajectory.TrajectorySummary] that replaces the raw
-	// step history in subsequent prompt builds (RFC §6.2, brief 02 §4,
-	// D-055). Compression is a runtime concern; the planner sees only
-	// the compacted view via [RunContext.Trajectory.Summary].
+	// CURRENTLY INERT on every shipped path: the
+	// [CompressionRunner.MaybeCompress] call that would read this
+	// field has no production call site (the seam shipped without its
+	// runtime consumer — SDK friction audit,
+	// docs/notes/sdk-friction-audit.md §3), so setting TokenBudget has
+	// no effect today. The designed shape: the runtime reads this
+	// field and, when exceeded, invokes the configured [Summariser] to
+	// produce a [TrajectorySummary] that replaces the raw step history
+	// in subsequent prompt builds (RFC §6.2, brief 02 §4, D-055).
+	// Compression is a runtime concern; the planner sees only the
+	// compacted view via the trajectory summary.
 	TokenBudget int
 }
 

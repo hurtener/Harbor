@@ -656,3 +656,53 @@ func TestAssemble_PreRegisterTools_RegistersBeforeBuilder(t *testing.T) {
 		t.Error("echo_tool not resolvable after Assemble")
 	}
 }
+
+// TestPlannerConfigFromConfig_FieldParityWithProduction pins the
+// devstack projection to field-for-field parity with production
+// `cmd/harbor/cmd_dev.go::plannerConfigFromConfig` (D-094 / D-155).
+// The SDK friction audit's B3 finding was this projection silently
+// dropping ExtraGuidance / ReasoningReplay / MaxToolExamplesPerTool /
+// ParallelToolCalls; this test fails loudly if either side drifts
+// again.
+func TestPlannerConfigFromConfig_FieldParityWithProduction(t *testing.T) {
+	t.Parallel()
+	parallel := false
+	in := config.PlannerConfig{
+		Driver:                 "react",
+		MaxSteps:               7,
+		ExtraGuidance:          "always cite sources",
+		ReasoningReplay:        "full",
+		MaxToolExamplesPerTool: 3,
+		ParallelToolCalls:      &parallel,
+		Extra:                  map[string]string{"k": "v"},
+	}
+	out := devstack.PlannerConfigFromConfig(in)
+	if out.Driver != "react" {
+		t.Errorf("Driver = %q, want react", out.Driver)
+	}
+	if out.MaxSteps != 7 {
+		t.Errorf("MaxSteps = %d, want 7", out.MaxSteps)
+	}
+	if out.ExtraGuidance != "always cite sources" {
+		t.Errorf("ExtraGuidance = %q, want carried verbatim", out.ExtraGuidance)
+	}
+	if string(out.ReasoningReplay) != "full" {
+		t.Errorf("ReasoningReplay = %q, want full", out.ReasoningReplay)
+	}
+	if out.MaxToolExamplesPerTool != 3 {
+		t.Errorf("MaxToolExamplesPerTool = %d, want 3", out.MaxToolExamplesPerTool)
+	}
+	if out.ParallelToolCalls == nil || *out.ParallelToolCalls != false {
+		t.Errorf("ParallelToolCalls = %v, want explicit false carried through", out.ParallelToolCalls)
+	}
+	if out.Extra["k"] != "v" {
+		t.Errorf("Extra = %v, want map carried", out.Extra)
+	}
+
+	// Nil ParallelToolCalls stays nil (the react factory distinguishes
+	// "unset" from explicit false — D-169).
+	in.ParallelToolCalls = nil
+	if out := devstack.PlannerConfigFromConfig(in); out.ParallelToolCalls != nil {
+		t.Errorf("nil ParallelToolCalls projected to %v, want nil", out.ParallelToolCalls)
+	}
+}
