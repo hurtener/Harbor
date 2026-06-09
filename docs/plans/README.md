@@ -197,6 +197,10 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |109a| MCP Apps runtime + Protocol surface (`_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy) | internal/tools/drivers/mcp + internal/protocol + cmd/harbor | §6.4, §6.5, §7 | 28, 85a, 84a | n/a | Pending (V1.1.x) |
 |109b| Console MCP Apps host (sandboxed iframe + CSP + official AppBridge in manual-handler mode + inline DisplayMode) | web/console | §6.4, §7 | 109a, 73n, 108 | n/a | Pending (V1.1.x) |
 |109c| MCP Apps DisplayMode layout (fullscreen tab + pip 50/50 split + rail toggle) | web/console | §7 | 109b | n/a | Pending (V1.1.x) |
+|110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Pending (V1.1.x) |
+|110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Pending (V1.1.x) |
+|110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Pending (V1.1.x) |
+|110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Pending (V1.1.x) |
 
 V1 critical path: phases 01–82 + 26a + 36a + 36b (85 phases beyond skeleton). Post-V1 follow-ups: phases 83–84, 86–100, plus the lettered bands 83a–e (ReAct prompt depth + reasoning-channel decoupling) and 85a–j + 85m (MCP client/host compliance — the prioritised first post-V1 work; 85k is the separate Harbor agent-builder skills phase). The integer phase 85 (Skills Portico provider driver) was removed; the 85-band is now MCP compliance. Per the MCP 2026-07-28 RC re-plan (2026-05-28) the 85-band re-shapes: 85a / 85b / 85f are ready now; 85d / 85m revisit after SDK-RC (≈ Aug 2026); 85g / 85j revisit after RC-final (2026-07-28); 85c / 85e / 85h / 85i are cut. Governance is 91–96, Multimodal-output 97–99, Recipe loader 100. The next release tag is V1.1.x — both the hygiene + positioning + UX band (101–104 + 108) and the Playground-depth band (105 + 106 + 107 + 107a + 107c + 107d) roll up under it; the previously-sketched V1.2 / V1.3 splits collapse. Phases 105–107c ship with this release: Console first-attach UX (105), Playground real assistant response (106), the streaming completion pipeline (107), reasoning trace projection (107a), and native tool-calling + deferred tools/skills + search meta-tools (107c) — the four built-in `*_search`/`*_get` meta-tools plus the optional `declarative_action` escape-hatch tool preserving brief 07's prompt-engineered path for weaker models. The 107b streaming answer extractor was deliberately superseded by 107c (one cutover instead of stop-gap-then-replace); the file at `docs/plans/phase-107b-streaming-answer-extractor.md` is kept as historical context. Phase 107d (shipped) is the native-tool-calling follow-up that closes 107c's documented serialization carve-out: it wires the already-shipped `internal/runtime/parallel.Executor` (Phase 47 / D-056) into the dev `ToolExecutor`, flips the React planner to native `CallParallel` emission for N>1 tool-calls, and pins the `JoinKind`-collapses-to-`JoinAll`-on-native semantic (D-169). Phase 107e (pending) closes the last `ErrDecisionShapeUnsupported` carve-out the dev `ToolExecutor` carries: it wires `planner.SpawnTask` + `planner.AwaitTask` dispatch through the already-shipped `tasks.TaskRegistry` (Phase 47 / D-056) and teaches the per-task RunLoop driver to drive `KindBackground` tasks (closing the D-097 dead-task gap for the background kind), bounded by a new `planner.absolute_max_spawn_depth` recursion cap; on the synchronous V1.1.x runloop a retain-turn spawn blocks in-decision and a non-retain-turn spawn is joined by an explicit `AwaitTask` (eager push wake-on-resolution is a documented steering-runloop follow-up). SpawnTask + AwaitTask dispatch land together per §13 (D-170). Phase 108 starts a 14-round page-by-page visual-polish series (one phase per Console page, anchored to `docs/design/console/page-*.md` + `docs/design/console/CONVENTIONS.md`) and is the largest piece still pending under V1.1.x. Background context for the native-tool-calling cutover: research brief 15. **Immediately after Phase 108, the three-phase "MCP Apps host" wave 109a–c lands (D-172):** 109a (MCP Apps runtime + Protocol surface — `_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy), 109b (Console sandboxed-iframe host + the official `ext-apps` AppBridge in manual-handler mode + inline DisplayMode), 109c (fullscreen-tab + pip-split DisplayMode layout). This wave **deprecates and supersedes Phase 85g**, pulling MCP Apps forward from the post-V1 85-band: Apps is a stable independent extension (`io.modelcontextprotocol/ui`), not gated on the July RC, and ships an official host bridge that removes 85g's hand-rolled-bridge risk. The architectural invariant is D-173 — the AppBridge runs in manual-handler mode and every app→host call is Protocol-proxied through the Runtime, never a direct MCP connection, so an in-iframe app stays inside the `(tenant, user, session)` isolation boundary and the unified approval/OAuth gates. The 14-round page-polish series continues from the next free integer after the 109 band; the band precedes it in execution order, it does not displace it. **Live Runtime reframe (2026-06-01, D-177):** after 108d shipped the topology-first Live Runtime page, an operator review found it low-value and Playground-overlapping on the dominant planner/RunLoop runtime (no engine graph). Phase 108e supersedes the topology-first composition (D-126) with a single-runtime **capability-adaptive cockpit** — the runtime's advertised `runtime.info` capabilities compose the page (an always-present spine + capability-gated topology / health / cost panels), so it is full on a planner runtime and richer on engine/multi-agent shapes with no rebuild. Plan: `docs/plans/phase-108e-live-runtime-capability-cockpit.md`.
 
@@ -1064,6 +1068,86 @@ Listed for tracking. Not on the V1 critical path.
 - **84b — Multimodal attachment disposition policy (D-189).** Turns the hardcoded MIME→disposition `switch` in `materializeOne` into declared policy: an `AttachmentDisposition` enum (`ref` / `inline` / `provider_native` / `tool:<name>`) resolved per-attachment caller hint > per-agent policy map > runtime default (`ref`) — the layers are semantic, the carriers (Protocol hint, `harbor.yaml`) are thin adapters over a planner-homed policy core (`DispositionPolicy` + the exported pure `ResolveDisposition`), so a headless library consumer authors the same policy directly. The default is byte-for-byte unchanged from today — so the existing developer-controllable `ArtifactStub`+`Fetch.Tool` path stays first-class for Playground, Protocol, and third-party clients, and 84c's provider-native upload becomes opt-in rather than forced. Ships no provider mechanism and no embeddings. §13 consumer: the materializer + the same-wave 84c. RFC §6.4, §6.5, §6.10. Deps: F11/D-166, 107c. Same wave as 84c. See `docs/plans/phase-84b-multimodal-disposition-policy.md`.
 - **84c — Provider-native multimodal mechanism (D-190).** Implements the `provider_native` disposition: the bifrost driver hands an over-threshold attachment to the provider's own understanding via `FileUploadRequest`→`file_id` (already on `core@v1.5.15`), performed *inside* `Complete` so `LLMClient` stays one method. Priority order is deliberate — **image/audio/video first** (regain vision/audio/video capability the stub path loses), **PDF/documents last** (the `ref`/`tool`+84d route is preferred for docs). Adds the part-level `ProviderNative` flag (settable by any `CompleteRequest` builder — the driver is the ONLY seam; the run loop never pre-uploads), optional `ProviderFileID`/`DocumentType` content fields, a driver-owned identity-scoped `file_id` cache + lifecycle (TTL/evict + `Close`-time cleanup; observability via the `llm.provider_file.uploaded` event), and the streaming-with-multimodal residual that Phase 107's row forward-referenced (in 107's `req.Stream`+`llm.completion.chunk` vocabulary). `ArtifactStub` stays the universal degradation. Opt-in via 84b; never the default. RFC §6.5, §6.10, §11Q3. Deps: 84b, 107, 32. Same wave as 84b. See `docs/plans/phase-84c-provider-native-multimodal.md`.
 - **84d — Embedding client + semantic retrieval (D-191).** Adds Harbor's first embeddings capability — an `Embedder` §4.4 seam wired to bifrost's `EmbeddingRequest` — with its §13 in-wave consumers being **semantic memory retrieval and semantic skill retrieval** (the direction set by the owner; not a standalone RAG tool). Both are opt-in modes composing with (not replacing) rolling_summary memory + token-savvy skill retrieval; vectors persist in the existing stores (brute-force similarity at V1 scale; ANN deferred). This is the primitive that makes 84b's `ref`/`tool` document path powerful. Requires a §6.5 RFC addendum (the `Embedder` seam) landed in the same PR. RFC §6.5, §6.6, §6.7. Deps: 32, 23, F11/84b. Follows the 84b+84c wave. See `docs/plans/phase-84d-embedder-semantic-retrieval.md`.
+
+#### 110-band — Wave B SDK re-homing (production semantics out of `cmd/harbor`)
+
+The 2026-06-09 SDK friction audit (`docs/notes/sdk-friction-audit.md`; program entry
+D-193) found a **package-main stratum** of production semantics that lives only in
+`cmd/harbor` with an already-diverged D-094 devstack mirror (two shipped/live
+silent-field-drop bugs — D-155, B3 — plus a degraded executor, a silently-dropped MCP
+ToolPolicy projection, and missing Emit/OnChunk/envelope wiring on the official test
+surface). The 110-band promotes that stratum into reusable `internal/` packages and
+collapses the mirror to thin callers — every promotion deletes a devstack copy in the
+same phase (§13 primitive-with-consumer + §17.6 fix-both-sides). Staging: **Stage 1 =
+110a ∥ 110c** (independent), **Stage 2 = 110b ∥ 110d** (after Stage 1 merges). The
+band is module-internal; the external-module facade (the audit's Wave D) is a future
+RFC-level program for which 110d is the named prerequisite.
+
+- **110a — Tool-executor promotion (D-194 reserved).** Promotes the only production
+  `steering.ToolExecutor` (`cmd/harbor/cmd_dev_executor.go`, ~660 lines: catalog
+  dispatch, D-026 heavy-result artifact promotion, `CallParallel` via
+  `internal/runtime/parallel`, SpawnTask/AwaitTask with depth caps) to
+  `internal/runtime/dispatch.NewToolExecutor(catalog, artifacts, tasks, opts...)`.
+  Also exports the Phase-106 answer envelope `{answer, finish_reason,
+  tool_calls_seen}` + terminal task error-code constants as `planner.AnswerEnvelope`
+  et al. (home picked by import direction — tasks stays planner-free), re-homes the
+  catalog→planner view as `tools.NewPlannerView` (structural satisfaction of
+  `planner.ToolCatalogView`; tools cannot import planner), re-points
+  `internal/planner/react/prompt.go`'s shape-contract citation away from `cmd/harbor`,
+  switches the D-192 HITL E2E off its test-local executor shim onto the real promoted
+  executor, and DELETES the devstack degraded executor (capability drift closed).
+  D-025 concurrent-reuse test (N≥100, `-race`) mandatory. RFC §6.4, §6.5, §6.2. Deps:
+  D-192 fix (in flight), 107d, 107e, 83i. Stage 1, parallel with 110c. See
+  `docs/plans/phase-110a-tool-executor-promotion.md`.
+- **110b — RunContext population + event-closure promotion (D-195 reserved).**
+  Promotes the five RunContext-population helpers duplicated cmd↔devstack into
+  `internal/runtime/runctx` (direction-safe: runtime imports planner/memory/skills;
+  planner gains NO memory import): `ProjectMemoryBlocks`, `ProjectSkillsContext`,
+  `ExtractSkillKeywords` + stopwords (the D-156 FTS5 query shaping — a third copy
+  existed), `ExtractAssistantAnswer`, and the D-166 `ResolveInputArtifacts` policy —
+  following the `planner.BuildArtifactManifest` precedent. Adds
+  `events.IdentityStampingEmitter(bus, q, logger)` for `RunContext.Emit` and
+  `llm.NewChunkPublisher(bus, q, taskID, logger)` for `OnChunk` (the closures whose
+  identity-envelope trap once produced 280+ bus-rejected chunks per task). cmd +
+  devstack become callers; devstack ADDITIONALLY gains missing parity: Emit/OnChunk
+  wired in its RunSpec and `MarkComplete` carrying the 110a answer envelope instead of
+  an empty `TaskResult{}`. RFC §6.2, §6.5, §6.13. Deps: 110a, 83f, 83i, 83m, 107.
+  Stage 2, parallel with 110d. See
+  `docs/plans/phase-110b-runcontext-population-promotion.md`.
+- **110c — Config-projection exporters (D-196 reserved).** The five config→snapshot
+  projections become exported helpers on the OWNING packages (settled direction:
+  subsystem imports `internal/config` additively; config stays a leaf; the snapshot
+  decoupling is preserved because `FromConfig` is optional sugar, never a required
+  path): `llm.SnapshotFromConfig` (absorbing the four private `copy*` helpers —
+  closing the D-155 recurrence class), `memory.SnapshotFromConfig`,
+  `skills.SnapshotFromConfig`, `planner.ConfigFromOperator` (fixing the LIVE devstack
+  drift B3 — four planner knobs silently dropped today, pinned by a reflection
+  field-parity test), `governance.ConfigFromOperator`. Plus: `config.Defaults()`
+  exported (hand-built configs start defaulted), planner-adjacent knob projections
+  re-homed (`skills_context_max` default, `planner.HintsFromConfig`, spawn-depth
+  default deduped), a headless validation profile (`ValidateCore` — config-without-
+  binary stops demanding JWT identity fields), and ONE blank-import aggregator
+  (`internal/drivers/prod`) imported by `main.go` and devstack — also closing
+  devstack's missing-LLM-wrapper trap (no corrections/downgrade/retry on its chain
+  today). cmd + devstack consume every projection; all duplicates deleted. RFC §6.5,
+  §6.6, §6.7, §9, §10. Deps: 83l, 83f, 107d, 107e. Stage 1, parallel with 110a. See
+  `docs/plans/phase-110c-config-projection-exporters.md`.
+- **110d — Assembly promotion (D-197 reserved).** Promotes devstack's `tryAssemble`
+  shape into an exported, error-returning
+  `assemble.Assemble(ctx, *config.Config, Options) (*Stack, error)` in
+  `internal/runtime/assemble`; `bootDevStack` (~700 ordered lines) and
+  `devstack.Assemble(t, ...)` both become thin wrappers — collapsing the last of the
+  D-094 mirror. Promotes the remaining cmd-local assembly legs: an exported MCP attach
+  helper next to the driver INCLUDING the config→`ToolPolicy` projection (devstack's
+  copy drops policy projection silently today — fixed by conversion),
+  `auth.BuildProviders` (OAuth KEK→sealer→tokenstore→provider chain), and
+  `events.OpenWith(ctx, cfg, redactor, Deps{State})` so the durable event driver can
+  share the runtime's StateStore through the factory path. Ships
+  `docs/recipes/embed-harbor-headless.md` as its acceptance-gated recipe (exercised by
+  an integration test — the audit: "until the promotions land, the recipe cannot
+  honestly be written"). RFC §6.4, §6.13, §9, §10. Deps: 110a, 110b, 110c, 64, 83g,
+  30, 57. Stage 2, parallel with 110b. See
+  `docs/plans/phase-110d-assembly-promotion.md`.
 
 #### 85-band — MCP client/host compliance (prioritised first post-V1 work)
 
