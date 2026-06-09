@@ -35,8 +35,9 @@ flagged: **unify on the Phase-38 handlers** (builtin delegates; duplicate
 bodies deleted; capability filtering / redaction / budgeting re-homed onto
 the production path), **ship `harbor skill import` + `harbor skill rm`** over
 an exported `importer.ImportAndStore`, and **wire the Directory as the
-`<skills_context>` provider** — with the Directory call explicitly marked as
-requiring an owner decision before implementation (see Risks).
+`<skills_context>` provider** — the Directory question was an explicit owner
+decision and is **RESOLVED: wire it** (owner, 2026-06-09; see Risks for the
+recorded rationale; D-201 logs it in full at ship).
 
 ## RFC anchor
 
@@ -113,13 +114,15 @@ onto thinner parallels; 111d converges them back.
   - §18 same-PR rule: `docs/skills/configure-memory-and-skills/SKILL.md` is
     updated in the SAME implementation PR — the verbs the Wave A chore
     excised return as documentation of a real surface.
-- **(c) Directory disposition — recommendation: wire it (owner decision
-  required before implementation).** Make `Directory.View` the producer of
+- **(c) Directory disposition — RESOLVED: wire it (owner decision,
+  2026-06-09).** Make `Directory.View` the producer of
   the run loop's `<skills_context>` prompt block: pinned-then-recent,
   identity-scoped, capability-filtered, redacted — replacing the raw
   `store.Search` + `extractSkillKeywords` call at
-  `cmd_dev_runloop.go:545`. Rationale for the recommendation (from reading
-  the Directory code + D-052/D-054 + the 107c surface):
+  `cmd_dev_runloop.go:545`. Rationale for the recommendation, adopted by the owner with the
+  D-176 manifest-pattern + KV-cache framing (a stable pinned-then-recent
+  browse window mirrors the session-artifact manifest; a stable prompt
+  prefix beats a per-turn query-churned block):
   - The Directory is purpose-built for exactly this consumer ("cheap
     browsing … the right user-visible namespace abstraction", brief 04
     §4.6); per-query RELEVANCE retrieval is now the LLM's job via the
@@ -135,8 +138,8 @@ onto thinner parallels; 111d converges them back.
     delete) on the grounds that 107c's meta-tools made browse-by-LLM cheap —
     is coherent but discards the pinning + injection-hygiene value and
     deletes shipped, conformant code to keep a keyword-extraction heuristic
-    the audit separately flagged as triple-duplicated. The plan recommends
-    AGAINST it; the owner picks (see Risks — explicit open question).
+    the audit separately flagged as triple-duplicated. The plan recommended
+    AGAINST it; the owner concurred (resolved — see Risks).
 
 ## Non-goals
 
@@ -188,9 +191,9 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
       builds without the subcommand keep smoke green (§4.2 rule 8).
 - [ ] §18: `docs/skills/configure-memory-and-skills/SKILL.md` updated in the
       same PR — real verbs, real flags, real output shapes.
-- [ ] Directory disposition: **owner decision recorded BEFORE implementation
-      starts** (this plan's recommendation: wire `Directory.View` as the
-      `<skills_context>` producer). If "wire it": the runloop (+ devstack
+- [x] Directory disposition: **owner decision recorded BEFORE implementation
+      starts** — RESOLVED "wire it" (owner, 2026-06-09; recorded in this
+      plan + D-201 at ship). The runloop (+ devstack
       mirror) consumes `Directory.View`; pinned skills render; capability
       filter + redaction asserted on the injected block; the
       `extractSkillKeywords` + raw-Search path is deleted from the
@@ -226,7 +229,7 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
   `cmd/harbor/root.go` — bind.
 - `cmd/harbor/main.go` — stale Phase-60+ comments replaced.
 - `cmd/harbor/cmd_dev_runloop.go` (+ `harbortest/devstack/devstack.go`
-  D-094 mirror) — Directory wiring IF the owner decision lands "wire it".
+  D-094 mirror) — Directory wiring (owner decision resolved: wire it).
 - `internal/config/config.go` + `validate.go` — `skills.directory` block
   surfacing `DirectoryConfig` (pinned / max_entries / selection) if wired;
   `tools.builtin.skill_propose.enabled` + `skill_list` enablement.
@@ -315,13 +318,15 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
 - **Staging note (Wave C):** the 111 band parallelizes freely once Wave B
   Stage 1 (110a + 110c) merges; 111d has no 110-band dependency; all six
   111-band phases are mutually independent.
-- **OPEN QUESTION — Directory disposition (owner decision REQUIRED before
-  implementation).** Recommendation: **wire it** as the `<skills_context>`
-  producer (rationale in Goals (c) — injection hygiene + pinning + the
-  designed consumer). Alternative: formally supersede (decisions entry,
-  delete the subsystem, keep raw Search). The implementing agent MUST NOT
-  start the (c) work-stream without the recorded decision; (a) and (b) are
-  decision-independent and can start immediately.
+- **RESOLVED (owner, 2026-06-09) — Directory disposition: wire it** as the
+  `<skills_context>` producer (rationale in Goals (c) — injection hygiene +
+  pinning + the designed consumer + the D-176 manifest-pattern/KV-cache
+  framing). The supersede and hygiene-only alternatives were presented and
+  declined. The (c) work-stream is cleared to start; D-201 records the
+  decision in full when the phase ships. Coordination consequence: Phase
+  110b no longer promotes `extractSkillKeywords` as a permanent surface —
+  see the 110b plan's adjusted scope (the helper is deleted by this phase's
+  Directory wiring).
 - **Prompt-behaviour delta if wired.** Swapping ranked-by-query Search for
   pinned-then-recent browse changes what the first prompt shows. Mitigation:
   the LLM retains full relevance retrieval via `skill_search` (107c), and
@@ -367,6 +372,7 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
       propagation, covers ≥1 failure mode, runs under `-race`
 - [ ] §18: SKILL.md updated in the same PR
 - [ ] New CLI verbs have a smoke degradation path (§4.2 rule 8)
-- [ ] Directory owner decision recorded in D-201 before (c) implementation
+- [x] Directory owner decision recorded before (c) implementation (resolved
+      in this plan 2026-06-09; logged in full in D-201 at ship)
 - [ ] Glossary updated
 - [ ] D-201 filed when the phase ships
