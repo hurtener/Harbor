@@ -76,7 +76,13 @@ None.
   - `runctx.ProjectSkillsContext(ranked []skills.RankedSkill) []any`
   - `runctx.ExtractSkillKeywords(query string) string` (+ the unexported stopword set
     and `maxSkillKeywords` cap moving with it; godoc keeps the D-156 pipeline contract
-    incl. the all-stopwords→caller-falls-back-to-raw-query rule)
+    incl. the all-stopwords→caller-falls-back-to-raw-query rule). **Scope note
+    (owner decision 2026-06-09, see the 111d plan):** the 111d Directory wiring
+    REPLACES the raw-Search injection path, deleting this helper and its call
+    sites. Promote it anyway (the mirror collapse must not wait on 111d, and
+    landing order is not guaranteed) but the godoc MUST carry a
+    "scheduled for deletion by Phase 111d (D-201); add no new consumers"
+    notice, and the deletion rides 111d regardless of which phase lands first.
   - `runctx.ExtractAssistantAnswer(fin planner.Finish) string`
   - `runctx.ResolveInputArtifacts(ctx context.Context, store artifacts.ArtifactStore, q identity.Quadruple, ids []string, logger *slog.Logger) []planner.InputArtifactView`
     — the D-166 policy (identity-scoped `GetRef`, image-MIME byte inlining, ref-only
