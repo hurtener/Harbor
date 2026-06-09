@@ -117,6 +117,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/notifications"
@@ -872,14 +873,20 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			stack.RunLoop = rl
 
-			// Phase 83i (D-152): mirror production's tool dispatch +
-			// Catalog projection + Trajectory wiring. The catalog is
-			// the SAME stack.Catalog the test (and operator) already
-			// populated via PreRegisterTools + MCP attachment;
-			// devStackToolExecutor dispatches against it.
+			// Phase 83i (D-152) / Phase 110a (D-194): the executor is
+			// the SAME promoted `dispatch.NewToolExecutor` production
+			// wires — the pre-110a devstack-local CallTool-only mirror
+			// (which skipped D-026 promotion, CallParallel, and
+			// SpawnTask/AwaitTask by its own admission) is deleted. The
+			// catalog is the SAME stack.Catalog the test (and operator)
+			// already populated via PreRegisterTools + MCP attachment;
+			// the artifact store + task registry are the stack's own.
 			var devExecutor steering.ToolExecutor
 			if stack.Catalog != nil {
-				devExecutor = devStackToolExecutor{cat: stack.Catalog, logger: opts.Logger}
+				devExecutor = dispatch.NewToolExecutor(stack.Catalog, stack.Artifacts, taskReg,
+					dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
+					dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
+					dispatch.WithLogger(opts.Logger))
 			}
 
 			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
@@ -1626,12 +1633,15 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		// the per-run CatalogFilter carries the operator-configured
 		// GrantedScopes so AuthScopes-protected tools are gated the
 		// same way they are in `cmd/harbor`.
-		catalogView = devStackCatalogView{cat: d.catalog, filter: tools.CatalogFilter{
+		// Phase 110a (D-194): the per-run view is the promoted
+		// `tools.NewPlannerView` — the same constructor production
+		// wires (the pre-110a devstack-local mirror is deleted).
+		catalogView = tools.NewPlannerView(d.catalog, tools.CatalogFilter{
 			TenantID:      q.TenantID,
 			UserID:        q.UserID,
 			SessionID:     q.SessionID,
-			GrantedScopes: append([]string(nil), d.grantedScopes...),
-		}}
+			GrantedScopes: d.grantedScopes,
+		})
 	}
 
 	// Phase 83m item 7 (D-094 mirror of cmd/harbor/cmd_dev_runloop.go):
@@ -2084,22 +2094,6 @@ func devStackCloneStringMap(m map[string]string) map[string]string {
 	return out
 }
 
-// devStackCatalogView mirrors `cmd/harbor/cmd_dev_catalog_view.go`'s
-// runtimeCatalogView per D-094 source-of-truth. Phase 83i (D-152).
-type devStackCatalogView struct {
-	cat    tools.ToolCatalog
-	filter tools.CatalogFilter
-}
-
-func (v devStackCatalogView) Resolve(name string) (tools.Tool, bool) {
-	desc, ok := v.cat.Resolve(name)
-	return desc.Tool, ok
-}
-
-func (v devStackCatalogView) List() []tools.Tool {
-	return v.cat.List(v.filter)
-}
-
 // devStackSkillKeywordStopwords mirrors cmd_dev_runloop.go's
 // skillKeywordStopwords per D-094 source-of-truth. Phase 83m (Item 4,
 // D-156).
@@ -2169,46 +2163,4 @@ func devStackExtractAssistantAnswer(fin planner.Finish) string {
 		return string(fin.Reason)
 	}
 	return fmt.Sprintf("%v", fin.Payload)
-}
-
-// devStackToolExecutor mirrors cmd/harbor/cmd_dev_executor.go's
-// devToolExecutor per D-094 source-of-truth. Phase 83i (D-152).
-type devStackToolExecutor struct {
-	cat    tools.ToolCatalog
-	logger *slog.Logger
-}
-
-func (e devStackToolExecutor) ExecuteDecision(ctx context.Context, _ planner.RunContext, decision planner.Decision) (any, any, error) {
-	switch d := decision.(type) {
-	case planner.CallTool:
-		if d.Tool == "" {
-			return nil, nil, errors.New("CallTool.Tool is empty")
-		}
-		desc, ok := e.cat.Resolve(d.Tool)
-		if !ok {
-			return nil, nil, fmt.Errorf("%w: %q", tools.ErrToolNotFound, d.Tool)
-		}
-		if desc.Invoke == nil {
-			return nil, nil, fmt.Errorf("tool %q is registered without an Invoke function", d.Tool)
-		}
-		result, err := desc.Invoke(ctx, d.Args)
-		if err != nil {
-			if e.logger != nil {
-				e.logger.Warn("devstack executor: tool invoke failed",
-					slog.String("tool", d.Tool),
-					slog.String("err", err.Error()))
-			}
-			return nil, nil, fmt.Errorf("tool %q invoke: %w", d.Tool, err)
-		}
-		raw := result.Value
-		if raw == nil && len(result.Meta) > 0 {
-			raw = map[string]any{"meta": result.Meta}
-		}
-		// V1.1 devstack: llmObservation == raw (the test mirror does
-		// not promote heavy results; production cmd_dev_executor.go
-		// does D-026 promotion).
-		return raw, raw, nil
-	default:
-		return nil, nil, fmt.Errorf("%w: %T", steering.ErrDecisionShapeUnsupported, decision)
-	}
 }

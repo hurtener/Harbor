@@ -197,7 +197,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |109a| MCP Apps runtime + Protocol surface (`_meta.ui.resourceUri` parse, `ui://` projection, `mcp.servers.read_resource`, real DisplayMode negotiation, app-tool-call proxy) | internal/tools/drivers/mcp + internal/protocol + cmd/harbor | §6.4, §6.5, §7 | 28, 85a, 84a | n/a | Pending (V1.1.x) |
 |109b| Console MCP Apps host (sandboxed iframe + CSP + official AppBridge in manual-handler mode + inline DisplayMode) | web/console | §6.4, §7 | 109a, 73n, 108 | n/a | Pending (V1.1.x) |
 |109c| MCP Apps DisplayMode layout (fullscreen tab + pip 50/50 split + rail toggle) | web/console | §7 | 109b | n/a | Pending (V1.1.x) |
-|110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Pending (V1.1.x) |
+|110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Shipped (V1.1.x) |
 |110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Pending (V1.1.x) |
 |110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Pending (V1.1.x) |
 |110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Pending (V1.1.x) |
@@ -1089,7 +1089,7 @@ same phase (§13 primitive-with-consumer + §17.6 fix-both-sides). Staging: **St
 band is module-internal; the external-module facade (the audit's Wave D) is a future
 RFC-level program for which 110d is the named prerequisite.
 
-- **110a — Tool-executor promotion (D-194 reserved).** Promotes the only production
+- **110a — Tool-executor promotion (D-194).** Promotes the only production
   `steering.ToolExecutor` (`cmd/harbor/cmd_dev_executor.go`, ~660 lines: catalog
   dispatch, D-026 heavy-result artifact promotion, `CallParallel` via
   `internal/runtime/parallel`, SpawnTask/AwaitTask with depth caps) to

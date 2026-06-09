@@ -1,10 +1,11 @@
-// cmd_dev_executor_preview_test.go — pins the field-aware preview
-// behaviour for heavy tool results: small top-level scalars / arrays
-// are preserved verbatim and oversized nested values are replaced
-// with a `[omitted: N bytes]` sentinel so the LLM sees both what's
-// available and what was pruned.
+// internal/runtime/dispatch/dispatch_preview_test.go — pins the
+// field-aware preview behaviour for heavy tool results: small top-level
+// scalars / arrays are preserved verbatim and oversized nested values
+// are replaced with a `[omitted: N bytes]` sentinel so the LLM sees
+// both what's available and what was pruned. (Moved from cmd/harbor in
+// Phase 110a — D-194.)
 
-package main
+package dispatch
 
 import (
 	"encoding/json"
@@ -12,12 +13,12 @@ import (
 	"testing"
 )
 
-// TestFieldAwarePreview_PreservesScalarsAndPrunesNested builds a
-// synthetic shape mirroring real-world metadata pathology — one huge
+// TestExecutor_FieldAwarePreview_PreservesScalarsAndPrunesNested builds
+// a synthetic shape mirroring real-world metadata pathology — one huge
 // nested field early in alphabetical order plus a scalar we care
 // about elsewhere — and asserts the scalar is preserved verbatim
 // while the big nested blob renders as a sentinel.
-func TestFieldAwarePreview_PreservesScalarsAndPrunesNested(t *testing.T) {
+func TestExecutor_FieldAwarePreview_PreservesScalarsAndPrunesNested(t *testing.T) {
 	t.Parallel()
 
 	bigNested := make(map[string]any, 200)
@@ -62,12 +63,12 @@ func TestFieldAwarePreview_PreservesScalarsAndPrunesNested(t *testing.T) {
 	}
 }
 
-// TestFieldAwarePreview_RespectsTotalBudget asserts that even when
-// every individual field passes the per-field budget, the assembled
+// TestExecutor_FieldAwarePreview_RespectsTotalBudget asserts that even
+// when every individual field passes the per-field budget, the assembled
 // preview is capped at previewTotalMaxBytes. Builds 500 short scalar
 // fields — each well under the per-field cap — and confirms the
 // final output stays within budget.
-func TestFieldAwarePreview_RespectsTotalBudget(t *testing.T) {
+func TestExecutor_FieldAwarePreview_RespectsTotalBudget(t *testing.T) {
 	t.Parallel()
 
 	m := make(map[string]any, 500)
@@ -88,15 +89,15 @@ func TestFieldAwarePreview_RespectsTotalBudget(t *testing.T) {
 	}
 }
 
-// TestBuildPreview_UnwrapsSingleKeyResultWrapper asserts that the
-// `{"result": {<actual metadata>}}` shape MCP tools (and many Go
+// TestExecutor_BuildPreview_UnwrapsSingleKeyResultWrapper asserts that
+// the `{"result": {<actual metadata>}}` shape MCP tools (and many Go
 // structs) emit is unwrapped one level before the field-aware
 // preview runs. Without this unwrap the outer single-key wrapper
 // would prune `result` itself as oversized and the model would see
 // `{"result":"[omitted: N bytes]"}` — useless. The pinned input
 // shape here mirrors what `youtube_get_metadata` actually returns
 // through the MCP driver (the live YouTube test surface).
-func TestBuildPreview_UnwrapsSingleKeyResultWrapper(t *testing.T) {
+func TestExecutor_BuildPreview_UnwrapsSingleKeyResultWrapper(t *testing.T) {
 	t.Parallel()
 
 	inner := map[string]any{
@@ -119,12 +120,12 @@ func TestBuildPreview_UnwrapsSingleKeyResultWrapper(t *testing.T) {
 	}
 }
 
-// TestBuildPreview_FromTypedStructEncodedJSON asserts that when raw
-// is a typed Go struct (so a `map[string]any` type assertion fails),
+// TestExecutor_BuildPreview_FromTypedStructEncodedJSON asserts that when
+// raw is a typed Go struct (so a `map[string]any` type assertion fails),
 // the preview path still kicks in via re-unmarshalling the encoded
 // bytes. This is the case for the MCP driver which returns its own
 // typed result value.
-func TestBuildPreview_FromTypedStructEncodedJSON(t *testing.T) {
+func TestExecutor_BuildPreview_FromTypedStructEncodedJSON(t *testing.T) {
 	t.Parallel()
 
 	type meta struct {
@@ -146,11 +147,11 @@ func TestBuildPreview_FromTypedStructEncodedJSON(t *testing.T) {
 	}
 }
 
-// TestBuildPreview_NonObjectFallsBackToByteTrunc asserts a top-level
-// array or scalar (not a JSON object) flows through byte-truncation
-// since there's no field structure to be aware of. This is the
-// fallback path; pre-fix behaviour for non-objects is preserved.
-func TestBuildPreview_NonObjectFallsBackToByteTrunc(t *testing.T) {
+// TestExecutor_BuildPreview_NonObjectFallsBackToByteTrunc asserts a
+// top-level array or scalar (not a JSON object) flows through
+// byte-truncation since there's no field structure to be aware of. This
+// is the fallback path; pre-fix behaviour for non-objects is preserved.
+func TestExecutor_BuildPreview_NonObjectFallsBackToByteTrunc(t *testing.T) {
 	t.Parallel()
 
 	// Top-level array.
@@ -168,12 +169,12 @@ func TestBuildPreview_NonObjectFallsBackToByteTrunc(t *testing.T) {
 	}
 }
 
-// TestHeavyTruncationSummary_EndToEnd asserts the full
-// heavyTruncationSummary shape mirrors what the planner's prompt
+// TestExecutor_HeavyTruncationSummary_EndToEnd asserts the full
+// HeavyTruncationSummary shape mirrors what the planner's prompt
 // builder expects: `tool`, `size_bytes`, `truncated: true`, `preview`,
 // `artifact_ref`. The preview itself MUST carry the now-pinned
 // `duration` value, proving the YouTube-loop case is closed.
-func TestHeavyTruncationSummary_EndToEnd(t *testing.T) {
+func TestExecutor_HeavyTruncationSummary_EndToEnd(t *testing.T) {
 	t.Parallel()
 
 	bigNested := strings.Repeat("x", 50_000) // 50 KB single nested string
@@ -183,11 +184,11 @@ func TestHeavyTruncationSummary_EndToEnd(t *testing.T) {
 		"title":              "World Cup 2026",
 	}
 	encoded, _ := json.Marshal(raw)
-	got := heavyTruncationSummary("youtube_get_metadata", raw, encoded, len(encoded), "ref_xyz")
+	got := HeavyTruncationSummary("youtube_get_metadata", raw, encoded, len(encoded), "ref_xyz")
 
 	m, ok := got.(map[string]any)
 	if !ok {
-		t.Fatalf("heavyTruncationSummary returned non-map: %T", got)
+		t.Fatalf("HeavyTruncationSummary returned non-map: %T", got)
 	}
 	for _, key := range []string{"tool", "size_bytes", "truncated", "preview", "artifact_ref"} {
 		if _, ok := m[key]; !ok {

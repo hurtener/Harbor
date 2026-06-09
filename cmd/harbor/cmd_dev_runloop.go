@@ -584,11 +584,15 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// to the planner; an empty list preserves the prior behaviour
 		// (tools without AuthScopes are always visible; tools with
 		// AuthScopes are filtered out).
-		catalogView = newRuntimeCatalogView(
-			d.catalog,
-			runtimeIdentity{Tenant: q.TenantID, User: q.UserID, Session: q.SessionID},
-			d.grantedScopes,
-		)
+		// Phase 110a (D-194): the per-run view is the promoted
+		// `tools.NewPlannerView` — constructed per run (never cached;
+		// the filter carries the run's identity triple).
+		catalogView = tools.NewPlannerView(d.catalog, tools.CatalogFilter{
+			TenantID:      q.TenantID,
+			UserID:        q.UserID,
+			SessionID:     q.SessionID,
+			GrantedScopes: d.grantedScopes,
+		})
 	}
 
 	// Phase 83i (D-152) — wire the planner's event-emit closure so
@@ -714,9 +718,9 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// caller surface and requires a reason); Failed is the closest
 		// terminal match for a ctx-cancelled run that did not reach a
 		// goal. See D-098 for the full rationale.
-		code := "runloop_error"
+		code := planner.TaskErrorCodeRunLoopError
 		if errors.Is(err, context.Canceled) {
-			code = "cancelled"
+			code = planner.TaskErrorCodeCancelled
 			d.logger.Debug("perTaskRunLoopDriver: run cancelled",
 				slog.String("task_id", string(taskID)))
 		} else {
@@ -774,10 +778,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// actual assistant response via tasks.get → result_inline.
 		// Pre-106, this was tasks.TaskResult{} — the projector had
 		// nothing to project and the Playground hardcoded a placeholder.
-		payload := map[string]any{
-			"answer":          extractAssistantAnswer(fin),
-			"finish_reason":   string(fin.Reason),
-			"tool_calls_seen": len(traj.Steps),
+		// Phase 110a (D-194): the shape is the exported
+		// `planner.AnswerEnvelope` (byte-compatible with the Phase 106
+		// map literal — pinned by the planner-side golden test).
+		payload := planner.AnswerEnvelope{
+			Answer:        extractAssistantAnswer(fin),
+			FinishReason:  string(fin.Reason),
+			ToolCallsSeen: len(traj.Steps),
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -806,7 +813,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// FinishReason as the error code so the Console / operator sees
 	// WHY the run ended without a goal.
 	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-		Code:    string(fin.Reason),
+		Code:    planner.TaskErrorCodeForFinish(fin.Reason),
 		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
 	}); mErr != nil {
 		d.logger.Warn("perTaskRunLoopDriver: MarkFailed after non-goal Finish failed",

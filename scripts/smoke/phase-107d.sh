@@ -4,7 +4,8 @@
 # Phase 107d — native parallel tool-calls (executor CallParallel branch + default flip).
 #
 # Surface under test:
-#   - cmd/harbor/cmd_dev_executor.go dispatches planner.CallParallel through
+#   - internal/runtime/dispatch (promoted from cmd/harbor by 110a / D-194)
+#     dispatches planner.CallParallel through
 #     internal/runtime/parallel.Executor instead of ErrDecisionShapeUnsupported.
 #   - The React planner emits a native CallParallel for N>1 tool-calls (default
 #     planner.react.parallel_tool_calls=true), so several tools dispatch
@@ -28,17 +29,18 @@ source "scripts/smoke/common.sh"
 
 # AC-1: the CallParallel reject is gone; the dev executor consumes the
 # runtime parallel executor.
-EXEC_FILE="cmd/harbor/cmd_dev_executor.go"
+# Phase 110a (D-194) promoted the executor out of cmd/harbor.
+EXEC_FILE="internal/runtime/dispatch/dispatch.go"
 if [[ -f "${EXEC_FILE}" ]]; then
   if grep -q "runtime/parallel" "${EXEC_FILE}"; then
-    ok "dev executor imports internal/runtime/parallel (CallParallel dispatch wired)"
+    ok "tool executor imports internal/runtime/parallel (CallParallel dispatch wired)"
   else
-    skip "phase 107d: dev executor does not yet wire parallel.Executor — surface not shipped"
+    skip "phase 107d: tool executor does not yet wire parallel.Executor — surface not shipped"
     smoke_summary
     exit 0
   fi
 else
-  skip "phase 107d: ${EXEC_FILE} absent — pre-83i build"
+  skip "phase 107d: ${EXEC_FILE} absent — pre-110a build"
   smoke_summary
   exit 0
 fi
