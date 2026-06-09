@@ -123,7 +123,7 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ..
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: parse: %w", ErrConfigInvalid, source, err)
 	}
-	cfg := defaults()
+	cfg := Defaults()
 	if err := yaml.UnmarshalWithOptions(cleaned, cfg, yaml.Strict()); err != nil {
 		return nil, fmt.Errorf("%w: %s: parse: %w", ErrConfigInvalid, source, err)
 	}
@@ -158,11 +158,31 @@ func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 	return &clone, nil
 }
 
-// defaults returns a *Config pre-populated with the documented
+// Defaults returns a *Config pre-populated with the documented
 // non-security defaults. Security-relevant fields (JWT algorithms,
 // audit redaction patterns) are intentionally absent so Validate
 // fails loudly when an operator omits them.
-func defaults() *Config {
+//
+// Exported in Phase 110c (D-196): before then this baseline was
+// loader-private, so a YAML-loaded config and a hand-built config got
+// DIFFERENT baselines and factories compensated inconsistently (events
+// fails loud on zero values; sessions self-defaults). `Load` starts
+// from this same function; a headless Go consumer building a config
+// programmatically starts here too:
+//
+//	cfg := config.Defaults()
+//	cfg.LLM.Provider = "openrouter"   // required-for-core
+//	cfg.LLM.Model = "anthropic/claude-sonnet-4"
+//	cfg.LLM.APIKey = "env.OPENROUTER_API_KEY"
+//	if err := cfg.ValidateCore(); err != nil { ... }
+//
+// Required-for-core fields a zero-config consumer must set before
+// `ValidateCore` passes: `LLM.Provider`, `LLM.Model`, `LLM.APIKey`
+// (the production `bifrost` driver demands a real provider — CLAUDE.md
+// §13 "no test stubs as production defaults"). Everything else carries
+// a working default. The full-binary `Validate()` additionally demands
+// the Identity (JWT) block — see ValidateCore's godoc for the split.
+func Defaults() *Config {
 	return &Config{
 		Server: ServerConfig{
 			BindAddr:            "127.0.0.1:8080",
@@ -193,7 +213,7 @@ func defaults() *Config {
 				// who omit the field get the production behaviour.
 				// `*bool` distinguishes "operator didn't set" (nil →
 				// loader fills with true) from "operator explicitly
-				// disabled" (*false). The loader's `defaults()` runs
+				// disabled" (*false). The loader's `Defaults()` runs
 				// BEFORE yaml merge, so the explicit `false` from yaml
 				// survives.
 				Enabled: boolPtr(true),
@@ -269,7 +289,7 @@ func defaults() *Config {
 	}
 }
 
-// boolPtr returns a pointer to b. Used by `defaults()` to populate
+// boolPtr returns a pointer to b. Used by `Defaults()` to populate
 // pointer-bool fields (e.g. `LLMCorrectionsConfig.Enabled`) where the
 // loader needs to distinguish "operator didn't set" from "operator
 // set false."

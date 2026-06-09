@@ -1301,7 +1301,7 @@ func TestIsValidationError(t *testing.T) {
 // TestValidate_Planner_AcceptsReact exercises D-103 — the V1 default
 // planner driver. A drift (the validator dropping `react`) would break
 // every operator config that omits the planner block (the loader's
-// `defaults()` populates `Driver: "react"`).
+// `Defaults()` populates `Driver: "react"`).
 func TestValidate_Planner_AcceptsReact(t *testing.T) {
 	t.Parallel()
 	cfg := mustLoadValid(t)
