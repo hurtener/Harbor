@@ -1,10 +1,13 @@
-// Harbor Console — Flows page e2e spec (Phase 73i / D-117, refactored
-// onto the design-system foundation — D-121).
+// Harbor Console — Flows page e2e spec (Phase 73i / D-117; rebuilt onto
+// the carded, viewport-locked page-polish foundation — Phase 108p / D-188).
 //
 // Per-page Playwright spec for the Console Flows page. It exercises the
-// shared `DataTable` catalog, the four-state `PageState`, the engine
-// graph canvas, the `Run flow` scope-claim gate, the run-history →
-// run-summary drill, and the heavy-output `Open artifact` link.
+// catalog (the `FlowsTable` over the shared `DataTable`), the four-state
+// `PageState`, the engine graph canvas, the `Run flow` scope-claim gate,
+// the run-history → run-summary drill, and the heavy-output `Open artifact`
+// link. The 108p rebuild preserves every `data-testid` below — the king-file
+// refactor (controllers + `derive.ts` + `FlowsTable`) is behaviour-preserving;
+// only the layout (carded + viewport-locked) and the empty-state copy changed.
 //
 // SKIP semantics (mirroring the Phase 75 harness baseline + CLAUDE.md
 // §4.2's "404/405/501 → SKIP" smoke convention): the `harbor console`
