@@ -24,7 +24,7 @@ enforcers in the documented order, called via `SetFactory` from the production
 assembly whenever `IdentityTiers` is non-empty. A configured tier then actually
 rejects and limits — cost ceiling, rate limit, and MaxTokens each exercised
 end-to-end. The posture-only boot warning the in-flight Wave A chore adds
-(branch `chore/sdk-audit-wave-a`, per audit §8 Wave A: "until then
+(PR #278, per audit §8 Wave A: "until then
 `validateGovernance` must warn posture-only") is removed in the same PR — the
 warning's reason to exist is gone.
 
@@ -269,7 +269,7 @@ as the implementor lands it):
   limit + MaxTokens).
 - 110c (soft — `governance.ConfigFromOperator`; this phase promotes it itself
   if 110c hasn't merged).
-- The in-flight Wave A chore (`chore/sdk-audit-wave-a`) — this phase removes
+- The in-flight Wave A chore (PR #278) — this phase removes
   the posture-only warning it adds; sequencing is tolerant (if Wave A hasn't
   merged, there is simply no warning to remove).
 

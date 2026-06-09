@@ -22,7 +22,7 @@ memory-strategy summarizer) — **do not conflate**. Phase 111e ships a real
 LLM-backed `planner.Summariser`, the `MaybeCompress` integration point in
 `steering.RunLoop`'s step loop gated on `Budget.TokenBudget > 0`, the
 production `RunSpec`/`Budget` wiring from a new config knob, and un-dormants
-the godocs the in-flight Wave A chore (branch `chore/sdk-audit-wave-a`) marks
+the godocs the in-flight Wave A chore (PR #278) marks
 dormant. Recommendation: **ship, not defer** — scoped tight (single
 compression per run, no auto-cascade).
 

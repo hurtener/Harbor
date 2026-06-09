@@ -13,7 +13,7 @@ the (state, code) exchange that persists the token and calls
 `provider.go:615-625`) has **zero callers**, and no HTTP route anywhere in the
 tree exchanges `(state, code)`. The godocs reference a "Harbor Protocol
 callback handler" that does not exist (`internal/tools/auth/auth.go:189`,
-`RedirectURI`). The in-flight Wave A chore (branch `chore/sdk-audit-wave-a`)
+`RedirectURI`). The in-flight Wave A chore (PR #278)
 makes those godocs honest; **this phase ships the real thing.**
 
 Phase 111b ships `auth.CallbackHandler` — an exported `http.Handler` that maps

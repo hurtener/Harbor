@@ -22,7 +22,7 @@ intertwined gaps (SDK friction audit §3):
   The operator SKILL.md documented fictional `harbor skill import` /
   `harbor skill rm` verbs
   (`docs/skills/configure-memory-and-skills/SKILL.md:94,114,138`) — live §18
-  drift the in-flight Wave A chore (branch `chore/sdk-audit-wave-a`) excises.
+  drift the in-flight Wave A chore (PR #278) excises.
   This phase ships the REAL verbs and restores the docs.
 - **(c) The Phase-39 Directory** (`internal/skills/directory.go:172`
   `NewDirectory`) has only test consumers; the production run loop bypasses
