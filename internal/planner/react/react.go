@@ -49,7 +49,7 @@
 //     path (declarative_action keeps it for backward compat).
 //  7. Stamps `req.Tools` from `rc.Catalog.List()` (which already
 //     filters by the run's identity scope + `LoadingAlways` per
-//     [runtimeCatalogView]) plus per-run discovered tools resolved
+//     `tools.PlannerView`) plus per-run discovered tools resolved
 //     through `rc.Catalog.Resolve` (AC-17). Sets
 //     `req.ParallelToolCalls = true` so native parallel tool-call
 //     emission is enabled per turn.
@@ -609,7 +609,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// AC-17: populate the per-turn native tool-calling surface.
 	// `rc.Catalog.List()` already returns the always-loaded subset
 	// filtered by the run's identity + GrantedScopes (the
-	// runtimeCatalogView's filter defaults to LoadingAlways when
+	// tools.PlannerView's filter defaults to LoadingAlways when
 	// `LoadingModes` is empty). Meta-tools registered with
 	// LoadingAlways flow through this path naturally. Per-run
 	// discovered tools (AC-18) are resolved by name and appended

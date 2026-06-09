@@ -1,14 +1,19 @@
-// cmd/harbor/cmd_dev_executor.go — the dev binary's `steering.ToolExecutor`
-// implementation. Phase 83i (D-152).
+// Package dispatch is the runtime's production tool-dispatch concrete —
+// the one full `steering.ToolExecutor` implementation (Phase 110a, D-194;
+// originally Phase 83i, D-152, as the dev binary's executor).
 //
 // Before 83i the runloop's default case dropped every planner CallTool
 // decision on the floor (Phase 53's deliberately-punted scope), which
 // made multi-step ReAct structurally broken against real LLMs because
 // the planner never saw tool observations. The audit pinned this as
 // the root cause of the "64 steps, 0 tools called" failure mode that
-// surfaced in the v1.1 operator validation.
+// surfaced in the v1.1 operator validation. Phase 110a promoted the
+// executor out of `package main` (the SDK friction audit's Pattern 1 /
+// P1 finding) so every assembly — `cmd/harbor`, `harbortest/devstack`,
+// a headless embedder's own run loop — wires the SAME dispatch
+// semantics via [NewToolExecutor].
 //
-// devToolExecutor closes that seam against the production
+// The executor closes the planner→runtime seam against the production
 // `tools.ToolCatalog`:
 //
 //   - CallTool: look up the descriptor by name, call Invoke under
@@ -16,17 +21,19 @@
 //     as the observation. The planner's next step sees this on
 //     `RunContext.Trajectory.Steps[N].Observation`.
 //
-//   - CallParallel / SpawnTask / AwaitTask: V1.1 returns
-//     ErrDecisionShapeUnsupported. The runloop surfaces this to the
-//     planner as the step's observation, and the planner can choose
-//     a different path (most ReAct planners will repair to a serial
-//     CallTool or Finish).
+//   - CallParallel: fan the branches out concurrently via
+//     `internal/runtime/parallel` in non-atomic mode (Phase 107d —
+//     D-169).
 //
-// The executor is constructed once per dev-stack and shared across
-// every run; it holds only the catalog (immutable after construction)
-// + a logger, so the D-025 reuse contract is trivially satisfied.
-
-package main
+//   - SpawnTask / AwaitTask: drive the background-task registry with
+//     spawn-depth caps and terminal-status polling (Phase 107e —
+//     D-170).
+//
+// The executor is constructed once per stack and shared across every
+// run; it holds only the catalog + artifact store + task registry
+// (immutable after construction) + a logger, so the D-025 reuse
+// contract is satisfied.
+package dispatch
 
 import (
 	"context"
@@ -47,9 +54,9 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
-// devToolExecutor is the dev binary's production `steering.ToolExecutor`
+// toolExecutor is the production `steering.ToolExecutor`
 // implementation. Concurrent-safe — the catalog + artifact store are
-// immutable after the dev-stack boot wiring runs.
+// immutable after the stack's boot wiring runs.
 //
 // D-026 heavy-content discipline: tool results whose JSON encoding
 // exceeds `heavyThreshold` get stored in the artifact store; the
@@ -58,7 +65,7 @@ import (
 // this discipline the v1.1 operator validation hit `ErrContextLeak`
 // after the first tool call (the youtube_get_metadata tool returns
 // ~1.5 MB which would otherwise reach the LLM verbatim).
-type devToolExecutor struct {
+type toolExecutor struct {
 	cat            tools.ToolCatalog
 	artifacts      artifacts.ArtifactStore
 	heavyThreshold int
@@ -95,40 +102,82 @@ type devToolExecutor struct {
 // levels of background nesting is generous for V1.1.x dev workloads.
 const defaultMaxSpawnDepth = 4
 
+// defaultHeavyThreshold is the heavy-output safety floor applied when
+// the operator-configured threshold is unset / non-positive. Matches
+// the Wave 11 `artifacts.heavy_output_threshold_bytes` default.
+const defaultHeavyThreshold = 32 * 1024
+
 // spawnAwaitPollInterval is the cadence at which AwaitTask + a retain-turn
 // SpawnTask poll the registry for a terminal status. The registry's
 // documented poll wake mode (internal/tasks/groups.go) is a cheap
 // in-memory Get on the dev path; the wait is bounded by the caller's ctx.
 const spawnAwaitPollInterval = 100 * time.Millisecond
 
-// newDevToolExecutor binds the catalog + artifact store the runloop
-// dispatches against. Both are the SAME instances bootDevStack
-// already constructs. `heavyThreshold` is the operator-configured
-// cfg.Artifacts.HeavyOutputThresholdBytes; tool results whose JSON
-// encoding exceeds it get promoted to ArtifactStub-shaped
-// llmObservations.
-func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore, taskReg tasks.TaskRegistry, heavyThreshold, maxSpawnDepth int, logger *slog.Logger) *devToolExecutor {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if heavyThreshold <= 0 {
-		heavyThreshold = 32 * 1024 // safety floor matches Wave 11 default
-	}
-	if maxSpawnDepth <= 0 {
-		maxSpawnDepth = defaultMaxSpawnDepth
-	}
-	return &devToolExecutor{
-		cat:            cat,
-		artifacts:      artStore,
-		heavyThreshold: heavyThreshold,
-		logger:         logger,
-		// AC-1: the catalog already satisfies parallel.Resolver via
+// Option configures the executor [NewToolExecutor] constructs.
+type Option func(*toolExecutor)
+
+// WithHeavyThreshold sets the D-026 heavy-output threshold in bytes:
+// tool results whose JSON encoding meets or exceeds it get promoted to
+// artifact-backed truncation summaries before reaching the planner /
+// LLM edge. Non-positive values fall back to the 32 KiB safety floor
+// (the Wave 11 default) — the same normalization the pre-110a
+// constructor applied, so passing an unset config value through is
+// safe.
+func WithHeavyThreshold(bytes int) Option {
+	return func(e *toolExecutor) { e.heavyThreshold = bytes }
+}
+
+// WithMaxSpawnDepth caps the ParentTaskID-chain depth of
+// planner-spawned background tasks (planner.absolute_max_spawn_depth).
+// Non-positive values fall back to the default depth of 4.
+func WithMaxSpawnDepth(n int) Option {
+	return func(e *toolExecutor) { e.maxSpawnDepth = n }
+}
+
+// WithLogger sets the executor's logger. Nil falls back to
+// slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(e *toolExecutor) { e.logger = l }
+}
+
+// NewToolExecutor binds the catalog + artifact store + task registry
+// the run loop dispatches against — the SAME instances the stack's
+// boot wiring constructs. The returned executor covers all four
+// non-Finish Decision shapes (CallTool, CallParallel, SpawnTask,
+// AwaitTask) with the D-026 heavy-result→artifact promotion applied
+// to every observation that reaches the planner / LLM edge.
+//
+// `taskReg` MAY be nil in degraded wiring — SpawnTask / AwaitTask then
+// fail loud with `steering.ErrDecisionShapeUnsupported` rather than
+// panic. `store` MAY be nil — heavy results then degrade to a loudly
+// logged truncated preview instead of an artifact promotion.
+//
+// Concurrent reuse (D-025): the executor is a compiled artifact —
+// construct once per stack, share across N concurrent runs. Per-run
+// state lives in ctx + RunContext, never on the executor.
+func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskReg tasks.TaskRegistry, opts ...Option) steering.ToolExecutor {
+	e := &toolExecutor{
+		cat:       cat,
+		artifacts: store,
+		// AC-1 (107d): the catalog already satisfies parallel.Resolver via
 		// Resolve(name); reuse it as the dispatcher's resolver. No second
 		// fanout engine (§13).
-		parallel:      parallel.New(cat),
-		tasks:         taskReg,
-		maxSpawnDepth: maxSpawnDepth,
+		parallel: parallel.New(cat),
+		tasks:    taskReg,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	if e.logger == nil {
+		e.logger = slog.Default()
+	}
+	if e.heavyThreshold <= 0 {
+		e.heavyThreshold = defaultHeavyThreshold
+	}
+	if e.maxSpawnDepth <= 0 {
+		e.maxSpawnDepth = defaultMaxSpawnDepth
+	}
+	return e
 }
 
 // ExecuteDecision implements `steering.ToolExecutor`. Dispatches the
@@ -154,7 +203,7 @@ func newDevToolExecutor(cat tools.ToolCatalog, artStore artifacts.ArtifactStore,
 //     (Phase 107e — D-170). Both spawn/await observations go through the
 //     same D-026 projectForLLM discipline so a heavy result never trips
 //     ErrContextLeak.
-func (e *devToolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
+func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
 		return e.callTool(ctx, rc, d)
@@ -174,7 +223,7 @@ func (e *devToolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunCon
 //   - descriptor.Invoke returns an error → wrapped + surfaced.
 //   - the result's Value is the observation the planner sees on its
 //     next step (after D-026 heavy-content projection).
-func (e *devToolExecutor) callTool(ctx context.Context, rc planner.RunContext, d planner.CallTool) (any, any, error) {
+func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d planner.CallTool) (any, any, error) {
 	if d.Tool == "" {
 		return nil, nil, errors.New("CallTool.Tool is empty")
 	}
@@ -187,7 +236,7 @@ func (e *devToolExecutor) callTool(ctx context.Context, rc planner.RunContext, d
 	}
 	result, err := desc.Invoke(ctx, d.Args)
 	if err != nil {
-		e.logger.Warn("devToolExecutor: tool invoke failed",
+		e.logger.Warn("dispatch: tool invoke failed",
 			slog.String("tool", d.Tool),
 			slog.String("err", err.Error()))
 		return nil, nil, fmt.Errorf("tool %q invoke: %w", d.Tool, err)
@@ -221,7 +270,7 @@ func (e *devToolExecutor) callTool(ctx context.Context, rc planner.RunContext, d
 // back as the Execute error and are surfaced verbatim (fail-loud per
 // §13); the runloop wraps them as the step's error observation and the
 // planner re-plans.
-func (e *devToolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
+func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, d planner.CallParallel) (any, any, error) {
 	results, err := e.parallel.Execute(ctx, d, parallel.WithNonAtomicSetup())
 	if err != nil {
 		return nil, nil, fmt.Errorf("parallel dispatch: %w", err)
@@ -286,7 +335,7 @@ func (e *devToolExecutor) callParallel(ctx context.Context, rc planner.RunContex
 //   - Retain-turn (Spec.RetainTurn == true): blocks (ctx-bounded) until
 //     the spawned task reaches a terminal status, returning its outcome —
 //     a synchronous spawn-and-join in one decision.
-func (e *devToolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d planner.SpawnTask) (any, any, error) {
+func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d planner.SpawnTask) (any, any, error) {
 	if e.tasks == nil {
 		return nil, nil, fmt.Errorf("%w: SpawnTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
 	}
@@ -349,7 +398,7 @@ func (e *devToolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, 
 // then returns its answer-envelope / error as the observation. Get
 // enforces identity scope, so a cross-session / cross-tenant task id
 // surfaces as a not-found error observation (AC-11) rather than leaking.
-func (e *devToolExecutor) awaitTask(ctx context.Context, rc planner.RunContext, d planner.AwaitTask) (any, any, error) {
+func (e *toolExecutor) awaitTask(ctx context.Context, rc planner.RunContext, d planner.AwaitTask) (any, any, error) {
 	if e.tasks == nil {
 		return nil, nil, fmt.Errorf("%w: AwaitTask (no TaskRegistry wired)", steering.ErrDecisionShapeUnsupported)
 	}
@@ -373,7 +422,7 @@ func (e *devToolExecutor) awaitTask(ctx context.Context, rc planner.RunContext, 
 // path returns the ctx error so a never-terminating child surfaces as a
 // deadline error observation rather than a hang (the runloop wraps it;
 // the planner re-plans). The poll cadence is spawnAwaitPollInterval.
-func (e *devToolExecutor) awaitTerminal(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) {
+func (e *toolExecutor) awaitTerminal(ctx context.Context, id tasks.TaskID) (*tasks.Task, error) {
 	ticker := time.NewTicker(spawnAwaitPollInterval)
 	defer ticker.Stop()
 	for {
@@ -400,7 +449,7 @@ func (e *devToolExecutor) awaitTerminal(ctx context.Context, id tasks.TaskID) (*
 // iterations so a corrupt or cyclic parent chain cannot loop unbounded; a
 // Get error mid-walk stops the walk and returns the count so far
 // (best-effort — the cap still bounds creation at the spawn site).
-func (e *devToolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int {
+func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int {
 	depth := 0
 	cur := id
 	for cur != "" && depth <= e.maxSpawnDepth {
@@ -415,11 +464,15 @@ func (e *devToolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) 
 }
 
 // taskOutcomeObservation projects a terminal task record into the
-// planner-readable observation for AwaitTask / retain-turn SpawnTask. The
-// answer envelope on Result.Value is JSON (the per-task driver's
-// {answer, finish_reason, tool_calls_seen} shape); it is embedded parsed
-// so the planner sees structured data rather than a JSON-string. A failed
-// / cancelled task carries its error code + message instead.
+// planner-readable observation for AwaitTask / retain-turn SpawnTask.
+// The answer envelope on Result.Value is JSON — the per-task driver's
+// [planner.AnswerEnvelope] `{answer, finish_reason, tool_calls_seen}`
+// shape (Phase 106; named and exported by Phase 110a). It is embedded
+// parsed-generic (not as the typed struct) so the planner sees
+// structured data rather than a JSON-string AND so non-envelope
+// Result.Values (a TaskResult is not guaranteed to be an envelope)
+// round-trip without field loss. A failed / cancelled task carries its
+// error code + message instead.
 func taskOutcomeObservation(task *tasks.Task) any {
 	out := map[string]any{
 		"task_id": string(task.ID),
@@ -454,7 +507,7 @@ func taskOutcomeObservation(task *tasks.Task) any {
 // degrades to a truncated string preview. We log a Warn (silent
 // degradation is forbidden) but do not fail the run — losing a
 // tool's full result is recoverable in the planner's eyes.
-func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunContext, tool string, raw any) any {
+func (e *toolExecutor) projectForLLM(ctx context.Context, rc planner.RunContext, tool string, raw any) any {
 	if raw == nil {
 		return raw
 	}
@@ -473,12 +526,12 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 	}
 	// Heavy result — promote to artifact store.
 	if e.artifacts == nil {
-		// No artifact store wired (degraded dev stack) — truncate
+		// No artifact store wired (degraded stack) — truncate
 		// loudly so the operator can see exactly what was elided.
-		e.logger.Warn("devToolExecutor: heavy tool result without artifact store; truncating",
+		e.logger.Warn("dispatch: heavy tool result without artifact store; truncating",
 			slog.String("tool", tool),
 			slog.Int("size_bytes", size))
-		return heavyTruncationSummary(tool, raw, encoded, size, "")
+		return HeavyTruncationSummary(tool, raw, encoded, size, "")
 	}
 	scope := artifacts.ArtifactScope{
 		TenantID:  rc.Quadruple.TenantID,
@@ -498,7 +551,9 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 			// discriminator so artifacts.list and the session-artifact
 			// manifest project a real provenance ("tool") instead of a
 			// blank source. The `tool`/`producer` keys stay for the
-			// originating-tool name.
+			// originating-tool name. The `producer` value is preserved
+			// verbatim from the pre-110a executor (byte-for-byte
+			// provenance parity — pre-existing consumers may key on it).
 			"source":     "tool",
 			"producer":   "dev-tool-executor",
 			"tool":       tool,
@@ -507,13 +562,13 @@ func (e *devToolExecutor) projectForLLM(ctx context.Context, rc planner.RunConte
 		},
 	})
 	if putErr != nil {
-		e.logger.Warn("devToolExecutor: artifact PutText failed; truncating",
+		e.logger.Warn("dispatch: artifact PutText failed; truncating",
 			slog.String("tool", tool),
 			slog.Int("size_bytes", size),
 			slog.String("err", putErr.Error()))
-		return heavyTruncationSummary(tool, raw, encoded, size, "")
+		return HeavyTruncationSummary(tool, raw, encoded, size, "")
 	}
-	return heavyTruncationSummary(tool, raw, encoded, size, ref.ID)
+	return HeavyTruncationSummary(tool, raw, encoded, size, ref.ID)
 }
 
 // previewFieldMaxBytes caps each top-level field's serialized form in
@@ -533,7 +588,7 @@ const previewFieldMaxBytes = 1024
 // is the back-stop.
 const previewTotalMaxBytes = 16384
 
-// heavyTruncationSummary builds the small llmObservation the
+// HeavyTruncationSummary builds the small llmObservation the
 // planner renders for a heavy tool result. For JSON-object results
 // it emits a field-aware preview that preserves every top-level
 // scalar / small field verbatim and replaces oversized nested
@@ -545,7 +600,16 @@ const previewTotalMaxBytes = 16384
 // Carries: the tool name, byte size of the full result, the
 // preview, the `truncated: true` signal, and the artifact ID
 // when available.
-func heavyTruncationSummary(tool string, raw any, encoded []byte, size int, artifactID string) any {
+//
+// This exported identifier IS the heavy-truncation shape contract:
+// the React planner's prompt renderer
+// (`internal/planner/react/prompt.go::renderHeavyContentMap`)
+// pattern-matches the `{tool, size_bytes, truncated, preview,
+// artifact_ref}` map this function emits. Changing a key here is a
+// prompt-renderer change in the same PR (Phase 110a re-pointed the
+// renderer's citation from the pre-promotion `cmd/harbor` copy to
+// this function).
+func HeavyTruncationSummary(tool string, raw any, encoded []byte, size int, artifactID string) any {
 	prev := buildPreview(raw, encoded)
 	out := map[string]any{
 		"tool":       tool,
@@ -659,4 +723,4 @@ func fieldAwarePreview(m map[string]any) (string, bool) {
 }
 
 // ensure interface satisfaction at compile time.
-var _ steering.ToolExecutor = (*devToolExecutor)(nil)
+var _ steering.ToolExecutor = (*toolExecutor)(nil)

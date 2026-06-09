@@ -49,8 +49,8 @@ assert_grep_present \
 # -----------------------------------------------------------------------------
 assert_grep_present \
     '"created_at": time.Now\(\).UTC\(\)' \
-    'cmd/harbor/cmd_dev_executor.go' \
-    'W6 dev-tool-executor stamps created_at on heavy-promoted artifacts'
+    'internal/runtime/dispatch/dispatch.go' \
+    'W6 tool executor stamps created_at on heavy-promoted artifacts (promoted by 110a / D-194)'
 assert_grep_present \
     '"created_at": s.clock\(\)' \
     'internal/protocol/artifacts.go' \

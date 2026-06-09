@@ -1109,7 +1109,7 @@ func TestRenderNativeStepPair_ReasoningReplayLayersBelowPreamble(t *testing.T) {
 // TestRenderNativeObservation_ArtifactStubInlinesPreview asserts the
 // heavy-content projection: when the trajectory step's observation
 // is either an `*llm.ArtifactStub` or the runtime tool-executor's
-// `heavyTruncationSummary` map, the RoleTool message body is the
+// `HeavyTruncationSummary` map, the RoleTool message body is the
 // inlined preview text + a positional `artifact_fetch` footer —
 // NEVER the wrapper JSON. No wrapper terminology leaks into the
 // LLM-facing body.
@@ -1117,8 +1117,8 @@ func TestRenderNativeObservation_ArtifactStubInlinesPreview(t *testing.T) {
 	t.Parallel()
 
 	// Sub-test 1: the runtime tool-executor's map shape. This is what
-	// `cmd/harbor/cmd_dev_executor.go::heavyTruncationSummary`
-	// returns. The renderer MUST inline `preview` as the body.
+	// `internal/runtime/dispatch.HeavyTruncationSummary` returns
+	// (Phase 110a). The renderer MUST inline `preview` as the body.
 	t.Run("executor_map_shape", func(t *testing.T) {
 		t.Parallel()
 		rc := planner.RunContext{
@@ -1344,7 +1344,7 @@ func TestRenderNativeStepPair_EmptyObservationEmitsPlaceholderToolMsg(t *testing
 }
 
 // TestRenderHeavyContentMap_FieldAwarePreviewSurfacesRef asserts
-// that when the executor's heavyTruncationSummary lands with a
+// that when the executor's HeavyTruncationSummary lands with a
 // field-aware preview (well-formed JSON containing `[omitted: N
 // bytes]` sentinels) AND an artifact_ref, the renderer surfaces
 // BOTH the preview body AND the artifact_fetch ref. Without the

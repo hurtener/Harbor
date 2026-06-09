@@ -100,6 +100,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
+	"github.com/hurtener/Harbor/internal/runtime/dispatch"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/notifications"
@@ -856,8 +857,15 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Phase 83i (D-152): tool dispatch + Catalog projection +
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
-		catalog:         toolCat,
-		executor:        newDevToolExecutor(toolCat, artStore, taskReg, cfg.Artifacts.HeavyOutputThresholdBytes, cfg.Planner.SpawnDepthCap(), opts.logger),
+		catalog: toolCat,
+		// Phase 110a (D-194): the executor is the promoted
+		// `internal/runtime/dispatch` concrete — cmd/harbor is a thin
+		// caller of the same constructor devstack (and any headless
+		// embedder) wires.
+		executor: dispatch.NewToolExecutor(toolCat, artStore, taskReg,
+			dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
+			dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
+			dispatch.WithLogger(opts.logger)),
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
 		// Phase 83m (Item 6, D-156): operator-declared granted scopes
 		// flow into the per-run catalog view's CatalogFilter, closing
@@ -867,7 +875,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Round-7 F11 / D-166: multimodal materializer reads bytes /
 		// metadata from the artifact store when a task's
 		// InputArtifactIDs is non-empty. The same `artStore` the
-		// devToolExecutor already consumes is reused — there is one
+		// dispatch executor already consumes is reused — there is one
 		// canonical ArtifactStore per dev stack.
 		artifactStore: artStore,
 	})
