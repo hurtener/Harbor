@@ -49,9 +49,16 @@ import (
 //	}
 //	Retire the Inbox  -- always, even on error
 //
-// The drain happens exactly ONCE per step boundary — never mid-tool-call
-// (brief 02 §6). The planner observes the result via RunContext.Control;
-// it never touches the Inbox (brief 02 §5 sharp-edge #2).
+// The full applyEvent treatment happens exactly ONCE per step boundary.
+// While a decision execution is in flight the loop ALSO drains the
+// inbox (D-192), but consumes ONLY approval-bridge-eligible APPROVE /
+// REJECT controls there (the D-097 gate bridge — without the mid-step
+// drain an approval-gated tool deadlocks the run: RunGuarded parks
+// until ResolveApproval, whose only production caller is this loop's
+// drain). Every other control drained mid-step is deferred verbatim to
+// the next boundary, preserving brief 02 §6's step-boundary semantics.
+// The planner observes the result via RunContext.Control; it never
+// touches the Inbox (brief 02 §5 sharp-edge #2).
 //
 // # Concurrent reuse (D-025)
 //
@@ -155,7 +162,11 @@ func WithMaxControlHistory(n int) RunLoopOption {
 // OAuth-pause APPROVE), the apply path falls back to the direct
 // `Coordinator.Resume`. A nil / empty map disables the bridge — the
 // loop behaves exactly as before D-097 (direct Resume only). See
-// `applier.advancePause` for the routing.
+// `applier.advancePause` for the step-boundary routing and
+// `applier.routeApprovalControl` + `RunLoop.dispatchDecision` for the
+// mid-step routing that fires while a decision execution is in flight
+// (D-192 — the path a planner-dispatched approval-gated tool resumes
+// through).
 //
 // Coupling note (acceptable; D-097): `internal/runtime/steering`
 // imports `internal/tools/approval` for the gate type. Both packages
@@ -360,6 +371,15 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 	// goroutine's stack, never on the RunLoop struct (D-025).
 	var outstandingToken pauseresume.Token
 
+	// carryEvents holds control events drained mid-step (while a
+	// decision execution was in flight — D-192) that were NOT
+	// approval-bridge-eligible. They keep their step-boundary
+	// semantics: the next boundary merges them ahead of the fresh
+	// drain (FIFO preserved — they arrived first) and applies them
+	// exactly once. Per-run loop state on this goroutine's stack,
+	// never on the RunLoop struct (D-025).
+	var carryEvents []ControlEvent
+
 	for step := range maxSteps {
 		if err := ctx.Err(); err != nil {
 			return planner.Finish{}, fmt.Errorf("steering: run cancelled at step boundary: %w", err)
@@ -377,10 +397,20 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			}
 		}
 
-		// --- DRAIN: once per step boundary, never mid-tool-call. ---
+		// --- DRAIN: the step boundary. The full applyEvent treatment
+		// happens here for every control type. (D-192 carve-out: while
+		// a decision execution is in flight, dispatchDecision keeps
+		// draining and consumes approval-bridge-eligible APPROVE /
+		// REJECT controls mid-step; everything else it drained rides
+		// in carryEvents and is applied at THIS boundary, exactly
+		// once.) ---
 		drained, derr := inbox.Drain()
 		if derr != nil {
 			return planner.Finish{}, fmt.Errorf("steering: draining run inbox: %w", derr)
+		}
+		if len(carryEvents) > 0 {
+			drained = append(carryEvents, drained...)
+			carryEvents = nil
 		}
 
 		// --- APPLY: each drained control event's side effect. ---
@@ -599,7 +629,29 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// are §13-forbidden silent degradation).
 			var observation, llmObservation any
 			if spec.ToolExecutor != nil {
-				obs, llmObs, execErr := spec.ToolExecutor.ExecuteDecision(runCtx, rc, decision)
+				// D-192: dispatch on a per-step goroutine and keep
+				// draining the inbox while the execution is in flight,
+				// routing ONLY approval-bridge-eligible APPROVE /
+				// REJECT controls (the D-097 gate bridge) mid-step. A
+				// synchronous dispatch here deadlocked approval-gated
+				// tools: the gate's RunGuarded parked until
+				// ResolveApproval, whose only production caller is
+				// this loop's own drain. Every other control type
+				// keeps its step-boundary semantics — dispatchDecision
+				// returns them as `deferred` and the next boundary
+				// applies them exactly once. The per-step goroutine is
+				// joined before dispatchDecision returns; run-ctx
+				// cancellation still aborts an in-flight gated
+				// decision (the step ctx is a child of runCtx).
+				out, deferred, bridgeErr := rl.dispatchDecision(runCtx, q, inbox, spec.ToolExecutor, rc, decision)
+				carryEvents = deferred
+				if bridgeErr != nil {
+					// A mid-step gate-bridge failure is the same
+					// fail-loud shape as a step-boundary apply
+					// failure — surface it verbatim.
+					return planner.Finish{}, bridgeErr
+				}
+				obs, llmObs, execErr := out.observation, out.llmObservation, out.err
 				if execErr != nil {
 					// Fail-loud per CLAUDE.md §5 / §13: the executor's
 					// own error path (catalog lookup failed, tool Invoke

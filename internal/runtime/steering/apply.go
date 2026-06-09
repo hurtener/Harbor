@@ -313,6 +313,46 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 	return nil
 }
 
+// routeApprovalControl is the D-192 mid-step entry into the D-097
+// steering→gate bridge. While a decision execution is in flight on the
+// per-step goroutine (see RunLoop.dispatchDecision), the run loop keeps
+// draining the inbox and hands EVERY drained event here. The method
+// routes ONLY approval-bridge-eligible controls — an APPROVE / REJECT
+// whose wire payload carries a gate-minted `token` that one of the
+// configured gates owns. Everything else keeps its step-boundary
+// semantics (the caller defers it to the next boundary's applyEvent).
+//
+// Returns:
+//
+//   - (true, nil) — an owning gate consumed the control: its
+//     `ResolveApproval` ran (Coordinator.Resume + the RunGuarded
+//     waiter's resolve channel). The event is CONSUMED — the caller
+//     MUST NOT re-apply it at the next step boundary.
+//   - (false, nil) — the control is not bridge-eligible mid-step (not
+//     an APPROVE / REJECT, no gates wired, no wire `token`, or no
+//     gate owns the token). The caller defers the event verbatim.
+//   - (false, err) — a gate returned a substantive error (scope
+//     mismatch, gate closed, coordinator error). Loud — same posture
+//     as a step-boundary apply failure.
+//
+// The bridge logic itself (scope elevation, gate iteration, the
+// ResolveApproval call) lives in routeThroughGate — ONE implementation
+// shared with the step-boundary path in advancePause (D-097; the D-192
+// requirement that the bridge is never duplicated).
+func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bool, error) {
+	if ev.Type != ControlApprove && ev.Type != ControlReject {
+		return false, nil
+	}
+	if len(a.gates) == 0 {
+		return false, nil
+	}
+	wireToken, ok := wireGateTokenFromPayload(ev.Payload)
+	if !ok {
+		return false, nil
+	}
+	return a.routeThroughGate(ctx, ev, wireToken)
+}
+
 // routeThroughGate is the D-097 steering→gate bridge. It iterates the
 // configured gates and tries `gate.ResolveApproval(ctx, token, ...)`
 // on each; the first gate that does not return `ErrApprovalNotFound`
