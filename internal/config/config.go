@@ -297,18 +297,17 @@ type LLMCostOverridesConfig struct {
 // `IdentityTiers` (Phase 36a + 36b). Hot-reload is not yet wired;
 // every field is restart-required.
 //
-// **Enforcement is NOT yet wired** (SDK friction audit,
-// docs/notes/sdk-friction-audit.md §1): no production path calls
-// `governance.SetFactory`, so a populated `IdentityTiers` map
-// currently drives ONLY the read-only `governance.posture` Protocol
-// surface — no request is throttled, budgeted, or token-capped. Both
-// reference assemblies emit a boot-time slog warning when
-// `IdentityTiers` is non-empty so the gap is visible. Enforcement
-// wiring is tracked as Wave C follow-up work in the audit doc.
+// **Enforcement is wired** (Phase 111a, D-198): a populated
+// `IdentityTiers` map is composed into the enforcement Subsystem
+// (MaxTokens → rate limit → cost ceiling) by the production assembly
+// (`assemble.Assemble` → `governance.SetFactory` → the `llm.Open`
+// wrapper chain) — requests ARE throttled, budgeted, and token-capped,
+// and the same map also drives the read-only `governance.posture`
+// Protocol surface.
 //
-// **Latent default (Wave 7b scoping):** an empty `IdentityTiers` map +
-// empty `DefaultTier` keeps the surface fully latent. Populating
-// `IdentityTiers` today changes posture display only (see above).
+// **Latent default (Wave 7b scoping, D-044):** an empty `IdentityTiers`
+// map + empty `DefaultTier` keeps the surface fully latent — no
+// enforcement, no wrapper in the LLM chain.
 //
 // **Removed in D-081 (chore/governance-config-consolidation):** the
 // pre-Phase-36a single-knob fields `default_max_tokens`,
@@ -330,11 +329,11 @@ type GovernanceConfig struct {
 	DefaultTier string `yaml:"default_tier,omitempty"`
 
 	// IdentityTiers maps tier name to its policy bundle. Empty is the
-	// latent default. NOTE: populated tiers currently feed ONLY the
-	// read-only posture surface — enforcement is not yet wired (see
-	// the type godoc above). Each entry's fields are independently
-	// declared — `budget_ceiling_usd` for cost ceilings, plus
-	// rate-limit + MaxTokens fields.
+	// latent default (no enforcement, D-044); populated tiers are
+	// enforced at the LLM edge AND projected on the read-only posture
+	// surface (see the type godoc above). Each entry's fields are
+	// independently declared — `budget_ceiling_usd` for cost ceilings,
+	// plus rate-limit + MaxTokens fields.
 	IdentityTiers map[string]GovernanceTierConfig `yaml:"identity_tiers,omitempty"`
 }
 

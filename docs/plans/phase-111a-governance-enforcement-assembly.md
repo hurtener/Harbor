@@ -193,7 +193,11 @@ gets a two-level answer:
   110d assembly site — D-197; cmd + devstack inherit it as thin callers).
 - `cmd/harbor/cmd_dev.go` — posture provider keeps its existing wiring;
   duplicate config projection deleted (110c convergence).
-- `internal/config/validate.go` — remove the Wave A posture-only warning.
+- `internal/runtime/assemble/assemble.go` — remove the Wave A
+  posture-only warning. (§4.3 correction at implementation time: the
+  warning landed in the shared assembly — one home post-110d — not in
+  `internal/config/validate.go`; `validateGovernance` never carried a
+  warning, so there is nothing to remove there.)
 - `test/integration/phase111a_governance_test.go` — the three-enforcer E2E +
   cross-session isolation.
 - `docs/recipes/run-harbor-dev.md` (or the recipe the implementor judges

@@ -54,6 +54,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
+	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
@@ -272,6 +273,36 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.Artifacts = artStore
 	stack.closers = append(stack.closers, artStore.Close)
 
+	// ── Phase 111a (D-198): governance enforcement assembly ─────────
+	// Populated `governance.identity_tiers` ENFORCE: the Subsystem
+	// (MaxTokens → RateLimiter → CostAccumulator) is built EAGERLY here
+	// — a construction failure fails the boot loud (§13) — and
+	// installed via governance.SetFactory BEFORE llm.Open composes the
+	// wrapper chain, so PreCall gates every Complete on the assembled
+	// client. Empty tiers CLEAR the factory: the latent default (D-044)
+	// must hold for THIS stack even when an earlier stack in the same
+	// process installed a factory. The seam is process-global (second
+	// SetFactory wins) — the binary assembles exactly one stack;
+	// multi-runtime embedders compose governance.Wrap per stack instead
+	// (see governance.SetFactory's godoc).
+	if len(cfg.Governance.IdentityTiers) > 0 {
+		govSub, govErr := governance.NewSubsystemFromConfig(
+			governance.ConfigFromOperator(cfg.Governance), stateStore, bus)
+		if govErr != nil {
+			return stack, fmt.Errorf("governance: %w", govErr)
+		}
+		governance.SetFactory(func(llm.ConfigSnapshot, llm.Deps) (governance.Subsystem, error) {
+			return govSub, nil
+		})
+		stack.closers = append(stack.closers, func(context.Context) error {
+			governance.ClearFactory()
+			return nil
+		})
+	} else {
+		governance.ClearFactory()
+	}
+	// ── end Phase 111a governance band ───────────────────────────────
+
 	// LLM — opened when the cfg names a driver (or the caller pinned a
 	// snapshot). Fail-loud LLM *requirement* policy is the binary's
 	// concern (`harbor dev` validates before assembling); a headless
@@ -394,17 +425,6 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		if err := assembleSteeringBand(ctx, cfg, opts, stack); err != nil {
 			return stack, err
 		}
-	}
-
-	// SDK friction audit §1: populated `governance.identity_tiers`
-	// feeds ONLY the read-only posture surface — enforcement wiring has
-	// no production caller yet. Warn loudly so an operator who
-	// configured ceilings knows nothing is enforced (§13 — no silent
-	// degradation). Enforcement is tracked as Wave C follow-up work.
-	if len(cfg.Governance.IdentityTiers) > 0 {
-		logger.Warn("governance: identity_tiers configured but enforcement is NOT yet wired — tiers drive the read-only posture surface only",
-			"tiers", len(cfg.Governance.IdentityTiers),
-			"see", "docs/notes/sdk-friction-audit.md")
 	}
 
 	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —

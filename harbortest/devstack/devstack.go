@@ -718,8 +718,9 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		// Phase 72f / 72g (D-111 / D-112): mirror `bootDevStack` — wire
 		// the single posture surface so all seven posture methods route
-		// through it. The governance identity-tiers honesty warning is
-		// emitted by the shared assembly (Phase 110d, D-197).
+		// through it. Governance identity-tier ENFORCEMENT is wired by
+		// the shared assembly (Phase 111a, D-198); the posture provider
+		// below is the read-only projection of the same config.
 		postureSurface, postErr := protocol.NewPostureSurface(protocol.PostureDeps{
 			Build: types.RuntimeInfo{
 				BuildVersion:   "devstack",

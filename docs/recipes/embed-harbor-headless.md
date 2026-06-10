@@ -175,6 +175,40 @@ order and is idempotent. After Close returns, the stack's goroutines
 drained — the integration test asserts the goroutine baseline is
 restored.
 
+## Enforce governance headless
+
+Two paths, depending on how many stacks your process runs:
+
+- **One stack (the common case)**: just populate
+  `cfg.Governance.DefaultTier` + `cfg.Governance.IdentityTiers` before
+  calling `assemble.Assemble` — the assembly builds the enforcement
+  subsystem (MaxTokens → rate limit → cost ceiling) and installs it via
+  `governance.SetFactory` before `llm.Open` composes the wrapper chain.
+  Configured tiers then reject with `governance.ErrBudgetExceeded` /
+  `ErrRateLimited` / `ErrMaxTokensExceeded` and emit the matching
+  `governance.*` events on `stack.Bus`. Empty tiers stay fully latent
+  (D-044).
+- **N stacks with different tier maps**: `SetFactory` is process-global
+  (the second caller wins — see its godoc), so skip it and compose per
+  stack instead:
+
+```go
+sub, err := governance.NewSubsystemFromConfig(
+    governance.ConfigFromOperator(cfg.Governance), // or a hand-built governance.Config
+    stack.State, stack.Bus)
+if err != nil {
+    return err // fail-loud: tiers without store/bus are a misconfig
+}
+if sub != nil { // nil = empty tiers = the sanctioned latent default
+    client = governance.Wrap(client, sub) // governance stays outermost (D-043)
+}
+```
+
+`NewSubsystemFromConfig` + `governance.Wrap` are the documented
+multi-runtime path (Phase 111a, D-198): no process-global state, one
+Subsystem per stack, accumulator state persisted in that stack's
+StateStore.
+
 ## Variations
 
 - **Observe events**: subscribe before running —

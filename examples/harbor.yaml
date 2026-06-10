@@ -162,17 +162,17 @@ governance:
 
   # Phase 36a + 36b — identity tier policy declarations.
   #
-  # **ENFORCEMENT NOT YET WIRED** (SDK friction audit,
-  # docs/notes/sdk-friction-audit.md §1): a populated
-  # `identity_tiers` block currently drives ONLY the read-only
-  # `governance.posture` Protocol surface — no cost ceiling fires,
-  # no rate limit drains, no MaxTokens cap rejects, regardless of
-  # what you declare here. The runtime warns at boot when tiers are
-  # configured so the gap is visible. Enforcement wiring is tracked
-  # as Wave C follow-up work in the audit doc.
+  # **ENFORCED** (Phase 111a, D-198): a populated `identity_tiers`
+  # block composes the enforcement subsystem at boot — cost ceilings
+  # fire (`ErrBudgetExceeded` + `governance.budget_exceeded`), rate
+  # limits drain (`ErrRateLimited` + `governance.rate_limited`), and
+  # MaxTokens caps reject (`ErrMaxTokensExceeded` +
+  # `governance.maxtokens_exceeded`). The same block also drives the
+  # read-only `governance.posture` Protocol surface.
   #
-  # **LATENT DEFAULT.** With the `identity_tiers` block omitted (or
-  # `default_tier` empty), the surface is fully latent.
+  # **LATENT DEFAULT (D-044).** With the `identity_tiers` block
+  # omitted (or `default_tier` empty), the surface is fully latent —
+  # no enforcement, no governance wrapper in the LLM chain.
   #
   # **Removed in D-081.** The pre-Phase-36a single-knob fields
   # `default_max_tokens`, `cost_ceiling_usd`, and `rate_limit_tps`

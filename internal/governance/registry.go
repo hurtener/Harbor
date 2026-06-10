@@ -12,13 +12,16 @@
 // tests). Phase 36a's accumulator is a long-lived sibling of the
 // LLMClient — operators build one per Open and dispose with the client.
 //
-// The factory is set ONCE per process by the runtime bootstrap. If unset
-// when `llm.Open` runs, the governance hook is a no-op pass-through —
-// preserving the latent default for callers (especially test code) that
-// don't wire governance explicitly.
+// The factory is installed by the production assembly
+// (`internal/runtime/assemble.Assemble`, Phase 111a / D-198) whenever
+// the operator config declares identity tiers, and cleared when it
+// declares none. If unset when `llm.Open` runs, the governance hook is
+// a no-op pass-through — preserving the latent default (D-044) for
+// callers (especially test code) that don't wire governance explicitly.
 package governance
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/hurtener/Harbor/internal/llm"
@@ -37,9 +40,23 @@ var (
 type Factory func(cfg llm.ConfigSnapshot, deps llm.Deps) (Subsystem, error)
 
 // SetFactory installs the per-`llm.Open` factory. Calling SetFactory
-// twice is allowed (the second call wins) — Phase 36a's bootstrap path
-// typically calls this once at process start; tests may swap it
-// repeatedly. Concurrent-safe.
+// twice is allowed (the second call wins) — the production assembly
+// (`assemble.Assemble`, the seam's first production caller per Phase
+// 111a / D-198) calls this once at boot when `Config.IdentityTiers` is
+// non-empty; tests may swap it repeatedly. Concurrent-safe.
+//
+// Multi-runtime limitation (D-198): the factory is PROCESS-GLOBAL. An
+// embedder assembling two runtime stacks with different tier maps in
+// one process would collide here — the second SetFactory wins for
+// every subsequent `llm.Open`. The binary assembles exactly one stack,
+// so the zero-ceremony seam stays; multi-runtime embedders skip
+// SetFactory entirely and compose per stack instead:
+//
+//	sub, err := governance.NewSubsystemFromConfig(cfg, store, bus)
+//	client = governance.Wrap(llmClient, sub) // governance outermost, D-043
+//
+// See `Wrap` and `NewSubsystemFromConfig` for the documented headless
+// path.
 func SetFactory(f Factory) {
 	factoryMu.Lock()
 	defer factoryMu.Unlock()
@@ -69,11 +86,19 @@ func init() {
 			return inner
 		}
 		sub, err := f(cfg, deps)
-		if err != nil || sub == nil {
-			// Construction failure is operator-visible at the factory
-			// site; Open's registry path should never see a nil
-			// factory. We fall back to pass-through rather than fail
-			// the entire LLM client open — Wave 7b ships LATENT.
+		if err != nil {
+			// In production this branch is unreachable: the assembly
+			// builds the Subsystem EAGERLY at boot via
+			// NewSubsystemFromConfig (a construction failure fails the
+			// boot loud, §13) and hands the already-built Subsystem to
+			// the factory closure. Only a test-installed factory can
+			// error here; warn loudly rather than degrade silently.
+			slog.Warn("governance: factory error — composing LLM client WITHOUT enforcement",
+				slog.String("error", err.Error()))
+			return inner
+		}
+		if sub == nil {
+			// nil Subsystem = the sanctioned latent default (D-044).
 			return inner
 		}
 		return Wrap(inner, sub)

@@ -256,11 +256,14 @@ identities). Validation: when set, MUST reference a key in
 ### governance.identity_tiers
 
 Per-tier policy bundle (cost ceiling, rate-limit token bucket,
-max-tokens cap). Default: empty (latent). **Enforcement is not yet
-wired** — populated tiers currently feed only the read-only
-`governance.posture` surface, and the runtime warns at boot when
-tiers are configured (see `docs/notes/sdk-friction-audit.md` §1).
-See `GovernanceTierConfig` godoc for the full surface.
+max-tokens cap). Default: empty (latent — no enforcement, D-044).
+**Populated tiers are enforced** (Phase 111a, D-198): the runtime
+composes the enforcement subsystem at boot, so the cost ceiling
+fails calls with `ErrBudgetExceeded`, the token bucket with
+`ErrRateLimited`, and the per-call cap with `ErrMaxTokensExceeded`
+(each with a matching `governance.*` event). The same tiers also
+feed the read-only `governance.posture` surface. See
+`GovernanceTierConfig` godoc for the full surface.
 
 ---
 

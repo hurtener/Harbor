@@ -444,3 +444,79 @@ func (s *concurrentStubClient) Complete(_ context.Context, _ llm.CompleteRequest
 }
 
 func (s *concurrentStubClient) Close(_ context.Context) error { return nil }
+
+// TestErrIs_BranchesOnSentinels covers the exported ErrIs helper: nil
+// errors are never a match; wrapped sentinels are.
+func TestErrIs_BranchesOnSentinels(t *testing.T) {
+	t.Parallel()
+	if governance.ErrIs(nil, governance.ErrBudgetExceeded) {
+		t.Errorf("ErrIs(nil, ...) must be false")
+	}
+	wrapped := fmt.Errorf("outer: %w", governance.ErrRateLimited)
+	if !governance.ErrIs(wrapped, governance.ErrRateLimited) {
+		t.Errorf("ErrIs(wrapped, ErrRateLimited) must be true")
+	}
+	if governance.ErrIs(wrapped, governance.ErrBudgetExceeded) {
+		t.Errorf("ErrIs must not match a different sentinel")
+	}
+}
+
+// TestRateLimitConfig_IsZero covers the zero-vs-configured classifier.
+func TestRateLimitConfig_IsZero(t *testing.T) {
+	t.Parallel()
+	if !(governance.RateLimitConfig{}).IsZero() {
+		t.Errorf("zero RateLimitConfig must report IsZero")
+	}
+	if (governance.RateLimitConfig{Capacity: 1}).IsZero() {
+		t.Errorf("configured RateLimitConfig must not report IsZero")
+	}
+}
+
+// TestWrap_PanicsOnNilArgs — nil inner / nil Subsystem are construction
+// bugs surfaced at the most actionable site (impossible-by-construction
+// panic per the Wrap godoc).
+func TestWrap_PanicsOnNilArgs(t *testing.T) {
+	t.Parallel()
+	mustPanic := func(name string, fn func()) {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: expected panic", name)
+			}
+		}()
+		fn()
+	}
+	mustPanic("nil inner", func() { _ = governance.Wrap(nil, &fakeSub{}) })
+	mustPanic("nil sub", func() { _ = governance.Wrap(&stubClient{}, nil) })
+}
+
+// TestSubsystem_TripleOnlyIdentity_Permits covers the ctx path where
+// only the identity TRIPLE (no run) is attached — the quadruple
+// fallback (empty RunID) must serve enforcement keying.
+func TestSubsystem_TripleOnlyIdentity_Permits(t *testing.T) {
+	t.Parallel()
+	bus, st, cleanup := busAndState(t)
+	defer cleanup()
+	sub, err := governance.NewSubsystemFromConfig(governance.Config{
+		DefaultTier:   "t",
+		IdentityTiers: map[string]governance.TierConfig{"t": {BudgetCeilingUSD: 1}},
+	}, st, bus)
+	if err != nil {
+		t.Fatalf("NewSubsystemFromConfig: %v", err)
+	}
+	ctx, err := identity.With(context.Background(), identity.Identity{
+		TenantID: "T", UserID: "U", SessionID: "S-triple",
+	})
+	if err != nil {
+		t.Fatalf("identity.With: %v", err)
+	}
+	if err := sub.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
+		t.Errorf("triple-only identity must permit under-budget calls: %v", err)
+	}
+	if err := sub.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+		llm.CompleteResponse{Cost: llm.Cost{TotalCost: 2}}, nil); err != nil {
+		t.Fatalf("PostCall: %v", err)
+	}
+	if err := sub.PreCall(ctx, llm.CompleteRequest{Model: "m"}); !errors.Is(err, governance.ErrBudgetExceeded) {
+		t.Errorf("triple-only identity over budget: got %v, want ErrBudgetExceeded", err)
+	}
+}

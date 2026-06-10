@@ -242,3 +242,37 @@ drain:
 		t.Errorf("goroutine leak after N=%d concurrent PreCalls: %d above baseline", n, leak)
 	}
 }
+
+// TestMaxTokensEnforcer_Close_FailsLoud — a closed enforcer rejects
+// subsequent PreCalls with ErrClosed (no silent permit, CLAUDE.md §13).
+func TestMaxTokensEnforcer_Close_FailsLoud(t *testing.T) {
+	t.Parallel()
+	bus, _, cleanup := busAndState(t)
+	defer cleanup()
+
+	enf := governance.NewMaxTokensEnforcer(bus, governance.Config{
+		DefaultTier:   "t",
+		IdentityTiers: map[string]governance.TierConfig{"t": {MaxTokens: 10}},
+	})
+	if err := enf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	over := 100
+	err := enf.PreCall(ctxWith(t, "T", "U", "S", "R"), llm.CompleteRequest{Model: "m", MaxTokens: &over})
+	if !errors.Is(err, governance.ErrClosed) {
+		t.Errorf("PreCall after Close: got %v, want ErrClosed", err)
+	}
+}
+
+// TestNewMaxTokensEnforcer_NilBus_Panics — the bus is mandatory for the
+// rejection-event emit; construction without it is impossible by
+// construction (panic, not silent latency).
+func TestNewMaxTokensEnforcer_NilBus_Panics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("NewMaxTokensEnforcer(nil bus) must panic")
+		}
+	}()
+	_ = governance.NewMaxTokensEnforcer(nil, governance.Config{})
+}
