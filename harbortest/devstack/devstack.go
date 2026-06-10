@@ -96,18 +96,21 @@ import (
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
+
+	// Production driver aggregator (Phase 110c, D-196) — the single
+	// sanctioned home of the driver blank-import block (§4.4).
+	// Imported by the kit itself (not left to each test file) so a
+	// devstack-assembled stack resolves the SAME driver factories and
+	// composes the SAME LLM wrapper chain
+	// (corrections/downgrade/retry/governance) as production
+	// `cmd/harbor/main.go` (SDK friction audit §7: the kit previously
+	// hand-curated a partial list and composed the client without the
+	// wrappers — invisible under the mock driver, divergent against
+	// live providers). The dev-only mock LLM driver is NOT in the set;
+	// tests that need it blank-import `internal/llm/mock` themselves.
+	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-
-	// LLM wrapper hooks — corrections / output-downgrade / retry.
-	// Blank-imported by the kit itself (not left to each test file)
-	// so a devstack-assembled LLM client composes the SAME wrapper
-	// chain as production `cmd/harbor/main.go` (SDK friction audit §7:
-	// the kit previously composed the client without these, invisible
-	// under the mock driver, divergent against live providers).
-	_ "github.com/hurtener/Harbor/internal/llm/corrections"
-	_ "github.com/hurtener/Harbor/internal/llm/output"
-	_ "github.com/hurtener/Harbor/internal/llm/retry"
 	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -128,7 +131,6 @@ import (
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
-	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver for tests that open one
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
@@ -262,20 +264,23 @@ type AssembleOpts struct {
 	}
 
 	// Phase 83f (D-149) — mirror the production cmd_dev.go
-	// per-run consumer wiring. The four fields are optional; nil /
-	// zero leaves the planner's matching wrapper omitted (matching
-	// production's behaviour when an operator did not configure the
-	// underlying subsystem).
+	// per-run consumer wiring. The four fields are optional
+	// OVERRIDES: a set field wins; an unset field falls back to what
+	// the cfg implies, exactly like production (Phase 110c, D-196 —
+	// the fallbacks consume the same exported projections cmd does).
 	//
 	// `MemoryStore` is the store the per-task driver calls
-	// `GetLLMContext(ctx, q)` against — the test passes a real
-	// inmem store keyed to the run's identity.
+	// `GetLLMContext(ctx, q)` against. Nil falls back to the
+	// cfg-opened `DevStack.Memory` (nil when `memory.driver` unset).
 	// `SkillStore` is the store the driver calls `Search(ctx, q, query, cap)`
-	// against — the test passes a real localdb store.
-	// `SkillsContextMax` caps the Search result count; zero resolves
-	// to the package default (5).
+	// against. Nil falls back to the cfg-opened store when
+	// `skills.driver` is set (via `skills.SnapshotFromConfig`).
+	// `SkillsContextMax` caps the Search result count; zero falls
+	// back to `cfg.Planner.SkillsContextMaxResolved()` (default 5,
+	// single-sourced at `config.DefaultSkillsContextMax`).
 	// `PlanningHints`, when non-nil, projects directly onto
-	// `RunContext.PlanningHints` for every run the driver spawns.
+	// `RunContext.PlanningHints` for every run the driver spawns;
+	// nil falls back to `planner.HintsFromConfig(cfg.Planner.PlanningHints)`.
 	MemoryStore      memory.MemoryStore
 	SkillStore       skills.SkillStore
 	SkillsContextMax int
@@ -335,6 +340,12 @@ type DevStack struct {
 	Tasks     tasks.TaskRegistry
 	LLMClient llm.LLMClient
 	Memory    memory.MemoryStore
+
+	// Skills is non-nil when the cfg declared `skills.driver` (opened
+	// via `skills.SnapshotFromConfig`, mirroring production cmd_dev —
+	// Phase 110c, D-196) or when the caller passed
+	// `AssembleOpts.SkillStore` (which always wins).
+	Skills skills.SkillStore
 
 	// Steering / Surface are nil when SkipSteering is set.
 	Steering *steering.Registry
@@ -436,25 +447,19 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 //
 // # Required blank imports
 //
-// Assemble does NOT itself blank-import driver packages — that would
-// surface in production binaries that vendor harbortest. Each test
-// file MUST include the driver imports it needs, e.g.:
+// None for the production set (Phase 110c, D-196): devstack imports
+// the `internal/drivers/prod` aggregator itself, so every production
+// driver factory AND the full LLM wrapper chain (corrections /
+// downgrade / retry / governance) are seated by construction — the
+// same registrations `cmd/harbor/main.go` boots with. The hand-curated
+// per-test import list (and the drift it invited — SDK friction audit
+// §7) is gone. The ONE driver outside the set is the dev-only mock
+// LLM; a test that flips the snapshot to `driver: mock` still adds:
 //
-//	import (
-//	    _ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
-//	    _ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
-//	    _ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
-//	    _ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
-//	    _ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-//	    _ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
-//	    _ "github.com/hurtener/Harbor/internal/llm/mock"
-//	)
+//	import _ "github.com/hurtener/Harbor/internal/llm/mock"
 //
-// The LLM *wrapper hooks* (corrections / output-downgrade / retry /
-// governance) are NOT on that list: devstack imports them itself so
-// the assembled `llm.Open` chain matches the production
-// `cmd/harbor/main.go` composition. Tests do not opt in to the
-// production wrapper chain — they get it by construction.
+// (existing per-test driver blank imports remain harmless — Go runs a
+// package init exactly once regardless of how many importers).
 //
 // The helper opens the audit redactor by direct construction (the
 // patterns driver is the only V1 redactor; the seam is documented
@@ -595,26 +600,12 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		if opts.LLMConfigSnapshot != nil {
 			llmCfg = *opts.LLMConfigSnapshot
 		} else {
-			llmCfg = llm.ConfigSnapshot{
-				Driver:               cfg.LLM.Driver,
-				Provider:             cfg.LLM.Provider,
-				Model:                cfg.LLM.Model,
-				APIKey:               cfg.LLM.APIKey,
-				BaseURL:              cfg.LLM.BaseURL,
-				Timeout:              cfg.LLM.Timeout,
-				ContextWindowReserve: cfg.LLM.ContextWindowReserve,
-				HeavyOutputThreshold: cfg.Artifacts.HeavyOutputThresholdBytes,
-				ModelProfiles:        copyModelProfiles(cfg.LLM.ModelProfiles),
-				// Phase 83l / D-155 — D-094 mirror of the production
-				// bug fix in `cmd/harbor/cmd_dev.go::bootDevStack`. The
-				// snapshot construction was previously missing these
-				// three fields; without them an operator-declared
-				// custom provider was silently dropped + the corrections
-				// layer ran with stale defaults.
-				CustomProviders:    copyCustomProviders(cfg.LLM.CustomProviders),
-				NetworkDefaults:    copyNetworkDefaults(cfg.LLM.NetworkDefaults),
-				DisableCorrections: disableCorrectionsFromConfig(cfg.LLM.Corrections),
-			}
+			// The SAME exported projection production calls (Phase
+			// 110c, D-196) — the hand-maintained mirror copies of the
+			// copy* helpers are gone, so this seam can no longer drift
+			// from `cmd/harbor/cmd_dev.go::bootDevStack` (the D-155 /
+			// audit-B3 silent-field-drop class).
+			llmCfg = llm.SnapshotFromConfig(cfg.LLM, cfg.Artifacts)
 		}
 		llmPostureCfg = llmCfg
 		llmClient, llmErr := llm.Open(context.Background(), llmCfg, llm.Deps{
@@ -635,13 +626,9 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	// the Summarizer defaults to the configured LLM (no special-case,
 	// no stub); strategy=none / truncation pass a nil Summarizer.
 	if cfg.Memory.Driver != "" {
-		memCfg := memory.ConfigSnapshot{
-			Driver:             cfg.Memory.Driver,
-			DSN:                cfg.Memory.DSN,
-			Strategy:           memory.Strategy(cfg.Memory.Strategy),
-			BudgetTokens:       cfg.Memory.BudgetTokens,
-			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
-		}
+		// Exported projection per Phase 110c (D-196) — the same
+		// config→snapshot mapping production calls.
+		memCfg := memory.SnapshotFromConfig(cfg.Memory)
 		var summarizer memory.Summarizer
 		if cfg.Memory.Strategy == "rolling_summary" {
 			if stack.LLMClient == nil {
@@ -664,6 +651,21 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		stack.Memory = ms
 		stack.closeFns = append(stack.closeFns, ms.Close)
+	}
+
+	// Skills. Mirrors production `cmd/harbor/cmd_dev.go::bootDevStack`
+	// (Phase 110c, D-196): when the cfg declares `skills.driver`, the
+	// store opens via the SAME exported `skills.SnapshotFromConfig`
+	// projection production calls. An explicit `AssembleOpts.SkillStore`
+	// always wins (tests that pre-seed a store keep their fixture).
+	stack.Skills = opts.SkillStore
+	if stack.Skills == nil && cfg.Skills.Driver != "" {
+		ss, openErr := skills.Open(context.Background(), skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus})
+		if openErr != nil {
+			return stack, fmt.Errorf("skills.Open: %w", openErr)
+		}
+		stack.Skills = ss
+		stack.closeFns = append(stack.closeFns, ss.Close)
 	}
 
 	// Tasks.
@@ -723,7 +725,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// finding pinned for the pause.requested bus wiring).
 		if err := builtin.RegisterWith(builtin.RegistryContext{
 			Catalog:       cat,
-			SkillStore:    opts.SkillStore,
+			SkillStore:    stack.Skills,
 			ArtifactStore: artStore,
 		}, cfg.Tools.BuiltIn); err != nil {
 			return stack, fmt.Errorf("tools/builtin: %w", err)
@@ -855,7 +857,12 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			if opts.PlannerOverride != nil {
 				plnr = opts.PlannerOverride
 			} else {
-				plannerCfg := plannerConfigFromConfig(cfg.Planner)
+				// The SAME exported projection production calls (Phase
+				// 110c, D-196 — fixes the audit-B3 drift where this
+				// helper's local copy silently dropped ExtraGuidance /
+				// ReasoningReplay / MaxToolExamplesPerTool /
+				// ParallelToolCalls).
+				plannerCfg := planner.ConfigFromOperator(cfg.Planner)
 				resolved, plnrErr := planner.Resolve(context.Background(), plannerCfg,
 					planner.FactoryDeps{LLM: stack.LLMClient})
 				if plnrErr != nil {
@@ -899,10 +906,15 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// wiring. The fields are exposed via AssembleOpts so the
 				// per-83f integration test populates them with a real
 				// MemoryStore + SkillStore.
-				memory:           opts.MemoryStore,
-				skills:           opts.SkillStore,
-				skillsContextMax: opts.SkillsContextMax,
-				planningHints:    opts.PlanningHints,
+				// Phase 110c (D-196): explicit AssembleOpts overrides win;
+				// otherwise the cfg-opened stores + the SAME exported
+				// projections production uses fill the per-run consumer
+				// wiring (config.SkillsContextMaxResolved /
+				// planner.HintsFromConfig) — D-094 parity by construction.
+				memory:           resolveMemoryStore(opts, stack),
+				skills:           stack.Skills,
+				skillsContextMax: resolveSkillsContextMax(opts, cfg),
+				planningHints:    resolvePlanningHints(opts, cfg),
 				// Phase 83i (D-152): tool dispatch + Catalog + Trajectory.
 				catalog:         stack.Catalog,
 				executor:        devExecutor,
@@ -1052,7 +1064,7 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return runtimeposture.DriversFromConfig(cfg)
 			},
 			Metrics:     runtimeposture.MetricsProvider(metricsReg, slog.Default()),
-			Governance:  governance.NewPostureProvider(governanceConfigForDevstack(cfg.Governance)),
+			Governance:  governance.NewPostureProvider(governance.ConfigFromOperator(cfg.Governance)),
 			LLM:         llm.NewPostureProvider(llmPostureCfg),
 			Redactor:    stack.Audit,
 			Bus:         bus,
@@ -1308,37 +1320,37 @@ func signDevToken(priv *ecdsa.PrivateKey, tenant, user, session string) (string,
 	return tok.SignedString(priv)
 }
 
-// plannerConfigFromConfig mirrors `cmd/harbor/cmd_dev.go`'s
-// helper of the same name (D-094 source-of-truth invariant). Maps the
-// operator-facing `config.PlannerConfig` onto the registry-facing
-// `planner.PlannerConfig` boundary. D-103 (closes issue #126). Empty
-// Driver defaults to "react" — the V1 reference planner — so a config
-// that omits the planner block boots unchanged from the pre-D-103
-// hardcoded path.
-func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
-	driver := cfg.Driver
-	if driver == "" {
-		driver = "react"
+// resolveMemoryStore returns the per-task driver's MemoryStore: an
+// explicit AssembleOpts override wins; otherwise the cfg-opened store
+// (mirroring production, which threads its cfg-opened store — Phase
+// 110c, D-196).
+func resolveMemoryStore(opts AssembleOpts, stack *DevStack) memory.MemoryStore {
+	if opts.MemoryStore != nil {
+		return opts.MemoryStore
 	}
-	var extra map[string]string
-	if len(cfg.Extra) > 0 {
-		extra = make(map[string]string, len(cfg.Extra))
-		for k, v := range cfg.Extra {
-			extra[k] = v
-		}
+	return stack.Memory
+}
+
+// resolveSkillsContextMax returns the per-task driver's skills cap: an
+// explicit positive AssembleOpts override wins; otherwise the cfg's
+// resolved value (`config.SkillsContextMaxResolved`, single-sourced
+// default — Phase 110c, D-196).
+func resolveSkillsContextMax(opts AssembleOpts, cfg *config.Config) int {
+	if opts.SkillsContextMax > 0 {
+		return opts.SkillsContextMax
 	}
-	return planner.PlannerConfig{
-		Driver:                 driver,
-		MaxSteps:               cfg.MaxSteps,
-		ExtraGuidance:          cfg.ExtraGuidance,
-		ReasoningReplay:        planner.ReasoningReplayMode(cfg.ReasoningReplay),
-		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
-		// Phase 107d (D-169): pass the *bool through verbatim so the
-		// react factory distinguishes "unset" (nil → default true) from
-		// an explicit false (107c serialization opt-out).
-		ParallelToolCalls: cfg.ParallelToolCalls,
-		Extra:             extra,
+	return cfg.Planner.SkillsContextMaxResolved()
+}
+
+// resolvePlanningHints returns the per-task driver's planning hints:
+// an explicit AssembleOpts override wins; otherwise the cfg's YAML
+// block via the SAME exported projection production calls
+// (`planner.HintsFromConfig` — Phase 110c, D-196).
+func resolvePlanningHints(opts AssembleOpts, cfg *config.Config) *planner.PlanningHints {
+	if opts.PlanningHints != nil {
+		return opts.PlanningHints
 	}
+	return planner.HintsFromConfig(cfg.Planner.PlanningHints)
 }
 
 // DevStackRunLoopDriver mirrors `cmd/harbor`'s package-private
@@ -1415,8 +1427,6 @@ type devStackRunLoopDriverOpts struct {
 	artifactStore artifacts.ArtifactStore
 }
 
-const devStackRuntimeSkillsContextMaxDefault = 5
-
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
 	if opts.bus == nil {
 		return nil, fmt.Errorf("devstack RunLoop driver: bus is nil")
@@ -1430,9 +1440,12 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 	if opts.tasks == nil {
 		return nil, fmt.Errorf("devstack RunLoop driver: tasks is nil")
 	}
+	// Defensive clamp for direct construction with a zero cap; the
+	// default's ONE source is `config.DefaultSkillsContextMax` (Phase
+	// 110c, D-196 — Assemble already passes the resolved value).
 	skillsCap := opts.skillsContextMax
 	if skillsCap <= 0 {
-		skillsCap = devStackRuntimeSkillsContextMaxDefault
+		skillsCap = config.DefaultSkillsContextMax
 	}
 	return &DevStackRunLoopDriver{
 		bus:              opts.bus,
@@ -1835,120 +1848,6 @@ func (d *DevStackRunLoopDriver) close(_ context.Context) error {
 		d.runsWG.Wait()
 	})
 	return nil
-}
-
-// governanceConfigForDevstack projects the config-package
-// GovernanceConfig onto the governance.Config shape the Phase 72g
-// posture surface reads. Mirrors `cmd/harbor/cmd_dev.go`'s
-// `governanceConfigFromConfig` — duplicated here because that helper
-// is unexported and the §17.6 source-of-truth invariant means this
-// helper MUST track production field-for-field.
-func governanceConfigForDevstack(in config.GovernanceConfig) governance.Config {
-	tiers := make(map[string]governance.TierConfig, len(in.IdentityTiers))
-	for name, tc := range in.IdentityTiers {
-		tiers[name] = governance.TierConfig{
-			BudgetCeilingUSD: tc.BudgetCeilingUSD,
-			RateLimit: governance.RateLimitConfig{
-				Capacity:       tc.RateLimit.Capacity,
-				RefillTokens:   tc.RateLimit.RefillTokens,
-				RefillInterval: tc.RateLimit.RefillInterval,
-			},
-			MaxTokens: tc.MaxTokens,
-		}
-	}
-	return governance.Config{
-		DefaultTier:   in.DefaultTier,
-		IdentityTiers: tiers,
-	}
-}
-
-// copyCustomProviders mirrors `cmd/harbor/cmd_dev.go::copyCustomProviders`
-// (Phase 83l / D-155). Production-bug fix — before 83l the snapshot
-// dropped CustomProviders, NetworkDefaults, and Corrections.
-func copyCustomProviders(in []config.LLMCustomProviderConfig) []llm.CustomProviderSpec {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]llm.CustomProviderSpec, 0, len(in))
-	for _, p := range in {
-		out = append(out, llm.CustomProviderSpec{
-			Name:                 p.Name,
-			BaseURL:              p.BaseURL,
-			APIKeyEnvVar:         p.APIKeyEnvVar,
-			Models:               append([]string(nil), p.Models...),
-			BaseProviderType:     p.BaseProviderType,
-			Timeout:              p.Timeout,
-			MaxRetries:           p.MaxRetries,
-			RetryBackoffInitial:  p.RetryBackoffInitial,
-			RetryBackoffMax:      p.RetryBackoffMax,
-			Concurrency:          p.Concurrency,
-			BufferSize:           p.BufferSize,
-			RequestPathOverrides: copyStringMap(p.RequestPathOverrides),
-		})
-	}
-	return out
-}
-
-// copyNetworkDefaults mirrors `cmd/harbor/cmd_dev.go::copyNetworkDefaults`.
-func copyNetworkDefaults(in config.LLMNetworkDefaults) llm.NetworkDefaults {
-	return llm.NetworkDefaults{
-		Timeout:             in.Timeout,
-		MaxRetries:          in.MaxRetries,
-		RetryBackoffInitial: in.RetryBackoffInitial,
-		RetryBackoffMax:     in.RetryBackoffMax,
-		Concurrency:         in.Concurrency,
-		BufferSize:          in.BufferSize,
-	}
-}
-
-// disableCorrectionsFromConfig mirrors
-// `cmd/harbor/cmd_dev.go::disableCorrectionsFromConfig`.
-func disableCorrectionsFromConfig(cfg config.LLMCorrectionsConfig) bool {
-	if cfg.Enabled == nil {
-		return false
-	}
-	return !*cfg.Enabled
-}
-
-// copyStringMap is the local map-clone helper used by
-// copyCustomProviders so we don't depend on `cmd/harbor`'s unexported
-// `cloneStringMap`.
-func copyStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-// copyModelProfiles converts the config-package map shape into the
-// llm-package ModelProfile map. Mirrors `cmd/harbor/cmd_dev.go`'s
-// helper of the same name — duplicated here because that helper is
-// unexported and the source-of-truth invariant means the helper
-// MUST track production.
-func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]llm.ModelProfile {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]llm.ModelProfile, len(in))
-	for name, p := range in {
-		mp := llm.ModelProfile{
-			ContextWindowTokens: p.ContextWindowTokens,
-			TokenEstimator:      p.TokenEstimator,
-			JSONSchemaMode:      p.JSONSchemaMode,
-			ReasoningEffort:     llm.ReasoningEffort(p.ReasoningEffort),
-			MaxRetries:          p.MaxRetries,
-		}
-		if p.DefaultMaxTokens != nil {
-			v := *p.DefaultMaxTokens
-			mp.DefaultMaxTokens = &v
-		}
-		out[name] = mp
-	}
-	return out
 }
 
 // devStackProjectMemoryBlocks mirrors the production projection

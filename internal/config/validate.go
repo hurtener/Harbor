@@ -30,10 +30,46 @@ var (
 // Validate runs every section validator and returns the first error,
 // formatted with the offending YAML path and the source filename
 // (when known). Nil on success.
+//
+// This is the full-binary profile: it includes the Protocol-server
+// identity ceremony (JWT algorithms / issuer / audience / JWKS) that a
+// Runtime serving the Protocol edge MUST carry. Headless library
+// consumers that never serve the Protocol validate with ValidateCore
+// instead. `Load` always runs the full Validate — a YAML-loaded config
+// is binary-shaped by definition.
 func (c *Config) Validate() error {
+	return c.runValidators(true)
+}
+
+// ValidateCore runs every section validator EXCEPT the Protocol-server
+// identity ceremony (`identity.jwt_algorithms` / `issuer` / `audience`
+// / JWKS source — the `validateIdentity` section). Phase 110c (D-196):
+// a Go consumer embedding the Runtime headless — never serving the
+// Protocol — is not forced to configure a JWT surface it never serves.
+//
+// The profile is subtractive and minimal: ONLY the identity section is
+// skipped. Everything a headless embedder can meaningfully configure
+// (state / llm / events / sessions / artifacts / tasks / memory /
+// skills / tools / planner / governance / telemetry / server / CLI)
+// stays validated — anything ambiguous stays in core (fail-closed
+// bias). Full `Validate()` semantics are unchanged; a config that
+// passes Validate always passes ValidateCore.
+func (c *Config) ValidateCore() error {
+	return c.runValidators(false)
+}
+
+// runValidators is the shared section-validator walk. The order is
+// load-bearing for error precedence (first failure wins) and mirrors
+// the pre-110c Validate order exactly; includeIdentity toggles the one
+// section the ValidateCore profile subtracts.
+func (c *Config) runValidators(includeIdentity bool) error {
 	validators := []func() error{
 		c.validateServer,
-		c.validateIdentity,
+	}
+	if includeIdentity {
+		validators = append(validators, c.validateIdentity)
+	}
+	validators = append(validators,
 		c.validateTelemetry,
 		c.validateState,
 		c.validateLLM,
@@ -48,7 +84,7 @@ func (c *Config) Validate() error {
 		c.validateTools,
 		c.validatePlanner,
 		c.validateCLI,
-	}
+	)
 	for _, v := range validators {
 		if err := v(); err != nil {
 			return c.wrapValidationError(err)
@@ -186,7 +222,7 @@ var allowedLLMDrivers = map[string]struct{}{
 func (c *Config) validateLLM() error {
 	// Driver — empty is accepted and treated as the runtime's
 	// `llm.DefaultDriver` (Phase 64 / D-089 flipped this to
-	// `"bifrost"`). The loader's `defaults()` populates the same
+	// `"bifrost"`). The loader's `Defaults()` populates the same
 	// string so any production config loaded from YAML carries an
 	// explicit driver; hand-constructed config values (e.g. in tests
 	// built before Phase 32) keep working with `"mock"` when the
@@ -576,7 +612,7 @@ func (c *Config) validateTasks() error {
 				sortedKeys(allowedTasksDrivers), c.Tasks.Driver))
 	}
 	// Phase 21: backgroundtasks-config knobs. Defaults are applied in
-	// `defaults()`; the validator rejects negative / zero values so an
+	// `Defaults()`; the validator rejects negative / zero values so an
 	// operator-set override that elides the field flips back to the
 	// default rather than silently disabling the feature.
 	if c.Tasks.RetainTurnTimeout <= 0 {
@@ -1505,7 +1541,7 @@ var allowedDevHotReloadPolicies = map[string]struct{}{
 // the watcher is ENABLED via explicit operator opt-in. An entirely
 // zero-valued block (`Enabled == nil` AND `Policy == ""` AND no other
 // fields set) is accepted as the "operator didn't touch it" case —
-// the loader's `defaults()` seeds the production defaults when going
+// the loader's `Defaults()` seeds the production defaults when going
 // through `Load`, while library callers / tests that construct
 // `*config.Config` by hand are allowed to skip the CLI section without
 // tripping the watcher's enabled-but-rootless guard.
@@ -1529,7 +1565,7 @@ func (c *Config) validateCLI() error {
 		}
 	}
 	// "Operator didn't touch it" zero-value detection: every field is
-	// at its zero. The loader's `defaults()` runs before yaml unmarshal,
+	// at its zero. The loader's `Defaults()` runs before yaml unmarshal,
 	// so any operator who LOADED a config (via `config.Load`) has
 	// non-zero defaults populated. Skipping the enabled-but-rootless
 	// check in this case lets hand-built test configs round-trip

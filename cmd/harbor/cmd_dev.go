@@ -478,37 +478,20 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// amendment mandates.
 	registerMockIfDevAllowMock(opts.allowMock, opts.stderr)
 
-	// Build the LLM ConfigSnapshot. When the dev-only escape hatch
-	// fired, override the driver to "mock" regardless of what
-	// harbor.yaml said — the operator's intent ("give me the mock")
-	// is explicit via the env var, and bypassing the bifrost knobs
-	// avoids the operator having to maintain two separate yaml files
-	// (one for prod, one for dev). The override is local to the
-	// snapshot; the original config.Config is unchanged.
-	driverName := cfg.LLM.Driver
-	apiKey := cfg.LLM.APIKey
+	// Build the LLM ConfigSnapshot via the exported projection (Phase
+	// 110c, D-196 — the one config→snapshot mapping cmd, devstack, and
+	// headless embedders share; closes the D-155 recurrence class).
+	// When the dev-only escape hatch fired, override the driver to
+	// "mock" regardless of what harbor.yaml said — the operator's
+	// intent ("give me the mock") is explicit via the env var, and
+	// bypassing the bifrost knobs avoids the operator having to
+	// maintain two separate yaml files (one for prod, one for dev).
+	// The override is local to the snapshot (SnapshotFromConfig deep-
+	// copies); the original config.Config is unchanged.
+	llmCfg := llm.SnapshotFromConfig(cfg.LLM, cfg.Artifacts)
 	if opts.allowMock {
-		driverName = "mock"
-		apiKey = ""
-	}
-	llmCfg := llm.ConfigSnapshot{
-		Driver:               driverName,
-		Provider:             cfg.LLM.Provider,
-		Model:                cfg.LLM.Model,
-		APIKey:               apiKey,
-		BaseURL:              cfg.LLM.BaseURL,
-		Timeout:              cfg.LLM.Timeout,
-		ContextWindowReserve: cfg.LLM.ContextWindowReserve,
-		HeavyOutputThreshold: cfg.Artifacts.HeavyOutputThresholdBytes,
-		ModelProfiles:        copyModelProfiles(cfg.LLM.ModelProfiles),
-		// Phase 83l / D-155 — production-bug fix. Before 83l the
-		// snapshot dropped CustomProviders, NetworkDefaults, and
-		// Corrections; an operator-declared custom provider was
-		// silently ignored at boot. Surfaced by the 83l real-bifrost
-		// integration test; mocked-LLM tests never exercised the path.
-		CustomProviders:    copyCustomProviders(cfg.LLM.CustomProviders),
-		NetworkDefaults:    copyNetworkDefaults(cfg.LLM.NetworkDefaults),
-		DisableCorrections: disableCorrectionsFromConfig(cfg.LLM.Corrections),
+		llmCfg.Driver = "mock"
+		llmCfg.APIKey = ""
 	}
 	llmClient, err := llm.Open(ctx, llmCfg, llm.Deps{
 		Artifacts: artStore,
@@ -536,13 +519,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `memory.Open` — never a stub fallback (AGENTS.md §13).
 	var memStore memory.MemoryStore
 	if cfg.Memory.Driver != "" {
-		memCfg := memory.ConfigSnapshot{
-			Driver:             cfg.Memory.Driver,
-			DSN:                cfg.Memory.DSN,
-			Strategy:           memory.Strategy(cfg.Memory.Strategy),
-			BudgetTokens:       cfg.Memory.BudgetTokens,
-			RecoveryBacklogMax: cfg.Memory.RecoveryBacklogMax,
-		}
+		// Exported projection per Phase 110c (D-196) — one
+		// config→snapshot mapping shared with devstack + embedders.
+		memCfg := memory.SnapshotFromConfig(cfg.Memory)
 		var summarizer memory.Summarizer
 		if memCfg.Strategy == memory.StrategyRollingSummary {
 			s, sErr := llmsummarizer.New(llmClient)
@@ -578,10 +557,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `<skills_context>` prompt wrapper is omitted.
 	var skillStore skills.SkillStore
 	if cfg.Skills.Driver != "" {
-		ss, openErr := skills.Open(ctx, skills.ConfigSnapshot{
-			Driver: cfg.Skills.Driver,
-			DSN:    cfg.Skills.DSN,
-		}, skills.Deps{Bus: bus})
+		// Exported projection per Phase 110c (D-196) — one
+		// config→snapshot mapping shared with devstack + embedders.
+		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus})
 		if openErr != nil {
 			closeAll(ctx)
 			return nil, fmt.Errorf("skills: %w", openErr)
@@ -744,7 +722,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `planner.driver: <name>` in `harbor.yaml`. The planner is reusable
 	// across concurrent runs (D-025); one instance backs every spawned
 	// task's RunLoop.
-	plannerCfg := plannerConfigFromConfig(cfg.Planner)
+	plannerCfg := planner.ConfigFromOperator(cfg.Planner)
 	plnr, err := planner.Resolve(ctx, plannerCfg, planner.FactoryDeps{LLM: llmClient})
 	if err != nil {
 		closeAll(ctx)
@@ -850,10 +828,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
 		// surfaces leave the planner's matching wrapper omitted.
-		memory:           memStore,
-		skills:           skillStore,
-		skillsContextMax: cfg.Planner.SkillsContextMax,
-		planningHints:    plannerHintsFromConfig(cfg.Planner.PlanningHints),
+		memory: memStore,
+		skills: skillStore,
+		// Phase 110c (D-196): the zero→default resolution + the YAML
+		// hints projection live on their owning packages now
+		// (config.SkillsContextMaxResolved / planner.HintsFromConfig),
+		// not as run-loop literals / package-main helpers.
+		skillsContextMax: cfg.Planner.SkillsContextMaxResolved(),
+		planningHints:    planner.HintsFromConfig(cfg.Planner.PlanningHints),
 		// Phase 83i (D-152): tool dispatch + Catalog projection +
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
@@ -1174,7 +1156,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			return runtimeposture.DriversFromConfig(cfg)
 		},
 		Metrics:     runtimeposture.MetricsProvider(metricsReg, opts.logger),
-		Governance:  governance.NewPostureProvider(governanceConfigFromConfig(cfg.Governance)),
+		Governance:  governance.NewPostureProvider(governance.ConfigFromOperator(cfg.Governance)),
 		LLM:         llm.NewPostureProvider(llmCfg),
 		Redactor:    red,
 		Bus:         bus,
@@ -1487,7 +1469,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		bindAddr:        bindAddr,
 		devToken:        token,
 		allowMock:       opts.allowMock,
-		effectiveDriver: driverName,
+		effectiveDriver: llmCfg.Driver,
 		label:           subcommandLabel,
 		closeFns:        closers,
 		bus:             bus,
@@ -1751,39 +1733,6 @@ func applyToolCatalogWiring(
 	return gates, providers, nil
 }
 
-// plannerConfigFromConfig maps the operator-facing `config.PlannerConfig`
-// onto the registry-facing `planner.PlannerConfig` boundary. D-103
-// (closes issue #126). Empty Driver defaults to "react" — the V1
-// reference planner — so a config that omits the planner block boots
-// unchanged from the pre-D-103 hardcoded path. The boundary copy
-// matches the D-095 OAuth-provider precedent (`internal/config` keeps
-// its own struct shape so it doesn't import `internal/planner`).
-func plannerConfigFromConfig(cfg config.PlannerConfig) planner.PlannerConfig {
-	driver := cfg.Driver
-	if driver == "" {
-		driver = "react"
-	}
-	var extra map[string]string
-	if len(cfg.Extra) > 0 {
-		extra = make(map[string]string, len(cfg.Extra))
-		for k, v := range cfg.Extra {
-			extra[k] = v
-		}
-	}
-	return planner.PlannerConfig{
-		Driver:                 driver,
-		MaxSteps:               cfg.MaxSteps,
-		ExtraGuidance:          cfg.ExtraGuidance,
-		ReasoningReplay:        planner.ReasoningReplayMode(cfg.ReasoningReplay),
-		MaxToolExamplesPerTool: cfg.MaxToolExamplesPerTool,
-		// Phase 107d (D-169): pass the *bool through verbatim so the
-		// react factory distinguishes "unset" (nil → default true) from
-		// an explicit false (107c serialization opt-out).
-		ParallelToolCalls: cfg.ParallelToolCalls,
-		Extra:             extra,
-	}
-}
-
 // resolveOAuthTokenKEK reads the named env var and decodes its value
 // as a 32-byte hex-encoded key-encryption key for AES-256-GCM token
 // encryption at rest. Fail-loud per §13 amendment: empty env or
@@ -1907,42 +1856,6 @@ func parsePortFromBind(bind string) (int, bool) {
 	return n, true
 }
 
-// copyModelProfiles converts the config-package map shape into the
-// llm-package ModelProfile map. Each profile field is copied by
-// value — both packages own their own struct types so a copy keeps
-// the seam decoupled.
-// governanceConfigFromConfig projects the operator-supplied
-// `config.GovernanceConfig` onto the `governance.Config` shape the
-// Phase 72g posture surface reads. Only the read-only posture-relevant
-// fields are projected — `DefaultTier` + `IdentityTiers` (each tier's
-// `BudgetCeilingUSD` / `RateLimit` / `MaxTokens`). The enforcement
-// fields (`Resolver` / `Clock`) stay zero — the posture surface is a
-// read-only projection, not the enforcement seam, so a nil resolver is
-// correct (every caller's `ResolvedTier` falls back to `DefaultTier`).
-//
-// An empty `IdentityTiers` in the YAML (the latent default) yields a
-// `governance.Config` with an empty tier map — the posture surface
-// reports it verbatim and the Console renders the explicit "No tiers
-// configured" state.
-func governanceConfigFromConfig(in config.GovernanceConfig) governance.Config {
-	tiers := make(map[string]governance.TierConfig, len(in.IdentityTiers))
-	for name, tc := range in.IdentityTiers {
-		tiers[name] = governance.TierConfig{
-			BudgetCeilingUSD: tc.BudgetCeilingUSD,
-			RateLimit: governance.RateLimitConfig{
-				Capacity:       tc.RateLimit.Capacity,
-				RefillTokens:   tc.RateLimit.RefillTokens,
-				RefillInterval: tc.RateLimit.RefillInterval,
-			},
-			MaxTokens: tc.MaxTokens,
-		}
-	}
-	return governance.Config{
-		DefaultTier:   in.DefaultTier,
-		IdentityTiers: tiers,
-	}
-}
-
 // devInstanceID mints a stable-per-process instance identifier for the
 // dev Runtime. A Console attached to multiple Runtimes keys each
 // attachment by it.
@@ -1953,111 +1866,10 @@ func devInstanceID() string {
 	return "harbor-dev"
 }
 
-// copyCustomProviders projects `config.LLMCustomProviderConfig`
-// entries onto the `llm.CustomProviderSpec` shape the bifrost driver
-// reads. Phase 83l / D-155 — the production bug fix: before 83l the
-// snapshot construction dropped this field, so an operator-declared
-// custom provider (NIM, vLLM, ollama, in-house gateway) was silently
-// ignored — `llm.Open` failed with "invalid provider … declared
-// custom: (none)" even though the operator's yaml passed validation.
-// Surfaced by the 83l real-bifrost integration test the moment it
-// ran; mocked-LLM tests never exercised this path.
-func copyCustomProviders(in []config.LLMCustomProviderConfig) []llm.CustomProviderSpec {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]llm.CustomProviderSpec, 0, len(in))
-	for _, p := range in {
-		out = append(out, llm.CustomProviderSpec{
-			Name:                 p.Name,
-			BaseURL:              p.BaseURL,
-			APIKeyEnvVar:         p.APIKeyEnvVar,
-			Models:               append([]string(nil), p.Models...),
-			BaseProviderType:     p.BaseProviderType,
-			Timeout:              p.Timeout,
-			MaxRetries:           p.MaxRetries,
-			RetryBackoffInitial:  p.RetryBackoffInitial,
-			RetryBackoffMax:      p.RetryBackoffMax,
-			Concurrency:          p.Concurrency,
-			BufferSize:           p.BufferSize,
-			RequestPathOverrides: cloneStringMap(p.RequestPathOverrides),
-		})
-	}
-	return out
-}
-
-// copyNetworkDefaults projects the operator's `network_defaults` block
-// onto the snapshot. Phase 83l / D-155 — same production-fix shape as
-// copyCustomProviders.
-func copyNetworkDefaults(in config.LLMNetworkDefaults) llm.NetworkDefaults {
-	return llm.NetworkDefaults{
-		Timeout:             in.Timeout,
-		MaxRetries:          in.MaxRetries,
-		RetryBackoffInitial: in.RetryBackoffInitial,
-		RetryBackoffMax:     in.RetryBackoffMax,
-		Concurrency:         in.Concurrency,
-		BufferSize:          in.BufferSize,
-	}
-}
-
-// disableCorrectionsFromConfig resolves the operator-facing
-// `llm.corrections.enabled` field onto the snapshot's
-// `DisableCorrections` bool (the inverse — empty / nil pointer means
-// "enabled by default"). Phase 83l / D-155 — same production-fix.
-func disableCorrectionsFromConfig(cfg config.LLMCorrectionsConfig) bool {
-	if cfg.Enabled == nil {
-		return false
-	}
-	return !*cfg.Enabled
-}
-
-func copyModelProfiles(in map[string]config.LLMModelProfileConfig) map[string]llm.ModelProfile {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]llm.ModelProfile, len(in))
-	for name, p := range in {
-		mp := llm.ModelProfile{
-			ContextWindowTokens: p.ContextWindowTokens,
-			TokenEstimator:      p.TokenEstimator,
-			JSONSchemaMode:      p.JSONSchemaMode,
-			ReasoningEffort:     llm.ReasoningEffort(p.ReasoningEffort),
-			MaxRetries:          p.MaxRetries,
-		}
-		if p.DefaultMaxTokens != nil {
-			v := *p.DefaultMaxTokens
-			mp.DefaultMaxTokens = &v
-		}
-		out[name] = mp
-	}
-	return out
-}
-
 // Compile-time ensure identity is imported (boot wiring reads
 // identity.Quadruple under the dev token's claims; the import is also
 // used by the dev-cmd integration test via the SignDevToken helper).
 var _ identity.Identity
-
-// plannerHintsFromConfig projects the YAML PlannerPlanningHintsCfg
-// onto a planner.PlanningHints pointer. Returns nil when the YAML
-// block is empty — the per-task RunLoop driver then hands the planner
-// a nil PlanningHints and the `<planning_constraints>` prompt wrapper
-// is omitted entirely.
-//
-// V1.1 projects only the two YAML-exposed fields (Constraints +
-// PreferredTools). The richer Go-struct fields on planner.PlanningHints
-// (ParallelGroups, DisallowTools, Budget) remain reachable through a
-// custom planner Option but not via harbor.yaml; see Phase 83f's plan
-// risks/open-questions section.
-func plannerHintsFromConfig(cfg config.PlannerPlanningHintsCfg) *planner.PlanningHints {
-	if cfg.IsZero() {
-		return nil
-	}
-	return &planner.PlanningHints{
-		Constraints:    cfg.Constraints,
-		PreferredTools: append([]string(nil), cfg.PreferredTools...),
-	}
-}
 
 // attachDevMCPServer wires one configured MCP server into the dev
 // stack (Phase 83g — D-150). It spawns the transport, opens the

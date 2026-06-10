@@ -19,8 +19,8 @@ duplicate, exports `config.Defaults()`, re-homes the planner-adjacent knob proje
 default), adds a headless validation profile (`ValidateCore`) so config-without-binary
 stops demanding JWT identity fields, and ships the single production blank-import
 aggregator (`internal/drivers/prod`) that cmd and devstack both import. Part of the
-Wave B re-homing program (D-193); this phase's decision is **D-196 (reserved; logged
-when the phase ships)**.
+Wave B re-homing program (D-193); this phase's decision is **D-196 (logged —
+shipped)**.
 
 ## RFC anchor
 
@@ -61,7 +61,12 @@ when the phase ships)**.
 
 ## Findings I'm departing from (if any)
 
-None.
+None. One §17.6 cross-fix landed beyond the plan's enumerated fields: the parity
+gate surfaced a THIRD live field-drop in the absorbed `copyModelProfiles` helpers —
+both copies silently dropped `LLMModelProfileConfig.CostOverrides` and
+`.Corrections` (an operator's per-model `cost_overrides:` / `corrections:` yaml
+validated cleanly and then did nothing). `llm.SnapshotFromConfig` maps both,
+pinned by the sub-struct parity tests (D-196 call 2).
 
 ## Goals
 
@@ -105,9 +110,11 @@ None.
     equivalent), not a run-loop literal;
   - `planner.HintsFromConfig(cfg config.PlannerPlanningHintsCfg) PlanningHints` — the
     YAML→`PlanningHints` projection out of the run loop;
-  - the spawn-depth default deduped: `config.go`'s `defaultSpawnDepthCap` and
+  - the spawn-depth default deduped: `config.go`'s constant is exported as
+    `config.DefaultSpawnDepthCap` (the ONE source, referenced by `SpawnDepthCap()`);
     `dispatch`'s clamp (110a; formerly `cmd_dev_executor.go::defaultMaxSpawnDepth`)
-    resolve to ONE source the others reference — no third copy survives.
+    references it — wired by the coordinator at the Stage 1 merge, since 110a and
+    110c built in parallel worktrees and 110c does not touch the executor region.
 - **Headless validation profile:** `config.ValidateCore()` (or a scope parameter on
   `Validate`) runs every section validator EXCEPT the Protocol-server-only identity
   ceremony (`validate.go:33-36,124-133` — JWT algorithms/keys), so a library consumer
@@ -138,36 +145,36 @@ None.
 
 ## Acceptance criteria
 
-- [ ] The five `FromConfig`/`ConfigFromOperator` projections are exported on their
+- [x] The five `FromConfig`/`ConfigFromOperator` projections are exported on their
       owning packages with unit tests; `internal/config` gains no subsystem imports
       (leaf preserved — asserted in review).
-- [ ] **§13 consumer in the same phase + duplicates deleted:** `cmd/harbor` AND
+- [x] **§13 consumer in the same phase + duplicates deleted:** `cmd/harbor` AND
       `harbortest/devstack` consume every exported projection; the cmd-local helpers
       (`plannerConfigFromConfig`, `governanceConfigFromConfig`, the four `copy*` LLM
       helpers, the inline memory/skills snapshot builds) and ALL devstack duplicates
       are deleted — grep-asserted in the smoke.
-- [ ] **B3 fixed and pinned:** the reflection parity test proves
+- [x] **B3 fixed and pinned:** the reflection parity test proves
       `planner.ConfigFromOperator` maps every `config.PlannerConfig` field; a
       devstack-assembled stack resolves `ExtraGuidance` / `ReasoningReplay` /
       `MaxToolExamplesPerTool` / `ParallelToolCalls` identically to production
       (integration-asserted).
-- [ ] `config.Defaults()` exported; `Load` behaviour unchanged (golden: loading the
+- [x] `config.Defaults()` exported; `Load` behaviour unchanged (golden: loading the
       examples yields byte-identical configs pre/post); a hand-built
       `*config.Defaults()` passes `ValidateCore` after setting only the fields the
       docs name as required-for-core.
-- [ ] `config.ValidateCore` (or the scope parameter) exists; full `Validate` semantics
+- [x] `config.ValidateCore` (or the scope parameter) exists; full `Validate` semantics
       unchanged (existing validate tests untouched); a JWT-less hand-built config
       passes core validation and still FAILS full validation (both asserted).
-- [ ] Planner-adjacent knobs: `planner.HintsFromConfig` exported; the
+- [x] Planner-adjacent knobs: `planner.HintsFromConfig` exported; the
       `skills_context_max` default has one source; the spawn-depth default has one
       source referenced by config + dispatch (grep-asserted: no third literal).
-- [ ] `internal/drivers/prod` exists; `cmd/harbor/main.go`'s driver blank-import block
+- [x] `internal/drivers/prod` exists; `cmd/harbor/main.go`'s driver blank-import block
       collapses to the aggregator import; devstack's documented "Required blank
       imports" list is replaced by the aggregator — and a devstack-composed LLM client
       now seats corrections/downgrade/retry (integration-asserted via the wrapper
       chain's observable behaviour or hook registry); AGENTS.md/CLAUDE.md §3 + §4.4
       amended + mirrored.
-- [ ] All prior phase smokes + integration tests pass against the converted binary.
+- [x] All prior phase smokes + integration tests pass against the converted binary.
 
 ## Files added or changed
 
@@ -298,16 +305,16 @@ Skeleton ships with this plan (standard skip until the phase implements).
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes (AGENTS.md/CLAUDE.md amended in this phase — verify)
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: N/A — projections carry no identity; the
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes (AGENTS.md/CLAUDE.md amended in this phase — verify)
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: N/A — projections carry no identity; the
       integration test still asserts identity flows through the assembled stores.
-- [ ] Concurrent-reuse test: N/A — no compiled artifact built (pure projections + an
+- [x] Concurrent-reuse test: N/A — no compiled artifact built (pure projections + an
       import-for-effect package); unit suite runs under `-race`.
-- [ ] **Integration test (§17):** devstack-parity + wrapper-chain test with real
+- [x] **Integration test (§17):** devstack-parity + wrapper-chain test with real
       drivers, ≥1 failure mode, under `-race`.
-- [ ] Glossary updated (FromConfig projection, production driver aggregator)
-- [ ] If a brief finding was departed from: N/A — none departed.
+- [x] Glossary updated (FromConfig projection, production driver aggregator)
+- [x] If a brief finding was departed from: N/A — none departed.

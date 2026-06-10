@@ -87,6 +87,7 @@ import (
 	"unicode"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -97,11 +98,6 @@ import (
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools"
 )
-
-// devRuntimeSkillsContextMaxDefault is the dev-binary default when
-// `planner.skills_context_max` is unset (0). Matches the cap mentioned
-// in Phase 83f's plan and brief 13 §2.4's "small, bounded" guidance.
-const devRuntimeSkillsContextMaxDefault = 5
 
 // perTaskRunLoopDriverOpts bundles the dependencies the driver
 // consumes. Bus + RunLoop + Planner + TaskRegistry are all mandatory;
@@ -237,9 +233,13 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 	if opts.taskKind == "" {
 		opts.taskKind = tasks.KindForeground
 	}
+	// Defensive clamp for programmatic construction with a zero cap;
+	// the default's ONE source is `config.DefaultSkillsContextMax`
+	// (Phase 110c, D-196 — the boot path already passes
+	// `cfg.Planner.SkillsContextMaxResolved()`).
 	skillsCap := opts.skillsContextMax
 	if skillsCap <= 0 {
-		skillsCap = devRuntimeSkillsContextMaxDefault
+		skillsCap = config.DefaultSkillsContextMax
 	}
 	return &perTaskRunLoopDriver{
 		logger:           opts.logger,

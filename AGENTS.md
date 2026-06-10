@@ -121,6 +121,8 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 │   │   ├── a2a/                # A2A v1 Go shapes (hand-transcribed from proto)
 │   │   ├── conformancetest/    # driver conformance suites
 │   │   └── drivers/{loopback}/ # V1 in-process driver (post-V1: durable bus; Phase 29: A2A wire)
+│   ├── drivers/                # cross-subsystem driver aggregation (Phase 110c, D-196)
+│   │   └── prod/               # production blank-import aggregator — THE §4.4 blank-import home (imported by cmd/harbor, devstack, embedders)
 │   ├── protocol/               # Harbor Protocol — wire types, methods, errors, transports
 │   │   ├── types/
 │   │   ├── methods/
@@ -244,8 +246,8 @@ The shape:
 1. Interface in `internal/<area>/ifaces/` (or `internal/<area>/<area>.go` when more natural).
 2. Concrete implementations in `internal/<area>/drivers/<driver>/` — one driver per subdirectory.
 3. A factory + registry at `internal/<area>/<area>.go` that dispatches by name.
-4. Drivers self-register from their `init()` and are pulled in via blank import (`_ "github.com/.../drivers/<driver>"`) at the binary entry point.
-5. Callers depend ONLY on the interface package. Nothing else imports a concrete driver except `cmd/harbor` and tests scoped to that driver.
+4. Drivers self-register from their `init()` and are pulled in via blank import (`_ "github.com/.../drivers/<driver>"`) — since Phase 110c (D-196), in ONE place: the production driver aggregator `internal/drivers/prod`, whose doc-commented blank-import block is the single sanctioned home of driver registrations. Binary entry points (`cmd/harbor/main.go`), `harbortest/devstack`, and headless embedders import the aggregator (`_ "github.com/hurtener/Harbor/internal/drivers/prod"`) instead of hand-curating per-driver lists (the hand-curated copies drifted — SDK friction audit §7). New drivers add their blank import to the aggregator, not to main.go. Dev-only escape hatches (the mock LLM driver) stay OUT of the aggregator and are imported explicitly at their gated boundary (D-089).
+5. Callers depend ONLY on the interface package. Nothing else imports a concrete driver except `internal/drivers/prod` (the aggregator's blank imports), `cmd/harbor` (for dev-only gated imports like the mock LLM), and tests scoped to that driver.
 6. The factory's error message lists registered drivers so misconfigurations are obvious.
 
 **No optional-capability ceremony when all V1 drivers will implement everything.** A subsystem with three drivers (in-mem / SQLite / Postgres) all of which implement everything has one mandatory interface — no `Supports*` capability protocols, no `hasattr`-style duck-typing. Optional capabilities are a smell when they map to "everyone implements everything anyway."
@@ -497,7 +499,7 @@ These will cause the PR to be rejected on sight.
 - ❌ `git push --force` to `main`.
 - ❌ Committing with `--no-verify` to skip the preflight hook except in a documented emergency.
 - ❌ Adding a new Protocol method or REST endpoint without extending the relevant `scripts/smoke/phase-NN.sh`.
-- ❌ Importing a concrete driver package from anywhere except `cmd/harbor` (blank import for self-registration) or that driver's own tests.
+- ❌ Importing a concrete driver package from anywhere except `internal/drivers/prod` (the §4.4 production aggregator — the single sanctioned blank-import home since Phase 110c / D-196), `cmd/harbor` (dev-only gated imports such as the mock LLM driver), or that driver's own tests. Hand-curating a second driver blank-import list (in a binary, a test kit, or an embedder) instead of importing the aggregator is the same violation.
 - ❌ Building a new subsystem with plausible alternate implementations as a single concrete type instead of an interface + factory + registry (see §4.4).
 - ❌ **The Console reads or imports any Runtime internal type.** All data flows through the Protocol's canonical events/state.
 - ❌ **The Runtime imports the Console package**, in any direction.
