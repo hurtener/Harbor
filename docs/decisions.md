@@ -4874,3 +4874,20 @@ ALL other controls (PAUSE / RESUME / CANCEL / REDIRECT / INJECT_CONTEXT / USER_M
 **Protocol additions.** None — wire behaviour for APPROVE/REJECT is unchanged (the Phase 31/54 suites pass with only the construction-site mechanical updates); zero schema changes.
 
 **Cross-references.** D-193 (the re-homing program; Wave C item 6), D-197 (the assembly site), D-192 (the bridge dispatch whose self-elevation this deletes), D-097 (the steering→gate bridge, option A unchanged), D-096 (the typed `pause.resumed` Decision the E2Es assert), D-082 (the metrics bridge — the symmetry target), D-020 (redaction fail-loud), D-025 (bridges + gate concurrent-reuse), D-090 (catalog Builder — `Deps.Authorizer`), D-059/D-124 (the Agent Registry whose control-scope claim is reused). CLAUDE.md §5 (logging canon), §6 (identity), §13 (primitive-with-consumer; fail-loud; two-implementations), §17.3/§17.6. RFC §6.14, §6.4, §5.1, §6.3. Plan: `docs/plans/phase-111f-telemetry-assembly-approval-seam.md`; findings: `docs/notes/sdk-friction-audit.md` §3, §4, §7.
+
+---
+
+## D-204 — Wave D: the public SDK facade — a top-level `sdk/` tree of alias-based re-exports makes RFC §1's "Go module" claim true for external teams; scaffold output must compile externally, gated by a standing smoke
+
+**Date:** 2026-06-10
+**Status:** Settled (planning — implemented by Phases 112a/112b; D-205/D-206 reserved)
+
+**Where it lives:** RFC §3.6 (the settled design, added in this PR); `docs/plans/phase-112a-sdk-facade.md` + `phase-112b-external-consumers.md`; the SDK friction audit's external-surface findings (`docs/notes/sdk-friction-audit.md` §5 — scaffold-with-tools cannot compile, harbortest's vocabulary is externally unconstructible, README presents the test kit as the runtime library).
+
+**Decision.** A new top-level `sdk/` package tree (the `harbortest/` Phase 71 precedent for escaping `internal/`; the `pkg/` convention was already rejected there) re-exports the curated public surface via type aliases, re-exported constants/sentinels, and thin forwards. `internal/` remains the implementation home — an alias IS the internal type, so no mechanism is duplicated, no types fork, and interface satisfiability crosses the boundary for free. The facade is the API-stability contract: re-exported = supported; omitted = deliberately private. The V1.2 inventory is RFC §3.6's list — exactly the audited set that templates, recipes, and devstack already assumed public. Phase 112a ships the tree + an in-module facade-integrity test (every re-export resolves; the curated surface compiles); Phase 112b converts the external consumers — scaffold templates emit `sdk/` imports, harbortest's parameter vocabulary becomes externally satisfiable through the aliases, consumer-facing recipes/README flip to the public paths — and lands the standing external-module compile gate (scaffold a tool-declaring agent into a temp module, `go build` it) so the audit's headline external break cannot silently return.
+
+**Why aliases, not moves.** Physically relocating packages out of `internal/` would churn every import in the repo, break the §3 layout's contract that `internal/` is production code's home, and turn every future internal refactor into a public API event. Aliases give a curation point instead: the public surface is chosen line-by-line, internal packages keep full freedom behind it, and the facade's godocs become the external documentation surface.
+
+**Numbering.** D-205 reserved for 112a; D-206 for 112b.
+
+**Cross-references.** Builds on D-193 (the program; Wave D was explicitly gated on Wave B's re-homing — "you cannot facade what lives in a binary"), D-197 (the assembly the facade exposes), D-085/Phase 71 (the top-level-package precedent), the §13 primitive-with-consumer rule (112a's facade ships with 112b's consumers in the same wave). RFC §1, §3.6 (new), §5.3 (deprecation posture). CLAUDE.md §3 gains `sdk/` with 112a (the implementation PR carries the AGENTS/CLAUDE amendment, mirror-gated).
