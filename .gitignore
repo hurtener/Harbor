@@ -60,6 +60,10 @@ cmd/harbor/consoledist/*
 node_modules/
 .npm/
 
+# Docs site build artifacts (Phase 103 — VitePress under docs/site/)
+docs/site/.vitepress/dist/
+docs/site/.vitepress/cache/
+
 # Tooling
 .tool-versions
 
