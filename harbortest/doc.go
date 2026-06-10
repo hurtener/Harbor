@@ -46,4 +46,26 @@
 // rationale (`golang.org/x/tools/go/analysis/analysistest` lives at a
 // top-level path inside its module) drives Harbor's choice. The
 // package name `harbortest` makes a production import grep-visible.
+//
+// External usage (RFC §3.6 item 5, Phase 112b / D-206). The kit's
+// parameter vocabulary is internal-typed, but every parameter type is
+// re-exported as an alias by the public `sdk/` facade — an alias IS
+// the internal type, so external modules satisfy the full surface:
+//
+//   - Deps.Bus: open one via sdk/events.Open (redactor from
+//     sdk/audit.Open; blank-import sdk/drivers/prod for the drivers).
+//   - Deps.Redactor: sdk/audit.Open(ctx, config.AuditConfig{Driver:
+//     "patterns"}).
+//   - Deps.Identity: &identity.Identity{...} via sdk/identity.
+//   - AssertSequence's []events.EventType: sdk/events.EventType
+//     values (register custom types via sdk/events.RegisterEventType).
+//   - NewFaultInjector's tools.ToolCatalog: sdk/tools.NewCatalog
+//     (+ sdk/tools/inproc.RegisterFunc); SimulateFailure's ErrorClass
+//     values are re-exported on sdk/tools.
+//
+// An external Agent under RunOnce reads its identity via
+// sdk/identity.MustQuadrupleFrom(ctx) and publishes events via
+// sdk/events.MustFrom(ctx) — the captured EventLog observes them like
+// any in-module producer. scripts/smoke/phase-112b.sh runs exactly
+// this shape as an external module on every preflight.
 package harbortest

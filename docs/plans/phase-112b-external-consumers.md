@@ -32,6 +32,34 @@ every preflight.
 None. Audit §5 findings (scaffold break verified by reproduction; harbortest
 type-poisoning; README misclaim) are the source; recorded in D-204.
 
+### Deviations recorded at ship (§4.3 — permanent, in D-206)
+
+1. **phase-67 supersession call.** The plan allowed "extend phase-67 OR
+   supersede": phase-67's smoke keeps the toolless template build-check;
+   the tool-declaring external shape is owned by the 112b gate (no
+   duplication; both scripts carry the cross-reference comment).
+2. **Facade additions flushed out by the conversions** (RFC §3.6 item 2;
+   inventory in item 3 amended): `sdk/audit` (events.Open + harbortest.Deps
+   demand a Redactor), `sdk/telemetry` + `sdk/telemetry/eventbus` (the
+   observe recipe's manual chain), `sdk/governance` (the headless recipe's
+   D-198 multi-stack path), `sdk/tools/auth` (the headless OAuth callback
+   mount), `sdk/skills/{importer,tools,generator}` (D-201's one skills
+   surface), and `ErrorClass` + the four class constants on `sdk/tools`
+   (SimulateFailure's vocabulary). All forwards-only; the 112a no-behavior
+   smoke guard still holds.
+3. **`sdk/pauseresume` deliberately NOT added.** D-205 settled the
+   Coordinator as facade-private; the steer-and-resume recipe was reworked
+   to the config-driven shape (`cfg.PauseResume.*` + `assemble.Assemble`)
+   instead of re-litigating the curation.
+4. **No kit constructors in harbortest.** The aliases alone satisfied all
+   three audit surfaces (the bus constructs via `sdk/events.Open` once
+   `sdk/audit` exists), so signatures stayed AND no `NewBus`/`NewCatalog`
+   kit-local constructors were needed — the narrowest reading of the goal.
+5. **The builtin substitution in the template.** 112a's curation does not
+   re-export the deprecated catalog-only `builtin.Register`; the template
+   emits `builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}, ...)`
+   — semantics identical for the catalog-only shape.
+
 ## Goals
 
 - Scaffold templates (`cmd/harbor/scaffold/templates/**`) import `sdk/` paths;

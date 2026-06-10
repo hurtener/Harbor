@@ -3,7 +3,12 @@
 The public `harbortest` package
 (`github.com/hurtener/Harbor/harbortest`) is Harbor's flow-level test
 kit. It is importable from outside the module, so end-users test their
-agents with the same surface Harbor uses internally.
+agents with the same surface Harbor uses internally. The kit's
+parameter vocabulary (`Deps.Bus` / `Deps.Redactor` / `Deps.Identity`,
+`AssertSequence`'s event types, `NewFaultInjector`'s catalog) is
+satisfied externally through the `sdk/` aliases — `sdk/events`,
+`sdk/audit`, `sdk/identity`, `sdk/tools` (RFC §3.6 item 5); the
+`harbortest` godoc carries the worked external shapes.
 
 The full runnable version of this recipe is
 [`examples/agents/echo/`](../../examples/agents/echo/).
