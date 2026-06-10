@@ -44,7 +44,9 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -82,12 +84,17 @@ const busyTimeoutMs = 5000
 // DSN handling:
 //
 //   - Empty DSN → clear error (no silent default-fallback).
-//   - `:memory:` → translated to the URI form
-//     `file::memory:?cache=shared` so `database/sql`'s pool can hand
-//     out multiple shared connections to the SAME in-memory database
-//     (the bare `:memory:` DSN gives every pool connection its own
-//     private DB, which would break Save+Load round-trip across
-//     pooled connections).
+//   - `:memory:` → translated to a PER-OPEN uniquely named shared-cache
+//     memory URI (`file:harbor_state_mem_<entropy>?mode=memory&cache=shared`,
+//     D-207) so `database/sql`'s pool can hand out multiple shared
+//     connections to the SAME in-memory database (the bare `:memory:`
+//     DSN gives every pool connection its own private DB, which would
+//     break Save+Load round-trip across pooled connections) while two
+//     `:memory:` stores opened by DIFFERENT subsystems in one process
+//     stay fully isolated (the previous process-wide
+//     `file::memory:?cache=shared` translation made every subsystem's
+//     `:memory:` store collide on one shared `schema_migrations`
+//     table).
 //   - Any other DSN is treated as a file path or URI form and passed
 //     through verbatim, with the WAL + busy_timeout PRAGMAs appended
 //     as `_pragma` query params (see below).
@@ -181,21 +188,25 @@ func init() {
 //     SQLite returns SQLITE_BUSY_SNAPSHOT immediately because the
 //     conflict is logical, not physical.
 //
-// The bare `:memory:` DSN is translated to a `file:`-form shared-cache
-// URI so `database/sql`'s pool can hand out multiple connections to
-// the same in-memory database (the bare `:memory:` sentinel gives
-// every pool connection its OWN private database, which would break
-// Save+Load round-trip across pooled connections).
+// The bare `:memory:` DSN is translated to a PER-OPEN uniquely named
+// `file:`-form shared-cache memory URI (D-207; see uniqueMemoryDSN)
+// so `database/sql`'s pool shares one DB within this store while two
+// `:memory:` stores opened by different subsystems never collide.
 //
 // Documented behavior (DSN format, RFC §10 stack-decisions): bare
 // file paths and the `:memory:` sentinel are the V1 supported inputs.
 // Operators who want richer URI forms can supply them directly; we
 // only add to whatever query string is present.
 func augmentDSNForPragmas(dsn string) (string, error) {
-	// Translate bare `:memory:` to a shared-cache file: URI so the
-	// pool sees the same DB across connections.
+	// Translate bare `:memory:` to a per-Open uniquely named
+	// shared-cache memory URI: shared across the pool, isolated
+	// across Opens (D-207).
 	if dsn == ":memory:" {
-		dsn = "file::memory:?cache=shared"
+		unique, err := uniqueMemoryDSN()
+		if err != nil {
+			return "", err
+		}
+		dsn = unique
 	}
 
 	pragmas := []string{
@@ -237,6 +248,24 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	}
 	parts = append(parts, "_txlock=immediate")
 	return dsn + sep + strings.Join(parts, "&"), nil
+}
+
+// uniqueMemoryDSN mints a per-Open named in-memory database URI
+// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// connection in THIS store's pool see the same database; the
+// crypto-random name keeps two `:memory:` stores — this subsystem's or
+// any other's — fully isolated within one process. The database lives
+// as long as at least one pool connection holds it open; the driver
+// pins the pool to a single long-lived connection (SetMaxOpenConns(1)),
+// so the store's lifetime bounds the data's. Same-DSN-reopen sharing
+// was never a documented `:memory:` contract — every consumer opens
+// once and passes the StateStore handle around.
+func uniqueMemoryDSN() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("state/sqlite: memory-DSN entropy: %w", err)
+	}
+	return "file:harbor_state_mem_" + hex.EncodeToString(entropy[:]) + "?mode=memory&cache=shared", nil
 }
 
 // verifyJournalMode reads back the journal mode after open to
@@ -533,6 +562,63 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 		return fmt.Errorf("state/sqlite: delete: %w", err)
 	}
 	return nil
+}
+
+// ListKind implements state.StateStore — the explicitly-elevated
+// maintenance scan (RFC §6.11, D-207). The prefix matches literally:
+// LIKE metacharacters in kindPrefix are escaped so a prefix containing
+// `%` or `_` cannot widen the scan.
+func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, fmt.Errorf("state/sqlite: %w", state.ErrStoreClosed)
+	}
+	if err := state.ValidateListKind(scope, kindPrefix); err != nil {
+		return nil, err
+	}
+
+	const sel = `
+        SELECT tenant, user, session, run, kind, event_id, version, bytes, updated_at
+        FROM state_records
+        WHERE kind LIKE ? ESCAPE '\'`
+	rows, err := d.db.QueryContext(ctx, sel, escapeLikePrefix(kindPrefix)+"%")
+	if err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind: %w", err)
+	}
+	defer rows.Close()
+
+	var out []state.StateRecord
+	for rows.Next() {
+		var tenant, user, session, run, kind, eventID string
+		var version int
+		var data []byte
+		var updatedAt time.Time
+		if err := rows.Scan(&tenant, &user, &session, &run, &kind, &eventID, &version, &data, &updatedAt); err != nil {
+			return nil, fmt.Errorf("state/sqlite: list kind scan: %w", err)
+		}
+		out = append(out, state.StateRecord{
+			ID: state.EventID(eventID),
+			Identity: identity.Quadruple{
+				Identity: identity.Identity{TenantID: tenant, UserID: user, SessionID: session},
+				RunID:    run,
+			},
+			Kind:      kind,
+			Version:   version,
+			Bytes:     data,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state/sqlite: list kind rows: %w", err)
+	}
+	return out, nil
+}
+
+// escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
+// the escape character itself) so a caller-supplied kind prefix
+// matches literally under `LIKE ? ESCAPE '\'`.
+func escapeLikePrefix(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // Close implements state.StateStore. Setting the atomic flag BEFORE

@@ -60,10 +60,22 @@ func TestAugmentDSNForPragmas_MemorySentinel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	for _, want := range []string{"file:", ":memory:", "cache=shared", "_pragma=", "_txlock=immediate"} {
+	// D-207: the sentinel translates to a per-Open uniquely NAMED
+	// memory URI (mode=memory + cache=shared) — no longer the
+	// process-wide `file::memory:` database every subsystem shared.
+	for _, want := range []string{"file:harbor_state_mem_", "mode=memory", "cache=shared", "_pragma=", "_txlock=immediate"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("memory DSN missing %q: got %q", want, got)
 		}
+	}
+	// Per-Open isolation: a second translation must mint a DIFFERENT
+	// database name.
+	again, err := augmentDSNForPragmas(":memory:")
+	if err != nil {
+		t.Fatalf("second augment err=%v", err)
+	}
+	if got == again {
+		t.Errorf("two :memory: opens produced the same DSN (%q) — per-Open isolation lost", got)
 	}
 }
 

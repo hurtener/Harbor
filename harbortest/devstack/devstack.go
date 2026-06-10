@@ -1447,9 +1447,12 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	// / `planner.finish`) and token streaming (`llm.completion.chunk`)
 	// were silently dead on the official test surface — devstack
 	// validated weaker semantics than production ships (§17.6). Both
-	// now come from the SAME promoted constructors production wires.
-	emit := events.IdentityStampingEmitter(d.bus, q, d.logger)
-	chunkPub := llm.NewChunkPublisher(d.bus, q, string(taskID), d.logger)
+	// now come from the SAME promoted constructors production wires,
+	// with the driver-lifetime d.subCtx bounding every publish (D-207,
+	// closing D-195's correction — the cmd mirror passes its subCtx
+	// identically).
+	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
+	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
 		chunkPub(delta, done, string(kind))
 	}

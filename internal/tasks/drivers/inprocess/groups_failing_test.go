@@ -46,6 +46,10 @@ func (f *failingStateStore) Delete(ctx context.Context, id identity.Quadruple, k
 	return f.inner.Delete(ctx, id, kind)
 }
 
+func (f *failingStateStore) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
+	return f.inner.ListKind(ctx, scope, kindPrefix)
+}
+
 func (f *failingStateStore) Close(ctx context.Context) error {
 	return f.inner.Close(ctx)
 }

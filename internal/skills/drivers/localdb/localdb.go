@@ -53,7 +53,9 @@ package localdb
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -491,10 +493,18 @@ func (d *driver) Close(_ context.Context) error {
 	return nil
 }
 
-// augmentDSNForPragmas mirrors memory/sqlite + state/sqlite.
+// augmentDSNForPragmas mirrors memory/sqlite + state/sqlite (D-207
+// added the per-Open `:memory:` isolation).
 func augmentDSNForPragmas(dsn string) (string, error) {
+	// Translate bare `:memory:` to a per-Open uniquely named
+	// shared-cache memory URI: shared across the pool, isolated
+	// across Opens (D-207).
 	if dsn == ":memory:" {
-		dsn = "file::memory:?cache=shared"
+		unique, err := uniqueMemoryDSN()
+		if err != nil {
+			return "", err
+		}
+		dsn = unique
 	}
 	pragmas := []string{
 		"busy_timeout(" + fmt.Sprint(busyTimeoutMs) + ")",
@@ -525,6 +535,23 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	}
 	parts = append(parts, "_txlock=immediate")
 	return dsn + sep + strings.Join(parts, "&"), nil
+}
+
+// uniqueMemoryDSN mints a per-Open named in-memory database URI
+// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// connection in THIS store's pool see the same database; the
+// crypto-random name keeps two `:memory:` stores — this subsystem's or
+// any other's — fully isolated within one process (the previous
+// process-wide `file::memory:?cache=shared` translation made every
+// subsystem's `:memory:` store collide on one shared
+// `schema_migrations` table). The database lives as long as the pool's
+// single pinned connection (SetMaxOpenConns(1)) holds it open.
+func uniqueMemoryDSN() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("skills/localdb: memory-DSN entropy: %w", err)
+	}
+	return "file:harbor_skills_mem_" + hex.EncodeToString(entropy[:]) + "?mode=memory&cache=shared", nil
 }
 
 func verifyJournalMode(ctx context.Context, db *sql.DB, originalDSN string) error {

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/state"
 )
 
 // This file ships the pause sweeper (Phase 111c / D-200) — the
@@ -35,10 +37,20 @@ import (
 // lives in THIS package and snapshots the registry directly
 // (value-copies under the mutex, same shape List itself uses), while
 // every MUTATION goes through the public Coordinator.Resume under the
-// pause's OWN identity triple — the scope check, handle re-attach,
-// checkpoint delete, and pause.resumed emit all run unmodified. No
-// storage-level identity filter is bypassed and no elevated List
-// shape is minted.
+// pause's OWN identity triple — the scope check, checkpoint delete,
+// and pause.resumed emit all run unmodified. No storage-level identity
+// filter is bypassed and no elevated List shape is minted.
+//
+// D-200 recorded one V1 boundary on this design: checkpoints orphaned
+// by a PROCESS CRASH were invisible (the registry scan only sees
+// in-process pauses; rehydrate-on-demand needs someone to ask by
+// Token). D-207 closes it: the StateStore gained its one explicitly-
+// elevated maintenance scan (state.StateStore.ListKind, RFC §6.11),
+// and every sweep pass first rescues `pauseresume.checkpoint:` rows
+// with no live registry entry back into the registry
+// (rescanCrashOrphans) — after which the unchanged expired scan +
+// public Resume path reaps them when their re-stamped deadline
+// passes.
 //
 // # Timeout is terminal
 //
@@ -104,19 +116,26 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 //     (WithMaxParkDuration > 0) — a sweeper over never-expiring pauses
 //     would silently reap nothing forever.
 //
-// Per-record reap failures (a lost tool-context handle, a store error
-// on the checkpoint delete) are logged at Error and do NOT stop the
-// loop: one wedged record must not shield every other expired pause
-// from being reaped. A PRE-flip failure (the handle re-attach) leaves
-// the entry paused, so the next pass's expired scan retries it; a
-// POST-flip failure (the checkpoint delete after Resume already
-// flipped the entry) marks the entry delete-pending and the next
-// pass's retryPendingDeletes phase re-attempts the delete + the
-// skipped pause.resumed emit — a resumed-but-undeleted checkpoint
-// must never orphan silently (Wave C checkpoint audit). Losing a reap
-// race to a legitimate concurrent Resume (ErrAlreadyResumed /
-// ErrPauseNotFound) is benign — the pause resolved exactly once — and
-// is not logged as a failure.
+// Per-record reap failures (a store error on the checkpoint delete)
+// are logged at Error and do NOT stop the loop: one wedged record must
+// not shield every other expired pause from being reaped. A PRE-flip
+// failure leaves the entry paused, so the next pass's expired scan
+// retries it (a lost tool-context handle is no longer in this class —
+// timeout resumes skip the handle re-attach, D-207); a POST-flip
+// failure (the checkpoint delete after Resume already flipped the
+// entry) marks the entry delete-pending and the next pass's
+// retryPendingDeletes phase re-attempts the delete + the skipped
+// pause.resumed emit — a resumed-but-undeleted checkpoint must never
+// orphan silently (Wave C checkpoint audit). Losing a reap race to a
+// legitimate concurrent Resume (ErrAlreadyResumed / ErrPauseNotFound)
+// is benign — the pause resolved exactly once — and is not logged as a
+// failure.
+//
+// Each pass also rescues CRASH-ORPHANED checkpoints — store rows whose
+// pause was never rehydrated because the process that parked it died —
+// into the registry via the StateStore's maintenance scan
+// (rescanCrashOrphans, D-207), so the max-park ceiling applies to them
+// like any live pause.
 func RunSweeper(ctx context.Context, coord Coordinator, opts ...SweeperOption) error {
 	c, ok := coord.(*coordinator)
 	if !ok {
@@ -152,14 +171,18 @@ func RunSweeper(ctx context.Context, coord Coordinator, opts ...SweeperOption) e
 	}
 }
 
-// sweepOnce performs one sweep pass: snapshot the expired pauses at
-// the Coordinator's clock, then Resume each with DecisionTimeout under
-// the pause's own identity. Returns the count of successfully reaped
-// pauses. The only error return is ctx cancellation mid-pass;
-// per-record failures are logged loud (Error level, with the
-// identity-attributed fields CLAUDE.md §5 requires) and skipped so one
-// wedged record cannot block the rest of the pass.
+// sweepOnce performs one sweep pass: rescue crash-orphaned checkpoints
+// into the registry (rescanCrashOrphans — D-207), then snapshot the
+// expired pauses at the Coordinator's clock and Resume each with
+// DecisionTimeout under the pause's own identity. Returns the count of
+// successfully reaped pauses. The only error return is ctx
+// cancellation mid-pass; per-record failures are logged loud (Error
+// level, with the identity-attributed fields CLAUDE.md §5 requires)
+// and skipped so one wedged record cannot block the rest of the pass.
 func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, error) {
+	if err := c.rescanCrashOrphans(ctx, logger); err != nil {
+		return 0, err
+	}
 	now := c.now()
 	expired := c.expiredEntries(now)
 	reaped := 0
@@ -207,13 +230,14 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 		default:
 			// A substantive reap failure. Loud, then continue. Two
 			// classes, both retried by the next pass: a PRE-flip
-			// failure (lost tool-context handle) leaves the entry
-			// paused and the expired scan re-selects it; a POST-flip
-			// failure (checkpoint-delete store error after Resume
-			// already flipped the entry) is marked delete-pending by
-			// Resume itself and re-attempted by retryPendingDeletes
-			// below — the expired scan alone could never see it again
-			// (it skips non-paused entries).
+			// failure leaves the entry paused and the expired scan
+			// re-selects it (timeout resumes skip the tool-context
+			// re-attach — D-207 — so a lost handle is no longer in
+			// this class); a POST-flip failure (checkpoint-delete
+			// store error after Resume already flipped the entry) is
+			// marked delete-pending by Resume itself and re-attempted
+			// by retryPendingDeletes below — the expired scan alone
+			// could never see it again (it skips non-paused entries).
 			logger.ErrorContext(ctx, "pauseresume: sweeper failed to reap expired pause",
 				"token", string(e.token),
 				"tenant_id", e.identity.TenantID,
@@ -227,6 +251,94 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 		return reaped, err
 	}
 	return reaped, nil
+}
+
+// rescanCrashOrphans rescues checkpoint rows that have no live pause
+// record into the registry (Phase 111c's recorded V1 boundary, closed
+// by D-207). A pause checkpointed by a process that then CRASHED is
+// invisible to the registry scan: rehydrate-on-demand (Status /
+// Resume) recovers it only if someone asks by Token, so an unasked-for
+// checkpoint leaked forever. The rescan walks the store's
+// `pauseresume.checkpoint:` kinds via the StateStore's maintenance
+// scan (state.StateStore.ListKind — D-207's RFC §6.11 amendment;
+// MaintenanceScoped is the explicit elevation claim, and every
+// MUTATION still goes through the public Resume under the pause's own
+// identity, exactly like the registry scan above) and installs every
+// orphan as a registry entry with the expiry re-stamped from THIS
+// Coordinator's maxPark — so the same pass's expired scan reaps it
+// when its deadline has already passed, and a not-yet-expired orphan
+// becomes legitimately resumable until then.
+//
+// Per-record failures (a corrupt checkpoint, an unsupported format
+// version) are logged loud and skipped — they stay in the store for
+// the operator rather than being silently deleted. A scan failure is
+// logged loud and the pass continues against the live registry. The
+// only error return is ctx cancellation.
+func (c *coordinator) rescanCrashOrphans(ctx context.Context, logger *slog.Logger) error {
+	if c.store == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pauseresume: orphan rescan cancelled: %w", err)
+	}
+	recs, err := c.store.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, checkpointKindPrefix)
+	if err != nil {
+		// Loud, then continue the pass: a wedged store must not shield
+		// the live registry's expired pauses from being reaped.
+		logger.ErrorContext(ctx, "pauseresume: sweeper checkpoint rescan failed", "error", err)
+		return nil
+	}
+	for _, sr := range recs {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("pauseresume: orphan rescan cancelled mid-pass: %w", err)
+		}
+		token := Token(strings.TrimPrefix(sr.Kind, checkpointKindPrefix))
+
+		c.mu.Lock()
+		_, live := c.pauses[token]
+		c.mu.Unlock()
+		if live {
+			continue // not an orphan — the registry already tracks it.
+		}
+
+		rec, err := DeserializeRecord(sr.Bytes)
+		if err == nil && rec.Token != token {
+			err = fmt.Errorf("%w: checkpoint kind names token %q but envelope carries %q", ErrCheckpointCorrupt, token, rec.Token)
+		}
+		var entry *pauseEntry
+		if err == nil {
+			entry, err = entryFromCheckpoint(rec)
+		}
+		if err != nil {
+			// Corrupt / unreadable checkpoint: loud, skipped, left in
+			// the store for the operator — never silently deleted.
+			logger.ErrorContext(ctx, "pauseresume: sweeper found unreadable orphaned checkpoint",
+				"token", string(token), "error", err)
+			continue
+		}
+		// Re-stamp the expiry from THIS Coordinator's knob — same
+		// discipline as rehydrate (the deadline is derived, never
+		// persisted; D-200).
+		if c.maxPark > 0 && entry.state == StatusPaused {
+			entry.expiresAt = entry.pausedAt.Add(c.maxPark)
+		}
+
+		c.mu.Lock()
+		if _, raced := c.pauses[token]; !raced {
+			c.pauses[token] = entry
+		}
+		c.mu.Unlock()
+		logger.InfoContext(ctx, "pauseresume: sweeper rescued crash-orphaned pause checkpoint",
+			"token", string(token),
+			"reason", string(entry.reason),
+			"tenant_id", entry.identity.TenantID,
+			"user_id", entry.identity.UserID,
+			"session_id", entry.identity.SessionID,
+			"run_id", entry.runID,
+			"paused_at", entry.pausedAt,
+			"expires_at", entry.expiresAt)
+	}
+	return nil
 }
 
 // retryPendingDeletes re-attempts the checkpoint delete (and the

@@ -16,6 +16,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/events/drivers/durable"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/state"
 	stateinmem "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 )
@@ -435,7 +436,10 @@ func (f *failingStore) LoadByEventID(context.Context, state.EventID) (state.Stat
 	return state.StateRecord{}, state.ErrNotFound
 }
 func (f *failingStore) Delete(context.Context, identity.Quadruple, string) error { return nil }
-func (f *failingStore) Close(context.Context) error                              { return nil }
+func (f *failingStore) ListKind(context.Context, state.ListScope, string) ([]state.StateRecord, error) {
+	return nil, nil
+}
+func (f *failingStore) Close(context.Context) error { return nil }
 
 func TestDurable_PersistFailure_SurfacesLoudly(t *testing.T) {
 	sentinel := errors.New("disk on fire")
@@ -496,3 +500,82 @@ func TestDurable_Close_Idempotent(t *testing.T) {
 
 // ensure the audit.Redactor interface import is used (compile guard).
 var _ audit.Redactor = auditpatterns.New()
+
+// ---------------------------------------------------------------------------
+// D-207 — emit-constructor base-ctx threading on the DURABLE driver.
+//
+// The durable driver persists every event via store.Save under the
+// PUBLISH ctx, so the per-run emit closures' base context is
+// load-bearing here: pre-D-207 the promoted constructors published
+// under context.Background(), which silently outlived the run-loop
+// driver's lifetime (D-195's recorded correction). These tests pin
+// the restored pre-110b semantics: a live driver-lifetime ctx
+// persists; a cancelled one stops persistence and Warns loudly.
+// ---------------------------------------------------------------------------
+
+// countDurableEntries counts persisted per-event entry records via the
+// StateStore's D-207 maintenance scan.
+func countDurableEntries(t *testing.T, store state.StateStore) int {
+	t.Helper()
+	recs, err := store.ListKind(context.Background(), state.ListScope{MaintenanceScoped: true}, "events.durable.entry/")
+	if err != nil {
+		t.Fatalf("ListKind: %v", err)
+	}
+	return len(recs)
+}
+
+func TestDurable_IdentityStampingEmitterContext_CancellationBoundsPersistence(t *testing.T) {
+	store := newInmemStore(t)
+	bus, _ := newDurableBus(t, store)
+	id := quad("t-emitctx", "u1", "s1")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	driverCtx, cancel := context.WithCancel(context.Background())
+	emit := events.IdentityStampingEmitterContext(driverCtx, bus, id, logger)
+
+	// Live driver ctx: the emit persists.
+	emit(events.Event{Type: events.EventTypeRuntimeWarning, Payload: runtimeWarn("alive")})
+	if n := countDurableEntries(t, store); n != 1 {
+		t.Fatalf("persisted entries after live emit = %d, want 1", n)
+	}
+
+	// Cancelled driver ctx (the run-loop driver closed): persistence
+	// stops — bounded by the caller ctx, the pre-110b subCtx
+	// semantics — and the failure is a loud Warn, never silent.
+	cancel()
+	emit(events.Event{Type: events.EventTypeRuntimeWarning, Payload: runtimeWarn("late")})
+	if n := countDurableEntries(t, store); n != 1 {
+		t.Fatalf("persisted entries after cancelled emit = %d, want 1 (no write past driver teardown)", n)
+	}
+	if !strings.Contains(buf.String(), "emitter publish failed") {
+		t.Fatalf("cancelled emit did not Warn loudly; log: %q", buf.String())
+	}
+}
+
+func TestDurable_NewChunkPublisherContext_CancellationBoundsPersistence(t *testing.T) {
+	store := newInmemStore(t)
+	bus, _ := newDurableBus(t, store)
+	id := quad("t-chunkctx", "u1", "s1")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	driverCtx, cancel := context.WithCancel(context.Background())
+	pub := llm.NewChunkPublisherContext(driverCtx, bus, id, "task-ctx-1", logger)
+
+	pub("hello", false, "answer")
+	if n := countDurableEntries(t, store); n != 1 {
+		t.Fatalf("persisted entries after live chunk = %d, want 1", n)
+	}
+
+	cancel()
+	pub("late", true, "answer")
+	if n := countDurableEntries(t, store); n != 1 {
+		t.Fatalf("persisted entries after cancelled chunk = %d, want 1 (no write past driver teardown)", n)
+	}
+	if !strings.Contains(buf.String(), "completion-chunk publish failed") {
+		t.Fatalf("cancelled chunk publish did not Warn loudly; log: %q", buf.String())
+	}
+}

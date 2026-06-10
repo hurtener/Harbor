@@ -41,6 +41,10 @@ func (failingStateStore) Delete(_ context.Context, _ identity.Quadruple, _ strin
 	return errStateProbe
 }
 
+func (failingStateStore) ListKind(_ context.Context, _ state.ListScope, _ string) ([]state.StateRecord, error) {
+	return nil, errStateProbe
+}
+
 func (failingStateStore) Close(_ context.Context) error { return nil }
 
 func openBusForStateFailTest(t *testing.T) (events.EventBus, func()) {
