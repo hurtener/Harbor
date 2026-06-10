@@ -42,6 +42,13 @@ type coordinator struct {
 	// (CLAUDE.md §11 — time-sensitive tests use a controllable clock).
 	// Set once at construction.
 	now func() time.Time
+	// maxPark is the OPTIONAL max-park duration (Phase 111c / D-200).
+	// When > 0, every pause carries an expiry derived from
+	// PausedAt + maxPark; the pause sweeper (sweeper.go) resumes
+	// expired pauses with DecisionTimeout. Zero (the default) means
+	// pauses never expire — today's pre-111c behaviour. Set once at
+	// construction.
+	maxPark time.Duration
 
 	// mu guards pauses. The map is the coordinator's only mutable
 	// state and is documented internally-synchronised per the D-025
@@ -64,6 +71,19 @@ type pauseEntry struct {
 	pausedAt   time.Time
 	resumedAt  time.Time
 	trajectory *trajectory.Trajectory
+	// expiresAt is the max-park deadline (PausedAt + maxPark) when the
+	// Coordinator was constructed WithMaxParkDuration; the zero value
+	// means "never expires" (the default). Derived, never persisted:
+	// the rehydrate path re-stamps it from the rehydrating
+	// Coordinator's own maxPark so an operator can change the knob
+	// across a restart without a checkpoint-format change.
+	expiresAt time.Time
+	// decision is the typed Decision the pause was resumed with; the
+	// zero value while State == StatusPaused. Recorded so Status (and
+	// the RunLoop's out-of-band timeout detection) can distinguish a
+	// timeout-reaped pause from an approve / reject / generic resume
+	// (Phase 111c / D-200).
+	decision Decision
 }
 
 // Option configures a coordinator at construction. Options are applied
@@ -113,6 +133,23 @@ func WithClock(now func() time.Time) Option {
 // emission is observability, not correctness).
 func WithBus(b events.EventBus) Option {
 	return func(c *coordinator) { c.bus = b }
+}
+
+// WithMaxParkDuration sets the operator-configured ceiling on how long
+// a pause may stay parked (Phase 111c / D-200, RFC §3.3's typed
+// `timeout` Decision — D-096). When d > 0, every pause carries an
+// expiry derived from PausedAt + d, and the pause sweeper (RunSweeper)
+// resumes expired pauses with DecisionTimeout — terminal for the
+// waiting run (a deadline the human missed is a constraint the
+// planner cannot resolve; mirrors D-071's REJECT posture). A
+// non-positive d is the documented "never expire" default — today's
+// pre-111c behaviour, not an error.
+func WithMaxParkDuration(d time.Duration) Option {
+	return func(c *coordinator) {
+		if d > 0 {
+			c.maxPark = d
+		}
+	}
 }
 
 // New constructs the V1 process-local Coordinator. The returned value
@@ -191,6 +228,12 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		payload:    cloneStringMap(req.Payload),
 		pausedAt:   pausedAt,
 		trajectory: req.Trajectory,
+	}
+	// Max-park expiry (Phase 111c / D-200): derived from PausedAt + the
+	// construction-time knob. Zero maxPark ⇒ zero expiresAt ⇒ the pause
+	// never expires (the default).
+	if c.maxPark > 0 {
+		entry.expiresAt = pausedAt.Add(c.maxPark)
 	}
 
 	// Persist the checkpoint BEFORE recording in the in-memory
@@ -305,6 +348,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 
 	entry.state = StatusResumed
 	entry.resumedAt = c.now()
+	entry.decision = decision
 	// Merge the resume payload into the entry payload so a subsequent
 	// Status reflects what the resume supplied.
 	mergeStringMap(&entry.payload, payload)
@@ -351,6 +395,7 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 			Reason:    entry.reason,
 			PausedAt:  entry.pausedAt,
 			ResumedAt: entry.resumedAt,
+			Decision:  entry.decision,
 		}
 		c.mu.Unlock()
 		return st, nil
@@ -358,7 +403,9 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 	c.mu.Unlock()
 
 	// Not in the in-memory registry — fall back to the checkpoint
-	// store (the restart-survival path).
+	// store (the restart-survival path). A rehydrated entry is always
+	// StatusPaused (Resume deletes the checkpoint), so Decision is the
+	// zero value here by construction.
 	rehydrated, err := c.rehydrate(ctx, token)
 	if err != nil {
 		return Status{}, err
@@ -383,7 +430,18 @@ func (c *coordinator) rehydrate(ctx context.Context, token Token) (*pauseEntry, 
 	if err != nil {
 		return nil, err
 	}
-	return entryFromCheckpoint(rec)
+	entry, err := entryFromCheckpoint(rec)
+	if err != nil {
+		return nil, err
+	}
+	// Re-stamp the max-park expiry from THIS Coordinator's knob: the
+	// deadline is derived (PausedAt + maxPark), never persisted, so a
+	// restarted Runtime with a different max_park_duration applies its
+	// own ceiling to rehydrated pauses (Phase 111c / D-200).
+	if c.maxPark > 0 && entry.state == StatusPaused {
+		entry.expiresAt = entry.pausedAt.Add(c.maxPark)
+	}
+	return entry, nil
 }
 
 // reattachHandles re-attaches every HandleID carried on the entry's

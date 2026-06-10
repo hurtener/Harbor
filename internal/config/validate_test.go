@@ -524,6 +524,25 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"corrections.response_format_shape",
 		},
+		// Phase 111c (D-200) — pause-lifecycle block.
+		{
+			"pauseresume negative max_park_duration",
+			func(c *config.Config) { c.PauseResume.MaxParkDuration = -1 * time.Second },
+			"pauseresume.max_park_duration",
+		},
+		{
+			"pauseresume negative sweep_interval",
+			func(c *config.Config) { c.PauseResume.SweepInterval = -1 * time.Second },
+			"pauseresume.sweep_interval",
+		},
+		{
+			"pauseresume sweep_interval exceeds max_park_duration",
+			func(c *config.Config) {
+				c.PauseResume.MaxParkDuration = 10 * time.Second
+				c.PauseResume.SweepInterval = 1 * time.Minute
+			},
+			"pauseresume.sweep_interval",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
