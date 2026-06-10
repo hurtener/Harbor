@@ -198,7 +198,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |109b| Console MCP Apps host (sandboxed iframe + CSP + official AppBridge in manual-handler mode + inline DisplayMode) | web/console | §6.4, §7 | 109a, 73n, 108 | n/a | Pending (V1.1.x) |
 |109c| MCP Apps DisplayMode layout (fullscreen tab + pip 50/50 split + rail toggle) | web/console | §7 | 109b | n/a | Pending (V1.1.x) |
 |110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Shipped (V1.1.x) |
-|110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Pending (V1.1.x) |
+|110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Shipped (V1.1.x) |
 |110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Shipped (V1.1.x) |
 |110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Pending (V1.1.x) |
 |111a| Governance enforcement assembly (`identity_tiers` actually enforce; `SetFactory`'s first production caller) | internal/governance + cmd/harbor + harbortest | §6.15, §6.5, §6.11 | 32, 36a, 36b, 110c (soft) | 90% | Pending (V1.1.x) |
@@ -1105,20 +1105,24 @@ RFC-level program for which 110d is the named prerequisite.
   D-025 concurrent-reuse test (N≥100, `-race`) mandatory. RFC §6.4, §6.5, §6.2. Deps:
   D-192 fix (in flight), 107d, 107e, 83i. Stage 1, parallel with 110c. See
   `docs/plans/phase-110a-tool-executor-promotion.md`.
-- **110b — RunContext population + event-closure promotion (D-195 reserved).**
+- **110b — RunContext population + event-closure promotion (SHIPPED — D-195).**
   Promotes the five RunContext-population helpers duplicated cmd↔devstack into
   `internal/runtime/runctx` (direction-safe: runtime imports planner/memory/skills;
   planner gains NO memory import): `ProjectMemoryBlocks`, `ProjectSkillsContext`,
   `ExtractSkillKeywords` + stopwords (the D-156 FTS5 query shaping — a third copy
-  existed), `ExtractAssistantAnswer`, and the D-166 `ResolveInputArtifacts` policy —
+  existed; godoc carries the "scheduled for deletion by Phase 111d (D-201); add no
+  new consumers" notice per the owner's 2026-06-09 scope amendment),
+  `ExtractAssistantAnswer`, and the D-166 `ResolveInputArtifacts` policy —
   following the `planner.BuildArtifactManifest` precedent. Adds
   `events.IdentityStampingEmitter(bus, q, logger)` for `RunContext.Emit` and
   `llm.NewChunkPublisher(bus, q, taskID, logger)` for `OnChunk` (the closures whose
   identity-envelope trap once produced 280+ bus-rejected chunks per task). cmd +
   devstack become callers; devstack ADDITIONALLY gains missing parity: Emit/OnChunk
   wired in its RunSpec and `MarkComplete` carrying the 110a answer envelope instead of
-  an empty `TaskResult{}`. RFC §6.2, §6.5, §6.13. Deps: 110a, 83f, 83i, 83m, 107.
-  Stage 2, parallel with 110d. See
+  an empty `TaskResult{}` (pinned by `test/integration/phase110b_runctx_parity_test.go`).
+  Also wires the D-196 call-4 handoff one-liner: dispatch's spawn-depth default now
+  references `config.DefaultSpawnDepthCap`. RFC §6.2, §6.5, §6.13. Deps: 110a, 83f,
+  83i, 83m, 107. Stage 2, parallel with 110d. See
   `docs/plans/phase-110b-runcontext-population-promotion.md`.
 - **110c — Config-projection exporters (SHIPPED — D-196).** The five config→snapshot
   projections become exported helpers on the OWNING packages (settled direction:

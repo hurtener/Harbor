@@ -81,10 +81,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/config"
@@ -93,6 +91,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
+	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
@@ -519,7 +518,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 			return
 		}
-		if mb := projectMemoryBlocks(patch); mb != nil {
+		if mb := runctx.ProjectMemoryBlocks(patch); mb != nil {
 			memBlocks = mb
 		}
 	}
@@ -528,17 +527,12 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	if d.skills != nil && task.Query != "" {
 		// Phase 83m (Item 4, D-156): extract keyword tokens from the
 		// raw task Query before handing it to the FTS5-backed skills
-		// driver. The SQLite skills driver's FTS5 ranker (BM25)
-		// performs poorly on full-sentence inputs — articles, common
-		// stopwords, and punctuation diffuse the score across noisy
-		// terms. The helper lowercases, drops stopwords + punctuation,
-		// dedupes, and caps at the standard 10-term ceiling. A
-		// pathological input that produces no keywords falls back to
-		// the raw Query so Search still has SOMETHING to rank
-		// against — the driver's empty-query handling is the
-		// canonical "no ranked skills" path and we prefer the raw
-		// query to that empty path.
-		searchQuery := extractSkillKeywords(task.Query)
+		// driver (promoted helper — Phase 110b, D-195). A pathological
+		// input that produces no keywords falls back to the raw Query
+		// so Search still has SOMETHING to rank against — the driver's
+		// empty-query handling is the canonical "no ranked skills"
+		// path and we prefer the raw query to that empty path.
+		searchQuery := runctx.ExtractSkillKeywords(task.Query)
 		if searchQuery == "" {
 			searchQuery = task.Query
 		}
@@ -558,7 +552,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 			return
 		}
-		skillsCtx = projectSkillsContext(ranked)
+		skillsCtx = runctx.ProjectSkillsContext(ranked)
 	}
 
 	// Step 3: per-run RepairCounters. ONE pointer per run, threaded
@@ -599,19 +593,11 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// `planner.decision` / `planner.finish` / `planner.repair_guidance_injected`
 	// reach the bus. Without this the entire planner-side telemetry
 	// stream is silent (operators / Console / inspect-runs see only
-	// llm.cost.recorded). The closure stamps the run's identity
-	// quadruple on every event and publishes under the driver's bus
-	// context so a bus-close mid-run logs Warn rather than races.
-	emit := func(ev events.Event) {
-		if ev.Identity.TenantID == "" {
-			ev.Identity = q
-		}
-		if pubErr := d.bus.Publish(d.subCtx, ev); pubErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: bus publish failed",
-				slog.String("type", string(ev.Type)),
-				slog.String("err", pubErr.Error()))
-		}
-	}
+	// llm.cost.recorded). The closure (promoted constructor — Phase
+	// 110b, D-195) stamps the run's identity quadruple on every event
+	// and Warns loudly on publish failure, so a bus-close mid-run logs
+	// rather than races.
+	emit := events.IdentityStampingEmitter(d.bus, q, d.logger)
 
 	// Phase 83m item 7: per-run OnToolDispatched hook that advances
 	// the task's `ToolCount` registry-side after every successful
@@ -630,46 +616,26 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 
 	// Phase 107 — per-run OnChunk closure. Translates bifrost streaming
 	// deltas into `llm.completion.chunk` bus events under the run's
-	// identity quadruple. Per D-025: the closure is per-run on the
-	// stack; N concurrent runs see N independent closures.
+	// identity quadruple, with identity on the Event ENVELOPE (the
+	// trap the promoted constructor encodes — Phase 110b, D-195; see
+	// `llm.NewChunkPublisher`'s godoc for the 280-rejected-chunks
+	// history). Per D-025: the closure is per-run on the stack; N
+	// concurrent runs see N independent closures. The one-line adapter
+	// bridges the constructor's string-typed kind (import direction:
+	// `planner` imports `llm`, so `llm` cannot name `planner.ChunkKind`).
+	chunkPub := llm.NewChunkPublisher(d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
-		payload := llm.CompletionChunkPayload{
-			Identity:   q,
-			TaskID:     string(taskID),
-			RunID:      q.RunID,
-			Delta:      delta,
-			Done:       done,
-			Kind:       string(kind),
-			OccurredAt: time.Now(),
-		}
-		// Identity MUST land on the Event envelope (not just the
-		// payload) — the event bus validates the envelope before fan-out
-		// (CLAUDE.md §6 rule 5). Matching the `emit` closure pattern
-		// twenty lines up — the chunk path was missing this when the
-		// closure was first authored, and live testing surfaced 280+
-		// rejected chunks per task ("events: event identity missing
-		// one or more components: type=llm.completion.chunk").
-		now := time.Now()
-		if pubErr := d.bus.Publish(d.subCtx, events.Event{
-			Type:       llm.EventTypeCompletionChunk,
-			Identity:   q,
-			OccurredAt: now,
-			Payload:    payload,
-		}); pubErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: chunk publish failed",
-				slog.String("task_id", string(taskID)),
-				slog.String("run_id", q.RunID),
-				slog.String("err", pubErr.Error()))
-		}
+		chunkPub(delta, done, string(kind))
 	}
 
 	// Round-7 F11 / D-166 — pre-resolve operator-uploaded input
 	// artifacts so the planner's first-turn materializer renders them
-	// as multimodal Content.Parts. The runloop clears
-	// `Base.InputArtifacts` after the first step (per
-	// `runloop.go::spec.Base.InputArtifacts = nil` at the end of the
-	// per-step build) so subsequent steps see an empty slice.
-	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
+	// as multimodal Content.Parts (promoted policy — Phase 110b,
+	// D-195). The runloop clears `Base.InputArtifacts` after the first
+	// step (per `runloop.go::spec.Base.InputArtifacts = nil` at the
+	// end of the per-step build) so subsequent steps see an empty
+	// slice.
+	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger)
 
 	// Phase 107f (D-176) — pre-resolve the session-artifact manifest so
 	// the planner renders a read-only `<session_artifacts>` block listing
@@ -762,7 +728,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		if d.memory != nil {
 			turn := memory.ConversationTurn{
 				UserMessage:       task.Query,
-				AssistantResponse: extractAssistantAnswer(fin),
+				AssistantResponse: runctx.ExtractAssistantAnswer(fin),
 				Timestamp:         time.Now(),
 			}
 			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil {
@@ -782,7 +748,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// `planner.AnswerEnvelope` (byte-compatible with the Phase 106
 		// map literal — pinned by the planner-side golden test).
 		payload := planner.AnswerEnvelope{
-			Answer:        extractAssistantAnswer(fin),
+			Answer:        runctx.ExtractAssistantAnswer(fin),
 			FinishReason:  string(fin.Reason),
 			ToolCallsSeen: len(traj.Steps),
 		}
@@ -826,95 +792,6 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		slog.String("task_id", string(taskID)),
 		slog.String("run_id", q.RunID),
 		slog.String("reason", string(fin.Reason)))
-}
-
-// Close cancels the subscription, waits for the subscribe-loop to
-// drain, then waits for every in-flight RunLoop goroutine to return.
-// Idempotent: a second Close walks no-ops. The supplied ctx is
-// accepted for the closer-signature compatibility (closeFns takes a
-// ctx); the driver's drain has its own bounded shape (every RunLoop
-// observes d.subCtx cancellation and returns within one drain
-// boundary). A pathological RunLoop that holds ctx-cancellation
-// indefinitely would block Close; the dev cmd's serve loop applies
-// the Server.ShutdownGracePeriod ceiling at the http boundary, so a
-// blocked Close eventually surfaces as a graceless exit.
-// resolveInputArtifacts pre-fetches the metadata (+ bytes for
-// `image/*`) for every operator-uploaded artifact ID on a task,
-// producing the `planner.InputArtifactView` slice the run loop hands
-// to the planner's first turn. Round-7 F11 / D-166 — the synchronous
-// pre-resolution keeps the planner's prompt assembly I/O-free.
-//
-// Failures are bounded:
-//   - Nil artifact store with non-empty IDs → empty slice + Warn log
-//     (the LLM still sees a text-only prompt; the operator can re-
-//     attach after wiring the store). Avoids a hard fail-loud here
-//     because the artifact-store dependency is genuinely optional in
-//     some dev postures.
-//   - `GetRef` not-found / errored → skip that ID + Warn (the rest
-//     of the slice survives; the artifact may have been GC'd between
-//     spawn and run).
-//   - `Get` (bytes fetch) errored on an image/* → keep the entry but
-//     leave Bytes nil. The materializer falls back to a stub-text
-//     part for missing-bytes images — see
-//     `TestMaterializeInputContent_ImageMissingBytesFallsBackToRef`.
-//
-// The scope on every store call is the run's identity tuple — the
-// artifact store enforces tenant isolation on read.
-func (d *perTaskRunLoopDriver) resolveInputArtifacts(
-	ctx context.Context, q identity.Quadruple, ids []string,
-) []planner.InputArtifactView {
-	if len(ids) == 0 {
-		return nil
-	}
-	if d.artifactStore == nil {
-		d.logger.Warn("perTaskRunLoopDriver: input artifacts ignored — no artifact store wired",
-			slog.String("run_id", q.RunID),
-			slog.Int("count", len(ids)))
-		return nil
-	}
-	scope := artifacts.ArtifactScope{
-		TenantID:  q.TenantID,
-		UserID:    q.UserID,
-		SessionID: q.SessionID,
-	}
-	out := make([]planner.InputArtifactView, 0, len(ids))
-	for _, id := range ids {
-		ref, found, gerr := d.artifactStore.GetRef(ctx, scope, id)
-		if gerr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: artifact GetRef failed; skipping",
-				slog.String("run_id", q.RunID),
-				slog.String("artifact_id", id),
-				slog.String("err", gerr.Error()))
-			continue
-		}
-		if !found || ref == nil {
-			d.logger.Warn("perTaskRunLoopDriver: artifact not found; skipping",
-				slog.String("run_id", q.RunID),
-				slog.String("artifact_id", id))
-			continue
-		}
-		view := planner.InputArtifactView{
-			ID:        ref.ID,
-			MIME:      ref.MimeType,
-			SizeBytes: ref.SizeBytes,
-			Filename:  ref.Filename,
-		}
-		// Image MIMEs need the bytes inline (Path 1 — DataURL).
-		// Everything else stays as a ref the materializer renders as
-		// an `ArtifactStub`.
-		if strings.HasPrefix(ref.MimeType, "image/") {
-			bytesPayload, getFound, berr := d.artifactStore.Get(ctx, scope, id)
-			if berr != nil || !getFound || len(bytesPayload) == 0 {
-				d.logger.Warn("perTaskRunLoopDriver: image artifact bytes missing; emitting ref-only fallback",
-					slog.String("run_id", q.RunID),
-					slog.String("artifact_id", id))
-			} else {
-				view.Bytes = bytesPayload
-			}
-		}
-		out = append(out, view)
-	}
-	return out
 }
 
 // resolveSessionArtifacts builds the session-artifact manifest the
@@ -965,6 +842,16 @@ func (d *perTaskRunLoopDriver) resolveSessionArtifacts(
 	return planner.BuildArtifactManifest(refs)
 }
 
+// Close cancels the subscription, waits for the subscribe-loop to
+// drain, then waits for every in-flight RunLoop goroutine to return.
+// Idempotent: a second Close walks no-ops. The supplied ctx is
+// accepted for the closer-signature compatibility (closeFns takes a
+// ctx); the driver's drain has its own bounded shape (every RunLoop
+// observes d.subCtx cancellation and returns within one drain
+// boundary). A pathological RunLoop that holds ctx-cancellation
+// indefinitely would block Close; the dev cmd's serve loop applies
+// the Server.ShutdownGracePeriod ceiling at the http boundary, so a
+// blocked Close eventually surfaces as a graceless exit.
 func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 	d.closedOnce.Do(func() {
 		if !d.started {
@@ -993,160 +880,4 @@ func (d *perTaskRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.
 	d.trajMu.RLock()
 	defer d.trajMu.RUnlock()
 	return d.trajectories[taskID]
-}
-
-// projectMemoryBlocks shapes a memory.LLMContextPatch into the
-// JSON-encodable map the planner's `<read_only_conversation_memory>`
-// wrapper renders. Returns nil when the patch is empty — the wrapper
-// is omitted entirely. V1.1 ships only the Conversation tier; the
-// External tier remains nil pending a long-term memory phase.
-func projectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
-	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
-		return nil
-	}
-	recent := make([]map[string]any, 0, len(patch.RecentTurns))
-	for _, turn := range patch.RecentTurns {
-		recent = append(recent, map[string]any{
-			"user":      turn.UserMessage,
-			"assistant": turn.AssistantResponse,
-		})
-	}
-	conversation := map[string]any{
-		"strategy":     string(patch.Strategy),
-		"recent_turns": recent,
-	}
-	if patch.Summary != "" {
-		conversation["summary"] = patch.Summary
-	}
-	return &planner.MemoryBlocks{Conversation: conversation}
-}
-
-// projectSkillsContext shapes a []skills.RankedSkill into the
-// []any the planner's `<skills_context>` wrapper renders. Each
-// element is a small map carrying the body fields the LLM consumes
-// (name / title / description / steps). An empty input returns nil
-// so the wrapper is omitted.
-func projectSkillsContext(ranked []skills.RankedSkill) []any {
-	if len(ranked) == 0 {
-		return nil
-	}
-	out := make([]any, 0, len(ranked))
-	for _, r := range ranked {
-		entry := map[string]any{
-			"name":  r.Skill.Name,
-			"title": r.Skill.Title,
-		}
-		if r.Skill.Description != "" {
-			entry["description"] = r.Skill.Description
-		}
-		if len(r.Skill.Steps) > 0 {
-			entry["steps"] = r.Skill.Steps
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
-// skillKeywordStopwords lists the common English stopwords the
-// keyword extractor drops before handing the query to the FTS5
-// skills driver. The list is intentionally CONSERVATIVE — domain
-// keywords ("api", "config", "auth", "tool") survive because they
-// drive the BM25 ranker's signal. The list mirrors the standard
-// short-stopword sets shipped with SQLite FTS5 tokenizers; it is
-// fixed (operator-tunable lists are a Phase 91+ concern).
-// Phase 83m (Item 4, D-156).
-var skillKeywordStopwords = map[string]struct{}{
-	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {},
-	"if": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {},
-	"been": {}, "being": {}, "have": {}, "has": {}, "had": {},
-	"do": {}, "does": {}, "did": {}, "of": {}, "to": {}, "in": {},
-	"on": {}, "at": {}, "for": {}, "with": {}, "by": {}, "from": {},
-	"as": {}, "into": {}, "that": {}, "this": {}, "it": {}, "i": {},
-	"you": {}, "we": {}, "they": {}, "my": {}, "your": {},
-}
-
-// maxSkillKeywords caps the number of terms the helper returns. A
-// longer term list dilutes the BM25 signal without improving recall;
-// 10 mirrors the standard search-keyword cap.
-const maxSkillKeywords = 10
-
-// extractSkillKeywords turns a raw task Query (a full sentence, with
-// punctuation + articles + stopwords) into the keyword-shaped string
-// the SQLite skills driver's FTS5 ranker performs best on. The
-// pipeline is intentionally CONSERVATIVE: tokens that look like
-// domain vocabulary survive; only the highest-noise common-English
-// stopwords + 1-char tokens get dropped. Phase 83m (Item 4, D-156).
-//
-// Steps (in order):
-//
-//  1. Lowercase the input so the case-insensitive token comparison
-//     matches the FTS5 tokenizer's default case-folding.
-//  2. Split on whitespace + punctuation (every rune that is neither a
-//     letter nor a digit acts as a separator). Apostrophes inside a
-//     word ("operator's") are split — the driver tokenizes the same
-//     way, so the result is a single contiguous letter run rather
-//     than the contraction.
-//  3. Drop tokens in `skillKeywordStopwords`.
-//  4. Drop 1-character tokens — they carry no signal at the BM25
-//     edge.
-//  5. Deduplicate while preserving order — the first occurrence wins
-//     so the operator-visible word order is preserved.
-//  6. Cap at `maxSkillKeywords` (10) terms.
-//
-// Returns the space-joined keyword string. An empty result is
-// possible for a pathological all-stopword input; the caller MUST
-// fall back to the raw Query so Search still has signal.
-func extractSkillKeywords(query string) string {
-	if query == "" {
-		return ""
-	}
-	lower := strings.ToLower(query)
-	// Token boundary: any rune that is not a letter or a digit.
-	tokens := strings.FieldsFunc(lower, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	seen := make(map[string]struct{}, len(tokens))
-	out := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		if len(tok) <= 1 {
-			continue
-		}
-		if _, drop := skillKeywordStopwords[tok]; drop {
-			continue
-		}
-		if _, dup := seen[tok]; dup {
-			continue
-		}
-		seen[tok] = struct{}{}
-		out = append(out, tok)
-		if len(out) >= maxSkillKeywords {
-			break
-		}
-	}
-	return strings.Join(out, " ")
-}
-
-// extractAssistantAnswer pulls the planner's natural-language answer
-// out of a terminal Finish for the memory.AddTurn writeback. Phase 83i
-// (D-152). The react planner's FinishGoal carries
-// Payload = map[string]any{"answer": "<the LLM's answer>"}. Other
-// planners may shape Payload differently; we accept any string-valued
-// "answer" key and otherwise fall back to a Sprintf so something
-// always lands in memory (matching CLAUDE.md §5 fail-loud — silent
-// "nothing written" would lose the run's outcome).
-func extractAssistantAnswer(fin planner.Finish) string {
-	switch p := fin.Payload.(type) {
-	case string:
-		return p
-	case map[string]any:
-		if v, ok := p["answer"]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
-	}
-	if fin.Payload == nil {
-		return string(fin.Reason)
-	}
-	return fmt.Sprintf("%v", fin.Payload)
 }
