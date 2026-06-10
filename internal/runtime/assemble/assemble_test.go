@@ -347,6 +347,10 @@ func (stub110dProvider) InitiateFlow(context.Context, tools.ToolSourceID) (toola
 func (stub110dProvider) CompleteFlow(context.Context, string, string) (toolauth.Token, error) {
 	return toolauth.Token{}, nil
 }
+func (stub110dProvider) PendingFlow(string) (toolauth.PendingFlowInfo, bool) {
+	return toolauth.PendingFlowInfo{}, false
+}
+func (stub110dProvider) DenyFlow(context.Context, string, string) error   { return nil }
 func (stub110dProvider) Revoke(context.Context, tools.ToolSourceID) error { return nil }
 func (stub110dProvider) Close(context.Context) error                      { return nil }
 

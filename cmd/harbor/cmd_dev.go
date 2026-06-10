@@ -114,6 +114,7 @@ import (
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
+	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -1056,6 +1057,26 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		opts.logger,
 	)
 	router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
+
+	// Phase 111b (D-199) — the tool-OAuth callback endpoint: the
+	// completion leg of the unified pause/resume choreography (RFC
+	// §6.4 + §3.3). The authorization server redirects the user's
+	// browser here; the handler exchanges (state, code) via
+	// Provider.CompleteFlow, persists the token, and resumes the
+	// parked pause record with the typed DecisionResume marker. The
+	// provider map is the SAME assembly output the catalog Builder
+	// consumed (assemble.Stack.OAuthProviders — D-197), so the flow
+	// records the wrapper parked are the records this route
+	// completes. Mounted WITHOUT auth middleware by design: the
+	// redirect carries no Harbor JWT — the unguessable one-time
+	// `state` nonce is the bearer capability, and the handler
+	// restores identity from the provider's own flow record (the
+	// single source of truth pinned at initiation; see
+	// internal/tools/auth/callback.go). Mounted BEFORE the /v1/
+	// catch-all so the exact method+path match wins. Operators point
+	// OAuthConfig.RedirectURI at http://<bind>/v1/tools/oauth/callback.
+	router.Handle(toolauth.CallbackRoutePattern,
+		toolauth.CallbackHandler(stack.OAuthProviders, toolauth.WithCallbackLogger(opts.logger)))
 
 	// Forward every other Protocol-prefixed path to the Phase 60 mux.
 	// The draft handler is registered above; this catch-all picks up
