@@ -47,6 +47,8 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
 	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
 
+	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
+
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
 	// it never appears in YAML / logging output.
@@ -470,6 +472,30 @@ type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
 	SweepInterval time.Duration `yaml:"sweep_interval"`
+}
+
+// PauseResumeConfig configures the pause lifecycle (Phase 111c /
+// D-200; RFC §3.3 + §6.3).
+//
+// `MaxParkDuration` is the ceiling on how long a pause may stay parked
+// before the runtime's pause sweeper resumes it with the typed
+// `timeout` Decision (`pause.resumed`, D-096) and the waiting run
+// terminates as a constraints-conflict. Zero (the default) means
+// pauses never expire and the sweeper is not started — the pre-111c
+// behaviour. Negative values are rejected by validation.
+//
+// `SweepInterval` is the sweeper's scan cadence. Default 1m; 0 means
+// the default applies (the block is off-by-default, so a hand-built
+// Config without it stays valid); negative values are rejected. When
+// expiry is enabled it must not exceed `MaxParkDuration` (a pause
+// must not overstay its deadline by more than one sweep).
+//
+// Fields are not hot-reloadable in V1 (changing the sweep cadence at
+// runtime would race with the sweeper goroutine — same posture as
+// SessionsConfig).
+type PauseResumeConfig struct {
+	MaxParkDuration time.Duration `yaml:"max_park_duration"`
+	SweepInterval   time.Duration `yaml:"sweep_interval"`
 }
 
 // ArtifactsConfig configures the ArtifactStore driver, the

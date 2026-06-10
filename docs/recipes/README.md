@@ -19,6 +19,7 @@ API, read the godoc.
 | [Run the local dev loop](run-harbor-dev.md) | `harbor validate` + `harbor dev` — boot a Runtime on the loopback. |
 | [Test an agent](test-an-agent.md) | The public `harbortest` kit — `RunOnce`, `AssertNoLeaks`, `SimulateFailure`. |
 | [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program — no CLI, no Protocol server. |
+| [Steer and resume a run](steer-and-resume-a-run.md) | The unified pause/resume primitive: durable (checkpoint-store-backed) pauses, what survives a restart, and the max-park sweeper that reaps abandoned pauses with the typed `timeout` Decision. |
 
 ## Conventions used in these recipes
 
