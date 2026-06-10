@@ -88,12 +88,12 @@ None.
 - **Production wiring.** New config knob `planner.token_budget` (int; 0 =
   disabled, today's behaviour, the default) → validated → projected onto
   `RunSpec.Base.Budget.TokenBudget` in the per-task run loop
-  (`cmd_dev_runloop.go`) → `bootDevStack` constructs the runner
+  (`cmd_dev_runloop.go` + devstack's driver shell — the per-caller seam
+  D-197 deliberately left per-caller) → the merged 110d assembly
+  (`assemble.Assemble` — D-197) constructs the runner
   (`planner.NewCompressionRunner(summariser)` over a
-  `NewTrajectorySummariser(llmClient)`) when the budget is non-zero.
-  Devstack D-094 mirror in the same PR. (If Wave B's 110a/110d promotions
-  land first, the wiring lands in the promoted run-loop/assembly instead —
-  either order works; §17.6 covers the transition.)
+  `NewTrajectorySummariser(llmClient)`) when the budget is non-zero, so
+  cmd + devstack inherit it as thin callers.
 - **Godoc honesty, reversed.** `compression.go:36-44`'s "the production
   LLM-backed summariser lands when …" and `planner.go:563-573`'s "the
   runtime's CompressionRunner reads this field" become TRUE; the Wave A
@@ -152,8 +152,9 @@ implementor judges closest), including the budget-zero-means-off contract.
       when `TokenBudget > 0` and the runner is non-nil; nil/zero =
       byte-identical to today (golden no-op test).
 - [ ] Production wiring: `planner.token_budget` config field (validated;
-      documented in `examples/harbor.yaml`); `bootDevStack` constructs
-      summariser + runner when non-zero; devstack D-094 mirror.
+      documented in `examples/harbor.yaml`); the merged 110d assembly
+      (`assemble.Assemble` — D-197) constructs summariser + runner when
+      non-zero; cmd + devstack inherit as thin callers.
 - [ ] Long-trajectory E2E: compression fires; `trajectory.compressed`
       emitted with identity; the next prompt build takes the
       `Summary != nil` path and the prompt shrinks (byte-length assertion);
@@ -181,9 +182,12 @@ implementor judges closest), including the budget-zero-means-off contract.
   step-loop `MaybeCompress` call.
 - `internal/planner/compression.go` + `internal/planner/planner.go` — godoc
   truth updates (no behaviour change to the runner itself).
-- `cmd/harbor/cmd_dev.go` + `cmd_dev_runloop.go` — runner construction +
-  `Budget`/`Compression` projection.
-- `harbortest/devstack/devstack.go` — D-094 mirror.
+- `internal/runtime/assemble/assemble.go` — runner construction (the merged
+  110d assembly site — D-197).
+- `cmd/harbor/cmd_dev_runloop.go` + `harbortest/devstack/devstack.go` —
+  `Budget`/`Compression` projection in the per-task run-loop driver shells
+  (the per-caller seam D-197 left per-caller; both sides in the same PR,
+  §17.6).
 - `internal/config/config.go` + `validate.go` — `planner.token_budget`.
 - `examples/harbor.yaml` — documented field.
 - `docs/recipes/configure-a-planner.md` — headless budget + compression

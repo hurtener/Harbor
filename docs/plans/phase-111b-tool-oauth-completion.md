@@ -92,9 +92,12 @@ None.
     bytes (§7 — secrets).
 - **Mounted by `harbor dev`:** the dev server mounts the handler at
   `GET /v1/tools/oauth/callback` (the path becomes the documented default
-  `RedirectURI` shape); the OAuth provider assembly already constructed in
-  `bootDevStack` (`cmd_dev.go::applyToolCatalogWiring`) passes its provider
-  map through. Devstack D-094 mirror in the same PR.
+  `RedirectURI` shape); the OAuth provider assembly already constructed by
+  the 110d assembly's catalog band (`auth.BuildProviders` inside
+  `assemble.Assemble` — D-197) passes its provider map through via
+  `assemble.Stack.OAuthProviders`. Devstack reads the same `Stack` field —
+  no D-094 hand-mirror needed since 110d collapsed the wiring to thin
+  callers.
 - **Mountable headless:** the handler is a plain `http.Handler` — a headless
   consumer mounts it on their own mux at whatever path matches their
   configured `RedirectURI`. No dependency on the Protocol server, the dev
@@ -184,9 +187,11 @@ None.
 - `internal/tools/auth/auth.go` — godoc repair (`RedirectURI` + the
   interface docs naming the callback).
 - `cmd/harbor/cmd_dev.go` — mount the handler on the dev server mux; thread
-  the provider map from `applyToolCatalogWiring`'s output.
-- `harbortest/devstack/devstack.go` — D-094 mirror (handler reachable on the
-  devstack's test server).
+  the provider map from `assemble.Stack.OAuthProviders` (the 110d assembly's
+  catalog band output — D-197).
+- `harbortest/devstack/devstack.go` — handler reachable on the devstack's
+  test server (same `Stack.OAuthProviders` source; thin-caller parity per
+  110d).
 - `test/integration/phase111b_oauth_completion_test.go` — the full
   choreography E2E.
 - `docs/recipes/steer-and-resume-a-run.md` — **NEW** (OAuth completion

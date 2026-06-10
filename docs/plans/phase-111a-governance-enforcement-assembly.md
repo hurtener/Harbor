@@ -89,12 +89,9 @@ None.
   `state.StateStore`; the factory builds via `NewSubsystemFromConfig` using the
   `(llm.ConfigSnapshot, llm.Deps)` pair `llm.Open` hands it (the bus comes from
   `Deps.Bus`). `SetFactory` is invoked BEFORE `llm.Open` in the boot order.
-  - **Assembly target:** if Wave B's 110d (the promoted, error-returning
-    `Assemble`) has merged, the wiring lands there — one site, cmd + devstack
-    are thin callers. If 110d has not merged when this phase is implemented,
-    the wiring lands in `cmd/harbor/cmd_dev.go::bootDevStack` AND the
-    `harbortest/devstack/devstack.go` mirror (D-094 — both sides in the same
-    PR, §17.6). The plan works either way; the implementor checks the tree.
+  - **Assembly target:** Wave B's 110d (the promoted, error-returning
+    `assemble.Assemble`) has merged (D-197) — the wiring lands there: one
+    site, cmd + devstack are thin callers. No D-094 hand-mirror is needed.
 - **Config projection:** consumes 110c's exported
   `governance.ConfigFromOperator` (the config→`governance.Config` projection
   that replaces the unexported `governanceConfigFromConfig` /
@@ -156,11 +153,11 @@ gets a two-level answer:
       documented order); returns `(nil, nil)` on empty `IdentityTiers`
       (D-044 latent default pinned by a unit test); returns wrapped
       `ErrInvalidConfig` on nil store/bus with non-empty tiers.
-- [ ] **§13 primitive-with-consumer:** the production assembly (110d
-      `Assemble` if merged; else `bootDevStack` + the devstack D-094 mirror)
-      calls `governance.SetFactory` before `llm.Open` whenever
-      `IdentityTiers` is non-empty — `SetFactory` gains its first production
-      caller in the same phase that ships the assembly helper.
+- [ ] **§13 primitive-with-consumer:** the production assembly (110d's
+      merged `assemble.Assemble` — D-197) calls `governance.SetFactory`
+      before `llm.Open` whenever `IdentityTiers` is non-empty —
+      `SetFactory` gains its first production caller in the same phase
+      that ships the assembly helper.
 - [ ] The factory consumes the exported config projection
       (`governance.ConfigFromOperator`, from 110c or promoted here); the
       unexported `governanceConfigFromConfig` / `governanceConfigForDevstack`
@@ -192,10 +189,10 @@ gets a two-level answer:
   `NewSubsystemFromConfig` + tests.
 - `internal/governance/registry.go` — `SetFactory` godoc: multi-runtime
   limitation + the `Wrap` escape pointer.
-- `cmd/harbor/cmd_dev.go` — `SetFactory` call in `bootDevStack` (or the 110d
-  `Assemble` site); posture provider keeps its existing wiring; duplicate
-  config projection deleted (110c convergence).
-- `harbortest/devstack/devstack.go` — D-094 mirror of the same wiring.
+- `internal/runtime/assemble/assemble.go` — `SetFactory` call (the merged
+  110d assembly site — D-197; cmd + devstack inherit it as thin callers).
+- `cmd/harbor/cmd_dev.go` — posture provider keeps its existing wiring;
+  duplicate config projection deleted (110c convergence).
 - `internal/config/validate.go` — remove the Wave A posture-only warning.
 - `test/integration/phase111a_governance_test.go` — the three-enforcer E2E +
   cross-session isolation.

@@ -125,7 +125,8 @@ func WithHeavyThreshold(bytes int) Option {
 
 // WithMaxSpawnDepth caps the ParentTaskID-chain depth of
 // planner-spawned background tasks (planner.absolute_max_spawn_depth).
-// Non-positive values fall back to the default depth of 4.
+// Non-positive values fall back to `config.DefaultSpawnDepthCap` (the
+// one source of the spawn-depth default — D-196).
 func WithMaxSpawnDepth(n int) Option {
 	return func(e *toolExecutor) { e.maxSpawnDepth = n }
 }

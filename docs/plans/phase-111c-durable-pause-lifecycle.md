@@ -72,11 +72,12 @@ None.
   already holds it — `RunSpec.Base.Trajectory`). Serialization failures
   surface as `ErrUnserializable` verbatim (the existing contract, now
   actually exercisable with real trajectories).
-- **Checkpoint-store wiring.** Both assemblies construct the Coordinator with
+- **Checkpoint-store wiring.** The one assembly constructs the Coordinator
+  with
   `pauseresume.New(pauseresume.WithBus(bus), pauseresume.WithCheckpointStore(stateStore))`:
-  `cmd/harbor/cmd_dev.go::bootDevStack` AND the devstack D-094 mirror in the
-  same PR (§17.6's exact F1 lesson: never fix one side). If Wave B's 110d
-  (promoted `Assemble`) has merged, the wiring lands once there instead.
+  Wave B's 110d (promoted `assemble.Assemble` — D-197) has merged, so the
+  wiring lands once there — cmd + devstack inherit it as thin callers (no
+  D-094 hand-mirror; §17.6's F1 lesson closed by construction).
 - **Durability E2E.** Pause a run (real planner `RequestPause` path) →
   construct a NEW Coordinator over the SAME StateStore (simulated restart) →
   `Resume(token, ...)` → the checkpointed trajectory is restored and
@@ -186,10 +187,10 @@ irrelevant.
 - `internal/runtime/pauseresume/sweeper.go` — **NEW** exported sweeper over
   List/Resume; `DecisionTimeout` emission.
 - `internal/runtime/pauseresume/sweeper_test.go` — **NEW**.
-- `cmd/harbor/cmd_dev.go` — `WithCheckpointStore(stateStore)` +
-  `WithMaxParkDuration` on the Coordinator construction (`:670` site);
-  sweeper start + closer-chain join.
-- `harbortest/devstack/devstack.go` — D-094 mirror of both (`:697` site).
+- `internal/runtime/assemble/assemble.go` — `WithCheckpointStore(stateStore)`
+  and `WithMaxParkDuration` on the one Coordinator construction
+  (`pauseresume.New`, the merged 110d assembly site — D-197); sweeper start
+  and closer-chain join. cmd + devstack inherit as thin callers.
 - `internal/config/config.go` + `validate.go` — the two new
   `pauseresume.*` fields + validation.
 - `examples/harbor.yaml` — documented fields.

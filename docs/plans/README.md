@@ -1089,7 +1089,7 @@ same phase (§13 primitive-with-consumer + §17.6 fix-both-sides). Staging: **St
 band is module-internal; the external-module facade (the audit's Wave D) is a future
 RFC-level program for which 110d is the named prerequisite.
 
-- **110a — Tool-executor promotion (D-194).** Promotes the only production
+- **110a — Tool-executor promotion (SHIPPED — D-194).** Promotes the only production
   `steering.ToolExecutor` (`cmd/harbor/cmd_dev_executor.go`, ~660 lines: catalog
   dispatch, D-026 heavy-result artifact promotion, `CallParallel` via
   `internal/runtime/parallel`, SpawnTask/AwaitTask with depth caps) to
@@ -1103,7 +1103,7 @@ RFC-level program for which 110d is the named prerequisite.
   switches the D-192 HITL E2E off its test-local executor shim onto the real promoted
   executor, and DELETES the devstack degraded executor (capability drift closed).
   D-025 concurrent-reuse test (N≥100, `-race`) mandatory. RFC §6.4, §6.5, §6.2. Deps:
-  D-192 fix (in flight), 107d, 107e, 83i. Stage 1, parallel with 110c. See
+  D-192 fix (merged), 107d, 107e, 83i. Stage 1, parallel with 110c. See
   `docs/plans/phase-110a-tool-executor-promotion.md`.
 - **110b — RunContext population + event-closure promotion (SHIPPED — D-195).**
   Promotes the five RunContext-population helpers duplicated cmd↔devstack into

@@ -83,15 +83,14 @@ None.
 
 ### Half 1 — telemetry assembly
 
-- **`telemetry.New` in production.** Once `bootDevStack` has the redactor +
-  bus, it constructs
+- **`telemetry.New` in production.** Once the merged 110d assembly
+  (`assemble.Assemble` — D-197) has the redactor + bus, it constructs
   `telemetry.New(cfg.Telemetry, red, telemetry.WithBusEmitter(eventbus.New(bus)))`
   and threads the resulting Logger into the stack's subsystems as the
   request-scoped logger source (the pre-redactor boot logger remains only
   for the bootstrap window — documented, narrow). `Logger.Error` paths now
-  emit the paired `runtime.error` event per RFC §6.14. Devstack D-094
-  mirror in the same PR. (If Wave B's 110d `Assemble` has merged, the
-  wiring lands once there.)
+  emit the paired `runtime.error` event per RFC §6.14. The wiring lands
+  once in the assembly; cmd + devstack inherit as thin callers.
 - **RunErrorHandler wired.** The flow construction seam
   (`internal/runtime/flow`) accepts and forwards a run-error handler to
   `engine.New(engine.WithRunErrorHandler(...))`; the production assembly
@@ -233,9 +232,9 @@ the embedder already has.
 
 ## Files added or changed
 
-- `cmd/harbor/cmd_dev.go` — `telemetry.New` construction + threading;
-  tracer + bridges start; closer-chain joins.
-- `harbortest/devstack/devstack.go` — D-094 mirror.
+- `internal/runtime/assemble/assemble.go` — `telemetry.New` construction +
+  threading; tracer + bridges start; closer-chain joins (the merged 110d
+  assembly site — D-197; cmd + devstack inherit as thin callers).
 - `internal/telemetry/tracebridge.go` — **NEW** `BridgeBusToTracer` (+
   `tracebridge_test.go`).
 - `internal/runtime/flow/flow.go` — run-error-handler pass-through option.
