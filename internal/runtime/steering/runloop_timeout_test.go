@@ -7,8 +7,11 @@ package steering
 // unpark-and-continue and never a park-forever.
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,5 +358,128 @@ func TestRun_ResumeControl_NonTimeoutAlreadyResumed_StaysLoud(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not surface the apply failure")
+	}
+}
+
+// TestRun_PauseTimeout_StatusRecheckBackstop pins the
+// delivery-independent backstop branch (Wave C checkpoint audit): on a
+// BUS-LESS RunLoop whose pause times out only AFTER the run is parked,
+// the ONLY wake channel is the Status re-check ticker
+// (`case <-recheck.C`). The stub Coordinator scripts the ordering
+// deterministically — the park's two fast-path Status checks (calls 1
+// and 2) see a live pause; from call 3 on (the ticker's checks) the
+// pause reports resumed/timeout — so a pass proves the ticker branch
+// terminates the run, not a fast path. The interval is injected small
+// (WithPauseStatusRecheckInterval) so the backstop is exercisable
+// without a 30s wall-clock wait.
+func TestRun_PauseTimeout_StatusRecheckBackstop(t *testing.T) {
+	reg := NewRegistry()
+	coord := &stubCoordinator{statusTimeoutAfterCalls: 3}
+	rl, err := NewRunLoop(reg, coord,
+		WithPauseStatusRecheckInterval(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRunLoop: %v", err)
+	}
+
+	p := &pausingPlanner{reason: planner.PauseApprovalRequired}
+	done := make(chan struct {
+		fin planner.Finish
+		err error
+	}, 1)
+	go func() {
+		fin, rerr := rl.Run(context.Background(), runSpecFor(runA, p))
+		done <- struct {
+			fin planner.Finish
+			err error
+		}{fin, rerr}
+	}()
+
+	// No control is ever enqueued and there is no bus: only the
+	// re-check ticker can wake the park.
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("Run: %v", out.err)
+		}
+		if out.fin.Reason != planner.FinishConstraintsConflict {
+			t.Fatalf("Finish.Reason = %q, want %q (ticker backstop must be timeout-terminal)",
+				out.fin.Reason, planner.FinishConstraintsConflict)
+		}
+		if out.fin.Metadata["steering_reason"] != "pause_timeout" {
+			t.Fatalf("Finish.Metadata[steering_reason] = %v, want pause_timeout", out.fin.Metadata["steering_reason"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bus-less parked run did not terminate via the Status re-check ticker")
+	}
+
+	coord.mu.Lock()
+	calls := coord.statusCalls
+	coord.mu.Unlock()
+	if calls < 3 {
+		t.Fatalf("Status calls = %d, want >= 3 (the ticker branch must have fired; 2 = fast paths only)", calls)
+	}
+	if steps := p.stepCount(); steps != 1 {
+		t.Fatalf("planner Next calls = %d, want 1 (a timed-out pause must not re-enter the planner)", steps)
+	}
+}
+
+// TestRun_PauseTimeout_BusSubscribeFailure_WarnsAndFallsBack pins the
+// degradation contract on the park's bus-subscription failure (Wave C
+// checkpoint audit): a CLOSED bus must not error the park — the run
+// falls back to the Status re-check ticker (and still terminates
+// timeout-terminal), and the degradation is surfaced at Warn with the
+// run's identity attributes (CLAUDE.md §5 — unexpected but recovered,
+// never silent).
+func TestRun_PauseTimeout_BusSubscribeFailure_WarnsAndFallsBack(t *testing.T) {
+	red := patternsAudit.New()
+	bus := mkBridgeBus(t, red)
+	if err := bus.Close(context.Background()); err != nil {
+		t.Fatalf("Close(bus): %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	reg := NewRegistry()
+	coord := &stubCoordinator{statusTimeoutAfterCalls: 3}
+	rl, err := NewRunLoop(reg, coord,
+		WithRunLoopBus(bus), // closed: Subscribe fails at park entry
+		WithRunLoopLogger(logger),
+		WithPauseStatusRecheckInterval(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRunLoop: %v", err)
+	}
+
+	p := &pausingPlanner{reason: planner.PauseAwaitInput}
+	done := make(chan struct {
+		fin planner.Finish
+		err error
+	}, 1)
+	go func() {
+		fin, rerr := rl.Run(context.Background(), runSpecFor(runA, p))
+		done <- struct {
+			fin planner.Finish
+			err error
+		}{fin, rerr}
+	}()
+
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("Run: %v (a failed bus subscription must degrade, not error)", out.err)
+		}
+		if out.fin.Reason != planner.FinishConstraintsConflict {
+			t.Fatalf("Finish.Reason = %q, want %q", out.fin.Reason, planner.FinishConstraintsConflict)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run with a failed bus subscription did not terminate via the re-check fallback")
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "could not subscribe to the bus") {
+		t.Fatalf("no Warn for the degraded park; log output:\n%s", logged)
+	}
+	if !strings.Contains(logged, "run_id="+runA.RunID) || !strings.Contains(logged, "tenant_id="+runA.TenantID) {
+		t.Fatalf("Warn line missing identity attributes; log output:\n%s", logged)
 	}
 }

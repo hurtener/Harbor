@@ -322,6 +322,66 @@ func TestSkillSearch_Delegation_ParityWithRichHandler(t *testing.T) {
 	}
 }
 
+// TestSkillSearch_Delegation_RedactionContract pins the redaction
+// semantics on the production registration path (Wave C checkpoint
+// audit). The 111d plan sketched a golden "disallowed tool name in a
+// skill body" fixture through the builtin skill_search — that fixture
+// is STRUCTURALLY unreachable: Redact's scrub set derives from the
+// skill's RequiredTools (capfilter.DisallowedNames(s.RequiredTools,
+// allowed)), and Filter drops any skill whose RequiredTools are not a
+// subset of the allowed set BEFORE Redact runs — so a survivor never
+// carries a disallowed required tool to scrub. This test pins both
+// halves of that contract through the production carrier:
+//
+//  1. A skill with a PARTIALLY disallowed RequiredTools list is
+//     filtered out entirely (the disallowed name never reaches the
+//     planner at all — stronger than redaction).
+//  2. A surviving skill whose PROSE mentions a gated tool it does not
+//     require is returned verbatim — prose-mention scrubbing keys off
+//     RequiredTools, not arbitrary text (brief 04 §4.5; the redactor
+//     unit suite in internal/skills/tools/redactor_test.go remains
+//     the scrub-mechanics gate).
+func TestSkillSearch_Delegation_RedactionContract(t *testing.T) {
+	t.Parallel()
+	cat, rc := seedDelegationCatalog(t)
+	ctx := skillTestCtx(t)
+	q := identity.Quadruple{Identity: skillTestID}
+
+	mustUpsert := func(s skills.Skill) {
+		t.Helper()
+		if err := rc.SkillStore.Upsert(ctx, q, s); err != nil {
+			t.Fatalf("Upsert(%s): %v", s.Name, err)
+		}
+	}
+	// Half 1: requires BOTH a visible and a gated tool → filtered out.
+	mustUpsert(skills.Skill{
+		Name: "partially-gated", Title: "Partially gated", Trigger: "redaction contract",
+		Steps:         []string{"kb_search then scoped_tool"},
+		RequiredTools: []string{"kb_search", "scoped_tool"},
+		Origin:        skills.OriginGenerated, Scope: skills.ScopeProject,
+	})
+	// Half 2: satisfiable RequiredTools, prose mentions the gated tool.
+	mustUpsert(skills.Skill{
+		Name: "prose-mention", Title: "Mentions scoped_tool in prose", Trigger: "redaction contract",
+		Steps:         []string{"try scoped_tool if you somehow have it, else kb_search"},
+		RequiredTools: []string{"kb_search"},
+		Origin:        skills.OriginGenerated, Scope: skills.ScopeProject,
+	})
+
+	out := invoke[skilltools.SearchResult](t, cat, ctx, "skill_search", SkillSearchArgs{Query: "redaction contract"})
+	names := make([]string, 0, len(out.Skills))
+	for _, r := range out.Skills {
+		names = append(names, r.Skill.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"prose-mention"}) {
+		t.Fatalf("skill_search returned %v, want [prose-mention] (partially-gated must be filtered, not redacted)", names)
+	}
+	got := out.Skills[0].Skill
+	if !strings.Contains(got.Title, "scoped_tool") || !strings.Contains(got.Steps[0], "scoped_tool") {
+		t.Errorf("prose mention was scrubbed (%q / %q) — the scrub contract keys off RequiredTools; if this changed deliberately, update this pin AND the redactor godoc", got.Title, got.Steps[0])
+	}
+}
+
 // TestSkillGet_Delegation_RunsBudgeter proves the tiered token
 // budgeter runs on the production registration: a small max_tokens
 // forces the ladder to drop optional fields (Summarized=true), and an
@@ -397,13 +457,30 @@ func TestSkillList_Delegation_Registered(t *testing.T) {
 
 // TestSkillPropose_Delegation_D054Semantics — the Phase-41 generator's
 // first production registration: persist=true persists with
-// Origin=Generated and the receipt's result branch; the conflict
-// policy (pack-protected) rejects LOUD through the same carrier.
+// Origin=Generated and the receipt's result branch; the D-054
+// audit-mandatory `skill.proposed` emit is observed DIRECTLY on the
+// bus (Wave C checkpoint audit — the plan's "audit emit asserted
+// through the production registration path" criterion, previously
+// pinned only via the persist-implies-emitted rollback indirection);
+// the conflict policy (pack-protected) rejects LOUD through the same
+// carrier.
 func TestSkillPropose_Delegation_D054Semantics(t *testing.T) {
 	t.Parallel()
 	cat, rc := seedDelegationCatalog(t)
 	ctx := skillTestCtx(t)
 	q := identity.Quadruple{Identity: skillTestID}
+
+	// Subscribe BEFORE invoking so the emit cannot be missed.
+	sub, err := rc.Bus.Subscribe(context.Background(), events.Filter{
+		Tenant:  skillTestID.TenantID,
+		User:    skillTestID.UserID,
+		Session: skillTestID.SessionID,
+		Types:   []events.EventType{skills.EventTypeSkillProposed},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
 
 	receipt := invoke[generator.SkillReceipt](t, cat, ctx, "skill_propose", generator.ProposeArgs{
 		Skill: generator.SkillDraft{
@@ -413,6 +490,30 @@ func TestSkillPropose_Delegation_D054Semantics(t *testing.T) {
 	})
 	if !receipt.Persisted || receipt.Result != generator.ResultPersisted || receipt.Origin != skills.OriginGenerated {
 		t.Fatalf("receipt = %+v, want persisted Origin=generated", receipt)
+	}
+
+	// Exactly one `skill.proposed`, carrying the run identity and the
+	// redacted payload shape.
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatal("subscription closed before skill.proposed arrived")
+		}
+		if ev.Type != skills.EventTypeSkillProposed {
+			t.Fatalf("event type = %s, want %s", ev.Type, skills.EventTypeSkillProposed)
+		}
+		if ev.Identity.Identity != skillTestID || ev.Identity.RunID != "r1" {
+			t.Errorf("skill.proposed identity = %+v, want %+v run r1 (the rc.Bus → generator.Deps.Bus wiring carries the run quadruple)", ev.Identity, skillTestID)
+		}
+		payload, ok := ev.Payload.(generator.SkillProposedPayload)
+		if !ok {
+			t.Fatalf("payload type = %T, want generator.SkillProposedPayload", ev.Payload)
+		}
+		if payload.Name != "proposed-skill" || payload.Result != string(generator.ResultPersisted) {
+			t.Errorf("payload = %+v, want name proposed-skill result persisted", payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no skill.proposed event within bound — the D-054 audit emit did not reach the bus")
 	}
 
 	// Conflict policy: a pack row with the same name blocks the

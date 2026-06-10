@@ -449,3 +449,112 @@ func TestTrajectorySummariser_ConcurrentReuse_D025(t *testing.T) {
 		t.Errorf("goroutine count %d did not return to baseline %d — leak", got, baseline)
 	}
 }
+
+// TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps pins
+// the aggregate cap (Wave C checkpoint audit): MANY individually
+// under-cap steps must not compose a payload past the heavy-output
+// threshold — the builder keeps the most recent steps under the
+// budget, collapses older ones into an elision marker, and the
+// summariser's own Complete call therefore can never trip the D-026
+// LLM-edge check. The per-fragment cap alone cannot provide this (the
+// single-big-fragment test above covers that axis).
+func TestTrajectorySummariser_Payload_AggregateBudget_ElidesOldSteps(t *testing.T) {
+	t.Parallel()
+	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
+	s, err := summarizer.NewTrajectorySummariser(client)
+	if err != nil {
+		t.Fatalf("NewTrajectorySummariser: %v", err)
+	}
+	tr := trajFixture()
+	tr.Steps = nil
+	// 40 steps × ~3 KiB observations: every fragment is under the
+	// 4 KiB per-fragment cap, but the naive concatenation (~120 KiB)
+	// would blow far past the 32 KiB default heavy-output threshold.
+	chunk := strings.Repeat("y", 3*1024)
+	for range 40 {
+		obs := chunk
+		tr.Steps = append(tr.Steps, planner.Step{
+			Action:         map[string]any{"tool": "chatty_tool"},
+			LLMObservation: obs,
+		})
+	}
+
+	if _, err := s.Summarise(context.Background(), trajRC("r-agg"), tr); err != nil {
+		t.Fatalf("Summarise: %v", err)
+	}
+	payload := client.seenCalls()[0].content
+	if len(payload) >= llm.DefaultHeavyOutputThreshold {
+		t.Fatalf("payload is %d bytes — at/over the %d heavy-output threshold; the aggregate budget failed",
+			len(payload), llm.DefaultHeavyOutputThreshold)
+	}
+	if !strings.Contains(payload, "earlier steps elided to fit the compaction payload budget") {
+		t.Error("overflowing trajectory rendered no elision marker")
+	}
+	// Recency wins: the LAST step is present, the FIRST is elided —
+	// with original step numbering preserved.
+	if !strings.Contains(payload, "Step 40 action:") {
+		t.Error("most recent step missing from the budgeted payload")
+	}
+	if strings.Contains(payload, "Step 1 action:") {
+		t.Error("oldest step survived a payload that should have elided it")
+	}
+}
+
+// TestTrajectorySummariser_Payload_UnderBudget_NoElision pins the
+// no-op side: a short trajectory renders every step with no elision
+// marker — the aggregate budget changes nothing when nothing
+// overflows.
+func TestTrajectorySummariser_Payload_UnderBudget_NoElision(t *testing.T) {
+	t.Parallel()
+	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
+	s, err := summarizer.NewTrajectorySummariser(client)
+	if err != nil {
+		t.Fatalf("NewTrajectorySummariser: %v", err)
+	}
+	if _, err := s.Summarise(context.Background(), trajRC("r-small"), trajFixture()); err != nil {
+		t.Fatalf("Summarise: %v", err)
+	}
+	payload := client.seenCalls()[0].content
+	if strings.Contains(payload, "elided to fit") {
+		t.Error("under-budget trajectory rendered an elision marker")
+	}
+	if !strings.Contains(payload, "Step 1 action:") {
+		t.Error("under-budget trajectory dropped its first step")
+	}
+}
+
+// TestTrajectorySummariser_Payload_ThreadedThresholdShrinksBudget pins
+// WithTrajectoryHeavyOutputThreshold: an operator-configured threshold
+// smaller than the default bounds the payload to (threshold −
+// headroom), so a summariser assembled against a tightened LLM edge
+// still composes a passable payload.
+func TestTrajectorySummariser_Payload_ThreadedThresholdShrinksBudget(t *testing.T) {
+	t.Parallel()
+	const threshold = 16 * 1024
+	client := &stubClient{response: llm.CompleteResponse{Content: goodSummaryJSON}}
+	s, err := summarizer.NewTrajectorySummariser(client,
+		summarizer.WithTrajectoryHeavyOutputThreshold(threshold))
+	if err != nil {
+		t.Fatalf("NewTrajectorySummariser: %v", err)
+	}
+	tr := trajFixture()
+	tr.Steps = nil
+	chunk := strings.Repeat("z", 3*1024)
+	for range 20 {
+		obs := chunk
+		tr.Steps = append(tr.Steps, planner.Step{
+			Action:         map[string]any{"tool": "chatty_tool"},
+			LLMObservation: obs,
+		})
+	}
+	if _, err := s.Summarise(context.Background(), trajRC("r-thr"), tr); err != nil {
+		t.Fatalf("Summarise: %v", err)
+	}
+	payload := client.seenCalls()[0].content
+	if len(payload) >= threshold {
+		t.Fatalf("payload is %d bytes — at/over the threaded %d threshold", len(payload), threshold)
+	}
+	if !strings.Contains(payload, "elided to fit") {
+		t.Error("tight threshold produced no elision on an overflowing trajectory")
+	}
+}

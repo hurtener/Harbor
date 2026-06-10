@@ -122,7 +122,7 @@ skills:
   directory:                                   # optional — the per-turn <skills_context> browse window
     pinned: [triage-incident]                  # anchored first, declaration order
     max_entries: 10                            # 0/unset → planner.skills_context_max (default 5)
-    selection: pinned_then_recent              # or pinned_then_top
+    selection: pinned_then_recent              # the one wired value (pinned_then_top is rejected: not yet wired)
 ```
 
 Ingest skills with `harbor skill import <path>` and remove them with `harbor skill rm <name>` — both operate on this block's store.

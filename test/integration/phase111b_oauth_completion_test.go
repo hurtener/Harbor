@@ -56,7 +56,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -803,6 +802,3 @@ func (f *phase111bAuthServer) token(w http.ResponseWriter, r *http.Request) {
 		"expires_in":    3600,
 	})
 }
-
-// keep strings import live across goimports reorganisations.
-var _ = strings.TrimSpace

@@ -92,8 +92,12 @@ var DefaultMCPIdentity = identity.Identity{TenantID: "dev", UserID: "dev", Sessi
 // what cmd/harbor and harbortest/devstack consume today, not a
 // speculative embedder wishlist).
 type Options struct {
-	// Logger receives boot warnings + subsystem log lines. Defaults to
-	// slog.Default().
+	// Logger receives the pre-telemetry bootstrap warnings (the window
+	// before the redactor + bus exist). Once the telemetry Logger is
+	// constructed, the assembly threads its Slog() bridge into every
+	// subsequently-built subsystem, so subsystem log lines flow
+	// through the canonical pipeline (Wave C checkpoint audit).
+	// Defaults to slog.Default().
 	Logger *slog.Logger
 
 	// LLMSnapshot, when non-nil, overrides the snapshot Assemble would
@@ -192,8 +196,10 @@ type Stack struct {
 	// Logger.Error emits the slog record AND a `runtime.error` bus
 	// event. Always non-nil after a successful Assemble (Phase 111f,
 	// D-203). The Options.Logger slog logger remains the BOOT logger
-	// (the pre-redactor bootstrap window + subsystem wiring lines);
-	// request-scoped emission goes through this Logger.
+	// for the pre-redactor bootstrap window only; the subsystems the
+	// assembly constructs after this Logger exists receive its Slog()
+	// bridge (Wave C checkpoint audit), and request-scoped emission
+	// goes through this Logger directly.
 	Telemetry *telemetry.Logger
 
 	// Tracer is the canonical OTel tracer (RFC §6.14). Spans are a
@@ -315,6 +321,17 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		return stack, fmt.Errorf("telemetry logger: %w", err)
 	}
 	stack.Telemetry = tlog
+
+	// Wave C checkpoint audit: from this point on, every subsystem the
+	// assembly constructs with a *slog.Logger (the notifications
+	// subscriber, the pause sweeper, the dispatch executor, the MCP
+	// attach loop, the search-cache warn path, the run loop) logs
+	// through the telemetry pipeline — ctx identity stamping,
+	// mandatory redaction, bus-paired errors. The bare Options.Logger
+	// served only the pre-telemetry bootstrap window above, which
+	// makes the D-203 "bootstrap-only" posture true inside the
+	// assembly.
+	logger = tlog.Slog()
 
 	// Phase 111f (D-203): the production engine run-error handler —
 	// `engine.WithRunErrorHandler`\'s godoc made true. Flow composition
@@ -524,7 +541,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.closers = append(stack.closers, agentRegistry.Close)
 
 	if !opts.SkipSteering {
-		if err := assembleSteeringBand(ctx, cfg, opts, stack); err != nil {
+		if err := assembleSteeringBand(ctx, cfg, opts, stack, logger); err != nil {
 			return stack, err
 		}
 	}
@@ -765,8 +782,9 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 // assembleSteeringBand builds the steering Registry, resolves the
 // planner concrete via the §4.4 driver registry (D-103), and
 // constructs the shared RunLoop (Phase 53 / D-071) when a planner and
-// the catalog band are available.
-func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options, stack *Stack) error {
+// the catalog band are available. The logger is the telemetry-backed
+// *slog.Logger Assemble threads post-bootstrap.
+func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options, stack *Stack, logger *slog.Logger) error {
 	stack.Steering = steering.NewRegistry()
 
 	switch {
@@ -790,7 +808,14 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		if stack.LLM == nil {
 			return fmt.Errorf("planner: token_budget=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Planner.TokenBudget)
 		}
-		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM)
+		// The operator's heavy-output threshold is threaded so the
+		// summariser's aggregate payload budget tracks the SAME limit
+		// the LLM-edge safety pass enforces (Wave C checkpoint audit
+		// — a compaction payload must never trip ErrContextLeak on
+		// the run it exists to save). Zero falls back to the D-022
+		// default inside the option.
+		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM,
+			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes))
 		if err != nil {
 			return fmt.Errorf("trajectory summariser: %w", err)
 		}
@@ -809,6 +834,7 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		steering.WithRunLoopBus(stack.Bus),
 		steering.WithTaskRegistry(stack.Tasks),
 		steering.WithApprovalGates(stack.Gates),
+		steering.WithRunLoopLogger(logger),
 	)
 	if err != nil {
 		return fmt.Errorf("steering.RunLoop: %w", err)

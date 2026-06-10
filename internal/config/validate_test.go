@@ -543,6 +543,19 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"pauseresume.sweep_interval",
 		},
+		// Wave C checkpoint audit: an explicit sweep_interval of 0
+		// means the documented 1m default — the one-sweep-overstay
+		// invariant must hold against that EFFECTIVE interval too, so
+		// a sub-minute max_park_duration with a zero interval is
+		// rejected rather than silently overstaying its own deadline.
+		{
+			"pauseresume sub-minute max_park_duration with defaulted sweep_interval",
+			func(c *config.Config) {
+				c.PauseResume.MaxParkDuration = 30 * time.Second
+				c.PauseResume.SweepInterval = 0
+			},
+			"pauseresume.sweep_interval",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1638,7 +1651,7 @@ func TestValidateSkillsDirectory(t *testing.T) {
 		c.Skills.Directory = config.SkillsDirectoryConfig{
 			Pinned:     []string{"triage-incident"},
 			MaxEntries: 10,
-			Selection:  "pinned_then_top",
+			Selection:  "pinned_then_recent",
 		}
 	}); err != nil {
 		t.Errorf("valid directory block rejected: %v", err)
@@ -1648,6 +1661,17 @@ func TestValidateSkillsDirectory(t *testing.T) {
 		c.Skills.Directory.Selection = "newest_first"
 	}); err == nil || !strings.Contains(err.Error(), "skills.directory.selection") {
 		t.Errorf("bad selection: err = %v, want skills.directory.selection error", err)
+	}
+
+	// Wave C checkpoint audit (D-201 addendum): `pinned_then_top` is a
+	// canonical Selection value but has no production usage-bump path
+	// yet — the validator rejects it loud (the tools.http_manifests
+	// fail-loud precedent) rather than letting it silently degrade to
+	// alphabetical ordering.
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory.Selection = "pinned_then_top"
+	}); err == nil || !strings.Contains(err.Error(), "not wired yet") {
+		t.Errorf("inert pinned_then_top: err = %v, want not-wired-yet rejection", err)
 	}
 
 	if err := withSkills(func(c *config.Config) {

@@ -469,7 +469,9 @@ planner:
 #     # (default 5); explicit values must be in [1, 200].
 #     max_entries: 10
 #     # Unpinned ordering: `pinned_then_recent` (default; UpdatedAt
-#     # DESC) or `pinned_then_top` (UseCount DESC).
+#     # DESC). `pinned_then_top` (UseCount DESC) is NOT YET WIRED —
+#     # no production path increments usage counters, so the
+#     # validator rejects it loud until usage tracking lands.
 #     selection: pinned_then_recent
 
 tools:

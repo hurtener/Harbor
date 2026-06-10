@@ -83,6 +83,15 @@ type stubCoordinator struct {
 	// Resume has been attempted — lets the Phase 111c timeout tests
 	// script "the sweeper already reaped this pause" deterministically.
 	statusAfterResume *pauseresume.Status
+	// statusCalls counts Status invocations. statusTimeoutAfterCalls,
+	// when > 0, makes Status report resumed/timeout from that call
+	// number on — lets the recheck-backstop test (Wave C checkpoint
+	// audit) script "the reap lands only AFTER the run is parked"
+	// deterministically: the park's two fast-path checks see a live
+	// pause, so only the Status re-check ticker can observe the
+	// timeout.
+	statusCalls             int
+	statusTimeoutAfterCalls int
 }
 
 func (c *stubCoordinator) Request(_ context.Context, req pauseresume.PauseRequest) (pauseresume.Pause, error) {
@@ -113,6 +122,13 @@ func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, dec
 func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauseresume.Status, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.statusCalls++
+	if c.statusTimeoutAfterCalls > 0 && c.statusCalls >= c.statusTimeoutAfterCalls {
+		return pauseresume.Status{
+			State:    pauseresume.StatusResumed,
+			Decision: pauseresume.DecisionTimeout,
+		}, nil
+	}
 	if c.statusAfterResume != nil && c.resumeCalls > 0 {
 		return *c.statusAfterResume, nil
 	}

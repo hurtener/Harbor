@@ -12,6 +12,14 @@
 # examples/harbor.yaml + docs/CONFIG.md. Then the focused unit slice
 # + the Phase111e integration E2E pass under -race.
 #
+# Static-only classification (deliberate; Wave C checkpoint audit):
+# the plan's sketched live `trajectory.compressed` assertion needs a
+# tiny-token-budget fixture config + the mock-LLM escape hatch, which
+# the shared preflight dev server does not boot with — and the same
+# event-on-the-bus assertion already runs end-to-end inside the
+# Phase111e integration E2E this script executes. A live branch can
+# land if the preflight ever gains a per-phase fixture-config slot.
+#
 # Conventions (AGENTS.md §4.2): 404/405/501 → SKIP; ≥1 OK once shipped;
 # use scripts/smoke/common.sh helpers.
 

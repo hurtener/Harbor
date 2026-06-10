@@ -529,3 +529,145 @@ func TestSweepOnce_ContinuesPastWedgedRecord(t *testing.T) {
 		t.Fatalf("wedged pause state = %q, want paused (failed reap must not flip state)", st.State)
 	}
 }
+
+// TestRunSweeper_DefaultIntervalMirrorsValidator pins the §4.4 mirror
+// between DefaultSweepInterval and the config validator's
+// `defaultPauseSweepInterval` (`internal/config/validate.go`). The
+// validator cannot import this package, so it duplicates the 1m
+// constant; this test asserts the duplicated value behaves
+// identically: a `max_park_duration` equal to DefaultSweepInterval
+// with a zero (defaulted) sweep_interval validates, while one second
+// less is rejected on the one-sweep-overstay invariant.
+func TestRunSweeper_DefaultIntervalMirrorsValidator(t *testing.T) {
+	t.Parallel()
+	build := func(maxPark time.Duration) error {
+		cfg := config.Defaults()
+		// Required-for-core LLM fields (documented dummy values — the
+		// validator only checks non-emptiness here).
+		cfg.LLM.Provider = "openrouter"
+		cfg.LLM.Model = "test/model"
+		cfg.LLM.APIKey = "env.HARBOR_TEST_DUMMY_KEY"
+		cfg.PauseResume.MaxParkDuration = maxPark
+		cfg.PauseResume.SweepInterval = 0
+		return cfg.ValidateCore()
+	}
+	if err := build(DefaultSweepInterval); err != nil {
+		t.Errorf("max_park_duration == DefaultSweepInterval (%s) with defaulted sweep_interval rejected: %v — the validator's mirrored default drifted",
+			DefaultSweepInterval, err)
+	}
+	if err := build(DefaultSweepInterval - time.Second); err == nil {
+		t.Errorf("max_park_duration just under DefaultSweepInterval (%s) with defaulted sweep_interval accepted — the validator's mirrored default drifted",
+			DefaultSweepInterval-time.Second)
+	}
+}
+
+// flakyDeleteStore wraps a real StateStore and fails Delete a
+// configured number of times before passing through — the smallest
+// fault injector that reproduces the resumed-but-undeleted checkpoint
+// orphan (Wave C checkpoint audit). Unit-test-only; the seam-level
+// behaviour runs on the real inmem driver underneath.
+type flakyDeleteStore struct {
+	state.StateStore
+	mu        sync.Mutex
+	failsLeft int
+}
+
+func (f *flakyDeleteStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	f.mu.Lock()
+	if f.failsLeft > 0 {
+		f.failsLeft--
+		f.mu.Unlock()
+		return errors.New("flaky store: injected delete failure")
+	}
+	f.mu.Unlock()
+	return f.StateStore.Delete(ctx, id, kind)
+}
+
+// TestSweeper_RetriesOrphanedCheckpointDelete pins the orphan-retry
+// guarantee: when a sweeper reap's Resume succeeds (state flipped,
+// timeout recorded) but the checkpoint delete fails, the checkpoint
+// is NOT orphaned — the next sweep pass's retryPendingDeletes clears
+// it and emits the pause.resumed event the failed pass skipped.
+func TestSweeper_RetriesOrphanedCheckpointDelete(t *testing.T) {
+	t.Parallel()
+	clk := newSweepClock()
+	// failsLeft: 2 — the reap's own delete AND the same pass's retry
+	// phase both fail, so the orphan survives a full sweep pass and
+	// pass 2 proves the cross-tick retry.
+	store := &flakyDeleteStore{StateStore: sweepStore(t), failsLeft: 2}
+	red := patternsAudit.New()
+	bus := sweepBus(t, red)
+	c := New(
+		WithClock(clk.Now),
+		WithCheckpointStore(store),
+		WithBus(bus),
+		WithMaxParkDuration(time.Minute),
+	).(*coordinator)
+	ctx := sweepRunCtx(t, sweepID, "run-orphan")
+
+	sub, err := bus.Subscribe(ctx, events.Filter{
+		Tenant:  sweepID.TenantID,
+		User:    sweepID.UserID,
+		Session: sweepID.SessionID,
+		Types:   []events.EventType{EventTypePauseResumed},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	tok := requestPaused(t, c, ctx, "run-orphan")
+	clk.advance(2 * time.Minute)
+
+	// Pass 1: the reap's Resume flips the entry but the injected
+	// delete failure orphans the checkpoint. Loud, not counted as
+	// reaped, and the entry is flagged delete-pending.
+	reaped, err := sweepOnce(ctx, c, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("sweepOnce(pass 1): %v", err)
+	}
+	if reaped != 0 {
+		t.Fatalf("pass 1 reaped = %d, want 0 (delete failed)", reaped)
+	}
+	st, err := c.Status(ctx, tok)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != StatusResumed || st.Decision != DecisionTimeout {
+		t.Fatalf("state=%q decision=%q, want resumed/timeout (the flip happened)", st.State, st.Decision)
+	}
+	if _, err := loadCheckpoint(ctx, store, tok); err != nil {
+		t.Fatalf("checkpoint should still exist after the failed delete: %v", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		t.Fatalf("pause.resumed emitted on the failed pass: %+v", ev)
+	default:
+	}
+
+	// Pass 2: the store recovered; the retry phase clears the
+	// checkpoint and completes the skipped emit.
+	if _, err := sweepOnce(ctx, c, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("sweepOnce(pass 2): %v", err)
+	}
+	if _, err := loadCheckpoint(ctx, store, tok); !errors.Is(err, ErrPauseNotFound) {
+		t.Fatalf("checkpoint after retry: err = %v, want ErrPauseNotFound (orphan cleared)", err)
+	}
+	select {
+	case ev := <-sub.Events():
+		payload, ok := ev.Payload.(PauseResumedPayload)
+		if !ok {
+			t.Fatalf("pause.resumed payload type = %T", ev.Payload)
+		}
+		if payload.Token != string(tok) || payload.Decision != DecisionTimeout {
+			t.Fatalf("pause.resumed payload = %+v, want token %q decision timeout", payload, tok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry pass emitted no pause.resumed within bound")
+	}
+
+	// Idempotent: a third pass finds nothing pending.
+	if pending := c.pendingDeleteEntries(); len(pending) != 0 {
+		t.Fatalf("pendingDeleteEntries after successful retry = %d, want 0", len(pending))
+	}
+}

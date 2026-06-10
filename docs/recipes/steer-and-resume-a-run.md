@@ -95,6 +95,9 @@ at it:
 
 ```yaml
 tools:
+  # Mandatory whenever oauth_providers[] is set: names the env var
+  # holding the 32-byte hex key that encrypts tokens at rest (AES-GCM).
+  oauth_token_kek_env: HARBOR_OAUTH_TOKEN_KEK
   oauth_providers:
     - name: github
       driver: oauth2
@@ -109,6 +112,13 @@ tools:
       oauth:
         provider: github
         binding_scope: user
+```
+
+Export the key-encryption key before booting — config validation
+fails closed without it (`openssl rand -hex 32` mints one):
+
+```bash
+export HARBOR_OAUTH_TOKEN_KEK="$(openssl rand -hex 32)"
 ```
 
 > **The port-must-match gotcha.** The `redirect_url` you register with
@@ -223,6 +233,11 @@ event carries `decision: timeout`, the checkpoint is deleted, and the
 waiting run terminates as a **constraints-conflict** — a deadline the
 human missed is a constraint the planner cannot resolve. Never a
 silent unpark-and-continue.
+
+One V1 boundary (recorded in D-200): the sweeper walks the LIVE
+process's pause registry. A checkpoint orphaned by a process crash is
+not proactively scanned — it is reaped only after something rehydrates
+it (a `Status` or `Resume` against the restarted process).
 
 In the binary, both knobs come from `harbor.yaml` and the assembly
 starts the sweeper for you:
