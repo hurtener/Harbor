@@ -114,14 +114,16 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 }
 
 // WithRunErrorHandler installs the callback the engine fires on
-// terminal node failure. The production wiring (Phase 111f, D-203) is
-// a callback that invokes telemetry.Logger.Error so the wave-2
+// terminal node failure. The production handler (Phase 111f, D-203)
+// is a callback that invokes telemetry.Logger.Error so the wave-2
 // BusEmitter adapter publishes a runtime.error event:
-// `assemble.Assemble` builds that handler as `Stack.RunErrorHandler`,
-// and flow composition forwards it via
-// `flow.WithRunErrorHandler(stack.RunErrorHandler)` (see
-// docs/recipes/observe-an-embedded-runtime.md). Tests install
-// recording callbacks to assert the structured RunError shape.
+// `assemble.Assemble` builds it as `Stack.RunErrorHandler`. The
+// composition site is the EMBEDDER's flow composition —
+// `flow.WithRunErrorHandler(stack.RunErrorHandler)`, per
+// docs/recipes/observe-an-embedded-runtime.md; the shipped binary
+// registers flow Definitions without composing an engine, so it has
+// no in-binary call site today. Tests install recording callbacks to
+// assert the structured RunError shape.
 //
 // When unset, the engine logs the failure via its slog.Logger only
 // (Phase 10 behavior). The handler is invoked AFTER the slog log so

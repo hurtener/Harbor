@@ -84,6 +84,14 @@ type pauseEntry struct {
 	// timeout-reaped pause from an approve / reject / generic resume
 	// (Phase 111c / D-200).
 	decision Decision
+	// deletePending marks a RESUMED entry whose checkpoint delete
+	// failed (Wave C checkpoint audit): Resume flips the state before
+	// the store delete, so a delete failure would otherwise orphan the
+	// checkpoint forever — the sweeper skips non-paused entries and
+	// Resume rejects an already-resumed token. The sweeper's
+	// retryPendingDeletes pass re-attempts the delete (and the skipped
+	// pause.resumed emit) until it lands, then clears this flag.
+	deletePending bool
 }
 
 // Option configures a coordinator at construction. Options are applied
@@ -358,15 +366,23 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// Clear the checkpoint AFTER the in-memory flip: the pause is
 	// terminal regardless of whether the store delete succeeds; a
 	// failed delete surfaces loud but the resume itself has happened.
+	// A failed delete (or a resumed entry that no longer serialises)
+	// additionally marks the entry delete-pending so the sweeper's
+	// retryPendingDeletes pass re-attempts the cleanup — the
+	// checkpoint must not orphan silently (Wave C checkpoint audit;
+	// the sweeper's expired scan only selects StatusPaused entries, so
+	// without the flag nothing would ever retry).
 	if c.store != nil {
 		rec, cerr := resumed.toCheckpoint()
 		if cerr != nil {
 			// A resumed entry's trajectory should still serialise;
 			// surface a corruption-shaped failure loud rather than
 			// leaving an orphan checkpoint silently.
+			c.markDeletePending(token)
 			return cerr
 		}
 		if err := deleteCheckpoint(ctx, c.store, rec); err != nil {
+			c.markDeletePending(token)
 			return err
 		}
 	}
@@ -416,6 +432,17 @@ func (c *coordinator) Status(ctx context.Context, token Token) (Status, error) {
 		PausedAt:  rehydrated.pausedAt,
 		ResumedAt: rehydrated.resumedAt,
 	}, nil
+}
+
+// markDeletePending flags a resumed entry whose checkpoint cleanup
+// failed so the sweeper's retry pass can re-attempt it. A token that
+// raced out of the registry is a no-op (nothing to retry against).
+func (c *coordinator) markDeletePending(token Token) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.pauses[token]; ok {
+		entry.deletePending = true
+	}
 }
 
 // rehydrate loads a pause record from the checkpoint store. Returns

@@ -288,6 +288,14 @@ type AssembleOpts struct {
 	SkillsContextMax int
 	PlanningHints    *planner.PlanningHints
 
+	// TracerOptions is forwarded verbatim to
+	// `assemble.Options.TracerOptions` (Phase 111f, D-203). Tests
+	// inject `telemetry.WithSpanExporter` with an in-memory recorder
+	// so the assembly-started bus→tracer bridge's spans are
+	// observable without a collector (the Wave C composed E2E is the
+	// first consumer).
+	TracerOptions []telemetry.TracerOption
+
 	// TopologyAccessor, when non-nil, is wired into the
 	// ControlSurface via protocol.WithTopologyAccessor so the Phase 74
 	// `topology.snapshot` method returns a real projection (D-114).
@@ -535,6 +543,7 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		MetricsOptions: []telemetry.MetricsOption{
 			telemetry.WithMetricReader(sdkmetric.NewManualReader()),
 		},
+		TracerOptions: opts.TracerOptions,
 		// Phase 111f (D-203): mirror production gate assembly — the
 		// Protocol-side scope adapter over the runtime-vocabulary
 		// default, same as cmd/harbor\'s bootDevStack.

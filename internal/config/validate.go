@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // allowedJWTAlgorithms is the asymmetric-only allowlist enforced by
@@ -577,13 +578,33 @@ func (c *Config) validatePauseResume() error {
 	if c.PauseResume.SweepInterval < 0 {
 		return fieldError("pauseresume.sweep_interval", "must be >= 0 (0 = the documented 1m default)")
 	}
-	if c.PauseResume.MaxParkDuration > 0 && c.PauseResume.SweepInterval > c.PauseResume.MaxParkDuration {
-		return fieldError("pauseresume.sweep_interval",
-			fmt.Sprintf("must be <= pauseresume.max_park_duration (%s) so a pause can't overstay its deadline by more than one sweep; got %s",
-				c.PauseResume.MaxParkDuration, c.PauseResume.SweepInterval))
+	if c.PauseResume.MaxParkDuration > 0 {
+		// The one-sweep-overstay invariant is checked against the
+		// EFFECTIVE interval: an explicit `sweep_interval: 0` means the
+		// documented 1m default applies, and that default must not
+		// exceed the park ceiling either (Wave C checkpoint audit — a
+		// 30s max_park_duration with the defaulted 1m cadence would
+		// overstay its own validated invariant).
+		effective := c.PauseResume.SweepInterval
+		if effective == 0 {
+			effective = defaultPauseSweepInterval
+		}
+		if effective > c.PauseResume.MaxParkDuration {
+			return fieldError("pauseresume.sweep_interval",
+				fmt.Sprintf("must be <= pauseresume.max_park_duration (%s) so a pause can't overstay its deadline by more than one sweep; got %s (0 = the documented %s default)",
+					c.PauseResume.MaxParkDuration, c.PauseResume.SweepInterval, defaultPauseSweepInterval))
+		}
 	}
 	return nil
 }
+
+// defaultPauseSweepInterval mirrors
+// `pauseresume.DefaultSweepInterval` (internal/runtime/pauseresume/
+// sweeper.go). Duplicated, not imported — `internal/config` MUST NOT
+// depend on the runtime packages (AGENTS.md §4.4). Drift is caught by
+// `TestRunSweeper_DefaultIntervalMirrorsValidator` in
+// `internal/runtime/pauseresume/sweeper_test.go`.
+const defaultPauseSweepInterval = time.Minute
 
 // allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
 // 17 ships `inmem` + `fs`; Phase 18 adds `sqlite` and `postgres`;
@@ -823,6 +844,19 @@ func (c *Config) validateSkillsDirectory() error {
 			return fieldError("skills.directory.selection",
 				fmt.Sprintf("must be one of %s, got %q",
 					sortedKeys(allowedSkillsDirectorySelections), d.Selection))
+		}
+		// Wave C checkpoint audit (D-201 addendum): nothing in
+		// production increments UseCount yet, so `pinned_then_top`
+		// would validate cleanly and then silently degrade to
+		// alphabetical ordering (every counter is 0) — the §13
+		// no-silent-degradation posture says fail loud instead (the
+		// tools.http_manifests precedent). Remove this guard when a
+		// production usage-bump path lands.
+		if d.Selection == "pinned_then_top" {
+			return fieldError("skills.directory.selection",
+				"pinned_then_top is not wired yet — no production path increments skill "+
+					"usage counters, so the ordering would silently degrade to alphabetical; "+
+					"use pinned_then_recent (or omit the field) until usage tracking lands")
 		}
 	}
 	seen := make(map[string]struct{}, len(d.Pinned))

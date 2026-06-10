@@ -131,13 +131,17 @@ func WithComposeQueueSize(n int) ComposeOption {
 }
 
 // WithRunErrorHandler forwards a run-error handler to the composed
-// engine (`engine.WithRunErrorHandler` — Phase 111f, D-203). The
-// production wiring passes the assembly's handler
-// (`assemble.Stack.RunErrorHandler`), which routes the structured
-// engine.RunError through `telemetry.Logger.Error` so a terminal node
-// failure on a flow-as-tool run emits the paired `runtime.error` bus
-// event (RFC §6.14). Nil is a no-op: the engine's slog path still
-// logs the failure (the Phase 10 behaviour).
+// engine (`engine.WithRunErrorHandler` — Phase 111f, D-203). An
+// embedder composing flows passes the assembly's handler
+// (`assemble.Stack.RunErrorHandler` — see
+// docs/recipes/observe-an-embedded-runtime.md), which routes the
+// structured engine.RunError through `telemetry.Logger.Error` so a
+// terminal node failure on a flow-as-tool run emits the paired
+// `runtime.error` bus event (RFC §6.14). The shipped binary registers
+// flow Definitions without composing an engine, so the recipe + the
+// flow-as-tool failure E2E are the seam's executing consumers. Nil is
+// a no-op: the engine's slog path still logs the failure (the Phase
+// 10 behaviour).
 func WithRunErrorHandler(h engine.RunErrorHandler) ComposeOption {
 	return func(c *composeConfig) { c.runErrorHandler = h }
 }

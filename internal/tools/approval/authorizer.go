@@ -125,6 +125,12 @@ func (IdentityAuthorizer) AuthorizeResolve(ctx context.Context, pending PendingI
 	if agentregistry.HasControlScope(ctx) {
 		return nil
 	}
-	return fmt.Errorf("%w: ctx carries neither the pause's originating identity (%s/%s/%s) nor the control-scope claim",
-		ErrResolveForbidden, pending.Identity.TenantID, pending.Identity.UserID, pending.Identity.SessionID)
+	// The originating triple is deliberately NOT echoed into the error:
+	// the message flows back to the REJECTED (foreign) resolver via
+	// ResolveApproval's wrap and the steering apply-error surface —
+	// disclosing whose pause it is would leak identity to an
+	// unauthorized caller. The audit/log layer carries the identity
+	// attributes where they belong.
+	return fmt.Errorf("%w: ctx carries neither the pause's originating identity nor the control-scope claim",
+		ErrResolveForbidden)
 }

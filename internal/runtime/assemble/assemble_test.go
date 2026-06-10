@@ -120,6 +120,14 @@ func TestAssemble_GoldenBoot_BuildsEveryLayer(t *testing.T) {
 		stack.Sessions == nil || stack.Agents == nil {
 		t.Errorf("load-bearing core has nil fields: %+v", stack)
 	}
+	// Phase 111f (D-203) always-constructed telemetry band — asserted
+	// so the test's name stays true (Wave C checkpoint audit): a
+	// dropped telemetry band fails at the cheapest level, not one repo
+	// layer away in the integration suite.
+	if stack.Telemetry == nil || stack.Tracer == nil || stack.RunErrorHandler == nil {
+		t.Errorf("telemetry band has nil fields: Telemetry=%v Tracer=%v RunErrorHandler set=%v",
+			stack.Telemetry, stack.Tracer, stack.RunErrorHandler != nil)
+	}
 	if stack.LLM == nil || stack.LLMSnapshot.Driver != "mock" {
 		t.Errorf("LLM not opened from cfg: client=%v snapshot=%+v", stack.LLM, stack.LLMSnapshot)
 	}

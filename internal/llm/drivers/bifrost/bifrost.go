@@ -344,23 +344,30 @@ func processStreamChunk(
 }
 
 // Close releases the underlying bifrost instance. Bifrost owns its
-// own goroutines for the queue/dispatcher; the recommended teardown
-// is to call its cleanup (if any) — at v1.5.8 the API exposes
-// `(*Bifrost).Shutdown()` via `bf` but the concrete shape may evolve.
-// For Harbor's tests we set the atomic flag and let the underlying
-// instance be GC'd; the goroutine-leak test pins baseline restoration
-// via the stub-client path.
+// own goroutines for the queue/dispatcher — `(*Bifrost).Shutdown()`
+// joins the per-provider worker pools. Pre-Wave-C this method probed
+// only for a `Cleanup() error` shape, which `*bf.Bifrost` does NOT
+// expose — a production stack Close therefore leaked bifrost's entire
+// worker pool (~1000 goroutines per provider). Found by the Wave C
+// composed E2E's goroutine-baseline assertion
+// (test/integration/wavec_test.go) and fixed per CLAUDE.md §17.6
+// (fix what the integration test finds, wherever the bug lives). Both
+// shapes are probed so a bifrost version that grows an
+// error-returning teardown is still honoured; the stub client
+// implements neither and opts out cleanly.
 //
 // Idempotent. Subsequent calls return nil.
 func (d *Driver) Close(_ context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// If the underlying client has a Close-like method, call it.
-	// Defining a separate interface for "closable client" lets the
-	// stub opt out cleanly.
-	if closer, ok := d.client.(interface{ Cleanup() error }); ok {
-		return closer.Cleanup()
+	switch c := d.client.(type) {
+	case interface{ Cleanup() error }:
+		return c.Cleanup()
+	case interface{ Shutdown() }:
+		// The v1.5.x `*bf.Bifrost` teardown: joins the provider
+		// worker pools; returns nothing.
+		c.Shutdown()
 	}
 	return nil
 }
