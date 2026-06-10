@@ -2,7 +2,7 @@ harbor is the command-line entry point for the Harbor agent runtime SDK.
 
 Subcommands fall into three groups:
 
-  Local dev loop      init, dev, console, scaffold, validate
+  Local dev loop      init, dev, console, scaffold, validate, skill
   Run inspection      inspect-events, inspect-runs, inspect-topology
   Build information   version
 
@@ -23,6 +23,7 @@ Available Commands:
   inspect-runs     list recent runs and inspect a run's trajectory
   inspect-topology render a run's node graph as ASCII
   scaffold         generate a new agent skeleton from a template
+  skill            manage the runtime skill catalog (import / rm)
   validate         validate config / skills / agent definitions without booting
   version          print harbor semver, protocol version, and build hash
 

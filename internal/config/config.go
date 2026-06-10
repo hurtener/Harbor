@@ -422,9 +422,37 @@ type MemoryConfig struct {
 // the StateStore + MemoryStore drivers (bare file path or `file:`
 // URI for SQLite; `:memory:` honoured for tests). `secret:"true"`
 // redacts the value in audit-redacted logs.
+//
+// `Directory` shapes the Phase-39 virtual directory the run loop
+// injects as the per-turn `<skills_context>` prompt block (Phase
+// 111d — D-201). All fields optional; restart-required.
 type SkillsConfig struct {
-	Driver string `yaml:"driver,omitempty"`
-	DSN    string `yaml:"dsn,omitempty" secret:"true"`
+	Driver    string                `yaml:"driver,omitempty"`
+	DSN       string                `yaml:"dsn,omitempty" secret:"true"`
+	Directory SkillsDirectoryConfig `yaml:"directory,omitempty"`
+}
+
+// SkillsDirectoryConfig configures the skills virtual directory
+// (Phase 39 / D-052) the run loop consumes as the `<skills_context>`
+// producer (Phase 111d — D-201). The injected block is a bounded,
+// stable, pinned-then-recent browse window — identity-scoped,
+// capability-filtered, redacted; per-query relevance retrieval stays
+// the LLM's job via the `skill_search` meta-tool.
+//
+//   - `Pinned` anchors the named skills at the top of every view, in
+//     declaration order. Pinning is an ORDERING preference — pinned
+//     skills are never exempt from the capability filter.
+//   - `MaxEntries` caps the view length. 0 (the default) falls back
+//     to `planner.skills_context_max`'s resolved value (default 5)
+//     so the pre-111d injection-budget knob keeps its meaning;
+//     explicit values must sit in [1, 200].
+//   - `Selection` orders the unpinned remainder:
+//     `pinned_then_recent` (default — UpdatedAt DESC) or
+//     `pinned_then_top` (UseCount DESC).
+type SkillsDirectoryConfig struct {
+	Pinned     []string `yaml:"pinned,omitempty"`
+	MaxEntries int      `yaml:"max_entries,omitempty"`
+	Selection  string   `yaml:"selection,omitempty"`
 }
 
 // TasksConfig configures the TaskRegistry driver and the Phase 21

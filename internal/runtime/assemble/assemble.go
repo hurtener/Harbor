@@ -498,12 +498,19 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// Phase 83n / D-153 + 107c / D-167 — opt-in built-in tools BEFORE
 	// the catalog-wiring step so `tools.entries[]` middleware naming a
 	// built-in resolves cleanly. Empty list = no-op; unknown name fails
-	// loud. SkillStore + ArtifactStore are threaded so skill_search /
-	// skill_get / artifact_fetch reach their backing stores.
+	// loud. SkillStore + ArtifactStore are threaded so the skill_* set
+	// / artifact_fetch reach their backing stores. Phase 111d (D-201):
+	// Bus + Redactor + GrantedScopes feed the skill_* delegations to
+	// the Phase-38 handlers + Phase-41 generator — the capability
+	// filter, redaction, budgeter, and the generator's audit-mandatory
+	// emit all run on this production path.
 	if err := builtin.RegisterWith(builtin.RegistryContext{
 		Catalog:       toolCat,
 		SkillStore:    stack.Skills,
 		ArtifactStore: stack.Artifacts,
+		Bus:           stack.Bus,
+		Redactor:      stack.Redactor,
+		GrantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 	}, cfg.Tools.BuiltIn); err != nil {
 		return fmt.Errorf("tools/builtin: %w", err)
 	}

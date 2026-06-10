@@ -127,11 +127,18 @@ llm:
 
 # skills — token-savvy DB-backed skill catalog the planner can search.
 # Driver `localdb` uses SQLite under the hood; the file is created on
-# first write. See docs/CONFIG.md#skills for the full surface.
+# first write. Ingest with `harbor skill import <path>`; remove with
+# `harbor skill rm <name>`. The optional `directory` block shapes the
+# per-turn `<skills_context>` browse window (pin your flagship skills;
+# cap the budget). See docs/CONFIG.md#skills for the full surface.
 #
 # skills:
 #   driver: localdb
 #   dsn: ./{{.Name}}-skills.sqlite
+#   directory:
+#     pinned: []                       # skill names anchored first
+#     max_entries: 10                  # 0 → planner.skills_context_max (default 5)
+#     selection: pinned_then_recent    # or pinned_then_top
 
 # governance — per-identity cost ceilings + rate limits + MaxTokens caps.
 # Tier-keyed; empty map = no enforcement. See docs/CONFIG.md#governance.

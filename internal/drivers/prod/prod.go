@@ -94,20 +94,17 @@ import (
 	// `skill_list`). The package has no init-time registration
 	// (catalogs are constructed at boot, not from a factory registry);
 	// the blank import documents the package's presence in the binary.
-	// HONESTY NOTE (SDK friction audit,
-	// docs/notes/sdk-friction-audit.md §3): `skills/tools.Register` is
-	// NOT called by any production path — the boot path registers the
-	// thinner `internal/tools/builtin` skill_search/skill_get instead.
-	// Picking ONE canonical skills-tool surface (builtin delegating to
-	// these rich handlers, or a decisions.md entry formally superseding
-	// Phase 38) is Wave C work — Phase 111d.
+	// Since Phase 111d (D-201) these handlers ARE the production path:
+	// the `internal/tools/builtin` carrier delegates the skill_* set
+	// to them, so capability filtering + redaction + the budgeter run
+	// on every production call.
 	_ "github.com/hurtener/Harbor/internal/skills/tools"
 	// Skills generator — Phase 41 (`skill_propose(persist=true)`). The
 	// package has no init-time registration (the catalog is built at
 	// boot); the blank import documents the package's presence in the
-	// binary. HONESTY NOTE: `skills/generator.Register` is NOT called
-	// by any production path — same canonical-surface decision as
-	// `skills/tools` above (Phase 111d).
+	// binary. Since Phase 111d (D-201) the builtin carrier registers
+	// `skill_propose` as a delegation to `generator.Propose` when the
+	// operator opts in via `tools.built_in`.
 	_ "github.com/hurtener/Harbor/internal/skills/generator"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"

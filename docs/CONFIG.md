@@ -344,6 +344,27 @@ block disables the subsystem). Validation: when set, `localdb`
 Driver connection string. Default: empty. Validation: required when
 `driver = "localdb"`. Secret: redacted.
 
+### skills.directory.pinned
+
+Skill names anchored at the top of every `<skills_context>` view, in
+declaration order (Phase 111d — D-201). Pinning is an ordering
+preference only — pinned skills are never exempt from the capability
+filter. Default: empty. Validation: entries non-empty and unique;
+requires `skills.driver` to be set.
+
+### skills.directory.max_entries
+
+Cap on the injected directory view's length. Default: `0` — falls
+back to `planner.skills_context_max`'s resolved value (default 5) so
+the pre-111d injection-budget knob keeps its meaning. Validation: `0`
+or in `[1, 200]`.
+
+### skills.directory.selection
+
+Ordering of the unpinned remainder. Default: `pinned_then_recent`
+(UpdatedAt DESC). Validation: when set, one of `pinned_then_recent`,
+`pinned_then_top` (UseCount DESC).
+
 ---
 
 ## Tasks

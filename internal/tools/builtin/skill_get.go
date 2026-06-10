@@ -3,55 +3,54 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"strings"
 
-	"github.com/hurtener/Harbor/internal/skills"
+	skilltools "github.com/hurtener/Harbor/internal/skills/tools"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
 )
 
-func registerSkillGet(cat tools.ToolCatalog, store skills.SkillStore) error {
-	return inproc.RegisterFunc[SkillGetArgs, SkillGetOut](
-		cat, "skill_get",
-		func(ctx context.Context, args SkillGetArgs) (SkillGetOut, error) {
-			return skillGet(ctx, store, args)
-		},
-		tools.WithDescription("Fetch the full body of a named skill playbook."),
-		tools.WithSideEffect(tools.SideEffectPure),
-		tools.WithLoading(tools.LoadingAlways),
-		tools.WithTags("builtin", "meta", "discovery"),
-	)
-}
-
+// SkillGetArgs is the LLM-facing input shape for the `skill_get`
+// built-in. Phase 111d (D-201): the pre-111d single-`name` shape is
+// replaced by the Phase-38 handler's multi-name + budget envelope —
+// the `capability` field is omitted and server-computed (see
+// skill_capability.go).
 type SkillGetArgs struct {
-	Name string `json:"name"`
+	// Names are the skill names to fetch. Missing names are skipped
+	// (a partial response beats a hard error for stale model state).
+	Names []string `json:"names"`
+	// MaxTokens caps the combined estimated token count of the
+	// returned skills via the tiered budgeter ladder. 0 → the
+	// handler default (1024).
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
-type SkillGetOut struct {
-	Name  string `json:"name"`
-	Title string `json:"title"`
-	Body  string `json:"body,omitempty"`
-	Found bool   `json:"found"`
-	Error string `json:"error,omitempty"`
-}
-
-func skillGet(ctx context.Context, store skills.SkillStore, args SkillGetArgs) (SkillGetOut, error) {
-	if store == nil {
-		return SkillGetOut{}, fmt.Errorf("skill_get: backing SkillStore is nil — `skill_get` was registered without skills.SkillStore deps (operator misconfiguration)")
+// registerSkillGet installs the `skill_get` built-in as a thin
+// delegation to the Phase-38 handler (`skilltools.GetHandler`):
+// capability filter + redaction + the tiered token budgeter run on
+// every production call. The pre-111d package-local fetch/projection
+// body is deleted — `internal/skills/tools` is the single
+// implementation home.
+func registerSkillGet(rc RegistryContext) error {
+	if err := requireSkillDeps("skill_get", rc); err != nil {
+		return err
 	}
-	id, err := requireIdentity(ctx)
-	if err != nil {
-		return SkillGetOut{}, err
-	}
-	s, err := store.Get(ctx, id, args.Name)
-	if err != nil {
-		//nolint:nilerr // intentional: a store miss/error is surfaced in-band as {Found:false, Error} so the LLM gets a structured observation, not a hard tool error
-		return SkillGetOut{Name: args.Name, Found: false, Error: err.Error()}, nil
-	}
-	return SkillGetOut{
-		Name:  s.Name,
-		Title: s.Title,
-		Body:  strings.Join(s.Steps, "\n"),
-		Found: true,
-	}, nil
+	return inproc.RegisterFunc[SkillGetArgs, skilltools.GetResult](
+		rc.Catalog, skilltools.ToolNameSkillGet,
+		func(ctx context.Context, args SkillGetArgs) (skilltools.GetResult, error) {
+			if rc.SkillStore == nil {
+				return skilltools.GetResult{}, fmt.Errorf("skill_get: backing SkillStore is nil — `skill_get` was registered without skills.SkillStore deps (operator misconfiguration)")
+			}
+			return skilltools.GetHandler(ctx, rc.SkillStore, rc.Bus, skilltools.GetArgs{
+				Names:      args.Names,
+				MaxTokens:  args.MaxTokens,
+				Capability: runCapability(ctx, rc),
+			})
+		},
+		tools.WithDescription("Fetch the full content of one or more named skill playbooks. Results are capability-filtered, redacted, and budget-fit to max_tokens via the tiered ladder (full → drop optional → cap steps to 3)."),
+		tools.WithSideEffect(tools.SideEffectRead),
+		tools.WithLoading(tools.LoadingAlways),
+		tools.WithTags("builtin", "meta", "discovery", "skills"),
+		tools.WithBus(rc.Bus),
+		tools.WithSource(tools.ToolSourceID("skills/tools")),
+	)
 }

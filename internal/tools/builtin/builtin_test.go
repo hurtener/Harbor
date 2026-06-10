@@ -40,18 +40,23 @@ func TestRegister_UnknownNameFailsLoudly(t *testing.T) {
 }
 
 // TestRegister_KnownNamesRegister asserts every name in the registry
-// actually registers when passed through Register. Guards against an
-// entry in the registry whose payload types the inproc deriver
-// can't represent.
+// actually registers when passed through RegisterWith under a full
+// RegistryContext. Guards against an entry in the registry whose
+// payload types the inproc deriver can't represent. Phase 111d
+// (D-201): the skill_* delegations require Bus (+ Redactor for
+// skill_propose), so the full set registers only with both wired —
+// the wiring-dep posture has its own tests in skill_delegation_test.go.
 func TestRegister_KnownNamesRegister(t *testing.T) {
 	t.Parallel()
 	cat := tools.NewCatalog()
-	if err := Register(cat, KnownNames()); err != nil {
-		t.Fatalf("Register(KnownNames()): %v", err)
+	rc := skillTestRegistryContext(t)
+	rc.Catalog = cat
+	if err := RegisterWith(rc, KnownNames()); err != nil {
+		t.Fatalf("RegisterWith(KnownNames()): %v", err)
 	}
 	for _, name := range KnownNames() {
 		if _, ok := cat.Resolve(name); !ok {
-			t.Fatalf("Resolve(%q): not found after Register", name)
+			t.Fatalf("Resolve(%q): not found after RegisterWith", name)
 		}
 	}
 }
