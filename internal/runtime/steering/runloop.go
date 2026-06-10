@@ -153,8 +153,9 @@ func WithMaxControlHistory(n int) RunLoopOption {
 }
 
 // WithApprovalGates hands the RunLoop the catalog-applied approval gates
-// keyed by tool name (Phase 64a `applyToolCatalogWiring` produces this
-// map via the `Deps.AppliedGates` out-channel — D-090, D-097). When a
+// keyed by tool name (the assembly's catalog band — `assemble.Assemble`
+// → `Stack.Gates` — produces this map via the catalog Builder's
+// `Deps.AppliedGates` out-channel; D-090, D-097, D-197). When a
 // drained CONTROL_APPROVE / CONTROL_REJECT event references a `token`
 // the bridge tries each gate's `ResolveApproval` in turn; the gate that
 // owns the token resumes its `pending` waiter so the wrapped tool's

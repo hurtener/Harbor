@@ -135,36 +135,36 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `internal/runtime/dispatch` exists; `dispatch.NewToolExecutor(...)` returns a
+- [x] `internal/runtime/dispatch` exists; `dispatch.NewToolExecutor(...)` returns a
       `steering.ToolExecutor` covering all four Decision shapes (`CallTool`,
       `CallParallel`, `SpawnTask`, `AwaitTask`) with behaviour-parity to today's
       `devToolExecutor` (golden/unit tests pin: D-026 promotion at threshold, non-atomic
       parallel mode, depth-cap rejection, terminal-status polling).
-- [ ] `planner.AnswerEnvelope` + the terminal error-code constants +
+- [x] `planner.AnswerEnvelope` + the terminal error-code constants +
       `planner.TaskErrorCodeForFinish` are exported in `internal/planner`; a golden test
       pins the envelope's JSON encoding byte-for-byte against the Phase 106 shape; the
       run-loop driver and `dispatch`'s `taskOutcomeObservation` both consume them (the
       implicit cmd↔cmd wire contract is now one named type).
-- [ ] `tools.NewPlannerView` exported in `internal/tools`; compile-time
+- [x] `tools.NewPlannerView` exported in `internal/tools`; compile-time
       `planner.ToolCatalogView` satisfaction asserted from `internal/planner` tests;
       identity/scope filtering behaviour-identical to `newRuntimeCatalogView`
       (including the empty-`granted` rule).
-- [ ] **§13 consumer in the same phase:** `cmd/harbor` calls `dispatch.NewToolExecutor`
+- [x] **§13 consumer in the same phase:** `cmd/harbor` calls `dispatch.NewToolExecutor`
       + `tools.NewPlannerView`; `cmd_dev_executor.go` and `cmd_dev_catalog_view.go` are
       deleted; `harbortest/devstack` wires the SAME constructor and its degraded
       `devStackToolExecutor` (`devstack.go:2103-2143`) is deleted — no second executor
       implementation survives anywhere (§13 two-implementations rule).
-- [ ] `internal/planner/react/prompt.go`'s shape-contract comment cites the
+- [x] `internal/planner/react/prompt.go`'s shape-contract comment cites the
       `internal/runtime/dispatch` exported identifier, not `cmd/harbor`; no `internal/`
       file references `cmd_dev_executor.go` any more (grep-asserted in the smoke).
-- [ ] The D-192 HITL E2E exercises the promoted executor (planner-dispatched gated tool
+- [x] The D-192 HITL E2E exercises the promoted executor (planner-dispatched gated tool
       through `dispatch.NewToolExecutor`); its test-local shim + §17.6 test-gap comment
       are removed.
-- [ ] Concurrent-reuse test (§11/D-025): N≥100 concurrent `ExecuteDecision` invocations
+- [x] Concurrent-reuse test (§11/D-025): N≥100 concurrent `ExecuteDecision` invocations
       against ONE shared executor under `-race` — no data races, no context bleed
       (per-run identity assertions), no cancellation cross-talk, goroutine baseline
       restored.
-- [ ] All prior phase smokes + integration tests pass against the converted binary (no
+- [x] All prior phase smokes + integration tests pass against the converted binary (no
       regression; preflight green).
 
 ## Files added or changed
@@ -285,17 +285,17 @@ Skeleton ships with this plan (standard skip until the phase implements).
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the
       executor + view carry identity per run; the concurrent-reuse test's per-run
       identity assertions cover it.
-- [ ] **Concurrent-reuse test passes (D-025)** — the promoted executor is a compiled
+- [x] **Concurrent-reuse test passes (D-025)** — the promoted executor is a compiled
       artifact; N≥100 under `-race` as specified above.
-- [ ] **Integration test (§17):** the converted E2E + runloop integration pass with real
+- [x] **Integration test (§17):** the converted E2E + runloop integration pass with real
       drivers, identity propagation, ≥1 failure mode, under `-race`.
-- [ ] Glossary updated (answer envelope)
-- [ ] If a brief finding was departed from: N/A — none departed.
+- [x] Glossary updated (answer envelope)
+- [x] If a brief finding was departed from: N/A — none departed.

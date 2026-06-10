@@ -529,14 +529,22 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 	return client, nil
 }
 
-// warnUnseatedWrapper emits the boot-time "wrapper hook not seated"
+// WarnWrapperNotSeated is the message [Open] emits (via slog.Warn) once
+// per production wrapper layer whose hook was never seated by its blank
+// import. Exported so tests that gate on the warning's PRESENCE or
+// ABSENCE (e.g. the Phase 110c aggregator integration test) reference
+// the one source of truth — a message rewording breaks the gate loudly
+// instead of silently turning it into a tautological pass.
+const WarnWrapperNotSeated = "llm: wrapper hook not seated — composing client WITHOUT this production layer"
+
+// warnUnseatedWrapper emits the boot-time [WarnWrapperNotSeated]
 // warning Open's godoc documents. One call per missing wrapper, at
 // Open time. Uses slog.Default(): the LLM Deps deliberately carry no
 // logger (the client is stateless across calls, D-025), and a
 // boot-time composition warning is exactly what the process default
 // logger exists for.
 func warnUnseatedWrapper(layer, importPath string) {
-	slog.Warn("llm: wrapper hook not seated — composing client WITHOUT this production layer",
+	slog.Warn(WarnWrapperNotSeated,
 		"layer", layer,
 		"missing_blank_import", importPath,
 	)

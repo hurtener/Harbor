@@ -200,10 +200,12 @@ func (c *phase110cLogCapture) contains(substr string) bool {
 // TestE2E_Phase110c_AggregatorSeatsProductionLLMWrapperChain — the
 // devstack now imports `internal/drivers/prod`, so the LLM client it
 // composes seats the full production wrapper set. Observable contract:
-// `llm.Open` warns "wrapper hook not seated — composing client WITHOUT
-// this production layer" (via the default slog logger) for every
-// missing hook; with the aggregator imported that warning MUST NOT
-// fire. NOT t.Parallel: it swaps the process-global default logger.
+// `llm.Open` warns `llm.WarnWrapperNotSeated` (via the default slog
+// logger) for every missing hook; with the aggregator imported that
+// warning MUST NOT fire. The gate references the exported const, not a
+// string literal, so a message rewording breaks this absence test
+// loudly instead of silently passing. NOT t.Parallel: it swaps the
+// process-global default logger.
 func TestE2E_Phase110c_AggregatorSeatsProductionLLMWrapperChain(t *testing.T) {
 	capture := &phase110cLogCapture{}
 	prev := slog.Default()
@@ -233,7 +235,7 @@ func TestE2E_Phase110c_AggregatorSeatsProductionLLMWrapperChain(t *testing.T) {
 	if stack.LLMClient == nil {
 		t.Fatal("LLMClient nil after Assemble")
 	}
-	if capture.contains("wrapper hook not seated") {
+	if capture.contains(llm.WarnWrapperNotSeated) {
 		t.Error("llm.Open warned about an unseated wrapper hook — the internal/drivers/prod aggregator did not seat the production corrections/downgrade/retry/governance chain (SDK friction audit §7 regression)")
 	}
 }

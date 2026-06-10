@@ -11,7 +11,7 @@ import (
 	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
-	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem" // self-register inmem bus
+	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem" // §13 test-harness carve-out: the runonce kit is deliberately lightweight — one inmem bus, not the full prod aggregator
 	"github.com/hurtener/Harbor/internal/identity"
 )
 

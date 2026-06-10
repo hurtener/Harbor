@@ -1394,9 +1394,9 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
-		code := "runloop_error"
+		code := planner.TaskErrorCodeRunLoopError
 		if errors.Is(err, context.Canceled) {
-			code = "cancelled"
+			code = planner.TaskErrorCodeCancelled
 		}
 		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 			Code:    code,
@@ -1452,7 +1452,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
-		Code:    string(fin.Reason),
+		Code:    planner.TaskErrorCodeForFinish(fin.Reason),
 		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
 	}); mErr != nil && d.logger != nil {
 		d.logger.Warn("devstack runloop: MarkFailed failed",

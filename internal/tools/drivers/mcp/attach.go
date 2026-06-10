@@ -27,9 +27,10 @@ import (
 )
 
 // AttachDeps bundles the collaborators Attach wires the server into.
-// Catalog, Registry, and Closers are mandatory; Bus and Logger are
-// optional (a nil Bus drops driver events, a nil Logger silences the
-// attachment log line — test stacks use both).
+// Catalog, Registry, Closers, and Bus are mandatory — a nil Bus fails
+// loud at mcp.New (Config.validate rejects it; the driver publishes
+// mcp.resource_updated). Only Logger is optional (a nil Logger silences
+// the attachment log line — test stacks omit it).
 type AttachDeps struct {
 	// Catalog receives one ToolDescriptor per discovered tool.
 	Catalog tools.ToolCatalog
