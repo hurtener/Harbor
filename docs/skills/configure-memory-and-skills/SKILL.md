@@ -121,7 +121,7 @@ skills:
   directory:                       # optional — shapes the per-turn <skills_context> block
     pinned: [triage-incident]      # always listed first, in this order
     max_entries: 10                # 0/unset → planner.skills_context_max (default 5)
-    selection: pinned_then_recent  # or pinned_then_top (most-used first)
+    selection: pinned_then_recent  # the one wired value (pinned_then_top is rejected: not yet wired)
 
 tools:
   built_in:

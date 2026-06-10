@@ -265,9 +265,11 @@ func (h *callbackHandler) lookup(state string) (string, OAuthProvider, PendingFl
 
 // writeFlowError maps the package's typed sentinels onto HTTP
 // statuses and writes the JSON error body. The full wrapped error is
-// LOGGED (it never contains code / token bytes — verified by the
-// no-secret tests); the response body carries sentinel-derived static
-// detail only.
+// LOGGED — it carries the sentinel plus, on the 502 exchange-failure
+// leg, the provider's truncated upstream response summary (never the
+// authorization code; a misbehaving token endpoint that echoes token
+// material with a non-2xx status would surface in that summary). The
+// response body carries sentinel-derived static detail only.
 func (h *callbackHandler) writeFlowError(w http.ResponseWriter, logger *slog.Logger, err error) {
 	var (
 		status int

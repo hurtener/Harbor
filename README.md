@@ -160,7 +160,12 @@ rolling-summary memory, live tool-call status, and cross-turn artifact awareness
 — held to a binding, page-by-page *verbatim-vs-mock* verification procedure that
 the rest of the Console is being brought through. Conversation memory now runs
 durably under every persistence driver, and tool retry/timeout is operator-
-configurable per MCP server and per tool. Cross-tenant isolation, goroutine-leak,
+configurable per MCP server and per tool. Long-running agents get operator-
+configurable trajectory compression (`planner.token_budget` — an over-budget
+trajectory is compacted into a five-field summary before the next prompt),
+durable pauses that survive a Runtime restart with a max-park sweeper, enforced
+per-tenant governance ceilings (`governance.identity_tiers`), and the tool-side
+OAuth completion leg. Cross-tenant isolation, goroutine-leak,
 and chaos conformance harnesses still gate every change.
 
 Next: the MCP Apps host (interactive, sandboxed `ui://` resources) and the

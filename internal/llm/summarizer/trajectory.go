@@ -53,11 +53,28 @@ var trajectorySummarySchemaV1 = json.RawMessage(`{
 }`)
 
 // trajectoryFragmentCap is the per-fragment byte cap the payload
-// builder applies to each step's rendered observation / reasoning
-// trace. It keeps the compaction prompt bounded (and safely under the
-// D-026 heavy-output threshold the LLM-edge safety pass enforces per
-// message) even when a single step carried a large observation.
+// builder applies to each step's rendered query / goal / action /
+// observation / error / reasoning fragments. It bounds a SINGLE
+// oversize fragment; the aggregate payload across many steps is
+// bounded separately by the payload budget (defaultTrajectoryPayload
+// Budget / WithTrajectoryHeavyOutputThreshold) — per-fragment capping
+// alone cannot keep a long trajectory under the D-026 heavy-output
+// threshold (Wave C checkpoint audit).
 const trajectoryFragmentCap = 4096
+
+// trajectoryPayloadHeadroom is the safety margin the payload budget
+// keeps below the heavy-output threshold so the rendered user message
+// stays strictly under the LLM-edge safety pass's per-message check
+// (findContextLeak triggers at >= threshold).
+const trajectoryPayloadHeadroom = trajectoryFragmentCap
+
+// defaultTrajectoryPayloadBudget is the aggregate byte budget the
+// payload builder applies when the caller does not thread the
+// operator's configured heavy-output threshold. Derived from the
+// D-022 default so the summariser's own Complete call can never fail
+// with ErrContextLeak on the default configuration — the failure mode
+// would kill the run exactly when compression was needed.
+const defaultTrajectoryPayloadBudget = llm.DefaultHeavyOutputThreshold - trajectoryPayloadHeadroom
 
 // TrajectorySummariser is the production planner.Summariser Phase
 // 111e ships — the producer half of trajectory compression (RFC §6.2,
@@ -84,6 +101,7 @@ type TrajectorySummariser struct {
 	model            string
 	systemPrompt     string
 	maxSummaryTokens int
+	payloadBudget    int
 }
 
 // TrajectoryOption configures a TrajectorySummariser at construction.
@@ -124,6 +142,28 @@ func WithTrajectoryMaxSummaryTokens(n int) TrajectoryOption {
 	}
 }
 
+// WithTrajectoryHeavyOutputThreshold threads the operator's resolved
+// heavy-output threshold (`artifacts.heavy_output_threshold_bytes`)
+// so the aggregate compaction-payload budget tracks the SAME limit
+// the LLM-edge safety pass enforces — a summariser built against a
+// non-default threshold must never compose a payload its own Complete
+// call would reject with ErrContextLeak (Wave C checkpoint audit).
+// The budget becomes threshold − trajectoryPayloadHeadroom, floored
+// at one fragment cap. Non-positive is a no-op (the D-022 default
+// applies).
+func WithTrajectoryHeavyOutputThreshold(threshold int) TrajectoryOption {
+	return func(s *TrajectorySummariser) {
+		if threshold <= 0 {
+			return
+		}
+		budget := threshold - trajectoryPayloadHeadroom
+		if budget < trajectoryFragmentCap {
+			budget = trajectoryFragmentCap
+		}
+		s.payloadBudget = budget
+	}
+}
+
 // NewTrajectorySummariser constructs the production trajectory
 // summariser. The client is mandatory; a nil client returns an error
 // rather than building a summariser that would nil-panic on the
@@ -139,8 +179,9 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 		return nil, fmt.Errorf("summarizer: NewTrajectorySummariser requires a non-nil llm.LLMClient")
 	}
 	s := &TrajectorySummariser{
-		client:       client,
-		systemPrompt: trajectorySystemPromptV1,
+		client:        client,
+		systemPrompt:  trajectorySystemPromptV1,
+		payloadBudget: defaultTrajectoryPayloadBudget,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -179,7 +220,7 @@ func (s *TrajectorySummariser) Summarise(ctx context.Context, rc planner.RunCont
 	}
 
 	systemText := s.systemPrompt
-	userText := buildTrajectoryPayload(rc, tr)
+	userText := buildTrajectoryPayload(rc, tr, s.payloadBudget)
 
 	req := llm.CompleteRequest{
 		Model: s.model,
@@ -250,46 +291,90 @@ func stripJSONFence(s string) string {
 
 // buildTrajectoryPayload assembles the user-side message body: the
 // run's query + current goal + the per-step action/observation
-// sequence, each fragment capped at trajectoryFragmentCap. Stable
-// line-prefix scheme so the LLM sees a consistent shape across calls
-// and test fixtures can pin against it.
-func buildTrajectoryPayload(rc planner.RunContext, tr *planner.Trajectory) string {
+// sequence, each fragment capped at trajectoryFragmentCap and the
+// AGGREGATE bounded by budget (Wave C checkpoint audit — many small
+// near-cap steps must not compose past the D-026 heavy-output
+// threshold and fail the summariser's own Complete call with
+// ErrContextLeak). When the steps overflow the budget, the MOST
+// RECENT steps are kept (original step numbers preserved) and the
+// older ones collapse into a single elision marker — recency carries
+// the live working set; the summary's job is exactly to replace the
+// elided history. Stable line-prefix scheme so the LLM sees a
+// consistent shape across calls and test fixtures can pin against it.
+func buildTrajectoryPayload(rc planner.RunContext, tr *planner.Trajectory, budget int) string {
+	if budget <= 0 {
+		budget = defaultTrajectoryPayloadBudget
+	}
 	var b strings.Builder
 	b.WriteString("Compress the following agent trajectory into the five-field JSON summary.\n")
 	b.WriteString("\n[User query]\n")
 	if tr.Query != "" {
-		b.WriteString(tr.Query)
+		b.WriteString(capFragment(tr.Query))
 	} else {
-		b.WriteString(rc.Query)
+		b.WriteString(capFragment(rc.Query))
 	}
 	b.WriteString("\n\n[Current goal]\n")
 	if rc.Goal != "" {
-		b.WriteString(rc.Goal)
+		b.WriteString(capFragment(rc.Goal))
 	} else {
 		b.WriteString("(same as query)")
 	}
 	b.WriteString("\n\n[Steps]\n")
 	if len(tr.Steps) == 0 {
 		b.WriteString("(none)\n")
+		return b.String()
 	}
+
+	blocks := make([]string, len(tr.Steps))
 	for i, step := range tr.Steps {
-		fmt.Fprintf(&b, "Step %d action: %s\n", i+1, capFragment(renderJSONFragment(step.Action)))
-		obs := step.LLMObservation
-		if obs == nil {
-			// Pre-projection-split steps: fall back to the raw
-			// observation, capped — the cap keeps the payload under the
-			// D-026 heavy threshold even on the legacy shape.
-			obs = step.Observation
+		blocks[i] = renderStepBlock(i+1, step)
+	}
+
+	// Keep the most recent blocks under the remaining budget. The
+	// newest block is ALWAYS kept (its fragments are individually
+	// capped, so a single block is bounded) — an empty step section
+	// would give the summariser nothing to digest.
+	remaining := budget - b.Len()
+	keepFrom := len(blocks) - 1
+	total := len(blocks[len(blocks)-1])
+	for i := len(blocks) - 2; i >= 0; i-- {
+		if total+len(blocks[i]) > remaining {
+			break
 		}
-		if obs != nil {
-			fmt.Fprintf(&b, "Step %d observation: %s\n", i+1, capFragment(renderJSONFragment(obs)))
-		}
-		if step.Error != "" {
-			fmt.Fprintf(&b, "Step %d error: %s\n", i+1, capFragment(step.Error))
-		}
-		if step.ReasoningTrace != "" {
-			fmt.Fprintf(&b, "Step %d reasoning: %s\n", i+1, capFragment(step.ReasoningTrace))
-		}
+		total += len(blocks[i])
+		keepFrom = i
+	}
+	if keepFrom > 0 {
+		fmt.Fprintf(&b, "(%d earlier steps elided to fit the compaction payload budget)\n", keepFrom)
+	}
+	for _, block := range blocks[keepFrom:] {
+		b.WriteString(block)
+	}
+	return b.String()
+}
+
+// renderStepBlock renders one step's action / observation / error /
+// reasoning lines, each fragment capped at trajectoryFragmentCap.
+// The 1-based step number is the step's ORIGINAL trajectory position
+// so an elided payload keeps honest numbering.
+func renderStepBlock(n int, step planner.Step) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Step %d action: %s\n", n, capFragment(renderJSONFragment(step.Action)))
+	obs := step.LLMObservation
+	if obs == nil {
+		// Pre-projection-split steps: fall back to the raw
+		// observation, capped — the per-fragment cap bounds the legacy
+		// shape too.
+		obs = step.Observation
+	}
+	if obs != nil {
+		fmt.Fprintf(&b, "Step %d observation: %s\n", n, capFragment(renderJSONFragment(obs)))
+	}
+	if step.Error != "" {
+		fmt.Fprintf(&b, "Step %d error: %s\n", n, capFragment(step.Error))
+	}
+	if step.ReasoningTrace != "" {
+		fmt.Fprintf(&b, "Step %d reasoning: %s\n", n, capFragment(step.ReasoningTrace))
 	}
 	return b.String()
 }

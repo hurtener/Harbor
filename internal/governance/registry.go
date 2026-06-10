@@ -48,9 +48,14 @@ type Factory func(cfg llm.ConfigSnapshot, deps llm.Deps) (Subsystem, error)
 // Multi-runtime limitation (D-198): the factory is PROCESS-GLOBAL. An
 // embedder assembling two runtime stacks with different tier maps in
 // one process would collide here — the second SetFactory wins for
-// every subsequent `llm.Open`. The binary assembles exactly one stack,
-// so the zero-ceremony seam stays; multi-runtime embedders skip
-// SetFactory entirely and compose per stack instead:
+// every subsequent `llm.Open`, and the same wipe exists on the CLOSE
+// side: a tier-bearing stack's `Stack.Close` runs `ClearFactory()`
+// unconditionally, so closing an older stack removes a newer sibling
+// stack's installed factory for any `llm.Open` issued afterwards
+// (already-wrapped clients keep their enforcement). The binary
+// assembles exactly one stack, so the zero-ceremony seam stays;
+// multi-runtime embedders skip SetFactory entirely and compose per
+// stack instead:
 //
 //	sub, err := governance.NewSubsystemFromConfig(cfg, store, bus)
 //	client = governance.Wrap(llmClient, sub) // governance outermost, D-043

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
@@ -78,16 +79,24 @@ type RunLoop struct {
 	history  *controlHistory
 	bus      events.EventBus // optional; nil ⇒ no lifecycle events emitted
 	clock    Clock
+	logger   *slog.Logger
+	// pauseRecheckInterval is the parked run's Status re-check cadence
+	// (the delivery-independent timeout backstop). Defaults to
+	// pauseStatusRecheckInterval; injectable via
+	// WithPauseStatusRecheckInterval. Set once at construction (D-025).
+	pauseRecheckInterval time.Duration
 }
 
 // runLoopConfig is the option-applied construction config for a RunLoop.
 type runLoopConfig struct {
-	taskRegistry      tasks.TaskRegistry
-	bus               events.EventBus
-	hardCancelHook    func(ctx context.Context, runID string) error
-	clock             Clock
-	maxControlHistory int
-	gates             map[string]*approval.ApprovalGate
+	taskRegistry         tasks.TaskRegistry
+	bus                  events.EventBus
+	hardCancelHook       func(ctx context.Context, runID string) error
+	clock                Clock
+	logger               *slog.Logger
+	maxControlHistory    int
+	gates                map[string]*approval.ApprovalGate
+	pauseRecheckInterval time.Duration
 }
 
 // RunLoopOption configures a RunLoop at construction. Options are applied
@@ -147,6 +156,36 @@ func WithRunLoopClock(c Clock) RunLoopOption {
 	}
 }
 
+// WithRunLoopLogger hands the RunLoop a logger for degradation /
+// recovery lines (CLAUDE.md §5 — "Warn: unexpected but recovered",
+// e.g. a parked run's bus subscription failing and falling back to
+// the Status re-check). Defaults to slog.Default(); the production
+// assembly threads the telemetry-backed logger.
+func WithRunLoopLogger(l *slog.Logger) RunLoopOption {
+	return func(cfg *runLoopConfig) {
+		if l != nil {
+			cfg.logger = l
+		}
+	}
+}
+
+// WithPauseStatusRecheckInterval overrides the parked run's
+// Coordinator.Status re-check cadence — the delivery-independent
+// backstop that makes the timeout-terminal guarantee hold even when
+// the `pause.resumed` bus wake is dropped (and the ONLY wake channel
+// on a bus-less RunLoop). The default
+// (pauseStatusRecheckInterval, 30s) is deliberately coarse; tests
+// inject a small interval so the backstop branch is exercisable
+// without a 30s wall-clock wait (Wave C checkpoint audit). A
+// non-positive d keeps the default.
+func WithPauseStatusRecheckInterval(d time.Duration) RunLoopOption {
+	return func(cfg *runLoopConfig) {
+		if d > 0 {
+			cfg.pauseRecheckInterval = d
+		}
+	}
+}
+
 // WithMaxControlHistory overrides the per-session applied-control history
 // cap. A non-positive value falls back to MaxControlHistory.
 func WithMaxControlHistory(n int) RunLoopOption {
@@ -200,8 +239,10 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 		return nil, fmt.Errorf("%w: Coordinator is nil", ErrRunLoopMisconfigured)
 	}
 	cfg := runLoopConfig{
-		clock:             systemClock{},
-		maxControlHistory: MaxControlHistory,
+		clock:                systemClock{},
+		logger:               slog.Default(),
+		maxControlHistory:    MaxControlHistory,
+		pauseRecheckInterval: pauseStatusRecheckInterval,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -215,9 +256,11 @@ func NewRunLoop(reg *Registry, coord pauseresume.Coordinator, opts ...RunLoopOpt
 			hardCancelHook: cfg.hardCancelHook,
 			gates:          cfg.gates,
 		},
-		history: newControlHistory(cfg.maxControlHistory),
-		bus:     cfg.bus,
-		clock:   cfg.clock,
+		history:              newControlHistory(cfg.maxControlHistory),
+		bus:                  cfg.bus,
+		clock:                cfg.clock,
+		logger:               cfg.logger,
+		pauseRecheckInterval: cfg.pauseRecheckInterval,
 	}, nil
 }
 
@@ -812,8 +855,10 @@ const pauseStatusRecheckInterval = 30 * time.Second
 //   - (true, nil)  — the pause was resumed out-of-band with the typed
 //     `timeout` Decision (the max-park sweeper reaped it); the run is
 //     TERMINAL — the caller finishes with Finish{ConstraintsConflict}.
-//   - (false, err) — ctx was cancelled, the inbox was retired, or the
-//     bus subscription failed.
+//   - (false, err) — ctx was cancelled or the inbox was retired. A
+//     FAILED bus subscription does NOT error: the park degrades to
+//     the Status re-check ticker (logged at Warn — §5: unexpected but
+//     recovered), exactly as a bus-less RunLoop behaves.
 //
 // The timeout signal has two channels: the canonical `pause.resumed`
 // bus event (primary, when the RunLoop carries a bus) and a coarse
@@ -846,6 +891,18 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 		if serr == nil {
 			defer sub.Cancel()
 			busEvents = sub.Events()
+		} else {
+			// Surfaced loud, then recovered (§5): the park degrades
+			// from the millisecond bus wake to the coarse Status
+			// re-check ticker below — same behaviour as a bus-less
+			// RunLoop, never a silent contract change.
+			rl.logger.WarnContext(ctx, "steering: parked run could not subscribe to the bus — timeout wake degrades to the Status re-check ticker",
+				slog.String("tenant_id", q.TenantID),
+				slog.String("user_id", q.UserID),
+				slog.String("session_id", q.SessionID),
+				slog.String("run_id", q.RunID),
+				slog.String("pause_token", string(token)),
+				slog.Any("error", serr))
 		}
 	}
 
@@ -861,7 +918,7 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 		<-waitDone
 	}
 
-	recheck := time.NewTicker(pauseStatusRecheckInterval)
+	recheck := time.NewTicker(rl.pauseRecheckInterval)
 	defer recheck.Stop()
 
 	// Close the subscribe-after-publish window: the sweeper may have

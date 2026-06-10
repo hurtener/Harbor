@@ -362,8 +362,12 @@ or in `[1, 200]`.
 ### skills.directory.selection
 
 Ordering of the unpinned remainder. Default: `pinned_then_recent`
-(UpdatedAt DESC). Validation: when set, one of `pinned_then_recent`,
-`pinned_then_top` (UseCount DESC).
+(UpdatedAt DESC). Validation: when set, must be `pinned_then_recent`.
+`pinned_then_top` (UseCount DESC) is recognised but **rejected as not
+yet wired** — no production path increments skill usage counters, so
+the ordering would silently degrade to alphabetical; the validator
+fails loud instead (the `tools.http_manifests` precedent). It becomes
+accepted when a usage-tracking path lands.
 
 ---
 

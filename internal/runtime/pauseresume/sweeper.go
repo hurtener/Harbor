@@ -107,9 +107,16 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 // Per-record reap failures (a lost tool-context handle, a store error
 // on the checkpoint delete) are logged at Error and do NOT stop the
 // loop: one wedged record must not shield every other expired pause
-// from being reaped. Losing a reap race to a legitimate concurrent
-// Resume (ErrAlreadyResumed / ErrPauseNotFound) is benign — the pause
-// resolved exactly once — and is not logged as a failure.
+// from being reaped. A PRE-flip failure (the handle re-attach) leaves
+// the entry paused, so the next pass's expired scan retries it; a
+// POST-flip failure (the checkpoint delete after Resume already
+// flipped the entry) marks the entry delete-pending and the next
+// pass's retryPendingDeletes phase re-attempts the delete + the
+// skipped pause.resumed emit — a resumed-but-undeleted checkpoint
+// must never orphan silently (Wave C checkpoint audit). Losing a reap
+// race to a legitimate concurrent Resume (ErrAlreadyResumed /
+// ErrPauseNotFound) is benign — the pause resolved exactly once — and
+// is not logged as a failure.
 func RunSweeper(ctx context.Context, coord Coordinator, opts ...SweeperOption) error {
 	c, ok := coord.(*coordinator)
 	if !ok {
@@ -198,9 +205,15 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 			// loser's error is the documented contract (plan §"Test
 			// plan" / D-200), not a failure.
 		default:
-			// A substantive reap failure (lost tool-context handle,
-			// checkpoint-delete store error). Loud, then continue — the
-			// record stays and the next pass retries it.
+			// A substantive reap failure. Loud, then continue. Two
+			// classes, both retried by the next pass: a PRE-flip
+			// failure (lost tool-context handle) leaves the entry
+			// paused and the expired scan re-selects it; a POST-flip
+			// failure (checkpoint-delete store error after Resume
+			// already flipped the entry) is marked delete-pending by
+			// Resume itself and re-attempted by retryPendingDeletes
+			// below — the expired scan alone could never see it again
+			// (it skips non-paused entries).
 			logger.ErrorContext(ctx, "pauseresume: sweeper failed to reap expired pause",
 				"token", string(e.token),
 				"tenant_id", e.identity.TenantID,
@@ -210,7 +223,84 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 				"error", err)
 		}
 	}
+	if err := c.retryPendingDeletes(ctx, logger); err != nil {
+		return reaped, err
+	}
 	return reaped, nil
+}
+
+// retryPendingDeletes re-attempts the checkpoint delete (and the
+// skipped pause.resumed emit) for every resumed entry whose original
+// delete failed (Wave C checkpoint audit — the orphan class Resume's
+// state-flip-before-delete ordering creates). Runs on every sweep
+// pass, not only when something expired, so a wedged store that
+// recovers drains its backlog on the next tick. The only error return
+// is ctx cancellation; per-record failures stay flagged, are logged
+// loud, and are retried next pass.
+func (c *coordinator) retryPendingDeletes(ctx context.Context, logger *slog.Logger) error {
+	if c.store == nil {
+		return nil
+	}
+	for _, e := range c.pendingDeleteEntries() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("pauseresume: delete-retry cancelled mid-pass: %w", err)
+		}
+		rec, err := e.toCheckpoint()
+		if err == nil {
+			err = deleteCheckpoint(ctx, c.store, rec)
+		}
+		if err != nil {
+			logger.ErrorContext(ctx, "pauseresume: sweeper failed to clear resumed pause's checkpoint (will retry next pass)",
+				"token", string(e.token),
+				"tenant_id", e.identity.TenantID,
+				"user_id", e.identity.UserID,
+				"session_id", e.identity.SessionID,
+				"run_id", e.runID,
+				"error", err)
+			continue
+		}
+		c.clearDeletePending(e.token)
+		// Complete the choreography: the original Resume returned
+		// before its pause.resumed emit, so observers (including a
+		// parked RunLoop waiting on the bus wake) never saw the
+		// terminal event. Emit it now that the record is fully cleaned.
+		c.emit(ctx, EventTypePauseResumed, &e, PauseResumedPayload{
+			Token:    string(e.token),
+			Reason:   string(e.reason),
+			Decision: e.decision,
+		})
+		logger.InfoContext(ctx, "pauseresume: sweeper cleared resumed pause's orphaned checkpoint",
+			"token", string(e.token),
+			"tenant_id", e.identity.TenantID,
+			"user_id", e.identity.UserID,
+			"session_id", e.identity.SessionID,
+			"run_id", e.runID)
+	}
+	return nil
+}
+
+// pendingDeleteEntries snapshots (value copies, under the mutex)
+// every resumed registry entry still awaiting its checkpoint delete.
+func (c *coordinator) pendingDeleteEntries() []pauseEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []pauseEntry
+	for _, e := range c.pauses {
+		if e.state == StatusResumed && e.deletePending {
+			out = append(out, *e)
+		}
+	}
+	return out
+}
+
+// clearDeletePending unflags an entry after its retried checkpoint
+// delete landed.
+func (c *coordinator) clearDeletePending(token Token) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.pauses[token]; ok {
+		entry.deletePending = false
+	}
 }
 
 // expiredEntries snapshots (value copies, under the mutex — the same

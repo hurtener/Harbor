@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -57,6 +58,13 @@ type importStoreOptions struct {
 // ImportStoreOption configures ImportAndStore.
 type ImportStoreOption func(*importStoreOptions)
 
+// importStoreMu serialises the duplicate-name gate + upsert window of
+// ImportAndStore (see the function's concurrency note). Process-local
+// by design: the §5 package-level-state rule's spirit is per-run
+// state on artifacts — a package-level sync primitive guarding a
+// CLI/embedder ingest path carries no identity and no run state.
+var importStoreMu sync.Mutex
+
 // WithOverwrite permits replacing an existing same-name skill. The
 // store's own conflict policy still applies underneath — an existing
 // `Origin=pack` row can only be replaced by another pack import (the
@@ -91,6 +99,17 @@ func WithOverwrite() ImportStoreOption {
 // `ErrMissingTrigger`, `ErrEmptySteps`, `ErrUnknownSection`,
 // `ErrAttachmentOutsideRoot` — so callers (and the CLI verb) can
 // print the validator's own message.
+//
+// Concurrency note (Wave C checkpoint audit; D-201 addendum): the
+// duplicate-name gate is check-then-act — the V1 SkillStore interface
+// has no conditional insert, so the Get→Upsert window is serialised
+// behind a PROCESS-LOCAL mutex here. That fully closes the race for
+// this surface's actual callers (the one-shot `harbor skill import`
+// verb and single-process headless embedders); two imports of the
+// same name from SEPARATE processes against a shared store can still
+// both pass the gate (last write wins — benign for identical pack
+// content, which converges). A store-level conditional create is the
+// recorded follow-up if a multi-process ingestion path ever lands.
 func ImportAndStore(
 	ctx context.Context,
 	id identity.Identity,
@@ -142,7 +161,13 @@ func ImportAndStore(
 	}
 
 	// Duplicate-name gate. Get under the same identity; ErrSkillNotFound
-	// is the happy path.
+	// is the happy path. The gate+upsert window is serialised behind
+	// the process-local importStoreMu (see the godoc's concurrency
+	// note): without it, two concurrent same-name imports could both
+	// observe not-found and silently last-write-win past the loud
+	// ErrDuplicateSkillName posture.
+	importStoreMu.Lock()
+	defer importStoreMu.Unlock()
 	overwrote := false
 	if _, getErr := store.Get(ctx, q, skill.Name); getErr == nil {
 		if !o.overwrite {

@@ -40,6 +40,8 @@ import (
 	// aggregator.
 	_ "github.com/hurtener/Harbor/internal/llm/mock"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
@@ -320,12 +322,22 @@ func TestE2E_Phase111a_CrossSessionIsolation(t *testing.T) {
 }
 
 // TestE2E_Phase111a_MissingIdentity_FailsClosed — the failure mode: a
-// Complete with no identity in ctx never reaches the provider (§6 rule
-// 9; the chain fails closed).
+// Complete with no identity in ctx fails closed with the typed
+// governance sentinel (§6 rule 9). The sentinel assertion pins WHICH
+// gate rejected it — the governance PreCall chain, per wrap.go's
+// contract — not merely that something errored (Wave C checkpoint
+// audit tightening; the mock echo would otherwise succeed, so a
+// rejection here is the gate's). The unit-level
+// TestNewSubsystemFromConfig_RejectShortCircuits_InnerNeverCalled pins
+// the never-reaches-the-provider half with a call counter.
 func TestE2E_Phase111a_MissingIdentity_FailsClosed(t *testing.T) {
 	stack := phase111aStack(t, config.GovernanceTierConfig{BudgetCeilingUSD: 100})
-	if _, err := phase111aComplete(context.Background(), stack, "anonymous", nil); err == nil {
+	_, err := phase111aComplete(context.Background(), stack, "anonymous", nil)
+	if err == nil {
 		t.Fatalf("Complete without identity must fail closed")
+	}
+	if !errors.Is(err, governance.ErrIdentityRequired) {
+		t.Fatalf("Complete without identity: got %v, want errors.Is ErrIdentityRequired (the governance gate, not an incidental failure)", err)
 	}
 }
 
@@ -396,4 +408,118 @@ func TestE2E_Phase111a_ConcurrentReuse_OneWrappedClient(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("goroutine baseline not restored: started %d, now %d", baseline, goruntime.NumGoroutine())
+}
+
+// TestE2E_Phase111a_ClearFactoryOnClose — the Wave C checkpoint-audit
+// regression gate for the assemble.go Close-side ClearFactory closer
+// (D-198; the documented "Stack.Close clears it again" guarantee had
+// no pinning test). A tier-bearing stack proves enforcement is LIVE,
+// is then Closed, and a FRESH llm.Open — with no Assemble in between,
+// so the else-branch clear cannot mask a dropped closer — must compose
+// an UNWRAPPED client: the same identity that was budget-rejected
+// pre-Close completes freely, with zero governance.* events (the
+// marker-bounded window, no sleep-as-sync).
+func TestE2E_Phase111a_ClearFactoryOnClose(t *testing.T) {
+	cfg := phase111aCfg(t, config.GovernanceTierConfig{BudgetCeilingUSD: 0.0000001})
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if err != nil {
+		if stack != nil {
+			_ = stack.Close(context.Background())
+		}
+		t.Fatalf("assemble: %v", err)
+	}
+	ctx := phase111aCtx(t, "s-close-clear")
+
+	// Prove the factory IS installed: the tiny ceiling rejects call 2.
+	if _, err := phase111aComplete(ctx, stack, "spend it", nil); err != nil {
+		_ = stack.Close(context.Background())
+		t.Fatalf("first Complete: %v", err)
+	}
+	if _, err := phase111aComplete(ctx, stack, "again", nil); !errors.Is(err, governance.ErrBudgetExceeded) {
+		_ = stack.Close(context.Background())
+		t.Fatalf("second Complete: got %v, want ErrBudgetExceeded (factory not installed?)", err)
+	}
+
+	// Close runs the reverse closer chain — including governance.ClearFactory.
+	if err := stack.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Fresh real drivers for a DIRECT llm.Open (no second Assemble).
+	red, err := audit.Open(context.Background(), cfg.Audit)
+	if err != nil {
+		t.Fatalf("audit.Open: %v", err)
+	}
+	bus, err := events.Open(context.Background(), cfg.Events, red)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	defer func() { _ = bus.Close(context.Background()) }()
+	artStore, err := artifacts.Open(context.Background(), cfg.Artifacts)
+	if err != nil {
+		t.Fatalf("artifacts.Open: %v", err)
+	}
+	defer func() { _ = artStore.Close(context.Background()) }()
+
+	sub, err := bus.Subscribe(context.Background(), events.Filter{
+		Tenant: "phase111a", User: "operator", Session: "s-close-clear",
+		Types: []events.EventType{
+			governance.EventTypeBudgetExceeded,
+			governance.EventTypeRateLimited,
+			governance.EventTypeMaxTokensExceeded,
+			events.EventTypeRuntimeWarning, // the marker
+		},
+	})
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	client, err := llm.Open(context.Background(), llm.SnapshotFromConfig(cfg.LLM, cfg.Artifacts), llm.Deps{
+		Artifacts: artStore,
+		Bus:       bus,
+	})
+	if err != nil {
+		t.Fatalf("llm.Open after Close: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+
+	// The SAME identity that was budget-rejected pre-Close: with the
+	// factory cleared this client is unwrapped, so the call permits.
+	text := "post-close call must be ungoverned"
+	resp, err := client.Complete(ctx, llm.CompleteRequest{
+		Model: "mock/echo",
+		Messages: []llm.ChatMessage{
+			{Role: llm.RoleUser, Content: llm.Content{Text: &text}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("post-Close Complete: %v (a dropped ClearFactory closer would re-wrap or fail here)", err)
+	}
+	if !strings.Contains(resp.Content, "post-close call") {
+		t.Errorf("mock echo missing: %q", resp.Content)
+	}
+
+	// Marker-bounded zero-event window (FIFO per subscriber): the
+	// marker arriving first proves no governance event preceded it.
+	if err := bus.Publish(ctx, events.Event{
+		Type: events.EventTypeRuntimeWarning,
+		Identity: identity.Quadruple{Identity: identity.Identity{
+			TenantID: "phase111a", UserID: "operator", SessionID: "s-close-clear",
+		}},
+		Payload: phase111aMarker{Note: "close-clear-marker"},
+	}); err != nil {
+		t.Fatalf("Publish marker: %v", err)
+	}
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			t.Fatalf("subscription closed before the marker")
+		}
+		if ev.Type != events.EventTypeRuntimeWarning {
+			t.Fatalf("post-Close client emitted a %s event — the factory survived Stack.Close", ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for the marker event")
+	}
 }

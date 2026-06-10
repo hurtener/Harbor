@@ -2,6 +2,7 @@ package skills
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hurtener/Harbor/internal/config"
@@ -129,7 +130,7 @@ func TestDirectoryFromConfig_FieldParity_SkillsDirectoryConfig(t *testing.T) {
 // round-trips through config validation.
 func TestDirectoryFromConfig_SelectionAllowlistMirrorsValidator(t *testing.T) {
 	t.Parallel()
-	for _, sel := range []Selection{SelectionPinnedThenRecent, SelectionPinnedThenTop} {
+	validate := func(sel Selection) error {
 		cfg := config.Defaults()
 		// Required-for-core LLM fields (documented dummy values —
 		// the validator only checks non-emptiness here).
@@ -139,8 +140,22 @@ func TestDirectoryFromConfig_SelectionAllowlistMirrorsValidator(t *testing.T) {
 		cfg.Skills.Driver = "localdb"
 		cfg.Skills.DSN = ":memory:"
 		cfg.Skills.Directory.Selection = string(sel)
-		if err := cfg.ValidateCore(); err != nil {
-			t.Errorf("config validator rejects canonical Selection %q: %v — the allowlists drifted", sel, err)
-		}
+		return cfg.ValidateCore()
+	}
+	if err := validate(SelectionPinnedThenRecent); err != nil {
+		t.Errorf("config validator rejects canonical Selection %q: %v — the allowlists drifted", SelectionPinnedThenRecent, err)
+	}
+	// Wave C checkpoint audit (D-201 addendum): `pinned_then_top` stays
+	// a canonical library-level Selection (an embedder that bumps
+	// UseCount through Upsert can use it), but the OPERATOR validator
+	// rejects it loud until a production usage-bump path lands — a knob
+	// that validates cleanly and silently degrades to alphabetical
+	// ordering violates §13. The rejection message must name the gap,
+	// not read as an allowlist miss.
+	err := validate(SelectionPinnedThenTop)
+	if err == nil {
+		t.Errorf("config validator accepts %q, want a loud not-wired-yet rejection (no production UseCount bump path exists)", SelectionPinnedThenTop)
+	} else if !strings.Contains(err.Error(), "not wired yet") {
+		t.Errorf("config validator rejection for %q = %v, want the not-wired-yet message (allowlist drift?)", SelectionPinnedThenTop, err)
 	}
 }

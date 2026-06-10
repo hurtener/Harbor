@@ -56,7 +56,12 @@ const (
 	// updated skills (UpdatedAt DESC, Name ASC).
 	SelectionPinnedThenRecent Selection = "pinned_then_recent"
 	// SelectionPinnedThenTop — pinned first, then most-used skills
-	// (UseCount DESC, Name ASC).
+	// (UseCount DESC, Name ASC). Library-level only at V1.1.x: no
+	// production path increments UseCount, so the OPERATOR config
+	// validator rejects `skills.directory.selection: pinned_then_top`
+	// as not-yet-wired (Wave C checkpoint audit; D-201 addendum). An
+	// embedder that maintains UseCount through Upsert itself may use
+	// this Selection directly.
 	SelectionPinnedThenTop Selection = "pinned_then_top"
 )
 

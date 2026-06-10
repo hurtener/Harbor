@@ -447,8 +447,12 @@ type SkillsConfig struct {
 //     so the pre-111d injection-budget knob keeps its meaning;
 //     explicit values must sit in [1, 200].
 //   - `Selection` orders the unpinned remainder:
-//     `pinned_then_recent` (default — UpdatedAt DESC) or
-//     `pinned_then_top` (UseCount DESC).
+//     `pinned_then_recent` (default — UpdatedAt DESC).
+//     `pinned_then_top` (UseCount DESC) is a canonical library-level
+//     Selection but is REJECTED by the operator validator until a
+//     production usage-bump path lands — no shipped path increments
+//     UseCount, so the ordering would silently degrade to
+//     alphabetical (Wave C checkpoint audit; D-201 addendum).
 type SkillsDirectoryConfig struct {
 	Pinned     []string `yaml:"pinned,omitempty"`
 	MaxEntries int      `yaml:"max_entries,omitempty"`
