@@ -3,11 +3,12 @@
 // (sessions, tasks, governance accumulators, planner checkpoints,
 // memory snapshots, steering events) saves through.
 //
-// The surface is generic by design (D-027): five methods keyed on
-// `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency
-// on a caller-supplied `EventID` (ULID). Consuming subsystems land
-// their typed wrappers at their own layer atop this interface — a
-// `SessionRegistry.Save(s Session)` reduces to
+// The surface is generic by design (D-027): identity-scoped CRUD keyed
+// on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency
+// on a caller-supplied `EventID` (ULID), plus ONE explicitly-elevated
+// maintenance scan (`ListKind` — RFC §6.11, D-207). Consuming
+// subsystems land their typed wrappers at their own layer atop this
+// interface — a `SessionRegistry.Save(s Session)` reduces to
 // `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`.
 //
 // Three V1 drivers ship to the §9 persistence triad (in-memory,
@@ -112,10 +113,49 @@ type StateStore interface {
 	// record is absent (idempotent), wrapped error on store failure.
 	Delete(ctx context.Context, id identity.Quadruple, kind string) error
 
+	// ListKind enumerates every record whose Kind starts with
+	// kindPrefix — the store's ONE maintenance-scan surface
+	// (RFC §6.11, D-207). Unlike every other method, the scan crosses
+	// identity boundaries: it exists so runtime maintenance loops (the
+	// pause sweeper's crash-orphan rescan is the first consumer) can
+	// find records whose identities the process has never seen. That
+	// elevation is explicit and fail-closed:
+	//
+	//   - scope.MaintenanceScoped MUST be true, or the call fails with
+	//     ErrMaintenanceScopeRequired (CLAUDE.md §6 rule 5 / §13 "no
+	//     cross-session queries without an explicit elevated scope
+	//     claim"). There is no identity-scoped mode — identity-scoped
+	//     reads stay on Load / LoadByEventID.
+	//   - kindPrefix MUST be non-empty (ErrInvalidRecord) — a
+	//     whole-store dump is never a valid maintenance scan.
+	//   - Callers MUST act on each returned record under that record's
+	//     OWN identity (every record carries its Quadruple); ListKind
+	//     grants visibility for the scan, never a widened mutation
+	//     scope.
+	//
+	// kindPrefix matches literally (no wildcard interpretation — SQL
+	// drivers escape LIKE metacharacters). Result order is
+	// unspecified; an empty result is ([]StateRecord{} or nil, nil),
+	// never an error.
+	ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error)
+
 	// Close releases driver resources. Subsequent calls return
 	// ErrStoreClosed (wrapped). Implementations MUST honour ctx
 	// during long teardowns.
 	Close(ctx context.Context) error
+}
+
+// ListScope is the explicit scope claim ListKind requires. The zero
+// value fails closed: a caller must set MaintenanceScoped to assert it
+// understands the call crosses identity boundaries (CLAUDE.md §6 rule
+// 5; the §13 elevated-scope-claim rule applied to the persistence
+// floor).
+type ListScope struct {
+	// MaintenanceScoped asserts the caller is a runtime maintenance
+	// loop acting on each returned record under that record's own
+	// identity. False (the zero value) is rejected with
+	// ErrMaintenanceScopeRequired.
+	MaintenanceScoped bool
 }
 
 // Sentinel errors. Callers compare via errors.Is.
@@ -139,6 +179,10 @@ var (
 	// ErrUnknownDriver — Open was asked for a driver name no
 	// registered factory handles.
 	ErrUnknownDriver = errors.New("state: unknown driver")
+	// ErrMaintenanceScopeRequired — ListKind was called without the
+	// explicit ListScope.MaintenanceScoped claim. The cross-identity
+	// scan fails closed (CLAUDE.md §6).
+	ErrMaintenanceScopeRequired = errors.New("state: ListKind requires an explicit maintenance scope claim")
 )
 
 // ValidateIdentity checks that the triple is fully specified. Empty
@@ -162,6 +206,21 @@ func ValidateRecord(r StateRecord) error {
 		return ErrInvalidRecord
 	}
 	if r.Kind == "" {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+// ValidateListKind checks ListKind's fail-closed preconditions shared
+// by every driver: the explicit maintenance scope claim must be set
+// (ErrMaintenanceScopeRequired) and the kind prefix must be non-empty
+// (ErrInvalidRecord — a whole-store dump is never a valid maintenance
+// scan).
+func ValidateListKind(scope ListScope, kindPrefix string) error {
+	if !scope.MaintenanceScoped {
+		return ErrMaintenanceScopeRequired
+	}
+	if kindPrefix == "" {
 		return ErrInvalidRecord
 	}
 	return nil

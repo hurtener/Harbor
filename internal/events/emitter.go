@@ -37,11 +37,14 @@ import (
 // the compile-shaped assertion lives in `internal/runtime/runctx`'s
 // tests (a package that may import both).
 //
-// The publish context is `context.Background()`: the planner's Emit
-// callback is ctx-less by contract (the documented bridge across an
-// unmanaged async boundary, CLAUDE.md §5). Bus drivers detect their
-// own closure internally (`ErrBusClosed`), so a run-loop teardown
-// mid-emit still surfaces through the Warn path rather than hanging.
+// The publish context is `context.Background()` — the documented
+// bridge across an unmanaged async boundary (CLAUDE.md §5) for callers
+// that genuinely have no lifetime ctx. Run-loop drivers are NOT that
+// caller: they own a driver-lifetime ctx and MUST use
+// [IdentityStampingEmitterContext] so publishes are bounded by it —
+// the durable bus driver drives its `store.Save` with the publish ctx,
+// and an unbounded Background ctx silently outlived driver Close
+// (D-195's recorded correction, resolved by D-207).
 //
 // Concurrent reuse (D-025): the constructor allocates no shared
 // mutable state — each run constructs its own closure over the run's
@@ -51,6 +54,25 @@ import (
 // A nil logger defaults to slog.Default() so the failure path stays
 // loud for every caller.
 func IdentityStampingEmitter(bus EventBus, q identity.Quadruple, logger *slog.Logger) func(Event) {
+	return IdentityStampingEmitterContext(context.Background(), bus, q, logger)
+}
+
+// IdentityStampingEmitterContext is [IdentityStampingEmitter] with a
+// caller-supplied base context bounding every publish (D-207, closing
+// D-195's correction note). Run-loop drivers pass their
+// driver-lifetime ctx (the pre-110b `d.subCtx` semantics): on the
+// durable bus driver — which persists each event via `store.Save`
+// under the publish ctx — cancelling baseCtx stops persistence at
+// driver teardown instead of letting late emits write past Close.
+// Publish failures (including baseCtx cancellation) Warn loudly,
+// never silently drop.
+//
+// A nil baseCtx falls back to context.Background() (the ctx-less
+// constructor's documented bridge).
+func IdentityStampingEmitterContext(baseCtx context.Context, bus EventBus, q identity.Quadruple, logger *slog.Logger) func(Event) {
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -58,7 +80,7 @@ func IdentityStampingEmitter(bus EventBus, q identity.Quadruple, logger *slog.Lo
 		if ev.Identity.TenantID == "" {
 			ev.Identity = q
 		}
-		if pubErr := bus.Publish(context.Background(), ev); pubErr != nil {
+		if pubErr := bus.Publish(baseCtx, ev); pubErr != nil {
 			logger.Warn("events: emitter publish failed",
 				slog.String("type", string(ev.Type)),
 				slog.String("run_id", q.RunID),

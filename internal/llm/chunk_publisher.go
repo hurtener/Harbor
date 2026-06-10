@@ -40,11 +40,14 @@ import (
 //	pub := llm.NewChunkPublisher(bus, q, string(taskID), logger)
 //	onChunk := func(d string, done bool, k planner.ChunkKind) { pub(d, done, string(k)) }
 //
-// The publish context is `context.Background()`: the planner's
-// OnChunk callback is ctx-less by contract (the documented bridge
-// across an unmanaged async boundary, CLAUDE.md §5). Bus drivers
-// detect their own closure internally (`ErrBusClosed`), so a run-loop
-// teardown mid-stream still surfaces through the Warn path.
+// The publish context is `context.Background()` — the documented
+// bridge across an unmanaged async boundary (CLAUDE.md §5) for callers
+// that genuinely have no lifetime ctx. Run-loop drivers are NOT that
+// caller: they own a driver-lifetime ctx and MUST use
+// [NewChunkPublisherContext] so publishes are bounded by it — the
+// durable bus driver drives its `store.Save` with the publish ctx, and
+// an unbounded Background ctx silently outlived driver Close (D-195's
+// recorded correction, resolved by D-207).
 //
 // Concurrent reuse (D-025): the constructor allocates no shared
 // mutable state — each run constructs its own closure over the run's
@@ -54,6 +57,25 @@ import (
 // A nil logger defaults to slog.Default() so the failure path stays
 // loud for every caller.
 func NewChunkPublisher(bus events.EventBus, q identity.Quadruple, taskID string, logger *slog.Logger) func(delta string, done bool, kind string) {
+	return NewChunkPublisherContext(context.Background(), bus, q, taskID, logger)
+}
+
+// NewChunkPublisherContext is [NewChunkPublisher] with a
+// caller-supplied base context bounding every publish (D-207, closing
+// D-195's correction note). Run-loop drivers pass their
+// driver-lifetime ctx (the pre-110b `d.subCtx` semantics): on the
+// durable bus driver — which persists each chunk event via
+// `store.Save` under the publish ctx — cancelling baseCtx stops
+// persistence at driver teardown instead of letting late chunks write
+// past Close. Publish failures (including baseCtx cancellation) Warn
+// loudly, never silently drop.
+//
+// A nil baseCtx falls back to context.Background() (the ctx-less
+// constructor's documented bridge).
+func NewChunkPublisherContext(baseCtx context.Context, bus events.EventBus, q identity.Quadruple, taskID string, logger *slog.Logger) func(delta string, done bool, kind string) {
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -68,7 +90,7 @@ func NewChunkPublisher(bus events.EventBus, q identity.Quadruple, taskID string,
 			Kind:       kind,
 			OccurredAt: now,
 		}
-		if pubErr := bus.Publish(context.Background(), events.Event{
+		if pubErr := bus.Publish(baseCtx, events.Event{
 			Type:       EventTypeCompletionChunk,
 			Identity:   q,
 			OccurredAt: now,

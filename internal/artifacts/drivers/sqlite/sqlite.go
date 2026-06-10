@@ -50,6 +50,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -94,11 +95,13 @@ const (
 // DSN handling:
 //
 //   - Empty DSN → clear error (no silent default-fallback).
-//   - `:memory:` → translated to `file::memory:?cache=shared` so the
-//     pool can hand out multiple connections to the same in-memory
-//     database (the bare `:memory:` DSN gives every pool connection
-//     its own private DB, which would break Put+Get round-trip across
-//     pooled connections).
+//   - `:memory:` → translated to a PER-OPEN uniquely named shared-cache
+//     memory URI (D-207; see uniqueMemoryDSN) so the pool can hand out
+//     multiple connections to the same in-memory database (the bare
+//     `:memory:` DSN gives every pool connection its own private DB,
+//     which would break Put+Get round-trip across pooled connections)
+//     while staying isolated from every other subsystem's `:memory:`
+//     store in the same process.
 //   - Any other DSN is treated as a file path or URI form and passed
 //     through verbatim with the WAL + busy_timeout PRAGMAs appended
 //     as `_pragma` query params.
@@ -171,14 +174,20 @@ func init() {
 //     RESERVED lock up-front instead of deferring until the first
 //     write, eliminating SQLITE_BUSY_SNAPSHOT under contention.
 //
-// The bare `:memory:` DSN is translated to a `file:`-form shared-cache
-// URI so `database/sql`'s pool can hand out multiple connections to
-// the same in-memory database.
+// The bare `:memory:` DSN is translated to a PER-OPEN uniquely named
+// `file:`-form shared-cache memory URI (D-207; see uniqueMemoryDSN)
+// so `database/sql`'s pool shares one DB within this store while two
+// `:memory:` stores opened by different subsystems never collide.
 func augmentDSNForPragmas(dsn string) (string, error) {
-	// Translate bare `:memory:` to a shared-cache file: URI so the
-	// pool sees the same DB across connections.
+	// Translate bare `:memory:` to a per-Open uniquely named
+	// shared-cache memory URI: shared across the pool, isolated
+	// across Opens (D-207).
 	if dsn == ":memory:" {
-		dsn = "file::memory:?cache=shared"
+		unique, err := uniqueMemoryDSN()
+		if err != nil {
+			return "", err
+		}
+		dsn = unique
 	}
 
 	pragmas := []string{
@@ -215,6 +224,23 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	}
 	parts = append(parts, "_txlock=immediate")
 	return dsn + sep + strings.Join(parts, "&"), nil
+}
+
+// uniqueMemoryDSN mints a per-Open named in-memory database URI
+// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// connection in THIS store's pool see the same database; the
+// crypto-random name keeps two `:memory:` stores — this subsystem's or
+// any other's — fully isolated within one process (the previous
+// process-wide `file::memory:?cache=shared` translation made every
+// subsystem's `:memory:` store collide on one shared
+// `schema_migrations` table). The database lives as long as the pool's
+// single pinned connection (SetMaxOpenConns(1)) holds it open.
+func uniqueMemoryDSN() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("artifacts/sqlite: memory-DSN entropy: %w", err)
+	}
+	return "file:harbor_artifacts_mem_" + hex.EncodeToString(entropy[:]) + "?mode=memory&cache=shared", nil
 }
 
 // verifyJournalMode reads back the journal mode after open to confirm

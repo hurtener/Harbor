@@ -994,6 +994,7 @@ type StateStore interface {
     Load(ctx context.Context, id identity.Quadruple, kind string) (StateRecord, error)
     LoadByEventID(ctx context.Context, eventID EventID) (StateRecord, error)
     Delete(ctx context.Context, id identity.Quadruple, kind string) error
+    ListKind(ctx context.Context, scope ListScope, kindPrefix string) ([]StateRecord, error) // the ONE maintenance scan; explicit elevation claim (D-207)
     Close(ctx context.Context) error
 }
 ```
@@ -1006,6 +1007,7 @@ type StateStore interface {
 - WAL journal mode for SQLite.
 - Idempotency: `Save` keys on `EventID`; same-ID + same-bytes is a no-op, same-ID + different-bytes returns `ErrIdempotencyConflict` (caller-controlled retry semantics — the store never silently overwrites).
 - Identity-mandatory at the API boundary: empty tenant / user / session in the `Quadruple` rejected with `ErrIdentityRequired`. Empty `RunID` is acceptable for session-scoped state.
+- **One explicitly-elevated maintenance scan — `ListKind` (amended, D-207).** `ListKind(ctx, scope, kindPrefix)` enumerates every record whose Kind starts with the literal prefix, across all identities — the surface runtime maintenance loops need to find records whose identities the process has never seen (first consumer: the pause sweeper's crash-orphan checkpoint rescan). The elevation is explicit and fail-closed: `ListScope{MaintenanceScoped: true}` is mandatory (`ErrMaintenanceScopeRequired` otherwise), an empty prefix is rejected, and callers act on each returned record under that record's own identity — the scan grants visibility, never a widened mutation scope. Identity-scoped reads stay on `Load`/`LoadByEventID`; there is no identity-scoped ListKind mode.
 - Audit redaction is **upstream** of `Save`. The store stores opaque bytes; mixing redaction into the persistence layer would couple a leaf package to the audit subsystem and split responsibility (D-020).
 
 **Earlier typed sketch (superseded by D-027 — kept for history):** an earlier draft listed 21 typed methods (`SaveTask`, `SaveTrajectory`, `SaveBinding`, `SaveSteering`, `SaveMemoryState`, etc.) keyed on domain types from unshipped phases. That shape would have inverted the dependency graph (a leaf persistence interface importing types from its consumers); the generic surface is strictly more general and lets each consumer ship its typed adapter at the right layer.

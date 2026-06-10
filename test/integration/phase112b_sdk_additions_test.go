@@ -95,18 +95,19 @@ func TestPhase112b_FacadeAdditions_ResolveAndForward(t *testing.T) {
 	// retrieval handlers + generator register on a real catalog over a
 	// real localdb store.
 	//
-	// File-backed DSN, deliberately NOT ":memory:": every sqlite-family
-	// driver translates ":memory:" to the PROCESS-WIDE
-	// `file::memory:?cache=shared` database, so a parallel test opening
-	// a skills ":memory:" store collides with any other subsystem's
-	// parallel ":memory:" store on the shared `schema_migrations` table
-	// (observed: the artifacts driver-parity test losing its
-	// `artifacts_blobs` migration). Cross-subsystem ":memory:" sharing
-	// in one process is a latent hazard beyond this test's scope —
-	// avoid the shared cache here.
+	// ":memory:" is safe here since D-207: every sqlite-family driver
+	// now translates ":memory:" to a PER-OPEN uniquely named memory
+	// database (`file:harbor_<subsystem>_mem_<entropy>?mode=memory&cache=shared`),
+	// so this skills store can no longer collide with any other
+	// subsystem's parallel ":memory:" store on a shared
+	// `schema_migrations` table (the pre-D-207 hazard this test
+	// originally dodged with a file-backed DSN — observed as the
+	// artifacts driver-parity test losing its `artifacts_blobs`
+	// migration to the then-process-wide `file::memory:?cache=shared`
+	// database).
 	store, err := sdkskills.Open(ctx, sdkskills.ConfigSnapshot{
 		Driver: sdkskills.DefaultDriver,
-		DSN:    t.TempDir() + "/skills.sqlite",
+		DSN:    ":memory:",
 	}, sdkskills.Deps{Bus: bus})
 	if err != nil {
 		t.Fatalf("sdk/skills.Open: %v", err)
