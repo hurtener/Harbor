@@ -61,6 +61,10 @@ planner:
     Voice/tone rules. Hard negatives. Safety notes.
     Operator-supplied; injected into the planner's system prompt.
   reasoning_replay: never                      # or `text` to round-trip the trace into the next turn
+  token_budget: 0                              # 0 (default) = trajectory compression OFF; > 0 = once the
+                                               # trajectory's token estimate exceeds it, the runtime
+                                               # compacts step history into a summary (one compression
+                                               # per run; needs the llm block)
 ```
 
 ### `memory`

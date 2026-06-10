@@ -142,6 +142,62 @@ func TestAssemble_GoldenBoot_BuildsEveryLayer(t *testing.T) {
 	settleGoroutines(t, baseline)
 }
 
+// TestAssemble_TokenBudget_BuildsCompressionRunner — Phase 111e
+// (D-202): a non-zero `planner.token_budget` makes the assembly
+// construct the trajectory-compression runner (TrajectorySummariser
+// over the configured LLM); zero leaves it nil (compression off).
+func TestAssemble_TokenBudget_BuildsCompressionRunner(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.Planner.TokenBudget = 2048
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("cfg.Validate(token_budget): %v", err)
+	}
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	defer func() {
+		if cerr := stack.Close(context.Background()); cerr != nil {
+			t.Errorf("Close: %v", cerr)
+		}
+	}()
+	if stack.Compression == nil {
+		t.Error("Stack.Compression is nil with planner.token_budget=2048 — the runner was not built")
+	}
+
+	// Zero budget: compression stays off.
+	cfg2 := minimalCfg(t)
+	stack2, err := assemble.Assemble(context.Background(), cfg2, assemble.Options{})
+	if err != nil {
+		t.Fatalf("Assemble(zero budget): %v", err)
+	}
+	defer func() {
+		if cerr := stack2.Close(context.Background()); cerr != nil {
+			t.Errorf("Close: %v", cerr)
+		}
+	}()
+	if stack2.Compression != nil {
+		t.Error("Stack.Compression non-nil with planner.token_budget=0 — compression must default off")
+	}
+}
+
+// TestAssemble_TokenBudget_WithoutLLM_FailsLoud — Phase 111e (D-202):
+// a configured budget without an LLM is a misconfiguration surfaced
+// loudly at assembly, never a silently-inert knob (CLAUDE.md §13).
+func TestAssemble_TokenBudget_WithoutLLM_FailsLoud(t *testing.T) {
+	cfg := minimalCfg(t)
+	cfg.LLM = config.LLMConfig{}
+	cfg.Memory.Strategy = "none"
+	cfg.Planner.TokenBudget = 2048
+	stack, err := assemble.Assemble(context.Background(), cfg, assemble.Options{})
+	if stack != nil {
+		defer func() { _ = stack.Close(context.Background()) }() // partial-stack drain on the failure path
+	}
+	if err == nil || !strings.Contains(err.Error(), "token_budget") {
+		t.Fatalf("expected loud token_budget-requires-LLM error, got %v", err)
+	}
+}
+
 // TestAssemble_NilConfig_FailsLoud — no silent default-config fallback.
 func TestAssemble_NilConfig_FailsLoud(t *testing.T) {
 	stack, err := assemble.Assemble(context.Background(), nil, assemble.Options{})
