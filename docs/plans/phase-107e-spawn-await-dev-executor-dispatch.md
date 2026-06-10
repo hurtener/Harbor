@@ -122,7 +122,7 @@ The bullets below are binding. Numbering is sequential.
 
 ### Smoke
 
-- `scripts/smoke/phase-107e.sh` — **NEW**. PREFLIGHT_REQUIRES: live-server. See "Smoke script additions".
+- `scripts/smoke/phase-107e.sh` — **NEW**. PREFLIGHT_REQUIRES: unit-tests (§4.3 conversion, 2026-06-10 — originally live-server). See "Smoke script additions".
 
 ## Public API surface
 
@@ -152,7 +152,15 @@ The bullets below are binding. Numbering is sequential.
 
 ## Smoke script additions
 
-`scripts/smoke/phase-107e.sh` — PREFLIGHT_REQUIRES: live-server. Assertions:
+`scripts/smoke/phase-107e.sh` — PREFLIGHT_REQUIRES: unit-tests.
+
+**§4.3 conversion (2026-06-10, program follow-ups chore).** The plan's original shape (live-server; the steps 3–8 below) shipped as a placeholder that SKIPped its live section even with `HARBOR_DEV_TOKEN` set — a standing §4.2-rule-5 violation (a SKIP that should be an OK). The smoke is converted to the phase-110a static Go-test gate pattern: the AC-15 driver-integrated E2E pair (`cmd/harbor/cmd_dev_spawn_await_test.go` — real `TaskRegistry`, real per-task driver with `driveBackground=true`, the promoted production executor, spawn → background run → await join, identity propagation, a failing-child sibling) plus the executor's spawn/await dispatch slice (`internal/runtime/dispatch`) run under `-race`, covering the live steps' semantics deterministically with no provider key and no flaky elicitation prompt. Actual assertions:
+
+1. Static: `internal/runtime/dispatch/dispatch.go` no longer returns `ErrDecisionShapeUnsupported` for `SpawnTask` (greps the dispatch branch comment).
+2. `go test ./cmd/harbor/ -run 'TestSpawnThenAwait_BackgroundDrivenEndToEnd|TestSpawnTask_RetainTurn_BlocksAndReturnsOutcome' -race` passes (the AC-15 gate).
+3. `go test ./internal/runtime/dispatch/ -run 'TestExecutor_Spawn|TestExecutor_Await' -race` passes (depth cap, terminal polling, D-026 projection, failed child, concurrent reuse).
+
+Original (superseded) live-server sketch, kept for the record:
 
 1. SKIP when no LLM provider key.
 2. Static: `cmd/harbor/cmd_dev_executor.go` no longer returns `ErrDecisionShapeUnsupported` for `SpawnTask` / `AwaitTask` (greps the dispatch branches).
@@ -208,4 +216,4 @@ The bullets below are binding. Numbering is sequential.
 - [ ] Skill(s) updated per AC-19 (CLAUDE.md §18 same-PR drift)
 - [ ] `examples/dev.yaml` shows `absolute_max_spawn_depth`
 - [ ] Phase 49 planner conformance + tasks driver conformance packs green
-- [ ] Live smoke against a tool-calling-capable provider confirms spawn → background run → await join, no `ErrContextLeak`
+- [x] ~~Live smoke against a tool-calling-capable provider confirms spawn → background run → await join, no `ErrContextLeak`~~ Superseded by the §4.3 smoke conversion (2026-06-10): the AC-15 driver-integrated E2E pair gates the same semantics deterministically under `-race` (see "Smoke script additions").
