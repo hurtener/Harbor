@@ -270,11 +270,14 @@ type AssembleOpts struct {
 	// `MemoryStore` is the store the per-task driver calls
 	// `GetLLMContext(ctx, q)` against. Nil falls back to the
 	// cfg-opened `DevStack.Memory` (nil when `memory.driver` unset).
-	// `SkillStore` is the store the driver calls `Search(ctx, q, query, cap)`
-	// against. Nil falls back to the cfg-opened store when
-	// `skills.driver` is set (via `skills.SnapshotFromConfig`).
-	// `SkillsContextMax` caps the Search result count; zero falls
-	// back to `cfg.Planner.SkillsContextMaxResolved()` (default 5,
+	// `SkillStore` is the store the kit's skills Directory browses
+	// (Phase 111d — D-201: the Directory is the `<skills_context>`
+	// producer, mirroring production). Nil falls back to the
+	// cfg-opened store when `skills.driver` is set (via
+	// `skills.SnapshotFromConfig`).
+	// `SkillsContextMax` caps the injected directory view's length
+	// when `skills.directory.max_entries` is unset; zero falls back
+	// to `cfg.Planner.SkillsContextMaxResolved()` (default 5,
 	// single-sourced at `config.DefaultSkillsContextMax`).
 	// `PlanningHints`, when non-nil, projects directly onto
 	// `RunContext.PlanningHints` for every run the driver spawns;
@@ -598,6 +601,21 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// RunLoop (planner + catalog + steering all present and the
 		// caller did not SkipRunLoop).
 		if stack.RunLoop != nil {
+			// Phase 111d (D-201): build the Phase-39 skills Directory
+			// over the effective SkillStore (AssembleOpts override or
+			// the cfg-opened store), mirroring production cmd_dev.go.
+			// `skills.directory.max_entries` unset falls back to the
+			// resolved skills-context budget (AssembleOpts override or
+			// `planner.skills_context_max`).
+			var skillsDir *skills.Directory
+			if stack.Skills != nil {
+				sd, sdErr := skills.NewDirectory(stack.Skills, skills.Deps{Bus: bus},
+					skills.DirectoryFromConfig(cfg.Skills, resolveSkillsContextMax(opts, cfg)))
+				if sdErr != nil {
+					return stack, fmt.Errorf("devstack skills directory: %w", sdErr)
+				}
+				skillsDir = sd
+			}
 			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
 				bus:     bus,
 				runLoop: stack.RunLoop,
@@ -608,10 +626,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// AssembleOpts overrides win; otherwise the cfg-opened
 				// stores + the SAME exported projections production uses
 				// (Phase 110c, D-196).
-				memory:           resolveMemoryStore(opts, stack),
-				skills:           stack.Skills,
-				skillsContextMax: resolveSkillsContextMax(opts, cfg),
-				planningHints:    resolvePlanningHints(opts, cfg),
+				memory: resolveMemoryStore(opts, stack),
+				// Phase 111d (D-201): the Phase-39 Directory is the
+				// `<skills_context>` producer (mirrors production).
+				skillsDirectory: skillsDir,
+				planningHints:   resolvePlanningHints(opts, cfg),
 				// Phase 83i (D-152) / 110a (D-194) / 110d (D-197): the
 				// catalog + executor are the assembly's — the ONE
 				// promoted dispatch executor production wires.
@@ -1070,10 +1089,12 @@ type DevStackRunLoopDriver struct {
 	// Phase 83f (D-149) per-run consumer wiring — mirrors the
 	// production driver's matching fields. Optional; nil = no
 	// projection (the planner omits the corresponding wrapper).
-	memory           memory.MemoryStore
-	skills           skills.SkillStore
-	skillsContextMax int
-	planningHints    *planner.PlanningHints
+	// Phase 111d (D-201): the skills surface is the Phase-39
+	// Directory (the `<skills_context>` producer), mirroring
+	// production's swap off raw SkillStore.Search.
+	memory          memory.MemoryStore
+	skillsDirectory *skills.Directory
+	planningHints   *planner.PlanningHints
 
 	// Phase 83i (D-152) — tool dispatch + Catalog projection.
 	catalog         tools.ToolCatalog
@@ -1108,11 +1129,11 @@ type devStackRunLoopDriverOpts struct {
 	logger  *slog.Logger // optional; when non-nil, Mark* failures log Warn (matches production)
 
 	// Phase 83f (D-149): per-run consumer wiring. See production
-	// `perTaskRunLoopDriverOpts` godoc.
-	memory           memory.MemoryStore
-	skills           skills.SkillStore
-	skillsContextMax int
-	planningHints    *planner.PlanningHints
+	// `perTaskRunLoopDriverOpts` godoc. Phase 111d (D-201): the
+	// skills surface is the Directory.
+	memory          memory.MemoryStore
+	skillsDirectory *skills.Directory
+	planningHints   *planner.PlanningHints
 
 	// Phase 83i (D-152): tool dispatch + Catalog projection +
 	// Trajectory wiring. Optional; nil catalog ⇒ planner sees no
@@ -1147,30 +1168,22 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 	if opts.tasks == nil {
 		return nil, fmt.Errorf("devstack RunLoop driver: tasks is nil")
 	}
-	// Defensive clamp for direct construction with a zero cap; the
-	// default's ONE source is `config.DefaultSkillsContextMax` (Phase
-	// 110c, D-196 — Assemble already passes the resolved value).
-	skillsCap := opts.skillsContextMax
-	if skillsCap <= 0 {
-		skillsCap = config.DefaultSkillsContextMax
-	}
 	return &DevStackRunLoopDriver{
-		bus:              opts.bus,
-		runLoop:          opts.runLoop,
-		planner:          opts.planner,
-		tasks:            opts.tasks,
-		logger:           opts.logger,
-		memory:           opts.memory,
-		skills:           opts.skills,
-		skillsContextMax: skillsCap,
-		planningHints:    opts.planningHints,
-		catalog:          opts.catalog,
-		executor:         opts.executor,
-		maxStepsRunLoop:  opts.maxStepsRunLoop,
-		grantedScopes:    append([]string(nil), opts.grantedScopes...),
-		artifactStore:    opts.artifactStore,
-		tokenBudget:      opts.tokenBudget,
-		compression:      opts.compression,
+		bus:             opts.bus,
+		runLoop:         opts.runLoop,
+		planner:         opts.planner,
+		tasks:           opts.tasks,
+		logger:          opts.logger,
+		memory:          opts.memory,
+		skillsDirectory: opts.skillsDirectory,
+		planningHints:   opts.planningHints,
+		catalog:         opts.catalog,
+		executor:        opts.executor,
+		maxStepsRunLoop: opts.maxStepsRunLoop,
+		grantedScopes:   append([]string(nil), opts.grantedScopes...),
+		artifactStore:   opts.artifactStore,
+		tokenBudget:     opts.tokenBudget,
+		compression:     opts.compression,
 	}, nil
 }
 
@@ -1315,25 +1328,29 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	}
 
 	var skillsCtx []any
-	if d.skills != nil && task.Query != "" {
-		// Phase 83m (Item 4, D-156): same promoted keyword shaper the
-		// production runloop calls (Phase 110b — D-195; the third
-		// drifting copy is deleted). Falls back to the raw Query if
-		// extraction yields nothing useful so Search still has signal.
-		searchQuery := runctx.ExtractSkillKeywords(task.Query)
-		if searchQuery == "" {
-			searchQuery = task.Query
-		}
-		ranked, sErr := d.skills.Search(taskCtx, sessionQ, searchQuery, d.skillsContextMax)
+	if d.skillsDirectory != nil {
+		// Phase 111d (D-201) — mirror the production runloop: the
+		// Phase-39 Directory view (pinned-then-recent, identity-
+		// scoped, capability-filtered, redacted) is the
+		// `<skills_context>` producer; the keyword-shaped raw-Search
+		// path is deleted (executing the D-195 deprecation notice).
+		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{
+			AllowedTools: tools.VisibleNames(d.catalog, tools.CatalogFilter{
+				TenantID:      q.TenantID,
+				UserID:        q.UserID,
+				SessionID:     q.SessionID,
+				GrantedScopes: d.grantedScopes,
+			}),
+		})
 		if sErr != nil {
 			if d.logger != nil {
-				d.logger.Warn("devstack runloop: skills.Search failed",
+				d.logger.Warn("devstack runloop: skills Directory.View failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", sErr.Error()))
 			}
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("skills.Search: %v", sErr),
+				Message: fmt.Sprintf("skills Directory.View: %v", sErr),
 			}); fErr != nil && d.logger != nil {
 				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
@@ -1341,7 +1358,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			}
 			return
 		}
-		skillsCtx = runctx.ProjectSkillsContext(ranked)
+		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
 	counters := &planner.RepairCounters{}

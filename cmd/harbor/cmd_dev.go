@@ -110,6 +110,7 @@ import (
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
+	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -478,6 +479,24 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		runLoop         = stack.RunLoop
 	)
 
+	// Phase 111d (D-201) — the Phase-39 skills Directory, built once
+	// over the configured SkillStore. It is the run loop's
+	// `<skills_context>` producer: a bounded pinned-then-recent browse
+	// window (identity-scoped, capability-filtered, redacted) replaces
+	// the pre-111d raw `SkillStore.Search` + keyword-extraction path.
+	// `skills.directory.max_entries` falls back to the resolved
+	// `planner.skills_context_max` so the existing injection-budget
+	// knob keeps capping the block length.
+	var skillsDir *skills.Directory
+	if skillStore != nil {
+		skillsDir, err = skills.NewDirectory(skillStore, skills.Deps{Bus: bus},
+			skills.DirectoryFromConfig(cfg.Skills, cfg.Planner.SkillsContextMaxResolved()))
+		if err != nil {
+			closeAll(ctx)
+			return nil, fmt.Errorf("skills directory: %w", err)
+		}
+	}
+
 	// Phase 83w F6 (D-164) — wire the Phase 73k MCPSurface over the
 	// constructed MCP Registry so the Console MCP Connections page's
 	// twelve `mcp.servers.*` methods resolve to live data instead of
@@ -552,18 +571,20 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// through a planner sub-run. Recursion is bounded at the spawn
 		// site by the dev executor's absolute_max_spawn_depth cap.
 		driveBackground: true,
-		// Phase 83f (D-149): per-run consumer wiring. Each of the four
+		// Phase 83f (D-149): per-run consumer wiring. Each of the
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
 		// surfaces leave the planner's matching wrapper omitted.
 		memory: memStore,
-		skills: skillStore,
-		// Phase 110c (D-196): the zero→default resolution + the YAML
-		// hints projection live on their owning packages now
-		// (config.SkillsContextMaxResolved / planner.HintsFromConfig),
-		// not as run-loop literals / package-main helpers.
-		skillsContextMax: cfg.Planner.SkillsContextMaxResolved(),
-		planningHints:    planner.HintsFromConfig(cfg.Planner.PlanningHints),
+		// Phase 111d (D-201): the Phase-39 Directory is the
+		// `<skills_context>` producer — pinned-then-recent,
+		// identity-scoped, capability-filtered, redacted. Replaces
+		// the raw SkillStore.Search + keyword-extraction path.
+		skillsDirectory: skillsDir,
+		// Phase 110c (D-196): the YAML hints projection lives on its
+		// owning package (planner.HintsFromConfig), not as a
+		// package-main helper.
+		planningHints: planner.HintsFromConfig(cfg.Planner.PlanningHints),
 		// Phase 83i (D-152): tool dispatch + Catalog projection +
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.

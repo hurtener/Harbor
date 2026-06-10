@@ -63,7 +63,7 @@ func NewRootCmd() *cobra.Command {
 
 Subcommands fall into three groups:
 
-  Local dev loop      init, dev, console, scaffold, validate
+  Local dev loop      init, dev, console, scaffold, validate, skill
   Run inspection      inspect-events, inspect-runs, inspect-topology
   Build information   version
 
@@ -96,6 +96,7 @@ docs/plans/README.md for the implementation schedule.`,
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newScaffoldCmd())
 	root.AddCommand(newValidateCmd())
+	root.AddCommand(newSkillCmd())
 	root.AddCommand(newInspectEventsCmd())
 	root.AddCommand(newInspectRunsCmd())
 	root.AddCommand(newInspectTopologyCmd())
