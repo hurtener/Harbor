@@ -133,10 +133,23 @@ func TestScaffold_FromConfig_GeneratesCustomToolStubs(t *testing.T) {
 		"func RegisterTools(cat tools.ToolCatalog) error",
 		`"clock.now"`,
 		"customtools.WeatherLookup",
+		// Phase 112b (D-206): the tool-declaring scaffold imports the
+		// public sdk/ facade so the output compiles as an EXTERNAL
+		// module (RFC §3.6 item 4).
+		`"github.com/hurtener/Harbor/sdk/tools"`,
+		`"github.com/hurtener/Harbor/sdk/tools/builtin"`,
+		`"github.com/hurtener/Harbor/sdk/tools/inproc"`,
+		"builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}",
 	} {
 		if !strings.Contains(agentBody, expect) {
 			t.Errorf("agent.go missing %q; got:\n%s", expect, agentBody)
 		}
+	}
+	// The external-module guarantee read backwards: NO internal/
+	// import may appear in scaffold output (Go forbids it outside
+	// this module — the SDK friction audit's headline break).
+	if strings.Contains(agentBody, "hurtener/Harbor/internal") {
+		t.Errorf("agent.go imports an internal/ package — scaffold output must compile externally; got:\n%s", agentBody)
 	}
 }
 

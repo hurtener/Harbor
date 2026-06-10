@@ -97,11 +97,16 @@ Future planners (Plan-Execute, Workflow, Graph, Deterministic,
 Supervisor, MultiAgent, HumanApproval per RFC §6.2) follow the §4.4
 extensibility-seam pattern:
 
-1. Implement the `Planner` interface under
-   `internal/planner/<name>/`.
-2. Self-register from the package's `init()`.
-3. Add a blank import (`_ "github.com/hurtener/Harbor/internal/planner/<name>"`)
-   in `cmd/harbor/main.go`.
+1. Implement the `Planner` interface (in-tree concretes live under
+   `internal/planner/<name>/`; an EXTERNAL module implements the
+   interface via `sdk/planner` — the swappable-planner seam is
+   deliberately public, D-205).
+2. Self-register from the package's `init()` — in-tree via the
+   internal registry; externally via `sdk/planner`'s `Register` /
+   `MustRegister`.
+3. Make the registration reachable: in-tree concretes add their blank
+   import to the production aggregator (§4.4 / D-196); an external
+   embedder blank-imports its own planner package in its binary.
 4. Flip `planner.driver` in `harbor.yaml` to `<name>` to opt in.
 
 The factory's error message lists the registered drivers, so a
@@ -112,8 +117,8 @@ misconfigured `driver:` name is obvious at boot.
 - Planner state is per-session — sharing a planner instance across
   sessions is a bug (CLAUDE.md §6 rule 7). The Runtime constructs
   per-session planner state for you; you do not wire this by hand.
-- `internal/planner/deterministic` is Harbor's second `Planner`
-  concrete — a scripted, LLM-free planner that drives ordered steps
-  through the identical `Planner` interface. It anchors the planner
-  conformance suite; V1 wires only `react` as a selectable
+- The deterministic planner (`sdk/planner/deterministic`) is Harbor's
+  second `Planner` concrete — a scripted, LLM-free planner that drives
+  ordered steps through the identical `Planner` interface. It anchors
+  the planner conformance suite; V1 wires only `react` as a selectable
   `planner.driver` value.

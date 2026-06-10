@@ -9,20 +9,20 @@ This recipe is acceptance-gated: its end-to-end path is executed by
 `test/integration/phase110d_assemble_test.go`, so every snippet
 references real exported symbols (Phase 110d, D-197).
 
-> **Scope note.** This recipe's snippets use the `internal/` paths and
-> therefore cover in-module embedding (a binary in this repo, a fork,
-> or a vendored tree). The externally importable facade now exists —
-> the curated `sdk/` alias tree (RFC §3.6, Phase 112a) re-exports every
-> symbol this recipe touches (`sdk/config`, `sdk/assemble`,
-> `sdk/drivers/prod`, …); Phase 112b flips this recipe's snippets to
-> the public paths. `test/integration/phase112a_sdk_facade_test.go`
-> already executes this recipe's path through `sdk/` imports only.
+> **Import paths.** This recipe's snippets use the public `sdk/` facade
+> (RFC §3.6, D-204/D-205) — the curated alias tree that makes every
+> symbol below importable from an EXTERNAL Go module. Each alias IS the
+> internal type, so the same snippets work verbatim for in-module
+> embedding too. `test/integration/phase112a_sdk_facade_test.go`
+> executes this recipe's path through `sdk/` imports only, and the
+> Phase 112b external compile gate (`scripts/smoke/phase-112b.sh`)
+> keeps external buildability true on every preflight.
 
 ## The pieces
 
 | Step | Symbol | Phase |
 |------|--------|-------|
-| Driver registrations | `_ "github.com/hurtener/Harbor/internal/drivers/prod"` | 110c (D-196) |
+| Driver registrations | `_ "github.com/hurtener/Harbor/sdk/drivers/prod"` | 110c / 112a (D-196, D-205) |
 | Config baseline | `config.Defaults()` | 110c (D-196) |
 | Headless validation | `cfg.ValidateCore()` | 110c (D-196) |
 | The ONE fan-out | `assemble.Assemble(ctx, cfg, opts)` | 110d (D-197) |
@@ -39,16 +39,16 @@ import (
     "log/slog"
 
     // The production driver aggregator — the single sanctioned
-    // blank-import home (§4.4). Without it every Open fails loud with
-    // "unknown driver".
-    _ "github.com/hurtener/Harbor/internal/drivers/prod"
+    // blank-import home (§4.4), via its public facade twin. Without
+    // it every Open fails loud with "unknown driver".
+    _ "github.com/hurtener/Harbor/sdk/drivers/prod"
 
-    "github.com/hurtener/Harbor/internal/config"
-    "github.com/hurtener/Harbor/internal/identity"
-    "github.com/hurtener/Harbor/internal/planner"
-    "github.com/hurtener/Harbor/internal/runtime/assemble"
-    "github.com/hurtener/Harbor/internal/runtime/steering"
-    "github.com/hurtener/Harbor/internal/tools"
+    "github.com/hurtener/Harbor/sdk/assemble"
+    "github.com/hurtener/Harbor/sdk/config"
+    "github.com/hurtener/Harbor/sdk/identity"
+    "github.com/hurtener/Harbor/sdk/planner"
+    "github.com/hurtener/Harbor/sdk/steering"
+    "github.com/hurtener/Harbor/sdk/tools"
 )
 ```
 
@@ -197,6 +197,8 @@ Two paths, depending on how many stacks your process runs:
   stack instead:
 
 ```go
+import "github.com/hurtener/Harbor/sdk/governance"
+
 sub, err := governance.NewSubsystemFromConfig(
     governance.ConfigFromOperator(cfg.Governance), // or a hand-built governance.Config
     stack.State, stack.Bus)
@@ -225,6 +227,10 @@ StateStore.
 - **Skip what you don't need**: `assemble.Options.SkipCatalog` /
   `SkipSteering` / `SkipRunLoop` build partial stacks for harness-style
   embedding (the `harbortest/devstack` kit uses exactly these knobs).
-- **Mock LLM for CI smoke**: blank-import
-  `internal/llm/mock`, set `cfg.LLM.Driver = "mock"` — dev-only
-  (D-089); never in production.
+- **Mock LLM for CI smoke**: module-internal only — the facade
+  deliberately omits the dev-only mock driver (D-089, D-205), so an
+  external module cannot seat it. For offline CI against the facade,
+  do what `test/integration/phase112a_sdk_facade_test.go` does:
+  a custom-provider LLM entry (loopback BaseURL, env-var dummy key)
+  plus `assemble.Options.PlannerOverride` with the deterministic
+  planner — real drivers, no network.

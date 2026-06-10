@@ -11,9 +11,10 @@ This recipe is acceptance-gated: its end-to-end path is executed by
 `test/integration/phase111f_telemetry_test.go`, so every snippet
 references real exported symbols (Phase 111f, D-203).
 
-> **Scope note.** Like the headless-embedding recipe, this covers
-> in-module embedding — `internal/telemetry` is module-internal until
-> the external facade RFC lands.
+> **Import paths.** The snippets use the public `sdk/` facade
+> (RFC §3.6; `sdk/telemetry` + `sdk/telemetry/eventbus` + `sdk/audit`
+> landed with Phase 112b, D-206) — every import below compiles from an
+> external Go module, same as in-module.
 
 ## The model in one paragraph
 
@@ -63,13 +64,13 @@ import (
 
     // Registers the audit / events / state drivers AND the span +
     // metric exporter drivers (noop, otlp, prometheus, otlpmetric).
-    _ "github.com/hurtener/Harbor/internal/drivers/prod"
+    _ "github.com/hurtener/Harbor/sdk/drivers/prod"
 
-    "github.com/hurtener/Harbor/internal/audit"
-    "github.com/hurtener/Harbor/internal/config"
-    "github.com/hurtener/Harbor/internal/events"
-    "github.com/hurtener/Harbor/internal/telemetry"
-    "github.com/hurtener/Harbor/internal/telemetry/eventbus"
+    "github.com/hurtener/Harbor/sdk/audit"
+    "github.com/hurtener/Harbor/sdk/config"
+    "github.com/hurtener/Harbor/sdk/events"
+    "github.com/hurtener/Harbor/sdk/telemetry"
+    "github.com/hurtener/Harbor/sdk/telemetry/eventbus"
 )
 ```
 
@@ -120,7 +121,7 @@ Notes:
   selects the `noop` span exporter (spans are still created, so
   in-process propagation works; nothing is shipped). A non-empty
   endpoint selects `otlp` (OTLP/gRPC). Both register via the
-  `internal/drivers/prod` blank import — without it, construction
+  `sdk/drivers/prod` blank import — without it, construction
   fails loud naming the registered drivers.
 - **The default trace filter.** `telemetry.DefaultTraceBridgeFilter()`
   scopes the bridge to the canonical lifecycle pairs
@@ -147,7 +148,10 @@ eng, err := flow.Compose(def, flow.WithRunErrorHandler(stack.RunErrorHandler))
 
 (Manual composition: write the same three-line closure the assembly
 builds — call `logger.Error(ctx, "engine: run failed", ...)` with the
-RunError's node/code/message attrs.)
+RunError's node/code/message attrs. The flow engine itself is
+module-internal at V1.2 — the `sdk/` facade deliberately omits it, so
+this hook applies to in-module flow composition; the assembled stack
+already carries the wired handler either way.)
 
 ## 4. Reading the signals
 
@@ -171,6 +175,6 @@ RunError's node/code/message attrs.)
 |---------|-------|
 | `telemetry: logger not configured` | invalid `log_format` / `log_level` — use `json`/`text`, `debug..error` |
 | `telemetry: redactor missing` | you passed a nil redactor; open `audit` first |
-| `telemetry: unknown span exporter driver` | missing `_ "github.com/hurtener/Harbor/internal/drivers/prod"` |
+| `telemetry: unknown span exporter driver` | missing `_ "github.com/hurtener/Harbor/sdk/drivers/prod"` |
 | `Logger.Error` writes the log line but no bus event | the ctx carries no identity triple — stamp it via `identity.With` |
 | No spans in the collector | empty `OTelEndpoint` (noop exporter), or your filter excludes the event types |

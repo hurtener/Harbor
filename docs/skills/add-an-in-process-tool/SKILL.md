@@ -14,73 +14,64 @@ Harbor's tool surface is transport-agnostic — the planner sees a uniform `Tool
 
 ## 1. The typed-tool contract
 
-A tool is a struct that implements `tools.Tool` — but you almost never write it by hand. Use `tools.NewTyped[Args, Result](spec, handler)` which gives you the type-safe wrapper:
+A tool is a plain Go function over typed input/output structs — you almost never implement the `Tool` interface by hand. `inproc.RegisterFunc[Args, Result]` derives the planner-visible JSON Schemas from your structs by reflection and wraps the function in the `ToolPolicy` reliability shell (timeout + retry + validation). The import paths are the public `sdk/` facade (RFC §3.6) — the same paths `harbor scaffold` emits, compiling from an external module:
 
 ```go
-package weather
+package tools
 
 import (
     "context"
-
-    "github.com/hurtener/Harbor/internal/runtime/runcontext"
-    "github.com/hurtener/Harbor/internal/tools"
+    "fmt"
 )
 
-type Args struct {
-    City string `json:"city" jsonschema:"description=City name (e.g. Madrid)"`
-    Unit string `json:"unit,omitempty" jsonschema:"enum=c,enum=f,default=c"`
+type WeatherArgs struct {
+    City string `json:"city"`
+    Unit string `json:"unit,omitempty"`
 }
 
-type Result struct {
+type WeatherResult struct {
     TemperatureC float64 `json:"temperature_c"`
     Description  string  `json:"description"`
 }
 
-func New() tools.Tool {
-    return tools.NewTyped(
-        tools.Spec{
-            Name:        "weather.get_current",
-            Description: "Return the current temperature + a short description for a city.",
-            Cost:        tools.CostMedium, // fast/medium/slow — surfaces in the planner's tool selection heuristics
-        },
-        handle,
-    )
-}
-
-func handle(ctx context.Context, rc *runcontext.RunContext, args Args) (Result, error) {
+func WeatherGetCurrent(ctx context.Context, in WeatherArgs) (WeatherResult, error) {
+    if err := ctx.Err(); err != nil {
+        return WeatherResult{}, fmt.Errorf("weather.get_current: %w", err)
+    }
     // ... fetch from your domain API ...
-    return Result{TemperatureC: 21.3, Description: "Partly cloudy"}, nil
+    return WeatherResult{TemperatureC: 21.3, Description: "Partly cloudy"}, nil
 }
 ```
 
 Three things to notice:
 
 1. **`ctx` is mandatory and first.** Use it for cancellation; pass it to every downstream I/O call. Never store it; never call `context.Background()` inside the handler (CLAUDE.md §5 "Context").
-2. **`*runcontext.RunContext`** carries the identity triple (`tenant_id`, `user_id`, `session_id`), the `run_id`, the audit redactor, the artifact store, and the per-run logger. Read identity via `rc.Identity()`; emit events via `rc.Events()`; persist heavy outputs via `rc.Artifacts()`. NEVER pull identity from package-level state.
-3. **`Args` / `Result` are real Go structs.** The `jsonschema` tags generate the planner-visible JSON schema; the planner sees a typed surface, not a free-form map. No `interface{}` smuggling.
+2. **Identity and the bus ride on `ctx`.** The runtime stamps the run's `(tenant, user, session)` quadruple and the event bus onto the invocation context — read them via `sdk/identity`'s `MustQuadrupleFrom(ctx)` and `sdk/events`' `MustFrom(ctx)` when the tool needs them. NEVER pull identity from package-level state.
+3. **`Args` / `Result` are real Go structs.** The `json` tags drive the reflection-derived schema; the planner sees a typed surface, not a free-form map. No `interface{}` smuggling.
 
 ## 2. Register the tool with the catalog
 
-In your scaffolded `main.go`:
+In your scaffolded `agent.go` (the `RegisterTools` function `harbor scaffold` generates is exactly this shape):
 
 ```go
 import (
-    "github.com/your-org/my-agent/tools/weather"
-    // ... other imports
+    "github.com/hurtener/Harbor/sdk/tools"
+    "github.com/hurtener/Harbor/sdk/tools/inproc"
 )
 
-func main() {
-    cat := tools.NewCatalog()
-    cat.Register(weather.New())
-    cat.Register(currency.New())
-    // ... other tools
-
-    rt, err := runtime.New(cfg, runtime.WithToolCatalog(cat))
-    // ...
+func RegisterTools(cat tools.ToolCatalog) error {
+    return inproc.RegisterFunc[WeatherArgs, WeatherResult](
+        cat,
+        "weather.get_current",
+        WeatherGetCurrent,
+        tools.WithDescription("Return the current temperature + a short description for a city."),
+        tools.WithSideEffect(tools.SideEffectExternal),
+        tools.WithCostHint("medium"), // surfaces in the planner's tool-selection heuristics
+    )
 }
 ```
 
-The catalog is the planner's tool index. `Register` validates the spec (unique name, valid schema, sensible cost) at boot — a duplicate name or a broken `jsonschema` tag fails LOUDLY at startup.
+The catalog is the planner's tool index. Registration validates at boot — a duplicate name or a schema-underivable type fails LOUDLY (`ErrToolDuplicateName` / `ErrSchemaBuild`), never silently.
 
 ### Always-loaded vs deferred — picking a `loading_mode` (Phase 107c)
 
@@ -113,25 +104,33 @@ Operators who don't care about prompt-budget pressure leave every tool at the de
 
 In-process tools are compiled artifacts: built once, called many times, **across many concurrent runs**. They MUST be safe for concurrent reuse:
 
-- **No mutable fields on the tool struct that change post-construction.** A counter is fine if it's `atomic.Int64`; a `map[string]X` is a bug unless behind a mutex with documented invariants.
-- **Per-run state lives in `ctx` / `rc`, never on the tool.** A `lastCity` field on the tool reading run A's args while run B's request lands is a context-bleed bug.
-- **Cancelling run A's `ctx` MUST NOT affect run B.** Use `ctx` for cancellation, not a tool-level shared context.
+- **No package-level mutable state behind the handler.** A counter is fine if it's `atomic.Int64`; a `map[string]X` is a bug unless behind a mutex with documented invariants.
+- **Per-run state lives in `ctx` and the arguments, never in the handler's closure.** A `lastCity` variable the handler reads while run B's request lands is a context-bleed bug.
+- **Cancelling run A's `ctx` MUST NOT affect run B.** Use `ctx` for cancellation, not a shared context.
 
 Every tool that ships gets a concurrent-reuse test:
 
 ```go
 func TestWeatherTool_ConcurrentReuse_NoCrossTalk(t *testing.T) {
-    tool := weather.New()
+    cat := tools.NewCatalog()
+    if err := RegisterTools(cat); err != nil {
+        t.Fatal(err)
+    }
+    desc, ok := cat.Resolve("weather.get_current")
+    if !ok {
+        t.Fatal("weather.get_current not registered")
+    }
     const N = 100
     var wg sync.WaitGroup
     wg.Add(N)
     for i := 0; i < N; i++ {
         go func(i int) {
             defer wg.Done()
-            rc := runcontexttest.New(t, identity.Triple{Tenant: "t", User: fmt.Sprintf("u%d", i), Session: "s"})
             args := []byte(fmt.Sprintf(`{"city":"City-%d"}`, i))
-            res, err := tool.Invoke(t.Context(), rc, args)
-            // ... assert per-i identity preserved in res, no cross-talk ...
+            res, err := desc.Invoke(context.Background(), args)
+            // ... assert the per-i city round-trips in res, no cross-talk ...
+            _ = res
+            _ = err
         }(i)
     }
     wg.Wait()
@@ -144,33 +143,11 @@ Run with `go test -race`. The race detector + the per-run identity assertion is 
 
 ## 4. Heavy outputs — the artifact-stub seam
 
-A tool that returns >32KB (the default `artifacts.heavy_output_threshold_bytes`) MUST NOT return the raw bytes in `Result`. Doing so leaks into the LLM context window — Harbor's LLM-edge guard fires `ErrContextLeak` and emits a `llm.context_leak` event (RFC §6.5).
+A raw heavy payload (>32KB by default — `artifacts.heavy_output_threshold_bytes`) must never reach the LLM context window. Harbor enforces this at the LLM edge: raw heavy content that is not already an `ArtifactStub` fires `ErrContextLeak` and emits a `llm.context_leak` event (RFC §6.5, D-026).
 
-Instead, persist the heavy payload via the artifact store and return an `ArtifactStub`:
+For tool results, you don't wire this by hand — the runtime's executor materialises any above-threshold result to the artifact store automatically and hands the LLM a stub-shaped observation instead. Your tool just returns its typed value; design the `Result` struct so the LLM-relevant part is small (a summary, a count, a key finding) even when the underlying payload is large.
 
-```go
-type Result struct {
-    Summary  string             `json:"summary"`         // small; goes to the LLM
-    Document tools.ArtifactStub `json:"document"`        // reference; the LLM sees a stub, not the bytes
-}
-
-func handle(ctx context.Context, rc *runcontext.RunContext, args Args) (Result, error) {
-    raw, err := fetchHugeReport(ctx, args)
-    if err != nil {
-        return Result{}, err
-    }
-    stub, err := rc.Artifacts().Put(ctx, raw, "application/pdf")
-    if err != nil {
-        return Result{}, fmt.Errorf("persist artifact: %w", err)
-    }
-    return Result{
-        Summary:  "12-page macro outlook for Q3 (full PDF in artifact)",
-        Document: stub,
-    }, nil
-}
-```
-
-The Console's chat panel renders `ArtifactStub`s as clickable links; the planner sees `{ "ref": "art-abc123", "mime": "application/pdf", "size": 142853 }` and can decide to pull only the parts it needs via a subsequent tool call.
+The Console's chat panel renders artifact stubs as clickable links; the planner sees `{ "ref": "art-abc123", "mime": "application/pdf", "size": 142853 }` and can pull only the parts it needs via a subsequent `artifact_fetch` call.
 
 ### What the LLM sees when a tool result exceeds the threshold
 
@@ -244,9 +221,9 @@ A tool named in `tool_policies` uses its override; tools absent from the map fal
 
 ## Common failure modes
 
-- **`tools.NewCatalog().Register(...)` panics at boot with "duplicate tool name".** Two tools registered under the same `Spec.Name`. Names are the planner's only handle; keep them unique.
-- **The `jsonschema` tag is rejected.** Probably a typo (`enum:c,f` instead of `enum=c,enum=f`) or an unsupported tag combination. The `jsonschema` library's docs at `github.com/invopop/jsonschema` are the canonical reference.
-- **The concurrent-reuse test fails with the race detector tripping.** Almost always a mutable field on the tool struct. Audit for non-`atomic` counters, unprotected maps, package-level globals. See CLAUDE.md §5 "Concurrent reuse contract".
+- **`RegisterFunc` fails at boot with `ErrToolDuplicateName`.** Two tools registered under the same name. Names are the planner's only handle; keep them unique.
+- **`RegisterFunc` fails with `ErrSchemaBuild` / `ErrUnsupportedType`.** Your `Args` / `Result` struct carries a field the reflection-based schema deriver cannot express (a channel, a func, an `any`-typed map). Stick to JSON-representable primitives, slices, and nested structs.
+- **The concurrent-reuse test fails with the race detector tripping.** Almost always shared mutable state behind the handler. Audit for non-`atomic` counters, unprotected maps, package-level globals. See CLAUDE.md §5 "Concurrent reuse contract".
 - **The planner doesn't pick the tool.** Either the description is too vague (write what the tool DOES, with concrete inputs the planner can pattern-match) or the planner's max_steps is too low to reach the relevant turn. Tune `planner.max_steps`.
 
 ## See also

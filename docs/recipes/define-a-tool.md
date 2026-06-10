@@ -42,12 +42,14 @@ The full runnable version of this recipe is
    }
    ```
 
-3. **Register it against a catalog** with `inproc.RegisterFunc`:
+3. **Register it against a catalog** with `inproc.RegisterFunc`. The
+   import paths are the public `sdk/` facade (RFC §3.6) — they work
+   identically from inside this module and from an external Go module:
 
    ```go
    import (
-       "github.com/hurtener/Harbor/internal/tools"
-       "github.com/hurtener/Harbor/internal/tools/drivers/inproc"
+       "github.com/hurtener/Harbor/sdk/tools"
+       "github.com/hurtener/Harbor/sdk/tools/inproc"
    )
 
    cat := tools.NewCatalog()
@@ -61,7 +63,7 @@ The full runnable version of this recipe is
    )
    ```
 
-   Common `DescriptorOption`s (from `internal/tools/policy.go`):
+   Common `DescriptorOption`s (see the `sdk/tools` godoc):
    `WithDescription`, `WithTags`, `WithAuthScopes`, `WithSideEffect`,
    `WithExamples`, `WithCostHint`, `WithLatencyHint`, `WithPolicy`.
 
@@ -80,7 +82,7 @@ The full runnable version of this recipe is
 - Heavy outputs (≥ the configured `heavy_output_threshold_bytes`)
   route through the ArtifactStore automatically (D-022, D-026); your
   tool returns typed values, not blobs.
-- HTTP, MCP, and A2A tools use different drivers
-  (`internal/tools/drivers/{http,mcp,a2a}`) but the same catalog
-  surface — see the `tools` block in
+- HTTP, MCP, and A2A tools use different transport drivers but the
+  same catalog surface; they are wired declaratively from the `tools`
+  block in `harbor.yaml` (no Go call site) — see
   [`examples/harbor.yaml`](../../examples/harbor.yaml).

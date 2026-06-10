@@ -6,8 +6,8 @@ binary wires (Phase 111d, D-201: there is exactly one skills surface;
 the CLI verbs and the dev binary are thin callers over the functions
 below).
 
-All snippets assume the module `github.com/hurtener/Harbor` and the
-imports they name. Pair this with
+All snippets use the public `sdk/` facade paths (RFC §3.6) — they
+compile from any Go module, external or in-tree. Pair this with
 [Embed Harbor headless](embed-harbor-headless.md) for the full-stack
 assembly; this recipe stays on the skills seam.
 
@@ -19,9 +19,9 @@ aggregator and open through the factory:
 
 ```go
 import (
-    _ "github.com/hurtener/Harbor/internal/drivers/prod" // driver registrations
+    _ "github.com/hurtener/Harbor/sdk/drivers/prod" // driver registrations
 
-    "github.com/hurtener/Harbor/internal/skills"
+    "github.com/hurtener/Harbor/sdk/skills"
 )
 
 store, err := skills.Open(ctx, skills.ConfigSnapshot{
@@ -41,7 +41,7 @@ component.
 The one-call ingest path `harbor skill import` wraps:
 
 ```go
-import "github.com/hurtener/Harbor/internal/skills/importer"
+import "github.com/hurtener/Harbor/sdk/skills/importer"
 
 report, err := importer.ImportAndStore(ctx,
     identity.Identity{TenantID: "t", UserID: "u", SessionID: "s"},
@@ -61,13 +61,13 @@ pack-origin rows are protected from non-pack overwrites at the store.
 ## 3. Retrieve — the Phase-38 handlers
 
 The planner-facing retrieval handlers (`SearchHandler` / `GetHandler` /
-`ListHandler` in `internal/skills/tools`) are the SAME functions the
+`ListHandler` in `sdk/skills/tools`) are the SAME functions the
 binary registers behind the `skill_search` / `skill_get` / `skill_list`
 built-ins — capability filter, tool-name redaction, and the `skill_get`
 token budgeter included:
 
 ```go
-import skilltools "github.com/hurtener/Harbor/internal/skills/tools"
+import skilltools "github.com/hurtener/Harbor/sdk/skills/tools"
 
 res, err := skilltools.SearchHandler(ctx, store, bus, skilltools.SearchArgs{
     Query: "triage ticket",
@@ -85,7 +85,7 @@ The `Capability` envelope is default-deny: a skill whose
 helper the binary's built-ins and run loop use. If you register the
 handlers on your own `ToolCatalog` instead of calling them directly,
 use `skilltools.Register(catalog, store, skilltools.Deps{Bus: bus})`
-(and `generator.Register` for `skill_propose`).
+(and `sdk/skills/generator`'s `Register` for `skill_propose`).
 
 ## 4. Inject — the skills directory
 
@@ -101,6 +101,7 @@ dir, err := skills.NewDirectory(store, skills.Deps{Bus: bus}, skills.DirectoryCo
 })
 // per run:
 views, err := dir.View(runCtx, skills.DirectoryCapability{AllowedTools: visibleNames})
+// runctx = github.com/hurtener/Harbor/sdk/runctx
 rc.SkillsContext = runctx.ProjectSkillsDirectory(views) // → planner.RunContext
 ```
 

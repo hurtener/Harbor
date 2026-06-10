@@ -90,17 +90,27 @@ all register into the same catalog.
 
 ## Using Harbor
 
-Build an agent against the runtime library:
+Build an agent against the runtime library — the curated public SDK facade at
+[`sdk/`](sdk/) (alias-based re-exports of the supported runtime API; RFC §3.6):
 
 ```go
-import "github.com/hurtener/Harbor/harbortest"
+import (
+    _ "github.com/hurtener/Harbor/sdk/drivers/prod" // production driver registrations
+
+    "github.com/hurtener/Harbor/sdk/assemble"
+    "github.com/hurtener/Harbor/sdk/config"
+)
+
+cfg := config.Defaults()
+// ... populate cfg.LLM, validate with cfg.ValidateCore() ...
+stack, err := assemble.Assemble(ctx, cfg, assemble.Options{})
 ```
 
-The runtime surface itself is importable from outside the module through the
-curated public SDK facade at [`sdk/`](sdk/) — alias-based re-exports of the
-supported runtime API (`sdk/config`, `sdk/assemble`, `sdk/tools`,
-`sdk/planner`, …; RFC §3.6). The headless-embedding recipe in
-[`docs/recipes/`](docs/recipes/) shows the full path.
+These paths import from any external Go module (`sdk/config`, `sdk/assemble`,
+`sdk/tools`, `sdk/planner`, …), and `harbor scaffold` emits them — a standing
+preflight gate compiles a tool-declaring scaffold as an external module on
+every change. The headless-embedding recipe in [`docs/recipes/`](docs/recipes/)
+shows the full path.
 
 The fastest path is the four-step CLI flow: `harbor init` drops a tiered,
 commented `harbor.yaml` plus `AGENTS.md` / `CLAUDE.md` / `README.md` companion
@@ -138,8 +148,11 @@ runtime headless in your own Go program — live in
 The public [`harbortest/`](harbortest/) package is a five-function authoring
 surface for flow-level tests — `RunOnce`, `AssertSequence`, `AssertNoLeaks`,
 `SimulateFailure`, `RecordedEvents`. Import it from outside the module; its
-godoc documents the surface and `harbortest/agent_test.go` is the worked
-example.
+parameter vocabulary (event buses, identities, tool catalogs, event types) is
+constructed through the `sdk/` aliases (`sdk/events`, `sdk/audit`,
+`sdk/identity`, `sdk/tools`), so the full surface works externally — the
+preflight gate runs an external-module probe against it. The godoc documents
+the surface and `harbortest/agent_test.go` is the worked example.
 
 ## Documentation
 
@@ -172,7 +185,10 @@ trajectory is compacted into a five-field summary before the next prompt),
 durable pauses that survive a Runtime restart with a max-park sweeper, enforced
 per-tenant governance ceilings (`governance.identity_tiers`), and the tool-side
 OAuth completion leg. The runtime surface is now externally importable through
-the curated [`sdk/`](sdk/) facade (RFC §3.6). Cross-tenant isolation,
+the curated [`sdk/`](sdk/) facade (RFC §3.6): `harbor scaffold` emits the
+public paths, the `harbortest` kit's full vocabulary is externally
+satisfiable, and a standing preflight gate compiles a tool-declaring scaffold
+as an external module on every change. Cross-tenant isolation,
 goroutine-leak, and chaos conformance harnesses still gate every change.
 
 Next: the MCP Apps host (interactive, sandboxed `ui://` resources) and the
