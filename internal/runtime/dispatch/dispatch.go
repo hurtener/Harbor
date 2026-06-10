@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/planner/react"
@@ -96,11 +97,6 @@ type toolExecutor struct {
 	// without bound. The cap bounds depth, not breadth.
 	maxSpawnDepth int
 }
-
-// defaultMaxSpawnDepth bounds planner-spawned background-task recursion
-// when planner.absolute_max_spawn_depth is unset / non-positive. Four
-// levels of background nesting is generous for V1.1.x dev workloads.
-const defaultMaxSpawnDepth = 4
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
 // the operator-configured threshold is unset / non-positive. Matches
@@ -175,7 +171,11 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 		e.heavyThreshold = defaultHeavyThreshold
 	}
 	if e.maxSpawnDepth <= 0 {
-		e.maxSpawnDepth = defaultMaxSpawnDepth
+		// The spawn-depth default is single-sourced on
+		// `config.DefaultSpawnDepthCap` (Phase 110c — D-196; the
+		// cross-region reference wired by Phase 110b per the Stage-1
+		// handoff). No other literal copy of the value is allowed.
+		e.maxSpawnDepth = config.DefaultSpawnDepthCap
 	}
 	return e
 }

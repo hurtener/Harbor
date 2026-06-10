@@ -128,30 +128,30 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `internal/runtime/runctx` exports the five helpers with behaviour-parity golden
+- [x] `internal/runtime/runctx` exports the five helpers with behaviour-parity golden
       tests (memory projection shape, skills projection shape, keyword pipeline
       including stopword/dedupe/cap rules, assistant-answer extraction fallbacks,
       input-artifact resolution incl. image-bytes inlining + missing-artifact +
       store-error Warn paths).
-- [ ] `internal/planner` gains no new imports (asserted in review; the package import
+- [x] `internal/planner` gains no new imports (asserted in review; the package import
       list stays `memory`-free) — the direction rule the plan exists to respect.
-- [ ] `events.IdentityStampingEmitter` exported; unit tests cover identity stamping
+- [x] `events.IdentityStampingEmitter` exported; unit tests cover identity stamping
       (empty→stamped, pre-set→preserved), publish-failure Warn, and that the returned
       closure satisfies `planner.RunContext.Emit` (compile-checked from a package that
       may import both).
-- [ ] `llm.NewChunkPublisher` exported; unit test asserts identity lands on the
+- [x] `llm.NewChunkPublisher` exported; unit test asserts identity lands on the
       **Event envelope** (a bus double that rejects identity-less events — the
       280-rejected-chunks regression gate) and the payload carries task/run IDs.
-- [ ] **§13 consumer in the same phase:** `cmd_dev_runloop.go` deletes its local copies
+- [x] **§13 consumer in the same phase:** `cmd_dev_runloop.go` deletes its local copies
       and calls the promoted surface; devstack deletes ALL duplicate copies (including
       the third `extractSkillKeywords`) and calls the same surface — grep-asserted in
       the smoke.
-- [ ] **Devstack parity:** devstack's RunSpec wires `Emit` + `OnChunk`; a devstack-run
+- [x] **Devstack parity:** devstack's RunSpec wires `Emit` + `OnChunk`; a devstack-run
       task produces `planner.decision` events and `llm.completion.chunk` events on its
       bus (integration-asserted); `MarkComplete` carries the answer envelope and a
       devstack `tasks.get`-shaped read sees a non-empty `result` (the audit's
       empty-`TaskResult{}` drift is closed).
-- [ ] All prior phase smokes + integration tests pass against the converted binary.
+- [x] All prior phase smokes + integration tests pass against the converted binary.
 
 ## Files added or changed
 
@@ -261,17 +261,17 @@ Skeleton ships with this plan (standard skip until the phase implements).
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the
       emitter/publisher stress test asserts no cross-run identity bleed.
-- [ ] Concurrent-reuse test: N/A as a new compiled artifact (the promoted surface is
+- [x] Concurrent-reuse test: N/A as a new compiled artifact (the promoted surface is
       pure functions + per-run closures); the N≥100 shared-bus stress test under
       `-race` covers the closure pattern per D-025.
-- [ ] **Integration test (§17):** devstack-parity test with real drivers, identity
+- [x] **Integration test (§17):** devstack-parity test with real drivers, identity
       propagation, ≥1 failure mode, under `-race`.
-- [ ] If new vocabulary: N/A.
-- [ ] If a brief finding was departed from: N/A — none departed.
+- [x] If new vocabulary: N/A.
+- [x] If a brief finding was departed from: N/A — none departed.
