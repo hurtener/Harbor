@@ -177,15 +177,46 @@ func init() {
 		if cfg.StateDriver == "" {
 			return nil, fmt.Errorf("durable: events.state_driver is required when driver=durable; configure a state driver (e.g. inmem, sqlite, postgres) or pick events.driver=inmem")
 		}
-		store, err := state.Open(context.Background(), config.StateConfig{
-			Driver: cfg.StateDriver,
-			DSN:    cfg.StateDSN,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("durable: open StateStore driver %q: %w", cfg.StateDriver, err)
-		}
-		return New(cfg, r, store, optWithOwnedStore())
+		return newWithOwnedStore(cfg, r)
 	})
+	// Phase 110d (D-197) — the deps-aware factory: when the runtime
+	// hands its already-open StateStore through `events.OpenWith`, the
+	// durable log persists into the SAME store the rest of the runtime
+	// uses, and the bus's Close leaves the shared store open (the
+	// caller owns it). Precedence:
+	//
+	//  1. An explicit `events.state_driver` wins — the operator asked
+	//     for a dedicated event-log store; the factory opens (and owns)
+	//     it exactly like the plain registry path.
+	//  2. Otherwise a non-nil deps.State is shared (not owned).
+	//  3. Otherwise fail loud — same posture as the plain factory; the
+	//     error names both ways out (PR #91's §13 amendment carried
+	//     forward: an operator who selected `durable` signalled they
+	//     want durability; silently degrading is forbidden).
+	events.RegisterWithDeps("durable", func(cfg config.EventsConfig, r audit.Redactor, deps events.Deps) (events.EventBus, error) {
+		if cfg.StateDriver != "" {
+			return newWithOwnedStore(cfg, r)
+		}
+		if deps.State != nil {
+			return New(cfg, r, deps.State)
+		}
+		return nil, fmt.Errorf("durable: no StateStore available — set events.state_driver (dedicated event-log store) or call events.OpenWith with Deps.State (share the runtime's store), or pick events.driver=inmem")
+	})
+}
+
+// newWithOwnedStore opens a dedicated StateStore from
+// cfg.StateDriver/cfg.StateDSN and constructs the bus as its owner —
+// Close disposes of the store. Shared by the plain and deps-aware
+// factory paths when the operator configured an explicit driver.
+func newWithOwnedStore(cfg config.EventsConfig, r audit.Redactor) (events.EventBus, error) {
+	store, err := state.Open(context.Background(), config.StateConfig{
+		Driver: cfg.StateDriver,
+		DSN:    cfg.StateDSN,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("durable: open StateStore driver %q: %w", cfg.StateDriver, err)
+	}
+	return New(cfg, r, store, optWithOwnedStore())
 }
 
 // bus is the durable driver. It is a compiled artifact: every field is

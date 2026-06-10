@@ -111,23 +111,23 @@ assert_grep_present 'KnownBuiltInTools' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 # Wiring into dev binary + devstack mirror (D-094).
 # ----------------------------------------------------------------------------
+# Phase 110d (D-197): built-in registration rides in the ONE promoted
+# assembly fan-out (internal/runtime/assemble) that bootDevStack wraps.
 assert_grep_present 'builtin\.Register(With)?\(' \
-    "cmd/harbor/cmd_dev.go" \
-    "bootDevStack invokes builtin.Register / RegisterWith"
+    "internal/runtime/assemble/assemble.go" \
+    "the assembly invokes builtin.RegisterWith (was bootDevStack pre-110d)"
 assert_grep_present 'cfg\.Tools\.BuiltIn' \
-    "cmd/harbor/cmd_dev.go" \
-    "bootDevStack passes cfg.Tools.BuiltIn into the registrar"
+    "internal/runtime/assemble/assemble.go" \
+    "the assembly passes cfg.Tools.BuiltIn into the registrar"
 # Phase 107c (D-167) widened the registrar shape from `Register(cat, names)` to
 # `RegisterWith(RegistryContext{Catalog, SkillStore, ArtifactStore}, names)`
 # so the new meta-tools (skill_search / skill_get / artifact_fetch) can reach
 # their backing stores. The legacy `Register` wrapper survives but the
 # devstack mirror routes through `RegisterWith` to expose the dep slots.
-assert_grep_present 'builtin\.Register(With)?\(' \
+# Devstack consumes the SAME assembly (110d) — parity by construction.
+assert_grep_present 'assemble\.Assemble\(' \
     "harbortest/devstack/devstack.go" \
-    "devstack mirrors built-in registration (D-094)"
-assert_grep_present 'cfg\.Tools\.BuiltIn' \
-    "harbortest/devstack/devstack.go" \
-    "devstack passes cfg.Tools.BuiltIn into the registrar (D-094)"
+    "devstack wraps the promoted assembly (built-ins included; D-094 via D-197)"
 
 # ----------------------------------------------------------------------------
 # docs/CONFIG.md + drift test.

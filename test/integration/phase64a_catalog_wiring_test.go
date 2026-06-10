@@ -143,6 +143,18 @@ func (s *phase64aStubProvider) Close(_ context.Context) error                   
 func buildPhase64aEnv(t *testing.T, entries []config.ToolEntryConfig, providers map[string]auth.OAuthProvider) *phase64aEnv {
 	t.Helper()
 	cfg := phase64aTestConfig(t, entries)
+	if providers == nil {
+		// Phase 110d (D-197): the assembly now constructs every
+		// cfg-declared OAuth provider that is NOT injection-overridden —
+		// production semantics (pre-110d the devstack silently skipped
+		// cfg-declared providers, a prod↔test divergence). The
+		// approval-only tests inject nothing and reference no
+		// entries[].oauth provider, so the declaration (which exists for
+		// the OAuth tests' D-095 structural validation) is dropped here
+		// rather than demanding a KEK env the tests never use.
+		cfg.Tools.OAuthTokenKEKEnv = ""
+		cfg.Tools.OAuthProviders = nil
+	}
 	stack := devstack.Assemble(t, cfg, devstack.AssembleOpts{
 		SkipAuth:       true,
 		SkipTransports: true,

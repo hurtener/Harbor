@@ -107,6 +107,15 @@ func TestE2E_Phase83g_MCPServerToolsReachTheCatalog(t *testing.T) {
 			Name:          "mcptest",
 			TransportMode: "stdio",
 			Command:       []string{binPath},
+			// Phase 110d (D-197) regression gate: the devstack attach
+			// path previously DROPPED the Phase 26b policy projection
+			// silently (the D-094 mirror drift the promoted
+			// mcpdrv.Attach closes). A policy-carrying config must
+			// surface the PROJECTED policy on the registry below.
+			Policy: &config.ToolPolicyConfig{
+				MaxAttempts: 2,
+				TimeoutMS:   4500,
+			},
 		},
 	}
 
@@ -166,6 +175,13 @@ func TestE2E_Phase83g_MCPServerToolsReachTheCatalog(t *testing.T) {
 	}
 	if servers[0].Transport != "stdio" {
 		t.Errorf("MCPRegistry: server transport = %q, want %q", servers[0].Transport, "stdio")
+	}
+	// Phase 110d (D-197): the projected per-server policy reaches the
+	// registry through the devstack path — NOT the zero value the
+	// pre-110d mirror silently dropped, and NOT tools.DefaultPolicy().
+	if servers[0].Policy.TimeoutMS != 4500 || servers[0].Policy.MaxRetries != 1 {
+		t.Errorf("MCPRegistry: policy projection dropped on the devstack path (D-197 regression): got %+v, want TimeoutMS=4500 MaxRetries=1",
+			servers[0].Policy)
 	}
 }
 

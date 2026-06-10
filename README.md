@@ -120,7 +120,8 @@ The full operator-facing configuration reference for every knob in
 build when a new config field lands without a documentation entry.
 
 Worked, runnable examples live in [`examples/`](examples/); copy-paste how-to
-guides — defining a tool, wiring a planner, testing an agent — live in
+guides — defining a tool, wiring a planner, testing an agent, embedding the
+runtime headless in your own Go program — live in
 [`docs/recipes/`](docs/recipes/).
 
 ### Testing your agent

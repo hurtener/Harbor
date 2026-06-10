@@ -169,11 +169,12 @@ else
     fail "static: builtin.RegistryContext missing ArtifactStore field — artifact_fetch will nil-deref at invoke"
 fi
 
-# Dev binary wires the store into the builtin RegistryContext.
-if grep -qE 'ArtifactStore:\s*artStore' "cmd/harbor/cmd_dev.go" 2>/dev/null; then
-    ok "static: cmd_dev.go threads artStore into builtin.RegistryContext"
+# The assembly (110d / D-197 — the ONE fan-out the dev binary wraps)
+# wires the store into the builtin RegistryContext.
+if grep -qE 'ArtifactStore:\s*stack.Artifacts' "internal/runtime/assemble/assemble.go" 2>/dev/null; then
+    ok "static: the assembly threads the ArtifactStore into builtin.RegistryContext"
 else
-    fail "static: cmd_dev.go does not thread artStore into builtin.RegistryContext — artifact_fetch will fail at invoke"
+    fail "static: the assembly does not thread the ArtifactStore into builtin.RegistryContext — artifact_fetch will fail at invoke"
 fi
 
 # Validator allowlist mirrors the new builtin (otherwise yaml validation rejects).
