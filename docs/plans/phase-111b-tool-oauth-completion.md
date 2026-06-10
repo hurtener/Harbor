@@ -147,36 +147,40 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `auth.CallbackHandler` exported; state→`PendingFlow` lookup across the
+- [x] `auth.CallbackHandler` exported; state→`PendingFlow` lookup across the
       provider map; `CompleteFlow` invocation; the four error mappings
       (404/410/400/502) + success page; no secret material in any response
       or log line (asserted by test).
-- [ ] **§13 primitive-with-consumer:** `CompleteFlow` gains its first
+- [x] **§13 primitive-with-consumer:** `CompleteFlow` gains its first
       production caller (the handler), and the handler gains its production
       mount (`harbor dev`) in the SAME phase — the
       `InitiateFlow`/`CompleteFlow` pair is whole.
-- [ ] `harbor dev` mounts the handler at `GET /v1/tools/oauth/callback`;
+- [x] `harbor dev` mounts the handler at `GET /v1/tools/oauth/callback`;
       devstack mirrors (D-094); both wired from the existing OAuth provider
       assembly output.
-- [ ] E2E (the full choreography, test OAuth server via `httptest`): planner
+- [x] E2E (the full choreography, test OAuth server via `httptest`): planner
       dispatches a gated tool → `tool.auth_required` + `pause.requested`
       observed on the bus → `InitiateFlow` URL fetched → simulated user
       authorize → redirect hits the handler → `CompleteFlow` persists the
       token → `pause.resumed` carries `Decision: resume` (D-096) → the run
       re-enters and the tool invocation succeeds using the token. Identity
       asserted end-to-end.
-- [ ] Failure modes covered: expired flow (410 + pause still parked),
+      (`test/integration/phase111b_oauth_completion_test.go` — the run-level
+      re-entry rides the existing steering RESUME surface; see Risks
+      resolution + D-199 §5.)
+- [x] Failure modes covered: expired flow (410 + pause still parked),
       mismatched state (400), replayed callback (second GET with the same
       state → 404 `ErrFlowNotFound`, idempotency by consumption).
-- [ ] `docs/recipes/steer-and-resume-a-run.md` ships with the OAuth section
+- [x] `docs/recipes/steer-and-resume-a-run.md` ships with the OAuth section
       (+ the HITL-approval section stub if not already present), including
       the headless mount snippet and the process-local-resume constraint.
-- [ ] `auth.go` godocs re-pointed at the real handler (the Wave A honesty
+- [x] `auth.go` godocs re-pointed at the real handler (the Wave A honesty
       edit is superseded by truth).
-- [ ] `scripts/smoke/phase-111b.sh` exercises the callback route (see Smoke
+- [x] `scripts/smoke/phase-111b.sh` exercises the callback route (see Smoke
       script additions) — new REST endpoint ⇒ same-PR smoke check (§4.2).
-- [ ] D-199 (reserved; logged when the phase ships) records the handler
-      shape, the mount path, and the one-recipe decision.
+- [x] D-199 records the handler shape, the mount path, the one-recipe
+      decision, and the §4.3 interface refinements (PendingFlow signature,
+      DenyFlow, the steered run-re-entry leg).
 
 ## Files added or changed
 
@@ -185,7 +189,15 @@ None.
 - `internal/tools/auth/callback_test.go` — **NEW** handler unit tests
   (mappings, no-secret assertions, replay).
 - `internal/tools/auth/auth.go` — godoc repair (`RedirectURI` + the
-  interface docs naming the callback).
+  interface docs naming the callback); `PendingFlowInfo`; the
+  `OAuthProvider` interface gains `PendingFlow` + `DenyFlow` (§4.3
+  refinement — see Public API surface).
+- `internal/tools/auth/provider.go` — `PendingFlow` returns the info
+  projection; `DenyFlow`; `CompleteFlow` godoc re-pointed at the real
+  handler.
+- `internal/tools/auth/drivers/oauth2/oauth2.go` — `PendingFlow` /
+  `DenyFlow` passthroughs; `ErrMissingRedirectURL` message names the
+  mounted handler.
 - `cmd/harbor/cmd_dev.go` — mount the handler on the dev server mux; thread
   the provider map from `assemble.Stack.OAuthProviders` (the 110d assembly's
   catalog band output — D-197).
@@ -205,10 +217,20 @@ None.
 
 - `auth.CallbackHandler(providers map[string]OAuthProvider, opts ...CallbackOption) http.Handler`.
 - `auth.CallbackOption` — `WithCallbackLogger(*slog.Logger)`,
-  `WithSuccessPage(...)` (exact option set implementor-owned; logger is
-  mandatory-shaped per §5 logging rules).
-- Documented default mount path: `/v1/tools/oauth/callback` (operator-visible
-  vocabulary for `RedirectURI` construction).
+  `WithSuccessPage(string)`.
+- `auth.CallbackPath` (`/v1/tools/oauth/callback`) +
+  `auth.CallbackRoutePattern` (`GET /v1/tools/oauth/callback`) — the
+  operator-visible vocabulary for `RedirectURI` construction.
+- **§4.3 refinements shipped with the phase (recorded in D-199):**
+  `OAuthProvider.PendingFlow(state)` returns `(PendingFlowInfo, bool)`
+  (the prior `bool` could neither locate an owner across the provider map
+  nor rebuild the completing identity; `PendingFlowInfo` exposes
+  Source / BindingScope / Identity / ExpiresAt and deliberately NOT the
+  PKCE verifier or the pause Token), and the interface gains
+  `DenyFlow(ctx, state, reason)` (upstream `error=access_denied` →
+  consume the flow + resume the pause with `DecisionReject`). Both land
+  ON `OAuthProvider` — no optional-capability ceremony (§4.4); the
+  `oauth2` driver passes through.
 
 > Scope note: "public" here is module-internal — `internal/` packages are not
 > importable by external modules (the recorded reason `harbortest/` lives at
@@ -260,6 +282,20 @@ None.
 
 ## Risks / open questions
 
+> **Resolutions (shipped).** (1) *Re-entry mechanics:* the run-level
+> re-entry rides the EXISTING steering surface — a `RESUME` control on
+> the run's inbox (Protocol `resume` / Console intervention queue / an
+> in-process watcher), the same path HITL approval uses; the OAuth
+> pause's own resolution is fully automatic via the callback. The E2E
+> proves the observable contract (run completes; the tool fetches and
+> uses the minted token); an automatic completion→run-resume bridge is
+> a recorded candidate follow-up (D-199 §5). (2) *Denied-authorization
+> semantics:* resume-with-rejection, per the plan's recommendation —
+> `Provider.DenyFlow` consumes the flow and resumes the pause with
+> `DecisionReject` (D-199 §4). (3) *Mount-path collision:* none — the
+> exact `GET /v1/tools/oauth/callback` pattern is registered before the
+> `/v1/` catch-all; Go's ServeMux precedence resolves it first.
+
 - **Staging note (Wave C):** the 111 band parallelizes freely once Wave B
   Stage 1 (110a + 110c) merges; 111b has no 110-band dependency (the
   provider assembly exists in cmd today; if Wave B's P7 `auth.BuildProviders`
@@ -292,20 +328,20 @@ None.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation: flow records + tokens stay bound to the
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation: flow records + tokens stay bound to the
       parking identity (asserted in the E2E)
-- [ ] **Primitive + consumer in the same wave (§13):**
+- [x] **Primitive + consumer in the same wave (§13):**
       `InitiateFlow`/`CompleteFlow` pair is whole — `CompleteFlow`'s first
       production caller (the handler) + the handler's production mount land
       in this phase, exercised end-to-end with a test — checked.
-- [ ] Concurrent-reuse test passes (handler, N≥100, `-race`)
-- [ ] Integration test wires real drivers end-to-end, asserts identity
+- [x] Concurrent-reuse test passes (handler, N≥100, `-race`)
+- [x] Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] New endpoint covered by `scripts/smoke/phase-111b.sh` (§4.2)
-- [ ] Glossary updated
-- [ ] D-199 filed when the phase ships
+- [x] New endpoint covered by `scripts/smoke/phase-111b.sh` (§4.2)
+- [x] Glossary updated
+- [x] D-199 filed when the phase ships

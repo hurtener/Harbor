@@ -76,6 +76,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateGovernance,
 		c.validateEvents,
 		c.validateSessions,
+		c.validatePauseResume,
 		c.validateArtifacts,
 		c.validateTasks,
 		c.validateDistributed,
@@ -554,6 +555,32 @@ func (c *Config) validateSessions() error {
 		return fieldError("sessions.sweep_interval",
 			fmt.Sprintf("must be <= sessions.idle_ttl (%s) so sessions can't live past TTL by more than one sweep; got %s",
 				c.Sessions.IdleTTL, c.Sessions.SweepInterval))
+	}
+	return nil
+}
+
+// validatePauseResume validates the Phase 111c (D-200) pause-lifecycle
+// block. Both fields are zero-meaning-default because the block is
+// OFF by default (unlike the always-on sessions sweeper):
+// max_park_duration 0 = pauses never expire and no sweeper starts;
+// sweep_interval 0 = the documented 1m default applies (Defaults()
+// sets it; a hand-built Config without the block stays valid).
+// Negative values are rejected loud rather than silently treated as
+// the default. When both are set, the sweep cadence must not exceed
+// the park ceiling — otherwise a pause overstays its deadline by more
+// than one sweep (same posture as sessions.sweep_interval vs
+// idle_ttl).
+func (c *Config) validatePauseResume() error {
+	if c.PauseResume.MaxParkDuration < 0 {
+		return fieldError("pauseresume.max_park_duration", "must be >= 0 (0 = pauses never expire)")
+	}
+	if c.PauseResume.SweepInterval < 0 {
+		return fieldError("pauseresume.sweep_interval", "must be >= 0 (0 = the documented 1m default)")
+	}
+	if c.PauseResume.MaxParkDuration > 0 && c.PauseResume.SweepInterval > c.PauseResume.MaxParkDuration {
+		return fieldError("pauseresume.sweep_interval",
+			fmt.Sprintf("must be <= pauseresume.max_park_duration (%s) so a pause can't overstay its deadline by more than one sweep; got %s",
+				c.PauseResume.MaxParkDuration, c.PauseResume.SweepInterval))
 	}
 	return nil
 }
@@ -1257,6 +1284,11 @@ func (c *Config) validatePlanner() error {
 		return fieldError("planner.absolute_max_spawn_depth",
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 4), got %d",
 				c.Planner.AbsoluteMaxSpawnDepth))
+	}
+	if c.Planner.TokenBudget < 0 {
+		return fieldError("planner.token_budget",
+			fmt.Sprintf("must be >= 0 (0 = trajectory compression disabled), got %d",
+				c.Planner.TokenBudget))
 	}
 	return nil
 }

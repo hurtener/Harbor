@@ -383,6 +383,24 @@ Background sweeper period. Default: `15m`. Validation: > 0 AND <=
 
 ---
 
+## Pause/Resume
+
+### pauseresume.max_park_duration
+
+Ceiling on how long a pause may stay parked before the pause sweeper
+resumes it with the typed `timeout` Decision (`pause.resumed`, D-096)
+and the waiting run terminates as a constraints-conflict (Phase 111c /
+D-200). Default: `0` — pauses never expire and the sweeper is not
+started. Validation: >= 0.
+
+### pauseresume.sweep_interval
+
+Pause-sweeper scan period (consumed only when `max_park_duration` >
+0). Default: `1m` (0 = the default applies). Validation: >= 0 AND <=
+`max_park_duration` when both are set.
+
+---
+
 ## Artifacts
 
 ### artifacts.driver
@@ -738,6 +756,20 @@ drop — any spawn whose child would exceed this depth, so a background
 sub-agent that itself emits `_spawn_task` cannot recurse without
 bound. The cap bounds depth, not breadth. Default: `0` → dev-runtime
 default of 4. Validation: >= 0.
+
+### planner.token_budget
+
+Trajectory-compression threshold in estimated tokens (Phase 111e /
+D-202). When > 0, the runtime builds the LLM-backed trajectory
+summariser and the steering run loop invokes it at each step boundary:
+a trajectory whose token estimate exceeds the budget is compacted into
+the five-field `Trajectory.Summary`, which replaces the raw per-step
+history in subsequent prompt builds (the prompt shrinks). One
+compression per run at V1.1.x — no auto-cascade. Emits
+`trajectory.compressed` / `trajectory.compression_failed` on the
+canonical event stream. Requires a configured `llm` block when
+non-zero (fail-loud at boot otherwise). Default: `0` → compression
+disabled. Validation: >= 0.
 
 ### planner.skills_context_max
 

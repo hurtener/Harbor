@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -298,6 +299,26 @@ type RunSpec struct {
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
+	// Compression is the optional trajectory-compression runner
+	// (Phase 111e — D-202; the §13 first call site of
+	// planner.CompressionRunner.MaybeCompress). When non-nil AND the
+	// run's Base.Budget.TokenBudget > 0, the runloop invokes
+	// MaybeCompress at each step boundary (after the control drain +
+	// projection, before Planner.Next) so an over-budget trajectory is
+	// compacted into Trajectory.Summary BEFORE the next prompt build —
+	// the React prompt builder's `Summary != nil` branch then renders
+	// the five-field summary instead of the per-step history and the
+	// prompt shrinks. Nil (or a zero TokenBudget) is byte-identical to
+	// the pre-111e behaviour: no estimate, no summariser, no events.
+	//
+	// One compression per run at V1.1.x: the runner is idempotent on
+	// `Trajectory.Summary != nil` (the documented scope fence — RFC
+	// §6.5; re-compaction cadence is the recorded D-202 follow-up).
+	// A MaybeCompress error fails the run LOUDLY (the runner already
+	// emitted trajectory.compression_failed) — never a silent
+	// fall-through that pretends compression happened.
+	Compression *planner.CompressionRunner
+
 	// OnToolDispatched is the optional per-run hook the runloop
 	// invokes after the ToolExecutor returns WITHOUT ERROR (Phase 83m
 	// item 7). The dev binary wires it to
@@ -389,12 +410,22 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		// While a pause is outstanding the planner must NOT be
 		// re-entered (it would just re-emit RequestPause). Block —
 		// without busy-spinning — until a steering control event
-		// arrives (a RESUME / APPROVE / REJECT, or any other control).
-		// The next drain applies it. WaitForEvent honours ctx so a
-		// cancelled run unblocks loud.
+		// arrives (a RESUME / APPROVE / REJECT, or any other control)
+		// OR the pause is reaped out-of-band by the max-park sweeper
+		// (Phase 111c / D-200 — a `pause.resumed` with the typed
+		// `timeout` Decision). The next drain applies a control;
+		// a timeout is TERMINAL: the run finishes with
+		// Finish{ConstraintsConflict} (a deadline the human missed is
+		// a constraint the planner cannot resolve — the D-071 REJECT
+		// posture), never a silent unpark-and-continue. The wait
+		// honours ctx so a cancelled run unblocks loud.
 		if outstandingToken != "" {
-			if werr := inbox.WaitForEvent(ctx); werr != nil {
+			timedOut, werr := rl.awaitResumeSignal(ctx, runCtx, inbox, q, outstandingToken)
+			if werr != nil {
 				return planner.Finish{}, fmt.Errorf("steering: waiting for resume control on a paused run: %w", werr)
+			}
+			if timedOut {
+				return timeoutFinish(q, outstandingToken), nil
 			}
 		}
 
@@ -427,6 +458,18 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			})
 			rl.emitLifecycle(runCtx, q, ev.Type, EventTypeControlApplied, classifyApplyErr(applyErr))
 			if applyErr != nil {
+				// Race carve-out (Phase 111c / D-200): a legitimate
+				// RESUME / APPROVE / REJECT control can lose the race
+				// against the max-park sweeper — the sweeper's
+				// DecisionTimeout Resume lands first and the control's
+				// own Coordinator.Resume surfaces ErrAlreadyResumed.
+				// The pause resolved exactly once (the documented
+				// loser contract); the run's honest outcome is the
+				// timeout-terminal Finish, not an error.
+				if errors.Is(applyErr, pauseresume.ErrAlreadyResumed) &&
+					outstandingToken != "" && rl.pauseTimedOut(runCtx, outstandingToken) {
+					return timeoutFinish(q, outstandingToken), nil
+				}
 				// A failed side effect is surfaced loud — never swallowed
 				// (CLAUDE.md §5). The history + control.applied event
 				// already recorded it; Run returns the wrapped error.
@@ -565,6 +608,23 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			stepPending = pending
 		}
 
+		// --- COMPRESS (Phase 111e — D-202): the trajectory-compression
+		// gate, after the drain/projection and before Planner.Next so
+		// THIS step's prompt build already sees the compacted view.
+		// The runner owns the semantics (estimate → threshold →
+		// summarise → stamp Summary → emit trajectory.compressed;
+		// idempotent on Summary != nil — one compression per run at
+		// V1.1.x). The gate below keeps the nil-runner / zero-budget
+		// paths byte-identical to the pre-111e loop. An error is
+		// fail-loud: the runner emitted trajectory.compression_failed
+		// and the run terminates with the wrapped error — never a
+		// silent fall-through to raw history (CLAUDE.md §13).
+		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
+			if cerr := spec.Compression.MaybeCompress(runCtx, rc, rc.Trajectory); cerr != nil {
+				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
+			}
+		}
+
 		// --- NEXT: the planner contributes exactly this. ---
 		decision, nerr := spec.Planner.Next(runCtx, rc)
 		if nerr != nil {
@@ -597,7 +657,7 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 			// control event arrives via the Phase 52 inbox -> the next
 			// step's drain applies it -> Coordinator.Resume -> the
 			// planner re-enters.
-			tok, perr := rl.requestPause(runCtx, q, d)
+			tok, perr := rl.requestPause(runCtx, q, d, spec.Base.Trajectory)
 			if perr != nil {
 				return planner.Finish{}, perr
 			}
@@ -711,22 +771,163 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 // requestPause routes a planner's RequestPause decision through the
 // unified Coordinator. It maps the planner-side PauseReason onto the
 // pauseresume.Reason (the typedef bridge keeps them byte-identical) and
-// hands the trajectory through so a checkpoint-store-backed Coordinator
-// can persist it. A pauseresume error (ErrUnserializable from a
-// non-serialisable payload / trajectory, ErrInvalidReason) propagates
-// verbatim — no silent degradation.
-func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d planner.RequestPause) (pauseresume.Token, error) {
+// hands the run's LIVE trajectory through (Phase 111c / D-200) so a
+// checkpoint-store-backed Coordinator persists the planner state with
+// the pause record — the brief 02 premise ("the planner can pause …
+// get serialised to a state store, and be resumed in a different
+// process") made true on the production path. A pauseresume error
+// (trajectory.ErrUnserializable from a non-serialisable payload /
+// trajectory leaf, ErrInvalidReason) propagates verbatim — no silent
+// degradation, no half-persisted checkpoint.
+func (rl *RunLoop) requestPause(ctx context.Context, q identity.Quadruple, d planner.RequestPause, tr *planner.Trajectory) (pauseresume.Token, error) {
 	req := pauseresume.PauseRequest{
 		Identity:   q.Identity,
 		Reason:     d.Reason, // Reason is `= planner.PauseReason` — same type
 		Payload:    d.Payload,
-		Trajectory: nil, // the run's Trajectory wiring is a later-phase concern; Phase 53 routes the decision, not the trajectory snapshot
+		Trajectory: tr, // planner.Trajectory is `= trajectory.Trajectory` — same type
 	}
 	pause, err := rl.coord.Request(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("steering: routing RequestPause through Coordinator.Request: %w", err)
 	}
 	return pause.Token, nil
+}
+
+// pauseStatusRecheckInterval is the coarse fallback cadence at which a
+// parked run re-checks Coordinator.Status for an out-of-band
+// DecisionTimeout resume. The primary timeout signal is the
+// `pause.resumed` bus event (delivered within milliseconds); the
+// re-check makes the timeout-terminal guarantee independent of
+// best-effort event delivery (a dropped event must not park a run
+// forever) and is the ONLY signal on a bus-less RunLoop. The Status
+// lookup is an in-memory map read — the cadence is deliberately
+// coarse.
+const pauseStatusRecheckInterval = 30 * time.Second
+
+// awaitResumeSignal blocks while a pause is outstanding (Phase 111c /
+// D-200). It returns:
+//
+//   - (false, nil) — a steering control event arrived; the caller
+//     drains and applies it (the pre-111c WaitForEvent contract).
+//   - (true, nil)  — the pause was resumed out-of-band with the typed
+//     `timeout` Decision (the max-park sweeper reaped it); the run is
+//     TERMINAL — the caller finishes with Finish{ConstraintsConflict}.
+//   - (false, err) — ctx was cancelled, the inbox was retired, or the
+//     bus subscription failed.
+//
+// The timeout signal has two channels: the canonical `pause.resumed`
+// bus event (primary, when the RunLoop carries a bus) and a coarse
+// Coordinator.Status re-check (the delivery-independent backstop, and
+// the only channel on a bus-less RunLoop). A non-timeout out-of-band
+// resume (e.g. a tool-side OAuth completion) deliberately does NOT
+// wake the run here — those flows re-enter via a steering control
+// event, exactly as before this phase.
+func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, q identity.Quadruple, token pauseresume.Token) (bool, error) {
+	// Race-close fast path: the sweeper may have reaped the pause
+	// before this wait began (tiny max-park windows). Checked BEFORE
+	// subscribing / blocking so the terminal outcome is never missed.
+	if rl.pauseTimedOut(runCtx, token) {
+		return true, nil
+	}
+
+	// Subscribe to the run's own event stream (identity-scoped — the
+	// run's triple + RunID; CLAUDE.md §6 rule 5) so a sweeper-emitted
+	// pause.resumed wakes the park promptly. Best-effort: a RunLoop
+	// without a bus, or a bus already shutting down, falls back to the
+	// Status re-check ticker below.
+	var busEvents <-chan events.Event
+	if rl.bus != nil {
+		sub, serr := rl.bus.Subscribe(ctx, events.Filter{
+			Tenant:  q.TenantID,
+			User:    q.UserID,
+			Session: q.SessionID,
+			Run:     q.RunID,
+		})
+		if serr == nil {
+			defer sub.Cancel()
+			busEvents = sub.Events()
+		}
+	}
+
+	// Park the inbox wait on its own goroutine so this select can also
+	// observe the bus / the re-check ticker. The goroutine is joined on
+	// every return path (waitCancel unblocks WaitForEvent via ctx) — no
+	// leak (CLAUDE.md §5 / D-025).
+	waitCtx, waitCancel := context.WithCancel(ctx)
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- inbox.WaitForEvent(waitCtx) }()
+	join := func() {
+		waitCancel()
+		<-waitDone
+	}
+
+	recheck := time.NewTicker(pauseStatusRecheckInterval)
+	defer recheck.Stop()
+
+	for {
+		select {
+		case werr := <-waitDone:
+			waitCancel()
+			if werr != nil {
+				return false, werr
+			}
+			return false, nil
+
+		case ev, ok := <-busEvents:
+			if !ok {
+				// Bus shut down mid-park — drop to the inbox wait +
+				// Status re-check only.
+				busEvents = nil
+				continue
+			}
+			if ev.Type != pauseresume.EventTypePauseResumed {
+				continue
+			}
+			payload, isResumed := ev.Payload.(pauseresume.PauseResumedPayload)
+			if !isResumed || payload.Token != string(token) || payload.Decision != pauseresume.DecisionTimeout {
+				continue
+			}
+			join()
+			return true, nil
+
+		case <-recheck.C:
+			if rl.pauseTimedOut(runCtx, token) {
+				join()
+				return true, nil
+			}
+		}
+	}
+}
+
+// pauseTimedOut reports whether the run's outstanding pause has been
+// resumed out-of-band with the typed `timeout` Decision (the max-park
+// sweeper's reap — Phase 111c / D-200). A Status error is treated as
+// "no timeout observed": the bus event remains the primary signal and
+// the next re-check retries; the check never converts a Status read
+// failure into a run failure.
+func (rl *RunLoop) pauseTimedOut(ctx context.Context, token pauseresume.Token) bool {
+	st, err := rl.coord.Status(ctx, token)
+	if err != nil {
+		return false
+	}
+	return st.State == pauseresume.StatusResumed && st.Decision == pauseresume.DecisionTimeout
+}
+
+// timeoutFinish is the terminal outcome of a max-park timeout: the
+// pause's deadline elapsed with no human decision, which is a
+// constraint the planner cannot resolve (the D-071 REJECT posture
+// applied to deadlines — plan §"Risks", settled). The metadata names
+// the timeout so observers distinguish it from a steering REJECT.
+func timeoutFinish(q identity.Quadruple, token pauseresume.Token) planner.Finish {
+	return planner.Finish{
+		Reason: planner.FinishConstraintsConflict,
+		Metadata: map[string]any{
+			"run_id":          q.RunID,
+			"steering_reason": "pause_timeout",
+			"pause_token":     string(token),
+			"pause_decision":  string(pauseresume.DecisionTimeout),
+		},
+	}
 }
 
 // emitLifecycle publishes a control.received / control.applied event

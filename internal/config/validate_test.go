@@ -524,6 +524,25 @@ func TestValidate_TableDriven(t *testing.T) {
 			},
 			"corrections.response_format_shape",
 		},
+		// Phase 111c (D-200) — pause-lifecycle block.
+		{
+			"pauseresume negative max_park_duration",
+			func(c *config.Config) { c.PauseResume.MaxParkDuration = -1 * time.Second },
+			"pauseresume.max_park_duration",
+		},
+		{
+			"pauseresume negative sweep_interval",
+			func(c *config.Config) { c.PauseResume.SweepInterval = -1 * time.Second },
+			"pauseresume.sweep_interval",
+		},
+		{
+			"pauseresume sweep_interval exceeds max_park_duration",
+			func(c *config.Config) {
+				c.PauseResume.MaxParkDuration = 10 * time.Second
+				c.PauseResume.SweepInterval = 1 * time.Minute
+			},
+			"pauseresume.sweep_interval",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1352,6 +1371,30 @@ func TestValidate_Planner_RejectsNegativeMaxSteps(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate(planner.max_steps=-1) returned nil, want error")
+	}
+}
+
+// TestValidate_Planner_TokenBudget — Phase 111e (D-202): negative
+// rejected loudly with the field path; zero (compression off, the
+// default) and positive both accepted.
+func TestValidate_Planner_TokenBudget(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", TokenBudget: -1}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.token_budget=-1) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "planner.token_budget") {
+		t.Fatalf("Validate err = %q, want it to name planner.token_budget", err.Error())
+	}
+	cfg.Planner.TokenBudget = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.token_budget=0) rejected the compression-off default: %v", err)
+	}
+	cfg.Planner.TokenBudget = 4096
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.token_budget=4096): %v", err)
 	}
 }
 

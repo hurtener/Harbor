@@ -47,6 +47,8 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
 	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
 
+	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
+
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
 	// it never appears in YAML / logging output.
@@ -469,6 +471,30 @@ type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
 	SweepInterval time.Duration `yaml:"sweep_interval"`
+}
+
+// PauseResumeConfig configures the pause lifecycle (Phase 111c /
+// D-200; RFC §3.3 + §6.3).
+//
+// `MaxParkDuration` is the ceiling on how long a pause may stay parked
+// before the runtime's pause sweeper resumes it with the typed
+// `timeout` Decision (`pause.resumed`, D-096) and the waiting run
+// terminates as a constraints-conflict. Zero (the default) means
+// pauses never expire and the sweeper is not started — the pre-111c
+// behaviour. Negative values are rejected by validation.
+//
+// `SweepInterval` is the sweeper's scan cadence. Default 1m; 0 means
+// the default applies (the block is off-by-default, so a hand-built
+// Config without it stays valid); negative values are rejected. When
+// expiry is enabled it must not exceed `MaxParkDuration` (a pause
+// must not overstay its deadline by more than one sweep).
+//
+// Fields are not hot-reloadable in V1 (changing the sweep cadence at
+// runtime would race with the sweeper goroutine — same posture as
+// SessionsConfig).
+type PauseResumeConfig struct {
+	MaxParkDuration time.Duration `yaml:"max_park_duration"`
+	SweepInterval   time.Duration `yaml:"sweep_interval"`
 }
 
 // ArtifactsConfig configures the ArtifactStore driver, the
@@ -1109,6 +1135,19 @@ const (
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
+// `TokenBudget` is the trajectory-compression threshold (Phase 111e —
+// D-202). When > 0 the per-task run loop projects it onto
+// `RunSpec.Base.Budget.TokenBudget` and the runtime assembly
+// constructs the trajectory compression runner (the LLM-backed
+// `TrajectorySummariser` over the configured LLM client); the
+// steering RunLoop then invokes `MaybeCompress` at each step
+// boundary, compacting an over-budget trajectory into
+// `Trajectory.Summary` (one compression per run at V1.1.x). Zero (the
+// default) disables compression entirely — today's behaviour. The
+// validator rejects negative values loudly pre-boot. Requires a
+// configured `llm` block when non-zero (the summariser needs a real
+// client; fail-loud at assembly).
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -1126,6 +1165,7 @@ type PlannerConfig struct {
 	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
+	TokenBudget            int                     `yaml:"token_budget,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }

@@ -79,4 +79,13 @@ var (
 	// (D-079); the Coordinator fails closed rather than leaking
 	// foreign-tenant pause records (Phase 72e / D-110).
 	ErrCrossTenantScope = errors.New("pauseresume: cross-tenant pause-list requires the admin scope claim")
+
+	// ErrSweeperMisconfigured — RunSweeper was started against a
+	// Coordinator the sweeper cannot maintain: a foreign Coordinator
+	// implementation (the maintenance scan needs this package's
+	// concrete registry), or one constructed without
+	// WithMaxParkDuration (nothing would ever expire — a sweeper that
+	// silently spins forever reaping nothing is the §13
+	// silent-degradation shape). Phase 111c / D-200.
+	ErrSweeperMisconfigured = errors.New("pauseresume: sweeper misconfigured")
 )

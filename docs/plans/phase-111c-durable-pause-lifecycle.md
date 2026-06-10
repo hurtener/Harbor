@@ -65,6 +65,44 @@ restored.
 
 None.
 
+## Ship-time deviations (§4.3, recorded 2026-06-10 — D-200)
+
+- **Sweeper scan is registry-internal, not `Coordinator.List`.** The
+  Risks section's anticipated conflict materialised: `List` is
+  §6-identity-scoped by design (empty `TenantIDs` projects the
+  caller's own tenant; cross-tenant filters must NAME tenants under
+  `AdminScoped`) — there is no "all tenants" wildcard, and a
+  maintenance actor cannot enumerate tenants it has never seen.
+  Rather than widening §6, the shipped sweeper lives in the
+  `pauseresume` package and snapshots the registry directly (value
+  copies under the mutex — the same discipline `List` uses), while
+  every MUTATION goes through the public `Coordinator.Resume` under
+  the pause's OWN identity triple: scope check, handle re-attach,
+  checkpoint delete, and `pause.resumed` emit all run unmodified. No
+  storage-level identity filter is bypassed; no elevated List shape
+  is minted. Recorded in D-200 §5.
+- **Known V1 boundary: crash-orphaned checkpoints are not proactively
+  scanned.** The sweeper reaps pauses live in the process registry
+  (which covers the audit's cancel-while-paused finding — the
+  acceptance floor). A checkpoint orphaned by a PROCESS CRASH is
+  rehydrated on demand (`Status` / `Resume`) but not swept until
+  something rehydrates it: `state.StateStore` has no scan-by-kind
+  surface, and adding one is a §9 RFC conversation, not a quiet
+  widening. Recorded in D-200 §5.
+- **Timeout-wake plumbing (additive).** The "waiting run terminates"
+  criterion needs the parked RunLoop to OBSERVE the out-of-band reap.
+  Shipped as: an identity-scoped bus subscription while parked
+  (primary; the canonical `pause.resumed` event) plus a coarse
+  `Coordinator.Status` re-check (delivery-independent backstop; the
+  only channel on a bus-less RunLoop). `pauseresume.Status` gains an
+  additive `Decision` field so the observer distinguishes `timeout`
+  from a legitimate out-of-band resume. Non-timeout out-of-band
+  resumes deliberately do NOT wake the park (no collision with 111b's
+  OAuth completion leg).
+- **No eager cancel-time release.** The plan marked it bonus; the
+  shipped floor is the sweeper-at-deadline backstop (asserted in the
+  E2E). The cancel path is untouched.
+
 ## Goals
 
 - **Trajectory threading.** `steering.RunLoop.requestPause` passes the run's
@@ -145,37 +183,37 @@ irrelevant.
 
 ## Acceptance criteria
 
-- [ ] `requestPause` threads the run's Trajectory into `PauseRequest`
+- [x] `requestPause` threads the run's Trajectory into `PauseRequest`
       (`runloop.go:670`'s `Trajectory: nil` + its "later-phase" comment are
       gone); a checkpoint written under a store-backed Coordinator contains
       the serialized trajectory (`format_version: 1`).
-- [ ] **§13 primitive-with-consumer:** `WithCheckpointStore` gains its first
+- [x] **§13 primitive-with-consumer:** `WithCheckpointStore` gains its first
       production consumers — BOTH assemblies (cmd + devstack mirror, or the
       promoted `Assemble`) construct the Coordinator with the store, in the
       same phase. `DecisionTimeout` gains its first producer (the sweeper),
       in the same phase.
-- [ ] §11 mandatory fail-loud test: a pause whose trajectory/payload carries
+- [x] §11 mandatory fail-loud test: a pause whose trajectory/payload carries
       a non-serialisable value raises `ErrUnserializable` loudly at
       `Request` time — no silent nil, no silently-empty checkpoint.
-- [ ] Durability E2E: pause → NEW Coordinator over the SAME store → `Resume`
+- [x] Durability E2E: pause → NEW Coordinator over the SAME store → `Resume`
       → trajectory restored and handed to the resumed run; the
       destructive-Resume contract (resumed ⇒ checkpoint deleted; fresh
       Coordinator returns `ErrPauseNotFound` post-resume) re-asserted.
-- [ ] `WithMaxParkDuration` + the exported sweeper ship; an expired pause is
+- [x] `WithMaxParkDuration` + the exported sweeper ship; an expired pause is
       resumed with `Decision: timeout`; the `pause.resumed` event carries the
       typed marker; the waiting run terminates as a constraints-conflict
       outcome (never silently continues); the checkpoint is deleted (no
       orphan).
-- [ ] Cancel-while-paused no longer leaks forever: at minimum the sweeper
+- [x] Cancel-while-paused no longer leaks forever: at minimum the sweeper
       reaps the record at deadline (asserted); an eager cancel-time release
       is bonus, documented if shipped.
-- [ ] Sweeper lifecycle is clean: started by the assemblies (config-gated),
+- [x] Sweeper lifecycle is clean: started by the assemblies (config-gated),
       cancellable via ctx, joined on shutdown, goroutine-leak test green.
-- [ ] Config fields `pauseresume.max_park_duration` + `sweep_interval`
+- [x] Config fields `pauseresume.max_park_duration` + `sweep_interval`
       validated, documented in `examples/harbor.yaml`, defaults pinned.
-- [ ] `scripts/smoke/phase-111c.sh` asserts the surface (see Smoke script
+- [x] `scripts/smoke/phase-111c.sh` asserts the surface (see Smoke script
       additions).
-- [ ] D-200 (reserved; logged when the phase ships) records: trajectory
+- [x] D-200 (reserved; logged when the phase ships) records: trajectory
       threading, store wiring, sweeper shape, the timeout-is-terminal call.
 
 ## Files added or changed
@@ -307,21 +345,21 @@ irrelevant.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation: pause records + checkpoints + sweeper actions
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation: pause records + checkpoints + sweeper actions
       stay identity-scoped (asserted under concurrency)
-- [ ] **Primitive + consumer in the same wave (§13):** `WithCheckpointStore`
+- [x] **Primitive + consumer in the same wave (§13):** `WithCheckpointStore`
       gets its production consumers AND `DecisionTimeout` gets its first
       producer, both exercised end-to-end with tests — checked.
-- [ ] Pause/resume serialization test asserts `ErrUnserializable` loudly
+- [x] Pause/resume serialization test asserts `ErrUnserializable` loudly
       (§11 mandatory)
-- [ ] Concurrent-reuse + sweeper-race tests pass (N≥100, `-race`)
-- [ ] Integration test wires real drivers end-to-end, asserts identity
+- [x] Concurrent-reuse + sweeper-race tests pass (N≥100, `-race`)
+- [x] Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] Config fields documented in plan + example config + validated
-- [ ] Glossary updated
-- [ ] D-200 filed when the phase ships
+- [x] Config fields documented in plan + example config + validated
+- [x] Glossary updated
+- [x] D-200 filed when the phase ships

@@ -189,6 +189,14 @@ type Stack struct {
 	Planner  planner.Planner
 	RunLoop  *steering.RunLoop
 
+	// Compression is the trajectory-compression runner (Phase 111e —
+	// D-202): planner.NewCompressionRunner over the LLM-backed
+	// summarizer.NewTrajectorySummariser. Non-nil only when
+	// cfg.Planner.TokenBudget > 0 (and the steering band ran) — the
+	// per-task run-loop drivers project it onto RunSpec.Compression
+	// alongside Base.Budget.TokenBudget. Nil = compression off.
+	Compression *planner.CompressionRunner
+
 	closeOnce sync.Once
 	closers   []func(context.Context) error
 }
@@ -505,7 +513,47 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// Coordinator instance (CLAUDE.md §13). WithBus(bus) is mandatory:
 	// it is what makes pause.requested / pause.resumed land on the
 	// canonical event stream (Wave 11.5 §17.5 F1).
-	coord := pauseresume.New(pauseresume.WithBus(stack.Bus))
+	// WithCheckpointStore(stack.State) is mandatory too (Phase 111c /
+	// D-200 — the §13 primitive-with-consumer closure): every pause is
+	// checkpointed through the runtime's own StateStore, so pauses
+	// survive a Runtime restart on any durable state driver. Pre-111c
+	// both assemblies constructed the Coordinator storeless with the
+	// store in scope — every pause was process-memory-only.
+	// WithMaxParkDuration threads the pause-lifecycle ceiling
+	// (`pauseresume.max_park_duration`; 0 = never expire, the default).
+	coord := pauseresume.New(
+		pauseresume.WithBus(stack.Bus),
+		pauseresume.WithCheckpointStore(stack.State),
+		pauseresume.WithMaxParkDuration(cfg.PauseResume.MaxParkDuration),
+	)
+
+	// Phase 111c (D-200) — the pause sweeper: DecisionTimeout's first
+	// producer. Config-gated on max_park_duration > 0 (the validated
+	// sweep_interval is consumed only here). The goroutine is
+	// cancellable + joined on Close (CLAUDE.md §5): the closer cancels
+	// the sweep ctx and blocks on the done channel.
+	if cfg.PauseResume.MaxParkDuration > 0 {
+		// context.Background is deliberate: the sweeper's lifetime is
+		// the stack's (bounded by the closer below), not the assembly
+		// ctx's — same documented bridge as the notifications
+		// subscriber.
+		sweepCtx, sweepCancel := context.WithCancel(context.Background())
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			if serr := pauseresume.RunSweeper(sweepCtx, coord,
+				pauseresume.WithSweepInterval(cfg.PauseResume.SweepInterval),
+				pauseresume.WithSweeperLogger(logger),
+			); serr != nil && !errors.Is(serr, context.Canceled) {
+				logger.ErrorContext(sweepCtx, "pause sweeper exited", slog.Any("error", serr))
+			}
+		}()
+		stack.closers = append(stack.closers, func(context.Context) error {
+			sweepCancel()
+			<-sweepDone
+			return nil
+		})
+	}
 
 	// D-095 — OAuth providers BEFORE the catalog Builder runs so the
 	// Builder's Deps.OAuthProviders lookup resolves. Caller-supplied
@@ -620,6 +668,22 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 			return fmt.Errorf("planner: %w", err)
 		}
 		stack.Planner = plnr
+	}
+
+	// Phase 111e (D-202): the trajectory-compression runner — built
+	// when the operator set a non-zero `planner.token_budget`. The
+	// summariser needs a real LLM client; a budget without an LLM is a
+	// misconfiguration surfaced loudly at boot (CLAUDE.md §13 — no
+	// silent "compression configured but inert" path).
+	if cfg.Planner.TokenBudget > 0 {
+		if stack.LLM == nil {
+			return fmt.Errorf("planner: token_budget=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Planner.TokenBudget)
+		}
+		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM)
+		if err != nil {
+			return fmt.Errorf("trajectory summariser: %w", err)
+		}
+		stack.Compression = planner.NewCompressionRunner(trajSumm)
 	}
 
 	// The RunLoop needs the planner plus the catalog band's Coordinator

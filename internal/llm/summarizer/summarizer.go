@@ -1,6 +1,32 @@
-// Package summarizer is Harbor's production LLM-backed `memory.Summarizer`
-// — the §13 "test stubs as production defaults" amendment closure for the
-// memory subsystem's `rolling_summary` strategy.
+// Package summarizer is the home of Harbor's production LLM-backed
+// summarisation: the memory-subsystem `memory.Summarizer` (Phase 64,
+// D-089) and the planner-trajectory `planner.Summariser` (Phase 111e,
+// D-202).
+//
+// # Two interfaces — do not conflate
+//
+// The package satisfies TWO unrelated interfaces that happen to share
+// a name root:
+//
+//   - `memory.Summarizer` (Summarizer, `New`) — the memory
+//     subsystem's rolling-summary compactor: conversation window
+//     (previous summary + evicted turns) in, free-text summary out.
+//     Phase 64 / D-089.
+//   - `planner.Summariser` (TrajectorySummariser,
+//     `NewTrajectorySummariser`) — the runtime's trajectory
+//     compression producer: a run's Trajectory in, the five-field
+//     `planner.TrajectorySummary` out (structured-output JSON-schema
+//     mode). Phase 111e / D-202; invoked by
+//     `planner.CompressionRunner.MaybeCompress` from the steering
+//     RunLoop when `Budget.TokenBudget` is exceeded.
+//
+// Different signatures, different inputs, different consumers — the
+// shared home exists because both are "LLM client + versioned
+// compaction prompt" compositions (the import direction is clean:
+// summarizer → planner/memory → llm; nothing imports back).
+//
+// The remainder of this doc describes the memory-subsystem
+// Summarizer; see trajectory.go for the TrajectorySummariser.
 //
 // Before Phase 64 / D-089 the only `memory.Summarizer` Harbor shipped
 // was `strategy.EchoSummarizer` — a deterministic test stub that
