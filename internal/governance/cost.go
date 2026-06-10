@@ -393,16 +393,3 @@ func (a *CostAccumulator) emitBudgetExceeded(ctx context.Context, q identity.Qua
 var (
 	_ Subsystem = (*CostAccumulator)(nil)
 )
-
-// total is a test-friendly accessor for the in-memory total bypassing
-// the lazy-load path. Used only in package-internal tests; not exported.
-//
-//nolint:unused // referenced by tests in same package.
-func (a *CostAccumulator) totalLoaded(q identity.Quadruple) (float64, bool) {
-	v, ok := a.keys.Load(quadKeyFor(q))
-	if !ok {
-		return 0, false
-	}
-	ks, _ := v.(*costKeyState) //nolint:errcheck // keys map values are always *costKeyState by construction
-	return math.Float64frombits(ks.totalBits.Load()), ks.loaded.Load()
-}

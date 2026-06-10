@@ -23,6 +23,16 @@ import (
 // identity from ctx via `identityFromCtx`; missing identity → fail-closed
 // with `ErrIdentityRequired`.
 //
+// Headless / multi-runtime path (Phase 111a, D-198): Wrap +
+// `NewSubsystemFromConfig` are the documented composition for embedders
+// that run N runtime stacks (each with its own tier map) in one process
+// — the process-global `SetFactory` seam would collide there (second
+// SetFactory wins; see its godoc). Build one Subsystem per stack and
+// wrap each `llm.Open` result directly:
+//
+//	sub, err := governance.NewSubsystemFromConfig(cfg, store, bus)
+//	client = governance.Wrap(client, sub)
+//
 // Concurrent reuse (D-025): the returned client is a thin functional
 // adapter (no mutable state of its own); concurrent reuse depends on the
 // inner client + Subsystem both honouring the contract.

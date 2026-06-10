@@ -75,9 +75,12 @@ import (
 	// Governance — Phase 36a + 36b cost accumulator + rate limiter +
 	// MaxTokens enforcer (RFC §6.15). Self-registers a wrapper hook
 	// so `llm.Open()` composes `governance(retry(...))` outermost.
-	// **LATENT default:** with no factory registered via
+	// **LATENT default (D-044):** with no factory registered via
 	// `governance.SetFactory`, the wrapper is a pass-through — the
-	// blank-import only seats the hook (D-044).
+	// blank-import only seats the hook. The production assembly
+	// (`assemble.Assemble`, Phase 111a / D-198) installs the factory
+	// when `governance.identity_tiers` is non-empty, so configured
+	// tiers ENFORCE through this hook.
 	_ "github.com/hurtener/Harbor/internal/governance"
 	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"

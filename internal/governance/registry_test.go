@@ -132,3 +132,56 @@ func (alwaysReject) PostCall(_ context.Context, _ llm.CompleteRequest, _ llm.Com
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestLLMOpen_FactoryError_WarnsAndPassesThrough covers the wrapper
+// hook's factory-error branch. In production this branch is unreachable
+// (the assembly builds the Subsystem eagerly at boot and fails the boot
+// on error — Phase 111a / D-198); a test-installed factory that errors
+// must degrade LOUDLY (slog warn) to a pass-through client rather than
+// wedge llm.Open.
+func TestLLMOpen_FactoryError_WarnsAndPassesThrough(t *testing.T) {
+	bus, err := events.Open(context.Background(), config.EventsConfig{
+		Driver:                   "inmem",
+		MaxSubscribersPerSession: 16,
+		SubscriberBufferSize:     64,
+		IdleTimeout:              60 * time.Second,
+		DropWindow:               1 * time.Second,
+	}, auditpatterns.New())
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	defer bus.Close(context.Background())
+	art, err := artifactsinmem.New(config.ArtifactsConfig{Driver: "inmem"})
+	if err != nil {
+		t.Fatalf("artifacts.New: %v", err)
+	}
+
+	governance.SetFactory(func(_ llm.ConfigSnapshot, _ llm.Deps) (governance.Subsystem, error) {
+		return nil, errors.New("forced factory failure")
+	})
+	defer governance.ClearFactory()
+
+	cfg := llm.ConfigSnapshot{
+		Driver:             "mock",
+		ModelProfiles:      map[string]llm.ModelProfile{"m": {ContextWindowTokens: 10000}},
+		DisableCorrections: true,
+		DisableDowngrade:   true,
+		DisableRetry:       true,
+	}
+	client, err := llm.Open(context.Background(), cfg, llm.Deps{Artifacts: art, Bus: bus})
+	if err != nil {
+		t.Fatalf("llm.Open: %v", err)
+	}
+	defer client.Close(context.Background())
+
+	resp, err := client.Complete(ctxWith(t, "T", "U", "S", "R"), llm.CompleteRequest{
+		Model:    "m",
+		Messages: []llm.ChatMessage{{Role: llm.RoleUser, Content: llm.Content{Text: ptr("hi")}}},
+	})
+	if err != nil {
+		t.Errorf("Complete after factory error must pass through: %v", err)
+	}
+	if resp.Content == "" {
+		t.Errorf("empty response on the pass-through path")
+	}
+}
