@@ -12,10 +12,19 @@
 //     smoke-test action the planner can call without side effects.
 //
 // Built-ins are NEVER registered implicitly. The operator opts in
-// via the `tools.built_in` yaml field, which the dev binary's
-// `bootDevStack` passes to `builtin.Register(cat, names)`. An empty
-// list registers nothing — the registry is purely additive and
+// via the `tools.built_in` yaml field, which the assembly fan-out
+// (`internal/runtime/assemble`) passes to `builtin.RegisterWith`. An
+// empty list registers nothing — the registry is purely additive and
 // opt-in by design.
+//
+// Phase 111d / D-201 — canonical skills surface. The `skill_search` /
+// `skill_get` / `skill_list` / `skill_propose` built-ins are thin
+// delegations to the Phase-38 `internal/skills/tools` handlers and
+// the Phase-41 `internal/skills/generator`. The capability envelope
+// (which tools the run may see) is computed per call from the
+// catalog's visible set under the run's identity + granted scopes —
+// never LLM-supplied — so the capability filter, tool-name redaction,
+// and the `skill_get` token budgeter run on the production path.
 //
 // The §4.4 seam pattern applies in the same shape as OAuth drivers
 // (`internal/tools/auth/drivers/oauth2`) and planner drivers
@@ -38,6 +47,8 @@ import (
 	"sort"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/skills"
 	"github.com/hurtener/Harbor/internal/tools"
 	"github.com/hurtener/Harbor/internal/tools/drivers/inproc"
@@ -87,12 +98,22 @@ var registry = map[string]registrar{
 	"tool_get": func(rc RegistryContext) error {
 		return registerToolGet(rc.Catalog)
 	},
-	"skill_search": func(rc RegistryContext) error {
-		return registerSkillSearch(rc.Catalog, rc.SkillStore)
-	},
-	"skill_get": func(rc RegistryContext) error {
-		return registerSkillGet(rc.Catalog, rc.SkillStore)
-	},
+	// Phase 111d / D-201 — the skill meta-tools are thin delegations
+	// to the Phase-38 `internal/skills/tools` handlers (capability
+	// filter + redaction + budgeter on the production path) and the
+	// Phase-41 generator. The builtin registry stays the ONE
+	// registration carrier; `skills/tools` + `skills/generator` are
+	// the ONE implementation home.
+	"skill_search": registerSkillSearch,
+	"skill_get":    registerSkillGet,
+	"skill_list":   registerSkillList,
+	// `skill_propose` is the persistence-capable generator tool
+	// (D-054). Like every built-in it registers ONLY when the
+	// operator lists it in `tools.built_in` — and unlike the
+	// discovery set it is deliberately absent from every recommended
+	// default: persistence-capable skill authoring is an explicit
+	// operator decision (Phase 111d / D-201).
+	"skill_propose": registerSkillPropose,
 	"declarative_action": func(rc RegistryContext) error {
 		return registerDeclarativeAction(rc.Catalog)
 	},
@@ -119,15 +140,30 @@ func KnownNames() []string {
 }
 
 // RegistryContext carries the dependencies builtins may need at
-// registration time. All fields are optional — a builtin that
-// doesn't use a field ignores it. Builtins that REQUIRE a field
-// (e.g. `skill_search` needs `SkillStore`; `artifact_fetch` needs
-// `ArtifactStore`) fail loud at invoke time with an operator-readable
-// message when the dependency is nil.
+// registration time. Fields are optional for builtins that don't use
+// them. Two failure postures, both fail-loud:
+//
+//   - Store-shaped deps (`SkillStore`, `ArtifactStore`) fail at
+//     INVOKE time with an operator-readable message when nil — the
+//     registration is structurally valid, the backing subsystem is
+//     simply not configured.
+//   - Wiring-shaped deps (`Bus` for every skill_* delegation;
+//     `Redactor` additionally for `skill_propose`) fail at
+//     REGISTRATION time — a missing bus/redactor is a boot-path bug,
+//     not an operator configuration choice (Phase 111d / D-201).
+//
+// `GrantedScopes` is the operator-declared `tools.granted_scopes`
+// list (Phase 83m Item 6, D-156). The skill_* delegations derive the
+// run's capability envelope from `tools.VisibleNames(Catalog, ...)`
+// under these scopes — default-deny: an empty list means tools with
+// AuthScopes are invisible and skills requiring them are filtered.
 type RegistryContext struct {
 	Catalog       tools.ToolCatalog
 	SkillStore    skills.SkillStore
 	ArtifactStore artifacts.ArtifactStore
+	Bus           events.EventBus
+	Redactor      audit.Redactor
+	GrantedScopes []string
 }
 
 // Register attaches each named built-in to the catalog. Equivalent to

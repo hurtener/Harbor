@@ -171,25 +171,25 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
 
 ## Acceptance criteria
 
-- [ ] **§13 two-implementations smell closed:** `tools/builtin`'s
+- [x] **§13 two-implementations smell closed:** `tools/builtin`'s
       `skill_search`/`skill_get` delegate to the Phase-38 handlers; the
       duplicate implementation bodies are deleted; a test proves the
       production-registered tool applies capability filtering + redaction +
       the `skill_get` budgeter (the behaviours only the rich path has).
-- [ ] **§13 primitive-with-consumer:** `skills/tools.Register` (or its
+- [x] **§13 primitive-with-consumer:** `skills/tools.Register` (or its
       exported handler seam) + `generator.Register` gain their first
       production registration through the builtin carrier in this phase;
       `main.go`'s stale Phase-60+ promise comments are replaced.
-- [ ] `skill_list` registered (default-enabled); `skill_propose` registered
+- [x] `skill_list` registered (default-enabled); `skill_propose` registered
       default-DISABLED with yaml opt-in; D-054 conflict policy + audit emit
       asserted through the production registration path.
-- [ ] `importer.ImportAndStore` exported; conflict policy + duplicate-name
+- [x] `importer.ImportAndStore` exported; conflict policy + duplicate-name
       rejection loud; path-safety preserved (`path_safety.go` — §7 rule 5).
-- [ ] `harbor skill import <path>` imports a spec-compliant Skills.md into
+- [x] `harbor skill import <path>` imports a spec-compliant Skills.md into
       the configured store; `harbor skill rm <name>` removes by name;
       non-zero exit + honest stderr on rejection; degradation path: older
       builds without the subcommand keep smoke green (§4.2 rule 8).
-- [ ] §18: `docs/skills/configure-memory-and-skills/SKILL.md` updated in the
+- [x] §18: `docs/skills/configure-memory-and-skills/SKILL.md` updated in the
       same PR — real verbs, real flags, real output shapes.
 - [x] Directory disposition: **owner decision recorded BEFORE implementation
       starts** — RESOLVED "wire it" (owner, 2026-06-09; recorded in this
@@ -201,13 +201,13 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
       with a decisions entry and the glossary/master-plan rows annotated —
       either way, NO third state (the status quo is the one outcome this
       phase forbids).
-- [ ] E2E: `harbor skill import` a fixture Skills.md → boot → the LLM
+- [x] E2E: `harbor skill import` a fixture Skills.md → boot → the LLM
       discovers it via `skill_search` (production registration) →
       `skill_get` returns budgeted, redacted content → (if wired) the
       Directory block lists it after use. Identity asserted throughout.
-- [ ] `scripts/smoke/phase-111d.sh` exercises the verb + the registration
+- [x] `scripts/smoke/phase-111d.sh` exercises the verb + the registration
       (see Smoke script additions).
-- [ ] D-201 (reserved; logged when the phase ships) records: the
+- [x] D-201 (reserved; logged when the phase ships) records: the
       unification, the verb surface, and the Directory decision + who made
       it.
 
@@ -344,6 +344,47 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
   silently imports into nowhere. The verb prints the resolved driver+DSN
   (redacted) so the operator can see where the skill landed.
 
+## Deviations recorded at ship (§4.3)
+
+Implementor deviations, all scope-preserving; each is also recorded in
+D-201:
+
+1. **`skill_propose` opt-in rides the existing `tools.built_in` names
+   list — the sketched `tools.builtin.skill_propose.enabled` key was
+   dropped.** A per-name `enabled` map would have been a SECOND
+   enablement mechanism next to the 107c names-list carrier (§13
+   two-parallel-implementations, applied to config shapes).
+   "Default-disabled with yaml opt-in" holds: the tool registers only
+   when explicitly listed, and it appears in no recommended set in
+   `examples/` or the `harbor init` template.
+2. **The stale registration promises no longer lived at
+   `cmd/harbor/main.go:76-90`.** Phase 110c's aggregator rewrite had
+   already replaced that block; the surviving stale text was the
+   `internal/skills/tools` package doc ("Phase 60+ wires it") and the
+   `internal/drivers/prod` HONESTY NOTEs — replaced there with the
+   post-111d truth.
+3. **The capability envelope's namespace/tag axes are empty
+   (default-deny).** The Risks section's granted-set concern resolved
+   on the deny side: Harbor has no runtime source of namespace/tag
+   grants, so `AllowedNamespaces` / `AllowedTags` stay empty and
+   skills requiring them are filtered. `AllowedTools` derives from
+   `tools.VisibleNames` (the run's identity + `tools.granted_scopes`,
+   both loading modes) — the one shared producer across the builtin
+   delegations and the run-loop Directory call.
+4. **Wiring sites adjusted for the 110d assembly reality.** The
+   builtin registration deps (Bus / Redactor / GrantedScopes) thread
+   through `internal/runtime/assemble` (the registration moved there
+   in 110d); the Directory is constructed at the two run-loop driver
+   sites (cmd + devstack) per D-197 call 4 (the driver shell is
+   per-caller), via the shared `skills.DirectoryFromConfig`
+   projection with the resolved `planner.skills_context_max` as the
+   `max_entries` fallback.
+5. **§17.6 fix bundled:** the rich `skill_get` returned
+   `"skills": null` for an all-missing/all-filtered request and
+   failed inproc output-schema validation when invoked through a
+   catalog — a latent Phase-38 bug surfaced by the new delegation
+   tests; fixed in `GetHandler` in the same PR.
+
 ## Glossary additions
 
 - **Canonical skills surface** — post-111d there is one skills
@@ -357,22 +398,22 @@ ships in this phase with the ingest + retrieve + inject walkthrough.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session/cross-tenant isolation test passes (skill visibility)
-- [ ] **Primitive + consumer in the same wave (§13):** the Phase-38/41
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session/cross-tenant isolation test passes (skill visibility)
+- [x] **Primitive + consumer in the same wave (§13):** the Phase-38/41
       Register surfaces gain their first production registration; the
       two-implementations smell is closed by deletion, not by a toggle —
       checked.
-- [ ] Concurrent-reuse test passes (registered tools, N≥100, `-race`)
-- [ ] Integration test wires real drivers end-to-end, asserts identity
+- [x] Concurrent-reuse test passes (registered tools, N≥100, `-race`)
+- [x] Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] §18: SKILL.md updated in the same PR
-- [ ] New CLI verbs have a smoke degradation path (§4.2 rule 8)
+- [x] §18: SKILL.md updated in the same PR
+- [x] New CLI verbs have a smoke degradation path (§4.2 rule 8)
 - [x] Directory owner decision recorded before (c) implementation (resolved
       in this plan 2026-06-09; logged in full in D-201 at ship)
-- [ ] Glossary updated
-- [ ] D-201 filed when the phase ships
+- [x] Glossary updated
+- [x] D-201 filed when the phase ships

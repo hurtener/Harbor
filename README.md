@@ -112,6 +112,9 @@ project (`go.mod`, a worked agent, a `harbortest`-driven test). From there:
   co-resident Runtime.
 - `harbor validate` — runs the config loader against a YAML file with
   file:line-precise errors; suitable as a CI pre-flight.
+- `harbor skill import <path>` / `harbor skill rm <name>` — ingest a Skills.md
+  playbook into the runtime skill catalog (the same store `harbor dev` serves)
+  or remove one by name.
 - `harbor inspect-events` / `inspect-runs` — tail the live event stream or
   reconstruct a run's trajectory from event replay.
 

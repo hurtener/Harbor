@@ -20,6 +20,8 @@ API, read the godoc.
 | [Test an agent](test-an-agent.md) | The public `harbortest` kit — `RunOnce`, `AssertNoLeaks`, `SimulateFailure`. |
 | [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program — no CLI, no Protocol server. |
 | [Steer and resume a run](steer-and-resume-a-run.md) | The ONE pause/resume choreography, all three triggers: HITL approval, tool-side OAuth completion, and durable pauses + the max-park lifecycle |
+| [Steer and resume a run](steer-and-resume-a-run.md) | The ONE pause/resume choreography with its two V1 triggers — HITL approval and tool-side OAuth completion (`auth.CallbackHandler`, the dev mount, the headless mount). |
+| [Use memory and skills from Go](use-memory-and-skills-from-go.md) | The canonical skills surface headless: `importer.ImportAndStore` to ingest, the Phase-38 handlers to retrieve, `skills.NewDirectory(...).View` to inject. |
 
 ## Conventions used in these recipes
 

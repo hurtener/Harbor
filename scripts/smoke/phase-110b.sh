@@ -30,8 +30,11 @@ assert_grep_present 'func IdentityStampingEmitter' "internal/events/emitter.go" 
     "events.IdentityStampingEmitter exported"
 assert_grep_present 'func NewChunkPublisher' "internal/llm/chunk_publisher.go" \
     "llm.NewChunkPublisher exported"
-assert_grep_present 'scheduled for deletion by Phase 111d \(D-201\)' "internal/runtime/runctx/runctx.go" \
-    "ExtractSkillKeywords carries the 111d deprecation notice (owner decision 2026-06-09)"
+# Phase 111d (D-201) executed the deprecation notice this smoke used
+# to pin: ExtractSkillKeywords is DELETED (the Directory is the
+# `<skills_context>` producer). Assert the deletion held.
+assert_grep_absent 'func ExtractSkillKeywords' "internal/runtime/runctx/runctx.go" \
+    "ExtractSkillKeywords deleted per its D-195 deprecation notice (Phase 111d, D-201)"
 
 # 2. cmd/harbor no longer DEFINES the five helpers (it calls the
 #    promoted surface). Patterns pin the definitions so the thin

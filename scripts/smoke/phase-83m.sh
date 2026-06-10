@@ -43,10 +43,15 @@ assert_grep_present 'agentRegistry\.Close' "internal/runtime/assemble/assemble.g
 # ----------------------------------------------------------------------------
 # Phase 110b (D-195) re-homed the extractor to internal/runtime/runctx;
 # both call sites consume the ONE promoted copy.
-assert_grep_present 'runctx\.ExtractSkillKeywords' "cmd/harbor/cmd_dev_runloop.go" \
-    "runloop calls promoted runctx.ExtractSkillKeywords (item 4; 110b)"
-assert_grep_present 'runctx\.ExtractSkillKeywords' "harbortest/devstack/devstack.go" \
-    "devstack calls promoted runctx.ExtractSkillKeywords (item 4; 110b)"
+# Item 4's keyword shaper was deleted by Phase 111d (D-201): the
+# skills Directory replaced the raw-Search `<skills_context>` path.
+# Assert the supersession (the run loops consume Directory.View now).
+assert_grep_absent 'ExtractSkillKeywords' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop no longer calls the deleted keyword shaper (111d, D-201)"
+assert_grep_present 'skillsDirectory\.View' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop consumes skills Directory.View (111d supersession of item 4)"
+assert_grep_present 'skillsDirectory\.View' "harbortest/devstack/devstack.go" \
+    "devstack consumes skills Directory.View (111d supersession of item 4)"
 
 # ----------------------------------------------------------------------------
 # Item 5 — Per-call LLM timeout uses cfg.Timeout.

@@ -34,12 +34,17 @@
 // `(ctx, args)`. One catalog + one store is safe to share across N
 // concurrent goroutines.
 //
-// Registration is a runtime call: `Register(catalog, store, deps)`
-// is invoked from the binary's bootstrap path (the catalog is built
-// at boot, not at package-init). Phase 38 ships the helper; Phase 60+
-// wires it from `harbor dev`. The package is blank-imported from
-// `cmd/harbor/main.go` so its presence is visible in the import
-// graph.
+// Registration is a runtime call (the catalog is built at boot, not
+// at package-init). Since Phase 111d (D-201) the PRODUCTION
+// registration path is the `internal/tools/builtin` carrier: the
+// `skill_search` / `skill_get` / `skill_list` built-ins delegate to
+// the exported handlers below (`SearchHandler` / `GetHandler` /
+// `ListHandler`) with a runtime-computed capability envelope, so the
+// capability filter + redaction + budgeter run on the production
+// path. `Register` remains the direct Go-level registration entry
+// for headless SDK consumers composing their own catalog (see
+// docs/recipes/use-memory-and-skills-from-go.md). The package is
+// blank-imported via `internal/drivers/prod`.
 package tools
 
 import (
@@ -212,7 +217,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	}
 
 	search := func(ctx context.Context, args SearchArgs) (SearchResult, error) {
-		return searchHandler(ctx, store, deps.Bus, args)
+		return SearchHandler(ctx, store, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[SearchArgs, SearchResult](
 		catalog,
@@ -229,7 +234,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	}
 
 	get := func(ctx context.Context, args GetArgs) (GetResult, error) {
-		return getHandler(ctx, store, deps.Bus, args)
+		return GetHandler(ctx, store, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[GetArgs, GetResult](
 		catalog,
@@ -246,7 +251,7 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	}
 
 	list := func(ctx context.Context, args ListArgs) (ListResult, error) {
-		return listHandler(ctx, store, deps.Bus, args)
+		return ListHandler(ctx, store, deps.Bus, args)
 	}
 	if err := inproc.RegisterFunc[ListArgs, ListResult](
 		catalog,
@@ -264,10 +269,16 @@ func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) erro
 	return nil
 }
 
-// searchHandler is the `skill_search` planner-tool body. Identity
+// SearchHandler is the `skill_search` planner-tool body. Identity
 // from ctx → SkillStore.Search → Filter → Redact (per-row). Path is
 // surfaced for observability.
-func searchHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args SearchArgs) (SearchResult, error) {
+//
+// Exported (Phase 111d, D-201) as the handler seam the
+// `internal/tools/builtin` carrier delegates to — ONE implementation
+// home, two registration carriers collapse onto it. Callers supply
+// the capability envelope on `args.Capability`; the builtin carrier
+// computes it from the run's visible-tool set.
+func SearchHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args SearchArgs) (SearchResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return SearchResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_search")
@@ -314,12 +325,15 @@ func searchHandler(ctx context.Context, store skills.SkillStore, bus events.Even
 	return SearchResult{Skills: out, Path: path}, nil
 }
 
-// getHandler is the `skill_get` planner-tool body. Identity → fetch
+// GetHandler is the `skill_get` planner-tool body. Identity → fetch
 // each named skill → Filter → Redact → Budgeter ladder. Missing
 // names are silently skipped (a partial response is more useful than
 // a hard error for stale planner caches); the budgeter is the only
 // hard error path.
-func getHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args GetArgs) (GetResult, error) {
+//
+// Exported (Phase 111d, D-201) as the handler seam the
+// `internal/tools/builtin` carrier delegates to.
+func GetHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args GetArgs) (GetResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return GetResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_get")
@@ -354,17 +368,27 @@ func getHandler(ctx context.Context, store skills.SkillStore, bus events.EventBu
 	}
 	// Normalise so the inproc driver's reflection-derived JSON
 	// Schema (every slice / map required) accepts a nil-valued
-	// post-filter skill.
+	// post-filter skill. The top-level slice must be non-nil for the
+	// same reason — an all-missing/all-filtered request previously
+	// returned `"skills": null` and failed output validation when
+	// invoked through a catalog (found by the Phase 111d delegation
+	// tests; fixed here per §17.6 — the bug predates the delegation).
+	if fit == nil {
+		fit = []skills.Skill{}
+	}
 	for i := range fit {
 		fit[i] = normalizeSkill(fit[i])
 	}
 	return GetResult{Skills: fit, Summarized: summarized, DroppedSteps: droppedSteps}, nil
 }
 
-// listHandler is the `skill_list` planner-tool body. Identity →
+// ListHandler is the `skill_list` planner-tool body. Identity →
 // SkillStore.List → Filter → Redact (summary fields only — full
 // content is reserved for `skill_get`).
-func listHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args ListArgs) (ListResult, error) {
+//
+// Exported (Phase 111d, D-201) as the handler seam the
+// `internal/tools/builtin` carrier delegates to.
+func ListHandler(ctx context.Context, store skills.SkillStore, bus events.EventBus, args ListArgs) (ListResult, error) {
 	q, err := skills.IdentityFromCtx(ctx)
 	if err != nil {
 		return ListResult{}, skills.EmitIdentityRejected(ctx, bus, q, "tools.skill_list")
