@@ -61,6 +61,7 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/runtime/dispatch"
+	"github.com/hurtener/Harbor/internal/runtime/engine"
 	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
@@ -70,6 +71,7 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/telemetry"
+	televentbus "github.com/hurtener/Harbor/internal/telemetry/eventbus"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
@@ -129,6 +131,27 @@ type Options struct {
 	// not require a metrics-exporter driver per test binary.
 	MetricsOptions []telemetry.MetricsOption
 
+	// TelemetryOptions is threaded into telemetry.New (Phase 111f,
+	// D-203). Tests inject telemetry.WithWriter to observe emitted
+	// records; production callers pass nothing (stdout handler).
+	TelemetryOptions []telemetry.Option
+
+	// TracerOptions is threaded into telemetry.NewTracer (Phase 111f,
+	// D-203). Tests inject telemetry.WithSpanExporter with an
+	// in-memory recorder so derived spans are observable without a
+	// collector; production callers pass nothing (exporter selection
+	// follows cfg.Telemetry.OTelEndpoint — noop without a collector).
+	TracerOptions []telemetry.TracerOption
+
+	// ApprovalAuthorizer overrides the resolve-privilege seam threaded
+	// into every catalog-built ApprovalGate (Phase 111f, D-203). Nil
+	// defaults to the runtime-vocabulary
+	// `approval.NewIdentityAuthorizer()` (originating identity /
+	// control scope). The serving binary and the devstack inject the
+	// Protocol-side `server.NewProtocolScopeAuthorizer` so wire-driven
+	// resolution keeps today\'s admin / console:fleet acceptance.
+	ApprovalAuthorizer toolapproval.ResolveAuthorizer
+
 	// SkipCatalog disables the tool-catalog band (search cache,
 	// builtins, pause Coordinator, OAuth providers, approval gates, MCP
 	// attach, executor). Catalog / Coordinator / Gates / OAuthProviders
@@ -163,6 +186,30 @@ type Stack struct {
 	Tasks     tasks.TaskRegistry
 	Sessions  *sessions.Registry
 	Agents    *agentregistry.Registry
+
+	// Telemetry is the canonical redactor-mandatory structured Logger
+	// (RFC §6.14), constructed with the bus-paired emitter so
+	// Logger.Error emits the slog record AND a `runtime.error` bus
+	// event. Always non-nil after a successful Assemble (Phase 111f,
+	// D-203). The Options.Logger slog logger remains the BOOT logger
+	// (the pre-redactor bootstrap window + subsystem wiring lines);
+	// request-scoped emission goes through this Logger.
+	Telemetry *telemetry.Logger
+
+	// Tracer is the canonical OTel tracer (RFC §6.14). Spans are a
+	// derivation of the event bus: the assembly starts
+	// telemetry.BridgeBusToTracer alongside the metrics bridge.
+	// Always non-nil after a successful Assemble; with no collector
+	// configured the noop exporter drops the spans (in-process
+	// propagation still works).
+	Tracer *telemetry.Tracer
+
+	// RunErrorHandler is the production engine run-error handler
+	// (Phase 111f, D-203): it routes the structured engine.RunError
+	// through Telemetry.Error so a terminal node failure emits the
+	// paired `runtime.error` bus event. Flow composition forwards it
+	// via `flow.WithRunErrorHandler(stack.RunErrorHandler)`.
+	RunErrorHandler engine.RunErrorHandler
 
 	// LLM / LLMSnapshot are populated when cfg.LLM.Driver (or
 	// Options.LLMSnapshot) names a driver. LLMSnapshot is the resolved
@@ -256,6 +303,35 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.Bus = bus
 	stack.closers = append(stack.closers, bus.Close)
 
+	// Phase 111f (D-203): the canonical telemetry Logger — redactor-
+	// mandatory, identity-attributed, bus-paired (RFC §6.14:
+	// "Logger.Error emits both an slog record AND a paired
+	// runtime.error bus event"). Constructed the moment the redactor +
+	// bus exist; the bare Options.Logger remains only the bootstrap /
+	// wiring logger.
+	tlog, err := telemetry.New(cfg.Telemetry, red,
+		append([]telemetry.Option{telemetry.WithBusEmitter(televentbus.New(bus))}, opts.TelemetryOptions...)...)
+	if err != nil {
+		return stack, fmt.Errorf("telemetry logger: %w", err)
+	}
+	stack.Telemetry = tlog
+
+	// Phase 111f (D-203): the production engine run-error handler —
+	// `engine.WithRunErrorHandler`\'s godoc made true. Flow composition
+	// forwards it via `flow.WithRunErrorHandler(stack.RunErrorHandler)`
+	// so a terminal node failure reaches Telemetry.Error and the
+	// paired runtime.error bus event.
+	stack.RunErrorHandler = func(hctx context.Context, re *engine.RunError) {
+		if re == nil {
+			return
+		}
+		tlog.Error(hctx, "engine: run failed",
+			slog.String("node", re.NodeName),
+			slog.String("code", string(re.Code)),
+			slog.String("error", re.Message),
+		)
+	}
+
 	// Phase 56 / 72f: the MetricsRegistry — metrics are a derivation of
 	// the event bus (D-082). BridgeBusToMetrics fans every bus event
 	// into the registry's counter so `metrics.snapshot` projects live
@@ -273,6 +349,24 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		return stack, fmt.Errorf("telemetry metrics bridge: %w", err)
 	}
 	stack.closers = append(stack.closers, func(context.Context) error { metricsBridgeStop(); return nil })
+
+	// Phase 55 / 111f (D-203): the OTel tracer + the bus→tracer bridge
+	// — traces become a first-class derivation of the event bus,
+	// symmetric with metrics (brief 06). Exporter selection follows
+	// cfg.Telemetry.OTelEndpoint (noop without a collector); the
+	// production filter scopes the bridge to the canonical lifecycle
+	// pairs so a chatty bus never becomes span flood.
+	tracer, tracerShutdown, err := telemetry.NewTracer(cfg.Telemetry, opts.TracerOptions...)
+	if err != nil {
+		return stack, fmt.Errorf("telemetry tracer: %w", err)
+	}
+	stack.Tracer = tracer
+	stack.closers = append(stack.closers, tracerShutdown)
+	traceBridgeStop, err := telemetry.BridgeBusToTracer(ctx, bus, tracer, telemetry.DefaultTraceBridgeFilter())
+	if err != nil {
+		return stack, fmt.Errorf("telemetry trace bridge: %w", err)
+	}
+	stack.closers = append(stack.closers, func(context.Context) error { traceBridgeStop(); return nil })
 
 	artStore, err := artifacts.Open(ctx, cfg.Artifacts)
 	if err != nil {
@@ -603,11 +697,21 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// loud (CLAUDE.md §13 amendment). Empty entries = no-op.
 	gates := make(map[string]*toolapproval.ApprovalGate)
 	if len(cfg.Tools.Entries) > 0 {
+		// Phase 111f (D-203): the injected resolve-privilege seam. The
+		// runtime-vocabulary default admits the steering bridge (the
+		// run\'s own identity) and control-scoped operators; the
+		// serving binary injects the Protocol-side adapter on top so
+		// wire-scoped resolvers keep today\'s acceptance.
+		authorizer := opts.ApprovalAuthorizer
+		if authorizer == nil {
+			authorizer = toolapproval.NewIdentityAuthorizer()
+		}
 		b := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
 			Catalog:        toolCat,
 			Coordinator:    coord,
 			Bus:            stack.Bus,
 			Redactor:       stack.Redactor,
+			Authorizer:     authorizer,
 			OAuthProviders: providers,
 			AppliedGates:   gates,
 		})

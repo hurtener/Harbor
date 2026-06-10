@@ -106,6 +106,12 @@ var (
 	// processes the approval-request payload before emission
 	// (CLAUDE.md §7 rule 6).
 	ErrRedactorRequired = errors.New("catalog: audit.Redactor required when entries declare approval")
+	// ErrAuthorizerRequired — Apply was called with no Authorizer and
+	// at least one entry declares an approval policy. The authorizer
+	// is the gate\'s injected resolve-privilege seam (Phase 111f,
+	// D-203); a gate with no resolve privilege check is a
+	// misconfiguration, not a permissive mode.
+	ErrAuthorizerRequired = errors.New("catalog: approval.ResolveAuthorizer required when entries declare approval")
 	// ErrToolNotRegistered — an `entries[].name` did not resolve to a
 	// registered tool in the catalog. The error message names the
 	// offending tool name + lists currently-registered names so the
@@ -152,6 +158,13 @@ type Deps struct {
 	// emission. Mandatory when any entry declares approval; ignored
 	// otherwise.
 	Redactor audit.Redactor
+	// Authorizer is the resolve-privilege seam threaded into every
+	// constructed ApprovalGate (Phase 111f, D-203). Mandatory when
+	// any entry declares approval; ignored otherwise. The runtime
+	// assembly passes the runtime-vocabulary default
+	// (`approval.NewIdentityAuthorizer()`) unless the caller injects
+	// the Protocol-side adapter for wire-driven resolution.
+	Authorizer approval.ResolveAuthorizer
 	// OAuthProviders maps the operator-facing provider name (the
 	// string under `entries[].oauth.provider`) to a constructed
 	// `auth.OAuthProvider`. An entry referencing a name not in this
@@ -245,6 +258,9 @@ func (b *Builder) Apply(ctx context.Context) error {
 		}
 		if b.deps.Redactor == nil {
 			return ErrRedactorRequired
+		}
+		if b.deps.Authorizer == nil {
+			return ErrAuthorizerRequired
 		}
 	}
 	if needsOAuth && len(b.deps.OAuthProviders) == 0 {
@@ -352,6 +368,7 @@ func (b *Builder) wrap(_ context.Context, e config.ToolEntryConfig, d tools.Tool
 			Coordinator: b.deps.Coordinator,
 			Bus:         b.deps.Bus,
 			Redactor:    b.deps.Redactor,
+			Authorizer:  b.deps.Authorizer,
 		})
 		if err != nil {
 			return tools.ToolDescriptor{}, fmt.Errorf("approval.NewApprovalGate: %w", err)

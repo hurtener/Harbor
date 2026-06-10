@@ -864,6 +864,19 @@ func (rl *RunLoop) awaitResumeSignal(ctx, runCtx context.Context, inbox *Inbox, 
 	recheck := time.NewTicker(pauseStatusRecheckInterval)
 	defer recheck.Stop()
 
+	// Close the subscribe-after-publish window: the sweeper may have
+	// reaped the pause between the pause request and the subscription
+	// established above — a bus wake published before the subscription
+	// landed is never delivered, leaving only the coarse ticker. One
+	// immediate Status check at park entry makes the timeout wake
+	// delivery-independent (found as a CI-only flake in the Phase 111f
+	// combination: TestRun_PauseTimeout_BusWake missed the wake and hit
+	// the 30s backstop past the test's 5s bound).
+	if rl.pauseTimedOut(runCtx, token) {
+		join()
+		return true, nil
+	}
+
 	for {
 		select {
 		case werr := <-waitDone:

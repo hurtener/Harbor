@@ -14,8 +14,8 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
-	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -44,22 +44,17 @@ func mkTestBus(t *testing.T, red audit.Redactor) events.EventBus {
 	return b
 }
 
-func mkAdminCtx(t *testing.T, id identity.Identity) context.Context {
+// mkControlScopeCtx builds an elevated-operator ctx: identity +
+// the `registry.WithControlScope` claim the default
+// IdentityAuthorizer accepts (Phase 111f, D-203 — the runtime-
+// vocabulary replacement for the pre-seam protocol-scope ctx).
+func mkControlScopeCtx(t *testing.T, id identity.Identity) context.Context {
 	t.Helper()
 	base, err := identity.With(context.Background(), id)
 	if err != nil {
 		t.Fatalf("identity.With: %v", err)
 	}
-	return protocolauth.WithScopes(base, []protocolauth.Scope{protocolauth.ScopeAdmin})
-}
-
-func mkConsoleFleetCtx(t *testing.T, id identity.Identity) context.Context {
-	t.Helper()
-	base, err := identity.With(context.Background(), id)
-	if err != nil {
-		t.Fatalf("identity.With: %v", err)
-	}
-	return protocolauth.WithScopes(base, []protocolauth.Scope{protocolauth.ScopeConsoleFleet})
+	return agentregistry.WithControlScope(base)
 }
 
 func mkPlainCtx(t *testing.T, id identity.Identity) context.Context {
@@ -81,6 +76,7 @@ func mkGate(t *testing.T, policy ApprovalPolicy) (*ApprovalGate, events.EventBus
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    red,
+		Authorizer:  NewIdentityAuthorizer(),
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
@@ -132,7 +128,7 @@ func TestNewApprovalGate_RejectsNilPolicy(t *testing.T) {
 	red := patternsAudit.New()
 	coord := pauseresume.New()
 	bus := mkTestBus(t, red)
-	_, err := NewApprovalGate(GateDeps{Coordinator: coord, Bus: bus, Redactor: red})
+	_, err := NewApprovalGate(GateDeps{Coordinator: coord, Bus: bus, Redactor: red, Authorizer: NewIdentityAuthorizer()})
 	if !errors.Is(err, ErrPolicyRequired) {
 		t.Fatalf("nil Policy: got %v want ErrPolicyRequired", err)
 	}
@@ -141,7 +137,7 @@ func TestNewApprovalGate_RejectsNilPolicy(t *testing.T) {
 func TestNewApprovalGate_RejectsNilCoordinator(t *testing.T) {
 	red := patternsAudit.New()
 	bus := mkTestBus(t, red)
-	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Bus: bus, Redactor: red})
+	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Bus: bus, Redactor: red, Authorizer: NewIdentityAuthorizer()})
 	if !errors.Is(err, ErrCoordinatorRequired) {
 		t.Fatalf("nil Coordinator: got %v want ErrCoordinatorRequired", err)
 	}
@@ -150,7 +146,7 @@ func TestNewApprovalGate_RejectsNilCoordinator(t *testing.T) {
 func TestNewApprovalGate_RejectsNilBus(t *testing.T) {
 	red := patternsAudit.New()
 	coord := pauseresume.New()
-	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Coordinator: coord, Redactor: red})
+	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Coordinator: coord, Redactor: red, Authorizer: NewIdentityAuthorizer()})
 	if !errors.Is(err, ErrBusRequired) {
 		t.Fatalf("nil Bus: got %v want ErrBusRequired", err)
 	}
@@ -160,9 +156,19 @@ func TestNewApprovalGate_RejectsNilRedactor(t *testing.T) {
 	red := patternsAudit.New()
 	coord := pauseresume.New()
 	bus := mkTestBus(t, red)
-	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus})
+	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus, Authorizer: NewIdentityAuthorizer()})
 	if !errors.Is(err, ErrRedactorRequired) {
 		t.Fatalf("nil Redactor: got %v want ErrRedactorRequired", err)
+	}
+}
+
+func TestNewApprovalGate_RejectsNilAuthorizer(t *testing.T) {
+	red := patternsAudit.New()
+	bus := mkTestBus(t, red)
+	coord := pauseresume.New()
+	_, err := NewApprovalGate(GateDeps{Policy: AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus, Redactor: red})
+	if !errors.Is(err, ErrAuthorizerRequired) {
+		t.Fatalf("nil Authorizer: got %v want ErrAuthorizerRequired", err)
 	}
 }
 
@@ -294,6 +300,7 @@ func TestRunGuarded_RedactorError_FailsLoud(t *testing.T) {
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    failingRedactor{err: boom},
+		Authorizer:  NewIdentityAuthorizer(),
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
@@ -358,7 +365,7 @@ func TestRunGuarded_ApproveRoundTrip(t *testing.T) {
 	token := pauseresume.Token(payload.PauseToken)
 
 	// Resolve as admin.
-	if err := g.ResolveApproval(mkAdminCtx(t, testID), token, DecisionApprove, "looks ok"); err != nil {
+	if err := g.ResolveApproval(mkControlScopeCtx(t, testID), token, DecisionApprove, "looks ok"); err != nil {
 		t.Fatalf("ResolveApproval: %v", err)
 	}
 
@@ -426,7 +433,7 @@ func TestRunGuarded_RejectRoundTrip(t *testing.T) {
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	if err := g.ResolveApproval(mkConsoleFleetCtx(t, testID), token, DecisionReject, "not approved"); err != nil {
+	if err := g.ResolveApproval(mkControlScopeCtx(t, testID), token, DecisionReject, "not approved"); err != nil {
 		t.Fatalf("ResolveApproval: %v", err)
 	}
 
@@ -499,9 +506,15 @@ func TestRunGuarded_CtxCancel_BeforeResolution(t *testing.T) {
 	}
 }
 
-// --- ResolveApproval scope gating -----------------------------------------
+// --- ResolveApproval authorization gating ----------------------------------
 
-func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
+// TestResolveApproval_RejectsUnauthorizedCaller is the fail-closed
+// gate for the Phase 111f authorizer seam (D-203): a resolving ctx
+// with NEITHER the pause\'s originating identity NOR the control-scope
+// claim is rejected with ErrResolveForbidden — the runtime-vocabulary
+// replacement for the pre-seam protocol-scope rejection. The pending
+// entry stays untouched so an authorized resolver can still land.
+func TestResolveApproval_RejectsUnauthorizedCaller(t *testing.T) {
 	g, bus := mkGate(t, AlwaysDenyPolicy{})
 	requestedSub, cancelReq := subscribeTo(t, bus, testID, EventTypeToolApprovalRequested)
 	defer cancelReq()
@@ -518,17 +531,25 @@ func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	// Unscoped ctx — no admin / console:fleet claim. The protocol/auth
-	// middleware is the only thing that sets scopes; a ctx that has
-	// not been through it carries no scopes.
-	err := g.ResolveApproval(mkPlainCtx(t, testID), token, DecisionApprove, "")
-	if !errors.Is(err, ErrApprovalScopeRequired) {
-		t.Fatalf("unscoped Resolve: got %v want ErrApprovalScopeRequired", err)
+	// Foreign identity, no control-scope claim: the default
+	// IdentityAuthorizer fails closed.
+	foreign := identity.Identity{TenantID: "tX", UserID: "uX", SessionID: "sX"}
+	err := g.ResolveApproval(mkPlainCtx(t, foreign), token, DecisionApprove, "")
+	if !errors.Is(err, ErrResolveForbidden) {
+		t.Fatalf("unauthorized Resolve: got %v want ErrResolveForbidden", err)
 	}
 
-	// Clean up the still-pending entry by approving as admin.
-	if err := g.ResolveApproval(mkAdminCtx(t, testID), token, DecisionApprove, ""); err != nil {
-		t.Fatalf("admin Resolve: %v", err)
+	// A ctx with NO identity and no claim is rejected too.
+	err = g.ResolveApproval(context.Background(), token, DecisionApprove, "")
+	if !errors.Is(err, ErrResolveForbidden) {
+		t.Fatalf("identity-free Resolve: got %v want ErrResolveForbidden", err)
+	}
+
+	// The rejected attempts left the pending entry intact: the
+	// ORIGINATING identity (the steering-bridge shape — no elevation
+	// ceremony) resolves it.
+	if err := g.ResolveApproval(mkPlainCtx(t, testID), token, DecisionApprove, ""); err != nil {
+		t.Fatalf("originating-identity Resolve: %v", err)
 	}
 }
 
@@ -536,7 +557,7 @@ func TestResolveApproval_RejectsUnscopedCaller(t *testing.T) {
 
 func TestResolveApproval_RejectsPendingDecision(t *testing.T) {
 	g, _ := mkGate(t, AlwaysDenyPolicy{})
-	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("x"), DecisionPending, "")
+	err := g.ResolveApproval(mkControlScopeCtx(t, testID), pauseresume.Token("x"), DecisionPending, "")
 	if !errors.Is(err, ErrInvalidDecision) {
 		t.Fatalf("Pending decision: got %v want ErrInvalidDecision", err)
 	}
@@ -553,6 +574,7 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 	coord := pauseresume.New()
 	g, err := NewApprovalGate(GateDeps{
 		Policy: AlwaysDenyPolicy{}, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer: NewIdentityAuthorizer(),
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
@@ -585,13 +607,13 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 
 	// Tenant B admin tries to resolve — Coordinator scope check
 	// rejects via ErrScopeMismatch.
-	err = g.ResolveApproval(mkAdminCtx(t, idB), token, DecisionApprove, "")
+	err = g.ResolveApproval(mkControlScopeCtx(t, idB), token, DecisionApprove, "")
 	if !errors.Is(err, pauseresume.ErrScopeMismatch) {
 		t.Fatalf("cross-identity Resolve: got %v want ErrScopeMismatch", err)
 	}
 
 	// Clean up by resolving from the correct identity.
-	if err := g.ResolveApproval(mkAdminCtx(t, idA), token, DecisionApprove, ""); err != nil {
+	if err := g.ResolveApproval(mkControlScopeCtx(t, idA), token, DecisionApprove, ""); err != nil {
 		t.Fatalf("correct-identity Resolve: %v", err)
 	}
 }
@@ -600,7 +622,7 @@ func TestResolveApproval_CrossIdentity_Rejected(t *testing.T) {
 
 func TestResolveApproval_UnknownToken(t *testing.T) {
 	g, _ := mkGate(t, AlwaysDenyPolicy{})
-	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("not-real"), DecisionApprove, "")
+	err := g.ResolveApproval(mkControlScopeCtx(t, testID), pauseresume.Token("not-real"), DecisionApprove, "")
 	if !errors.Is(err, ErrApprovalNotFound) {
 		t.Fatalf("unknown token: got %v want ErrApprovalNotFound", err)
 	}
@@ -623,11 +645,11 @@ func TestResolveApproval_DoubleResolve_NotFoundOnSecondCall(t *testing.T) {
 	payload, _ := ev.Payload.(ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	if err := g.ResolveApproval(mkAdminCtx(t, testID), token, DecisionApprove, ""); err != nil {
+	if err := g.ResolveApproval(mkControlScopeCtx(t, testID), token, DecisionApprove, ""); err != nil {
 		t.Fatalf("first Resolve: %v", err)
 	}
 	// Second resolve — entry has been removed from the pending map.
-	err := g.ResolveApproval(mkAdminCtx(t, testID), token, DecisionApprove, "")
+	err := g.ResolveApproval(mkControlScopeCtx(t, testID), token, DecisionApprove, "")
 	if !errors.Is(err, ErrApprovalNotFound) {
 		t.Fatalf("second Resolve: got %v want ErrApprovalNotFound", err)
 	}
@@ -659,7 +681,7 @@ func TestRunGuarded_AfterClose_ReturnsClosed(t *testing.T) {
 func TestResolveApproval_AfterClose_ReturnsClosed(t *testing.T) {
 	g, _ := mkGate(t, AlwaysDenyPolicy{})
 	_ = g.Close(context.Background())
-	err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token("x"), DecisionApprove, "")
+	err := g.ResolveApproval(mkControlScopeCtx(t, testID), pauseresume.Token("x"), DecisionApprove, "")
 	if !errors.Is(err, ErrGateClosed) {
 		t.Fatalf("post-close Resolve: got %v want ErrGateClosed", err)
 	}
@@ -688,7 +710,7 @@ func TestRunGuarded_TaggedPolicy_TriggersOnTag(t *testing.T) {
 	if payload.Reason != "policy: tagged" {
 		t.Fatalf("Reason: got %q want %q", payload.Reason, "policy: tagged")
 	}
-	if err := g.ResolveApproval(mkAdminCtx(t, testID), pauseresume.Token(payload.PauseToken), DecisionApprove, ""); err != nil {
+	if err := g.ResolveApproval(mkControlScopeCtx(t, testID), pauseresume.Token(payload.PauseToken), DecisionApprove, ""); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	<-resCh
