@@ -53,6 +53,7 @@ the Protocol `approve` / `reject` methods, the Console intervention
 queue, or in-process:
 
 ```go
+// steering = github.com/hurtener/Harbor/sdk/steering
 inbox, _ := steeringRegistry.Lookup(q) // q = the run's identity.Quadruple
 _ = inbox.Enqueue(steering.ControlEvent{
     Type:         steering.ControlApprove, // or ControlReject
@@ -137,7 +138,7 @@ it on your own mux at whatever path matches your configured
 
 ```go
 import (
-    toolauth "github.com/hurtener/Harbor/internal/tools/auth"
+    toolauth "github.com/hurtener/Harbor/sdk/tools/auth"
 )
 
 mux := http.NewServeMux()
@@ -171,26 +172,31 @@ intervention queue (D-199).
 
 ## Durable pauses + the pause lifecycle (Phase 111c)
 
-### Construct a durable Coordinator
+### Configure a durable Coordinator
 
 Durability rides on the runtime's existing `state.StateStore` (the
-§4.4 persistence seam — D-067; no parallel checkpoint driver). Hand
-the store to the Coordinator and every pause record — including the
-run's serialized trajectory — is checkpointed:
+§4.4 persistence seam — D-067; no parallel checkpoint driver). The
+supported embedding shape is config-driven: point `state` at a durable
+DSN, set the pause knobs, and `assemble.Assemble` builds the
+Coordinator with the bus, the checkpoint store, and the max-park
+ceiling already wired:
 
 ```go
-store, err := state.Open(ctx, config.StateConfig{Driver: "sqlite", DSN: "/var/lib/harbor/state.sqlite"})
-if err != nil { /* fail loud */ }
-
-coord := pauseresume.New(
-    pauseresume.WithBus(bus),                       // pause.requested / pause.resumed on the canonical stream
-    pauseresume.WithCheckpointStore(store),         // pauses survive a Runtime restart
-    pauseresume.WithMaxParkDuration(24*time.Hour),  // 0 = pauses never expire (the default)
-)
+cfg := config.Defaults()                 // github.com/hurtener/Harbor/sdk/config
+cfg.State.Driver = "sqlite"
+cfg.State.DSN = "/var/lib/harbor/state.sqlite"
+cfg.PauseResume.MaxParkDuration = 24 * time.Hour // 0 = pauses never expire (the default)
+cfg.PauseResume.SweepInterval = time.Minute
+// ... llm block etc., then:
+stack, err := assemble.Assemble(ctx, cfg, assemble.Options{})
 ```
 
-The assembled runtime (`assemble.Assemble`) wires all three for you
-from `harbor.yaml` — the snippet above is the headless-SDK shape.
+Every pause record — including the run's serialized trajectory — is
+checkpointed through that store. The pause Coordinator itself is
+deliberately NOT part of the `sdk/` facade (D-205's curation call):
+the assembled stack is the supported construction path, in-module and
+external alike. The binary's `harbor.yaml` carries the same two knobs
+(see below).
 
 ### What survives a restart
 
@@ -204,10 +210,11 @@ checkpoint is deleted, and a later Coordinator sees
 
 What fails loud (never silently degrades):
 
-- **`trajectory.ErrUnserializable`** at `Request` time — a pause whose
-  trajectory or payload carries a non-JSON-encodable leaf is rejected
-  before anything is recorded. No half-persisted checkpoint.
-- **`trajectory.ErrToolContextLost`** at `Resume` time — the handle
+- **`planner.ErrUnserializable`** (`sdk/planner`) at `Request` time —
+  a pause whose trajectory or payload carries a non-JSON-encodable
+  leaf is rejected before anything is recorded. No half-persisted
+  checkpoint.
+- **`planner.ErrToolContextLost`** at `Resume` time — the handle
   registry is process-local at V1 (RFC §6.3); a resume that needs a
   handle the restarted process never re-registered fails loud rather
   than resuming with a nil tool context.
@@ -215,17 +222,11 @@ What fails loud (never silently degrades):
 ### Who reaps abandoned pauses
 
 Without a ceiling, a pause nobody answers (or a run cancelled while
-paused) parks forever. `WithMaxParkDuration` + the pause sweeper give
-the lifecycle an end:
-
-```go
-go func() {
-    // Blocks until ctx is cancelled. Cancel + join on shutdown.
-    err := pauseresume.RunSweeper(ctx, coord,
-        pauseresume.WithSweepInterval(time.Minute))
-    if err != nil && !errors.Is(err, context.Canceled) { /* loud */ }
-}()
-```
+paused) parks forever. `max_park_duration` + the pause sweeper give
+the lifecycle an end. With `pauseresume.max_park_duration > 0` and a
+non-zero `sweep_interval`, the assembly starts the sweeper goroutine
+for you and joins it on `stack.Close(ctx)` — there is nothing to wire
+by hand.
 
 Every sweep pass resumes each pause past `PausedAt + max_park_duration`
 with the typed **`timeout`** Decision (D-096): the `pause.resumed`
@@ -239,8 +240,7 @@ process's pause registry. A checkpoint orphaned by a process crash is
 not proactively scanned — it is reaped only after something rehydrates
 it (a `Status` or `Resume` against the restarted process).
 
-In the binary, both knobs come from `harbor.yaml` and the assembly
-starts the sweeper for you:
+In the binary, the same two knobs come from `harbor.yaml`:
 
 ```yaml
 pauseresume:
@@ -248,9 +248,11 @@ pauseresume:
   sweep_interval: 1m     # must be <= max_park_duration when set
 ```
 
-`RunSweeper` fails loud (`ErrSweeperMisconfigured`) against a
+The sweeper fails loud (`ErrSweeperMisconfigured`) against a
 Coordinator with no max-park duration — a sweeper that silently reaps
-nothing forever is the failure mode the error closes.
+nothing forever is the failure mode the error closes. Config
+validation enforces the `sweep_interval <= max_park_duration`
+relationship before the stack ever boots.
 
 ## What is and is NOT automatic (honesty notes)
 

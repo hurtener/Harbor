@@ -71,7 +71,9 @@ assert_grep_present 'events\.RegisterWithDeps\("durable"' internal/events/driver
 
 assert_grep_present 'config\.Defaults\(\)'             docs/recipes/embed-harbor-headless.md 'phase 110d: recipe uses config.Defaults'
 assert_grep_present 'ValidateCore\(\)'                 docs/recipes/embed-harbor-headless.md 'phase 110d: recipe uses ValidateCore'
-assert_grep_present 'internal/drivers/prod'            docs/recipes/embed-harbor-headless.md 'phase 110d: recipe imports the production driver aggregator'
+# Phase 112b (D-206) flipped the recipe to the facade twin
+# sdk/drivers/prod (identical registration set by construction).
+assert_grep_present 'sdk/drivers/prod'                 docs/recipes/embed-harbor-headless.md 'phase 110d: recipe imports the production driver aggregator (sdk facade twin since 112b)'
 assert_grep_present 'assemble\.Assemble\(ctx, cfg'     docs/recipes/embed-harbor-headless.md 'phase 110d: recipe calls assemble.Assemble'
 assert_grep_present 'stack\.RunLoop\.Run\(ctx, steering\.RunSpec' docs/recipes/embed-harbor-headless.md 'phase 110d: recipe drives the run loop'
 assert_grep_present 'planner\.AnswerEnvelope'          docs/recipes/embed-harbor-headless.md 'phase 110d: recipe reads the AnswerEnvelope'

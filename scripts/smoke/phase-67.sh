@@ -24,6 +24,12 @@
 #      `replace github.com/hurtener/Harbor => ${ROOT}` directive. Catches
 #      regressions where the template's go.mod or imports drift away
 #      from a buildable shape (Wave 11 §17.5 audit, finding F3).
+#
+# Scope note (Phase 112b, D-206): assertion 6 covers the TOOLLESS
+# template shape. The tool-declaring shape (--from-config with
+# built-in + custom tools — the SDK friction audit's CI blind spot) is
+# owned by scripts/smoke/phase-112b.sh, which builds it as an EXTERNAL
+# module; it is deliberately not duplicated here (§4.3 call).
 
 set -euo pipefail
 

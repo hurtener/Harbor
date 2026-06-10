@@ -88,16 +88,15 @@ harbor scaffold --name my-first-agent
 ```text
 my-first-agent/
 ├── go.mod
-├── go.sum
-├── main.go                     # entry point — wires the agent
-├── tools/                      # in-process tool implementations
-│   └── hello/hello.go          # one example tool (typed args, typed result)
-├── harbor.yaml                 # the same yaml init dropped
-├── AGENTS.md / CLAUDE.md / README.md
-└── .gitignore
+├── README.md
+├── agent.go                    # your agent code (worked EchoAgent + RegisterTools)
+├── agent_test.go               # harbortest-driven smoke test
+├── tools/                      # one typed stub per tools.custom[] yaml entry
+│   └── <name>.go / <name>_test.go
+└── harbor.yaml                 # the same yaml init dropped (copied verbatim)
 ```
 
-The example `hello` tool exercises the typed-tool contract — input struct, output struct, handler function. Use it as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
+When the yaml declares tools (`tools.built_in` / `tools.custom`), `agent.go` gains a generated `RegisterTools` function and each custom tool gets a typed stub (input struct, output struct, handler) under `tools/`. The generated imports are the public `sdk/` facade paths, so the project builds as a standalone external module. Use the stubs as the template for your real tools (see [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md)).
 
 ## 5. Boot the runtime
 

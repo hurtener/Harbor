@@ -27,5 +27,9 @@ API, read the godoc.
 
 - Shell snippets assume `bin/harbor` is on `PATH` (run `make build`
   first) or invoke it as `./bin/harbor`.
-- Go snippets assume the module `github.com/hurtener/Harbor`.
+- Go snippets import the public `sdk/` facade
+  (`github.com/hurtener/Harbor/sdk/...`, RFC §3.6) — they compile from
+  an external Go module and in-tree alike. The standing Phase 112b
+  preflight gate (`scripts/smoke/phase-112b.sh`) keeps external
+  buildability true.
 - Anything destructive or production-sensitive is called out inline.

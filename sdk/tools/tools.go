@@ -46,6 +46,23 @@ type (
 	ValidateMode = internal.ValidateMode
 	// PlannerView is the identity-filtered, planner-facing catalog view.
 	PlannerView = internal.PlannerView
+	// ErrorClass classifies a tool failure for the policy shell
+	// (retry-vs-stop decisions). Re-exported in Phase 112b (D-206):
+	// harbortest.SimulateFailure takes one, so external test authors
+	// must be able to name the class values.
+	ErrorClass = internal.ErrorClass
+)
+
+// ErrorClass values.
+const (
+	// ErrClassTransient — retryable infrastructure failures.
+	ErrClassTransient = internal.ErrClassTransient
+	// ErrClassTimeout — the per-attempt deadline elapsed.
+	ErrClassTimeout = internal.ErrClassTimeout
+	// ErrClass5xx — server-side 5xx failures.
+	ErrClass5xx = internal.ErrClass5xx
+	// ErrClassPermanent — non-retryable failures.
+	ErrClassPermanent = internal.ErrClassPermanent
 )
 
 // LoadingMode values.
