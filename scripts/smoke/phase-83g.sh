@@ -19,18 +19,16 @@ source "scripts/smoke/common.sh"
 # ----------------------------------------------------------------------------
 # Production consumer wiring.
 # ----------------------------------------------------------------------------
-assert_grep_present 'mcpdrv\.New\b' "cmd/harbor/cmd_dev.go" \
-    "bootDevStack calls mcpdrv.New per cfg.Tools.MCPServers (D-150)"
-assert_grep_present 'mcpdrv\.NewRegistry\b' "cmd/harbor/cmd_dev.go" \
-    "bootDevStack constructs the MCP Registry (D-150)"
-assert_grep_present 'attachDevMCPServer' "cmd/harbor/cmd_dev.go" \
-    "attachDevMCPServer helper is the per-server wiring entry point"
-
-# ----------------------------------------------------------------------------
-# Devstack mirror (D-094 source-of-truth invariant).
-# ----------------------------------------------------------------------------
-assert_grep_present 'attachDevStackMCPServer' "harbortest/devstack/devstack.go" \
-    "devstack mirror carries the MCP attachment helper (D-094)"
+# Phase 110d (D-197): the per-server attach helper was PROMOTED from
+# cmd/harbor's attachDevMCPServer (and devstack's drifted mirror) to
+# `mcpdrv.Attach`, invoked from the ONE assembly fan-out
+# (internal/runtime/assemble) both callers wrap.
+assert_grep_present 'func Attach\(ctx context\.Context, ms config\.MCPServerConfig' "internal/tools/drivers/mcp/attach.go" \
+    "mcpdrv.Attach is the per-server wiring entry point (D-150 → D-197 promotion)"
+assert_grep_present 'mcpdrv\.NewRegistry\b' "internal/runtime/assemble/assemble.go" \
+    "the assembly constructs the MCP Registry (D-150 via D-197)"
+assert_grep_present 'mcpdrv\.Attach\(' "internal/runtime/assemble/assemble.go" \
+    "the assembly attaches each cfg.Tools.MCPServers entry via mcpdrv.Attach"
 assert_grep_present 'MCPRegistry \*mcpdrv.Registry' "harbortest/devstack/devstack.go" \
     "DevStack exposes the MCPRegistry for tests to inspect"
 

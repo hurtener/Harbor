@@ -200,7 +200,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Shipped (V1.1.x) |
 |110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Shipped (V1.1.x) |
 |110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Shipped (V1.1.x) |
-|110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Pending (V1.1.x) |
+|110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Shipped (V1.1.x) |
 |111a| Governance enforcement assembly (`identity_tiers` actually enforce; `SetFactory`'s first production caller) | internal/governance + cmd/harbor + harbortest | §6.15, §6.5, §6.11 | 32, 36a, 36b, 110c (soft) | 90% | Pending (V1.1.x) |
 |111b| Tool-OAuth completion leg (`auth.CallbackHandler` + full pause→callback→resume choreography E2E) | internal/tools/auth + cmd/harbor | §6.4, §3.3, §6.3 | 30, 50, 31, D-192 fix | 85% | Pending (V1.1.x) |
 |111c| Durable pauses + pause lifecycle (checkpoint-store wiring, trajectory threading, max-park sweeper → `DecisionTimeout`'s first producer) | internal/runtime/pauseresume + internal/runtime/steering + cmd/harbor | §3.3, §6.3, §6.11 | 50, 51, D-192 fix | 90% | Pending (V1.1.x) |
@@ -1148,21 +1148,28 @@ RFC-level program for which 110d is the named prerequisite.
   `internal/runtime/dispatch`) references it at Stage 1 merge (parallel worktrees).
   RFC §6.5, §6.6, §6.7, §9, §10. Deps: 83l, 83f, 107d, 107e. Stage 1, parallel with
   110a. See `docs/plans/phase-110c-config-projection-exporters.md`.
-- **110d — Assembly promotion (D-197 reserved).** Promotes devstack's `tryAssemble`
-  shape into an exported, error-returning
+- **110d — Assembly promotion (D-197).** SHIPPED. Promoted devstack's `tryAssemble`
+  shape into the exported, error-returning
   `assemble.Assemble(ctx, *config.Config, Options) (*Stack, error)` in
-  `internal/runtime/assemble`; `bootDevStack` (~700 ordered lines) and
-  `devstack.Assemble(t, ...)` both become thin wrappers — collapsing the last of the
-  D-094 mirror. Promotes the remaining cmd-local assembly legs: an exported MCP attach
-  helper next to the driver INCLUDING the config→`ToolPolicy` projection (devstack's
-  copy drops policy projection silently today — fixed by conversion),
-  `auth.BuildProviders` (OAuth KEK→sealer→tokenstore→provider chain), and
-  `events.OpenWith(ctx, cfg, redactor, Deps{State})` so the durable event driver can
-  share the runtime's StateStore through the factory path. Ships
-  `docs/recipes/embed-harbor-headless.md` as its acceptance-gated recipe (exercised by
-  an integration test — the audit: "until the promotions land, the recipe cannot
-  honestly be written"). RFC §6.4, §6.13, §9, §10. Deps: 110a, 110b, 110c, 64, 83g,
-  30, 57. Stage 2, parallel with 110b. See
+  `internal/runtime/assemble`; `bootDevStack` and `devstack.Assemble(t, ...)` are
+  thin wrappers — the last of the D-094 subsystem-wiring mirror is collapsed.
+  Promoted the remaining cmd-local assembly legs: `mcpdrv.Attach` next to the driver
+  INCLUDING the config→`ToolPolicy` projection (the devstack silent drop is closed —
+  regression pinned in `phase83g`'s real-stdio-fixture E2E + the attach unit E2E),
+  `auth.BuildProviders` (OAuth KEK→sealer→tokenstore→provider chain; per §4.3 it
+  returns the provider map only — approval gates remain the catalog Builder's
+  output, which the assembly invokes), and
+  `events.OpenWith(ctx, cfg, redactor, Deps{State})` + `events.RegisterWithDeps` so
+  the durable event driver shares the runtime's StateStore through the factory path
+  (recorded reconciliation: the assembly opens State BEFORE the bus so the shared
+  store outlives it — production's pre-110d bus-first order swapped, behaviour
+  preserved). The per-task run-loop *driver* (the `task.spawned` subscriber) stays
+  per-caller (110b's seam); headless embedders drive `Stack.RunLoop.Run` directly.
+  Ships `docs/recipes/embed-harbor-headless.md`, acceptance-gated by
+  `test/integration/phase110d_assemble_test.go` (recipe path on real drivers +
+  durable-store sharing + identity propagation + 2 failure modes + N=10
+  Assemble/Close cycles + N=100 concurrent runs on one stack). RFC §6.4, §6.13, §9,
+  §10. Deps: 110a, 110b, 110c, 64, 83g, 30, 57. Stage 2, parallel with 110b. See
   `docs/plans/phase-110d-assembly-promotion.md`.
 
 #### 111-band — Wave C: finish (or formally defer) the half-shipped primitives (SDK friction audit §3)

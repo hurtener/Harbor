@@ -6,11 +6,13 @@ package devstack
 
 import "github.com/hurtener/Harbor/internal/config"
 
-// TryAssemble re-exports the package-private tryAssemble so unit
-// tests can drive the error paths directly. The contract matches
-// the production Assemble: a non-nil error leaves the returned
-// DevStack with whatever subsystems had already opened — the
-// caller's deferred Close drains them cleanly.
+// TryAssemble re-exports the package-private assembleWith (Phase 110d
+// / D-197 — the thin error-returning core over
+// `internal/runtime/assemble.Assemble`; the pre-110d `tryAssemble`
+// mirror body is deleted) so unit tests can drive the error paths
+// directly. The contract matches the production Assemble: a non-nil
+// error leaves the returned DevStack with whatever subsystems had
+// already opened — the caller's deferred Close drains them cleanly.
 //
 // Phase 110c (D-196): the former PlannerConfigFromConfig re-export is
 // gone — the package-private projection it aliased was deleted when
@@ -20,5 +22,5 @@ import "github.com/hurtener/Harbor/internal/config"
 // which is strictly stronger: reflection over EVERY config field, not
 // a hand-listed golden.
 func TryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
-	return tryAssemble(cfg, opts)
+	return assembleWith(cfg, opts)
 }

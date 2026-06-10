@@ -33,8 +33,10 @@ assert_grep_present '"\.db"' "cmd/harbor/cmd_dev_hot_reload.go" \
 # ----------------------------------------------------------------------------
 assert_grep_present 'draftStore\.Close' "cmd/harbor/cmd_dev.go" \
     "bootDevStack registers draftStore.Close in the closer chain (item 3)"
-assert_grep_present 'agentRegistry\.Close' "cmd/harbor/cmd_dev.go" \
-    "bootDevStack registers agentRegistry.Close in the closer chain (item 3)"
+# Phase 110d (D-197): the Agent Registry (and its Close) is owned by
+# the promoted assembly the dev binary wraps.
+assert_grep_present 'agentRegistry\.Close' "internal/runtime/assemble/assemble.go" \
+    "the assembly registers agentRegistry.Close in the closer chain (item 3 via D-197)"
 
 # ----------------------------------------------------------------------------
 # Item 4 — Skills query keyword extraction.

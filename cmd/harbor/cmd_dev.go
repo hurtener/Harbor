@@ -67,7 +67,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -83,30 +82,24 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/hurtener/Harbor/internal/artifacts"
-	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
-	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
-	"github.com/hurtener/Harbor/internal/runtime/dispatch"
+	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
-	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
-	"github.com/hurtener/Harbor/internal/runtime/registry"
 	agentsprotocol "github.com/hurtener/Harbor/internal/runtime/registry/protocol"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
@@ -116,21 +109,12 @@ import (
 	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
-	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
-	"github.com/hurtener/Harbor/internal/skills"
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver
-	"github.com/hurtener/Harbor/internal/state"
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
-	"github.com/hurtener/Harbor/internal/telemetry"
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
-	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
-	"github.com/hurtener/Harbor/internal/tools/builtin"
-	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
-	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
-	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -400,70 +384,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
-	// Construct subsystems in dependency order. Every "close everything
-	// we've opened so far" path is funneled through `closers`.
-	closers := make([]func(context.Context) error, 0, 16)
-	closeAll := func(ctx context.Context) {
-		for i := len(closers) - 1; i >= 0; i-- {
-			if cErr := closers[i](ctx); cErr != nil && opts.logger != nil {
-				opts.logger.Warn("harbor dev: error closing subsystem during boot rollback",
-					slog.String("error", cErr.Error()))
-			}
-		}
-	}
-
-	red, err := audit.Open(ctx, cfg.Audit)
-	if err != nil {
-		return nil, fmt.Errorf("audit: %w", err)
-	}
-	// `audit.Redactor` has no Close in the current interface — nothing
-	// to register here.
-
-	bus, err := events.Open(ctx, cfg.Events, red)
-	if err != nil {
-		return nil, fmt.Errorf("events: %w", err)
-	}
-	closers = append(closers, bus.Close)
-
-	// Phase 56 / 72f: the MetricsRegistry — metrics are a derivation of
-	// the event bus (D-082). The registry is constructed once at boot;
-	// BridgeBusToMetrics fans every bus event into the registry's
-	// counter so `metrics.snapshot` (wired into PostureDeps.Metrics
-	// below) projects live numbers — never an empty stub (§17.6 F3).
-	// An Admin-scope filter feeds the fleet-wide bridge; the bridge
-	// does not widen the isolation boundary (the wire scope is the
-	// caller's responsibility — here a runtime-internal infra consumer).
-	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(cfg.Telemetry)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("telemetry metrics: %w", err)
-	}
-	closers = append(closers, metricsShutdown)
-	metricsBridgeStop, err := telemetry.BridgeBusToMetrics(ctx, bus, metricsReg, events.Filter{Admin: true})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("telemetry metrics bridge: %w", err)
-	}
-	closers = append(closers, func(context.Context) error { metricsBridgeStop(); return nil })
-
-	stateStore, err := state.Open(ctx, cfg.State)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("state: %w", err)
-	}
-	closers = append(closers, stateStore.Close)
-
-	artStore, err := artifacts.Open(ctx, cfg.Artifacts)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("artifacts: %w", err)
-	}
-	closers = append(closers, artStore.Close)
-
 	// LLM seam — fail loud per §13 when no provider configured AND
-	// the operator did not explicitly opt into the mock.
+	// the operator did not explicitly opt into the mock. This gate is
+	// dev-cmd POLICY (the D-089 escape hatch), so it runs BEFORE the
+	// promoted assembly: `assemble.Assemble` itself stays policy-free
+	// (a headless embedder decides its own LLM-requirement posture).
 	if err := validateLLMProvider(cfg, opts.allowMock); err != nil {
-		closeAll(ctx)
 		return nil, fmt.Errorf("llm: %w", err)
 	}
 	// The dev binary blank-imports the mock LLM driver via
@@ -493,194 +419,64 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		llmCfg.Driver = "mock"
 		llmCfg.APIKey = ""
 	}
-	llmClient, err := llm.Open(ctx, llmCfg, llm.Deps{
-		Artifacts: artStore,
-		Bus:       bus,
-	})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("llm: %w", err)
-	}
-	closers = append(closers, llmClient.Close)
 
-	// Memory subsystem (Phase 25a, D-174). The summariser threads
-	// through `memory.Deps.Summarizer`, so ONE `memory.Open` call
-	// serves every driver × strategy — no rolling_summary special-case,
-	// no "only inmem" rejection. The memory open path is configured
-	// even when strategy=none so the runtime has a memory store for
-	// per-session reads.
-	//
-	// The default Summarizer is the agent's configured LLM
-	// (`llmsummarizer.New(llmClient)`) — no separate summariser model,
-	// no hardwiring (constraint #3 — Phase 64 / D-089). It is built
-	// only when the strategy actually needs it (`rolling_summary`); a
-	// nil Summarizer is valid for `none` / `truncation`. A
-	// `rolling_summary` config with no Summarizer fails loud at
-	// `memory.Open` — never a stub fallback (AGENTS.md §13).
-	var memStore memory.MemoryStore
-	if cfg.Memory.Driver != "" {
-		// Exported projection per Phase 110c (D-196) — one
-		// config→snapshot mapping shared with devstack + embedders.
-		memCfg := memory.SnapshotFromConfig(cfg.Memory)
-		var summarizer memory.Summarizer
-		if memCfg.Strategy == memory.StrategyRollingSummary {
-			s, sErr := llmsummarizer.New(llmClient)
-			if sErr != nil {
-				closeAll(ctx)
-				return nil, fmt.Errorf("summarizer: %w", sErr)
+	// Phase 110d (D-197): the config→stack fan-out is the promoted
+	// `internal/runtime/assemble` entry point — bootDevStack is a thin
+	// wrapper that adds only the cmd-only legs (Protocol surfaces, the
+	// listener/mux/CORS band, dev auth, drafts, seeding). The assembly
+	// returns a PARTIAL stack on error so the rollback path drains
+	// whatever opened.
+	stack, err := assemble.Assemble(ctx, cfg, assemble.Options{
+		Logger:      opts.logger,
+		LLMSnapshot: &llmCfg,
+		MCPDefaultIdentity: identity.Identity{
+			TenantID:  DevTenant,
+			UserID:    DevUser,
+			SessionID: DevSession,
+		},
+	})
+	// Every "close everything we've opened so far" path is funneled
+	// through `closers`. The assembled stack's Close runs LAST (its
+	// subsystems opened first); the cmd-only legs appended below close
+	// before it, in reverse order.
+	closers := make([]func(context.Context) error, 0, 8)
+	if stack != nil {
+		closers = append(closers, func(closeCtx context.Context) error { return stack.Close(closeCtx) })
+	}
+	closeAll := func(ctx context.Context) {
+		for i := len(closers) - 1; i >= 0; i-- {
+			if cErr := closers[i](ctx); cErr != nil && opts.logger != nil {
+				opts.logger.Warn("harbor dev: error closing subsystem during boot rollback",
+					slog.String("error", cErr.Error()))
 			}
-			summarizer = s
 		}
-		ms, openErr := memory.Open(ctx, memCfg, memory.Deps{
-			State:      stateStore,
-			Bus:        bus,
-			Summarizer: summarizer,
-		})
-		if openErr != nil {
-			closeAll(ctx)
-			return nil, fmt.Errorf("memory: %w", openErr)
-		}
-		closers = append(closers, ms.Close)
-		memStore = ms
 	}
-	// memStore is consumed by the Phase 73j (D-118) Console Memory page
-	// `memory.*` read routes — wired into transports.NewMux below via
-	// transports.WithMemory. Phase 83f (D-149) also threads it into the
-	// per-task RunLoop driver so the dev binary actually populates
-	// `RunContext.MemoryBlocks` for every run.
-
-	// Phase 83f (D-149): skills are OPTIONAL on the dev binary. When
-	// `skills.driver` is set in harbor.yaml, the dev stack opens the
-	// store and the per-task RunLoop driver hands the planner pre-
-	// retrieved skill bodies via `RunContext.SkillsContext`. Empty
-	// config = no skills opened = SkillsContext stays nil = the
-	// `<skills_context>` prompt wrapper is omitted.
-	var skillStore skills.SkillStore
-	if cfg.Skills.Driver != "" {
-		// Exported projection per Phase 110c (D-196) — one
-		// config→snapshot mapping shared with devstack + embedders.
-		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus})
-		if openErr != nil {
-			closeAll(ctx)
-			return nil, fmt.Errorf("skills: %w", openErr)
-		}
-		closers = append(closers, ss.Close)
-		skillStore = ss
-	}
-
-	taskReg, err := tasks.Open(ctx, tasks.Dependencies{
-		Store:    stateStore,
-		Bus:      bus,
-		Redactor: red,
-		Cfg:      cfg.Tasks,
-	})
 	if err != nil {
 		closeAll(ctx)
-		return nil, fmt.Errorf("tasks: %w", err)
-	}
-	closers = append(closers, taskReg.Close)
-
-	// Tool catalog + Phase 64a catalog wiring (D-090). The dev cmd
-	// constructs an empty catalog; operators register tools either via
-	// in-process Go code (their own embedding harness) or — once
-	// Phase 27/28/29 manifests are loaded — via the configured tool
-	// sources. The Phase 64a wiring step is applied LAST so any
-	// `tools.entries[]` declared in `harbor.yaml` auto-wraps its
-	// matching descriptors with the declared approval / OAuth
-	// middleware. An entry naming a tool that is not registered fails
-	// the boot loud (CLAUDE.md §13 amendment).
-	//
-	// The shared `pauseresume.Coordinator` is the unified pause/resume
-	// primitive (Phase 50 / D-067). Future phases that need to pause
-	// for OAuth or approval read this same Coordinator from
-	// `devStack.coordinator` — there is NEVER a second Coordinator
-	// instance (CLAUDE.md §13).
-	// Phase 107c / D-167 — construct the tool SearchCache + attach it to
-	// the catalog so deferred-tool discovery + the `tool_search` /
-	// `tool_get` meta-tools work. In-memory DSN by default; operators
-	// can override via `tools.search_cache_dsn`. A failure here is
-	// non-fatal: discovery degrades to empty (the meta-tools return
-	// "no results") rather than wedging the boot.
-	searchCacheDSN := ":memory:"
-	if cfg.Tools.SearchCacheDSN != "" {
-		searchCacheDSN = cfg.Tools.SearchCacheDSN
-	}
-	searchCache, scErr := searchcache.New(searchcache.Config{DSN: searchCacheDSN})
-	if scErr != nil {
-		opts.logger.Warn("tools/searchcache: disabled — discovery meta-tools will return empty",
-			"err", scErr.Error(),
-			"dsn", searchCacheDSN)
-		searchCache = nil
-	} else {
-		closers = append(closers, func(_ context.Context) error { return searchCache.Close() })
-	}
-	var catOpts []tools.CatalogOption
-	if searchCache != nil {
-		catOpts = append(catOpts, tools.WithSearchCache(searchCache))
-	}
-	toolCat := tools.NewCatalog(catOpts...)
-	// Phase 83n / D-153 + 107c / D-167 — register opt-in built-in tools
-	// (clock.now, text.echo, plus the 107c meta-tools) BEFORE the
-	// catalog-wiring step so any `tools.entries[]` middleware that names
-	// a built-in resolves cleanly. Empty list is a no-op; an unknown
-	// name fails loud at this boundary. RegisterWith threads the
-	// `skills.SkillStore` so `skill_search` / `skill_get` reach their
-	// backing store instead of nil-derefing on first invocation. The
-	// `artifacts.ArtifactStore` is threaded so the `artifact_fetch`
-	// builtin can resolve refs the runtime tool-executor surfaced as
-	// truncated previews; without this the meta-tool fails loud at
-	// first invocation with the operator-readable nil-store message.
-	if err := builtin.RegisterWith(builtin.RegistryContext{
-		Catalog:       toolCat,
-		SkillStore:    skillStore,
-		ArtifactStore: artStore,
-	}, cfg.Tools.BuiltIn); err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("tools/builtin: %w", err)
-	}
-	// WithBus(bus) is mandatory in production: it is what makes
-	// pause.requested / pause.resumed land on the canonical event
-	// stream so wire consumers (Console, third-party Protocol clients,
-	// integration tests) observe D-096's typed Decision marker. Bare
-	// pauseresume.New() short-circuits emit when bus == nil — the same
-	// shape the Wave 11.5 §17.5 closeout audit flagged as F1.
-	// harbortest/devstack.Assemble carries the matching wiring per
-	// D-094's "helper tracks production" rule.
-	coord := pauseresume.New(pauseresume.WithBus(bus))
-	appliedGates, oauthProviders, applyErr := applyToolCatalogWiring(ctx, cfg, toolCat, coord, bus, red, stateStore)
-	if applyErr != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("tools/catalog: %w", applyErr)
-	}
-	// Approval gates close cleanly when the dev stack drains; close in
-	// reverse-dependency order with the rest of the subsystems.
-	for _, g := range appliedGates {
-		gate := g
-		closers = append(closers, func(closeCtx context.Context) error { return gate.Close(closeCtx) })
-	}
-	// OAuth providers also close cleanly.
-	for _, p := range oauthProviders {
-		prov := p
-		closers = append(closers, func(closeCtx context.Context) error { return prov.Close(closeCtx) })
+		return nil, err
 	}
 
-	// Phase 83g (D-150) — the production consumer for the Phase 28
-	// MCP southbound driver. Per `cfg.Tools.MCPServers[i]` the dev
-	// boot spawns the configured MCP server (stdio subprocess /
-	// HTTP), opens the MCP session, discovers tools, and registers
-	// each ToolDescriptor on the tool catalog. Fail-loud at boot if
-	// the server cannot connect or discover — silent degradation
-	// would hide a misconfigured server. The Registry is built so a
-	// follow-up phase can mount the Console MCP-page surface (the
-	// surface needs a single *auth.Provider accessor; the dev
-	// binary's OAuth side is a slice today).
-	mcpRegistry := mcpdrv.NewRegistry()
-	for _, ms := range cfg.Tools.MCPServers {
-		if err := attachDevMCPServer(ctx, ms, toolCat, mcpRegistry, bus, opts.logger, &closers); err != nil {
-			closeAll(ctx)
-			return nil, fmt.Errorf("mcp[%s]: %w", ms.Name, err)
-		}
-	}
+	// Local views over the assembled stack — the cmd-only legs below
+	// read these; the subsystem wiring itself lives in
+	// internal/runtime/assemble (one fan-out, two thin callers).
+	var (
+		red             = stack.Redactor
+		bus             = stack.Bus
+		metricsReg      = stack.Metrics
+		artStore        = stack.Artifacts
+		memStore        = stack.Memory
+		skillStore      = stack.Skills
+		taskReg         = stack.Tasks
+		toolCat         = stack.Catalog
+		coord           = stack.Coordinator
+		appliedGates    = stack.Gates
+		mcpRegistry     = stack.MCPRegistry
+		sessionRegistry = stack.Sessions
+		agentRegistry   = stack.Agents
+		steeringReg     = stack.Steering
+		plnr            = stack.Planner
+		runLoop         = stack.RunLoop
+	)
 
 	// Phase 83w F6 (D-164) — wire the Phase 73k MCPSurface over the
 	// constructed MCP Registry so the Console MCP Connections page's
@@ -707,48 +503,6 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("mcp surface: %w", err)
 	}
 
-	steeringReg := steering.NewRegistry()
-
-	// Planner — the swappable reasoning policy the RunLoop drives.
-	// D-103 (closes issue #126) — the planner concrete is resolved via
-	// the `internal/planner` driver registry (the §4.4 seam pattern
-	// that D-095 uses for OAuth providers). `cmd/harbor/main.go`
-	// blank-imports each driver so its init() registration fires; the
-	// `cfg.Planner.Driver` allowlist in `internal/config/validate.go`
-	// pre-boots an unknown driver name. The V1 reference driver
-	// (`react`) backs the no-config-needed default; future concretes
-	// (Plan-Execute, Workflow, Graph, Deterministic, Supervisor,
-	// MultiAgent, HumanApproval per RFC §6.2) opt in via
-	// `planner.driver: <name>` in `harbor.yaml`. The planner is reusable
-	// across concurrent runs (D-025); one instance backs every spawned
-	// task's RunLoop.
-	plannerCfg := planner.ConfigFromOperator(cfg.Planner)
-	plnr, err := planner.Resolve(ctx, plannerCfg, planner.FactoryDeps{LLM: llmClient})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("planner: %w", err)
-	}
-
-	// RunLoop — the per-run planner-step loop (Phase 53 / D-071) that
-	// drives the planner to a terminal Finish, draining the steering
-	// inbox between steps and routing pause decisions through the
-	// unified Coordinator. ONE RunLoop instance is constructed at
-	// boot and shared across N concurrent goroutines (D-025); each
-	// goroutine's per-run state lives on its own stack + ctx. The
-	// WithApprovalGates option wires the D-097 steering→gate bridge:
-	// a wire-side APPROVE / REJECT control that reaches the run's
-	// steering inbox is routed to the matching gate's pending map,
-	// unblocking the wrapped tool's Invoke.
-	runLoop, err := steering.NewRunLoop(steeringReg, coord,
-		steering.WithRunLoopBus(bus),
-		steering.WithTaskRegistry(taskReg),
-		steering.WithApprovalGates(appliedGates),
-	)
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("steering.RunLoop: %w", err)
-	}
-
 	// Phase 74 (D-114): the ControlSurface is built WITHOUT a
 	// topology accessor. `harbor dev`'s runtime is planner/RunLoop-
 	// shaped — it hosts no `engine.Engine` node-graph — so there is no
@@ -759,32 +513,6 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// §17.6): a Runtime that hosts an engine wires it via
 	// protocol.WithTopologyAccessor; the Phase 74 integration test
 	// does exactly that through harbortest/devstack.AssembleOpts.
-	// D-171: the SessionRegistry is constructed here (ahead of the
-	// ControlSurface) so the surface can be wired with the
-	// create-on-first-use ensurer. Sessions are per-request and
-	// create-on-first-use: there is NO boot-time Open of a fixed "dev"
-	// session (that path crashed boot on a persisted-closed session —
-	// reopen-after-close is forbidden). The registry's persistent catalog
-	// re-discovers sessions across restarts, so sessions.list / inspect /
-	// tasks-by-session keep working against an existing state dir.
-	// RFC §6.9: GC never reaps a session with a RUNNING task. The
-	// TaskRegistry-backed probe is the enforcement; without it the
-	// registry's no-op default reports "not running" and the sweeper
-	// can reap mid-flight sessions at the IdleTTL timescale (SDK
-	// friction audit B2, docs/notes/sdk-friction-audit.md §1).
-	sessionRegistry, err := sessions.New(stateStore, cfg.Sessions, bus,
-		sessions.WithGCPolicy(sessions.GCPolicy{
-			IdleTTL:       cfg.Sessions.IdleTTL,
-			HardCap:       cfg.Sessions.HardCap,
-			SweepInterval: cfg.Sessions.SweepInterval,
-			RunningProbe:  sessions.TaskRunningProbe(taskReg),
-		}))
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("sessions registry: %w", err)
-	}
-	closers = append(closers, sessionRegistry.CloseRegistry)
-
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
 		// D-171 — create-on-first-use: a `start` on a not-yet-existing
 		// session materialises its registry row so the Console's
@@ -840,14 +568,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
 		catalog: toolCat,
-		// Phase 110a (D-194): the executor is the promoted
-		// `internal/runtime/dispatch` concrete — cmd/harbor is a thin
-		// caller of the same constructor devstack (and any headless
-		// embedder) wires.
-		executor: dispatch.NewToolExecutor(toolCat, artStore, taskReg,
-			dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
-			dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
-			dispatch.WithLogger(opts.logger)),
+		// Phase 110a (D-194) / 110d (D-197): the executor is the promoted
+		// `internal/runtime/dispatch` concrete, constructed by the ONE
+		// assembly fan-out — cmd/harbor consumes the assembled instance
+		// the same way devstack (and any headless embedder) does.
+		executor:        stack.Executor,
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
 		// Phase 83m (Item 6, D-156): operator-declared granted scopes
 		// flow into the per-run catalog view's CatalogFilter, closing
@@ -960,23 +685,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `agents.*` methods are READ-ONLY projections; the five
 	// agent-control verbs the page exposes are the EXISTING shipped
 	// `registry.*` control verbs (D-066), not new methods (CLAUDE.md
-	// §13).
-	agentRegistry, err := registry.New(registry.Deps{
-		Store:    stateStore,
-		Bus:      bus,
-		Redactor: red,
-	})
-	if err != nil {
-		closeAll(ctx)
-		return nil, fmt.Errorf("agent registry: %w", err)
-	}
-	// Phase 83m (Item 3, D-156): append the registry's Close to the
-	// closer chain. The V1 Registry flips a closed flag (no long-
-	// lived goroutines) but the contract is "every constructed
-	// subsystem registers its Close" — a future driver that DOES own
-	// goroutines must not be discovered as a leak via the §11
-	// goroutine-leak gate.
-	closers = append(closers, agentRegistry.Close)
+	// §13). The Registry itself (and its Close) is owned by the
+	// assembly (Phase 110d, D-197).
 	agentsProjector, err := agentsprotocol.NewRegistryProjector(agentRegistry)
 	if err != nil {
 		closeAll(ctx)
@@ -1130,16 +840,9 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	//
 	// SDK friction audit (docs/notes/sdk-friction-audit.md §1):
 	// populated `governance.identity_tiers` currently feeds ONLY this
-	// read-only posture provider — enforcement wiring
-	// (`governance.SetFactory`) has no production caller yet. Warn
-	// loudly so an operator who configured ceilings knows nothing is
-	// enforced (§13 — no silent degradation). Enforcement wiring is
-	// tracked as Wave C follow-up work in the audit doc.
-	if len(cfg.Governance.IdentityTiers) > 0 {
-		opts.logger.Warn("governance: identity_tiers configured but enforcement is NOT yet wired — tiers drive the read-only posture surface only",
-			"tiers", len(cfg.Governance.IdentityTiers),
-			"see", "docs/notes/sdk-friction-audit.md")
-	}
+	// read-only posture provider — enforcement wiring has no
+	// production caller yet; the assembly (Phase 110d, D-197) emits
+	// the loud operator warning.
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
 			BuildVersion:   HarborVersion,
@@ -1217,27 +920,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("search surface: %w", err)
 	}
 
-	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —
-	// the bus consumer that synthesises `notification.*` events from the
-	// V1 trigger taxonomy (task.failed, tool.approval_requested, …).
-	// §17.6 F2: the Subscriber MUST be constructed and Run() here — a
-	// blank import alone only registers the event types; without a live
-	// Run the `notification.*` topic has no producer. The goroutine is
-	// cancelled + joined on shutdown via the closer below.
-	notifSubscriber := notifications.NewSubscriber(bus, opts.logger)
-	notifCtx, notifCancel := context.WithCancel(context.Background())
-	notifDone := make(chan struct{})
-	go func() {
-		defer close(notifDone)
-		if rerr := notifSubscriber.Run(notifCtx); rerr != nil && !errors.Is(rerr, context.Canceled) {
-			opts.logger.ErrorContext(notifCtx, "notifications subscriber exited", slog.Any("error", rerr))
-		}
-	}()
-	closers = append(closers, func(context.Context) error {
-		notifCancel()
-		<-notifDone
-		return nil
-	})
+	// The long-lived `notification.*` Subscriber (Phase 72d / D-109) is
+	// constructed and run by the assembly (Phase 110d, D-197).
 
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
@@ -1622,142 +1306,6 @@ func (s *devStack) close(ctx context.Context) {
 	}
 }
 
-// applyToolCatalogWiring is the Phase 64a (D-090) integration point:
-// reads `cfg.Tools.Entries` and applies the catalog wiring builder
-// against `cat`. Returns the set of applied gates + OAuth providers
-// so the dev stack can register their Close functions.
-//
-// When `cfg.Tools.Entries` is empty, this is a no-op — the catalog
-// stays as the operator registered it (via in-process Go code,
-// Phase 27/28/29 manifests, etc.).
-//
-// Fail-loud semantics: every error path returns a wrapped error;
-// missing/unknown tool/policy/provider crashes boot. CLAUDE.md §13
-// amendment.
-//
-// OAuth provider construction lands here per D-095 (closes issue
-// #116 and D-090's "OAuth provider construction deferred" deferral).
-// The function walks `cfg.Tools.OAuthProviders[]`, dispatches each
-// entry to the `internal/tools/auth` driver registry by `Driver`
-// name, and populates the catalog Builder's `Deps.OAuthProviders`
-// map keyed by `Name`. Credentials enter via env-var indirection
-// (§7 rule 2 — never hardcoded, never logged) — `os.Getenv` resolves
-// `ClientIDEnv` / `ClientSecretEnv` at this boundary and the dev
-// stack reads the KEK from the env var named in
-// `cfg.Tools.OAuthTokenKEKEnv` (32 hex bytes; the Sealer enforces
-// length). Every failure is loud: empty / wrong-length KEK, missing
-// env-var contents, unknown driver, or factory errors all crash
-// boot with a wrapped error naming the offending field.
-func applyToolCatalogWiring(
-	ctx context.Context,
-	cfg *config.Config,
-	cat tools.ToolCatalog,
-	coord pauseresume.Coordinator,
-	bus events.EventBus,
-	red audit.Redactor,
-	stateStore state.StateStore,
-) (map[string]*toolapproval.ApprovalGate, map[string]toolauth.OAuthProvider, error) {
-	gates := make(map[string]*toolapproval.ApprovalGate)
-	providers := make(map[string]toolauth.OAuthProvider)
-
-	// D-095 — construct OAuth providers BEFORE the catalog Builder
-	// runs so the Builder's `Deps.OAuthProviders` lookup resolves.
-	// The dev stack constructs one TokenStore + Sealer (shared across
-	// every provider, single operator-supplied KEK) and passes them
-	// into every driver factory. An empty `OAuthProviders` list is a
-	// no-op — the binary still boots cleanly when no operator
-	// declares OAuth bindings.
-	if len(cfg.Tools.OAuthProviders) > 0 {
-		kek, err := resolveOAuthTokenKEK(cfg.Tools.OAuthTokenKEKEnv)
-		if err != nil {
-			return nil, nil, err
-		}
-		sealer, err := toolauth.NewAESGCMSealer(kek)
-		if err != nil {
-			return nil, nil, fmt.Errorf("tools/oauth: sealer: %w", err)
-		}
-		tokenStore, err := toolauth.NewTokenStore(stateStore, sealer)
-		if err != nil {
-			return nil, nil, fmt.Errorf("tools/oauth: token store: %w", err)
-		}
-		deps := toolauth.FactoryDeps{
-			Store:       tokenStore,
-			Bus:         bus,
-			Redactor:    red,
-			Coordinator: coord,
-		}
-		for i, p := range cfg.Tools.OAuthProviders {
-			clientID := os.Getenv(p.ClientIDEnv)
-			if clientID == "" {
-				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_id_env) is unset or empty",
-					p.Name, i, p.ClientIDEnv)
-			}
-			clientSecret := os.Getenv(p.ClientSecretEnv)
-			if clientSecret == "" {
-				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d]): env var %q (named by client_secret_env) is unset or empty",
-					p.Name, i, p.ClientSecretEnv)
-			}
-			pcfg := toolauth.ProviderConfig{
-				Name:         p.Name,
-				ClientID:     clientID,
-				ClientSecret: clientSecret,
-				Scopes:       append([]string(nil), p.Scopes...),
-				AuthURL:      p.AuthURL,
-				TokenURL:     p.TokenURL,
-				RedirectURL:  p.RedirectURL,
-				Extra:        p.Extra,
-			}
-			prov, err := toolauth.Resolve(ctx, p.Driver, pcfg, deps)
-			if err != nil {
-				return nil, nil, fmt.Errorf("tools/oauth: provider %q (oauth_providers[%d], driver=%q): %w",
-					p.Name, i, p.Driver, err)
-			}
-			providers[p.Name] = prov
-		}
-	}
-
-	if len(cfg.Tools.Entries) == 0 {
-		return gates, providers, nil
-	}
-	b := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
-		Catalog:        cat,
-		Coordinator:    coord,
-		Bus:            bus,
-		Redactor:       red,
-		OAuthProviders: providers,
-		AppliedGates:   gates,
-	})
-	if err := b.Apply(ctx); err != nil {
-		return nil, nil, err
-	}
-	return gates, providers, nil
-}
-
-// resolveOAuthTokenKEK reads the named env var and decodes its value
-// as a 32-byte hex-encoded key-encryption key for AES-256-GCM token
-// encryption at rest. Fail-loud per §13 amendment: empty env or
-// wrong-length decoded key crashes boot with a wrapped error naming
-// the env var.
-func resolveOAuthTokenKEK(envName string) ([]byte, error) {
-	if envName == "" {
-		return nil, fmt.Errorf("tools/oauth: tools.oauth_token_kek_env must be set (validated upstream — this is a sanity check)")
-	}
-	raw := os.Getenv(envName)
-	if raw == "" {
-		return nil, fmt.Errorf("tools/oauth: env var %q (named by tools.oauth_token_kek_env) is unset or empty — operator must populate a 32-byte hex-encoded KEK",
-			envName)
-	}
-	kek, err := hex.DecodeString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("tools/oauth: env var %q is not valid hex: %w", envName, err)
-	}
-	if len(kek) != toolauth.KEKSizeBytes {
-		return nil, fmt.Errorf("tools/oauth: env var %q decoded to %d bytes, want %d (AES-256-GCM)",
-			envName, len(kek), toolauth.KEKSizeBytes)
-	}
-	return kek, nil
-}
-
 // validateLLMProvider enforces constraint #2: missing provider, missing
 // API key, or empty `llm:` block (driver=bifrost without provider/model/
 // api_key) fails closed with a one-line error naming the missing key
@@ -1870,209 +1418,3 @@ func devInstanceID() string {
 // identity.Quadruple under the dev token's claims; the import is also
 // used by the dev-cmd integration test via the SignDevToken helper).
 var _ identity.Identity
-
-// attachDevMCPServer wires one configured MCP server into the dev
-// stack (Phase 83g — D-150). It spawns the transport, opens the
-// session, discovers tools, registers each ToolDescriptor on the tool
-// catalog, registers the Provider with the Registry (so the Console
-// MCP-page mount lands when its surface is wired), and threads the
-// Provider's Close into the closer chain so stack teardown drains
-// the subprocess. Fail-loud on any step: a misconfigured / unreachable
-// MCP server must not boot silently per §13.
-//
-// Phase 83m (Item 1, D-156): the `DefaultIdentity` passed below is
-// now the FALLBACK identity stamped on server-pushed events that
-// arrive without an inflight call (transport-side notifications).
-// Per-call subscriptions — registered under a real (tenant, user,
-// session) triple via `provider.SubscribeResource(ctx, ...)` — produce
-// events stamped with the subscription's ctx-resident identity via the
-// driver's `pushIdentity(ctx, cfg)` helper. The dev triple here remains
-// correct for transport-level events because the dev binary boots a
-// single (DevTenant, DevUser, DevSession); multi-tenant deployments
-// invariably register their subscriptions under their own per-call
-// identity and therefore rely on the helper's preference, not this
-// cached default.
-func attachDevMCPServer(
-	ctx context.Context,
-	ms config.MCPServerConfig,
-	cat tools.ToolCatalog,
-	reg *mcpdrv.Registry,
-	bus events.EventBus,
-	logger *slog.Logger,
-	closers *[]func(context.Context) error,
-) error {
-	mode := mcpdrv.MCPTransportMode(ms.TransportMode)
-	if mode == "" {
-		mode = mcpdrv.TransportAuto
-	}
-	// Phase 26b — project the operator-facing policy YAML onto the
-	// driver's runtime ToolPolicy fields. A nil ms.Policy leaves
-	// DefaultPolicy zero-valued, so every tool inherits
-	// tools.DefaultPolicy() at dispatch (today's behaviour). A
-	// projection error (e.g. an unknown retry_on class that slipped
-	// past validation) fails the boot loud (CLAUDE.md §5).
-	defaultPolicy, toolPolicies, policyErr := projectMCPToolPolicies(ms)
-	if policyErr != nil {
-		return fmt.Errorf("mcp server %q: %w", ms.Name, policyErr)
-	}
-	provider, err := mcpdrv.New(mcpdrv.Config{
-		Name:          ms.Name,
-		TransportMode: mode,
-		URL:           ms.URL,
-		Command:       append([]string(nil), ms.Command...),
-		Headers:       cloneStringMap(ms.Headers),
-		KeepAlive:     ms.KeepAlive,
-		Logger:        logger,
-		Bus:           bus,
-		DefaultPolicy: defaultPolicy,
-		ToolPolicies:  toolPolicies,
-		DefaultIdentity: identity.Identity{
-			TenantID:  DevTenant,
-			UserID:    DevUser,
-			SessionID: DevSession,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("mcp.New: %w", err)
-	}
-	if connectErr := provider.Connect(ctx); connectErr != nil {
-		_ = provider.Close(ctx)
-		return fmt.Errorf("provider.Connect: %w", connectErr)
-	}
-	// Append closer NOW (after a successful Connect) so a Discover
-	// failure still drains the live subprocess.
-	*closers = append(*closers, provider.Close)
-
-	descriptors, discoverErr := provider.Discover(ctx)
-	if discoverErr != nil {
-		return fmt.Errorf("provider.Discover: %w", discoverErr)
-	}
-	for _, d := range descriptors {
-		if regErr := cat.Register(d); regErr != nil {
-			return fmt.Errorf("catalog.Register(%q): %w", d.Tool.Name, regErr)
-		}
-	}
-
-	// Surface the live Provider on the MCP Registry so a follow-up
-	// can mount the Console MCP-page surface without re-spawning.
-	// URLOrCommand is best-effort cosmetic — Console operators read
-	// it to identify the server.
-	urlOrCommand := ms.URL
-	if urlOrCommand == "" {
-		urlOrCommand = strings.Join(ms.Command, " ")
-	}
-	if regErr := reg.Register(mcpdrv.ServerRegistration{
-		Provider:     provider,
-		Transport:    string(mode),
-		URLOrCommand: urlOrCommand,
-		InitialState: mcpdrv.ServerStateOnline,
-		// Surface the configured per-server policy on the registry so the
-		// Console's mcp.servers.list / mcp.servers.policy read the policy
-		// the operator actually set, not tools.DefaultPolicy() (Phase 26b
-		// wave-audit fix — without this the Console misreports a tuned
-		// server as 30s/3-retries). Per-tool overrides are not part of the
-		// registry projection; the per-server default is the headline.
-		Policy: defaultPolicy,
-	}); regErr != nil {
-		return fmt.Errorf("registry.Register: %w", regErr)
-	}
-	// Round-4 (P1+P2): seed the registry's per-server stats from the
-	// boot-time discovery so the Console's mcp.servers.list wire surface
-	// reports the actual tool_count + a real last_discovery_at. Without
-	// this the page renders `tool_count: 0` + `last_discovery_at:
-	// 0001-01-01T00:00:00Z` on a just-booted Runtime even though tool
-	// registration already ran (the descriptors landed on the tool
-	// catalog but bypassed the registry's stats).
-	if recErr := reg.RecordDiscovery(ms.Name, descriptors); recErr != nil {
-		return fmt.Errorf("registry.RecordDiscovery: %w", recErr)
-	}
-	logger.Info("dev: MCP server attached",
-		slog.String("name", ms.Name),
-		slog.String("transport", string(mode)),
-		slog.Int("tools_registered", len(descriptors)),
-	)
-	return nil
-}
-
-// projectMCPToolPolicies converts an MCPServerConfig's operator-facing
-// policy YAML (Phase 26b) into the driver's runtime ToolPolicy fields:
-// the per-server default and the per-tool override map (keyed by the
-// MCP server-side tool name). The config package owns the single
-// config→policy translation seam (config.ToolPolicyConfig.ToToolPolicy);
-// this helper performs only the trivial primitive→tools.ToolPolicy copy
-// — it lives in cmd/harbor because internal/config cannot import
-// internal/tools (an import cycle via internal/events). Any projection
-// error (e.g. an unknown retry_on class) is returned so the boot path
-// fails loud (CLAUDE.md §5).
-//
-// A nil ms.Policy yields a zero-valued DefaultPolicy, so the driver
-// applies tools.DefaultPolicy() per-field at dispatch — preserving
-// today's behaviour exactly when no policy is configured.
-func projectMCPToolPolicies(ms config.MCPServerConfig) (tools.ToolPolicy, map[string]tools.ToolPolicy, error) {
-	var defaultPolicy tools.ToolPolicy
-	if ms.Policy != nil {
-		projected, err := ms.Policy.ToToolPolicy()
-		if err != nil {
-			return tools.ToolPolicy{}, nil, fmt.Errorf("policy: %w", err)
-		}
-		defaultPolicy = toolPolicyFromProjected(projected)
-	}
-
-	var toolPolicies map[string]tools.ToolPolicy
-	if len(ms.ToolPolicies) > 0 {
-		toolPolicies = make(map[string]tools.ToolPolicy, len(ms.ToolPolicies))
-		for toolName, tp := range ms.ToolPolicies {
-			projected, err := tp.ToToolPolicy()
-			if err != nil {
-				return tools.ToolPolicy{}, nil, fmt.Errorf("tool_policies[%q]: %w", toolName, err)
-			}
-			toolPolicies[toolName] = toolPolicyFromProjected(projected)
-		}
-	}
-
-	return defaultPolicy, toolPolicies, nil
-}
-
-// toolPolicyFromProjected copies the cycle-free config.ProjectedToolPolicy
-// image into the runtime tools.ToolPolicy. Fields the operator omitted
-// stay zero so tools.ToolPolicy's own per-field resolved() fall-through
-// fills them with the package default at dispatch (per-field semantics,
-// Phase 26b). RetryOn strings are turned into tools.ErrorClass values;
-// they were already validated against the allowlist by ToToolPolicy.
-func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
-	var retryOn []tools.ErrorClass
-	switch {
-	case len(p.RetryOn) > 0:
-		retryOn = make([]tools.ErrorClass, 0, len(p.RetryOn))
-		for _, class := range p.RetryOn {
-			retryOn = append(retryOn, tools.ErrorClass(class))
-		}
-	case p.RetryOnEmpty:
-		// Explicit empty, non-nil slice → "retry on nothing" (exactly
-		// one attempt), surviving tools.ToolPolicy.resolved()'s
-		// MaxRetries fall-through. See config.ToolPolicyConfig.ToToolPolicy.
-		retryOn = []tools.ErrorClass{}
-	}
-	return tools.ToolPolicy{
-		TimeoutMS:   p.TimeoutMS,
-		MaxRetries:  p.MaxRetries,
-		BackoffBase: p.BackoffBase,
-		BackoffMult: p.BackoffMult,
-		BackoffMax:  p.BackoffMax,
-		RetryOn:     retryOn,
-	}
-}
-
-// cloneStringMap returns a defensive copy of m so the Provider's
-// Headers slice cannot be mutated by callers that retain the
-// MCPServerConfig.
-func cloneStringMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}

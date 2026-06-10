@@ -18,6 +18,7 @@ API, read the godoc.
 | [Select and configure a planner](configure-a-planner.md) | The `planner` config block and the swappable-driver seam. |
 | [Run the local dev loop](run-harbor-dev.md) | `harbor validate` + `harbor dev` — boot a Runtime on the loopback. |
 | [Test an agent](test-an-agent.md) | The public `harbortest` kit — `RunOnce`, `AssertNoLeaks`, `SimulateFailure`. |
+| [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program — no CLI, no Protocol server. |
 
 ## Conventions used in these recipes
 
