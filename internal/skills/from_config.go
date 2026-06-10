@@ -18,10 +18,35 @@ import "github.com/hurtener/Harbor/internal/config"
 // block onto the skills package's decoupled ConfigSnapshot. Every
 // config field maps 1:1; the field-parity test in from_config_test.go
 // fails the build when a new config field lands without a projection
-// (or an explicit exclusion naming why).
+// (or an explicit exclusion naming why). `Directory` is excluded —
+// the store snapshot and the directory config feed two different
+// constructors; `DirectoryFromConfig` is the directory's projection.
 func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 	return ConfigSnapshot{
 		Driver: cfg.Driver,
 		DSN:    cfg.DSN,
+	}
+}
+
+// DirectoryFromConfig projects the operator-facing
+// `config.SkillsConfig.Directory` block onto a DirectoryConfig for
+// `NewDirectory` (Phase 111d — D-201).
+//
+// `fallbackMaxEntries` is consulted when `skills.directory.max_entries`
+// is unset (zero): the run-loop callers pass the resolved
+// `planner.skills_context_max` value so the pre-111d injection-budget
+// knob keeps capping the injected block's length. A zero fallback
+// leaves MaxEntries at zero and `NewDirectory` applies its own
+// package default (30). The Pinned slice is copied so the caller's
+// config struct cannot mutate the directory after construction.
+func DirectoryFromConfig(cfg config.SkillsConfig, fallbackMaxEntries int) DirectoryConfig {
+	maxEntries := cfg.Directory.MaxEntries
+	if maxEntries == 0 {
+		maxEntries = fallbackMaxEntries
+	}
+	return DirectoryConfig{
+		Pinned:     append([]string(nil), cfg.Directory.Pinned...),
+		MaxEntries: maxEntries,
+		Selection:  Selection(cfg.Directory.Selection),
 	}
 }

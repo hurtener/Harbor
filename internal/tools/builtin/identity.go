@@ -18,8 +18,11 @@ var ErrIdentityRequired = errors.New("builtin: identity (tenant/user/session) is
 // requireIdentity reads the calling identity from ctx and fails loud
 // when any component of the (tenant, user, session) triple is missing.
 // Phase 107c / D-167 — the discovery meta-tools (`tool_search`,
-// `tool_get`, `skill_search`, `skill_get`) refuse to operate without
-// identity so cross-tenant discovery leaks are structurally impossible.
+// `tool_get`, `artifact_fetch`, `declarative_action`) refuse to
+// operate without identity so cross-tenant discovery leaks are
+// structurally impossible. The skill_* built-ins delegate to the
+// Phase-38 handlers, which carry their own identity gate +
+// `skill.identity_rejected` emit (Phase 111d / D-201).
 func requireIdentity(ctx context.Context) (identity.Quadruple, error) {
 	q, ok := identity.QuadrupleFrom(ctx)
 	if !ok {

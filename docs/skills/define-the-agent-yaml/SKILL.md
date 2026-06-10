@@ -115,7 +115,13 @@ Skills are token-savvy DB-backed playbooks the planner searches by name. Distinc
 skills:
   driver: localdb
   dsn: ./my-agent-skills.sqlite                # WAL trap caveat applies
+  directory:                                   # optional — the per-turn <skills_context> browse window
+    pinned: [triage-incident]                  # anchored first, declaration order
+    max_entries: 10                            # 0/unset → planner.skills_context_max (default 5)
+    selection: pinned_then_recent              # or pinned_then_top
 ```
+
+Ingest skills with `harbor skill import <path>` and remove them with `harbor skill rm <name>` — both operate on this block's store.
 
 ### `governance`
 

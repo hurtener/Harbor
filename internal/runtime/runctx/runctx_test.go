@@ -1,8 +1,8 @@
 // Behaviour-parity golden tests for the promoted RunContext-population
-// helpers (Phase 110b — D-195). The five helpers moved verbatim from
-// `cmd/harbor/cmd_dev_runloop.go` (and the devstack mirror copies);
-// these tables pin the shapes the planner renders so the promotion
-// cannot drift retrieval quality (keyword shaping) or prompt shape
+// helpers (Phase 110b — D-195; Phase 111d — D-201 deleted the
+// `ExtractSkillKeywords` shaper per its deprecation notice and added
+// the Directory-view projection). These tables pin the shapes the
+// planner renders so a refactor cannot drift the prompt shape
 // (memory / skills projections).
 
 package runctx_test
@@ -10,6 +10,7 @@ package runctx_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -153,92 +154,33 @@ func TestProjectSkillsContext_GoldenShape(t *testing.T) {
 	}
 }
 
-// TestExtractSkillKeywords — the D-156 FTS5 query-shaping pipeline,
-// golden table moved verbatim from the pre-110b cmd test so the
-// promotion provably preserved retrieval behaviour: lowercase, split
-// on whitespace + punctuation, drop stopwords + 1-char tokens, dedupe
-// preserving order, cap at 10.
-func TestExtractSkillKeywords(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "empty_input",
-			input: "",
-			want:  "",
-		},
-		{
-			name:  "all_stopwords_returns_empty",
-			input: "the a an of to in",
-			want:  "",
-		},
-		{
-			name:  "sentence_with_punctuation",
-			input: "How do I configure the OAuth provider?",
-			want:  "how configure oauth provider",
-		},
-		{
-			name:  "lowercases_input",
-			input: "DEPLOY my Helm Chart",
-			want:  "deploy helm chart",
-		},
-		{
-			name:  "dedupes_preserving_order",
-			input: "auth config auth setup auth",
-			want:  "auth config setup",
-		},
-		{
-			name:  "drops_single_char_tokens",
-			input: "a b configure x setup y",
-			want:  "configure setup",
-		},
-		{
-			name:  "splits_on_punctuation",
-			input: "tool.invoke(name,args)",
-			want:  "tool invoke name args",
-		},
-		{
-			name:  "caps_at_ten_terms",
-			input: "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima",
-			want:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-		},
-		{
-			name:  "preserves_domain_keywords",
-			input: "Search the api docs for the rate-limit knob",
-			want:  "search api docs rate limit knob",
-		},
-		{
-			name:  "numbers_kept_when_long_enough",
-			input: "deploy version 42 to staging",
-			want:  "deploy version 42 staging",
-		},
-		{
-			name:  "single_digit_dropped",
-			input: "task 1 needs attention",
-			want:  "task needs attention",
-		},
+// TestProjectSkillsDirectory pins the Phase 111d (D-201) projection:
+// each `skills.SkillView` rides verbatim as one []any element (the
+// planner JSON-encodes the slice into the `<skills_context>` wrapper);
+// an empty input returns nil so the wrapper is omitted entirely.
+func TestProjectSkillsDirectory(t *testing.T) {
+	if got := runctx.ProjectSkillsDirectory(nil); got != nil {
+		t.Errorf("empty views: got %#v, want nil", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := runctx.ExtractSkillKeywords(tc.input)
-			if got != tc.want {
-				t.Errorf("ExtractSkillKeywords(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
+	views := []skills.SkillView{
+		{Name: "triage-incident", Title: "Triage an incident", Trigger: "when a ticket arrives", TaskType: "triage", Pinned: true},
+		{Name: "summarise-paper", Title: "Summarise a paper"},
 	}
-}
-
-// TestExtractSkillKeywords_CapsAtTenTermsExactly — boundary assert:
-// the helper returns EXACTLY the 10-term cap when the input produces
-// more than that, never more, never fewer.
-func TestExtractSkillKeywords_CapsAtTenTermsExactly(t *testing.T) {
-	// 12 distinct non-stopword tokens.
-	input := "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"
-	got := runctx.ExtractSkillKeywords(input)
-	if terms := len(strings.Fields(got)); terms != 10 {
-		t.Errorf("ExtractSkillKeywords cap: got %d terms, want 10 (output=%q)", terms, got)
+	got := runctx.ProjectSkillsDirectory(views)
+	want := []any{views[0], views[1]}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("skills directory projection = %#v, want %#v", got, want)
+	}
+	// The projected block must JSON-encode with the SkillView wire
+	// keys — this is the prompt-block shape the planner renders
+	// (the 111d prompt-delta golden, asserted at the projection seam).
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal projected views: %v", err)
+	}
+	const wantJSON = `[{"name":"triage-incident","title":"Triage an incident","trigger":"when a ticket arrives","task_type":"triage","pinned":true},{"name":"summarise-paper","title":"Summarise a paper","pinned":false}]`
+	if string(raw) != wantJSON {
+		t.Errorf("projected JSON = %s, want %s", raw, wantJSON)
 	}
 }
 

@@ -18,8 +18,9 @@ Discovery meta-tools (use them to explore beyond the always-loaded set):
 
 - tool_search(query, tags[], limit): search the catalog by capability keywords. Results are callable on the next turn after the planner observes the search.
 - tool_get(name): fetch a specific tool's full schema + examples.
-- skill_search(query, tags[], limit): search skill playbooks by topic.
-- skill_get(name): fetch a specific skill's content.
+- skill_search(query, limit): search skill playbooks by topic. Results are capability-filtered to what this run can actually use.
+- skill_get(names[], max_tokens): fetch one or more skills' full content, budget-fit to max_tokens.
+- skill_list(scope, task_type, tags[], limit, offset): enumerate the skill catalog, summary-only.
 
 How to respond, in two cases:
 

@@ -85,7 +85,6 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
-	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -120,16 +119,17 @@ type perTaskRunLoopDriverOpts struct {
 	driveBackground bool
 
 	// Phase 83f (D-149) — RunContext consumer wiring. All three of
-	// memory / skills / planningHints are OPTIONAL: a dev stack that
-	// did not open the respective subsystem hands nil; the driver
-	// projects the corresponding RunContext field to nil and the
-	// planner omits the wrapper. `skillsContextMax` is the cap the
-	// driver applies when calling `SkillStore.Search` — zero resolves
-	// to the package default (5).
-	memory           memory.MemoryStore
-	skills           skills.SkillStore
-	skillsContextMax int
-	planningHints    *planner.PlanningHints
+	// memory / skillsDirectory / planningHints are OPTIONAL: a dev
+	// stack that did not open the respective subsystem hands nil; the
+	// driver projects the corresponding RunContext field to nil and
+	// the planner omits the wrapper. Phase 111d (D-201): the skills
+	// surface is the Phase-39 `skills.Directory` — the bounded,
+	// pinned-then-recent, capability-filtered `<skills_context>`
+	// producer (the directory carries its own MaxEntries cap; the
+	// pre-111d SkillStore.Search + skillsContextMax pair is deleted).
+	memory          memory.MemoryStore
+	skillsDirectory *skills.Directory
+	planningHints   *planner.PlanningHints
 
 	// Phase 83i (D-152) — tool dispatch + Catalog projection +
 	// Trajectory. The tool catalog is the shared catalog the rest of
@@ -169,11 +169,11 @@ type perTaskRunLoopDriver struct {
 	taskKind        tasks.TaskKind
 	driveBackground bool // Phase 107e (D-170) — also drive KindBackground tasks
 
-	// Phase 83f (D-149) per-run consumer wiring. See driver opts godoc.
-	memory           memory.MemoryStore
-	skills           skills.SkillStore
-	skillsContextMax int
-	planningHints    *planner.PlanningHints
+	// Phase 83f (D-149) per-run consumer wiring; Phase 111d (D-201)
+	// — Directory as the skills surface. See driver opts godoc.
+	memory          memory.MemoryStore
+	skillsDirectory *skills.Directory
+	planningHints   *planner.PlanningHints
 
 	// Phase 83i (D-152) — tool dispatch + Catalog projection.
 	catalog         tools.ToolCatalog
@@ -232,32 +232,23 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 	if opts.taskKind == "" {
 		opts.taskKind = tasks.KindForeground
 	}
-	// Defensive clamp for programmatic construction with a zero cap;
-	// the default's ONE source is `config.DefaultSkillsContextMax`
-	// (Phase 110c, D-196 — the boot path already passes
-	// `cfg.Planner.SkillsContextMaxResolved()`).
-	skillsCap := opts.skillsContextMax
-	if skillsCap <= 0 {
-		skillsCap = config.DefaultSkillsContextMax
-	}
 	return &perTaskRunLoopDriver{
-		logger:           opts.logger,
-		bus:              opts.bus,
-		runLoop:          opts.runLoop,
-		planner:          opts.planner,
-		tasks:            opts.tasks,
-		taskKind:         opts.taskKind,
-		driveBackground:  opts.driveBackground,
-		memory:           opts.memory,
-		skills:           opts.skills,
-		skillsContextMax: skillsCap,
-		planningHints:    opts.planningHints,
-		catalog:          opts.catalog,
-		executor:         opts.executor,
-		maxStepsRunLoop:  opts.maxStepsRunLoop,
-		grantedScopes:    append([]string(nil), opts.grantedScopes...),
-		artifactStore:    opts.artifactStore,
-		trajectories:     make(map[tasks.TaskID]*planner.Trajectory),
+		logger:          opts.logger,
+		bus:             opts.bus,
+		runLoop:         opts.runLoop,
+		planner:         opts.planner,
+		tasks:           opts.tasks,
+		taskKind:        opts.taskKind,
+		driveBackground: opts.driveBackground,
+		memory:          opts.memory,
+		skillsDirectory: opts.skillsDirectory,
+		planningHints:   opts.planningHints,
+		catalog:         opts.catalog,
+		executor:        opts.executor,
+		maxStepsRunLoop: opts.maxStepsRunLoop,
+		grantedScopes:   append([]string(nil), opts.grantedScopes...),
+		artifactStore:   opts.artifactStore,
+		trajectories:    make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -487,18 +478,19 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
-	// Step 2: fetch identity-scoped memory + skills. Each is OPTIONAL
-	// — a stack without the subsystem configured leaves the
-	// corresponding field nil and the planner omits the wrapper. A
-	// store-side error is LOUD per CLAUDE.md §5 fail-loud: the run
-	// fails with the wrapped error, the LLM is never called, and the
-	// operator sees a clear `runtime_fetch_error` on the task.
+	// Step 2: fetch identity-scoped memory + the skills-directory
+	// view. Each is OPTIONAL — a stack without the subsystem
+	// configured leaves the corresponding field nil and the planner
+	// omits the wrapper. A store-side error is LOUD per CLAUDE.md §5
+	// fail-loud: the run fails with the wrapped error, the LLM is
+	// never called, and the operator sees a clear
+	// `runtime_fetch_error` on the task.
 	//
 	// Memory + skills are SESSION-scoped per RFC §6.6/§6.7 (memory
 	// spans runs within a session; skills are stored per-session). The
 	// fetch quadruple zeroes RunID so the run inherits the session's
 	// accumulated state rather than seeing only its own (empty) per-run
-	// slice. D-149.
+	// slice. D-149; Directory wiring D-201.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil {
@@ -524,27 +516,31 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	}
 
 	var skillsCtx []any
-	if d.skills != nil && task.Query != "" {
-		// Phase 83m (Item 4, D-156): extract keyword tokens from the
-		// raw task Query before handing it to the FTS5-backed skills
-		// driver (promoted helper — Phase 110b, D-195). A pathological
-		// input that produces no keywords falls back to the raw Query
-		// so Search still has SOMETHING to rank against — the driver's
-		// empty-query handling is the canonical "no ranked skills"
-		// path and we prefer the raw query to that empty path.
-		searchQuery := runctx.ExtractSkillKeywords(task.Query)
-		if searchQuery == "" {
-			searchQuery = task.Query
-		}
-		ranked, sErr := d.skills.Search(taskCtx, sessionQ, searchQuery, d.skillsContextMax)
+	if d.skillsDirectory != nil {
+		// Phase 111d (D-201): the Phase-39 Directory is the
+		// `<skills_context>` producer — a bounded, STABLE
+		// pinned-then-recent browse window (identity-scoped via
+		// taskCtx, capability-filtered against the run's visible-tool
+		// set, redacted). Per-query relevance retrieval is the LLM's
+		// job via the `skill_search` meta-tool (107c); a stable
+		// prompt prefix beats a per-turn query-churned block (the
+		// D-176 manifest-pattern / KV-cache framing).
+		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{
+			AllowedTools: tools.VisibleNames(d.catalog, tools.CatalogFilter{
+				TenantID:      q.TenantID,
+				UserID:        q.UserID,
+				SessionID:     q.SessionID,
+				GrantedScopes: d.grantedScopes,
+			}),
+		})
 		if sErr != nil {
-			d.logger.Warn("perTaskRunLoopDriver: skills.Search failed; failing run",
+			d.logger.Warn("perTaskRunLoopDriver: skills Directory.View failed; failing run",
 				slog.String("task_id", string(taskID)),
 				slog.String("run_id", q.RunID),
 				slog.String("err", sErr.Error()))
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("skills.Search: %v", sErr),
+				Message: fmt.Sprintf("skills Directory.View: %v", sErr),
 			}); fErr != nil {
 				d.logger.Warn("perTaskRunLoopDriver: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
@@ -552,7 +548,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 			return
 		}
-		skillsCtx = runctx.ProjectSkillsContext(ranked)
+		skillsCtx = runctx.ProjectSkillsDirectory(views)
 	}
 
 	// Step 3: per-run RepairCounters. ONE pointer per run, threaded

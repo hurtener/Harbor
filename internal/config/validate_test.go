@@ -1578,3 +1578,70 @@ func TestValidateCLI_DevHotReload(t *testing.T) {
 		})
 	}
 }
+
+// Phase 111d (D-201) — the `skills.directory` block validation:
+// selection allowlist, max_entries bounds, pinned uniqueness, and the
+// directory-without-a-store rejection.
+func TestValidateSkillsDirectory(t *testing.T) {
+	withSkills := func(mutate func(c *config.Config)) error {
+		cfg := mustLoadValid(t)
+		cfg.Skills.Driver = "localdb"
+		cfg.Skills.DSN = ":memory:"
+		mutate(cfg)
+		return cfg.Validate()
+	}
+
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory = config.SkillsDirectoryConfig{
+			Pinned:     []string{"triage-incident"},
+			MaxEntries: 10,
+			Selection:  "pinned_then_top",
+		}
+	}); err != nil {
+		t.Errorf("valid directory block rejected: %v", err)
+	}
+
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory.Selection = "newest_first"
+	}); err == nil || !strings.Contains(err.Error(), "skills.directory.selection") {
+		t.Errorf("bad selection: err = %v, want skills.directory.selection error", err)
+	}
+
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory.MaxEntries = 201
+	}); err == nil || !strings.Contains(err.Error(), "skills.directory.max_entries") {
+		t.Errorf("out-of-range max_entries: err = %v, want skills.directory.max_entries error", err)
+	}
+
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory.Pinned = []string{"dup", "dup"}
+	}); err == nil || !strings.Contains(err.Error(), "skills.directory.pinned[1]") {
+		t.Errorf("duplicate pinned: err = %v, want skills.directory.pinned[1] error", err)
+	}
+
+	if err := withSkills(func(c *config.Config) {
+		c.Skills.Directory.Pinned = []string{""}
+	}); err == nil || !strings.Contains(err.Error(), "skills.directory.pinned[0]") {
+		t.Errorf("empty pinned entry: err = %v, want skills.directory.pinned[0] error", err)
+	}
+
+	// Directory without a configured store is meaningless — reject.
+	cfg := mustLoadValid(t)
+	cfg.Skills = config.SkillsConfig{
+		Directory: config.SkillsDirectoryConfig{Pinned: []string{"x"}},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "skills.driver") {
+		t.Errorf("directory without store: err = %v, want skills.driver error", err)
+	}
+}
+
+// Phase 111d (D-201) — `skill_list` + `skill_propose` join the
+// built-in allowlist; the registry mirror test on the builtin side
+// asserts the reverse direction.
+func TestValidateTools_BuiltIn_SkillListAndProposeAllowed(t *testing.T) {
+	cfg := mustLoadValid(t)
+	cfg.Tools.BuiltIn = []string{"skill_search", "skill_get", "skill_list", "skill_propose"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected the 111d built-in names: %v", err)
+	}
+}

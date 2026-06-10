@@ -435,6 +435,21 @@ planner:
 #   # HARBOR_SKILLS_DSN in production; never commit a real path with
 #   # sensitive metadata.
 #   dsn: /var/lib/harbor/skills.sqlite
+#   # Phase 111d (D-201) — the skills virtual directory: the bounded,
+#   # pinned-then-recent, capability-filtered browse window the run
+#   # loop injects as the per-turn `<skills_context>` prompt block.
+#   # All fields optional. Ingest skills with `harbor skill import`.
+#   directory:
+#     # Skill names anchored first in every view, declaration order.
+#     # Pinning is ordering only — never a capability-filter bypass.
+#     pinned:
+#       - triage-incident
+#     # View length cap. 0/unset → planner.skills_context_max
+#     # (default 5); explicit values must be in [1, 200].
+#     max_entries: 10
+#     # Unpinned ordering: `pinned_then_recent` (default; UpdatedAt
+#     # DESC) or `pinned_then_top` (UseCount DESC).
+#     selection: pinned_then_recent
 
 tools:
   # Phase 27 HTTP tool driver manifests. NOT YET WIRED at boot (see
