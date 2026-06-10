@@ -76,6 +76,10 @@ func mkBridgeFixture(t *testing.T) *bridgeFixture {
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    red,
+		// Phase 111f (D-203): the runtime-vocabulary default — the
+		// bridge resolves with the run\'s own identity ctx, no
+		// elevation ceremony.
+		Authorizer: approval.NewIdentityAuthorizer(),
 	})
 	if err != nil {
 		t.Fatalf("approval.NewApprovalGate: %v", err)

@@ -18,8 +18,10 @@
 //   - the full APPROVE round-trip (identity propagates everywhere);
 //   - the full REJECT round-trip (the typed `tool.rejected` event lands
 //     with the verified identity in the envelope);
-//   - the scope-gating failure mode — a non-admin / non-console-fleet
-//     caller is rejected with `ErrApprovalScopeRequired`;
+//   - the authorization failure mode — a foreign caller with neither
+//     a Protocol scope, the originating identity, nor the control-
+//     scope claim is rejected with `ErrResolveForbidden` (Phase 111f
+//     authorizer seam, D-203);
 //   - cross-identity failure mode — a tenant-B admin cannot resolve a
 //     tenant-A pause;
 //   - initiate-then-cancel goroutine-leak;
@@ -47,6 +49,7 @@ import (
 	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/server"
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
 	"github.com/hurtener/Harbor/internal/tools"
@@ -97,6 +100,12 @@ func buildPhase31Env(t *testing.T, policy approval.ApprovalPolicy) *phase31Env {
 		Coordinator: coord,
 		Bus:         stack.Bus,
 		Redactor:    stack.Audit,
+		// Phase 111f (D-203): the production wire-side composition —
+		// the Protocol-scope adapter over the runtime-vocabulary
+		// default, exactly what cmd/harbor + devstack inject. The
+		// pre-seam admin / console:fleet acceptance is preserved
+		// byte-for-byte (asserted by the scope-gating tests below).
+		Authorizer: server.NewProtocolScopeAuthorizer(approval.NewIdentityAuthorizer()),
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
@@ -425,12 +434,16 @@ func TestE2E_Phase31_FullRejectCycle(t *testing.T) {
 	}
 }
 
-// TestE2E_Phase31_ScopeGating_RejectsUnscoped is the §17.3 failure-
-// mode coverage: a caller without admin / console:fleet scope is
-// rejected at ResolveApproval. Defence in depth — the Phase 54
-// Protocol edge also enforces this at the JWT boundary; this is the
-// in-process layer.
-func TestE2E_Phase31_ScopeGating_RejectsUnscoped(t *testing.T) {
+// TestE2E_Phase31_ScopeGating_RejectsUnauthorized is the §17.3
+// failure-mode coverage, post the Phase 111f authorizer seam (D-203):
+// a caller with NO Protocol scope, a FOREIGN identity, and no
+// control-scope claim is rejected at ResolveApproval with
+// ErrResolveForbidden. Defence in depth — the Phase 54 Protocol edge
+// also enforces the RFC §6.3 steering scopes at the JWT boundary;
+// this is the in-process layer. (A caller presenting the pause\'s
+// ORIGINATING identity is now authorized by design — the steering
+// bridge\'s elevation-free shape; the wire edge already vetted it.)
+func TestE2E_Phase31_ScopeGating_RejectsUnauthorized(t *testing.T) {
 	env := buildPhase31Env(t, approval.AlwaysDenyPolicy{})
 	requestedSub, cancelReq := phase31SubFor(t, env.bus, phase31ID,
 		approval.EventTypeToolApprovalRequested)
@@ -447,14 +460,17 @@ func TestE2E_Phase31_ScopeGating_RejectsUnscoped(t *testing.T) {
 	payload, _ := ev.Payload.(approval.ToolApprovalRequestedPayload)
 	token := pauseresume.Token(payload.PauseToken)
 
-	// Unscoped ctx — auth middleware never ran, no scopes attached.
-	err := env.gate.ResolveApproval(phase31Ctx(t, phase31ID), token,
+	// Foreign identity, no Protocol scope, no control-scope claim —
+	// rejected by both authorizer layers; fail closed.
+	foreign := identity.Identity{TenantID: "tForeign", UserID: "uForeign", SessionID: "sForeign"}
+	err := env.gate.ResolveApproval(phase31Ctx(t, foreign), token,
 		approval.DecisionApprove, "")
-	if !errors.Is(err, approval.ErrApprovalScopeRequired) {
-		t.Fatalf("unscoped Resolve: got %v want ErrApprovalScopeRequired", err)
+	if !errors.Is(err, approval.ErrResolveForbidden) {
+		t.Fatalf("unauthorized Resolve: got %v want ErrResolveForbidden", err)
 	}
 
-	// Cleanup with admin.
+	// Cleanup with admin — the rejected attempt left the pending
+	// entry intact.
 	if err := env.gate.ResolveApproval(phase31AdminCtx(t, phase31ID),
 		token, approval.DecisionApprove, ""); err != nil {
 		t.Fatalf("cleanup admin Resolve: %v", err)

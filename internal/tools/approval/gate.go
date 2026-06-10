@@ -10,12 +10,11 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
-	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 )
 
 // GateDeps bundles the collaborators an ApprovalGate needs. The
-// production binary wires all four; tests may stub the bus / redactor
+// production binary wires all five; tests may stub the bus / redactor
 // with in-memory equivalents that satisfy the same interface.
 //
 // Every field is mandatory — the §13 amendment forbids silent default
@@ -38,6 +37,13 @@ type GateDeps struct {
 	// ArgsSummary before emission. Mandatory — CLAUDE.md §7 rule 6
 	// requires audit redaction on every emit path.
 	Redactor audit.Redactor
+	// Authorizer is the injected resolve-privilege check (Phase 111f,
+	// D-203). Mandatory — an approval gate with no resolve privilege
+	// check is a misconfiguration, not a permissive mode. Direct
+	// construction wires the runtime-vocabulary default
+	// (NewIdentityAuthorizer); wire-driven assembly injects the
+	// Protocol-side adapter (`internal/server.ProtocolScopeAuthorizer`).
+	Authorizer ResolveAuthorizer
 }
 
 // ApprovalGate is the V1 concrete approval-gate artifact.
@@ -52,6 +58,7 @@ type ApprovalGate struct {
 	coordinator pauseresume.Coordinator
 	bus         events.EventBus
 	redactor    audit.Redactor
+	authorizer  ResolveAuthorizer
 
 	// mu guards pending. Documented internally-synchronised per the
 	// D-025 concurrent-reuse contract (CLAUDE.md §5).
@@ -107,11 +114,15 @@ func NewApprovalGate(deps GateDeps) (*ApprovalGate, error) {
 	if deps.Redactor == nil {
 		return nil, ErrRedactorRequired
 	}
+	if deps.Authorizer == nil {
+		return nil, ErrAuthorizerRequired
+	}
 	return &ApprovalGate{
 		policy:      deps.Policy,
 		coordinator: deps.Coordinator,
 		bus:         deps.Bus,
 		redactor:    deps.Redactor,
+		authorizer:  deps.Authorizer,
 		pending:     make(map[pauseresume.Token]*waitingEntry),
 	}, nil
 }
@@ -308,14 +319,19 @@ func (g *ApprovalGate) RunGuarded(ctx context.Context, req *ApprovalRequest) (js
 // REJECT control events through this surface (in-process callers
 // reach the gate directly). Path:
 //
-//  1. Enforce `auth.HasScope(ctx, ScopeAdmin) || HasScope(ctx,
-//     ScopeConsoleFleet)`. A non-elevated caller is rejected with
-//     `ErrApprovalScopeRequired`. The Phase 54 edge also enforces
-//     this at the JWT boundary; the in-process helper is the
-//     defence-in-depth layer.
-//
-//  2. Validate the decision is Approve or Reject (Pending is
+//  1. Validate the decision is Approve or Reject (Pending is
 //     rejected with `ErrInvalidDecision`).
+//
+//  2. Locate the pending entry and consult the injected
+//     `ResolveAuthorizer` (Phase 111f, D-203) with the entry\'s
+//     PendingInfo. An unauthorized resolver is rejected with a
+//     wrapped `ErrResolveForbidden` BEFORE any pause state mutates.
+//     The Phase 54 edge also enforces the RFC §6.3 steering scopes at
+//     the JWT boundary; the in-process check is the defence-in-depth
+//     layer — in runtime vocabulary, never protocol scopes (the
+//     pre-seam `internal/protocol/auth` check lives on as the
+//     server-side `ProtocolScopeAuthorizer` adapter, injected at
+//     wire-driven gate assembly).
 //
 //  3. Call `Coordinator.Resume(ctx, token, decision, {rejected: bool})`
 //     with the typed `pauseresume.Decision` (Approve or Reject) so the
@@ -348,23 +364,46 @@ func (g *ApprovalGate) ResolveApproval(ctx context.Context, token pauseresume.To
 	if !IsValidDecision(decision) {
 		return fmt.Errorf("%w: %q", ErrInvalidDecision, decision)
 	}
-	// Privilege check: admin OR console:fleet. Defence in depth — the
-	// Phase 54 Protocol edge enforces this at the JWT boundary too.
-	if !protocolauth.HasScope(ctx, protocolauth.ScopeAdmin) &&
-		!protocolauth.HasScope(ctx, protocolauth.ScopeConsoleFleet) {
-		return ErrApprovalScopeRequired
-	}
 	// Look up the pending entry. A missing entry is either "the
 	// gate never opened it" or "it was already resolved" — both are
-	// errors the caller distinguishes via `errors.Is`.
+	// errors the caller distinguishes via `errors.Is`. (The lookup
+	// precedes the privilege check because the authorizer needs the
+	// entry\'s PendingInfo; pause tokens are unguessable
+	// Coordinator-minted handles, so the not-found answer leaks no
+	// pending state to an unauthorized prober.)
 	g.mu.Lock()
 	entry, ok := g.pending[token]
+	g.mu.Unlock()
 	if !ok {
+		return fmt.Errorf("%w: token %q", ErrApprovalNotFound, token)
+	}
+
+	// Privilege check via the injected seam (Phase 111f, D-203):
+	// originating identity / control scope by default, protocol scopes
+	// via the server-side adapter. Defence in depth — the Phase 54
+	// Protocol edge enforces the RFC §6.3 steering scopes at the JWT
+	// boundary too. Authorize BEFORE reserving the entry so a rejected
+	// resolver leaves the pending approval untouched.
+	if err := g.authorizer.AuthorizeResolve(ctx, PendingInfo{
+		Tool:     entry.req.Tool.Name,
+		Token:    token,
+		Identity: entry.req.Identity,
+		Tags:     append([]string(nil), entry.req.Tags...),
+	}); err != nil {
+		return fmt.Errorf("approval: resolve authorization: %w", err)
+	}
+
+	// Reserve the entry (remove it from the map so a concurrent
+	// second ResolveApproval gets ErrApprovalAlreadyResolved). The
+	// entry may have been resolved between the authorize call and the
+	// reservation — that race surfaces as ErrApprovalNotFound, the
+	// same already-resolved answer a late second resolver gets.
+	g.mu.Lock()
+	current, ok := g.pending[token]
+	if !ok || current != entry {
 		g.mu.Unlock()
 		return fmt.Errorf("%w: token %q", ErrApprovalNotFound, token)
 	}
-	// Reserve the entry (remove it from the map so a concurrent
-	// second ResolveApproval gets ErrApprovalAlreadyResolved).
 	delete(g.pending, token)
 	g.mu.Unlock()
 

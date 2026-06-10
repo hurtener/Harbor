@@ -16,8 +16,8 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 	eventsInmem "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
-	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
+	agentregistry "github.com/hurtener/Harbor/internal/runtime/registry"
 	"github.com/hurtener/Harbor/internal/tools"
 )
 
@@ -63,6 +63,7 @@ func TestApprovalGate_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 	policy := &alternatingPolicy{}
 	g, err := NewApprovalGate(GateDeps{
 		Policy: policy, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer: NewIdentityAuthorizer(),
 	})
 	if err != nil {
 		t.Fatalf("NewApprovalGate: %v", err)
@@ -95,7 +96,7 @@ func TestApprovalGate_ConcurrentReuse_NoCrossTalk(t *testing.T) {
 			}
 			// Resolve from the admin ctx for the matching identity.
 			tok := pauseresume.Token(p.PauseToken)
-			adminCtx := mkConcurrentAdminCtx(ev.Identity.Identity)
+			adminCtx := mkConcurrentControlCtx(ev.Identity.Identity)
 			// 50/50 approve vs reject so both code paths exercise.
 			decision := DecisionApprove
 			if int(ev.Sequence)%2 == 0 {
@@ -216,10 +217,12 @@ func mkIDCtx(id identity.Identity) context.Context {
 	return ctx
 }
 
-// mkConcurrentAdminCtx is a non-test-helper version of mkAdminCtx used
-// from inside the resolver goroutine where we cannot pass *testing.T
-// without provoking a vet warning about test-helper misuse.
-func mkConcurrentAdminCtx(id identity.Identity) context.Context {
+// mkConcurrentControlCtx is a non-test-helper version of
+// mkControlScopeCtx used from inside the resolver goroutine where we
+// cannot pass *testing.T without provoking a vet warning about
+// test-helper misuse. Control scope is the Phase 111f (D-203)
+// runtime-vocabulary elevation the default IdentityAuthorizer accepts.
+func mkConcurrentControlCtx(id identity.Identity) context.Context {
 	base, _ := identity.With(context.Background(), id)
-	return protocolauth.WithScopes(base, []protocolauth.Scope{protocolauth.ScopeAdmin})
+	return agentregistry.WithControlScope(base)
 }

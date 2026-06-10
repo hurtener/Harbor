@@ -435,6 +435,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			UserID:    DevUser,
 			SessionID: DevSession,
 		},
+		// Phase 111f (D-203): the serving binary assembles gates for
+		// wire-driven resolution — the Protocol-side scope adapter
+		// preserves today\'s admin / console:fleet acceptance and
+		// falls through to the runtime-vocabulary default for the
+		// in-process steering bridge.
+		ApprovalAuthorizer: server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
 	})
 	// Every "close everything we've opened so far" path is funneled
 	// through `closers`. The assembled stack's Close runs LAST (its

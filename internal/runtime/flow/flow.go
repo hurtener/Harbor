@@ -118,7 +118,8 @@ func (d Definition) Validate() error {
 type ComposeOption func(*composeConfig)
 
 type composeConfig struct {
-	queueSize int
+	queueSize       int
+	runErrorHandler engine.RunErrorHandler
 }
 
 // WithComposeQueueSize overrides the engine's per-channel queue
@@ -127,6 +128,18 @@ type composeConfig struct {
 // backpressure.
 func WithComposeQueueSize(n int) ComposeOption {
 	return func(c *composeConfig) { c.queueSize = n }
+}
+
+// WithRunErrorHandler forwards a run-error handler to the composed
+// engine (`engine.WithRunErrorHandler` — Phase 111f, D-203). The
+// production wiring passes the assembly's handler
+// (`assemble.Stack.RunErrorHandler`), which routes the structured
+// engine.RunError through `telemetry.Logger.Error` so a terminal node
+// failure on a flow-as-tool run emits the paired `runtime.error` bus
+// event (RFC §6.14). Nil is a no-op: the engine's slog path still
+// logs the failure (the Phase 10 behaviour).
+func WithRunErrorHandler(h engine.RunErrorHandler) ComposeOption {
+	return func(c *composeConfig) { c.runErrorHandler = h }
 }
 
 // Compose builds a runnable engine.Engine from a Definition.
@@ -162,7 +175,11 @@ func Compose(def Definition, opts ...ComposeOption) (engine.Engine, error) {
 		}
 		adjs = append(adjs, engine.Adjacency{From: from, To: to})
 	}
-	return engine.New(adjs, engine.WithQueueSize(cfg.queueSize))
+	engOpts := []engine.Option{engine.WithQueueSize(cfg.queueSize)}
+	if cfg.runErrorHandler != nil {
+		engOpts = append(engOpts, engine.WithRunErrorHandler(cfg.runErrorHandler))
+	}
+	return engine.New(adjs, engOpts...)
 }
 
 // RegisterAsTool wires a composed Engine into the Tool catalog

@@ -129,6 +129,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -342,6 +343,13 @@ type DevStack struct {
 	LLMClient llm.LLMClient
 	Memory    memory.MemoryStore
 
+	// Telemetry / Tracer mirror the assembly\'s canonical structured
+	// Logger + OTel tracer (Phase 111f, D-203). Both bridges
+	// (bus→metrics, bus→tracer) are started by the assembly and join
+	// its closer chain — the kit inherits them as a thin caller.
+	Telemetry *telemetry.Logger
+	Tracer    *telemetry.Tracer
+
 	// Skills is non-nil when the cfg declared `skills.driver` (opened
 	// via `skills.SnapshotFromConfig`, mirroring production cmd_dev —
 	// Phase 110c, D-196) or when the caller passed
@@ -527,15 +535,21 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		MetricsOptions: []telemetry.MetricsOption{
 			telemetry.WithMetricReader(sdkmetric.NewManualReader()),
 		},
-		SkipCatalog:  opts.SkipCatalog,
-		SkipSteering: opts.SkipSteering,
-		SkipRunLoop:  opts.SkipRunLoop,
+		// Phase 111f (D-203): mirror production gate assembly — the
+		// Protocol-side scope adapter over the runtime-vocabulary
+		// default, same as cmd/harbor\'s bootDevStack.
+		ApprovalAuthorizer: server.NewProtocolScopeAuthorizer(toolapproval.NewIdentityAuthorizer()),
+		SkipCatalog:        opts.SkipCatalog,
+		SkipSteering:       opts.SkipSteering,
+		SkipRunLoop:        opts.SkipRunLoop,
 	})
 	if core != nil {
 		// The assembled core closes as ONE closer (its own chain runs in
 		// reverse); the test-kit legs appended below close before it.
 		stack.closeFns = append(stack.closeFns, core.Close)
 		stack.Audit = core.Redactor
+		stack.Telemetry = core.Telemetry
+		stack.Tracer = core.Tracer
 		stack.Bus = core.Bus
 		stack.State = core.State
 		stack.Artifacts = core.Artifacts
