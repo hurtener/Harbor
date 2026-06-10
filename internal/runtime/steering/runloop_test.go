@@ -78,12 +78,18 @@ type stubCoordinator struct {
 	requestErr         error
 	resumeErr          error
 	resumedTokens      []pauseresume.Token
+	lastRequest        pauseresume.PauseRequest // captured verbatim — trajectory-threading assertions (Phase 111c)
+	// statusAfterResume, when non-nil, is returned by Status once a
+	// Resume has been attempted — lets the Phase 111c timeout tests
+	// script "the sweeper already reaped this pause" deterministically.
+	statusAfterResume *pauseresume.Status
 }
 
 func (c *stubCoordinator) Request(_ context.Context, req pauseresume.PauseRequest) (pauseresume.Pause, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.requestCalls++
+	c.lastRequest = req
 	if c.requestErr != nil {
 		return pauseresume.Pause{}, c.requestErr
 	}
@@ -105,6 +111,11 @@ func (c *stubCoordinator) Resume(_ context.Context, token pauseresume.Token, dec
 }
 
 func (c *stubCoordinator) Status(_ context.Context, _ pauseresume.Token) (pauseresume.Status, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.statusAfterResume != nil && c.resumeCalls > 0 {
+		return *c.statusAfterResume, nil
+	}
 	return pauseresume.Status{}, nil
 }
 
