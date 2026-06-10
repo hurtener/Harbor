@@ -336,7 +336,7 @@ func TestProvider_NewProvider_OptionalDeps_Defaults(t *testing.T) {
 func TestProvider_PendingFlow_UnknownStateFalse(t *testing.T) {
 	t.Parallel()
 	h := newProviderHarness(t)
-	if h.provider.PendingFlow("never-issued") {
+	if _, ok := h.provider.PendingFlow("never-issued"); ok {
 		t.Fatal("PendingFlow should be false for unknown state")
 	}
 }
