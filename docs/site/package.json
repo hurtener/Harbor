@@ -1,0 +1,16 @@
+{
+  "name": "@harbor/docs-site",
+  "version": "0.1.0",
+  "description": "Harbor's published documentation site. Static site built with VitePress (Phase 103, D-208) from the in-repo docs and deployed to GitHub Pages by .github/workflows/docs.yml.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}

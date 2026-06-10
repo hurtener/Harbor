@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install
 
 help:
 	@echo "Harbor — make targets"
@@ -14,6 +14,8 @@ help:
 	@echo "  wave13-coverage-check  Assert every Console page has a Playwright spec"
 	@echo "  release-build   Build the version-stamped static release artifact into dist/"
 	@echo "  release-dryrun  Exercise the release build end-to-end without a tag (Phase 81)"
+	@echo "  docs            Build the published docs site (Phase 103; VitePress under docs/site/)"
+	@echo "  docs-install    Install the docs/site/ npm dependencies"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -199,8 +201,38 @@ dev:
 		exit 1; \
 	fi
 
+# docs — build Harbor's published documentation site (Phase 103: VitePress
+# under docs/site/, deployed to GitHub Pages by .github/workflows/docs.yml).
+# The site renders the canonical in-repo docs (skills, recipes, CONFIG,
+# glossary, decisions, RFC, master plan, changelog) via include stubs —
+# the repo stays the source of truth. The VitePress build doubles as the
+# link-check gate: a dead site-internal link fails it.
+#
+# Skips gracefully where docs/site/package.json or npm is absent, the same
+# degradation posture as markdownlint above.
+docs:
+	@if [ ! -f docs/site/package.json ]; then \
+		echo "skip docs: docs/site/package.json missing"; \
+	elif ! command -v npm >/dev/null 2>&1; then \
+		echo "skip docs: npm not installed"; \
+	else \
+		( cd docs/site && \
+			if [ ! -d node_modules ]; then npm ci --no-audit --no-fund; fi && \
+			npm run build ) || exit 1; \
+	fi
+
+docs-install:
+	@if [ ! -f docs/site/package.json ]; then \
+		echo "skip docs-install: docs/site/package.json missing"; \
+	elif ! command -v npm >/dev/null 2>&1; then \
+		echo "skip docs-install: npm not installed"; \
+	else \
+		( cd docs/site && npm ci --no-audit --no-fund ) || exit 1; \
+	fi
+
 clean:
 	@rm -rf bin/ dist/ build/
+	@rm -rf docs/site/.vitepress/dist docs/site/.vitepress/cache
 	@find . -name '*.test' -delete
 	@find . -name 'coverage.out' -delete
 	@find . -name 'coverage.html' -delete

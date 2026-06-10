@@ -17,16 +17,68 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-The V1.2 backlog is scoped in `docs/plans/README.md` under the **101–104** band. Tracking:
+(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
 
-- **101** — GitHub Actions Node 24 modernisation (`actions/checkout@v4` → `@v6` etc., before GitHub's 2026-09-16 cutoff).
-- **102** — Godoc hygiene: strip internal phase jargon from godoc-visible Go source under `internal/` and `cmd/` (2,343 occurrences across 360 files at v1.1.6); add a drift-audit hook so the cleanup doesn't decay.
-- **103** — GitHub Pages docs site mirroring Dockyard's VitePress stack.
-- **104** — Composable resilient flows as a load-bearing value proposition (RFC §1 fourth headline prop, README framing modelled on eino's positioning, new `build-a-resilient-flow` operator skill).
-- **105** — Console first-attach UX. Fixes two adoption-blocking bugs: the `Settings → Connected Runtimes` card collects only `name` + `baseURL` (missing the four other fields the connection loader requires — silent no-op); first load with no attached runtime doesn't route to Settings. Also lands a co-resident `harbor console` "Attach to local Runtime" one-click via a loopback-gated `/v1/dev/bootstrap.json` endpoint.
-- **106** — Playground displays the real assistant response. Two bugs: `cmd/harbor/cmd_dev_runloop.go:684` calls `MarkComplete(... TaskResult{})` with an empty result, dropping the planner's answer on the floor; the Playground's chat panel hardcodes `'Message accepted by the Runtime.'` as the agent bubble text and never consumes the actual completion stream. Together: operators see their question + a placeholder, conclude the agent is broken. Surfaced during live YouTube-agent validation.
+## [1.3.0] — 2026-06-10
 
-Each lands as its own PR. No code under V1.2 is shipped in `[Unreleased]` itself — this section is a forward pointer to the phase plans.
+The release where the SDK story becomes real: Harbor is now a `go get`-able
+runtime for external modules, not only a binary.
+
+### Added
+
+- **The public SDK facade (`sdk/`)** — a curated, alias-based re-export tree
+  (RFC §3.6): 20+ packages spanning identity, events, config,
+  tools, llm, memory/state/artifacts/skills, planner, tasks, steering,
+  dispatch, runctx, and the one-call `assemble.Assemble` stack fan-out.
+  External-module importability is enforced by a standing preflight gate that
+  scaffolds and compiles a tool-declaring agent outside the module.
+- **`assemble.Assemble`** — the exported, error-returning, dependency-ordered
+  runtime assembly (D-197); `bootDevStack` and `harbortest/devstack` are thin
+  callers of the one implementation.
+- **`harbor skill import` / `harbor skill rm`** — CLI ingestion for Skills.md
+  playbooks over the exported `importer.ImportAndStore`.
+- **Governance enforcement** — populated `governance.identity_tiers` now
+  enforces cost ceilings, rate limits, and max-tokens caps; the
+  latent-by-default posture is preserved.
+- **Durable pauses** — pause checkpoints carry the run trajectory and survive
+  a Runtime restart; a max-park sweeper reaps expired and crash-orphaned
+  pauses (`DecisionTimeout`, `StateStore.ListKind`).
+- **Tool-OAuth completion** — `auth.CallbackHandler` closes the
+  pause→callback→resume choreography.
+- **Trajectory compression** — long runs compress under
+  `planner.token_budget` via the LLM-backed summariser.
+- **Production telemetry assembly** — the redactor-mandatory Logger, the
+  engine RunErrorHandler, and `BridgeBusToTracer` are wired by the assembly.
+- **The published docs site** — VitePress on GitHub Pages, built from the
+  canonical in-repo docs.
+- The skills `<skills_context>` prompt block is produced by the
+  capability-filtered, redacted virtual Directory with functional operator
+  pinning.
+
+### Changed
+
+- The runtime's production semantics were re-homed out of `cmd/harbor` into
+  exported packages (`internal/runtime/dispatch`, `runctx`, `assemble`; five
+  per-subsystem `FromConfig` projections; the `internal/drivers/prod`
+  aggregator). The devstack mirror is collapsed to thin
+  callers.
+- The approval gate's privilege check is an injected authorizer; the runtime
+  no longer imports Protocol auth (the Protocol import-direction rule now has zero
+  violations).
+- Scaffold templates emit `sdk/` import paths; `harbortest`'s full vocabulary
+  is externally satisfiable; the root README tells the embeddable-SDK story.
+
+### Fixed
+
+- A planner-dispatched approval-gated tool no longer deadlocks the run loop —
+  APPROVE/REJECT drain mid-step.
+- Session GC can no longer reap RUNNING sessions (the `RunningProbe` is wired).
+- The bifrost driver's `Close` now shuts down the provider worker pool
+  (previously leaked ~1000 goroutines per stack close).
+- The pause park's subscribe-after-publish wake window is closed; sqlite
+  `:memory:` stores no longer collide across subsystems; the durable
+  event bus honours publish-context cancellation; per-model
+  `cost_overrides`/`corrections` YAML is no longer silently dropped.
 
 ## [1.1.6] — 2026-05-26
 
