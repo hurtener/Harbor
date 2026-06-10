@@ -23,7 +23,10 @@ Ship a published Harbor docs site on GitHub Pages, mirroring the sibling Dockyar
 
 ## Findings I'm departing from (if any)
 
-None — VitePress is the chosen stack at Dockyard; reusing the choice keeps drift between the two repos low.
+- **The 102-first ordering.** Shipped ahead of Phase 102 for the v1.3.0 cut: the site's pkg.go.dev links work regardless — 102's godoc-jargon cleanup improves what pkg.go.dev renders, not whether the site's links resolve. No docs-site change is required when 102 lands. Recorded in D-208.
+- **Sitemap narrowed.** No dedicated "Releases" / "Contributing" pages — the changelog page plus GitHub's own Releases and `AGENTS.md` surfaces serve both; a mirrored page would add a second copy of release notes with no extra signal. Recorded in D-208.
+- **godoc cross-links scoped to reality.** At ship time no operator skill links a Go package directly (the count is zero); the landing page links the pkg.go.dev module root, and skill/recipe links render as authored. The per-skill criterion is vacuously satisfied until a skill grows such a link — at which point the dead-link gate does not apply (external links are not checked) but ordinary review does.
+- **No theme customisation.** Dockyard's site runs the stock VitePress theme too; "theme matches Dockyard's posture" is satisfied by the shared mechanism, not by a custom `theme/` directory. `docs/site/.vitepress/theme/` is therefore not created.
 
 ## Goals
 
@@ -43,21 +46,21 @@ None — VitePress is the chosen stack at Dockyard; reusing the choice keeps dri
 
 ## Acceptance criteria
 
-- [ ] `docs/site/` (the VitePress project) exists with `package-lock.json` committed.
-- [ ] `.github/workflows/docs.yml` builds the site on every PR + every push to `main`, deploys to GitHub Pages on `main` only.
-- [ ] The build is itself a link-check gate — a dead internal link to a skill / recipe / glossary term / RFC heading fails CI.
-- [ ] Site sitemap renders: Home / Operator skills (with grouped nav matching `docs/skills/INDEX.md`) / Recipes / CONFIG / Glossary / RFC / Decisions log / Changelog / Releases / Contributing.
-- [ ] godoc cross-links: every operator skill linking to a Go package has a working pkg.go.dev link in the rendered site.
-- [ ] CLAUDE.md §18 drift rule is extended to call out the docs site: a change that renames a skill / recipe / glossary term MUST update the navigation manifest in the same PR.
-- [ ] `make docs` builds the site locally (the workflow's local equivalent).
-- [ ] The site honours the existing `docs/skills/INDEX.md` grouping (start / build / drive / observe / ship / frontend) as its top-level skills nav.
+- [x] `docs/site/` (the VitePress project) exists with `package-lock.json` committed.
+- [x] `.github/workflows/docs.yml` builds the site on every PR + every push to `main`, deploys to GitHub Pages on `main` only.
+- [x] The build is itself a link-check gate — a dead site-internal link (a renamed skill, a deleted recipe, a moved reference page) fails CI. Links into the repo tree (Go files, scripts, plans, examples) carry a scoped carve-out; cross-skill links stay fatal (D-208).
+- [x] Site sitemap renders: Home / Operator skills (with grouped nav matching `docs/skills/INDEX.md`) / Recipes / CONFIG / Glossary / RFC / Decisions log / Master plan / Productionization playbook / Changelog. (Releases / Contributing narrowed out — see "Findings I'm departing from".)
+- [x] godoc cross-links: satisfied vacuously at ship time (no skill links a Go package); the landing page links the pkg.go.dev module root. See "Findings I'm departing from".
+- [x] CLAUDE.md §18 drift rule is extended to call out the docs site: a change that renames a skill / recipe / glossary term MUST update the navigation manifest in the same PR.
+- [x] `make docs` builds the site locally (the workflow's local equivalent).
+- [x] The site honours the existing `docs/skills/INDEX.md` grouping (start / build / drive / observe / ship / frontend) as its skills sidebar.
 
 ## Files added or changed
 
 - `docs/site/` — new VitePress project.
   - `docs/site/package.json` + `docs/site/package-lock.json`
   - `docs/site/.vitepress/config.ts` — site config, navigation, theme, search.
-  - `docs/site/.vitepress/theme/` — minor theme customisations (logo, color tokens parallel to Dockyard's).
+  - ~~`docs/site/.vitepress/theme/`~~ — not created; the stock theme matches Dockyard's posture (see "Findings I'm departing from").
   - `docs/site/index.md` — landing page.
 - `.github/workflows/docs.yml` — new workflow (build on PR, build + deploy on `main`).
 - `Makefile` — add `docs` + `docs-serve` targets.

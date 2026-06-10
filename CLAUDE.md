@@ -706,6 +706,8 @@ Harbor is built in **waves** — a wave is ~3–8 phases that form a coherent su
 
 **When two surfaces compete for one skill update.** A change that affects two skills (e.g. a `harbor.yaml` config field renamed AND a CLI flag that reads it) updates BOTH in the same PR. The skill-frontmatter helper lists every `SKILL.md` that names the affected surface; touch them all.
 
+**The docs site renders these surfaces — keep its navigation manifest in the same PR (Phase 103).** The published docs site (`docs/site/`, VitePress, deployed by `.github/workflows/docs.yml`) mirrors the canonical in-repo docs via include stubs: one page per operator skill, one per recipe, one per reference document. A PR that adds, renames, or removes a skill, a recipe, or a mirrored reference doc MUST update the matching stub under `docs/site/` AND the navigation in `docs/site/.vitepress/config.ts` in the same PR. Two trip-wires back this up mechanically: `scripts/smoke/phase-103.sh` fails preflight when a repo skill or recipe has no site page, and the VitePress build (every PR, via the docs workflow) fails on a dead site-internal link.
+
 **Dockyard precedent.** Dockyard's sibling skills (`~/Repos/Dockyard/skills/`) carry the same drift discipline. The cross-references between Harbor and Dockyard skills work because both repos enforce same-PR updates on their respective surfaces.
 
 ---
