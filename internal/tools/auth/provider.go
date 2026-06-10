@@ -518,14 +518,14 @@ func (p *Provider) InitiateFlow(ctx context.Context, source tools.ToolSourceID) 
 // tokens; persists via TokenStore; resumes the parked run via the
 // coordinator; emits tool.auth_completed.
 //
-// CompleteFlow is the resume half of the tool-OAuth pause and the
-// exported seam an OAuth callback handler calls. No production
-// handler exists yet (SDK friction audit,
-// docs/notes/sdk-friction-audit.md §3) — embedders mount their own
-// endpoint at the configured RedirectURI and call this with the
-// returned (state, code). A bare Coordinator.Resume without
-// CompleteFlow re-parks the run immediately (the token is still
-// missing), so this method is the ONLY correct completion path.
+// CompleteFlow is the resume half of the tool-OAuth pause. Its
+// production caller is `auth.CallbackHandler` (Phase 111b, D-199),
+// which `harbor dev` mounts at `GET /v1/tools/oauth/callback`;
+// headless embedders mount the same handler (or call CompleteFlow
+// directly) at whatever path matches the configured RedirectURI. A
+// bare Coordinator.Resume without CompleteFlow re-parks the run
+// immediately (the token is still missing), so this method is the
+// ONLY correct completion path.
 func (p *Provider) CompleteFlow(ctx context.Context, state, code string) (Token, error) {
 	if p.closed.Load() {
 		return Token{}, ErrProviderClosed
@@ -690,13 +690,89 @@ func (p *Provider) ConfigFor(source tools.ToolSourceID) (OAuthConfig, bool) {
 }
 
 // PendingFlow reports whether `state` corresponds to an in-flight
-// flow record (useful for the callback handler to short-circuit
-// validation before the token-exchange round-trip).
-func (p *Provider) PendingFlow(state string) bool {
+// flow record, returning the record's read-only PendingFlowInfo
+// projection. The callback handler (`auth.CallbackHandler`) uses it
+// to locate the owning provider and to rebuild the completing ctx's
+// identity from the record. The lookup does NOT consume the record.
+func (p *Provider) PendingFlow(state string) (PendingFlowInfo, bool) {
 	p.flowsMu.RLock()
-	_, ok := p.flows[state]
+	rec, ok := p.flows[state]
 	p.flowsMu.RUnlock()
-	return ok
+	if !ok {
+		return PendingFlowInfo{}, false
+	}
+	return PendingFlowInfo{
+		Source:       rec.Source,
+		BindingScope: rec.BindingScope,
+		Identity:     rec.Identity,
+		ExpiresAt:    rec.ExpiresAt,
+	}, true
+}
+
+// DenyFlow consumes the flow record for `state` and resumes the
+// associated pause with the typed DecisionReject marker (D-096) — the
+// fail-loud terminal for an upstream authorization denial. The token
+// store is never touched (there is no token); the pause record does
+// not linger to flow-TTL on a denial the authorization server already
+// made final (Phase 111b plan §Risks; recorded in D-199).
+//
+// Identity + admin-scope checks mirror CompleteFlow: the calling ctx
+// must carry the flow's parking identity, and a ScopeAgent flow
+// requires the control scope.
+func (p *Provider) DenyFlow(ctx context.Context, state, reason string) error {
+	if p.closed.Load() {
+		return ErrProviderClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("auth: DenyFlow cancelled: %w", err)
+	}
+	if state == "" {
+		return wrap(ErrFlowNotFound, "empty state")
+	}
+
+	p.flowsMu.Lock()
+	rec, ok := p.flows[state]
+	if ok {
+		delete(p.flows, state)
+	}
+	p.flowsMu.Unlock()
+	if !ok {
+		return ErrFlowNotFound
+	}
+	if p.now().After(rec.ExpiresAt) {
+		return ErrFlowExpired
+	}
+
+	cfg, cfgOK := p.configs[rec.Source]
+	if !cfgOK {
+		return fmt.Errorf("%w: source %q removed mid-flow", ErrConfigInvalid, rec.Source)
+	}
+	if cfg.BindingScope == ScopeAgent && !registry.HasControlScope(ctx) {
+		return ErrAdminScopeRequired
+	}
+
+	id, err := identityFromCtx(ctx)
+	if err != nil {
+		return err
+	}
+	if id != rec.Identity {
+		return ErrStateMismatch
+	}
+
+	// Resume the pause with DecisionReject so the denial is loud on
+	// the canonical event stream (pause.resumed{Decision: reject})
+	// instead of the pause hanging to TTL. `reason` is the OAuth
+	// `error` code from the redirect — caller-controllable surface,
+	// never token / code material.
+	if err := p.coordinator.Resume(ctx, rec.PauseToken, pauseresume.DecisionReject, map[string]any{
+		"source":        string(cfg.Source),
+		"binding":       string(cfg.BindingScope),
+		"denied_reason": reason,
+		"denied_at":     p.now().Format(time.RFC3339),
+	}); err != nil {
+		return fmt.Errorf("auth: coordinator.Resume (deny): %w", err)
+	}
+	return nil
 }
 
 // emitEvent Publishes onto the bus.

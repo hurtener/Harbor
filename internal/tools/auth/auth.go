@@ -186,14 +186,15 @@ type OAuthConfig struct {
 	// Required when AuthorizeURL / TokenURL / RegistrationURL are
 	// empty and dynamic resolution is needed; optional otherwise.
 	ServerURL string
-	// RedirectURI is the redirect_uri the operator's callback
-	// endpoint exposes. Required. NOTE: Harbor does not yet ship a
-	// callback handler — `CompleteFlow` (the resume half of the
-	// flow) is the exported seam a handler will call, and it
-	// currently has no production caller (SDK friction audit,
-	// docs/notes/sdk-friction-audit.md §3). Until that handler
-	// lands, embedders mount their own endpoint that calls
-	// CompleteFlow(state, code).
+	// RedirectURI is the redirect_uri the callback endpoint exposes.
+	// Required. Harbor ships the production callback handler:
+	// `auth.CallbackHandler` (Phase 111b, D-199), mounted by
+	// `harbor dev` at `GET /v1/tools/oauth/callback`
+	// (auth.CallbackPath) — point RedirectURI at
+	// `http://<bind>/v1/tools/oauth/callback` for the dev binary.
+	// Headless embedders mount the same handler on their own mux at
+	// whatever path matches this field (see
+	// docs/recipes/steer-and-resume-a-run.md).
 	RedirectURI string
 	// Scopes is the requested OAuth scopes list.
 	Scopes []string
@@ -281,6 +282,37 @@ type FlowInitiation struct {
 	BindingScope BindingScope
 	// Source echoes the OAuthConfig.Source.
 	Source tools.ToolSourceID
+}
+
+// PendingFlowInfo is the read-only projection of an in-flight
+// authorization-code flow record that `OAuthProvider.PendingFlow`
+// returns. The callback handler (`auth.CallbackHandler`, Phase 111b)
+// consults it to locate the owning provider for a redirect's `state`
+// and to rebuild the completing request's identity scope from the
+// provider's own record — the flow record stays the single source of
+// truth for the identity binding (brief 09: the handler adds zero
+// identity logic of its own).
+//
+// The PKCE verifier and the pause Token are deliberately NOT exposed:
+// the verifier is flow-secret material, and the pause Token's only
+// legitimate consumer is `CompleteFlow` / `DenyFlow` (resuming a pause
+// without completing the flow is the "bare Resume re-parks
+// immediately" trap — the run would just pause again on the still-
+// missing token).
+type PendingFlowInfo struct {
+	// Source is the ToolSourceID the flow was initiated for.
+	Source tools.ToolSourceID
+	// BindingScope echoes the originating OAuthConfig.BindingScope.
+	BindingScope BindingScope
+	// Identity is the (tenant, user, session) triple pinned at
+	// initiation time. The callback handler quotes it back onto the
+	// completing ctx so CompleteFlow's identity cross-check and the
+	// Coordinator's resume-scope check see the parking identity.
+	Identity identity.Identity
+	// ExpiresAt is when the flow record expires (FlowTTL after
+	// initiation). A callback arriving after this time is rejected
+	// with ErrFlowExpired.
+	ExpiresAt time.Time
 }
 
 // ErrAuthRequired is the typed sentinel returned by Provider.Token
@@ -503,8 +535,31 @@ type OAuthProvider interface {
 	// via TokenStore, and (when a pause was allocated by
 	// InitiateFlow) resumes the parked run via the coordinator.
 	// Returns the persisted Token (caller almost never needs it but
-	// it is returned for confirmation / testing).
+	// it is returned for confirmation / testing). The production
+	// caller is `auth.CallbackHandler` (Phase 111b, D-199) — mounted
+	// by `harbor dev` at `GET /v1/tools/oauth/callback` and
+	// mountable on any mux by headless embedders.
 	CompleteFlow(ctx context.Context, state, code string) (Token, error)
+
+	// PendingFlow reports whether `state` corresponds to an in-flight
+	// flow record, returning the record's read-only projection. The
+	// callback handler uses it to locate the owning provider across a
+	// provider map and to rebuild the completing ctx's identity from
+	// the record (the single source of truth for the binding). The
+	// lookup does NOT consume the record — completion / denial does.
+	PendingFlow(state string) (PendingFlowInfo, bool)
+
+	// DenyFlow consumes the in-flight flow record for `state` and
+	// resumes the associated pause record with the typed
+	// DecisionReject marker — the fail-loud terminal for an upstream
+	// authorization denial (`error=access_denied` on the redirect).
+	// The run does not hang to flow-TTL on a denial the provider
+	// already made final (Phase 111b plan §Risks; recorded in D-199).
+	// `reason` is the audit-safe denial reason (the OAuth `error`
+	// code — never token or code material). Sentinels mirror
+	// CompleteFlow: ErrFlowNotFound / ErrFlowExpired /
+	// ErrStateMismatch / ErrAdminScopeRequired.
+	DenyFlow(ctx context.Context, state, reason string) error
 
 	// Revoke removes the token for (ctx identity, source). For
 	// ScopeAgent sources, ctx MUST carry the admin scope. Idempotent.

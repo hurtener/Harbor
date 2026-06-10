@@ -962,6 +962,20 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 			}
 			router.Handle(devdraft.RoutePrefix+"/", mounted)
 		}
+		// Phase 111b (D-199) — mirror production: mount the tool-OAuth
+		// callback endpoint over the SAME Stack.OAuthProviders the
+		// assembly's catalog band produced (thin-caller parity per
+		// 110d / D-197). Mounted WITHOUT auth middleware by design —
+		// the provider redirect carries no Harbor JWT; the one-time
+		// `state` nonce is the capability and the handler restores
+		// identity from the provider's own flow record. Registered
+		// BEFORE the /v1/ catch-all so the exact match wins.
+		var cbOpts []toolauth.CallbackOption
+		if opts.Logger != nil {
+			cbOpts = append(cbOpts, toolauth.WithCallbackLogger(opts.Logger))
+		}
+		router.Handle(toolauth.CallbackRoutePattern,
+			toolauth.CallbackHandler(stack.OAuthProviders, cbOpts...))
 		router.Handle("/v1/", mux)
 		stack.Mux = router
 		// Phase 83v (D-162) — CORS middleware. D-094 source-of-truth
