@@ -1374,6 +1374,30 @@ func TestValidate_Planner_RejectsNegativeMaxSteps(t *testing.T) {
 	}
 }
 
+// TestValidate_Planner_TokenBudget — Phase 111e (D-202): negative
+// rejected loudly with the field path; zero (compression off, the
+// default) and positive both accepted.
+func TestValidate_Planner_TokenBudget(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoadValid(t)
+	cfg.Planner = config.PlannerConfig{Driver: "react", TokenBudget: -1}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate(planner.token_budget=-1) returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "planner.token_budget") {
+		t.Fatalf("Validate err = %q, want it to name planner.token_budget", err.Error())
+	}
+	cfg.Planner.TokenBudget = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.token_budget=0) rejected the compression-off default: %v", err)
+	}
+	cfg.Planner.TokenBudget = 4096
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate(planner.token_budget=4096): %v", err)
+	}
+}
+
 // TestValidate_Planner_AcceptsZeroMaxSteps_AsDriverDefault confirms
 // MaxSteps=0 is the documented "use driver default" sentinel.
 func TestValidate_Planner_AcceptsZeroMaxSteps_AsDriverDefault(t *testing.T) {

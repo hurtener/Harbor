@@ -61,9 +61,19 @@ func TestProvider_FullPauseResumeCycle_UserBound(t *testing.T) {
 
 	// Verify pause record exists and is in StatusPaused.
 	// We don't have the pause token directly (it's internal),
-	// but we can assert PendingFlow returns true.
-	if !h.provider.PendingFlow(state) {
+	// but we can assert PendingFlow returns the flow's projection.
+	info, ok := h.provider.PendingFlow(state)
+	if !ok {
 		t.Fatalf("PendingFlow(%q) = false", state)
+	}
+	if info.Source != h.userCfg.Source {
+		t.Fatalf("PendingFlow Source = %q, want %q", info.Source, h.userCfg.Source)
+	}
+	if info.BindingScope != ScopeUser {
+		t.Fatalf("PendingFlow BindingScope = %q, want %q", info.BindingScope, ScopeUser)
+	}
+	if info.ExpiresAt.IsZero() {
+		t.Fatal("PendingFlow ExpiresAt is zero")
 	}
 
 	// Phase 2: simulate user completing OAuth out of band.

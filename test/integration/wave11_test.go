@@ -227,6 +227,12 @@ func (s *wave11StubProvider) CompleteFlow(_ context.Context, _, _ string) (toola
 	return toolauth.Token{}, nil
 }
 
+func (s *wave11StubProvider) PendingFlow(_ string) (toolauth.PendingFlowInfo, bool) {
+	return toolauth.PendingFlowInfo{}, false
+}
+
+func (s *wave11StubProvider) DenyFlow(_ context.Context, _, _ string) error { return nil }
+
 func (s *wave11StubProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 
 func (s *wave11StubProvider) Close(_ context.Context) error { return nil }

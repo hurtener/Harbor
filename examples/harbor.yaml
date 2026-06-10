@@ -429,6 +429,12 @@ planner:
   # parallel_tool_calls: true       # default true; false → serialise N>1 tool-calls (107c fallback)
   # max_tool_examples_per_tool: 3   # 0/unset → 3
   # skills_context_max: 5            # 0/unset → 5; cap on SkillStore.Search results per run
+  # token_budget: 0                  # 0/unset → trajectory compression OFF (Phase 111e / D-202).
+  #                                  # When > 0: once the trajectory's token estimate exceeds this
+  #                                  # budget, the runtime invokes the LLM-backed trajectory
+  #                                  # summariser and the compacted five-field summary replaces the
+  #                                  # raw step history in subsequent prompts (one compression per
+  #                                  # run, no auto-cascade; requires the llm block).
   # planning_hints:
   #   constraints: |
   #     Never call external download tools without confirming the URL

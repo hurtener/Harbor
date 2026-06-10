@@ -754,6 +754,20 @@ sub-agent that itself emits `_spawn_task` cannot recurse without
 bound. The cap bounds depth, not breadth. Default: `0` → dev-runtime
 default of 4. Validation: >= 0.
 
+### planner.token_budget
+
+Trajectory-compression threshold in estimated tokens (Phase 111e /
+D-202). When > 0, the runtime builds the LLM-backed trajectory
+summariser and the steering run loop invokes it at each step boundary:
+a trajectory whose token estimate exceeds the budget is compacted into
+the five-field `Trajectory.Summary`, which replaces the raw per-step
+history in subsequent prompt builds (the prompt shrinks). One
+compression per run at V1.1.x — no auto-cascade. Emits
+`trajectory.compressed` / `trajectory.compression_failed` on the
+canonical event stream. Requires a configured `llm` block when
+non-zero (fail-loud at boot otherwise). Default: `0` → compression
+disabled. Validation: >= 0.
+
 ### planner.skills_context_max
 
 Cap on skill bodies the dev run loop fetches from

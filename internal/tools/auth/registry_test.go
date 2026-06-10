@@ -111,5 +111,9 @@ func (registryTestProvider) InitiateFlow(_ context.Context, _ tools.ToolSourceID
 func (registryTestProvider) CompleteFlow(_ context.Context, _, _ string) (Token, error) {
 	return Token{}, nil
 }
+func (registryTestProvider) PendingFlow(_ string) (PendingFlowInfo, bool) {
+	return PendingFlowInfo{}, false
+}
+func (registryTestProvider) DenyFlow(_ context.Context, _, _ string) error        { return nil }
 func (registryTestProvider) Revoke(_ context.Context, _ tools.ToolSourceID) error { return nil }
 func (registryTestProvider) Close(_ context.Context) error                        { return nil }
