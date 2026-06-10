@@ -250,7 +250,7 @@ func Defaults() *Config {
 		Artifacts: ArtifactsConfig{
 			Driver:                    "inmem",
 			FSRoot:                    "",
-			HeavyOutputThresholdBytes: 32 * 1024,
+			HeavyOutputThresholdBytes: DefaultHeavyOutputThresholdBytes,
 			// Phase 19: S3-style driver defaults. Region defaults to
 			// us-east-1 (covers MinIO + plain R2); UsePathStyle
 			// defaults to false (AWS native — operators flip on for

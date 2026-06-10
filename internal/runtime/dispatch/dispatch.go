@@ -99,9 +99,11 @@ type toolExecutor struct {
 }
 
 // defaultHeavyThreshold is the heavy-output safety floor applied when
-// the operator-configured threshold is unset / non-positive. Matches
-// the Wave 11 `artifacts.heavy_output_threshold_bytes` default.
-const defaultHeavyThreshold = 32 * 1024
+// the operator-configured threshold is unset / non-positive. Single-
+// sourced on `config.DefaultHeavyOutputThresholdBytes` (the
+// `artifacts.heavy_output_threshold_bytes` default — the
+// DefaultSpawnDepthCap precedent; no literal copy allowed).
+const defaultHeavyThreshold = config.DefaultHeavyOutputThresholdBytes
 
 // spawnAwaitPollInterval is the cadence at which AwaitTask + a retain-turn
 // SpawnTask poll the registry for a terminal status. The registry's
