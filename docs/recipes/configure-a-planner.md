@@ -29,6 +29,68 @@ by the `planner` config block (D-103).
    provider/API-key wiring. A missing provider fails loudly at boot
    (CLAUDE.md §13 — no silent stub fallback).
 
+## Budget + trajectory compression (`token_budget`)
+
+Long-running agents accumulate trajectory — every step's action and
+observation rides into the next prompt. `planner.token_budget`
+(Phase 111e, D-202) caps that growth: when the trajectory's estimated
+token count exceeds the budget, the runtime invokes the LLM-backed
+trajectory summariser once and the compacted five-field summary
+replaces the raw per-step history in subsequent prompt builds (the
+prompt shrinks; the summary preserves the load-bearing facts).
+
+```yaml
+planner:
+  driver: react
+  # 0 (the default) = trajectory compression OFF. When > 0, the
+  # runtime builds the trajectory summariser over the configured llm
+  # block — a budget without an llm block fails loudly at boot.
+  token_budget: 8000
+```
+
+The contract:
+
+- **Zero means off.** `token_budget: 0` (or omitting the key) is
+  byte-identical to the no-compression behaviour — no estimate, no
+  summariser call, no events.
+- **One compression per run** at V1.1.x — no auto-cascade. A
+  trajectory that re-exceeds the budget post-compression grows until
+  the context-window safety net backstops it.
+- Compression is observable: `trajectory.compressed` /
+  `trajectory.compression_failed` ride the canonical event stream
+  under the run's identity quadruple; a summariser failure fails the
+  run loudly, never a silent fall-through to raw history.
+
+### Headless (no config file)
+
+Every piece is independently constructible — the YAML knob is a thin
+carrier over the programmatic surface:
+
+```go
+summ, err := summarizer.NewTrajectorySummariser(llmClient,
+    summarizer.WithTrajectoryModel("cheap-compactor-model"), // optional
+)
+if err != nil { /* handle */ }
+runner := planner.NewCompressionRunner(summ)
+
+spec := steering.RunSpec{
+    Planner:     plnr,
+    Compression: runner, // nil = compression off
+    Base: planner.RunContext{
+        Quadruple:  q,
+        Goal:       goal,
+        Trajectory: traj,
+        Budget:     planner.Budget{TokenBudget: 8000}, // 0 = off
+    },
+}
+fin, err := runLoop.Run(ctx, spec)
+```
+
+`Budget.TokenBudget` is a per-run option on `RunContext`, never
+planner state — the same `CompressionRunner` + `TrajectorySummariser`
+pair is a shared compiled artifact safe across N concurrent runs
+(D-025).
+
 ## Adding a new planner driver
 
 Future planners (Plan-Execute, Workflow, Graph, Deterministic,

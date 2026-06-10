@@ -622,6 +622,11 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 				// Round-7 F11 / D-166 — multimodal input materializer.
 				artifactStore: stack.Artifacts,
+				// Phase 111e (D-202) — trajectory compression: the
+				// assembly-built runner + the operator's token budget
+				// (D-094 mirror of cmd_dev.go's projection).
+				tokenBudget: cfg.Planner.TokenBudget,
+				compression: core.Compression,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1067,6 +1072,11 @@ type DevStackRunLoopDriver struct {
 	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
 	artifactStore artifacts.ArtifactStore
 
+	// Phase 111e (D-202) — trajectory compression projection, the
+	// D-094 mirror of the production driver's fields.
+	tokenBudget int
+	compression *planner.CompressionRunner
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1103,6 +1113,11 @@ type devStackRunLoopDriverOpts struct {
 
 	// Round-7 F11 / D-166 — artifact store for multimodal materializer.
 	artifactStore artifacts.ArtifactStore
+
+	// Phase 111e (D-202) — trajectory compression: the per-run token
+	// budget + the assembly-built runner. Zero/nil = compression off.
+	tokenBudget int
+	compression *planner.CompressionRunner
 }
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
@@ -1140,6 +1155,8 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 		artifactStore:    opts.artifactStore,
+		tokenBudget:      opts.tokenBudget,
+		compression:      opts.compression,
 	}, nil
 }
 
@@ -1386,11 +1403,15 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			OnChunk:          onChunk, // Phase 110b (D-195) — per-token streaming parity
 			InputArtifacts:   inputArtifacts,
 			SessionArtifacts: sessionArtifacts,
+			// Phase 111e (D-202) — per-run token budget for the runloop's
+			// compression gate (D-094 mirror of production).
+			Budget: planner.Budget{TokenBudget: d.tokenBudget},
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,
 		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
+		Compression:      d.compression, // Phase 111e (D-202) — trajectory compression runner
 	}
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {

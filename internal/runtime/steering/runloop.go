@@ -298,6 +298,26 @@ type RunSpec struct {
 	// tool catalog so the planner's CallTool decisions actually run.
 	ToolExecutor ToolExecutor
 
+	// Compression is the optional trajectory-compression runner
+	// (Phase 111e — D-202; the §13 first call site of
+	// planner.CompressionRunner.MaybeCompress). When non-nil AND the
+	// run's Base.Budget.TokenBudget > 0, the runloop invokes
+	// MaybeCompress at each step boundary (after the control drain +
+	// projection, before Planner.Next) so an over-budget trajectory is
+	// compacted into Trajectory.Summary BEFORE the next prompt build —
+	// the React prompt builder's `Summary != nil` branch then renders
+	// the five-field summary instead of the per-step history and the
+	// prompt shrinks. Nil (or a zero TokenBudget) is byte-identical to
+	// the pre-111e behaviour: no estimate, no summariser, no events.
+	//
+	// One compression per run at V1.1.x: the runner is idempotent on
+	// `Trajectory.Summary != nil` (the documented scope fence — RFC
+	// §6.5; re-compaction cadence is the recorded D-202 follow-up).
+	// A MaybeCompress error fails the run LOUDLY (the runner already
+	// emitted trajectory.compression_failed) — never a silent
+	// fall-through that pretends compression happened.
+	Compression *planner.CompressionRunner
+
 	// OnToolDispatched is the optional per-run hook the runloop
 	// invokes after the ToolExecutor returns WITHOUT ERROR (Phase 83m
 	// item 7). The dev binary wires it to
@@ -563,6 +583,23 @@ func (rl *RunLoop) Run(ctx context.Context, spec RunSpec) (planner.Finish, error
 		var stepPending []planner.ToolCallDeferred
 		rc.OnPendingToolCalls = func(pending []planner.ToolCallDeferred) {
 			stepPending = pending
+		}
+
+		// --- COMPRESS (Phase 111e — D-202): the trajectory-compression
+		// gate, after the drain/projection and before Planner.Next so
+		// THIS step's prompt build already sees the compacted view.
+		// The runner owns the semantics (estimate → threshold →
+		// summarise → stamp Summary → emit trajectory.compressed;
+		// idempotent on Summary != nil — one compression per run at
+		// V1.1.x). The gate below keeps the nil-runner / zero-budget
+		// paths byte-identical to the pre-111e loop. An error is
+		// fail-loud: the runner emitted trajectory.compression_failed
+		// and the run terminates with the wrapped error — never a
+		// silent fall-through to raw history (CLAUDE.md §13).
+		if spec.Compression != nil && rc.Budget.TokenBudget > 0 {
+			if cerr := spec.Compression.MaybeCompress(runCtx, rc, rc.Trajectory); cerr != nil {
+				return planner.Finish{}, fmt.Errorf("steering: trajectory compression at step %d: %w", step, cerr)
+			}
 		}
 
 		// --- NEXT: the planner contributes exactly this. ---
