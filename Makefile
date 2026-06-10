@@ -1,4 +1,4 @@
-.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install
+.PHONY: help build console-build test vet lint lint-revive preflight drift-audit markdownlint check-mirror install-hooks clean dev wave13-coverage-check bench bench-check release-build release-dryrun docs docs-install protocol-docs-gen protocol-docs-gen-check
 
 help:
 	@echo "Harbor — make targets"
@@ -16,6 +16,8 @@ help:
 	@echo "  release-dryrun  Exercise the release build end-to-end without a tag (Phase 81)"
 	@echo "  docs            Build the published docs site (Phase 103; VitePress under docs/site/)"
 	@echo "  docs-install    Install the docs/site/ npm dependencies"
+	@echo "  protocol-docs-gen        Regenerate docs/site/protocol from the canonical Protocol sources"
+	@echo "  protocol-docs-gen-check  Regenerate + fail if docs/site/protocol is stale (CI gate)"
 	@echo "  check-mirror    Verify AGENTS.md == CLAUDE.md"
 	@echo "  install-hooks   Install the pre-commit hook (one-time per clone)"
 	@echo "  dev             Run ./bin/harbor dev (skipped until Phase 1 lands)"
@@ -117,6 +119,27 @@ preflight:
 
 drift-audit:
 	@bash scripts/drift-audit.sh
+
+# protocol-docs-gen regenerates the four generated Protocol contract-
+# reference pages (docs/site/protocol/{methods,events,errors,types}.md)
+# from the canonical single sources (Phase 113a, D-209). Run after any
+# change to a Protocol method, error code, event type, or wire type.
+protocol-docs-gen:
+	go run ./cmd/harbor-gen-protocol-docs -out docs/site/protocol
+
+# protocol-docs-gen-check is the drift gate (the D-093 gate shape):
+# regenerate, then assert the working tree is clean over the generated
+# pages. A Go-side wire-surface change without a regenerated reference
+# fails here. Wired into .github/workflows/docs.yml before the
+# VitePress build.
+protocol-docs-gen-check: protocol-docs-gen
+	@if ! git diff --exit-code -- docs/site/protocol; then \
+		echo ""; \
+		echo "ERROR: docs/site/protocol is stale relative to the canonical Protocol sources." >&2; \
+		echo "  Run 'make protocol-docs-gen' and commit the regenerated pages." >&2; \
+		exit 1; \
+	fi
+	@echo "protocol-docs-gen-check: docs/site/protocol is in sync"
 
 # markdownlint runs the SAME markdownlint-cli2 version CI pins
 # (DavidAnson/markdownlint-cli2-action@v15 bundles markdownlint-cli2
