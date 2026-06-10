@@ -39,6 +39,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -328,6 +329,66 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 		return d.translateErr(err, "postgres: delete")
 	}
 	return nil
+}
+
+// ListKind implements state.StateStore — the explicitly-elevated
+// maintenance scan (RFC §6.11, D-207). The prefix matches literally:
+// LIKE metacharacters in kindPrefix are escaped so a prefix containing
+// `%` or `_` cannot widen the scan.
+func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKind(scope, kindPrefix); err != nil {
+		return nil, err
+	}
+
+	const q1 = `
+		SELECT tenant_id, user_id, session_id, run_id, kind, event_id, version, bytes, updated_at
+		FROM state_records
+		WHERE kind LIKE $1 ESCAPE '\'
+	`
+	rows, err := d.db.QueryContext(ctx, q1, escapeLikePrefix(kindPrefix)+"%")
+	if err != nil {
+		return nil, d.translateErr(err, "postgres: list kind")
+	}
+	defer rows.Close()
+
+	var out []state.StateRecord
+	for rows.Next() {
+		var (
+			tenantID, userID, sessionID, runID, kind, eventID string
+			version                                           int
+			buf                                               []byte
+			updatedAt                                         time.Time
+		)
+		if err := rows.Scan(&tenantID, &userID, &sessionID, &runID, &kind, &eventID, &version, &buf, &updatedAt); err != nil {
+			return nil, d.translateErr(err, "postgres: list kind scan")
+		}
+		out = append(out, state.StateRecord{
+			ID: state.EventID(eventID),
+			Identity: identity.Quadruple{
+				Identity: identity.Identity{TenantID: tenantID, UserID: userID, SessionID: sessionID},
+				RunID:    runID,
+			},
+			Kind:      kind,
+			Version:   version,
+			Bytes:     buf,
+			UpdatedAt: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, d.translateErr(err, "postgres: list kind rows")
+	}
+	return out, nil
+}
+
+// escapeLikePrefix escapes the SQL LIKE metacharacters (`%`, `_`, and
+// the escape character itself) so a caller-supplied kind prefix
+// matches literally under `LIKE $1 ESCAPE '\'`.
+func escapeLikePrefix(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // Close implements state.StateStore. Idempotent — a second call is a

@@ -255,9 +255,20 @@ type bus struct {
 }
 
 // Publish validates, redacts, sequences, persists, and fans out ev.
+//
+// Publish honours ctx (CLAUDE.md §5): a cancelled caller context is
+// rejected up front, BEFORE anything is persisted — the publish ctx
+// drives store.Save, and the caller's ctx is the lifetime bound for
+// the persistence (D-207: the run-loop drivers' emit closures publish
+// under their driver-lifetime ctx, so events stop persisting at driver
+// teardown regardless of whether the configured StateStore driver
+// itself reads ctx — the inmem store does no I/O and ignores it).
 func (b *bus) Publish(ctx context.Context, ev events.Event) error {
 	if b.closed.Load() {
 		return events.ErrBusClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("durable: publish cancelled: %w", err)
 	}
 	if err := events.ValidateEvent(ev); err != nil {
 		return err

@@ -117,6 +117,13 @@ func (f *faultyStateStore) Delete(ctx context.Context, id identity.Quadruple, ki
 	return f.inner.Delete(ctx, id, kind)
 }
 
+func (f *faultyStateStore) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
+	if f.faulted() {
+		return nil, errStateDisconnected
+	}
+	return f.inner.ListKind(ctx, scope, kindPrefix)
+}
+
 // Close delegates verbatim — teardown is never faulted (a faulted
 // Close would leak the real store's resources, which is a different
 // failure class than the one this harness injects).

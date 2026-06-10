@@ -349,9 +349,22 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// is never resumed with a nil tool context. Done under the lock so
 	// a concurrent Resume of the same token cannot both pass the
 	// not-yet-resumed check; the registry Get is O(1) (sync.Map load).
-	if err := c.reattachHandles(entry); err != nil {
-		c.mu.Unlock()
-		return err
+	//
+	// DecisionTimeout deliberately SKIPS the re-attach (D-207): a
+	// timeout resume is terminal — the waiting run finishes with
+	// Finish{ConstraintsConflict} and the planner is never re-entered
+	// with the trajectory (D-200 call 4), so the non-serialisable tool
+	// half is never needed. Requiring it would wedge the sweeper's
+	// crash-orphan reap forever: a crashed process's handle registry
+	// is empty by definition, so a crash-orphaned checkpoint whose
+	// trajectory carries handles could never be reaped. Every
+	// run-continuing decision (approve / reject / resume) keeps the
+	// fail-loud re-attach unchanged.
+	if decision != DecisionTimeout {
+		if err := c.reattachHandles(entry); err != nil {
+			c.mu.Unlock()
+			return err
+		}
 	}
 
 	entry.state = StatusResumed

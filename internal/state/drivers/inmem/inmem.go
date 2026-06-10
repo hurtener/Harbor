@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -208,6 +209,31 @@ func (d *driver) Delete(_ context.Context, q identity.Quadruple, kind string) er
 	delete(d.records, key)
 	delete(d.eventIdx, rec.ID)
 	return nil
+}
+
+// ListKind implements state.StateStore — the explicitly-elevated
+// maintenance scan (RFC §6.11, D-207). The prefix matches literally
+// via strings.HasPrefix; results carry value copies with cloned Bytes
+// (same defensive-copy discipline as Load).
+func (d *driver) ListKind(_ context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {
+	if d.closed.Load() {
+		return nil, state.ErrStoreClosed
+	}
+	if err := state.ValidateListKind(scope, kindPrefix); err != nil {
+		return nil, err
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var out []state.StateRecord
+	for key, rec := range d.records {
+		if !strings.HasPrefix(key.Kind, kindPrefix) {
+			continue
+		}
+		rec.Bytes = cloneBytes(rec.Bytes)
+		out = append(out, rec)
+	}
+	return out, nil
 }
 
 // Close implements state.StateStore. Idempotent.

@@ -481,29 +481,21 @@ func TestSweeper_RaceWithLegitimateResume(t *testing.T) {
 }
 
 // TestSweepOnce_ContinuesPastWedgedRecord asserts one failing reap (a
-// lost tool-context handle) does not shield other expired pauses: the
-// wedged record stays parked (loud-logged), the rest are reaped.
+// checkpoint delete the store refuses) does not shield other expired
+// pauses: the wedged record is loud-logged + flagged for the retry
+// phase, the rest are reaped. (Pre-D-207 this test wedged on a lost
+// tool-context handle; timeout resumes now deliberately skip the
+// handle re-attach — see TestSweepOnce_ReapsExpiredPauseWithLostHandle
+// — so the wedge moved to the surviving PRE-reap failure class.)
 func TestSweepOnce_ContinuesPastWedgedRecord(t *testing.T) {
 	t.Parallel()
 	clk := newSweepClock()
-	c := New(WithClock(clk.Now), WithMaxParkDuration(time.Minute)).(*coordinator)
+	store := &kindSelectiveDeleteFailStore{StateStore: sweepStore(t)}
+	c := New(WithClock(clk.Now), WithCheckpointStore(store), WithMaxParkDuration(time.Minute)).(*coordinator)
 	ctx := sweepRunCtx(t, sweepID, "run-wedge")
 
-	// A pause whose trajectory references a handle that is NOT in the
-	// coordinator's registry — Resume (and therefore the reap) fails
-	// loud with trajectory.ErrToolContextLost.
-	wedged, err := c.Request(ctx, PauseRequest{
-		Identity: sweepID,
-		Reason:   ReasonExternalEvent,
-		Trajectory: &trajectory.Trajectory{
-			ToolContext: trajectory.ToolContext{
-				Handles: []trajectory.HandleID{"handle-lost-in-sweep"},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Request(wedged): %v", err)
-	}
+	wedged := requestPaused(t, c, ctx, "run-wedge")
+	store.setFailKind(checkpointKind(wedged))
 	healthy := requestPaused(t, c, ctx, "run-wedge")
 
 	clk.advance(2 * time.Minute)
@@ -521,12 +513,87 @@ func TestSweepOnce_ContinuesPastWedgedRecord(t *testing.T) {
 	if st.State != StatusResumed || st.Decision != DecisionTimeout {
 		t.Fatalf("healthy pause: state=%q decision=%q, want resumed/timeout", st.State, st.Decision)
 	}
-	st, err = c.Status(ctx, wedged.Token)
+	// The wedged record's Resume flipped it (timeout is terminal) but
+	// the failed delete flags it for retryPendingDeletes — never a
+	// silent orphan, never a halt of the pass.
+	st, err = c.Status(ctx, wedged)
 	if err != nil {
 		t.Fatalf("Status(wedged): %v", err)
 	}
-	if st.State != StatusPaused {
-		t.Fatalf("wedged pause state = %q, want paused (failed reap must not flip state)", st.State)
+	if st.State != StatusResumed || st.Decision != DecisionTimeout {
+		t.Fatalf("wedged pause: state=%q decision=%q, want resumed/timeout (flip happens before the delete)", st.State, st.Decision)
+	}
+	if pending := c.pendingDeleteEntries(); len(pending) != 1 || pending[0].token != wedged {
+		t.Fatalf("pendingDeleteEntries = %+v, want exactly the wedged token", pending)
+	}
+}
+
+// kindSelectiveDeleteFailStore wraps a real StateStore and fails
+// Delete for ONE configured kind — the smallest fault injector that
+// wedges a single record's reap without racing the map-ordered sweep.
+type kindSelectiveDeleteFailStore struct {
+	state.StateStore
+	mu       sync.Mutex
+	failKind string
+}
+
+func (f *kindSelectiveDeleteFailStore) setFailKind(kind string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failKind = kind
+}
+
+func (f *kindSelectiveDeleteFailStore) Delete(ctx context.Context, id identity.Quadruple, kind string) error {
+	f.mu.Lock()
+	fail := f.failKind != "" && kind == f.failKind
+	f.mu.Unlock()
+	if fail {
+		return errors.New("kind-selective store: injected delete failure")
+	}
+	return f.StateStore.Delete(ctx, id, kind)
+}
+
+// TestSweepOnce_ReapsExpiredPauseWithLostHandle pins the D-207
+// timeout-skips-reattach semantics: a pause whose trajectory carries a
+// tool-context handle the registry no longer holds (the crash-orphan
+// shape — a dead process's handle registry is empty by definition) IS
+// reaped by the sweeper. Timeout is terminal: the run finishes without
+// re-entering the planner, so the non-serialisable tool half is never
+// needed. Run-continuing decisions keep the fail-loud re-attach —
+// coordinator_test.go + phase50/111c durability E2Es pin that side.
+func TestSweepOnce_ReapsExpiredPauseWithLostHandle(t *testing.T) {
+	t.Parallel()
+	clk := newSweepClock()
+	c := New(WithClock(clk.Now), WithMaxParkDuration(time.Minute)).(*coordinator)
+	ctx := sweepRunCtx(t, sweepID, "run-lost-handle")
+
+	p, err := c.Request(ctx, PauseRequest{
+		Identity: sweepID,
+		Reason:   ReasonExternalEvent,
+		Trajectory: &trajectory.Trajectory{
+			ToolContext: trajectory.ToolContext{
+				Handles: []trajectory.HandleID{"handle-lost-in-sweep"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	clk.advance(2 * time.Minute)
+	reaped, err := sweepOnce(ctx, c, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("sweepOnce reaped = %d, want 1 (lost handle must not wedge a timeout reap)", reaped)
+	}
+	st, err := c.Status(ctx, p.Token)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != StatusResumed || st.Decision != DecisionTimeout {
+		t.Fatalf("state=%q decision=%q, want resumed/timeout", st.State, st.Decision)
 	}
 }
 
@@ -558,6 +625,187 @@ func TestRunSweeper_DefaultIntervalMirrorsValidator(t *testing.T) {
 	if err := build(DefaultSweepInterval - time.Second); err == nil {
 		t.Errorf("max_park_duration just under DefaultSweepInterval (%s) with defaulted sweep_interval accepted — the validator's mirrored default drifted",
 			DefaultSweepInterval-time.Second)
+	}
+}
+
+// TestSweepOnce_RescuesCrashOrphan_ReapsWhenExpired pins the D-207
+// crash-orphan sweep end to end at the unit level: a checkpoint
+// written by one Coordinator ("the process that crashed") with NO
+// in-registry pause on the new Coordinator is rescued by the rescan
+// phase and — its re-stamped deadline already past — reaped in the
+// SAME pass: resumed with DecisionTimeout, checkpoint deleted,
+// pause.resumed emitted.
+func TestSweepOnce_RescuesCrashOrphan_ReapsWhenExpired(t *testing.T) {
+	t.Parallel()
+	clk := newSweepClock()
+	store := sweepStore(t)
+	red := patternsAudit.New()
+	bus := sweepBus(t, red)
+	ctx := sweepRunCtx(t, sweepID, "run-crash")
+
+	// "Process 1": parks a pause durably, then crashes (the
+	// Coordinator is simply dropped — its registry dies with it).
+	c1 := New(WithClock(clk.Now), WithCheckpointStore(store))
+	p, err := c1.Request(ctx, PauseRequest{
+		Identity: sweepID,
+		Reason:   ReasonApprovalRequired,
+		Payload:  map[string]any{"gate": "approval"},
+	})
+	if err != nil {
+		t.Fatalf("Request (process 1): %v", err)
+	}
+
+	// "Process 2": fresh Coordinator over the SAME store. Nothing asks
+	// for the token, so rehydrate-on-demand never fires — pre-D-207
+	// the checkpoint leaked forever.
+	c2 := New(
+		WithClock(clk.Now),
+		WithCheckpointStore(store),
+		WithBus(bus),
+		WithMaxParkDuration(time.Minute),
+	).(*coordinator)
+
+	sub, err := bus.Subscribe(ctx, events.Filter{
+		Tenant:  sweepID.TenantID,
+		User:    sweepID.UserID,
+		Session: sweepID.SessionID,
+		Types:   []events.EventType{EventTypePauseResumed},
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	clk.advance(2 * time.Minute) // past PausedAt + c2's 1m ceiling
+	reaped, err := sweepOnce(ctx, c2, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("sweepOnce reaped = %d, want 1 (the rescued crash orphan)", reaped)
+	}
+	// Destructive-resume contract: the checkpoint is gone.
+	if _, err := loadCheckpoint(ctx, store, p.Token); !errors.Is(err, ErrPauseNotFound) {
+		t.Fatalf("checkpoint after reap: err = %v, want ErrPauseNotFound", err)
+	}
+	st, err := c2.Status(ctx, p.Token)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != StatusResumed || st.Decision != DecisionTimeout {
+		t.Fatalf("state=%q decision=%q, want resumed/timeout", st.State, st.Decision)
+	}
+	select {
+	case ev := <-sub.Events():
+		payload, ok := ev.Payload.(PauseResumedPayload)
+		if !ok {
+			t.Fatalf("pause.resumed payload type = %T", ev.Payload)
+		}
+		if payload.Token != string(p.Token) || payload.Decision != DecisionTimeout {
+			t.Fatalf("pause.resumed payload = %+v, want token %q decision timeout", payload, p.Token)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no pause.resumed within bound for the reaped crash orphan")
+	}
+}
+
+// TestSweepOnce_RescuesCrashOrphan_NotExpiredStaysResumable asserts a
+// rescued orphan whose re-stamped deadline has NOT passed is installed
+// in the registry but not reaped — a legitimate Resume still wins
+// within the ceiling (rescue widens visibility, never shortens the
+// pause's life).
+func TestSweepOnce_RescuesCrashOrphan_NotExpiredStaysResumable(t *testing.T) {
+	t.Parallel()
+	clk := newSweepClock()
+	store := sweepStore(t)
+	ctx := sweepRunCtx(t, sweepID, "run-crash-live")
+
+	c1 := New(WithClock(clk.Now), WithCheckpointStore(store))
+	p, err := c1.Request(ctx, PauseRequest{Identity: sweepID, Reason: ReasonApprovalRequired})
+	if err != nil {
+		t.Fatalf("Request (process 1): %v", err)
+	}
+
+	c2 := New(WithClock(clk.Now), WithCheckpointStore(store), WithMaxParkDuration(time.Hour)).(*coordinator)
+	clk.advance(time.Minute) // well inside the 1h ceiling
+	reaped, err := sweepOnce(ctx, c2, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if reaped != 0 {
+		t.Fatalf("sweepOnce reaped = %d, want 0 (orphan not yet expired)", reaped)
+	}
+	// Rescued into the registry with the re-stamped deadline.
+	c2.mu.Lock()
+	entry, ok := c2.pauses[p.Token]
+	c2.mu.Unlock()
+	if !ok {
+		t.Fatal("crash orphan was not rescued into the registry")
+	}
+	if want := entry.pausedAt.Add(time.Hour); !entry.expiresAt.Equal(want) {
+		t.Fatalf("rescued expiresAt = %v, want re-stamped pausedAt + 1h = %v", entry.expiresAt, want)
+	}
+	// A legitimate Resume still wins.
+	if err := c2.Resume(ctx, p.Token, DecisionApprove, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("legitimate Resume of rescued orphan: %v", err)
+	}
+	st, err := c2.Status(ctx, p.Token)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.State != StatusResumed || st.Decision != DecisionApprove {
+		t.Fatalf("state=%q decision=%q, want resumed/approve", st.State, st.Decision)
+	}
+}
+
+// TestSweepOnce_CorruptOrphanCheckpoint_LoggedAndSkipped asserts an
+// unreadable checkpoint row is loud-logged and left in the store for
+// the operator (never silently deleted), and does not shield healthy
+// orphans in the same pass.
+func TestSweepOnce_CorruptOrphanCheckpoint_LoggedAndSkipped(t *testing.T) {
+	t.Parallel()
+	clk := newSweepClock()
+	store := sweepStore(t)
+	ctx := sweepRunCtx(t, sweepID, "run-corrupt")
+
+	// A garbage row under the checkpoint kind prefix.
+	corruptKind := checkpointKindPrefix + "tok-corrupt"
+	if err := store.Save(ctx, state.StateRecord{
+		ID:       "01HABXXXCORRUPT000",
+		Identity: identity.Quadruple{Identity: sweepID},
+		Kind:     corruptKind,
+		Bytes:    []byte("{not a checkpoint"),
+	}); err != nil {
+		t.Fatalf("Save corrupt row: %v", err)
+	}
+	// Plus a healthy, already-expired orphan from "process 1".
+	c1 := New(WithClock(clk.Now), WithCheckpointStore(store))
+	p, err := c1.Request(ctx, PauseRequest{Identity: sweepID, Reason: ReasonApprovalRequired})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+
+	c2 := New(WithClock(clk.Now), WithCheckpointStore(store), WithMaxParkDuration(time.Minute)).(*coordinator)
+	clk.advance(2 * time.Minute)
+	reaped, err := sweepOnce(ctx, c2, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("sweepOnce reaped = %d, want 1 (the healthy orphan; corrupt row skipped)", reaped)
+	}
+	if _, err := loadCheckpoint(ctx, store, p.Token); !errors.Is(err, ErrPauseNotFound) {
+		t.Fatalf("healthy orphan's checkpoint after reap: err = %v, want ErrPauseNotFound", err)
+	}
+	// The corrupt row survives for the operator.
+	if _, err := store.Load(ctx, identity.Quadruple{Identity: sweepID}, corruptKind); err != nil {
+		t.Fatalf("corrupt checkpoint row must stay in the store (loud, never silently deleted): %v", err)
+	}
+	c2.mu.Lock()
+	_, installed := c2.pauses[Token("tok-corrupt")]
+	c2.mu.Unlock()
+	if installed {
+		t.Fatal("corrupt checkpoint must not install a registry entry")
 	}
 }
 

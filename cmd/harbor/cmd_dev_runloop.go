@@ -608,8 +608,11 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// llm.cost.recorded). The closure (promoted constructor — Phase
 	// 110b, D-195) stamps the run's identity quadruple on every event
 	// and Warns loudly on publish failure, so a bus-close mid-run logs
-	// rather than races.
-	emit := events.IdentityStampingEmitter(d.bus, q, d.logger)
+	// rather than races. The driver-lifetime d.subCtx bounds every
+	// publish (D-207, closing D-195's correction): on the durable bus
+	// driver, persistence stops at driver Close instead of late emits
+	// writing past teardown.
+	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
 
 	// Phase 83m item 7: per-run OnToolDispatched hook that advances
 	// the task's `ToolCount` registry-side after every successful
@@ -635,7 +638,8 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// concurrent runs see N independent closures. The one-line adapter
 	// bridges the constructor's string-typed kind (import direction:
 	// `planner` imports `llm`, so `llm` cannot name `planner.ChunkKind`).
-	chunkPub := llm.NewChunkPublisher(d.bus, q, string(taskID), d.logger)
+	// The driver-lifetime d.subCtx bounds every publish (D-207).
+	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
 		chunkPub(delta, done, string(kind))
 	}

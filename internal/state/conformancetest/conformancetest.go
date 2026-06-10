@@ -56,6 +56,12 @@ type Factory func() (state.StateStore, func())
 //   - Save_CrossSession_Isolation
 //   - Save_AcceptsEmptyRunID (session-scoped state)
 //   - Delete_Idempotent
+//   - ListKind_PrefixMatchesAcrossIdentities (D-207)
+//   - ListKind_RequiresMaintenanceScope (D-207)
+//   - ListKind_EmptyPrefixRejected (D-207)
+//   - ListKind_NoMatchesReturnsEmpty (D-207)
+//   - ListKind_MetacharactersMatchLiterally (D-207)
+//   - ListKind_AfterClose_Errors (D-207)
 //   - Save_AfterClose_Errors
 //   - Concurrent_SaveLoad_NoRace (D-025)
 //   - GoroutineLeak_AfterClose
@@ -388,6 +394,118 @@ func Run(t *testing.T, factory Factory) {
 		_, err = s.LoadByEventID(ctx, rec.ID)
 		if !errors.Is(err, state.ErrNotFound) {
 			t.Errorf("LoadByEventID after Delete: err=%v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("ListKind_PrefixMatchesAcrossIdentities", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		// Two records under the SAME kind prefix in DIFFERENT tenants,
+		// plus one non-matching kind: the maintenance scan must return
+		// both prefix matches (it deliberately crosses identity
+		// boundaries — RFC §6.11 / D-207) and nothing else.
+		seeds := []state.StateRecord{
+			{ID: "01HABXXX00000000LK", Identity: tripleA(), Kind: "pauseresume.checkpoint:tok-A", Bytes: []byte("a")},
+			{ID: "01HABXXX00000001LK", Identity: tripleB(), Kind: "pauseresume.checkpoint:tok-B", Bytes: []byte("b")},
+			{ID: "01HABXXX00000002LK", Identity: tripleA(), Kind: "session.lifecycle", Bytes: []byte("c")},
+		}
+		for _, r := range seeds {
+			if err := s.Save(ctx, r); err != nil {
+				t.Fatalf("Save(%s): %v", r.Kind, err)
+			}
+		}
+		got, err := s.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, "pauseresume.checkpoint:")
+		if err != nil {
+			t.Fatalf("ListKind: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("ListKind returned %d records, want 2: %+v", len(got), got)
+		}
+		byKind := map[string]state.StateRecord{}
+		for _, r := range got {
+			byKind[r.Kind] = r
+		}
+		a, ok := byKind["pauseresume.checkpoint:tok-A"]
+		if !ok {
+			t.Fatal("ListKind missing tenant A's checkpoint record")
+		}
+		if a.Identity != tripleA() || string(a.Bytes) != "a" || a.ID != "01HABXXX00000000LK" {
+			t.Errorf("tenant A record round-trip failed: %+v", a)
+		}
+		b, ok := byKind["pauseresume.checkpoint:tok-B"]
+		if !ok {
+			t.Fatal("ListKind missing tenant B's checkpoint record")
+		}
+		if b.Identity != tripleB() || string(b.Bytes) != "b" {
+			t.Errorf("tenant B record round-trip failed: %+v", b)
+		}
+	})
+
+	t.Run("ListKind_RequiresMaintenanceScope", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		_, err := s.ListKind(context.Background(), state.ListScope{}, "pauseresume.checkpoint:")
+		if !errors.Is(err, state.ErrMaintenanceScopeRequired) {
+			t.Fatalf("err=%v, want errors.Is ErrMaintenanceScopeRequired (the scan must fail closed)", err)
+		}
+	})
+
+	t.Run("ListKind_EmptyPrefixRejected", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		_, err := s.ListKind(context.Background(), state.ListScope{MaintenanceScoped: true}, "")
+		if !errors.Is(err, state.ErrInvalidRecord) {
+			t.Fatalf("err=%v, want errors.Is ErrInvalidRecord (a whole-store dump is never a valid scan)", err)
+		}
+	})
+
+	t.Run("ListKind_NoMatchesReturnsEmpty", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		got, err := s.ListKind(context.Background(), state.ListScope{MaintenanceScoped: true}, "never.seen:")
+		if err != nil {
+			t.Fatalf("ListKind: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("ListKind on empty store returned %d records, want 0", len(got))
+		}
+	})
+
+	t.Run("ListKind_MetacharactersMatchLiterally", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		// `%` and `_` in the prefix must match literally — a SQL driver
+		// that forgets LIKE escaping would match the decoy kinds.
+		seeds := []state.StateRecord{
+			{ID: "01HABXXX00000003LK", Identity: tripleA(), Kind: "a%b_c:match", Bytes: []byte("m")},
+			{ID: "01HABXXX00000004LK", Identity: tripleA(), Kind: "aXbYc:decoy", Bytes: []byte("d")},
+		}
+		for _, r := range seeds {
+			if err := s.Save(ctx, r); err != nil {
+				t.Fatalf("Save(%s): %v", r.Kind, err)
+			}
+		}
+		got, err := s.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, "a%b_c:")
+		if err != nil {
+			t.Fatalf("ListKind: %v", err)
+		}
+		if len(got) != 1 || got[0].Kind != "a%b_c:match" {
+			t.Fatalf("ListKind metacharacter prefix returned %+v, want exactly the literal match", got)
+		}
+	})
+
+	t.Run("ListKind_AfterClose_Errors", func(t *testing.T) {
+		s, cleanup := factory()
+		defer cleanup()
+		ctx := context.Background()
+		if err := s.Close(ctx); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		_, err := s.ListKind(ctx, state.ListScope{MaintenanceScoped: true}, "k:")
+		if !errors.Is(err, state.ErrStoreClosed) {
+			t.Fatalf("err=%v, want errors.Is ErrStoreClosed", err)
 		}
 	})
 

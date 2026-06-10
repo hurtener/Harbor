@@ -16,6 +16,9 @@ type (
 	StateRecord = internal.StateRecord
 	// EventID identifies one appended state event.
 	EventID = internal.EventID
+	// ListScope is the explicit scope claim StateStore.ListKind
+	// requires (the cross-identity maintenance scan — D-207).
+	ListScope = internal.ListScope
 )
 
 // DefaultDriver is the driver name Open resolves when the config
@@ -36,6 +39,9 @@ var (
 	ErrInvalidRecord = internal.ErrInvalidRecord
 	// ErrUnknownDriver — the named state driver is not registered.
 	ErrUnknownDriver = internal.ErrUnknownDriver
+	// ErrMaintenanceScopeRequired — ListKind called without the
+	// explicit maintenance scope claim (D-207).
+	ErrMaintenanceScopeRequired = internal.ErrMaintenanceScopeRequired
 )
 
 // Open resolves the configured state driver and opens it.

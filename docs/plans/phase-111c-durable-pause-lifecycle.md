@@ -88,7 +88,14 @@ None.
   rehydrated on demand (`Status` / `Resume`) but not swept until
   something rehydrates it: `state.StateStore` has no scan-by-kind
   surface, and adding one is a §9 RFC conversation, not a quiet
-  widening. Recorded in D-200 §5.
+  widening. Recorded in D-200 §5. **RESOLVED (2026-06-10, D-207):**
+  the §9 conversation happened — RFC §6.11 gained the one
+  explicitly-elevated maintenance scan (`StateStore.ListKind`, three
+  drivers + conformance suite), and every sweep pass now rescues
+  crash-orphaned `pauseresume.checkpoint:` rows into the registry
+  (`rescanCrashOrphans`) so the unchanged expired-scan + public
+  `Resume` path reaps them at deadline. This boundary no longer
+  exists.
 - **Timeout-wake plumbing (additive).** The "waiting run terminates"
   criterion needs the parked RunLoop to OBSERVE the out-of-band reap.
   Shipped as: an identity-scoped bus subscription while parked
