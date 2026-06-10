@@ -738,9 +738,9 @@ func (e *engine) incomingChannelsFor(name string) []chan messages.Envelope {
 // no handler is installed; the handler is the seam an engine-hosting
 // assembly uses to route the structured RunError into the
 // telemetry.Logger → eventbus adapter → runtime.error bus event
-// chain. No production assembly installs a handler today (`harbor
-// dev` boots no engine graph — docs/notes/sdk-friction-audit.md §3),
-// so the slog path is the only live consumer.
+// chain. The production assembly builds that handler
+// (`assemble.Stack.RunErrorHandler` — Phase 111f, D-203) and flow
+// composition forwards it via `flow.WithRunErrorHandler`.
 //
 // The handler call is best-effort: a panic is recovered and logged.
 // Bus-emit failures must not crash the worker.

@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/tools"
+	"github.com/hurtener/Harbor/internal/tools/approval"
 	"github.com/hurtener/Harbor/internal/tools/auth"
 	"github.com/hurtener/Harbor/internal/tools/catalog"
 )
@@ -139,6 +140,7 @@ func TestConcurrent_ApprovalWrapper_Reuse(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer: approval.NewIdentityAuthorizer(),
 	})
 	if err := b.Apply(context.Background()); err != nil {
 		t.Fatalf("Apply: %v", err)

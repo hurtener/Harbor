@@ -154,10 +154,14 @@ func buildD192Env(t *testing.T) *d192Env {
 			},
 		},
 	}, catalog.Deps{
-		Catalog:      cat,
-		Coordinator:  coord,
-		Bus:          bus,
-		Redactor:     red,
+		Catalog:     cat,
+		Coordinator: coord,
+		Bus:         bus,
+		Redactor:    red,
+		// Phase 111f (D-203): the runtime-vocabulary default — the
+		// steering bridge resolves with the run\'s own identity ctx,
+		// no protocol-scope elevation (the deleted apply.go block).
+		Authorizer:   approval.NewIdentityAuthorizer(),
 		AppliedGates: gates,
 	})
 	if err := b.Apply(context.Background()); err != nil {

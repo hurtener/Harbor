@@ -525,6 +525,10 @@ func TestE2E_Phase64a_FailureMode_UnknownTool(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		// Phase 111f (D-203): the Builder validates the injected
+		// authorizer before resolving names; supply the default so the
+		// unknown-tool failure mode stays the asserted error.
+		Authorizer: approval.NewIdentityAuthorizer(),
 	})
 	bootErr := b.Apply(context.Background())
 	if !errors.Is(bootErr, catalog.ErrToolNotRegistered) {

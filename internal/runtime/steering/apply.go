@@ -7,7 +7,6 @@ import (
 
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/planner"
-	protocolauth "github.com/hurtener/Harbor/internal/protocol/auth"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/tasks"
 	"github.com/hurtener/Harbor/internal/tools/approval"
@@ -335,8 +334,8 @@ func (a *applier) advancePause(ctx context.Context, ev ControlEvent, token pause
 //     mismatch, gate closed, coordinator error). Loud — same posture
 //     as a step-boundary apply failure.
 //
-// The bridge logic itself (scope elevation, gate iteration, the
-// ResolveApproval call) lives in routeThroughGate — ONE implementation
+// The bridge logic itself (gate iteration + the ResolveApproval
+// call) lives in routeThroughGate — ONE implementation
 // shared with the step-boundary path in advancePause (D-097; the D-192
 // requirement that the bridge is never duplicated).
 func (a *applier) routeApprovalControl(ctx context.Context, ev ControlEvent) (bool, error) {
@@ -400,19 +399,16 @@ func (a *applier) routeThroughGate(ctx context.Context, ev ControlEvent, token p
 	// reason and the per-tool events surface it verbatim.
 	reason, _ := stringFromPayload(ev.Payload, "reason")
 
-	// Elevate the bridge ctx to admin scope. The gate's
-	// `ResolveApproval` enforces `protocolauth.HasScope(ctx, ScopeAdmin) ||
-	// HasScope(ctx, ScopeConsoleFleet)` as a defence-in-depth check —
-	// the Phase 54 Protocol edge already vetted the caller's scope at
-	// inbox-Enqueue time via `CheckScope`. The pre-vetted CallerScope
-	// on the drained event attests "this came from a sufficiently-
-	// privileged caller"; the bridge re-stamps the ctx with the
-	// equivalent protocol scope so the gate's check passes. The
-	// elevation is scoped to this single ResolveApproval call (a
-	// derived ctx, never propagated back to the caller).
-	bridgeCtx := protocolauth.WithScopes(ctx,
-		[]protocolauth.Scope{protocolauth.ScopeAdmin, protocolauth.ScopeConsoleFleet})
-
+	// No elevation ceremony (Phase 111f, D-203 — the pre-seam
+	// self-elevation via protocol scopes is deleted). The gate's
+	// injected ResolveAuthorizer speaks runtime vocabulary: the bridge
+	// ctx already carries the run's identity quadruple (the RunLoop's
+	// ctxWithIdentity), which IS the gated pause's originating
+	// identity, so the default IdentityAuthorizer admits the bridge
+	// directly. The Phase 54 Protocol edge already vetted the wire
+	// caller's RFC §6.3 steering scope at inbox-Enqueue time via
+	// `CheckScope`; the gate's authorizer is the defence-in-depth
+	// re-check, one layer up from protocol-auth claims.
 	for _, gate := range a.gates {
 		if gate == nil {
 			// A nil gate in the map is a misconfiguration (a builder
@@ -422,7 +418,7 @@ func (a *applier) routeThroughGate(ctx context.Context, ev ControlEvent, token p
 			// already trapped upstream. Defence-in-depth.
 			continue
 		}
-		err := gate.ResolveApproval(bridgeCtx, token, decision, reason)
+		err := gate.ResolveApproval(ctx, token, decision, reason)
 		if err == nil {
 			// Owning gate resolved the token. Coordinator.Resume was
 			// called inside ResolveApproval; the caller MUST NOT
@@ -632,6 +628,8 @@ func classifyApplyErr(err error) string {
 		return "already_resumed"
 	case errors.Is(err, pauseresume.ErrScopeMismatch):
 		return "scope_mismatch"
+	case errors.Is(err, approval.ErrResolveForbidden):
+		return "resolve_forbidden"
 	case errors.Is(err, pauseresume.ErrPauseNotFound):
 		return "pause_not_found"
 	default:

@@ -52,16 +52,25 @@
 // conceptual feature" — the approval gate is NOT another pause
 // primitive; it is another CONSUMER of the one primitive.
 //
-// # Scope-gating
+// # Resolve authorization (Phase 111f, D-203)
 //
-// Approval resolution is privileged. A non-admin user cannot approve
-// their own tool call (a self-approval would defeat the gate's
-// purpose). `ResolveApproval` enforces
-// `auth.HasScope(ctx, ScopeAdmin) || auth.HasScope(ctx,
-// ScopeConsoleFleet)` — Phase 61's verified-JWT scope claims — and
-// rejects unscoped callers with `ErrApprovalScopeRequired`. The Phase
-// 54 Protocol edge also enforces this at the JWT boundary; the
-// in-process helper is the second line of defence.
+// Approval resolution is privileged. Who may resolve is decided by
+// the INJECTED `GateDeps.Authorizer` seam (see authorizer.go): the
+// runtime-vocabulary default (`IdentityAuthorizer` — the pause's
+// originating identity tuple OR the elevated
+// `registry.WithControlScope` claim) for direct construction and the
+// in-process steering bridge; the Protocol-side
+// `internal/server.ProtocolScopeAuthorizer` adapter (admin /
+// console:fleet — Phase 61's verified-JWT scope claims) at
+// wire-driven gate assembly. Unauthorized resolvers are rejected with
+// a wrapped `ErrResolveForbidden`. The Phase 54 Protocol edge also
+// enforces the RFC §6.3 steering scopes at the JWT boundary; the
+// in-process check is the second line of defence.
+//
+// This package deliberately imports NO `internal/protocol/auth` —
+// per the D-203 direction rule, runtime packages may import
+// `internal/protocol/types` (data), never protocol auth / methods /
+// transports (behaviour).
 //
 // # Audit redaction
 //
@@ -256,13 +265,6 @@ var (
 	// decision that is not one of Approve / Reject. A pending
 	// no-op resolution is rejected.
 	ErrInvalidDecision = errors.New("approval: decision must be approve or reject")
-
-	// ErrApprovalScopeRequired — `ResolveApproval` was called from a
-	// ctx that does NOT carry `auth.ScopeAdmin` OR
-	// `auth.ScopeConsoleFleet`. The gate enforces the scope check in
-	// addition to the Phase 54 Protocol edge's JWT check; defence in
-	// depth.
-	ErrApprovalScopeRequired = errors.New("approval: admin or console:fleet scope required")
 
 	// ErrApprovalNotFound — `ResolveApproval` was called with a
 	// Token the gate has no pending record for. Either the gate

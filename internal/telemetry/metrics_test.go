@@ -16,6 +16,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	patternsaudit "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -375,4 +376,112 @@ func scrape(t *testing.T, h http.Handler) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b)
+}
+
+// --- BridgeBusToMetrics in-package coverage (Phase 111f) -------------------
+//
+// The bridge's primary E2E lives in test/integration (real assembled
+// stack); these unit slices pin the fail-loud nil checks, the drain
+// loop, and the Snapshot projection in-package.
+
+func TestBridgeBusToMetrics_FailsLoudOnNilDeps(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	reg, shutdown, err := telemetry.NewMetricsRegistry(goodCfg(), telemetry.WithMetricReader(reader))
+	if err != nil {
+		t.Fatalf("NewMetricsRegistry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+	bus := mkBridgeBus(t)
+
+	if _, berr := telemetry.BridgeBusToMetrics(context.Background(), nil, reg, events.Filter{Admin: true}); !errors.Is(berr, telemetry.ErrBridgeMisconfigured) {
+		t.Fatalf("nil bus: got %v, want ErrBridgeMisconfigured", berr)
+	}
+	if _, berr := telemetry.BridgeBusToMetrics(context.Background(), bus, nil, events.Filter{Admin: true}); !errors.Is(berr, telemetry.ErrBridgeMisconfigured) {
+		t.Fatalf("nil registry: got %v, want ErrBridgeMisconfigured", berr)
+	}
+}
+
+func TestBridgeBusToMetrics_DrainsAndSnapshots(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	reg, shutdown, err := telemetry.NewMetricsRegistry(goodCfg(), telemetry.WithMetricReader(reader))
+	if err != nil {
+		t.Fatalf("NewMetricsRegistry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+	bus := mkBridgeBus(t)
+
+	stop, err := telemetry.BridgeBusToMetrics(context.Background(), bus, reg, events.Filter{Admin: true})
+	if err != nil {
+		t.Fatalf("BridgeBusToMetrics: %v", err)
+	}
+	publish(t, bus, "task.started", bridgeQuad)
+
+	// Eventually: the drain goroutine is async; poll the Snapshot with
+	// a bounded deadline.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap, serr := reg.Snapshot(context.Background())
+		if serr != nil {
+			t.Fatalf("Snapshot: %v", serr)
+		}
+		found := false
+		for _, c := range snap.Counters {
+			if c.Labels["event_type"] == "task.started" {
+				found = true
+				// Cardinality guard: no identity / run labels ever.
+				for k := range c.Labels {
+					if k == "run_id" || k == "tenant_id" {
+						t.Fatalf("metrics label %q leaked onto counter %q", k, c.Name)
+					}
+				}
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bridge never registered the event; snapshot: %+v", snap)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+
+	// Snapshot on a nil registry fails loud.
+	var nilReg *telemetry.MetricsRegistry
+	if _, serr := nilReg.Snapshot(context.Background()); !errors.Is(serr, telemetry.ErrMetricsNotConfigured) {
+		t.Fatalf("nil-registry Snapshot: got %v, want ErrMetricsNotConfigured", serr)
+	}
+}
+
+// TestLoggerError_NoopEmitterDefault pins the WithBusEmitter-less
+// default: Logger.Error still writes the slog record and the noop
+// emitter is a true no-op (no panic, no bus).
+func TestLoggerError_NoopEmitterDefault(t *testing.T) {
+	var buf strings.Builder
+	var mu sync.Mutex
+	w := &lockedWriter{mu: &mu, sb: &buf}
+	logger, err := telemetry.New(goodCfg(), patternsaudit.New(), telemetry.WithWriter(w))
+	if err != nil {
+		t.Fatalf("telemetry.New: %v", err)
+	}
+	logger.Error(context.Background(), "noop emitter check")
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+	if !strings.Contains(out, "noop emitter check") {
+		t.Fatalf("slog record missing: %q", out)
+	}
+}
+
+// lockedWriter serialises writes for the race detector (the Logger
+// does not serialise writer access itself — see WithWriter's godoc).
+type lockedWriter struct {
+	mu *sync.Mutex
+	sb *strings.Builder
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sb.Write(p)
 }

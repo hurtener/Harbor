@@ -114,14 +114,13 @@ func WithErrorEmissionToEgress(enabled bool) Option {
 }
 
 // WithRunErrorHandler installs the callback the engine fires on
-// terminal node failure. The intended wiring for an engine-hosting
-// assembly is a callback that invokes telemetry.Logger.Error so the
-// wave-2 BusEmitter adapter publishes a runtime.error event — but no
-// production assembly installs one today: `harbor dev` is
-// planner/RunLoop-shaped, boots no engine graph, and boots a bare
-// slog logger rather than telemetry.New (see
-// docs/notes/sdk-friction-audit.md §3). This option is the seam a
-// future engine-hosting runtime (or an embedder) fills. Tests install
+// terminal node failure. The production wiring (Phase 111f, D-203) is
+// a callback that invokes telemetry.Logger.Error so the wave-2
+// BusEmitter adapter publishes a runtime.error event:
+// `assemble.Assemble` builds that handler as `Stack.RunErrorHandler`,
+// and flow composition forwards it via
+// `flow.WithRunErrorHandler(stack.RunErrorHandler)` (see
+// docs/recipes/observe-an-embedded-runtime.md). Tests install
 // recording callbacks to assert the structured RunError shape.
 //
 // When unset, the engine logs the failure via its slog.Logger only
@@ -136,8 +135,9 @@ func WithRunErrorHandler(h RunErrorHandler) Option {
 // WithRunCancelledHandler installs the callback the engine fires
 // after Cancel(runID) observed an active run. The seam for an
 // engine-hosting assembly to translate the notice to a
-// runtime.run_cancelled bus event (none exists in production today —
-// see WithRunErrorHandler); tests use a recording callback. Phase 13.
+// runtime.run_cancelled bus event (no production assembly installs
+// THIS handler today, unlike the run-error handler — see
+// WithRunErrorHandler); tests use a recording callback. Phase 13.
 func WithRunCancelledHandler(h RunCancelledHandler) Option {
 	return func(cfg *engineConfig) {
 		cfg.runCancelledHandler = h

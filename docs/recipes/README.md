@@ -19,6 +19,7 @@ API, read the godoc.
 | [Run the local dev loop](run-harbor-dev.md) | `harbor validate` + `harbor dev` — boot a Runtime on the loopback. |
 | [Test an agent](test-an-agent.md) | The public `harbortest` kit — `RunOnce`, `AssertNoLeaks`, `SimulateFailure`. |
 | [Embed Harbor headless](embed-harbor-headless.md) | `config.Defaults` → `ValidateCore` → `assemble.Assemble` → drive the run loop in your own Go program — no CLI, no Protocol server. |
+| [Observe an embedded runtime](observe-an-embedded-runtime.md) | The bus-first observability chain — redactor → bus → `telemetry.New` Logger → metrics bridge → tracer bridge — and the engine run-error hook. |
 
 ## Conventions used in these recipes
 

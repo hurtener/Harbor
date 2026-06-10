@@ -159,6 +159,7 @@ func TestApply_UnknownTool_FailsLoud(t *testing.T) {
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    red,
+		Authorizer:  approval.NewIdentityAuthorizer(),
 	})
 	err := b.Apply(context.Background())
 	if !errors.Is(err, catalog.ErrToolNotRegistered) {
@@ -181,6 +182,7 @@ func TestApply_UnknownPolicy_FailsLoud(t *testing.T) {
 		Coordinator: coord,
 		Bus:         bus,
 		Redactor:    red,
+		Authorizer:  approval.NewIdentityAuthorizer(),
 	})
 	err := b.Apply(context.Background())
 	if !errors.Is(err, catalog.ErrUnknownApprovalPolicy) {
@@ -242,6 +244,7 @@ func TestApply_ApprovalWrapper_ApproveCycle(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer:   approval.NewIdentityAuthorizer(),
 		AppliedGates: applied,
 	})
 	if err := b.Apply(context.Background()); err != nil {
@@ -329,6 +332,7 @@ func TestApply_ApprovalWrapper_RejectCycle(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer:   approval.NewIdentityAuthorizer(),
 		AppliedGates: applied,
 	})
 	if err := b.Apply(context.Background()); err != nil {
@@ -475,6 +479,7 @@ func TestApply_ApprovalWrapper_NoIdentity_FailsLoud(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer: approval.NewIdentityAuthorizer(),
 	})
 	if err := b.Apply(context.Background()); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -523,6 +528,7 @@ func TestApply_BothMiddleware_ApprovalIsOutermost(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer:     approval.NewIdentityAuthorizer(),
 		OAuthProviders: map[string]auth.OAuthProvider{"github": prov},
 		AppliedGates:   applied,
 	})
@@ -593,6 +599,7 @@ func TestValidateTools_PolicyAllowlistMirrors_ApprovalPackage(t *testing.T) {
 		}
 		b := catalog.New(ents, catalog.Deps{
 			Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+			Authorizer: approval.NewIdentityAuthorizer(),
 		})
 		if err := b.Apply(context.Background()); err != nil {
 			t.Errorf("policy %q: Apply: %v (config allowlist names a policy the builder cannot resolve)", name, err)
@@ -629,6 +636,7 @@ func TestApply_AppliedGates_NilMapDoesNotPanic(t *testing.T) {
 	}
 	b := catalog.New(entries, catalog.Deps{
 		Catalog: cat, Coordinator: coord, Bus: bus, Redactor: red,
+		Authorizer: approval.NewIdentityAuthorizer(),
 	})
 	if err := b.Apply(context.Background()); err != nil {
 		t.Fatalf("Apply: %v", err)
