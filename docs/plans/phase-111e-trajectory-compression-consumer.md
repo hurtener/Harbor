@@ -69,8 +69,13 @@ None.
   `TrajectorySummary`). Import direction is clean
   (`llm/summarizer` → `planner` → `llm`; no cycle) and the home follows the
   Phase 64/D-089 precedent of production LLM-backed summarization living
-  there. The implementation composes a compaction prompt over
-  `Trajectory`'s serialized state, calls `Complete` (structured-output
+  there. The implementation composes a compaction prompt over the
+  trajectory's planner-facing projection — query + goal + per-step action +
+  `LLMObservation`, per-fragment capped (a recorded §4.3 deviation from
+  this plan's original "serialized state" sketch: raw observations may
+  carry heavy content that must never reach the LLM edge per
+  D-026/`ErrContextLeak`; the budget estimator still measures the full
+  `Serialize` bytes) — calls `Complete` (structured-output
   JSON-schema mode for the five fields, with the existing downgrade ladder),
   and parses into `TrajectorySummary` — failing loud per the seam's contract
   (`ErrEmptySummary` on a vacuous result; errors propagate verbatim).
@@ -138,36 +143,36 @@ implementor judges closest), including the budget-zero-means-off contract.
 
 ## Acceptance criteria
 
-- [ ] `summarizer.NewTrajectorySummariser(client, opts...)` ships; satisfies
+- [x] `summarizer.NewTrajectorySummariser(client, opts...)` ships; satisfies
       `planner.Summariser`; compile-time assertion present; package godoc
       disambiguates the two summarizer interfaces; `ErrEmptySummary` +
       verbatim error propagation honoured (the seam's existing fail-loud
       contract, now under a real implementation).
-- [ ] **§13 primitive-with-consumer:** `MaybeCompress` gains its first call
+- [x] **§13 primitive-with-consumer:** `MaybeCompress` gains its first call
       site (the RunLoop) AND `Budget.TokenBudget` gains its first
       production writer (the run-loop projection from
       `planner.token_budget`) in the same phase — the Phase-46 seam is
       un-dormanted end-to-end, not re-documented.
-- [ ] `steering.RunSpec.Compression` field; the step-loop call fires only
+- [x] `steering.RunSpec.Compression` field; the step-loop call fires only
       when `TokenBudget > 0` and the runner is non-nil; nil/zero =
       byte-identical to today (golden no-op test).
-- [ ] Production wiring: `planner.token_budget` config field (validated;
+- [x] Production wiring: `planner.token_budget` config field (validated;
       documented in `examples/harbor.yaml`); the merged 110d assembly
       (`assemble.Assemble` — D-197) constructs summariser + runner when
       non-zero; cmd + devstack inherit as thin callers.
-- [ ] Long-trajectory E2E: compression fires; `trajectory.compressed`
+- [x] Long-trajectory E2E: compression fires; `trajectory.compressed`
       emitted with identity; the next prompt build takes the
       `Summary != nil` path and the prompt shrinks (byte-length assertion);
       the run completes correctly using summary-carried context.
-- [ ] Summariser failure mode: a summariser error fails the compression
+- [x] Summariser failure mode: a summariser error fails the compression
       LOUDLY (`trajectory.compression_failed` emitted, error propagated per
       the runner's contract) — never a silent fall-through that pretends
       compression happened.
-- [ ] Godocs at `compression.go` + `planner.go:563-573` updated to the
+- [x] Godocs at `compression.go` + `planner.go:563-573` updated to the
       now-true behaviour; Wave A dormant markers removed.
-- [ ] `scripts/smoke/phase-111e.sh` asserts the surface (see Smoke script
+- [x] `scripts/smoke/phase-111e.sh` asserts the surface (see Smoke script
       additions).
-- [ ] D-202 (reserved; logged when the phase ships) records: the summariser
+- [x] D-202 (reserved; logged when the phase ships) records: the summariser
       home, the single-compression scope fence, the re-compaction
       follow-up.
 
@@ -307,20 +312,20 @@ implementor judges closest), including the budget-zero-means-off contract.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation: compression state is per-run (no summary
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation: compression state is per-run (no summary
       bleed across concurrent runs — asserted)
-- [ ] **Primitive + consumer in the same wave (§13):** `Summariser` gets its
+- [x] **Primitive + consumer in the same wave (§13):** `Summariser` gets its
       production implementation, `MaybeCompress` its first call site,
       `TokenBudget` its first production writer — all exercised end-to-end
       with a test — checked.
-- [ ] Concurrent-reuse test passes (runner + summariser, N≥100, `-race`)
-- [ ] Integration test wires real drivers end-to-end, asserts identity
+- [x] Concurrent-reuse test passes (runner + summariser, N≥100, `-race`)
+- [x] Integration test wires real drivers end-to-end, asserts identity
       propagation, covers ≥1 failure mode, runs under `-race`
-- [ ] Config field documented in plan + example config + validated
-- [ ] Glossary updated
-- [ ] D-202 filed when the phase ships
+- [x] Config field documented in plan + example config + validated
+- [x] Glossary updated
+- [x] D-202 filed when the phase ships

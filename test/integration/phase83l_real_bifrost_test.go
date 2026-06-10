@@ -239,7 +239,7 @@ const scriptedModel = "google/gemma-4-31b-it"
 // native `tool_calls` block (Phase 107c — D-167). The bifrost driver
 // extracts ToolCalls into `resp.ToolCalls`; the React projector reads
 // them and emits a planner.CallTool decision.
-func scriptedToolCallResponse(callID, toolName, argsJSON string) string {
+func scriptedToolCallResponse(callID, toolName, argsJSON string) string { //nolint:unparam // every current script dispatches text.echo (the one registered builtin); the param keeps call sites explicit
 	return fmt.Sprintf(`{
 		"id":"chatcmpl-83l-test",
 		"object":"chat.completion",

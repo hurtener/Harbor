@@ -34,17 +34,17 @@ type TrajectorySummary = trajectory.Summary
 // runner is a reusable artifact per D-025; the summariser is called
 // under the run's ctx from MaybeCompress).
 //
-// Production consumer pending: Phase 46 shipped the seam, but no
-// production path constructs a Summariser or calls
-// [CompressionRunner.MaybeCompress] today — the only implementations
-// are test-grade (SDK friction audit,
-// docs/notes/sdk-friction-audit.md §3). The intended production shape
-// binds an LLM client + a compaction prompt, invokes
-// [llm.LLMClient.Complete] with the trajectory's state, and parses
-// the response into the five [TrajectorySummary] fields; until that
-// lands (with a MaybeCompress call in the run loop gated on
-// Budget.TokenBudget > 0), trajectory compression does not run on any
-// shipped path.
+// The production implementation is the LLM-backed
+// TrajectorySummariser in internal/llm/summarizer (Phase 111e,
+// D-202): it binds an LLM client + a versioned compaction prompt,
+// invokes [llm.LLMClient.Complete] over the trajectory's
+// planner-facing projection (Phase 35 structured-output JSON-schema
+// mode with the existing downgrade ladder), and parses the response
+// into the five [TrajectorySummary] fields. The production call site
+// is the steering RunLoop's step loop, which calls
+// [CompressionRunner.MaybeCompress] at each step boundary when
+// [Budget.TokenBudget] > 0 — wired from the `planner.token_budget`
+// config knob by the runtime assembly.
 type Summariser interface {
 	Summarise(ctx context.Context, rc RunContext, tr *Trajectory) (*TrajectorySummary, error)
 }
@@ -94,9 +94,10 @@ func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 }
 
 // CompressionRunner drives the "estimate → optional summariser → stamp
-// Trajectory.Summary" loop the runtime invokes between planner steps
-// (or at any cadence the engine decides — Phase 47+ owns the cadence
-// policy).
+// Trajectory.Summary" loop the runtime invokes between planner steps.
+// The production cadence is the steering RunLoop's step boundary
+// (Phase 111e — one MaybeCompress call per step, gated on
+// Budget.TokenBudget > 0 and a configured runner).
 //
 // Reusable artifact (D-025): one constructed instance is safe to
 // share across N concurrent runs; per-call state lives entirely in
@@ -105,9 +106,10 @@ func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 //
 // **Idempotent on `tr.Summary != nil`.** A second call with an
 // already-stamped trajectory returns nil without invoking the
-// summariser. The engine that owns the cadence policy is the layer
-// responsible for clearing the summary when re-compaction is needed
-// (a Phase 47+ concern; Phase 46 ships the V1 idempotency contract).
+// summariser — this short-circuit IS the V1.1.x "one compression per
+// run, no auto-cascade" scope fence (RFC §6.5; re-compaction cadence
+// is the recorded D-202 follow-up). The layer that owns a future
+// re-compaction policy clears the summary before re-invoking.
 type CompressionRunner struct {
 	summariser Summariser
 	estimator  TokenEstimator
@@ -204,9 +206,9 @@ func (r *CompressionRunner) MaybeCompress(
 		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: %w", ErrNilTrajectory)
 	}
 
-	// Idempotency: already compressed, nothing to do. The engine that
-	// owns the cadence policy clears tr.Summary when re-compaction is
-	// needed (Phase 47+ concern); Phase 46 ships the V1 short-circuit.
+	// Idempotency: already compressed, nothing to do. This is the
+	// V1.1.x single-compression scope fence (D-202); a future
+	// re-compaction policy clears tr.Summary before re-invoking.
 	if tr.Summary != nil {
 		return nil
 	}
