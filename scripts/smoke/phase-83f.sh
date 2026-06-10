@@ -42,14 +42,16 @@ assert_grep_present 'planner.skills_context_max' "internal/config/validate.go" \
 # ----------------------------------------------------------------------------
 assert_grep_present 'memory.MemoryStore' "cmd/harbor/cmd_dev_runloop.go" \
     "perTaskRunLoopDriver opts carry the MemoryStore dep (D-149)"
-assert_grep_present 'skills.SkillStore' "cmd/harbor/cmd_dev_runloop.go" \
-    "perTaskRunLoopDriver opts carry the SkillStore dep (D-149)"
+# Phase 111d (D-201): the D-149 SkillStore dep became the Phase-39
+# Directory — the `<skills_context>` producer the driver consumes.
+assert_grep_present 'skillsDirectory \*skills.Directory' "cmd/harbor/cmd_dev_runloop.go" \
+    "perTaskRunLoopDriver opts carry the skills Directory dep (D-149 → D-201)"
 # Phase 110b (D-195) re-homed the projection helpers to the exported
 # internal/runtime/runctx package; the run loop is a thin caller.
 assert_grep_present 'runctx\.ProjectMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
     "runloop calls promoted runctx.ProjectMemoryBlocks (LLMContextPatch → MemoryBlocks; 110b)"
-assert_grep_present 'runctx\.ProjectSkillsContext' "cmd/harbor/cmd_dev_runloop.go" \
-    "runloop calls promoted runctx.ProjectSkillsContext (RankedSkill → SkillsContext; 110b)"
+assert_grep_present 'runctx\.ProjectSkillsDirectory' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop projects the Directory view via runctx.ProjectSkillsDirectory (110b → 111d)"
 assert_grep_present 'RepairCounters{' "cmd/harbor/cmd_dev_runloop.go" \
     "per-run *RepairCounters allocated in runOne (D-145 producer-side, D-149)"
 assert_grep_present 'runtime_fetch_error' "cmd/harbor/cmd_dev_runloop.go" \
@@ -67,7 +69,7 @@ assert_grep_present 'planner\.HintsFromConfig' "cmd/harbor/cmd_dev.go" \
 # calls the SAME promoted projections production calls.
 assert_grep_present 'runctx\.ProjectMemoryBlocks' "harbortest/devstack/devstack.go" \
     "devstack calls promoted runctx.ProjectMemoryBlocks (mirror collapsed; 110b)"
-assert_grep_present 'runctx\.ProjectSkillsContext' "harbortest/devstack/devstack.go" \
-    "devstack calls promoted runctx.ProjectSkillsContext (mirror collapsed; 110b)"
+assert_grep_present 'runctx\.ProjectSkillsDirectory' "harbortest/devstack/devstack.go" \
+    "devstack projects the Directory view via runctx.ProjectSkillsDirectory (mirror; 110b → 111d)"
 
 smoke_summary

@@ -47,6 +47,8 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
 	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
 
+	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
+
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
 	// it never appears in YAML / logging output.
@@ -421,9 +423,37 @@ type MemoryConfig struct {
 // the StateStore + MemoryStore drivers (bare file path or `file:`
 // URI for SQLite; `:memory:` honoured for tests). `secret:"true"`
 // redacts the value in audit-redacted logs.
+//
+// `Directory` shapes the Phase-39 virtual directory the run loop
+// injects as the per-turn `<skills_context>` prompt block (Phase
+// 111d — D-201). All fields optional; restart-required.
 type SkillsConfig struct {
-	Driver string `yaml:"driver,omitempty"`
-	DSN    string `yaml:"dsn,omitempty" secret:"true"`
+	Driver    string                `yaml:"driver,omitempty"`
+	DSN       string                `yaml:"dsn,omitempty" secret:"true"`
+	Directory SkillsDirectoryConfig `yaml:"directory,omitempty"`
+}
+
+// SkillsDirectoryConfig configures the skills virtual directory
+// (Phase 39 / D-052) the run loop consumes as the `<skills_context>`
+// producer (Phase 111d — D-201). The injected block is a bounded,
+// stable, pinned-then-recent browse window — identity-scoped,
+// capability-filtered, redacted; per-query relevance retrieval stays
+// the LLM's job via the `skill_search` meta-tool.
+//
+//   - `Pinned` anchors the named skills at the top of every view, in
+//     declaration order. Pinning is an ORDERING preference — pinned
+//     skills are never exempt from the capability filter.
+//   - `MaxEntries` caps the view length. 0 (the default) falls back
+//     to `planner.skills_context_max`'s resolved value (default 5)
+//     so the pre-111d injection-budget knob keeps its meaning;
+//     explicit values must sit in [1, 200].
+//   - `Selection` orders the unpinned remainder:
+//     `pinned_then_recent` (default — UpdatedAt DESC) or
+//     `pinned_then_top` (UseCount DESC).
+type SkillsDirectoryConfig struct {
+	Pinned     []string `yaml:"pinned,omitempty"`
+	MaxEntries int      `yaml:"max_entries,omitempty"`
+	Selection  string   `yaml:"selection,omitempty"`
 }
 
 // TasksConfig configures the TaskRegistry driver and the Phase 21
@@ -470,6 +500,30 @@ type SessionsConfig struct {
 	IdleTTL       time.Duration `yaml:"idle_ttl"`
 	HardCap       time.Duration `yaml:"hard_cap"`
 	SweepInterval time.Duration `yaml:"sweep_interval"`
+}
+
+// PauseResumeConfig configures the pause lifecycle (Phase 111c /
+// D-200; RFC §3.3 + §6.3).
+//
+// `MaxParkDuration` is the ceiling on how long a pause may stay parked
+// before the runtime's pause sweeper resumes it with the typed
+// `timeout` Decision (`pause.resumed`, D-096) and the waiting run
+// terminates as a constraints-conflict. Zero (the default) means
+// pauses never expire and the sweeper is not started — the pre-111c
+// behaviour. Negative values are rejected by validation.
+//
+// `SweepInterval` is the sweeper's scan cadence. Default 1m; 0 means
+// the default applies (the block is off-by-default, so a hand-built
+// Config without it stays valid); negative values are rejected. When
+// expiry is enabled it must not exceed `MaxParkDuration` (a pause
+// must not overstay its deadline by more than one sweep).
+//
+// Fields are not hot-reloadable in V1 (changing the sweep cadence at
+// runtime would race with the sweeper goroutine — same posture as
+// SessionsConfig).
+type PauseResumeConfig struct {
+	MaxParkDuration time.Duration `yaml:"max_park_duration"`
+	SweepInterval   time.Duration `yaml:"sweep_interval"`
 }
 
 // ArtifactsConfig configures the ArtifactStore driver, the

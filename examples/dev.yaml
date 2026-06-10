@@ -102,6 +102,15 @@ sessions:
   hard_cap: 720h
   sweep_interval: 15m
 
+# Phase 111c (D-200) — pause lifecycle. 0 = pauses never expire (the
+# default; the sweeper is not started). Set e.g. `max_park_duration:
+# 24h` to reap pauses nobody answered; expired pauses resume with the
+# typed `timeout` Decision and the waiting run terminates as a
+# constraints-conflict.
+pauseresume:
+  max_park_duration: 0s
+  sweep_interval: 1m
+
 artifacts:
   driver: inmem
   heavy_output_threshold_bytes: 32768
@@ -166,8 +175,17 @@ tools:
   #     - text.echo      # smoke-test action
   #     - tool_search    # LLM discovers deferred tools by capability
   #     - tool_get       # LLM fetches a tool's full schema
-  #     - skill_search   # LLM discovers skills (Phase 37 SkillStore)
-  #     - skill_get      # LLM fetches a skill body
+  #     - skill_search   # LLM discovers skills (capability-filtered, Phase 111d)
+  #     - skill_get      # LLM fetches skill bodies (budget-fit + redacted)
+  #     - skill_list     # LLM enumerates the skill catalog (paged, summary-only)
+  #
+  # Deliberate opt-in (Phase 111d / D-201 — NOT in any recommended
+  # set): `skill_propose` lets the LLM author + persist new skills
+  # (Origin=generated; pack skills protected; audit-mandatory).
+  #
+  #   built_in:
+  #     # ...the discovery set...
+  #     - skill_propose
   #
   # Optional escape-hatch (Phase 107c step 10 — D-167):
   #

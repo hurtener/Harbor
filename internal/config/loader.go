@@ -240,6 +240,13 @@ func Defaults() *Config {
 			HardCap:       720 * time.Hour,
 			SweepInterval: 15 * time.Minute,
 		},
+		// Phase 111c (D-200) — pause lifecycle. MaxParkDuration 0 = pauses
+		// never expire and no sweeper is started (the documented default);
+		// SweepInterval is the sweeper cadence once an operator opts in.
+		PauseResume: PauseResumeConfig{
+			MaxParkDuration: 0,
+			SweepInterval:   time.Minute,
+		},
 		Artifacts: ArtifactsConfig{
 			Driver:                    "inmem",
 			FSRoot:                    "",

@@ -44,10 +44,12 @@ const (
 
 	// DecisionTimeout — a deadline-driven resume (the pause's max-park
 	// window elapsed and the runtime resumed it to surface a
-	// constraint-conflict). Forward-looking: Phase 50 does not yet
-	// emit this, but the enum value is reserved so a future
-	// pause-deadline implementor does not have to widen the wire
-	// shape.
+	// constraint-conflict). Produced by the pause sweeper (sweeper.go,
+	// Phase 111c / D-200) when a pause outlives the Coordinator's
+	// WithMaxParkDuration ceiling. Terminal for the waiting run: the
+	// steering RunLoop finishes it with Finish{ConstraintsConflict}
+	// (the D-071 REJECT posture applied to deadlines), never a silent
+	// unpark-and-continue.
 	DecisionTimeout Decision = "timeout"
 )
 

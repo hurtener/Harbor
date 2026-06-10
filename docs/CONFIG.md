@@ -341,6 +341,27 @@ block disables the subsystem). Validation: when set, `localdb`
 Driver connection string. Default: empty. Validation: required when
 `driver = "localdb"`. Secret: redacted.
 
+### skills.directory.pinned
+
+Skill names anchored at the top of every `<skills_context>` view, in
+declaration order (Phase 111d — D-201). Pinning is an ordering
+preference only — pinned skills are never exempt from the capability
+filter. Default: empty. Validation: entries non-empty and unique;
+requires `skills.driver` to be set.
+
+### skills.directory.max_entries
+
+Cap on the injected directory view's length. Default: `0` — falls
+back to `planner.skills_context_max`'s resolved value (default 5) so
+the pre-111d injection-budget knob keeps its meaning. Validation: `0`
+or in `[1, 200]`.
+
+### skills.directory.selection
+
+Ordering of the unpinned remainder. Default: `pinned_then_recent`
+(UpdatedAt DESC). Validation: when set, one of `pinned_then_recent`,
+`pinned_then_top` (UseCount DESC).
+
 ---
 
 ## Tasks
@@ -377,6 +398,24 @@ Validation: > 0.
 
 Background sweeper period. Default: `15m`. Validation: > 0 AND <=
 `idle_ttl`.
+
+---
+
+## Pause/Resume
+
+### pauseresume.max_park_duration
+
+Ceiling on how long a pause may stay parked before the pause sweeper
+resumes it with the typed `timeout` Decision (`pause.resumed`, D-096)
+and the waiting run terminates as a constraints-conflict (Phase 111c /
+D-200). Default: `0` — pauses never expire and the sweeper is not
+started. Validation: >= 0.
+
+### pauseresume.sweep_interval
+
+Pause-sweeper scan period (consumed only when `max_park_duration` >
+0). Default: `1m` (0 = the default applies). Validation: >= 0 AND <=
+`max_park_duration` when both are set.
 
 ---
 

@@ -76,6 +76,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateGovernance,
 		c.validateEvents,
 		c.validateSessions,
+		c.validatePauseResume,
 		c.validateArtifacts,
 		c.validateTasks,
 		c.validateDistributed,
@@ -558,6 +559,32 @@ func (c *Config) validateSessions() error {
 	return nil
 }
 
+// validatePauseResume validates the Phase 111c (D-200) pause-lifecycle
+// block. Both fields are zero-meaning-default because the block is
+// OFF by default (unlike the always-on sessions sweeper):
+// max_park_duration 0 = pauses never expire and no sweeper starts;
+// sweep_interval 0 = the documented 1m default applies (Defaults()
+// sets it; a hand-built Config without the block stays valid).
+// Negative values are rejected loud rather than silently treated as
+// the default. When both are set, the sweep cadence must not exceed
+// the park ceiling — otherwise a pause overstays its deadline by more
+// than one sweep (same posture as sessions.sweep_interval vs
+// idle_ttl).
+func (c *Config) validatePauseResume() error {
+	if c.PauseResume.MaxParkDuration < 0 {
+		return fieldError("pauseresume.max_park_duration", "must be >= 0 (0 = pauses never expire)")
+	}
+	if c.PauseResume.SweepInterval < 0 {
+		return fieldError("pauseresume.sweep_interval", "must be >= 0 (0 = the documented 1m default)")
+	}
+	if c.PauseResume.MaxParkDuration > 0 && c.PauseResume.SweepInterval > c.PauseResume.MaxParkDuration {
+		return fieldError("pauseresume.sweep_interval",
+			fmt.Sprintf("must be <= pauseresume.max_park_duration (%s) so a pause can't overstay its deadline by more than one sweep; got %s",
+				c.PauseResume.MaxParkDuration, c.PauseResume.SweepInterval))
+	}
+	return nil
+}
+
 // allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
 // 17 ships `inmem` + `fs`; Phase 18 adds `sqlite` and `postgres`;
 // Phase 19 adds the S3-style driver. The validator only checks
@@ -736,7 +763,19 @@ var skillsDriversRequiringDSN = map[string]struct{}{
 // When the operator HAS supplied any skills field, the validator
 // enforces driver-allowlist + driver-requires-DSN.
 func (c *Config) validateSkills() error {
+	// Directory shape-validation runs unconditionally so a typo'd
+	// `skills.directory` block fails at load time even when the
+	// parent store fields are empty (Phase 111d — D-201).
+	if err := c.validateSkillsDirectory(); err != nil {
+		return err
+	}
 	if c.Skills.Driver == "" && c.Skills.DSN == "" {
+		if len(c.Skills.Directory.Pinned) > 0 ||
+			c.Skills.Directory.MaxEntries != 0 ||
+			c.Skills.Directory.Selection != "" {
+			return fieldError("skills.driver",
+				"must not be empty when skills.directory is set (the directory browses the configured store)")
+		}
 		return nil
 	}
 	if c.Skills.Driver == "" {
@@ -754,6 +793,49 @@ func (c *Config) validateSkills() error {
 				fmt.Sprintf("must not be empty when driver=%q (use \":memory:\" for ephemeral)",
 					c.Skills.Driver))
 		}
+	}
+	return nil
+}
+
+// allowedSkillsDirectorySelections mirrors the `skills.Selection`
+// canonical values (`internal/skills/directory.go`). Duplicated, not
+// imported — `internal/config` MUST NOT depend on the skills package
+// (AGENTS.md §4.4). Drift is caught by
+// `TestDirectoryFromConfig_SelectionAllowlistMirrorsValidator` in
+// `internal/skills/from_config_test.go`.
+var allowedSkillsDirectorySelections = map[string]struct{}{
+	"pinned_then_recent": {},
+	"pinned_then_top":    {},
+}
+
+// validateSkillsDirectory validates the optional `skills.directory`
+// block (Phase 111d — D-201). Runs even when the parent skills block
+// is empty so a typo'd directory block under a not-yet-configured
+// store still fails at load time rather than silently no-oping.
+func (c *Config) validateSkillsDirectory() error {
+	d := c.Skills.Directory
+	if d.MaxEntries != 0 && (d.MaxEntries < 1 || d.MaxEntries > 200) {
+		return fieldError("skills.directory.max_entries",
+			fmt.Sprintf("must be 0 (default) or in [1, 200], got %d", d.MaxEntries))
+	}
+	if d.Selection != "" {
+		if _, ok := allowedSkillsDirectorySelections[d.Selection]; !ok {
+			return fieldError("skills.directory.selection",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedSkillsDirectorySelections), d.Selection))
+		}
+	}
+	seen := make(map[string]struct{}, len(d.Pinned))
+	for i, name := range d.Pinned {
+		prefix := fmt.Sprintf("skills.directory.pinned[%d]", i)
+		if name == "" {
+			return fieldError(prefix, "must not be empty")
+		}
+		if _, dup := seen[name]; dup {
+			return fieldError(prefix,
+				fmt.Sprintf("duplicate pinned skill %q (names must be unique)", name))
+		}
+		seen[name] = struct{}{}
 	}
 	return nil
 }
@@ -1144,6 +1226,12 @@ var allowedBuiltInTools = map[string]struct{}{
 	"skill_get":          {},
 	"declarative_action": {},
 	"artifact_fetch":     {},
+	// Phase 111d / D-201 — the canonical skills surface. `skill_list`
+	// joins the discovery set; `skill_propose` (persistence-capable
+	// generator) is a deliberate operator opt-in, absent from every
+	// recommended default.
+	"skill_list":    {},
+	"skill_propose": {},
 }
 
 // KnownBuiltInTools returns the sorted built-in allowlist as a slice.

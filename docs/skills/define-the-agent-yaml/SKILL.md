@@ -119,7 +119,13 @@ Skills are token-savvy DB-backed playbooks the planner searches by name. Distinc
 skills:
   driver: localdb
   dsn: ./my-agent-skills.sqlite                # WAL trap caveat applies
+  directory:                                   # optional — the per-turn <skills_context> browse window
+    pinned: [triage-incident]                  # anchored first, declaration order
+    max_entries: 10                            # 0/unset → planner.skills_context_max (default 5)
+    selection: pinned_then_recent              # or pinned_then_top
 ```
+
+Ingest skills with `harbor skill import <path>` and remove them with `harbor skill rm <name>` — both operate on this block's store.
 
 ### `governance`
 
@@ -154,6 +160,7 @@ The scaffold drops a commented summary of advanced defaults. The full reference 
 - **`artifacts`**: `driver` (`inmem` / `fs` / `sqlite` / `postgres`), `heavy_output_threshold_bytes` (the LLM-edge context-leak guard, default 32768 — see RFC §6.5).
 - **`events`**: `driver` (`inmem` / `sqlite` / `postgres`); events power the Console's live streaming.
 - **`sessions`**: `idle_ttl` (default 24h), `hard_cap` (default 720h / 30d), `sweep_interval`.
+- **`pauseresume`**: `max_park_duration` (ceiling on how long a pause — HITL approval, tool OAuth — may stay parked before the runtime resumes it with the typed `timeout` decision and the run ends as a constraints-conflict; default `0` = never expire), `sweep_interval` (sweeper cadence, default 1m).
 - **`tasks`**: `driver` (`inprocess` only in V1.1).
 - **`distributed`**: `bus_driver` + `remote_driver` (V1.1 ships `loopback` only; durable bus + A2A wire are post-V1).
 

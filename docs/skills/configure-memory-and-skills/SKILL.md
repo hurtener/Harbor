@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   framework: harbor
   surface: memory
-  verbs: ""
+  verbs: "skill import, skill rm"
 ---
 
 # Configure memory + runtime skills
@@ -63,34 +63,54 @@ Every memory write/read is keyed by `(tenant_id, user_id, session_id)`. The plan
 
 Runtime skills are typed, token-savvy reusable patterns the planner can ask for by name mid-reasoning. They originate from two sources:
 
-- **Skills.md importer** — you write a `Skills.md` file with one `## skill-name` heading per skill, and the importer loads it into the skill catalog. NOTE: there is currently **no CLI ingestion verb** — the importer is a Go-level surface (`internal/skills/importer`); a `harbor skill import` verb is tracked as follow-up work (see `docs/notes/sdk-friction-audit.md` §3).
-- **In-runtime generator** — the planner itself can author a new skill at runtime (e.g. "this kind of question seems common — let me save the steps as a skill") and persist it.
+- **Skills.md importer** — you write a Skills.md file (one skill per file: YAML frontmatter + a `## Steps` body) and ingest it with `harbor skill import <path>`.
+- **In-runtime generator** — the planner itself can author a new skill at runtime (e.g. "this kind of question seems common — let me save the steps as a skill") and persist it via the `skill_propose` built-in (opt-in; see below).
 
 Both sources land in the same SQLite-backed catalog.
 
 ### Example: a Skills.md file
 
+One skill per file. The frontmatter `trigger:` is the planner-visible match cue (mandatory), `## Steps` needs at least one item; `## Preconditions` and `## Failure modes` are optional sections.
+
 ```markdown
-# Skills
+---
+name: triage-incident
+title: Triage an incident
+trigger: when a support ticket needs classification
+tags: [support, triage]
+---
+Classify a support ticket into {bug, feature, question} and recommend the next action.
 
-## summarise-paper
-Compact a 10-page paper to a 3-bullet summary + 1-sentence verdict.
+## Steps
 
-1. Read abstract + conclusion.
-2. Note the 3 most-cited prior works.
-3. Output: bullet points, then verdict.
-
-## triage-incident
-Classify a support ticket into {bug, feature, question} + recommend the next action.
-
-1. Read the user's report.
-2. Match against known categories.
-3. If "bug", pull the last 5 PRs that touched the area.
+- Read the user's report.
+- Match against known categories.
+- If "bug", pull the last 5 PRs that touched the area.
 ```
 
-Import — Go-level today (no CLI verb yet; see the note above). The surface is `internal/skills/importer`: construct an `Importer` with `importer.New(deps)` (the deps carry an `ArtifactStore` for skill attachments), call `Import` with the `Skills.md` source, then persist the returned `skills.Skill` through your `SkillStore` handle. The CLI verb that will wrap this flow end-to-end is tracked follow-up work.
+### Import / remove with the CLI
 
-Once the skills are in the catalog, the planner sees both at reasoning time: it searches the catalog for relevant skill names and injects the matching skill body into the prompt — token-savvy because it doesn't carry every skill every turn, only the ones it actually pulls.
+```console
+$ harbor skill import ./skills/triage-incident.skill.md
+imported "triage-incident" (scope=project, steps=3, attachments=0)
+store: driver=localdb dsn=/tmp/harbor-validation/my-agent-skills.sqlite
+
+$ harbor skill rm triage-incident
+removed "triage-incident"
+store: driver=localdb dsn=/tmp/harbor-validation/my-agent-skills.sqlite
+```
+
+Behaviour you can rely on:
+
+- The verbs resolve the store from `harbor.yaml`'s `skills:` block — the **same store `harbor dev` serves** — and print the resolved `driver=… dsn=…` so you can see exactly where the skill landed. Pass `--config <path>` for a non-default config.
+- Skills are identity-scoped (`(tenant, user, session)`). The verbs default to the `harbor dev` triple (`dev`/`dev`/`dev`); use `--tenant` / `--user` / `--session` for anything else.
+- A duplicate name is **rejected with exit 1** ("pass --overwrite to replace, or `harbor skill rm <name>` first"); `--overwrite` replaces it. An invalid file (missing frontmatter, empty `trigger:`, no steps) exits 1 with the validator's reason. `rm` of a missing name exits 1.
+- The global `--json` flag switches both verbs to a machine-readable result (`{"result":"imported","driver":…,"dsn":…,"report":{…}}`).
+- Inline attachments (`![alt](relative/path)`) resolve relative to the file's own directory and upload to the configured artifact store; paths escaping that directory are rejected.
+
+Go-level: the verbs are thin callers over `importer.ImportAndStore` — a headless embedder calls the same function (see `docs/recipes/use-memory-and-skills-from-go.md`).
+
+Once the skills are in the catalog, the planner sees them at reasoning time two ways: a bounded per-turn `<skills_context>` browse window (the skills directory — see below) and on-demand retrieval via the `skill_search` / `skill_get` meta-tools — token-savvy because full skill bodies only enter the prompt when the LLM actually pulls them.
 
 ### Yaml config
 
@@ -98,20 +118,31 @@ Once the skills are in the catalog, the planner sees both at reasoning time: it 
 skills:
   driver: localdb
   dsn: /tmp/harbor-validation/my-agent-skills.sqlite    # WAL trap caveat applies
+  directory:                       # optional — shapes the per-turn <skills_context> block
+    pinned: [triage-incident]      # always listed first, in this order
+    max_entries: 10                # 0/unset → planner.skills_context_max (default 5)
+    selection: pinned_then_recent  # or pinned_then_top (most-used first)
 
 tools:
   built_in:
-    - skill_search   # the LLM discovers runtime skills by capability text
-    - skill_get      # the LLM pulls the full body of a named skill
+    - skill_search    # the LLM discovers runtime skills by capability text
+    - skill_get       # the LLM pulls the full bodies of named skills
+    - skill_list      # the LLM enumerates the catalog (paged, summary-only)
+    # - skill_propose # OPT-IN: lets the LLM author + persist new skills
 ```
 
-### LLM-side discovery via meta-tools (Phase 107c)
+### LLM-side discovery via meta-tools
 
-After 107c the React planner runs on native provider tool-calling. The LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in meta-tool when it needs one. Opt those built-ins in (above) and the LLM gets a structured search surface backed by the FTS5 catalog. The meta-tools route through the SAME `SkillStore.Search` + `SkillStore.Get` path your operator-side import populated, so there's no second-source-of-truth and identity-scoping (`(tenant, user, session)`) carries through.
+The React planner runs on native provider tool-calling: the LLM doesn't ask "what skills do I have?" in prose — it calls the `skill_search` built-in when it needs one. The meta-tools are the rich skills handlers (capability filter + redaction + token budgeter) over the SAME store your `harbor skill import` populated — one source of truth, identity-scoping carries through:
 
-`skill_search(query, tags?, limit?)` returns ranked candidates (`{name, title, description, score}`); `skill_get(name)` returns the full body. Tag filter is intersection. The LLM typically searches once, picks one or two names, and pulls full bodies in the same or next turn.
+- `skill_search(query, limit?)` — ranked candidates, capability-filtered to the tools this run can actually see (a skill requiring a tool the run isn't granted never surfaces).
+- `skill_get(names[], max_tokens?)` — full bodies, budget-fit through a tiered ladder (full → drop optional sections → cap steps at 3); an impossibly small budget errs loudly rather than silently truncating.
+- `skill_list(scope?, task_type?, tags?, limit?, offset?)` — paged enumeration, summary-only.
+- `skill_propose({skill, persist})` — the in-runtime generator. **Deliberately opt-in** (list it in `tools.built_in` only when you want the LLM persisting skills): persisted skills are stamped `Origin=generated`, can never overwrite an imported pack skill, and every persist emits a mandatory redacted `skill.proposed` audit event.
 
-If you DON'T opt the meta-tools in, the existing pre-107c flow still works: the planner's per-turn `<skills_context>` section injects relevant skill bodies the planner pre-selected. The meta-tools are the LLM-driven discovery path; the prompt-injection path is the planner-driven one. Most operators want both — let the planner inject the obvious matches AND give the LLM the discovery escape hatch.
+### The per-turn skills directory (`<skills_context>`)
+
+Independent of the meta-tools, every planner turn carries a compact `<skills_context>` block produced by the **skills directory**: a bounded, stable, pinned-then-recent browse window over the catalog (name / title / trigger / task type / pinned flag — never full bodies). The block tells the LLM *what exists*; pulling content is `skill_get`'s job. Tune it with the `skills.directory` yaml block above — `pinned` guarantees your flagship skills are always visible, `max_entries` caps the budget, and the stable ordering keeps the prompt prefix KV-cache-friendly. Capability filtering applies to the directory too: pinning never bypasses it.
 
 ### Skill vs tool — when to pick which
 
@@ -131,8 +162,8 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 
 - **Memory blows the token budget mid-conversation.** Lower `budget_tokens` OR switch strategy from `truncation` to `rolling_summary`. The summariser uses ~1500 tokens of LLM per turn but saves ~5000 tokens of payload.
 - **`harbor dev` reboots in a loop after enabling memory.** Your `memory.dsn` is inside the project directory and the SQLite WAL trap fires. Move the DSN to `/tmp/harbor-validation/<project>-memory.sqlite` or `~/.harbor/<project>-memory.sqlite`.
-- **Importing a `Skills.md` fails with "duplicate skill name".** The catalog rejects duplicate names. Either rename the skill in the file OR delete the prior entry from the skill store (no CLI removal verb exists yet — manage entries through your store handle or the importer flow).
-- **The planner doesn't pick a skill I imported.** Either the skill body doesn't pattern-match the user's input (write more concrete trigger language) or `planner.max_steps` is too low to reach the skill-search turn.
+- **`harbor skill import` fails with "skill name already exists".** The catalog rejects duplicate names by default. Re-import with `--overwrite`, remove the old entry first (`harbor skill rm <name>`), or rename the skill in the file.
+- **The planner doesn't pick a skill I imported.** Either the skill's `trigger:` doesn't pattern-match the user's input (write more concrete trigger language), the run can't see a tool the skill requires (`required_tools` is capability-filtered — default-deny), or `planner.max_steps` is too low to reach the skill-search turn. Pin it (`skills.directory.pinned`) to guarantee it's at least visible in every `<skills_context>` block.
 - **Cross-session memory leakage suspected.** It can't happen — the SQL filter is at the driver. If you see it, file a bug with the SQL trace from `telemetry.log_level: debug` — a leak would be a P0 security issue.
 
 ## See also

@@ -22,6 +22,12 @@
 // All five helpers are pure functions (or functions over their
 // explicit dependencies) with no package-level mutable state — they
 // are trivially safe for concurrent use (D-025).
+//
+// Phase 111d (D-201) executed the D-195 deprecation notice: the
+// `ExtractSkillKeywords` query shaper is DELETED along with the
+// raw-Search `<skills_context>` injection path it served; the
+// Phase-39 `skills.Directory` view (projected via
+// ProjectSkillsDirectory) is the canonical producer.
 package runctx
 
 import (
@@ -29,7 +35,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -92,92 +97,25 @@ func ProjectSkillsContext(ranked []skills.RankedSkill) []any {
 	return out
 }
 
-// skillKeywordStopwords lists the common English stopwords the
-// keyword extractor drops before handing the query to the FTS5
-// skills driver. The list is intentionally CONSERVATIVE — domain
-// keywords ("api", "config", "auth", "tool") survive because they
-// drive the BM25 ranker's signal. The list mirrors the standard
-// short-stopword sets shipped with SQLite FTS5 tokenizers; it is
-// fixed (operator-tunable lists are a Phase 91+ concern).
-// Phase 83m (Item 4, D-156).
-var skillKeywordStopwords = map[string]struct{}{
-	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {},
-	"if": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {},
-	"been": {}, "being": {}, "have": {}, "has": {}, "had": {},
-	"do": {}, "does": {}, "did": {}, "of": {}, "to": {}, "in": {},
-	"on": {}, "at": {}, "for": {}, "with": {}, "by": {}, "from": {},
-	"as": {}, "into": {}, "that": {}, "this": {}, "it": {}, "i": {},
-	"you": {}, "we": {}, "they": {}, "my": {}, "your": {},
-}
-
-// maxSkillKeywords caps the number of terms the helper returns. A
-// longer term list dilutes the BM25 signal without improving recall;
-// 10 mirrors the standard search-keyword cap.
-const maxSkillKeywords = 10
-
-// ExtractSkillKeywords turns a raw task Query (a full sentence, with
-// punctuation + articles + stopwords) into the keyword-shaped string
-// the SQLite skills driver's FTS5 ranker performs best on. The
-// pipeline is intentionally CONSERVATIVE: tokens that look like
-// domain vocabulary survive; only the highest-noise common-English
-// stopwords + 1-char tokens get dropped. Phase 83m (Item 4, D-156);
-// promoted by Phase 110b.
-//
-// DEPRECATION NOTICE: scheduled for deletion by Phase 111d (D-201);
-// add no new consumers. The 111d skills Directory wiring replaces the
-// raw-Search injection path this helper shapes queries for, deleting
-// this function and its call sites. It is promoted anyway because the
-// cmd↔devstack mirror collapse must not wait on 111d and landing
-// order is not guaranteed; the deletion rides 111d regardless of
-// which phase lands first.
-//
-// Steps (in order):
-//
-//  1. Lowercase the input so the case-insensitive token comparison
-//     matches the FTS5 tokenizer's default case-folding.
-//  2. Split on whitespace + punctuation (every rune that is neither a
-//     letter nor a digit acts as a separator). Apostrophes inside a
-//     word ("operator's") are split — the driver tokenizes the same
-//     way, so the result is a single contiguous letter run rather
-//     than the contraction.
-//  3. Drop tokens in the conservative English stopword set.
-//  4. Drop 1-character tokens — they carry no signal at the BM25
-//     edge.
-//  5. Deduplicate while preserving order — the first occurrence wins
-//     so the operator-visible word order is preserved.
-//  6. Cap at 10 terms.
-//
-// Returns the space-joined keyword string. An empty result is
-// possible for a pathological all-stopword input; the caller MUST
-// fall back to the raw Query so Search still has signal.
-func ExtractSkillKeywords(query string) string {
-	if query == "" {
-		return ""
+// ProjectSkillsDirectory shapes a Phase-39 `skills.Directory.View`
+// snapshot into the []any the planner's `<skills_context>` wrapper
+// renders (Phase 111d — D-201, executing the D-195 deprecation
+// notice: the keyword-shaped raw-Search injection path and its
+// `ExtractSkillKeywords` helper are deleted; the Directory's bounded,
+// pinned-then-recent, capability-filtered, redacted browse window is
+// the canonical producer). Each element is the compact
+// `skills.SkillView` projection (name / title / trigger / task_type /
+// pinned) — full skill content stays behind the `skill_get`
+// meta-tool. An empty input returns nil so the wrapper is omitted.
+func ProjectSkillsDirectory(views []skills.SkillView) []any {
+	if len(views) == 0 {
+		return nil
 	}
-	lower := strings.ToLower(query)
-	// Token boundary: any rune that is not a letter or a digit.
-	tokens := strings.FieldsFunc(lower, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	seen := make(map[string]struct{}, len(tokens))
-	out := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		if len(tok) <= 1 {
-			continue
-		}
-		if _, drop := skillKeywordStopwords[tok]; drop {
-			continue
-		}
-		if _, dup := seen[tok]; dup {
-			continue
-		}
-		seen[tok] = struct{}{}
-		out = append(out, tok)
-		if len(out) >= maxSkillKeywords {
-			break
-		}
+	out := make([]any, 0, len(views))
+	for _, v := range views {
+		out = append(out, v)
 	}
-	return strings.Join(out, " ")
+	return out
 }
 
 // ExtractAssistantAnswer pulls the planner's natural-language answer

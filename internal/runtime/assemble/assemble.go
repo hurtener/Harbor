@@ -572,12 +572,19 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// Phase 83n / D-153 + 107c / D-167 — opt-in built-in tools BEFORE
 	// the catalog-wiring step so `tools.entries[]` middleware naming a
 	// built-in resolves cleanly. Empty list = no-op; unknown name fails
-	// loud. SkillStore + ArtifactStore are threaded so skill_search /
-	// skill_get / artifact_fetch reach their backing stores.
+	// loud. SkillStore + ArtifactStore are threaded so the skill_* set
+	// / artifact_fetch reach their backing stores. Phase 111d (D-201):
+	// Bus + Redactor + GrantedScopes feed the skill_* delegations to
+	// the Phase-38 handlers + Phase-41 generator — the capability
+	// filter, redaction, budgeter, and the generator's audit-mandatory
+	// emit all run on this production path.
 	if err := builtin.RegisterWith(builtin.RegistryContext{
 		Catalog:       toolCat,
 		SkillStore:    stack.Skills,
 		ArtifactStore: stack.Artifacts,
+		Bus:           stack.Bus,
+		Redactor:      stack.Redactor,
+		GrantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
 	}, cfg.Tools.BuiltIn); err != nil {
 		return fmt.Errorf("tools/builtin: %w", err)
 	}
@@ -587,7 +594,47 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	// Coordinator instance (CLAUDE.md §13). WithBus(bus) is mandatory:
 	// it is what makes pause.requested / pause.resumed land on the
 	// canonical event stream (Wave 11.5 §17.5 F1).
-	coord := pauseresume.New(pauseresume.WithBus(stack.Bus))
+	// WithCheckpointStore(stack.State) is mandatory too (Phase 111c /
+	// D-200 — the §13 primitive-with-consumer closure): every pause is
+	// checkpointed through the runtime's own StateStore, so pauses
+	// survive a Runtime restart on any durable state driver. Pre-111c
+	// both assemblies constructed the Coordinator storeless with the
+	// store in scope — every pause was process-memory-only.
+	// WithMaxParkDuration threads the pause-lifecycle ceiling
+	// (`pauseresume.max_park_duration`; 0 = never expire, the default).
+	coord := pauseresume.New(
+		pauseresume.WithBus(stack.Bus),
+		pauseresume.WithCheckpointStore(stack.State),
+		pauseresume.WithMaxParkDuration(cfg.PauseResume.MaxParkDuration),
+	)
+
+	// Phase 111c (D-200) — the pause sweeper: DecisionTimeout's first
+	// producer. Config-gated on max_park_duration > 0 (the validated
+	// sweep_interval is consumed only here). The goroutine is
+	// cancellable + joined on Close (CLAUDE.md §5): the closer cancels
+	// the sweep ctx and blocks on the done channel.
+	if cfg.PauseResume.MaxParkDuration > 0 {
+		// context.Background is deliberate: the sweeper's lifetime is
+		// the stack's (bounded by the closer below), not the assembly
+		// ctx's — same documented bridge as the notifications
+		// subscriber.
+		sweepCtx, sweepCancel := context.WithCancel(context.Background())
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			if serr := pauseresume.RunSweeper(sweepCtx, coord,
+				pauseresume.WithSweepInterval(cfg.PauseResume.SweepInterval),
+				pauseresume.WithSweeperLogger(logger),
+			); serr != nil && !errors.Is(serr, context.Canceled) {
+				logger.ErrorContext(sweepCtx, "pause sweeper exited", slog.Any("error", serr))
+			}
+		}()
+		stack.closers = append(stack.closers, func(context.Context) error {
+			sweepCancel()
+			<-sweepDone
+			return nil
+		})
+	}
 
 	// D-095 — OAuth providers BEFORE the catalog Builder runs so the
 	// Builder's Deps.OAuthProviders lookup resolves. Caller-supplied
