@@ -28,23 +28,26 @@ assert_grep_present 'func TestE2E_RealBifrost_ToolValidationFailure_PlannerRepla
     "tool-failure replan test declared"
 
 # ----------------------------------------------------------------------------
-# Production bug fix — snapshot now threads CustomProviders + NetworkDefaults
-# + Corrections (Phase 83l / D-155).
+# Production bug fix — snapshot threads CustomProviders + NetworkDefaults
+# + Corrections (Phase 83l / D-155). Phase 110c (D-196) re-homed the
+# projection from the cmd-local copy* helpers onto the owning package:
+# the ONE exported llm.SnapshotFromConfig maps all three D-155 fields
+# (pinned by the reflection field-parity gate in
+# internal/llm/from_config_test.go), and BOTH cmd_dev.go and the
+# devstack consume it -- the D-094 mirror copy is gone by design.
 # ----------------------------------------------------------------------------
-assert_grep_present 'func copyCustomProviders' "cmd/harbor/cmd_dev.go" \
-    "cmd_dev.go projects CustomProviders onto the LLM snapshot"
-assert_grep_present 'func copyNetworkDefaults' "cmd/harbor/cmd_dev.go" \
-    "cmd_dev.go projects NetworkDefaults onto the LLM snapshot"
-assert_grep_present 'func disableCorrectionsFromConfig' "cmd/harbor/cmd_dev.go" \
-    "cmd_dev.go projects llm.corrections onto the snapshot"
-assert_grep_present 'CustomProviders:\s*copyCustomProviders' "cmd/harbor/cmd_dev.go" \
-    "bootDevStack wires CustomProviders into the snapshot"
+assert_grep_present 'CustomProviders:\s*customProvidersFromConfig' "internal/llm/from_config.go" \
+    "llm.SnapshotFromConfig projects CustomProviders onto the snapshot (D-155 via 110c)"
+assert_grep_present 'NetworkDefaults:\s*networkDefaultsFromConfig' "internal/llm/from_config.go" \
+    "llm.SnapshotFromConfig projects NetworkDefaults onto the snapshot (D-155 via 110c)"
+assert_grep_present 'DisableCorrections:\s*disableCorrectionsFromConfig' "internal/llm/from_config.go" \
+    "llm.SnapshotFromConfig projects llm.corrections onto the snapshot (D-155 via 110c)"
+assert_grep_present 'llm\.SnapshotFromConfig' "cmd/harbor/cmd_dev.go" \
+    "bootDevStack consumes the exported projection (110c)"
 
-# Devstack mirror per D-094.
-assert_grep_present 'func copyCustomProviders' "harbortest/devstack/devstack.go" \
-    "devstack mirrors copyCustomProviders (D-094)"
-assert_grep_present 'CustomProviders:\s*copyCustomProviders' \
-    "harbortest/devstack/devstack.go" \
-    "devstack snapshot wires CustomProviders (D-094)"
+# Devstack consumes the SAME exported projection (the D-094 mirror copy
+# was deleted by 110c -- parity by construction).
+assert_grep_present 'llm\.SnapshotFromConfig' "harbortest/devstack/devstack.go" \
+    "devstack consumes the exported projection (110c)"
 
 smoke_summary

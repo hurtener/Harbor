@@ -52,8 +52,11 @@ assert_grep_present 'RepairCounters{' "cmd/harbor/cmd_dev_runloop.go" \
     "per-run *RepairCounters allocated in runOne (D-145 producer-side, D-149)"
 assert_grep_present 'runtime_fetch_error' "cmd/harbor/cmd_dev_runloop.go" \
     "memory/skills fetch errors map to MarkFailed(code=runtime_fetch_error)"
-assert_grep_present 'plannerHintsFromConfig' "cmd/harbor/cmd_dev.go" \
-    "bootDevStack projects YAML planning_hints onto *planner.PlanningHints"
+# Phase 110c (D-196) re-homed the YAML->PlanningHints projection from
+# the cmd-local plannerHintsFromConfig helper onto the owning package
+# (planner.HintsFromConfig); bootDevStack consumes the exported one.
+assert_grep_present 'planner\.HintsFromConfig' "cmd/harbor/cmd_dev.go" \
+    "bootDevStack projects YAML planning_hints onto *planner.PlanningHints (via planner.HintsFromConfig - 110c)"
 
 # ----------------------------------------------------------------------------
 # Test fixture (D-094 source-of-truth) mirror lands the same wiring.

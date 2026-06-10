@@ -1092,12 +1092,15 @@ const (
 // `WithParallelToolCalls` Option only when non-nil; other drivers ignore
 // it. No validator rule beyond "bool" — both states are correct.
 //
-// `SkillsContextMax` caps how many skill bodies the dev run loop
-// fetches from `skills.SkillStore.Search` and hands the planner via
+// `SkillsContextMax` caps how many skill bodies the run loop fetches
+// from `skills.SkillStore.Search` and hands the planner via
 // `RunContext.SkillsContext` (Phase 83f — D-149). Zero (the default)
-// resolves to 5; the validator rejects negatives loudly pre-boot.
-// Only consumed by the dev binary's per-task run loop; library
-// consumers that build their own RunContext are unaffected.
+// resolves to `DefaultSkillsContextMax` (5) via
+// `SkillsContextMaxResolved()` — the one source of the default since
+// Phase 110c (D-196); the validator rejects negatives loudly pre-boot.
+// Consumed by the per-task run loop (cmd + devstack + headless
+// assemblies); library consumers that build their own RunContext
+// resolve through the same method.
 //
 // `PlanningHints` is the operator-supplied per-run planning steering
 // the dev run loop projects onto `RunContext.PlanningHints` (Phase 83f
@@ -1141,21 +1144,41 @@ func (p PlannerConfig) ParallelToolCallsEnabled() bool {
 
 // SpawnDepthCap resolves the optional `absolute_max_spawn_depth` knob
 // (Phase 107e — D-170). A non-positive value (unset or zero) resolves to
-// the dev-runtime default of 4: a SpawnTask whose child would exceed this
+// `DefaultSpawnDepthCap`: a SpawnTask whose child would exceed this
 // ParentTaskID-chain depth is rejected loudly so a background sub-agent
 // cannot recurse without bound. The cap bounds depth, not breadth.
 func (p PlannerConfig) SpawnDepthCap() int {
 	if p.AbsoluteMaxSpawnDepth <= 0 {
-		return defaultSpawnDepthCap
+		return DefaultSpawnDepthCap
 	}
 	return p.AbsoluteMaxSpawnDepth
 }
 
-// defaultSpawnDepthCap mirrors cmd/harbor's defaultMaxSpawnDepth — kept
-// here so config consumers resolve the same default without importing the
-// binary package. Drift between the two is caught by the dev executor's
-// constructor (it clamps a non-positive cap to its own default too).
-const defaultSpawnDepthCap = 4
+// DefaultSpawnDepthCap is the ONE source of the spawn-depth default
+// (Phase 110c — D-196; deduped from the former unexported mirror pair
+// `config.defaultSpawnDepthCap` / `cmd/harbor::defaultMaxSpawnDepth`).
+// The tool executor's constructor clamp references this constant; no
+// other literal copy of the value is allowed.
+const DefaultSpawnDepthCap = 4
+
+// SkillsContextMaxResolved resolves the optional `skills_context_max`
+// knob (Phase 83f — D-149). A non-positive value (unset or zero)
+// resolves to `DefaultSkillsContextMax`. Phase 110c (D-196) re-homed
+// the zero→default resolution here from run-loop literals (the
+// cmd/devstack pair each carried its own `= 5` constant — the
+// D-155-class duplicate-default mechanism).
+func (p PlannerConfig) SkillsContextMaxResolved() int {
+	if p.SkillsContextMax <= 0 {
+		return DefaultSkillsContextMax
+	}
+	return p.SkillsContextMax
+}
+
+// DefaultSkillsContextMax is the ONE source of the skills-context cap
+// default: how many skill bodies the run loop fetches from
+// `skills.SkillStore.Search` and hands the planner via
+// `RunContext.SkillsContext` when `skills_context_max` is unset.
+const DefaultSkillsContextMax = 5
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
 // `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the

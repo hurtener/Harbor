@@ -199,7 +199,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 |109c| MCP Apps DisplayMode layout (fullscreen tab + pip 50/50 split + rail toggle) | web/console | §7 | 109b | n/a | Pending (V1.1.x) |
 |110a| Tool-executor promotion (`internal/runtime/dispatch` + exported answer envelope + `tools.NewPlannerView`; devstack degraded executor deleted) | internal/runtime/dispatch + internal/planner + internal/tools + cmd/harbor + harbortest | §6.4, §6.5, §6.2 | D-192 fix, 107d, 107e, 83i | 85% | Shipped (V1.1.x) |
 |110b| RunContext population + event-closure promotion (`internal/runtime/runctx` + `events.IdentityStampingEmitter` + `llm.NewChunkPublisher`; devstack Emit/OnChunk/envelope parity) | internal/runtime/runctx + internal/events + internal/llm + cmd/harbor + harbortest | §6.2, §6.5, §6.13 | 110a, 83f, 83i, 83m, 107 | 90% | Pending (V1.1.x) |
-|110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Pending (V1.1.x) |
+|110c| Config-projection exporters (five `FromConfig` + `config.Defaults()` + `ValidateCore` + `internal/drivers/prod` aggregator; fixes live devstack planner drift B3) | internal/llm + internal/memory + internal/skills + internal/planner + internal/governance + internal/config + internal/drivers/prod | §6.5, §6.6, §6.7, §9, §10 | 83l, 83f, 107d, 107e | 95% | Shipped (V1.1.x) |
 |110d| Assembly promotion (exported error-returning `assemble.Assemble` + MCP attach + `auth.BuildProviders` + `events.OpenWith`; D-094 mirror collapses to thin callers; headless recipe) | internal/runtime/assemble + tools/mcp + tools/auth + internal/events + cmd/harbor + harbortest | §6.4, §6.13, §9, §10 | 110a, 110b, 110c, 64, 83g, 30, 57 | 80% | Pending (V1.1.x) |
 |111a| Governance enforcement assembly (`identity_tiers` actually enforce; `SetFactory`'s first production caller) | internal/governance + cmd/harbor + harbortest | §6.15, §6.5, §6.11 | 32, 36a, 36b, 110c (soft) | 90% | Pending (V1.1.x) |
 |111b| Tool-OAuth completion leg (`auth.CallbackHandler` + full pause→callback→resume choreography E2E) | internal/tools/auth + cmd/harbor | §6.4, §3.3, §6.3 | 30, 50, 31, D-192 fix | 85% | Pending (V1.1.x) |
@@ -1120,7 +1120,7 @@ RFC-level program for which 110d is the named prerequisite.
   an empty `TaskResult{}`. RFC §6.2, §6.5, §6.13. Deps: 110a, 83f, 83i, 83m, 107.
   Stage 2, parallel with 110d. See
   `docs/plans/phase-110b-runcontext-population-promotion.md`.
-- **110c — Config-projection exporters (D-196 reserved).** The five config→snapshot
+- **110c — Config-projection exporters (SHIPPED — D-196).** The five config→snapshot
   projections become exported helpers on the OWNING packages (settled direction:
   subsystem imports `internal/config` additively; config stays a leaf; the snapshot
   decoupling is preserved because `FromConfig` is optional sugar, never a required
@@ -1135,9 +1135,15 @@ RFC-level program for which 110d is the named prerequisite.
   binary stops demanding JWT identity fields), and ONE blank-import aggregator
   (`internal/drivers/prod`) imported by `main.go` and devstack — also closing
   devstack's missing-LLM-wrapper trap (no corrections/downgrade/retry on its chain
-  today). cmd + devstack consume every projection; all duplicates deleted. RFC §6.5,
-  §6.6, §6.7, §9, §10. Deps: 83l, 83f, 107d, 107e. Stage 1, parallel with 110a. See
-  `docs/plans/phase-110c-config-projection-exporters.md`.
+  today). cmd + devstack consume every projection; all duplicates deleted. Shipped
+  as planned, plus one §17.6 cross-fix the parity gate surfaced: both
+  `copyModelProfiles` copies silently dropped the per-model `cost_overrides:` /
+  `corrections:` yaml (a third D-155-class drop); `llm.SnapshotFromConfig` maps
+  both, pinned by the sub-struct parity tests. The spawn-depth constant is exported
+  as `config.DefaultSpawnDepthCap`; the executor-side clamp (110a's
+  `internal/runtime/dispatch`) references it at Stage 1 merge (parallel worktrees).
+  RFC §6.5, §6.6, §6.7, §9, §10. Deps: 83l, 83f, 107d, 107e. Stage 1, parallel with
+  110a. See `docs/plans/phase-110c-config-projection-exporters.md`.
 - **110d — Assembly promotion (D-197 reserved).** Promotes devstack's `tryAssemble`
   shape into an exported, error-returning
   `assemble.Assemble(ctx, *config.Config, Options) (*Stack, error)` in

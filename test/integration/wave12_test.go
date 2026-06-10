@@ -669,7 +669,7 @@ func TestE2E_Wave12_PlannerRegistry_ResolvesReactDriver(t *testing.T) {
 
 	// Empty driver name fails loud at the registry level — the
 	// "react" default lives at the cfg → planner.PlannerConfig
-	// boundary (`cmd/harbor/cmd_dev.go::plannerConfigFromConfig`),
+	// boundary (`planner.ConfigFromOperator` since Phase 110c),
 	// NOT inside the registry. This asserts the registry's strict
 	// fail-loud contract per §13.
 	_, err = planner.Resolve(ctx, planner.PlannerConfig{Driver: ""}, planner.FactoryDeps{LLM: llmClient})

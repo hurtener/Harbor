@@ -383,8 +383,8 @@ func TestAssemble_CustomIdentity_FlowsIntoToken(t *testing.T) {
 }
 
 // TestAssemble_ModelProfiles_CopiesDefaultMaxTokens — the cfg's
-// `default_max_tokens` ptr-field flows through `copyModelProfiles`
-// unchanged. Closes the conditional in that helper.
+// `default_max_tokens` ptr-field flows through the exported
+// `llm.SnapshotFromConfig` projection (Phase 110c, D-196) unchanged.
 func TestAssemble_ModelProfiles_CopiesDefaultMaxTokens(t *testing.T) {
 	t.Parallel()
 	cfg := minimalConfig(t)
@@ -403,8 +403,9 @@ func TestAssemble_ModelProfiles_CopiesDefaultMaxTokens(t *testing.T) {
 		t.Fatal("LLMClient nil — Open should have succeeded with the profile")
 	}
 	// We do not assert the profile round-tripped to the LLM client —
-	// the LLM client's internal state isn't exposed here. The
-	// coverage gain is on copyModelProfiles' ptr-handling branch.
+	// the LLM client's internal state isn't exposed here; the
+	// projection's ptr-handling branch is pinned directly by
+	// internal/llm/from_config_test.go.
 }
 
 // TestAssemble_CatalogWiring_AppliesBuilder — when the cfg names
@@ -657,52 +658,12 @@ func TestAssemble_PreRegisterTools_RegistersBeforeBuilder(t *testing.T) {
 	}
 }
 
-// TestPlannerConfigFromConfig_FieldParityWithProduction pins the
-// devstack projection to field-for-field parity with production
-// `cmd/harbor/cmd_dev.go::plannerConfigFromConfig` (D-094 / D-155).
-// The SDK friction audit's B3 finding was this projection silently
-// dropping ExtraGuidance / ReasoningReplay / MaxToolExamplesPerTool /
-// ParallelToolCalls; this test fails loudly if either side drifts
-// again.
-func TestPlannerConfigFromConfig_FieldParityWithProduction(t *testing.T) {
-	t.Parallel()
-	parallel := false
-	in := config.PlannerConfig{
-		Driver:                 "react",
-		MaxSteps:               7,
-		ExtraGuidance:          "always cite sources",
-		ReasoningReplay:        "full",
-		MaxToolExamplesPerTool: 3,
-		ParallelToolCalls:      &parallel,
-		Extra:                  map[string]string{"k": "v"},
-	}
-	out := devstack.PlannerConfigFromConfig(in)
-	if out.Driver != "react" {
-		t.Errorf("Driver = %q, want react", out.Driver)
-	}
-	if out.MaxSteps != 7 {
-		t.Errorf("MaxSteps = %d, want 7", out.MaxSteps)
-	}
-	if out.ExtraGuidance != "always cite sources" {
-		t.Errorf("ExtraGuidance = %q, want carried verbatim", out.ExtraGuidance)
-	}
-	if string(out.ReasoningReplay) != "full" {
-		t.Errorf("ReasoningReplay = %q, want full", out.ReasoningReplay)
-	}
-	if out.MaxToolExamplesPerTool != 3 {
-		t.Errorf("MaxToolExamplesPerTool = %d, want 3", out.MaxToolExamplesPerTool)
-	}
-	if out.ParallelToolCalls == nil || *out.ParallelToolCalls != false {
-		t.Errorf("ParallelToolCalls = %v, want explicit false carried through", out.ParallelToolCalls)
-	}
-	if out.Extra["k"] != "v" {
-		t.Errorf("Extra = %v, want map carried", out.Extra)
-	}
-
-	// Nil ParallelToolCalls stays nil (the react factory distinguishes
-	// "unset" from explicit false — D-169).
-	in.ParallelToolCalls = nil
-	if out := devstack.PlannerConfigFromConfig(in); out.ParallelToolCalls != nil {
-		t.Errorf("nil ParallelToolCalls projected to %v, want nil", out.ParallelToolCalls)
-	}
-}
+// SUPERSEDED (Phase 110c, D-196): the Wave A
+// TestPlannerConfigFromConfig_FieldParityWithProduction parity test is
+// gone WITH the duplicate it guarded. cmd + devstack now call the ONE
+// exported `planner.ConfigFromOperator`, so devstack↔production parity
+// holds by construction; the strictly stronger reflection field-parity
+// gate lives at the owning package
+// (`internal/planner/from_config_test.go::TestConfigFromOperator_FieldParity`)
+// and the B3 wiring regression gate lives at
+// `test/integration/phase110c_config_projections_test.go`.
