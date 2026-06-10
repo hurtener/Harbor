@@ -110,7 +110,6 @@ import (
 	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
-	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb" // §4.4: registers the V1 "localdb" skill driver
 	"github.com/hurtener/Harbor/internal/tasks"
 	tasksprotocol "github.com/hurtener/Harbor/internal/tasks/protocol"
 	"github.com/hurtener/Harbor/internal/tools"

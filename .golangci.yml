@@ -100,6 +100,8 @@ linters:
       # package ships a .go file). CI's lint job has no `npm ci`, so it
       # never sees these; excluding them keeps local lint == CI lint.
       - node_modules
+      # Agent worktrees under .claude/worktrees/ must not be walked.
+      - \.claude
       - third_party$
       - builtin$
       - examples$
@@ -117,6 +119,8 @@ formatters:
     generated: lax
     paths:
       - node_modules
+      # Agent worktrees under .claude/worktrees/ must not be walked.
+      - \.claude
       - third_party$
       - builtin$
       - examples$

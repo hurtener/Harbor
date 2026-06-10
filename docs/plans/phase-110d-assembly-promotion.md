@@ -230,7 +230,11 @@ entry point instead of a binary.
   (a) mid-assembly forced failure cleans up, (b) durable-events config without the
   shared store behaves per the documented loud-degradation contract. Devstack-vs-cmd
   parity: both wrappers produce stacks with identical wiring posture (probe-based
-  assertions). `-race` throughout.
+  assertions). `-race` throughout. *§4.3 amendment (2026-06-09, Wave B checkpoint
+  audit):* the probe-based parity assertions were substituted by construction — both
+  wrappers call the SAME `assemble.Assemble`, so the wiring posture cannot diverge;
+  the residual per-caller driver shells are pinned by 110b's parity E2E
+  (`test/integration/phase110b_runctx_parity_test.go`) instead.
 - **Conformance:** N/A — no new driver registry; `OpenWith` reuses the existing events
   conformance posture.
 - **Concurrency / leak:** N≥10 concurrent Assemble/Close cycles (shared registries) +

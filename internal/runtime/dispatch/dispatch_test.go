@@ -176,6 +176,11 @@ func TestExecutor_CallTool_HeavyResult_PromotedToArtifact(t *testing.T) {
 	if ref.Source["source"] != "tool" || ref.Source["tool"] != "heavy" {
 		t.Errorf("provenance = %#v, want source=tool + tool=heavy", ref.Source)
 	}
+	// The producer value is a wire contract: D-194 explicitly preserves
+	// "dev-tool-executor" so pre-110a consumers keying on it keep working.
+	if ref.Source["producer"] != "dev-tool-executor" {
+		t.Errorf("provenance producer = %#v, want dev-tool-executor (D-194 preserved key)", ref.Source["producer"])
+	}
 	if _, hasCreated := ref.Source["created_at"]; !hasCreated {
 		t.Errorf("provenance missing created_at stamp: %#v", ref.Source)
 	}
