@@ -17,7 +17,7 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-(Next up: the MCP Apps host wave 109a–c, the remaining Console polish rounds, and phases 102/104 from the V1.2 backlog.)
+(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
 
 ## [1.3.0] — 2026-06-10
 
@@ -27,44 +27,43 @@ runtime for external modules, not only a binary.
 ### Added
 
 - **The public SDK facade (`sdk/`)** — a curated, alias-based re-export tree
-  (RFC §3.6, D-204/D-205): 20+ packages spanning identity, events, config,
+  (RFC §3.6): 20+ packages spanning identity, events, config,
   tools, llm, memory/state/artifacts/skills, planner, tasks, steering,
   dispatch, runctx, and the one-call `assemble.Assemble` stack fan-out.
   External-module importability is enforced by a standing preflight gate that
-  scaffolds and compiles a tool-declaring agent outside the module (D-206).
+  scaffolds and compiles a tool-declaring agent outside the module.
 - **`assemble.Assemble`** — the exported, error-returning, dependency-ordered
   runtime assembly (D-197); `bootDevStack` and `harbortest/devstack` are thin
   callers of the one implementation.
 - **`harbor skill import` / `harbor skill rm`** — CLI ingestion for Skills.md
-  playbooks over the exported `importer.ImportAndStore` (D-201).
+  playbooks over the exported `importer.ImportAndStore`.
 - **Governance enforcement** — populated `governance.identity_tiers` now
-  enforces cost ceilings, rate limits, and max-tokens caps (D-198); the
-  latent-by-default posture (D-044) is preserved.
+  enforces cost ceilings, rate limits, and max-tokens caps; the
+  latent-by-default posture is preserved.
 - **Durable pauses** — pause checkpoints carry the run trajectory and survive
   a Runtime restart; a max-park sweeper reaps expired and crash-orphaned
-  pauses (`DecisionTimeout`, `StateStore.ListKind` — D-200, D-207).
+  pauses (`DecisionTimeout`, `StateStore.ListKind`).
 - **Tool-OAuth completion** — `auth.CallbackHandler` closes the
-  pause→callback→resume choreography (D-199).
+  pause→callback→resume choreography.
 - **Trajectory compression** — long runs compress under
-  `planner.token_budget` via the LLM-backed summariser (D-202).
+  `planner.token_budget` via the LLM-backed summariser.
 - **Production telemetry assembly** — the redactor-mandatory Logger, the
-  engine RunErrorHandler, and `BridgeBusToTracer` are wired by the assembly
-  (D-203).
+  engine RunErrorHandler, and `BridgeBusToTracer` are wired by the assembly.
 - **The published docs site** — VitePress on GitHub Pages, built from the
-  canonical in-repo docs (Phase 103, D-208).
+  canonical in-repo docs.
 - The skills `<skills_context>` prompt block is produced by the
   capability-filtered, redacted virtual Directory with functional operator
-  pinning (D-201).
+  pinning.
 
 ### Changed
 
 - The runtime's production semantics were re-homed out of `cmd/harbor` into
   exported packages (`internal/runtime/dispatch`, `runctx`, `assemble`; five
   per-subsystem `FromConfig` projections; the `internal/drivers/prod`
-  aggregator) — D-193..D-197. The devstack mirror is collapsed to thin
+  aggregator). The devstack mirror is collapsed to thin
   callers.
 - The approval gate's privilege check is an injected authorizer; the runtime
-  no longer imports Protocol auth (the D-193 direction rule now has zero
+  no longer imports Protocol auth (the Protocol import-direction rule now has zero
   violations).
 - Scaffold templates emit `sdk/` import paths; `harbortest`'s full vocabulary
   is externally satisfiable; the root README tells the embeddable-SDK story.
@@ -72,12 +71,12 @@ runtime for external modules, not only a binary.
 ### Fixed
 
 - A planner-dispatched approval-gated tool no longer deadlocks the run loop —
-  APPROVE/REJECT drain mid-step (D-192).
+  APPROVE/REJECT drain mid-step.
 - Session GC can no longer reap RUNNING sessions (the `RunningProbe` is wired).
 - The bifrost driver's `Close` now shuts down the provider worker pool
   (previously leaked ~1000 goroutines per stack close).
 - The pause park's subscribe-after-publish wake window is closed; sqlite
-  `:memory:` stores no longer collide across subsystems (D-207); the durable
+  `:memory:` stores no longer collide across subsystems; the durable
   event bus honours publish-context cancellation; per-model
   `cost_overrides`/`corrections` YAML is no longer silently dropped.
 
