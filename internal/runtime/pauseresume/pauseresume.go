@@ -181,6 +181,15 @@ type Status struct {
 	// ResumedAt is the wall-clock time Resume was called; the zero
 	// value unless State == StatusResumed.
 	ResumedAt time.Time
+	// Decision is the typed marker the pause was resumed with
+	// (approve / reject / resume / timeout — D-096); the zero value
+	// while State == StatusPaused. Lets an in-process observer (the
+	// steering RunLoop's timeout detection — Phase 111c / D-200)
+	// distinguish a sweeper-reaped timeout from a legitimate resume
+	// without parsing event payloads. Process-local: a rehydrated
+	// (restart-survival) Status never carries a Decision because a
+	// resumed checkpoint is deleted, not kept.
+	Decision Decision
 }
 
 // Coordinator is Harbor's unified pause/resume primitive. One

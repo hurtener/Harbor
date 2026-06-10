@@ -380,6 +380,24 @@ Background sweeper period. Default: `15m`. Validation: > 0 AND <=
 
 ---
 
+## Pause/Resume
+
+### pauseresume.max_park_duration
+
+Ceiling on how long a pause may stay parked before the pause sweeper
+resumes it with the typed `timeout` Decision (`pause.resumed`, D-096)
+and the waiting run terminates as a constraints-conflict (Phase 111c /
+D-200). Default: `0` — pauses never expire and the sweeper is not
+started. Validation: >= 0.
+
+### pauseresume.sweep_interval
+
+Pause-sweeper scan period (consumed only when `max_park_duration` >
+0). Default: `1m` (0 = the default applies). Validation: >= 0 AND <=
+`max_park_duration` when both are set.
+
+---
+
 ## Artifacts
 
 ### artifacts.driver

@@ -303,6 +303,21 @@ tasks:
   retain_turn_timeout: 5m
   continuation_hop_limit: 8
 
+pauseresume:
+  # Phase 111c (D-200) — the pause lifecycle. `max_park_duration` is
+  # the ceiling on how long a pause (HITL approval, tool-side OAuth,
+  # an awaited external event) may stay parked before the runtime's
+  # pause sweeper resumes it with the typed `timeout` Decision
+  # (`pause.resumed`, D-096) and the waiting run terminates as a
+  # constraints-conflict. 0 (the default) = pauses never expire and
+  # the sweeper is not started. Must be >= 0.
+  max_park_duration: 0s
+  # Sweeper scan cadence — consumed only when `max_park_duration` > 0.
+  # Default 1m (0s = the default applies); when expiry is enabled it
+  # must be <= `max_park_duration` so a pause can't overstay its
+  # deadline by more than one sweep.
+  sweep_interval: 1m
+
 memory:
   # MemoryStore driver — Phase 23 shipped `inmem`; Phase 25 adds
   # `sqlite` and `postgres` (durable across restart). Default
