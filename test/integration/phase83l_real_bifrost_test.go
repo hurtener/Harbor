@@ -52,10 +52,14 @@ import (
 // request the dev stack made (callers assert against `Requests()`) and
 // replays a scripted JSON-response sequence keyed by request index.
 //
-// Phase 83l / D-155. The shape is deliberately minimal — no SSE, no
-// streaming, no provider-correction edge cases. The unary chat-
-// completions path is what `cmd/harbor`'s dev binary exercises through
-// the planner's Complete() call; streaming has its own phase.
+// Phase 83l / D-155. Originally unary-only; Phase 110b (D-195) taught
+// it the streaming shape too, because the devstack now wires
+// `RunContext.OnChunk` (production parity), which makes the React
+// planner set `req.Stream = true` and the bifrost driver take the SSE
+// path. A `"stream": true` request gets the SAME canned response
+// transcoded into OpenAI `chat.completion.chunk` SSE frames; unary
+// requests get the canned JSON verbatim, so the pre-110b posture is
+// still exercised by any non-streaming caller.
 type scriptedLLMServer struct {
 	t         *testing.T
 	server    *httptest.Server
@@ -66,10 +70,12 @@ type scriptedLLMServer struct {
 
 // openAIRequestEnvelope is the subset of the OpenAI chat-completions
 // request shape 83l asserts against. Bifrost emits more fields; only
-// what the tests inspect lives here.
+// what the tests inspect lives here. `Stream` routes the scripted
+// reply between the unary JSON body and the SSE transcode (110b).
 type openAIRequestEnvelope struct {
 	Model    string                  `json:"model"`
 	Messages []openAIChatMessageJSON `json:"messages"`
+	Stream   bool                    `json:"stream"`
 }
 
 type openAIChatMessageJSON struct {
@@ -112,9 +118,100 @@ func (s *scriptedLLMServer) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "script exhausted", http.StatusInternalServerError)
 		return
 	}
+	if env.Stream {
+		s.writeSSE(w, s.responses[idx])
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(s.responses[idx]))
+}
+
+// writeSSE transcodes one canned unary chat-completion JSON body into
+// the OpenAI streaming shape (Phase 110b — D-195): one
+// `chat.completion.chunk` frame carrying the full message as a delta,
+// one terminal frame carrying the finish_reason + usage, then
+// `data: [DONE]`. The single-delta shape is valid SSE (a provider may
+// legally send the whole message in one delta) and keeps the canned
+// scripts as the single source for both reply modes.
+func (s *scriptedLLMServer) writeSSE(w http.ResponseWriter, canned string) {
+	var full struct {
+		ID      string `json:"id"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index        int             `json:"index"`
+			Message      json.RawMessage `json:"message"`
+			FinishReason string          `json:"finish_reason"`
+		} `json:"choices"`
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(canned), &full); err != nil || len(full.Choices) == 0 {
+		s.t.Errorf("scriptedLLMServer: canned response does not parse for SSE transcode: %v", err)
+		http.Error(w, "bad script", http.StatusInternalServerError)
+		return
+	}
+	var msg struct {
+		Role      string          `json:"role"`
+		Content   *string         `json:"content"`
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(full.Choices[0].Message, &msg); err != nil {
+		s.t.Errorf("scriptedLLMServer: canned message does not parse for SSE transcode: %v", err)
+		http.Error(w, "bad script", http.StatusInternalServerError)
+		return
+	}
+
+	delta := map[string]any{"role": msg.Role}
+	if msg.Content != nil {
+		delta["content"] = *msg.Content
+	}
+	if len(msg.ToolCalls) > 0 {
+		// Streamed tool_calls carry a per-delta `index`; splice it in.
+		var calls []map[string]any
+		if err := json.Unmarshal(msg.ToolCalls, &calls); err != nil {
+			s.t.Errorf("scriptedLLMServer: canned tool_calls do not parse for SSE transcode: %v", err)
+			http.Error(w, "bad script", http.StatusInternalServerError)
+			return
+		}
+		for i := range calls {
+			calls[i]["index"] = i
+		}
+		delta["tool_calls"] = calls
+	}
+
+	frame := func(d map[string]any, finish any, usage json.RawMessage) string {
+		chunk := map[string]any{
+			"id":      full.ID,
+			"object":  "chat.completion.chunk",
+			"created": full.Created,
+			"model":   full.Model,
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         d,
+				"finish_reason": finish,
+			}},
+		}
+		if len(usage) > 0 {
+			chunk["usage"] = usage
+		}
+		raw, mErr := json.Marshal(chunk)
+		if mErr != nil {
+			s.t.Errorf("scriptedLLMServer: marshal SSE chunk: %v", mErr)
+			return ""
+		}
+		return "data: " + string(raw) + "\n\n"
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, frame(delta, nil, nil))
+	_, _ = io.WriteString(w, frame(map[string]any{}, full.Choices[0].FinishReason, full.Usage))
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // URL returns the fake server's base URL — what the test wires into
