@@ -71,6 +71,13 @@ real provider (CLAUDE.md §13).
 - `harbor dev` boots the Runtime only — it does NOT serve the Console.
   The Console runs via the separate `harbor console` subcommand
   (D-091).
+- **Governance tiers enforce** (Phase 111a, D-198): a populated
+  `governance.identity_tiers` block in `harbor.yaml` gates LLM calls at
+  boot — cost ceilings, rate limits, and per-call MaxTokens each reject
+  with a typed error and a `governance.*` event on the stream. Empty
+  tiers stay fully latent (D-044). Headless embedders running multiple
+  stacks compose `governance.Wrap` instead — see
+  `docs/recipes/embed-harbor-headless.md`.
 - Hot reload watches the config file's directory and
   `.harbor/agents` by default; an edit to `harbor.yaml` triggers a
   drained reload.

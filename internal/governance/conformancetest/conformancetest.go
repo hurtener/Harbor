@@ -299,6 +299,67 @@ func Run(t *testing.T, mk Factory) {
 			runtime.Gosched()
 		}
 	})
+
+	// Phase 111a (D-198): parity gate for the assembly-constructed
+	// Subsystem — `NewSubsystemFromConfig` composes the same enforcers
+	// the per-policy subtests above exercise individually; this subtest
+	// proves the composed surface enforces all three policies on every
+	// conformant StateStore driver.
+	t.Run("AssembledSubsystem_AllThreePoliciesEnforce", func(t *testing.T) {
+		t.Parallel()
+		h := mk()
+		defer h.Cleanup()
+
+		cfg := governance.Config{
+			DefaultTier: "conf",
+			IdentityTiers: map[string]governance.TierConfig{
+				"conf": {
+					MaxTokens:        10,
+					RateLimit:        governance.RateLimitConfig{Capacity: 2},
+					BudgetCeilingUSD: 0.5,
+				},
+			},
+		}
+		sub, err := governance.NewSubsystemFromConfig(cfg, h.State, h.Bus)
+		if err != nil {
+			t.Fatalf("NewSubsystemFromConfig: %v", err)
+		}
+		ctx := withIdentity(t)
+
+		// MaxTokens (the first member) rejects an over-cap request.
+		over := 100
+		if err := sub.PreCall(ctx, llm.CompleteRequest{Model: "m", MaxTokens: &over}); !errors.Is(err, governance.ErrMaxTokensExceeded) {
+			t.Fatalf("over-cap PreCall: got %v, want ErrMaxTokensExceeded", err)
+		}
+
+		// Cost ceiling: accumulate past 0.5, next PreCall rejects.
+		if err := sub.PreCall(ctx, llm.CompleteRequest{Model: "m"}); err != nil {
+			t.Fatalf("under-budget PreCall: %v", err)
+		}
+		if err := sub.PostCall(ctx, llm.CompleteRequest{Model: "m"},
+			llm.CompleteResponse{Cost: llm.Cost{TotalCost: 1.0}, Content: "x"}, nil); err != nil {
+			t.Fatalf("PostCall: %v", err)
+		}
+		if err := sub.PreCall(ctx, llm.CompleteRequest{Model: "m"}); !errors.Is(err, governance.ErrBudgetExceeded) {
+			t.Fatalf("over-budget PreCall: got %v, want ErrBudgetExceeded", err)
+		}
+
+		// Rate limit: a sibling-session identity (its own budget) drains
+		// the capacity-2 bucket, then underflows.
+		sibling, err := identity.WithRun(context.Background(),
+			identity.Identity{TenantID: "T", UserID: "U", SessionID: "S-assembled"}, "R")
+		if err != nil {
+			t.Fatalf("identity.WithRun: %v", err)
+		}
+		for i := range 2 {
+			if err := sub.PreCall(sibling, llm.CompleteRequest{Model: "m"}); err != nil {
+				t.Fatalf("drain %d: %v", i, err)
+			}
+		}
+		if err := sub.PreCall(sibling, llm.CompleteRequest{Model: "m"}); !errors.Is(err, governance.ErrRateLimited) {
+			t.Fatalf("underflow PreCall: got %v, want ErrRateLimited", err)
+		}
+	})
 }
 
 // withIdentity attaches the canonical conformance identity + run to a

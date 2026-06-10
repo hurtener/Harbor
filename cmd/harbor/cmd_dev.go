@@ -872,11 +872,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// MetricsRegistry's bus-fed counter snapshot for Metrics. They are
 	// NEVER an empty stub.
 	//
-	// SDK friction audit (docs/notes/sdk-friction-audit.md §1):
-	// populated `governance.identity_tiers` currently feeds ONLY this
-	// read-only posture provider — enforcement wiring has no
-	// production caller yet; the assembly (Phase 110d, D-197) emits
-	// the loud operator warning.
+	// Phase 111a (D-198): populated `governance.identity_tiers` are
+	// ENFORCED by the shared assembly (assemble.Assemble installs the
+	// enforcement Subsystem via governance.SetFactory before llm.Open).
+	// This posture provider stays what it always was — the read-only
+	// projection of the same operator config.
 	postureSurface, err := protocol.NewPostureSurface(protocol.PostureDeps{
 		Build: types.RuntimeInfo{
 			BuildVersion:   HarborVersion,

@@ -131,22 +131,25 @@ Ingest skills with `harbor skill import <path>` and remove them with `harbor ski
 
 Per-identity cost ceilings + rate limits + max-token caps, keyed by tier.
 
-> **Enforcement is not yet wired.** Declared tiers currently drive only the
-> read-only `governance.posture` Protocol surface — no budget, rate limit, or
-> token cap fires yet, and the runtime warns at boot when tiers are
-> configured. Enforcement wiring is tracked follow-up work (see
-> `docs/notes/sdk-friction-audit.md`). The declaration shape below is stable;
-> tiers you declare today light up when enforcement lands.
+> **Declared tiers are enforced.** A populated `identity_tiers` block
+> composes the enforcement subsystem at boot: the budget ceiling fails
+> over-budget calls with `ErrBudgetExceeded`, the token bucket with
+> `ErrRateLimited`, and the per-call cap with `ErrMaxTokensExceeded` — each
+> emitting a matching `governance.*` event you can watch on the events
+> stream. The same block drives the read-only `governance.posture` Protocol
+> surface.
 
 ```yaml
 governance:
   default_tier: free
   identity_tiers:
     free:
-      budget_ceiling_usd: 5.00                 # declared cap per (tenant, user) per billing window
-      max_tokens: 4096
-      rate_limit:
-        requests_per_minute: 30
+      budget_ceiling_usd: 5.00                 # enforced cap per (tenant, user, session)
+      max_tokens: 4096                         # per-call MaxTokens cap
+      rate_limit:                              # token bucket per (identity, model)
+        capacity: 100000
+        refill_tokens: 50000
+        refill_interval: 1h
 ```
 
 Empty `identity_tiers: {}` = fully latent (the default).
