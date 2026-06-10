@@ -44,10 +44,12 @@ assert_grep_present 'memory.MemoryStore' "cmd/harbor/cmd_dev_runloop.go" \
     "perTaskRunLoopDriver opts carry the MemoryStore dep (D-149)"
 assert_grep_present 'skills.SkillStore' "cmd/harbor/cmd_dev_runloop.go" \
     "perTaskRunLoopDriver opts carry the SkillStore dep (D-149)"
-assert_grep_present 'projectMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
-    "projectMemoryBlocks helper present (LLMContextPatch → MemoryBlocks)"
-assert_grep_present 'projectSkillsContext' "cmd/harbor/cmd_dev_runloop.go" \
-    "projectSkillsContext helper present (RankedSkill → SkillsContext)"
+# Phase 110b (D-195) re-homed the projection helpers to the exported
+# internal/runtime/runctx package; the run loop is a thin caller.
+assert_grep_present 'runctx\.ProjectMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop calls promoted runctx.ProjectMemoryBlocks (LLMContextPatch → MemoryBlocks; 110b)"
+assert_grep_present 'runctx\.ProjectSkillsContext' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop calls promoted runctx.ProjectSkillsContext (RankedSkill → SkillsContext; 110b)"
 assert_grep_present 'RepairCounters{' "cmd/harbor/cmd_dev_runloop.go" \
     "per-run *RepairCounters allocated in runOne (D-145 producer-side, D-149)"
 assert_grep_present 'runtime_fetch_error' "cmd/harbor/cmd_dev_runloop.go" \
@@ -61,9 +63,11 @@ assert_grep_present 'planner\.HintsFromConfig' "cmd/harbor/cmd_dev.go" \
 # ----------------------------------------------------------------------------
 # Test fixture (D-094 source-of-truth) mirror lands the same wiring.
 # ----------------------------------------------------------------------------
-assert_grep_present 'devStackProjectMemoryBlocks' "harbortest/devstack/devstack.go" \
-    "devstack mirror carries the memory projector (D-094 mirror invariant)"
-assert_grep_present 'devStackProjectSkillsContext' "harbortest/devstack/devstack.go" \
-    "devstack mirror carries the skills projector (D-094 mirror invariant)"
+# Phase 110b (D-195): the D-094 mirror copies are deleted; devstack
+# calls the SAME promoted projections production calls.
+assert_grep_present 'runctx\.ProjectMemoryBlocks' "harbortest/devstack/devstack.go" \
+    "devstack calls promoted runctx.ProjectMemoryBlocks (mirror collapsed; 110b)"
+assert_grep_present 'runctx\.ProjectSkillsContext' "harbortest/devstack/devstack.go" \
+    "devstack calls promoted runctx.ProjectSkillsContext (mirror collapsed; 110b)"
 
 smoke_summary

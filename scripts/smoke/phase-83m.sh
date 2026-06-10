@@ -41,10 +41,12 @@ assert_grep_present 'agentRegistry\.Close' "internal/runtime/assemble/assemble.g
 # ----------------------------------------------------------------------------
 # Item 4 — Skills query keyword extraction.
 # ----------------------------------------------------------------------------
-assert_grep_present 'extractSkillKeywords' "cmd/harbor/cmd_dev_runloop.go" \
-    "skills query keyword extractor declared (item 4)"
-assert_grep_present 'extractSkillKeywords' "harbortest/devstack/devstack.go" \
-    "devstack mirror uses extractSkillKeywords (D-094 mirror, item 4)"
+# Phase 110b (D-195) re-homed the extractor to internal/runtime/runctx;
+# both call sites consume the ONE promoted copy.
+assert_grep_present 'runctx\.ExtractSkillKeywords' "cmd/harbor/cmd_dev_runloop.go" \
+    "runloop calls promoted runctx.ExtractSkillKeywords (item 4; 110b)"
+assert_grep_present 'runctx\.ExtractSkillKeywords' "harbortest/devstack/devstack.go" \
+    "devstack calls promoted runctx.ExtractSkillKeywords (item 4; 110b)"
 
 # ----------------------------------------------------------------------------
 # Item 5 — Per-call LLM timeout uses cfg.Timeout.

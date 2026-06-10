@@ -463,9 +463,10 @@ func TestPerTaskRunLoop_FinishGoal_EmptyAnswer_StillPopulatesShape(t *testing.T)
 	if err := json.Unmarshal(got.Result.Value, &envelope); err != nil {
 		t.Fatalf("unmarshal TaskResult.Value: %v", err)
 	}
-	// Pin the actual behaviour: when Payload is nil, the existing
-	// extractAssistantAnswer helper (Phase 83i / D-152, shared with the
-	// memory.AddTurn writeback) falls back to string(fin.Reason) so
+	// Pin the actual behaviour: when Payload is nil, the promoted
+	// runctx.ExtractAssistantAnswer helper (Phase 83i / D-152; Phase
+	// 110b / D-195, shared with the memory.AddTurn writeback) falls
+	// back to string(fin.Reason) so
 	// something always lands. This deviates from the plan's literal
 	// "answer == \"\"" expectation but matches reality + AC-3's "no
 	// regression to the memory writeback path" requirement (the same
@@ -475,7 +476,7 @@ func TestPerTaskRunLoop_FinishGoal_EmptyAnswer_StillPopulatesShape(t *testing.T)
 		t.Fatalf("envelope.answer is missing or not a string: %T", envelope["answer"])
 	}
 	if ans != "goal" {
-		t.Errorf("envelope.answer = %q, want %q (extractAssistantAnswer fallback for nil payload)", ans, "goal")
+		t.Errorf("envelope.answer = %q, want %q (runctx.ExtractAssistantAnswer fallback for nil payload)", ans, "goal")
 	}
 	if envelope["finish_reason"] != "goal" {
 		t.Errorf("envelope.finish_reason = %q, want %q", envelope["finish_reason"], "goal")
@@ -981,101 +982,4 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(digits)
-}
-
-// TestExtractSkillKeywords — Phase 83m (Item 4, D-156): the helper
-// the runloop runs the raw task Query through before calling
-// `skills.Search`. The FTS5 ranker performs best on keyword-shaped
-// input — articles + punctuation + stopwords dilute the BM25 signal.
-// The helper lowercases, splits on whitespace + punctuation, drops
-// stopwords + 1-char tokens, dedupes (preserving order), caps at 10.
-func TestExtractSkillKeywords(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "empty_input",
-			input: "",
-			want:  "",
-		},
-		{
-			name:  "all_stopwords_returns_empty",
-			input: "the a an of to in",
-			want:  "",
-		},
-		{
-			name:  "sentence_with_punctuation",
-			input: "How do I configure the OAuth provider?",
-			want:  "how configure oauth provider",
-		},
-		{
-			name:  "lowercases_input",
-			input: "DEPLOY my Helm Chart",
-			want:  "deploy helm chart",
-		},
-		{
-			name:  "dedupes_preserving_order",
-			input: "auth config auth setup auth",
-			want:  "auth config setup",
-		},
-		{
-			name:  "drops_single_char_tokens",
-			input: "a b configure x setup y",
-			want:  "configure setup",
-		},
-		{
-			name:  "splits_on_punctuation",
-			input: "tool.invoke(name,args)",
-			want:  "tool invoke name args",
-		},
-		{
-			name:  "caps_at_ten_terms",
-			input: "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima",
-			want:  "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
-		},
-		{
-			name:  "preserves_domain_keywords",
-			input: "Search the api docs for the rate-limit knob",
-			want:  "search api docs rate limit knob",
-		},
-		{
-			name:  "numbers_kept_when_long_enough",
-			input: "deploy version 42 to staging",
-			want:  "deploy version 42 staging",
-		},
-		{
-			name:  "single_digit_dropped",
-			input: "task 1 needs attention",
-			want:  "task needs attention",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := extractSkillKeywords(tc.input)
-			if got != tc.want {
-				t.Errorf("extractSkillKeywords(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestExtractSkillKeywords_CapsAtTenTermsExactly — boundary assert:
-// the helper returns EXACTLY maxSkillKeywords tokens when the input
-// produces more than that, never more, never fewer.
-func TestExtractSkillKeywords_CapsAtTenTermsExactly(t *testing.T) {
-	// 12 distinct non-stopword tokens.
-	input := "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"
-	got := extractSkillKeywords(input)
-	terms := 0
-	for _, ch := range got {
-		if ch == ' ' {
-			terms++
-		}
-	}
-	terms++ // count = spaces + 1
-	if terms != maxSkillKeywords {
-		t.Errorf("extractSkillKeywords cap: got %d terms, want %d (output=%q)", terms, maxSkillKeywords, got)
-	}
 }

@@ -77,6 +77,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -87,7 +88,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -126,6 +126,7 @@ import (
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
+	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
@@ -1277,18 +1278,18 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			}
 			return
 		}
-		if mb := devStackProjectMemoryBlocks(patch); mb != nil {
+		if mb := runctx.ProjectMemoryBlocks(patch); mb != nil {
 			memBlocks = mb
 		}
 	}
 
 	var skillsCtx []any
 	if d.skills != nil && task.Query != "" {
-		// Phase 83m (Item 4, D-156): mirror the production runloop —
-		// extract keyword tokens before handing the query to the FTS5-
-		// backed skills driver. Falls back to the raw Query if
+		// Phase 83m (Item 4, D-156): same promoted keyword shaper the
+		// production runloop calls (Phase 110b — D-195; the third
+		// drifting copy is deleted). Falls back to the raw Query if
 		// extraction yields nothing useful so Search still has signal.
-		searchQuery := devStackExtractSkillKeywords(task.Query)
+		searchQuery := runctx.ExtractSkillKeywords(task.Query)
 		if searchQuery == "" {
 			searchQuery = task.Query
 		}
@@ -1309,7 +1310,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			}
 			return
 		}
-		skillsCtx = devStackProjectSkillsContext(ranked)
+		skillsCtx = runctx.ProjectSkillsContext(ranked)
 	}
 
 	counters := &planner.RepairCounters{}
@@ -1346,9 +1347,21 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return nil
 	}
 
-	// Round-7 F11 / D-166 — mirror of the production cmd_dev wiring:
-	// resolve operator-uploaded input artifacts for the first turn.
-	inputArtifacts := d.resolveInputArtifacts(taskCtx, q, task.InputArtifactIDs)
+	// Phase 110b (D-195) — Emit/OnChunk parity. The kit previously
+	// wired NEITHER closure, so planner telemetry (`planner.decision`
+	// / `planner.finish`) and token streaming (`llm.completion.chunk`)
+	// were silently dead on the official test surface — devstack
+	// validated weaker semantics than production ships (§17.6). Both
+	// now come from the SAME promoted constructors production wires.
+	emit := events.IdentityStampingEmitter(d.bus, q, d.logger)
+	chunkPub := llm.NewChunkPublisher(d.bus, q, string(taskID), d.logger)
+	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
+		chunkPub(delta, done, string(kind))
+	}
+
+	// Round-7 F11 / D-166 — the SAME promoted input-artifact policy
+	// production calls (Phase 110b — D-195).
+	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger)
 
 	// Phase 107f (D-176 mirror of cmd/harbor/cmd_dev_runloop.go §17.6
 	// parity): build the read-only session-artifact manifest the planner
@@ -1369,6 +1382,8 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			PlanningHints:    d.planningHints,
 			Catalog:          catalogView,
 			Trajectory:       traj,
+			Emit:             emit,    // Phase 110b (D-195) — planner-side telemetry parity
+			OnChunk:          onChunk, // Phase 110b (D-195) — per-token streaming parity
 			InputArtifacts:   inputArtifacts,
 			SessionArtifacts: sessionArtifacts,
 		},
@@ -1386,7 +1401,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 			Code:    code,
 			Message: err.Error(),
-		}); mErr != nil {
+		}); mErr != nil && d.logger != nil {
 			d.logger.Warn("devstack runloop: MarkFailed failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", mErr.Error()))
@@ -1394,11 +1409,12 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		return
 	}
 	if fin.Reason == planner.FinishGoal {
-		// Phase 83i (D-152) — memory writeback mirror.
+		// Phase 83i (D-152) — memory writeback mirror, via the SAME
+		// promoted extractor production calls (Phase 110b — D-195).
 		if d.memory != nil {
 			turn := memory.ConversationTurn{
 				UserMessage:       task.Query,
-				AssistantResponse: devStackExtractAssistantAnswer(fin),
+				AssistantResponse: runctx.ExtractAssistantAnswer(fin),
 				Timestamp:         time.Now(),
 			}
 			if mErr := d.memory.AddTurn(taskCtx, sessionQ, turn); mErr != nil && d.logger != nil {
@@ -1407,7 +1423,28 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 					slog.String("err", mErr.Error()))
 			}
 		}
-		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{}); mErr != nil {
+		// Phase 110b (D-195) — answer-envelope parity. The kit
+		// previously marked completion with an EMPTY TaskResult{}, so a
+		// devstack `tasks.get`-shaped read saw no result while
+		// production projected the Phase-106 envelope (the audit's
+		// "empty result" drift). The marshalled shape is the
+		// 110a-exported `planner.AnswerEnvelope` — byte-identical to
+		// production's MarkComplete payload.
+		envelope := planner.AnswerEnvelope{
+			Answer:        runctx.ExtractAssistantAnswer(fin),
+			FinishReason:  string(fin.Reason),
+			ToolCallsSeen: len(traj.Steps),
+		}
+		raw, encErr := json.Marshal(envelope)
+		if encErr != nil {
+			if d.logger != nil {
+				d.logger.Error("devstack runloop: marshal TaskResult.Value failed",
+					slog.String("task_id", string(taskID)),
+					slog.String("err", encErr.Error()))
+			}
+			raw = []byte("{}")
+		}
+		if mErr := d.tasks.MarkComplete(taskCtx, taskID, tasks.TaskResult{Value: raw}); mErr != nil && d.logger != nil {
 			d.logger.Warn("devstack runloop: MarkComplete failed",
 				slog.String("task_id", string(taskID)),
 				slog.String("err", mErr.Error()))
@@ -1417,67 +1454,11 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	if mErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 		Code:    string(fin.Reason),
 		Message: "RunLoop finished without satisfying goal: " + string(fin.Reason),
-	}); mErr != nil {
+	}); mErr != nil && d.logger != nil {
 		d.logger.Warn("devstack runloop: MarkFailed failed",
 			slog.String("task_id", string(taskID)),
 			slog.String("err", mErr.Error()))
 	}
-}
-
-// resolveInputArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go` —
-// pre-fetches metadata (+ bytes for `image/*`) for every operator-
-// uploaded artifact ID on a task, producing the `planner.InputArtifactView`
-// slice the run loop hands to the planner's first turn. Round-7
-// F11 / D-166 — D-094 mirror of the production resolver.
-func (d *DevStackRunLoopDriver) resolveInputArtifacts(
-	ctx context.Context, q identity.Quadruple, ids []string,
-) []planner.InputArtifactView {
-	if len(ids) == 0 {
-		return nil
-	}
-	if d.artifactStore == nil {
-		if d.logger != nil {
-			d.logger.Warn("devstack RunLoop driver: input artifacts ignored — no artifact store wired",
-				slog.String("run_id", q.RunID),
-				slog.Int("count", len(ids)))
-		}
-		return nil
-	}
-	scope := artifacts.ArtifactScope{
-		TenantID:  q.TenantID,
-		UserID:    q.UserID,
-		SessionID: q.SessionID,
-	}
-	out := make([]planner.InputArtifactView, 0, len(ids))
-	for _, id := range ids {
-		ref, found, gerr := d.artifactStore.GetRef(ctx, scope, id)
-		if gerr != nil || !found || ref == nil {
-			if d.logger != nil {
-				d.logger.Warn("devstack RunLoop driver: artifact GetRef miss; skipping",
-					slog.String("run_id", q.RunID),
-					slog.String("artifact_id", id))
-			}
-			continue
-		}
-		view := planner.InputArtifactView{
-			ID:        ref.ID,
-			MIME:      ref.MimeType,
-			SizeBytes: ref.SizeBytes,
-			Filename:  ref.Filename,
-		}
-		if strings.HasPrefix(ref.MimeType, "image/") {
-			bytesPayload, getFound, berr := d.artifactStore.Get(ctx, scope, id)
-			if berr == nil && getFound && len(bytesPayload) > 0 {
-				view.Bytes = bytesPayload
-			} else if d.logger != nil {
-				d.logger.Warn("devstack RunLoop driver: image bytes missing; ref-only fallback",
-					slog.String("run_id", q.RunID),
-					slog.String("artifact_id", id))
-			}
-		}
-		out = append(out, view)
-	}
-	return out
 }
 
 // resolveSessionArtifacts mirrors `cmd/harbor/cmd_dev_runloop.go`'s
@@ -1525,123 +1506,4 @@ func (d *DevStackRunLoopDriver) close(_ context.Context) error {
 		d.runsWG.Wait()
 	})
 	return nil
-}
-
-// devStackProjectMemoryBlocks mirrors the production projection
-// helper at cmd/harbor/cmd_dev_runloop.go::projectMemoryBlocks.
-// Per Phase 83f (D-149) the projection shape stays identical
-// across the production driver and the devstack mirror.
-func devStackProjectMemoryBlocks(patch memory.LLMContextPatch) *planner.MemoryBlocks {
-	if len(patch.RecentTurns) == 0 && patch.Summary == "" {
-		return nil
-	}
-	recent := make([]map[string]any, 0, len(patch.RecentTurns))
-	for _, turn := range patch.RecentTurns {
-		recent = append(recent, map[string]any{
-			"user":      turn.UserMessage,
-			"assistant": turn.AssistantResponse,
-		})
-	}
-	conversation := map[string]any{
-		"strategy":     string(patch.Strategy),
-		"recent_turns": recent,
-	}
-	if patch.Summary != "" {
-		conversation["summary"] = patch.Summary
-	}
-	return &planner.MemoryBlocks{Conversation: conversation}
-}
-
-// devStackProjectSkillsContext mirrors the production projection
-// helper at cmd/harbor/cmd_dev_runloop.go::projectSkillsContext.
-func devStackProjectSkillsContext(ranked []skills.RankedSkill) []any {
-	if len(ranked) == 0 {
-		return nil
-	}
-	out := make([]any, 0, len(ranked))
-	for _, r := range ranked {
-		entry := map[string]any{
-			"name":  r.Skill.Name,
-			"title": r.Skill.Title,
-		}
-		if r.Skill.Description != "" {
-			entry["description"] = r.Skill.Description
-		}
-		if len(r.Skill.Steps) > 0 {
-			entry["steps"] = r.Skill.Steps
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
-// devStackSkillKeywordStopwords mirrors cmd_dev_runloop.go's
-// skillKeywordStopwords per D-094 source-of-truth. Phase 83m (Item 4,
-// D-156).
-var devStackSkillKeywordStopwords = map[string]struct{}{
-	"a": {}, "an": {}, "the": {}, "and": {}, "or": {}, "but": {},
-	"if": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {},
-	"been": {}, "being": {}, "have": {}, "has": {}, "had": {},
-	"do": {}, "does": {}, "did": {}, "of": {}, "to": {}, "in": {},
-	"on": {}, "at": {}, "for": {}, "with": {}, "by": {}, "from": {},
-	"as": {}, "into": {}, "that": {}, "this": {}, "it": {}, "i": {},
-	"you": {}, "we": {}, "they": {}, "my": {}, "your": {},
-}
-
-// devStackMaxSkillKeywords mirrors cmd_dev_runloop.go's
-// maxSkillKeywords. Phase 83m (Item 4, D-156).
-const devStackMaxSkillKeywords = 10
-
-// devStackExtractSkillKeywords mirrors cmd_dev_runloop.go's
-// extractSkillKeywords per D-094. Phase 83m (Item 4, D-156): turns a
-// raw task Query into the keyword-shaped string the FTS5 ranker
-// performs best on. Returns an empty string for an all-stopword
-// pathological input; the caller falls back to the raw Query so
-// Search still has SOMETHING to rank against.
-func devStackExtractSkillKeywords(query string) string {
-	if query == "" {
-		return ""
-	}
-	lower := strings.ToLower(query)
-	tokens := strings.FieldsFunc(lower, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	seen := make(map[string]struct{}, len(tokens))
-	out := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
-		if len(tok) <= 1 {
-			continue
-		}
-		if _, drop := devStackSkillKeywordStopwords[tok]; drop {
-			continue
-		}
-		if _, dup := seen[tok]; dup {
-			continue
-		}
-		seen[tok] = struct{}{}
-		out = append(out, tok)
-		if len(out) >= devStackMaxSkillKeywords {
-			break
-		}
-	}
-	return strings.Join(out, " ")
-}
-
-// devStackExtractAssistantAnswer mirrors cmd_dev_runloop.go's
-// extractAssistantAnswer per D-094. Phase 83i (D-152).
-func devStackExtractAssistantAnswer(fin planner.Finish) string {
-	switch p := fin.Payload.(type) {
-	case string:
-		return p
-	case map[string]any:
-		if v, ok := p["answer"]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
-	}
-	if fin.Payload == nil {
-		return string(fin.Reason)
-	}
-	return fmt.Sprintf("%v", fin.Payload)
 }
