@@ -1138,6 +1138,19 @@ const (
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
+// `TokenBudget` is the trajectory-compression threshold (Phase 111e —
+// D-202). When > 0 the per-task run loop projects it onto
+// `RunSpec.Base.Budget.TokenBudget` and the runtime assembly
+// constructs the trajectory compression runner (the LLM-backed
+// `TrajectorySummariser` over the configured LLM client); the
+// steering RunLoop then invokes `MaybeCompress` at each step
+// boundary, compacting an over-budget trajectory into
+// `Trajectory.Summary` (one compression per run at V1.1.x). Zero (the
+// default) disables compression entirely — today's behaviour. The
+// validator rejects negative values loudly pre-boot. Requires a
+// configured `llm` block when non-zero (the summariser needs a real
+// client; fail-loud at assembly).
+//
 // `Extra` is the per-driver opaque extras map. Reserved for future
 // drivers' per-flow knobs (e.g. a deterministic planner's scripted
 // step sequence, a supervisor planner's sub-agent list). The V1 `react`
@@ -1155,6 +1168,7 @@ type PlannerConfig struct {
 	ParallelToolCalls      *bool                   `yaml:"parallel_tool_calls,omitempty"`
 	SkillsContextMax       int                     `yaml:"skills_context_max,omitempty"`
 	AbsoluteMaxSpawnDepth  int                     `yaml:"absolute_max_spawn_depth,omitempty"`
+	TokenBudget            int                     `yaml:"token_budget,omitempty"`
 	PlanningHints          PlannerPlanningHintsCfg `yaml:"planning_hints,omitempty"`
 	Extra                  map[string]string       `yaml:"extra,omitempty"`
 }

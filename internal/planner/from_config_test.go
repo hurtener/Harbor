@@ -100,6 +100,7 @@ func TestConfigFromOperator_FieldParity(t *testing.T) {
 		"SkillsContextMax":      "run-loop skill-retrieval cap — resolved via config.PlannerConfig.SkillsContextMaxResolved(), consumed by the per-task run loop, never by a planner driver",
 		"AbsoluteMaxSpawnDepth": "tool-executor SpawnTask depth clamp — resolved via config.PlannerConfig.SpawnDepthCap(), consumed by the executor, never by a planner driver",
 		"PlanningHints":         "per-run prompt steering — projected via planner.HintsFromConfig onto RunContext.PlanningHints, not onto the driver config",
+		"TokenBudget":           "trajectory-compression threshold (Phase 111e, D-202) — a runtime-level run option projected onto RunSpec.Base.Budget.TokenBudget by the per-task run-loop drivers (brief 02 §planner-knobs: never planner state); the assembly builds the CompressionRunner from it, never a planner driver",
 	}
 	typ := reflect.TypeOf(config.PlannerConfig{})
 	for i := range typ.NumField() {

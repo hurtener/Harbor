@@ -1319,6 +1319,11 @@ func (c *Config) validatePlanner() error {
 			fmt.Sprintf("must be >= 0 (0 = use dev-runtime default of 4), got %d",
 				c.Planner.AbsoluteMaxSpawnDepth))
 	}
+	if c.Planner.TokenBudget < 0 {
+		return fieldError("planner.token_budget",
+			fmt.Sprintf("must be >= 0 (0 = trajectory compression disabled), got %d",
+				c.Planner.TokenBudget))
+	}
 	return nil
 }
 

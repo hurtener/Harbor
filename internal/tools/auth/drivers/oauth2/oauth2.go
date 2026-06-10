@@ -88,11 +88,13 @@ var (
 	// declare both.
 	ErrMissingEndpoints = errors.New("auth/oauth2: both auth_url and token_url must be set (the oauth2 driver does not auto-discover endpoints — declare them in tools.oauth_providers[])")
 	// ErrMissingRedirectURL — `cfg.RedirectURL` was empty. The
-	// redirect_uri names the operator's callback endpoint; Harbor
-	// does not yet ship one — the endpoint calls
-	// `auth.Provider.CompleteFlow(state, code)` (the exported seam;
-	// see docs/notes/sdk-friction-audit.md §3).
-	ErrMissingRedirectURL = errors.New("auth/oauth2: redirect_url must not be empty (the redirect_uri your OAuth callback endpoint exposes)")
+	// redirect_uri names the callback endpoint; `harbor dev` mounts
+	// Harbor's production handler (`auth.CallbackHandler`, Phase
+	// 111b / D-199) at `GET /v1/tools/oauth/callback`, so the dev
+	// value is `http://<bind>/v1/tools/oauth/callback`. Headless
+	// embedders mount the same handler on their own mux (see
+	// docs/recipes/steer-and-resume-a-run.md).
+	ErrMissingRedirectURL = errors.New("auth/oauth2: redirect_url must not be empty (point it at the mounted auth.CallbackHandler — harbor dev serves GET /v1/tools/oauth/callback)")
 )
 
 // init self-registers the `oauth2` driver under its canonical name.
@@ -207,6 +209,18 @@ func (p *provider) InitiateFlow(ctx context.Context, _ tools.ToolSourceID) (auth
 // here — passed through verbatim.
 func (p *provider) CompleteFlow(ctx context.Context, state, code string) (auth.Token, error) {
 	return p.inner.CompleteFlow(ctx, state, code)
+}
+
+// PendingFlow implements OAuthProvider.PendingFlow. State-keyed like
+// CompleteFlow — passed through verbatim.
+func (p *provider) PendingFlow(state string) (auth.PendingFlowInfo, bool) {
+	return p.inner.PendingFlow(state)
+}
+
+// DenyFlow implements OAuthProvider.DenyFlow. State-keyed like
+// CompleteFlow — passed through verbatim.
+func (p *provider) DenyFlow(ctx context.Context, state, reason string) error {
+	return p.inner.DenyFlow(ctx, state, reason)
 }
 
 // Revoke implements OAuthProvider.Revoke.
