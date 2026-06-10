@@ -914,7 +914,20 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// the same TaskRegistry the runtime drives so the wave-end E2E
 		// exercises the real routes.
 		if stack.Tasks != nil {
-			tasksProjector, tpErr := tasksprotocol.NewRegistryProjector(stack.Tasks)
+			// Phase 107a parity (D-195 dated-note follow-up): mirror the
+			// production `cmd/harbor` boot path — the Enricher projects the
+			// run-loop driver's per-task trajectory map onto `tasks.get`
+			// reads. Only wired when the assembly produced a driver
+			// (SkipRunLoop / no-planner stacks read un-enriched tasks,
+			// same as a production boot without a run loop).
+			var projectorOpts []tasksprotocol.RegistryProjectorOption
+			if stack.RunLoopDriver != nil {
+				projectorOpts = append(projectorOpts,
+					tasksprotocol.WithEnricher(&devStackEnricher{
+						trajectoryFn: stack.RunLoopDriver.TrajectoryByTaskID,
+					}))
+			}
+			tasksProjector, tpErr := tasksprotocol.NewRegistryProjector(stack.Tasks, projectorOpts...)
 			if tpErr != nil {
 				return stack, fmt.Errorf("tasks/protocol projector: %w", tpErr)
 			}
@@ -1136,6 +1149,15 @@ type DevStackRunLoopDriver struct {
 	tokenBudget int
 	compression *planner.CompressionRunner
 
+	// Phase 107a parity (D-195 dated-note follow-up) — per-task
+	// trajectory map for the Enricher seam, the D-094 mirror of the
+	// production driver. Trajectories are stored before RunLoop.Run
+	// and retained after completion for tasks.get enrichment. Reads
+	// are safe under RLock; writes acquire the full mutex. An evicted
+	// task returns nil.
+	trajMu       sync.RWMutex
+	trajectories map[tasks.TaskID]*planner.Trajectory
+
 	subCtx     context.Context
 	subCancel  context.CancelFunc
 	sub        events.Subscription
@@ -1208,6 +1230,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		artifactStore:   opts.artifactStore,
 		tokenBudget:     opts.tokenBudget,
 		compression:     opts.compression,
+		trajectories:    make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -1471,6 +1494,14 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 		MaxSteps:         d.maxStepsRunLoop,
 		Compression:      d.compression, // Phase 111e (D-202) — trajectory compression runner
 	}
+	// Phase 107a parity (D-195 dated-note follow-up — D-094 mirror of
+	// cmd/harbor/cmd_dev_runloop.go): save the trajectory ref before
+	// Run so the Enricher can read it post-completion (including
+	// concurrently — the map is mutex-guarded per D-025).
+	d.trajMu.Lock()
+	d.trajectories[taskID] = traj
+	d.trajMu.Unlock()
+
 	fin, err := d.runLoop.Run(d.subCtx, spec)
 	if err != nil {
 		code := planner.TaskErrorCodeRunLoopError
@@ -1570,6 +1601,17 @@ func (d *DevStackRunLoopDriver) resolveSessionArtifacts(
 		return nil
 	}
 	return planner.BuildArtifactManifest(refs)
+}
+
+// TrajectoryByTaskID returns the planner trajectory for a completed run,
+// or nil when the task's trajectory has been evicted or never existed.
+// Reads are safe under concurrent access (RLock / D-025). The D-094
+// mirror of the production driver's accessor — the Enricher seam's
+// trajectory source (Phase 107a parity, D-195 dated-note follow-up).
+func (d *DevStackRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
+	d.trajMu.RLock()
+	defer d.trajMu.RUnlock()
+	return d.trajectories[taskID]
 }
 
 func (d *DevStackRunLoopDriver) close(_ context.Context) error {

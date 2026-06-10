@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/events"
 )
 
@@ -195,8 +196,12 @@ const DefaultDriver = "bifrost"
 // snapshot programmatically still gets reasonable behaviour without
 // every test wiring also touching the config layer.
 const (
-	DefaultContextWindowReserve = 0.05   // 5%
-	DefaultHeavyOutputThreshold = 32_768 // 32 KiB; matches D-022 / RFC §6.10
+	DefaultContextWindowReserve = 0.05 // 5%
+	// DefaultHeavyOutputThreshold (32 KiB; D-022 / RFC §6.10) is
+	// single-sourced on `config.DefaultHeavyOutputThresholdBytes` so
+	// the snapshot default cannot drift from the operator-config
+	// default (the DefaultSpawnDepthCap precedent).
+	DefaultHeavyOutputThreshold = config.DefaultHeavyOutputThresholdBytes
 	// DefaultMaxRetries (Phase 36) — the retry-with-feedback bound
 	// when `ModelProfile.MaxRetries` is zero. Conservative: one
 	// corrective re-ask after the original attempt.

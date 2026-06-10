@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PREFLIGHT_REQUIRES: live-server
+# PREFLIGHT_REQUIRES: unit-tests
 #
 # Phase 107e — SpawnTask + AwaitTask dev-executor dispatch (background-task execution).
 #
@@ -12,9 +12,18 @@
 #   - A parent run can spawn a background task (_spawn_task) and join it (_await_task)
 #     within one dev run, bounded by planner.absolute_max_spawn_depth.
 #
-# 404/405/501 → SKIP convention (AGENTS.md §4.2) keeps this green on builds
-# that predate the surface. The live assertions also SKIP without a provider
-# key (the spawn-then-join elicitation needs a real model).
+# §4.3 conversion (2026-06-10, program follow-ups chore): the plan's
+# original live LLM-elicited spawn-then-join (AC-15 / smoke steps 4-7)
+# is covered by the static Go-test gate instead (the phase-110a smoke
+# pattern): `cmd/harbor/cmd_dev_spawn_await_test.go::
+# TestSpawnThenAwait_BackgroundDrivenEndToEnd` runs the SAME semantics
+# deterministically — real TaskRegistry + real per-task driver
+# (driveBackground=true) + the promoted production executor, spawn →
+# background run → await join, identity propagation, a failing-child
+# sibling — under -race, with no provider key and no flaky elicitation
+# prompt. The placeholder live section (which skipped even WITH a
+# token) is deleted; the surface now shows OK > 0 under preflight
+# (§4.2 rule 5).
 
 set -euo pipefail
 
@@ -40,19 +49,31 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# Live: spawn → background run → await join. Needs a provider key + a dev
-# token. SKIP cleanly when either is missing.
-#
-# Real assertions land with the implementation (AC-15 / smoke steps 5-7):
-#   - assert a task.spawned event for a KindBackground task during the parent run
-#   - assert the spawned task reaches task.completed
-#   - assert the parent trajectory carries a SpawnTask step + an AwaitTask step
-#   - assert no ErrContextLeak in the server log
+# AC-15 gate: spawn → background run → await join, end-to-end under -race.
+# The driver-integrated E2E pair (cmd/harbor) proves the production
+# wiring drives a spawned background task to completion and joins it;
+# the dispatch slice covers the executor's pure spawn/await behaviour
+# (depth cap, terminal polling, D-026 projection, failed child,
+# concurrent reuse).
 # ----------------------------------------------------------------------------
-if [ -z "${HARBOR_DEV_TOKEN:-}" ]; then
-  skip "phase 107e: no HARBOR_DEV_TOKEN — live spawn/await assertions skipped"
+if [ ! -f "cmd/harbor/cmd_dev_spawn_await_test.go" ]; then
+  skip "phase 107e: cmd/harbor/cmd_dev_spawn_await_test.go absent (pre-107e build)"
 else
-  skip "phase 107e: live spawn/await assertions — implement with AC-15 (scripted spawn-then-join run)"
+  if go test ./cmd/harbor/ \
+      -run 'TestSpawnThenAwait_BackgroundDrivenEndToEnd|TestSpawnTask_RetainTurn_BlocksAndReturnsOutcome' \
+      -race -count=1 -timeout 300s >/dev/null 2>&1; then
+    ok "phase 107e: spawn→background-run→await-join E2E pair passes under -race (AC-15)"
+  else
+    fail "phase 107e: spawn/await driver E2Es failed (run: go test ./cmd/harbor/ -run 'TestSpawnThenAwait|TestSpawnTask_RetainTurn' -race)"
+  fi
+
+  if go test ./internal/runtime/dispatch/ \
+      -run 'TestExecutor_Spawn|TestExecutor_Await' \
+      -race -count=1 -timeout 300s >/dev/null 2>&1; then
+    ok "phase 107e: executor spawn/await dispatch slice passes under -race"
+  else
+    fail "phase 107e: executor spawn/await dispatch slice failed (run: go test ./internal/runtime/dispatch/ -run 'TestExecutor_Spawn|TestExecutor_Await' -race)"
+  fi
 fi
 
 smoke_summary

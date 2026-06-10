@@ -918,7 +918,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// The events Searcher needs the bus's Replayer capability; the
 	// inmem / replay-buffered bus implements it, so a fresh dev stack
 	// serves `search.events` too.
-	searchDeps := search.Deps{Redactor: red, AdminScope: search.AdminScopeFromAuth}
+	searchDeps := search.Deps{Redactor: red, AdminScope: server.SearchAdminScopeFromAuth}
 	searchSessions, err := searchsessions.New(sessionRegistry, searchDeps)
 	if err != nil {
 		closeAll(ctx)
@@ -948,7 +948,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("search registry: %w", err)
 	}
-	searchSurface, err := protocol.NewSearchSurface(searchRegistry, search.AdminScopeFromAuth)
+	searchSurface, err := protocol.NewSearchSurface(searchRegistry, server.SearchAdminScopeFromAuth)
 	if err != nil {
 		closeAll(ctx)
 		return nil, fmt.Errorf("search surface: %w", err)

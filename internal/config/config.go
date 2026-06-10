@@ -1232,6 +1232,18 @@ func (p PlannerConfig) SpawnDepthCap() int {
 // other literal copy of the value is allowed.
 const DefaultSpawnDepthCap = 4
 
+// DefaultHeavyOutputThresholdBytes is the ONE source of the D-026 /
+// D-022 heavy-output threshold default (32 KiB; RFC §6.10): the byte
+// size at which the runtime promotes heavy content to artifact-backed
+// stubs. `Defaults()` seeds
+// `ArtifactsConfig.HeavyOutputThresholdBytes` from it; the dispatch
+// executor's safety floor (`internal/runtime/dispatch`), the LLM-edge
+// snapshot default (`llm.DefaultHeavyOutputThreshold`), and the search
+// preview bound (`search.HeavyPreviewThreshold`) all reference this
+// constant (the `DefaultSpawnDepthCap` precedent — Wave B audit
+// follow-up). No other literal copy of the value is allowed.
+const DefaultHeavyOutputThresholdBytes = 32 * 1024
+
 // SkillsContextMaxResolved resolves the optional `skills_context_max`
 // knob (Phase 83f — D-149). A non-positive value (unset or zero)
 // resolves to `DefaultSkillsContextMax`. Phase 110c (D-196) re-homed
