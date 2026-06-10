@@ -96,6 +96,12 @@ Build an agent against the runtime library:
 import "github.com/hurtener/Harbor/harbortest"
 ```
 
+The runtime surface itself is importable from outside the module through the
+curated public SDK facade at [`sdk/`](sdk/) — alias-based re-exports of the
+supported runtime API (`sdk/config`, `sdk/assemble`, `sdk/tools`,
+`sdk/planner`, …; RFC §3.6). The headless-embedding recipe in
+[`docs/recipes/`](docs/recipes/) shows the full path.
+
 The fastest path is the four-step CLI flow: `harbor init` drops a tiered,
 commented `harbor.yaml` plus `AGENTS.md` / `CLAUDE.md` / `README.md` companion
 files into the current directory; you edit one LLM-provider example block, run
@@ -165,8 +171,9 @@ configurable trajectory compression (`planner.token_budget` — an over-budget
 trajectory is compacted into a five-field summary before the next prompt),
 durable pauses that survive a Runtime restart with a max-park sweeper, enforced
 per-tenant governance ceilings (`governance.identity_tiers`), and the tool-side
-OAuth completion leg. Cross-tenant isolation, goroutine-leak,
-and chaos conformance harnesses still gate every change.
+OAuth completion leg. The runtime surface is now externally importable through
+the curated [`sdk/`](sdk/) facade (RFC §3.6). Cross-tenant isolation,
+goroutine-leak, and chaos conformance harnesses still gate every change.
 
 Next: the MCP Apps host (interactive, sandboxed `ui://` resources) and the
 remaining Console page-polish waves. Post-V1 work — additional planner concretes,

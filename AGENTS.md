@@ -136,6 +136,7 @@ When a phase plan and the RFC drift, the RFC wins. File a follow-up to update th
 │   ├── tools/                  # example tools (in-proc, HTTP, MCP, A2A)
 │   └── *.yaml                  # example configs
 ├── harbortest/                 # public test kit — operator-importable from outside the module
+├── sdk/                        # public SDK facade — curated alias-based re-exports of the runtime surface (RFC §3.6, D-204)
 ├── test/integration/
 ├── scripts/
 │   ├── preflight.sh            # the preflight gate

@@ -9,10 +9,14 @@ This recipe is acceptance-gated: its end-to-end path is executed by
 `test/integration/phase110d_assemble_test.go`, so every snippet
 references real exported symbols (Phase 110d, D-197).
 
-> **Scope note.** `internal/runtime/assemble` is module-internal — this
-> recipe covers in-module embedding (a binary in this repo, a fork, or
-> a vendored tree). An externally importable facade is a future
-> RFC-level program for which this entry point is the prerequisite.
+> **Scope note.** This recipe's snippets use the `internal/` paths and
+> therefore cover in-module embedding (a binary in this repo, a fork,
+> or a vendored tree). The externally importable facade now exists —
+> the curated `sdk/` alias tree (RFC §3.6, Phase 112a) re-exports every
+> symbol this recipe touches (`sdk/config`, `sdk/assemble`,
+> `sdk/drivers/prod`, …); Phase 112b flips this recipe's snippets to
+> the public paths. `test/integration/phase112a_sdk_facade_test.go`
+> already executes this recipe's path through `sdk/` imports only.
 
 ## The pieces
 
