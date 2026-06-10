@@ -128,33 +128,33 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `assemble.Assemble(ctx, cfg, opts)` exists in `internal/runtime/assemble`
+- [x] `assemble.Assemble(ctx, cfg, opts)` exists in `internal/runtime/assemble`
       (error-returning, no `testing` import — grep-asserted); ordering + closer chain
       + partial-failure semantics behaviour-match `bootDevStack` (golden boot test on
       an examples-shaped config; forced mid-assembly failure closes everything already
       opened, goroutine baseline restored).
-- [ ] **§13 consumer in the same phase:** `bootDevStack` and `devstack.Assemble` are
+- [x] **§13 consumer in the same phase:** `bootDevStack` and `devstack.Assemble` are
       thin wrappers over `assemble.Assemble`; `tryAssemble` and both duplicated
       fan-out bodies are deleted — grep-asserted; the binary boots and all prior
       smokes pass (preflight green).
-- [ ] The exported MCP attach helper lands next to the driver including the
+- [x] The exported MCP attach helper lands next to the driver including the
       `ToolPolicy` projection; devstack's converted path now applies policy projection
       (regression test pins a policy-carrying `config.MCPServerConfig` →
       policy-resolved descriptors on the catalog — the silent drop is closed).
-- [ ] `auth.BuildProviders` exported; cmd's `applyToolCatalogWiring` reduces to a thin
+- [x] `auth.BuildProviders` exported; cmd's `applyToolCatalogWiring` reduces to a thin
       call; fail-loud KEK/env/driver errors preserved (unit-tested).
-- [ ] `events.OpenWith(ctx, cfg, redactor, Deps{State})` exists; a durable-driver
+- [x] `events.OpenWith(ctx, cfg, redactor, Deps{State})` exists; a durable-driver
       config assembled via `Assemble` shares the runtime's StateStore (integration:
       events survive a bus reopen against the same store); plain `Open` untouched.
-- [ ] `docs/recipes/embed-harbor-headless.md` ships and its end-to-end path
+- [x] `docs/recipes/embed-harbor-headless.md` ships and its end-to-end path
       (Defaults → ValidateCore → prod import → Assemble → one task → Close) is
       exercised by `test/integration/` — the recipe compiles against reality, not
       aspiration.
-- [ ] Concurrent-use: N≥10 concurrent `Assemble`+`Close` cycles under `-race` (driver
+- [x] Concurrent-use: N≥10 concurrent `Assemble`+`Close` cycles under `-race` (driver
       registries are shared process state) — no cross-stack bleed, no goroutine leak;
       plus N≥100 concurrent task-runs against ONE assembled stack (the stack is the
       compiled artifact; D-025).
-- [ ] All prior phase smokes + integration tests pass against the converted binary.
+- [x] All prior phase smokes + integration tests pass against the converted binary.
 
 ## Files added or changed
 
@@ -181,10 +181,21 @@ None.
 
 - `assemble.Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, error)`
 - `assemble.Stack` (composed subsystems + `Close(ctx) error`) + `assemble.Options`
-- `mcpdrv.Attach(ctx, config.MCPServerConfig, tools.ToolCatalog, *Registry, events.EventBus, *slog.Logger, *[]func(context.Context) error) error`
-  (shape refinable per §4.3)
-- `auth.BuildProviders(ctx, config.ToolsConfig, Deps) (map[string]*toolapproval.ApprovalGate, map[string]toolauth.OAuthProvider, error)`
+- `mcpdrv.Attach(ctx, config.MCPServerConfig, AttachDeps) error` (plus the
+  exported `mcpdrv.ProjectToolPolicies`) — refined per §4.3 from the positional sketch to a
+  godoc'd deps struct (`Catalog` / `Registry` / `Bus` / `Logger` /
+  `DefaultIdentity` / `Closers`).
+- `auth.BuildProviders(ctx, config.ToolsConfig, BuildDeps) (map[string]OAuthProvider, error)`
+  — refined per §4.3: returns the provider map ONLY. Approval gates were never
+  built by the cmd-side wiring function itself but by the catalog Builder's
+  `AppliedGates` output (which the assembly invokes); returning gates from
+  `auth` would force an `auth → catalog` import cycle (catalog imports auth).
+  D-197 records the refinement.
 - `events.OpenWith(ctx, config.EventsConfig, audit.Redactor, Deps) (EventBus, error)`
+  plus `events.RegisterWithDeps` (the parallel deps-aware registration seam).
+- Recorded ordering reconciliation (D-197): the assembly opens the StateStore
+  BEFORE the event bus (production was bus-first) so the durable log's shared
+  store outlives the bus; behaviour is otherwise order-insensitive.
 
 > Scope note: "public" here is module-internal — `internal/` packages are not
 > importable by external modules (the recorded reason `harbortest/` lives at the
@@ -285,17 +296,17 @@ Skeleton ships with this plan (standard skip until the phase implements).
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] If multi-isolation paths changed: cross-session isolation test passes — the
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] Coverage on touched packages ≥ stated target
+- [x] If multi-isolation paths changed: cross-session isolation test passes — the
       integration E2E asserts identity propagation through the assembled stack.
-- [ ] **Concurrent-reuse test passes (D-025)** — the assembled `Stack` is the compiled
+- [x] **Concurrent-reuse test passes (D-025)** — the assembled `Stack` is the compiled
       artifact; N≥100 concurrent runs against one stack + N≥10 Assemble/Close cycles
       under `-race`, goroutine baseline restored.
-- [ ] **Integration test (§17):** the recipe-path E2E with real drivers, identity
+- [x] **Integration test (§17):** the recipe-path E2E with real drivers, identity
       propagation, ≥2 failure modes, under `-race`.
-- [ ] Glossary updated (assembly entry point)
-- [ ] If a brief finding was departed from: N/A — none departed.
+- [x] Glossary updated (assembly entry point)
+- [x] If a brief finding was departed from: N/A — none departed.

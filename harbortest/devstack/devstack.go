@@ -2,14 +2,17 @@
 //
 // # Source of truth
 //
-// This package's `Assemble` function MUST track the production boot
-// stack in `cmd/harbor/cmd_dev.go::bootDevStack` field-for-field. When
-// the production boot order changes — and it will — this helper
-// changes in the same PR. The §17.6 "fix what the integration test
-// finds — no matter where the bug lives" rule requires it: if the
-// production boot is the source of truth, the helper that pretends
-// to be production-shaped MUST stay aligned, or the tests it backs
-// silently drift.
+// Since Phase 110d (D-197) this package's `Assemble` is a THIN wrapper
+// over `internal/runtime/assemble.Assemble` — the SAME promoted
+// fan-out `cmd/harbor/cmd_dev.go::bootDevStack` wraps. Production ↔
+// devstack subsystem-wiring parity therefore holds by construction;
+// the pre-110d hand-mirrored copy (the D-094 "MUST track production
+// field-for-field" discipline, which drifted anyway — the MCP
+// ToolPolicy projection drop, the missing cfg-declared OAuth
+// providers) is deleted. What remains per-caller is the test-kit-only
+// band: dev auth signer, draft store, transports/mux, and the
+// per-task run-loop driver mirror (whose POPULATION helpers are
+// shared; the subscriber shell is per-caller).
 //
 // # What this package replaces
 //
@@ -91,7 +94,6 @@ import (
 
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
-	auditpatterns "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/devdraft"
 	"github.com/hurtener/Harbor/internal/events"
@@ -111,7 +113,6 @@ import (
 	_ "github.com/hurtener/Harbor/internal/drivers/prod"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
-	llmsummarizer "github.com/hurtener/Harbor/internal/llm/summarizer"
 	"github.com/hurtener/Harbor/internal/mcpconsole"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -120,10 +121,9 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/transports"
 	"github.com/hurtener/Harbor/internal/protocol/transports/cors"
 	"github.com/hurtener/Harbor/internal/protocol/types"
-	"github.com/hurtener/Harbor/internal/runtime/dispatch"
+	"github.com/hurtener/Harbor/internal/runtime/assemble"
 	"github.com/hurtener/Harbor/internal/runtime/flow"
 	flowprotocol "github.com/hurtener/Harbor/internal/runtime/flow/protocol"
-	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	runtimeposture "github.com/hurtener/Harbor/internal/runtime/posture"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
@@ -138,10 +138,7 @@ import (
 	"github.com/hurtener/Harbor/internal/tools"
 	toolapproval "github.com/hurtener/Harbor/internal/tools/approval"
 	toolauth "github.com/hurtener/Harbor/internal/tools/auth"
-	"github.com/hurtener/Harbor/internal/tools/builtin"
-	toolcatalog "github.com/hurtener/Harbor/internal/tools/catalog"
 	mcpdrv "github.com/hurtener/Harbor/internal/tools/drivers/mcp"
-	"github.com/hurtener/Harbor/internal/tools/drivers/searchcache"
 	toolsprotocol "github.com/hurtener/Harbor/internal/tools/protocol"
 )
 
@@ -435,8 +432,11 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 }
 
 // Assemble builds the dev stack the production `harbor dev`
-// subcommand boots. See package doc for the source-of-truth
-// invariant and the import block tests must blank-import.
+// subcommand boots. Since Phase 110d (D-197) it is a THIN wrapper
+// over the promoted `internal/runtime/assemble` fan-out — the same
+// entry point `cmd/harbor/cmd_dev.go::bootDevStack` wraps — plus the
+// test-kit-only legs (dev auth signer, draft store, transports/mux,
+// the per-task run-loop driver mirror).
 //
 // The helper is `*testing.T`-flavoured: every failure is a
 // `t.Fatalf` so tests don't need to thread error returns. On
@@ -460,13 +460,9 @@ func (k *devKeySet) KeyByID(kid string) (crypto.PublicKey, string, error) {
 //
 // (existing per-test driver blank imports remain harmless — Go runs a
 // package init exactly once regardless of how many importers).
-//
-// The helper opens the audit redactor by direct construction (the
-// patterns driver is the only V1 redactor; the seam is documented
-// future-proofing). All other layers use the factory `Open`.
 func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 	t.Helper()
-	stack, err := tryAssemble(cfg, opts)
+	stack, err := assembleWith(cfg, opts)
 	if err != nil {
 		if stack != nil {
 			stack.Close()
@@ -476,18 +472,18 @@ func Assemble(t *testing.T, cfg *config.Config, opts AssembleOpts) *DevStack {
 	return stack
 }
 
-// tryAssemble is the error-returning core of Assemble. Split out from
-// the t-flavoured wrapper so:
-//
-//   - error paths can be unit-tested without faking *testing.T;
-//   - the Assemble wrapper has one t.Fatal call site (cleaner audit);
-//   - the dependency-order remains visible in one function (matching
-//     the production cmd_dev.go::bootDevStack layout).
+// assembleWith is the error-returning core of Assemble. Since Phase
+// 110d (D-197) the subsystem fan-out lives in ONE place —
+// `internal/runtime/assemble.Assemble` — and this core only maps
+// AssembleOpts onto assemble.Options and adds the test-kit legs.
+// The pre-110d `tryAssemble` (the hand-mirrored ~450-line copy of
+// `bootDevStack`, D-094) is deleted: production↔devstack parity is
+// now by construction, not by comment discipline.
 //
 // Returns a partial DevStack on error so the caller's deferred Close
 // drains every subsystem that was successfully opened before the
-// failure.
-func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
+// failure (the assemble package carries the same contract).
+func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("cfg is required (call config.Load + Validate or build a minimal cfg by hand)")
 	}
@@ -507,310 +503,67 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		stack.closeFns = nil
 	}
 
-	// Audit. The patterns driver is the V1 redactor used by every
-	// integration test. Constructed by direct call (audit.Open's
-	// factory path is wired but redundant given the single-driver
-	// shape at V1).
-	stack.Audit = auditpatterns.New()
-
-	// Events. Real inmem driver per CLAUDE.md §17.3 #1.
-	bus, err := events.Open(context.Background(), cfg.Events, stack.Audit)
-	if err != nil {
-		return stack, fmt.Errorf("events.Open: %w", err)
-	}
-	stack.Bus = bus
-	stack.closeFns = append(stack.closeFns, bus.Close)
-
-	// Phase 56 / 72f: the MetricsRegistry + bus→metrics bridge. The
-	// devstack mirrors the production `cmd/harbor` boot path field-for-
-	// field (CLAUDE.md §17.6 — the fixture must not diverge from
-	// production) so the posture surface's `metrics.snapshot` projects
-	// a LIVE counter snapshot, not an empty stub.
-	//
-	// The reader is an in-process sdkmetric.ManualReader injected via
-	// the `WithMetricReader` seam: production resolves the metric
-	// exporter through the §4.4 driver registry (the prometheus driver
-	// is blank-imported in `cmd/harbor/main.go`), but `harbortest` is a
-	// library every integration test imports — requiring each of them
-	// to blank-import a driver would be fragile. The ManualReader keeps
-	// `devstack.Assemble` self-contained while exercising the SAME
-	// MetricsRegistry + bridge + Snapshot code path production runs.
-	metricsReg, metricsShutdown, err := telemetry.NewMetricsRegistry(cfg.Telemetry,
-		telemetry.WithMetricReader(sdkmetric.NewManualReader()))
-	if err != nil {
-		return stack, fmt.Errorf("telemetry.NewMetricsRegistry: %w", err)
-	}
-	stack.closeFns = append(stack.closeFns, metricsShutdown)
-	metricsBridgeStop, err := telemetry.BridgeBusToMetrics(context.Background(), bus, metricsReg, events.Filter{Admin: true})
-	if err != nil {
-		return stack, fmt.Errorf("telemetry.BridgeBusToMetrics: %w", err)
-	}
-	stack.closeFns = append(stack.closeFns, func(context.Context) error { metricsBridgeStop(); return nil })
-
-	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —
-	// mirrors `cmd/harbor/cmd_dev.go::bootDevStack` field-for-field
-	// (§17.6 source-of-truth invariant). Without a live Run() the
-	// `notification.*` topic has no producer; the goroutine is
-	// cancelled + joined on Close.
-	notifSubscriber := notifications.NewSubscriber(bus, slog.Default())
-	notifCtx, notifCancel := context.WithCancel(context.Background())
-	notifDone := make(chan struct{})
-	go func() {
-		defer close(notifDone)
-		if err := notifSubscriber.Run(notifCtx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Default().Warn("devstack: notification subscriber stopped with error",
-				slog.String("error", err.Error()))
-		}
-	}()
-	stack.closeFns = append(stack.closeFns, func(context.Context) error {
-		notifCancel()
-		<-notifDone
-		return nil
+	// The ONE config→stack fan-out (Phase 110d, D-197). The in-process
+	// sdkmetric.ManualReader keeps the kit self-contained while
+	// exercising the SAME MetricsRegistry + bridge + Snapshot code path
+	// production runs (production resolves a metrics exporter through
+	// the §4.4 driver registry instead).
+	core, err := assemble.Assemble(context.Background(), cfg, assemble.Options{
+		Logger:           opts.Logger,
+		LLMSnapshot:      opts.LLMConfigSnapshot,
+		PlannerOverride:  opts.PlannerOverride,
+		SkillStore:       opts.SkillStore,
+		OAuthProviders:   opts.OAuthProviders,
+		PreRegisterTools: opts.PreRegisterTools,
+		MCPDefaultIdentity: identity.Identity{
+			TenantID:  DefaultDevTenant,
+			UserID:    DefaultDevUser,
+			SessionID: DefaultDevSession,
+		},
+		MetricsOptions: []telemetry.MetricsOption{
+			telemetry.WithMetricReader(sdkmetric.NewManualReader()),
+		},
+		SkipCatalog:  opts.SkipCatalog,
+		SkipSteering: opts.SkipSteering,
+		SkipRunLoop:  opts.SkipRunLoop,
 	})
-
-	// State.
-	stateStore, err := state.Open(context.Background(), cfg.State)
+	if core != nil {
+		// The assembled core closes as ONE closer (its own chain runs in
+		// reverse); the test-kit legs appended below close before it.
+		stack.closeFns = append(stack.closeFns, core.Close)
+		stack.Audit = core.Redactor
+		stack.Bus = core.Bus
+		stack.State = core.State
+		stack.Artifacts = core.Artifacts
+		stack.Tasks = core.Tasks
+		stack.LLMClient = core.LLM
+		stack.Memory = core.Memory
+		stack.Skills = core.Skills
+		stack.Sessions = core.Sessions
+		stack.Catalog = core.Catalog
+		stack.Coordinator = core.Coordinator
+		stack.Gates = core.Gates
+		stack.MCPRegistry = core.MCPRegistry
+		stack.Steering = core.Steering
+		stack.RunLoop = core.RunLoop
+		if core.OAuthProviders != nil {
+			stack.OAuthProviders = core.OAuthProviders
+		}
+	}
 	if err != nil {
-		return stack, fmt.Errorf("state.Open: %w", err)
-	}
-	stack.State = stateStore
-	stack.closeFns = append(stack.closeFns, stateStore.Close)
-
-	// Artifacts.
-	artStore, err := artifacts.Open(context.Background(), cfg.Artifacts)
-	if err != nil {
-		return stack, fmt.Errorf("artifacts.Open: %w", err)
-	}
-	stack.Artifacts = artStore
-	stack.closeFns = append(stack.closeFns, artStore.Close)
-
-	// LLM. Only opened when the cfg names a driver — phase31 /
-	// phase64a tests pass a cfg without an LLM block and the helper
-	// skips this layer. The wave11 / phase64 tests pin an explicit
-	// snapshot via LLMConfigSnapshot to flip the driver to "mock"
-	// without rewriting their yaml.
-	// llmPostureCfg holds the resolved LLM ConfigSnapshot so the Phase
-	// 72g posture surface (wired into the mux below) can project it.
-	// Captured here even when the LLM client itself is skipped — the
-	// posture surface is a read-only projection and works against a
-	// zero snapshot too.
-	var llmPostureCfg llm.ConfigSnapshot
-	if cfg.LLM.Driver != "" || opts.LLMConfigSnapshot != nil {
-		var llmCfg llm.ConfigSnapshot
-		if opts.LLMConfigSnapshot != nil {
-			llmCfg = *opts.LLMConfigSnapshot
-		} else {
-			// The SAME exported projection production calls (Phase
-			// 110c, D-196) — the hand-maintained mirror copies of the
-			// copy* helpers are gone, so this seam can no longer drift
-			// from `cmd/harbor/cmd_dev.go::bootDevStack` (the D-155 /
-			// audit-B3 silent-field-drop class).
-			llmCfg = llm.SnapshotFromConfig(cfg.LLM, cfg.Artifacts)
-		}
-		llmPostureCfg = llmCfg
-		llmClient, llmErr := llm.Open(context.Background(), llmCfg, llm.Deps{
-			Artifacts: artStore,
-			Bus:       bus,
-		})
-		if llmErr != nil {
-			return stack, fmt.Errorf("llm.Open: %w", llmErr)
-		}
-		stack.LLMClient = llmClient
-		stack.closeFns = append(stack.closeFns, llmClient.Close)
+		return stack, err
 	}
 
-	// Memory. Only opened when the cfg names a driver. Mirrors the
-	// production wiring in cmd/harbor/cmd_dev.go (D-174, §17.6 — the
-	// helper must not diverge from production): a single memory.Open
-	// with the Summarizer threaded through Deps. For rolling_summary
-	// the Summarizer defaults to the configured LLM (no special-case,
-	// no stub); strategy=none / truncation pass a nil Summarizer.
-	if cfg.Memory.Driver != "" {
-		// Exported projection per Phase 110c (D-196) — the same
-		// config→snapshot mapping production calls.
-		memCfg := memory.SnapshotFromConfig(cfg.Memory)
-		var summarizer memory.Summarizer
-		if cfg.Memory.Strategy == "rolling_summary" {
-			if stack.LLMClient == nil {
-				return stack, fmt.Errorf("memory.strategy=rolling_summary requires an LLM " +
-					"(configure llm) so the helper can build the default Summarizer")
-			}
-			s, sErr := llmsummarizer.New(stack.LLMClient)
-			if sErr != nil {
-				return stack, fmt.Errorf("summarizer: %w", sErr)
-			}
-			summarizer = s
-		}
-		ms, openErr := memory.Open(context.Background(), memCfg, memory.Deps{
-			State:      stateStore,
-			Bus:        bus,
-			Summarizer: summarizer,
-		})
-		if openErr != nil {
-			return stack, fmt.Errorf("memory.Open: %w", openErr)
-		}
-		stack.Memory = ms
-		stack.closeFns = append(stack.closeFns, ms.Close)
-	}
+	// Locals the test-kit legs below read.
+	bus := core.Bus
+	taskReg := core.Tasks
+	metricsReg := core.Metrics
+	llmPostureCfg := core.LLMSnapshot
 
-	// Skills. Mirrors production `cmd/harbor/cmd_dev.go::bootDevStack`
-	// (Phase 110c, D-196): when the cfg declares `skills.driver`, the
-	// store opens via the SAME exported `skills.SnapshotFromConfig`
-	// projection production calls. An explicit `AssembleOpts.SkillStore`
-	// always wins (tests that pre-seed a store keep their fixture).
-	stack.Skills = opts.SkillStore
-	if stack.Skills == nil && cfg.Skills.Driver != "" {
-		ss, openErr := skills.Open(context.Background(), skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus})
-		if openErr != nil {
-			return stack, fmt.Errorf("skills.Open: %w", openErr)
-		}
-		stack.Skills = ss
-		stack.closeFns = append(stack.closeFns, ss.Close)
-	}
-
-	// Tasks.
-	taskReg, err := tasks.Open(context.Background(), tasks.Dependencies{
-		Store:    stateStore,
-		Bus:      bus,
-		Redactor: stack.Audit,
-		Cfg:      cfg.Tasks,
-	})
-	if err != nil {
-		return stack, fmt.Errorf("tasks.Open: %w", err)
-	}
-	stack.Tasks = taskReg
-	stack.closeFns = append(stack.closeFns, taskReg.Close)
-
-	// Catalog + Coordinator + Builder. Skip-aware.
-	if !opts.SkipCatalog {
-		// Phase 107c / D-167 — construct the tool SearchCache + attach
-		// it to the catalog, mirroring production cmd_dev.go (§17.6
-		// both-sides; SDK friction audit §2 mirror tax). Without it the
-		// `tool_search` / `skill_search` meta-tools return empty on a
-		// devstack-assembled stack while working in production.
-		searchCacheDSN := ":memory:"
-		if cfg.Tools.SearchCacheDSN != "" {
-			searchCacheDSN = cfg.Tools.SearchCacheDSN
-		}
-		searchCache, scErr := searchcache.New(searchcache.Config{DSN: searchCacheDSN})
-		if scErr != nil {
-			if opts.Logger != nil {
-				opts.Logger.Warn("tools/searchcache: disabled — discovery meta-tools will return empty",
-					"err", scErr.Error(),
-					"dsn", searchCacheDSN)
-			}
-			searchCache = nil
-		} else {
-			stack.closeFns = append(stack.closeFns, func(_ context.Context) error { return searchCache.Close() })
-		}
-		var catOpts []tools.CatalogOption
-		if searchCache != nil {
-			catOpts = append(catOpts, tools.WithSearchCache(searchCache))
-		}
-		cat := tools.NewCatalog(catOpts...)
-		for _, d := range opts.PreRegisterTools {
-			if regErr := cat.Register(d); regErr != nil {
-				return stack, fmt.Errorf("PreRegisterTools[%q]: %w", d.Tool.Name, regErr)
-			}
-		}
-		// Phase 83n / D-153 — mirror cmd_dev.go's built-in tool
-		// registration so devstack-driven tests see the same opt-in
-		// surface as the production dev binary (D-094 invariant).
-		// Phase 107c follow-up — thread the ArtifactStore so the
-		// `artifact_fetch` builtin can resolve heavy-content refs.
-		// The §17.6 closeout audit hinges on this mirror: a test stack
-		// that doesn't thread the store would silently disagree with
-		// production, and the wave-end E2E would pass while the live
-		// path stayed broken (the exact bug shape Wave 11.5's F1
-		// finding pinned for the pause.requested bus wiring).
-		if err := builtin.RegisterWith(builtin.RegistryContext{
-			Catalog:       cat,
-			SkillStore:    stack.Skills,
-			ArtifactStore: artStore,
-		}, cfg.Tools.BuiltIn); err != nil {
-			return stack, fmt.Errorf("tools/builtin: %w", err)
-		}
-		// Wire the bus into the Coordinator so pause.requested /
-		// pause.resumed events land on the bus — wire consumers
-		// (integration tests, the Console) need the typed Decision
-		// marker (D-096) to discriminate approve/reject without
-		// parsing free-form Reason strings. Bare pauseresume.New()
-		// was the gap that motivated issue #113's audit finding;
-		// fix lives at the helper boundary so every test stack
-		// inherits the wiring instead of repeating the omission.
-		coord := pauseresume.New(pauseresume.WithBus(bus))
-		gates := make(map[string]*toolapproval.ApprovalGate)
-		providers := opts.OAuthProviders
-		if providers == nil {
-			providers = make(map[string]toolauth.OAuthProvider)
-		}
-		// Apply the Builder only when the cfg declares entries —
-		// matches `bootDevStack`'s early-return on empty entries
-		// (no Builder.Apply call when there's nothing to wire).
-		if len(cfg.Tools.Entries) > 0 {
-			b := toolcatalog.New(cfg.Tools.Entries, toolcatalog.Deps{
-				Catalog:        cat,
-				Coordinator:    coord,
-				Bus:            bus,
-				Redactor:       stack.Audit,
-				OAuthProviders: providers,
-				AppliedGates:   gates,
-			})
-			if applyErr := b.Apply(context.Background()); applyErr != nil {
-				return stack, fmt.Errorf("catalog.Builder.Apply: %w", applyErr)
-			}
-			for _, g := range gates {
-				gate := g
-				stack.closeFns = append(stack.closeFns,
-					func(ctx context.Context) error { return gate.Close(ctx) })
-			}
-		}
-		stack.Catalog = cat
-		stack.Coordinator = coord
-		stack.Gates = gates
-		stack.OAuthProviders = providers
-
-		// Phase 83g (D-150): mirror cmd_dev.go's MCP southbound
-		// consumer wiring so devstack-driven integration tests see
-		// the same boot-time MCP-server attachment the production
-		// dev binary performs. Skip silently when the cfg has no
-		// MCP servers configured.
-		mcpRegistry := mcpdrv.NewRegistry()
-		for _, ms := range cfg.Tools.MCPServers {
-			if err := attachDevStackMCPServer(context.Background(), ms, cat, mcpRegistry, bus, opts.Logger, &stack.closeFns); err != nil {
-				return stack, fmt.Errorf("mcp[%s]: %w", ms.Name, err)
-			}
-		}
-		stack.MCPRegistry = mcpRegistry
-	}
-
-	// D-171: the SessionRegistry — StateStore-backed, mirroring
-	// production `cmd/harbor` boot. Built unconditionally so the
-	// create-on-first-use ensurer can be wired into the ControlSurface
-	// and the `sessions.*` Protocol routes project over it. NOT
-	// force-Opened with a fixed session at boot (the production bug
-	// D-171 closes): sessions are per-request + create-on-first-use.
-	// RFC §6.9: GC never reaps a session with a RUNNING task — wire
-	// the TaskRegistry-backed probe, mirroring production cmd/harbor
-	// boot (§17.6 both-sides; SDK friction audit B2).
-	sessionRegistry, sessErr := sessions.New(stack.State, cfg.Sessions, bus,
-		sessions.WithGCPolicy(sessions.GCPolicy{
-			IdleTTL:       cfg.Sessions.IdleTTL,
-			HardCap:       cfg.Sessions.HardCap,
-			SweepInterval: cfg.Sessions.SweepInterval,
-			RunningProbe:  sessions.TaskRunningProbe(stack.Tasks),
-		}))
-	if sessErr != nil {
-		return stack, fmt.Errorf("sessions.New: %w", sessErr)
-	}
-	stack.Sessions = sessionRegistry
-	stack.closeFns = append(stack.closeFns, sessionRegistry.CloseRegistry)
-
-	// Steering + ControlSurface. Skip-aware. The Mux phase below
-	// depends on the surface, so SkipSteering implies SkipTransports
-	// even if the caller did not set both flags.
+	// Steering surface + run-loop driver. Skip-aware: the Mux phase
+	// below depends on the surface, so SkipSteering implies
+	// SkipTransports even if the caller did not set both flags.
 	if !opts.SkipSteering {
-		steerReg := steering.NewRegistry()
 		// Phase 74 (D-114): wire the optional topology accessor + scope
 		// checker. Production `harbor dev` passes neither (no engine-
 		// graph); the Phase 74 integration test passes a real engine
@@ -830,104 +583,43 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		// `cmd/harbor/cmd_dev.go::bootDevStack`. A `start` on a not-yet-
 		// existing session materialises its registry row.
 		surfaceOpts = append(surfaceOpts,
-			protocol.WithSessionEnsurer(newSessionEnsurer(sessionRegistry)))
-		surface, surfaceErr := protocol.NewControlSurface(taskReg, steerReg, surfaceOpts...)
+			protocol.WithSessionEnsurer(newSessionEnsurer(core.Sessions)))
+		surface, surfaceErr := protocol.NewControlSurface(taskReg, core.Steering, surfaceOpts...)
 		if surfaceErr != nil {
 			return stack, fmt.Errorf("protocol.NewControlSurface: %w", surfaceErr)
 		}
-		stack.Steering = steerReg
 		stack.Surface = surface
 
-		// D-097 — production wiring: a `steering.RunLoop` per spawned
-		// task. Mirrors `cmd/harbor/cmd_dev.go::bootDevStack` (the
-		// source-of-truth invariant per D-094). Skip-aware: the
-		// RunLoop requires both the steering Registry (constructed
-		// above) and the catalog-applied gates map (so SkipCatalog
-		// also disables the loop), and the caller can opt out via
-		// SkipRunLoop.
-		if !opts.SkipRunLoop && !opts.SkipCatalog && stack.LLMClient != nil {
-			// D-103 (closes #126) — the planner concrete is resolved via
-			// the `internal/planner` driver registry, mirroring the
-			// production `cmd/harbor/cmd_dev.go::bootDevStack` path per
-			// D-094's helper-tracks-production rule. PlannerOverride
-			// lets tests inject a stub / scripted / pausing planner
-			// without re-implementing the wiring; production code never
-			// sets the override.
-			var plnr planner.Planner
-			if opts.PlannerOverride != nil {
-				plnr = opts.PlannerOverride
-			} else {
-				// The SAME exported projection production calls (Phase
-				// 110c, D-196 — fixes the audit-B3 drift where this
-				// helper's local copy silently dropped ExtraGuidance /
-				// ReasoningReplay / MaxToolExamplesPerTool /
-				// ParallelToolCalls).
-				plannerCfg := planner.ConfigFromOperator(cfg.Planner)
-				resolved, plnrErr := planner.Resolve(context.Background(), plannerCfg,
-					planner.FactoryDeps{LLM: stack.LLMClient})
-				if plnrErr != nil {
-					return stack, fmt.Errorf("planner.Resolve: %w", plnrErr)
-				}
-				plnr = resolved
-			}
-			rl, rlErr := steering.NewRunLoop(steerReg, stack.Coordinator,
-				steering.WithRunLoopBus(bus),
-				steering.WithTaskRegistry(taskReg),
-				steering.WithApprovalGates(stack.Gates),
-			)
-			if rlErr != nil {
-				return stack, fmt.Errorf("steering.NewRunLoop: %w", rlErr)
-			}
-			stack.RunLoop = rl
-
-			// Phase 83i (D-152) / Phase 110a (D-194): the executor is
-			// the SAME promoted `dispatch.NewToolExecutor` production
-			// wires — the pre-110a devstack-local CallTool-only mirror
-			// (which skipped D-026 promotion, CallParallel, and
-			// SpawnTask/AwaitTask by its own admission) is deleted. The
-			// catalog is the SAME stack.Catalog the test (and operator)
-			// already populated via PreRegisterTools + MCP attachment;
-			// the artifact store + task registry are the stack's own.
-			var devExecutor steering.ToolExecutor
-			if stack.Catalog != nil {
-				devExecutor = dispatch.NewToolExecutor(stack.Catalog, stack.Artifacts, taskReg,
-					dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
-					dispatch.WithMaxSpawnDepth(cfg.Planner.SpawnDepthCap()),
-					dispatch.WithLogger(opts.Logger))
-			}
-
+		// D-097 — the per-task run-loop driver mirror (the production
+		// driver is cmd-private; the kit carries its own per D-094 —
+		// the run-loop POPULATION helpers are shared, the subscriber
+		// shell is per-caller). Built whenever the assembly produced a
+		// RunLoop (planner + catalog + steering all present and the
+		// caller did not SkipRunLoop).
+		if stack.RunLoop != nil {
 			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
 				bus:     bus,
-				runLoop: rl,
-				planner: plnr,
+				runLoop: stack.RunLoop,
+				planner: core.Planner,
 				tasks:   taskReg, // D-098: helper mirrors production's FSM bridge (D-094 source-of-truth invariant)
 				logger:  opts.Logger,
-				// Phase 83f (D-149): mirror production's per-run consumer
-				// wiring. The fields are exposed via AssembleOpts so the
-				// per-83f integration test populates them with a real
-				// MemoryStore + SkillStore.
-				// Phase 110c (D-196): explicit AssembleOpts overrides win;
-				// otherwise the cfg-opened stores + the SAME exported
-				// projections production uses fill the per-run consumer
-				// wiring (config.SkillsContextMaxResolved /
-				// planner.HintsFromConfig) — D-094 parity by construction.
+				// Phase 83f (D-149): per-run consumer wiring. Explicit
+				// AssembleOpts overrides win; otherwise the cfg-opened
+				// stores + the SAME exported projections production uses
+				// (Phase 110c, D-196).
 				memory:           resolveMemoryStore(opts, stack),
 				skills:           stack.Skills,
 				skillsContextMax: resolveSkillsContextMax(opts, cfg),
 				planningHints:    resolvePlanningHints(opts, cfg),
-				// Phase 83i (D-152): tool dispatch + Catalog + Trajectory.
+				// Phase 83i (D-152) / 110a (D-194) / 110d (D-197): the
+				// catalog + executor are the assembly's — the ONE
+				// promoted dispatch executor production wires.
 				catalog:         stack.Catalog,
-				executor:        devExecutor,
+				executor:        core.Executor,
 				maxStepsRunLoop: cfg.Planner.MaxSteps,
-				// Phase 83m (Item 6, D-156): mirror the production
-				// granted-scopes plumb-through so the devstack's
-				// catalog view sees the same operator-declared scopes.
+				// Phase 83m (Item 6, D-156): operator-declared scopes.
 				grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
-				// Round-7 F11 / D-166 — D-094 mirror of the production
-				// cmd_dev wiring. The devstack's artifact store is the
-				// same shared instance the executor consumes; the
-				// runloop driver reuses it for multimodal input
-				// materialization.
+				// Round-7 F11 / D-166 — multimodal input materializer.
 				artifactStore: stack.Artifacts,
 			})
 			if drvErr != nil {
@@ -1025,22 +717,8 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 		}
 		// Phase 72f / 72g (D-111 / D-112): mirror `bootDevStack` — wire
 		// the single posture surface so all seven posture methods route
-		// through it. §17.6 source-of-truth invariant: this helper
-		// tracks the production boot field-for-field.
-		//
-		// SDK friction audit (docs/notes/sdk-friction-audit.md §1):
-		// mirror production's honesty warning — populated
-		// `governance.identity_tiers` feeds ONLY the read-only posture
-		// provider; enforcement is not yet wired.
-		if len(cfg.Governance.IdentityTiers) > 0 {
-			govLogger := opts.Logger
-			if govLogger == nil {
-				govLogger = slog.Default()
-			}
-			govLogger.Warn("governance: identity_tiers configured but enforcement is NOT yet wired — tiers drive the read-only posture surface only",
-				"tiers", len(cfg.Governance.IdentityTiers),
-				"see", "docs/notes/sdk-friction-audit.md")
-		}
+		// through it. The governance identity-tiers honesty warning is
+		// emitted by the shared assembly (Phase 110d, D-197).
 		postureSurface, postErr := protocol.NewPostureSurface(protocol.PostureDeps{
 			Build: types.RuntimeInfo{
 				BuildVersion:   "devstack",
@@ -1053,13 +731,12 @@ func tryAssemble(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return runtimeposture.HealthFromConfig(cfg)
 			},
 			// §17.6 F3: Counters + Metrics wired to live runtime state —
-			// the task registry's per-identity running/background counts
-			// and the MetricsRegistry's bus-fed counter snapshot. The
-			// devstack does not assemble a session registry, so the
-			// SessionLister is nil — SessionsActive then reports 0
-			// (honest: the fixture runs no sessions), never a fabricated
-			// value. This tracks the production boot field-for-field.
-			Counters: runtimeposture.CountersProvider(taskReg, nil, stack.MCPRegistry),
+			// the task registry's per-identity running/background counts,
+			// the assembly's SessionRegistry (Phase 110d closes the stale
+			// nil-SessionLister drift — the kit HAS assembled a session
+			// registry since D-171), and the MetricsRegistry's bus-fed
+			// counter snapshot. Tracks the production boot field-for-field.
+			Counters: runtimeposture.CountersProvider(taskReg, stack.Sessions, stack.MCPRegistry),
 			Drivers: func() []types.SubsystemDriver {
 				return runtimeposture.DriversFromConfig(cfg)
 			},
@@ -1894,101 +1571,6 @@ func devStackProjectSkillsContext(ranked []skills.RankedSkill) []any {
 			entry["steps"] = r.Skill.Steps
 		}
 		out = append(out, entry)
-	}
-	return out
-}
-
-// attachDevStackMCPServer mirrors cmd/harbor/cmd_dev.go's
-// attachDevMCPServer per D-094's source-of-truth invariant. Phase 83g
-// (D-150) — boot-time MCP southbound consumer wiring.
-//
-// Phase 83m (Item 1, D-156): `DefaultIdentity` is the fallback for
-// transport-side events only; per-call subscriptions stamp the
-// inflight caller's identity via the driver's `pushIdentity(ctx, cfg)`
-// helper. Mirror of the production attachDevMCPServer godoc.
-func attachDevStackMCPServer(
-	ctx context.Context,
-	ms config.MCPServerConfig,
-	cat tools.ToolCatalog,
-	reg *mcpdrv.Registry,
-	bus events.EventBus,
-	logger *slog.Logger,
-	closeFns *[]func(context.Context) error,
-) error {
-	mode := mcpdrv.MCPTransportMode(ms.TransportMode)
-	if mode == "" {
-		mode = mcpdrv.TransportAuto
-	}
-	provider, err := mcpdrv.New(mcpdrv.Config{
-		Name:          ms.Name,
-		TransportMode: mode,
-		URL:           ms.URL,
-		Command:       append([]string(nil), ms.Command...),
-		Headers:       devStackCloneStringMap(ms.Headers),
-		KeepAlive:     ms.KeepAlive,
-		Logger:        logger,
-		Bus:           bus,
-		DefaultIdentity: identity.Identity{
-			TenantID:  DefaultDevTenant,
-			UserID:    DefaultDevUser,
-			SessionID: DefaultDevSession,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("mcp.New: %w", err)
-	}
-	if connectErr := provider.Connect(ctx); connectErr != nil {
-		_ = provider.Close(ctx)
-		return fmt.Errorf("provider.Connect: %w", connectErr)
-	}
-	*closeFns = append(*closeFns, provider.Close)
-
-	descriptors, discoverErr := provider.Discover(ctx)
-	if discoverErr != nil {
-		return fmt.Errorf("provider.Discover: %w", discoverErr)
-	}
-	for _, d := range descriptors {
-		if regErr := cat.Register(d); regErr != nil {
-			return fmt.Errorf("catalog.Register(%q): %w", d.Tool.Name, regErr)
-		}
-	}
-	urlOrCommand := ms.URL
-	if urlOrCommand == "" {
-		urlOrCommand = strings.Join(ms.Command, " ")
-	}
-	if regErr := reg.Register(mcpdrv.ServerRegistration{
-		Provider:     provider,
-		Transport:    string(mode),
-		URLOrCommand: urlOrCommand,
-		InitialState: mcpdrv.ServerStateOnline,
-	}); regErr != nil {
-		return fmt.Errorf("registry.Register: %w", regErr)
-	}
-	// Round-4 (P1+P2) D-094 mirror: seed the registry's per-server
-	// stats from the boot-time discovery so the Console's
-	// mcp.servers.list wire surface reports the actual tool_count + a
-	// real last_discovery_at. Mirror of the production
-	// attachDevMCPServer path in cmd/harbor/cmd_dev.go.
-	if recErr := reg.RecordDiscovery(ms.Name, descriptors); recErr != nil {
-		return fmt.Errorf("registry.RecordDiscovery: %w", recErr)
-	}
-	if logger != nil {
-		logger.Info("devstack: MCP server attached",
-			slog.String("name", ms.Name),
-			slog.String("transport", string(mode)),
-			slog.Int("tools_registered", len(descriptors)),
-		)
-	}
-	return nil
-}
-
-func devStackCloneStringMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
 	}
 	return out
 }

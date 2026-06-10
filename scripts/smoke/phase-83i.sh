@@ -65,8 +65,13 @@ assert_grep_present 'd\.memory\.AddTurn' "cmd/harbor/cmd_dev_runloop.go" \
 # Devstack parity (D-094 → 110a / D-194: the hand-maintained executor +
 # view mirrors are DELETED; devstack wires the promoted constructors).
 # ----------------------------------------------------------------------------
-assert_grep_present 'dispatch\.NewToolExecutor' "harbortest/devstack/devstack.go" \
-    "devstack wires the promoted executor (110a / D-194)"
+# Phase 110d (D-197): the executor is constructed by the ONE assembly
+# fan-out; devstack consumes `core.Executor` (assemble wires
+# dispatch.NewToolExecutor — the same instance production reads).
+assert_grep_present 'dispatch\.NewToolExecutor' "internal/runtime/assemble/assemble.go" \
+    "the assembly wires the promoted executor (110a / D-194 via D-197)"
+assert_grep_present 'executor:\s*core\.Executor' "harbortest/devstack/devstack.go" \
+    "devstack consumes the assembly's executor (110a / D-194 via D-197)"
 assert_grep_present 'tools\.NewPlannerView' "harbortest/devstack/devstack.go" \
     "devstack wires the promoted catalog view (110a / D-194)"
 assert_grep_present 'd\.memory\.AddTurn' "harbortest/devstack/devstack.go" \

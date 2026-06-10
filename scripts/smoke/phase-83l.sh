@@ -45,9 +45,9 @@ assert_grep_present 'DisableCorrections:\s*disableCorrectionsFromConfig' "intern
 assert_grep_present 'llm\.SnapshotFromConfig' "cmd/harbor/cmd_dev.go" \
     "bootDevStack consumes the exported projection (110c)"
 
-# Devstack consumes the SAME exported projection (the D-094 mirror copy
-# was deleted by 110c -- parity by construction).
-assert_grep_present 'llm\.SnapshotFromConfig' "harbortest/devstack/devstack.go" \
-    "devstack consumes the exported projection (110c)"
+# Devstack routes through the ONE assembly fan-out (110d / D-197),
+# which consumes the same exported projection -- parity by construction.
+assert_grep_present 'llm\.SnapshotFromConfig' "internal/runtime/assemble/assemble.go" \
+    "the assembly consumes the exported projection (110c via 110d)"
 
 smoke_summary
