@@ -155,6 +155,16 @@ type perTaskRunLoopDriverOpts struct {
 	// the materializer emits text-stub-only references the LLM
 	// routes via the catalog.
 	artifactStore artifacts.ArtifactStore
+
+	// Phase 111e (D-202) — trajectory compression. `tokenBudget`
+	// projects onto RunSpec.Base.Budget.TokenBudget (the per-run
+	// runtime budget — brief 02 §planner-knobs: a run option, never
+	// planner state); `compression` is the assembly-built
+	// planner.CompressionRunner the runloop invokes at each step
+	// boundary when the budget is non-zero. Both zero/nil (the
+	// default) = compression off, byte-identical behaviour.
+	tokenBudget int
+	compression *planner.CompressionRunner
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -186,6 +196,10 @@ type perTaskRunLoopDriver struct {
 	// Round-7 F11 / D-166 — artifact store handle for the multimodal
 	// materializer.
 	artifactStore artifacts.ArtifactStore
+
+	// Phase 111e (D-202) — trajectory compression projection.
+	tokenBudget int
+	compression *planner.CompressionRunner
 
 	// Phase 107a — per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -257,6 +271,8 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		maxStepsRunLoop:  opts.maxStepsRunLoop,
 		grantedScopes:    append([]string(nil), opts.grantedScopes...),
 		artifactStore:    opts.artifactStore,
+		tokenBudget:      opts.tokenBudget,
+		compression:      opts.compression,
 		trajectories:     make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
@@ -664,11 +680,15 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			OnChunk:          onChunk,          // Phase 107 — per-token streaming to bus
 			InputArtifacts:   inputArtifacts,   // Round-7 F11 / D-166 — first-turn multimodal inputs
 			SessionArtifacts: sessionArtifacts, // Phase 107f / D-176 — read-only cross-turn manifest
+			// Phase 111e (D-202) — the per-run token budget the runloop's
+			// compression gate reads. Zero = compression off.
+			Budget: planner.Budget{TokenBudget: d.tokenBudget},
 		},
 		TaskID:           taskID,
 		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
 		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
+		Compression:      d.compression, // Phase 111e (D-202) — trajectory compression runner
 	}
 	// Phase 107a — save the trajectory ref before Run so the Enricher
 	// can read it post-completion (including concurrently — the map is

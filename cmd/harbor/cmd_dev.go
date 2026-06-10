@@ -590,6 +590,13 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// dispatch executor already consumes is reused — there is one
 		// canonical ArtifactStore per dev stack.
 		artifactStore: artStore,
+		// Phase 111e (D-202): trajectory compression. The assembly built
+		// the runner (LLM-backed TrajectorySummariser) when the operator
+		// set a non-zero `planner.token_budget`; the driver projects the
+		// budget onto each run's Base.Budget and hands the runner to the
+		// RunSpec. Zero/nil = compression off.
+		tokenBudget: cfg.Planner.TokenBudget,
+		compression: stack.Compression,
 	})
 	if err != nil {
 		closeAll(ctx)

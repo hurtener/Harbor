@@ -235,6 +235,14 @@ type Stack struct {
 	Planner  planner.Planner
 	RunLoop  *steering.RunLoop
 
+	// Compression is the trajectory-compression runner (Phase 111e —
+	// D-202): planner.NewCompressionRunner over the LLM-backed
+	// summarizer.NewTrajectorySummariser. Non-nil only when
+	// cfg.Planner.TokenBudget > 0 (and the steering band ran) — the
+	// per-task run-loop drivers project it onto RunSpec.Compression
+	// alongside Base.Budget.TokenBudget. Nil = compression off.
+	Compression *planner.CompressionRunner
+
 	closeOnce sync.Once
 	closers   []func(context.Context) error
 }
@@ -704,6 +712,22 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 			return fmt.Errorf("planner: %w", err)
 		}
 		stack.Planner = plnr
+	}
+
+	// Phase 111e (D-202): the trajectory-compression runner — built
+	// when the operator set a non-zero `planner.token_budget`. The
+	// summariser needs a real LLM client; a budget without an LLM is a
+	// misconfiguration surfaced loudly at boot (CLAUDE.md §13 — no
+	// silent "compression configured but inert" path).
+	if cfg.Planner.TokenBudget > 0 {
+		if stack.LLM == nil {
+			return fmt.Errorf("planner: token_budget=%d requires an LLM (configure llm) so the trajectory summariser can be built — see examples/harbor.yaml", cfg.Planner.TokenBudget)
+		}
+		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM)
+		if err != nil {
+			return fmt.Errorf("trajectory summariser: %w", err)
+		}
+		stack.Compression = planner.NewCompressionRunner(trajSumm)
 	}
 
 	// The RunLoop needs the planner plus the catalog band's Coordinator
