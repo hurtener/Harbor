@@ -143,6 +143,20 @@ In Harbor every "compiled artifact" — `flow.Engine`, `Tool` (any transport), `
 
 **Why it matters at design time, not just at test time:** an artifact that needs mutable per-run state pushes the design to expose that state through `RunContext`, not stash it on the receiver. This shapes interface signatures, registry patterns, and lifecycle conventions across the runtime. Done from t=0, it is free; retrofitted, it requires rewriting every artifact's invocation path. The predecessor learned this. Harbor inherits the lesson.
 
+### 3.6 The public SDK facade (`sdk/`) — Settled (D-204)
+
+RFC §1's "ships as a Go module" is a product property for **external** teams, not only in-module consumers. Go's `internal/` visibility rule means every runtime package is import-forbidden outside the module; until Wave D, the only importable surface was `harbortest/` (the Phase 71 precedent) — the test kit wearing the runtime's clothes.
+
+The facade is a curated, top-level **`sdk/`** package tree of **alias-based re-exports**: each `sdk/<area>` package re-exports its `internal/<area>` counterpart's public surface via type aliases (`type Identity = identity.Identity`), re-exported constants/sentinels, and thin function/variable forwards. Settled properties:
+
+1. **`internal/` stays the implementation home.** The facade adds no mechanism and forks no types — an alias IS the internal type, so values flow freely across the boundary and interface satisfiability is preserved. Zero churn to runtime code.
+2. **The facade is the API-stability contract.** What `sdk/` re-exports is the supported external surface; what it omits is deliberately private. Additions are cheap; removals follow the Protocol-style deprecation posture (§5.3).
+3. **The V1.2 facade inventory** (the audited set the templates, recipes, and devstack already treated as public): `sdk/identity`, `sdk/events`, `sdk/config`, `sdk/tools` (+ `inproc`, `builtin`), `sdk/llm`, `sdk/memory`, `sdk/state`, `sdk/artifacts`, `sdk/skills`, `sdk/planner` (+ the `react`/`deterministic` registration import paths), `sdk/tasks`, `sdk/steering`, `sdk/dispatch`, `sdk/runctx`, `sdk/assemble`, and `sdk/drivers/prod` (the public blank-import aggregator).
+4. **External consumers are gated mechanically.** The scaffold templates emit `sdk/` imports (a tool-declaring scaffold MUST compile as an external module), and a standing smoke gate compiles a scaffolded external module against the facade — the class of breakage the SDK friction audit found can never silently return.
+5. **`harbortest/` remains the test kit**; its parameter vocabulary becomes externally satisfiable through the `sdk/` aliases rather than kit-local forks.
+
+Phases 112a (the facade tree) and 112b (external consumers + the compile gate) implement this section. See D-204.
+
 ---
 
 ## 4. Identity & isolation contract
