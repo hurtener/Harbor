@@ -55,16 +55,19 @@ import (
 	"time"
 
 	"github.com/hurtener/Harbor/internal/audit"
+	"github.com/hurtener/Harbor/internal/config"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
 // HeavyPreviewThreshold is the D-026 bound — a `SearchResultRow`
 // preview whose UTF-8 byte length would exceed this value ships as a
-// `*SearchArtifactRef` instead of inline bytes. The threshold mirrors
-// the runtime LLM-edge safety net (32 KiB) but stays a local constant
-// so the search package has no dependency on internal/llm.
-const HeavyPreviewThreshold = 32 * 1024
+// `*SearchArtifactRef` instead of inline bytes. Single-sourced on
+// `config.DefaultHeavyOutputThresholdBytes` (the one home of the
+// 32 KiB heavy-output default — the DefaultSpawnDepthCap precedent)
+// so the search bound cannot drift from the runtime LLM-edge safety
+// net; the search package still has no dependency on internal/llm.
+const HeavyPreviewThreshold = config.DefaultHeavyOutputThresholdBytes
 
 // PreviewMaxRunes is the soft cap applied at the row-construction site
 // after redaction — a preview that fits under HeavyPreviewThreshold
@@ -123,8 +126,11 @@ type Searcher interface {
 
 // ScopeChecker is the narrow predicate the Searchers consult to decide
 // whether a cross-tenant request is allowed. The production
-// implementation reads from `internal/protocol/auth.HasScope(ctx,
-// ScopeAdmin)`; tests inject a deterministic predicate.
+// implementation is `server.SearchAdminScopeFromAuth` — owned by the
+// Runtime's network surface per the D-203 direction rule (runtime
+// packages import protocol TYPES only, never protocol auth /
+// behaviour), so this package never sees the Protocol's auth
+// vocabulary; tests inject a deterministic predicate.
 //
 // The signature deliberately takes `ctx` (not a verified-identity
 // struct) so the implementation can read the verified scope set from

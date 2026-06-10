@@ -41,6 +41,19 @@ assert_grep_absent 'protocolauth\.WithScopes' internal/runtime/steering/apply.go
 assert_grep_absent 'github.com/hurtener/Harbor/internal/protocol/auth' internal/runtime/steering/apply.go \
     'phase 111f: apply.go imports no protocol auth vocabulary'
 
+# D-203 addendum follow-up: the second named violation — the search
+# area package importing protocol auth — is repaid by relocating the
+# production ScopeChecker into internal/server (the
+# ProtocolScopeAuthorizer precedent).
+if grep -rn '"github.com/hurtener/Harbor/internal/protocol/auth"' internal/search/*.go >/dev/null 2>&1; then
+    fail 'phase 111f: internal/search still imports internal/protocol/auth (D-203 direction rule violated)'
+else
+    ok 'phase 111f: internal/search has NO protocol/auth import (D-203 direction rule)'
+fi
+assert_file internal/server/search_scope.go 'phase 111f follow-up: the server-owned search ScopeChecker'
+assert_grep_present 'server\.SearchAdminScopeFromAuth' cmd/harbor/cmd_dev.go \
+    'phase 111f follow-up: cmd injects the server-owned search ScopeChecker'
+
 # --- 2. Telemetry assembled in production ----------------------------------
 
 assert_grep_present 'telemetry\.New\(cfg\.Telemetry, red' internal/runtime/assemble/assemble.go \
