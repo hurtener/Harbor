@@ -37,9 +37,9 @@ None.
 
 - [x] Every step in every `.github/workflows/*.yml` file uses a Node-24-capable action version (`actions/checkout@v6`, `actions/setup-go@v6`, `actions/setup-node@v4` or later, `actions/upload-artifact@v4` if Node-24-pinned by maintainer or successor, `actions/download-artifact@v4` ditto, `actions/attest-build-provenance@v4` ditto, etc.). Verified per-action at implementation time: `checkout@v6` / `setup-go@v6` / `setup-node@v6` / `cache@v5` / `upload-artifact@v7` / `download-artifact@v8` / `deploy-pages@v5` / `markdownlint-cli2-action@v23` declare `using: node24`; the two composites (`attest-build-provenance@v4` → `actions/attest@v4.1.0`, `upload-pages-artifact@v5` → `upload-artifact@v7`) wrap node24 actions.
 - [x] `grep -rE 'actions/(checkout|setup-go)@v[45]' .github/workflows/` returns zero matches (the two actions whose Node-24 successors exist today are pinned forward).
-- [ ] CI workflow (`ci.yml`) green on the bump PR.
-- [ ] Release workflow (`release.yml`) green when the next `v*` tag push exercises it; SLSA attestations still emit; `checksums.txt` still verifies.
-- [ ] No new deprecation annotations on the bump PR run.
+- [x] CI workflow (`ci.yml`) green on the bump PR (PR #315 — all 16 checks pass).
+- [ ] Release workflow (`release.yml`) green when the next `v*` tag push exercises it; SLSA attestations still emit; `checksums.txt` still verifies. (Open until the next `v*` tag; the workflow's bumped actions are the same set CI validated.)
+- [x] No new deprecation annotations on the bump PR run (verified via the Checks API: zero annotations across both workflow runs).
 
 ## Files added or changed
 
