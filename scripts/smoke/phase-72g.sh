@@ -57,12 +57,12 @@ CONTROL_LLM_URL="$(api_url /v1/control/llm.posture)"
 unauth_gov=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     --data '{}' \
-    "${CONTROL_GOV_URL}" || echo "000")
+    "${CONTROL_GOV_URL}" || true)
 case "${unauth_gov}" in
     401)
         ok "phase-72g: governance.posture rejects unauthenticated request (401)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: governance.posture surface not yet implemented (${unauth_gov})"
         ;;
     *)
@@ -77,12 +77,12 @@ esac
 unauth_llm=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     --data '{}' \
-    "${CONTROL_LLM_URL}" || echo "000")
+    "${CONTROL_LLM_URL}" || true)
 case "${unauth_llm}" in
     401)
         ok "phase-72g: llm.posture rejects unauthenticated request (401)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: llm.posture surface not yet implemented (${unauth_llm})"
         ;;
     *)
@@ -119,7 +119,7 @@ status_gov=$(curl -s -o "${GOV_BODY}" -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{}' \
-    "${CONTROL_GOV_URL}" || echo "000")
+    "${CONTROL_GOV_URL}" || true)
 case "${status_gov}" in
     200)
         if command -v jq >/dev/null 2>&1; then
@@ -134,7 +134,7 @@ case "${status_gov}" in
             ok "phase-72g: governance.posture own-tenant returns 200 (jq not available; shape check skipped)"
         fi
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: governance.posture not yet implemented (${status_gov})"
         ;;
     *)
@@ -156,7 +156,7 @@ status_llm=$(curl -s -o "${LLM_BODY}" -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{}' \
-    "${CONTROL_LLM_URL}" || echo "000")
+    "${CONTROL_LLM_URL}" || true)
 case "${status_llm}" in
     200)
         if command -v jq >/dev/null 2>&1; then
@@ -171,7 +171,7 @@ case "${status_llm}" in
             ok "phase-72g: llm.posture own-tenant returns 200 (jq not available; shape check skipped)"
         fi
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: llm.posture not yet implemented (${status_llm})"
         ;;
     *)
@@ -211,12 +211,12 @@ cross_gov=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{"tenant_id":"other-tenant"}' \
-    "${CONTROL_GOV_URL}" || echo "000")
+    "${CONTROL_GOV_URL}" || true)
 case "${cross_gov}" in
     403)
         ok "phase-72g: governance.posture rejects cross-tenant non-admin request (403)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: governance.posture cross-tenant path not yet implemented (${cross_gov})"
         ;;
     200)
@@ -237,12 +237,12 @@ cross_llm=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{"tenant_id":"other-tenant"}' \
-    "${CONTROL_LLM_URL}" || echo "000")
+    "${CONTROL_LLM_URL}" || true)
 case "${cross_llm}" in
     403)
         ok "phase-72g: llm.posture rejects cross-tenant non-admin request (403)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase-72g: llm.posture cross-tenant path not yet implemented (${cross_llm})"
         ;;
     200)

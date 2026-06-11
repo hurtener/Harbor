@@ -129,6 +129,11 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	runsprotocol "github.com/hurtener/Harbor/internal/runtime/runs/protocol"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
+	"github.com/hurtener/Harbor/internal/search"
+	searchartifacts "github.com/hurtener/Harbor/internal/search/artifacts"
+	searchevents "github.com/hurtener/Harbor/internal/search/events"
+	searchsessions "github.com/hurtener/Harbor/internal/search/sessions"
+	searchtasks "github.com/hurtener/Harbor/internal/search/tasks"
 	"github.com/hurtener/Harbor/internal/server"
 	"github.com/hurtener/Harbor/internal/sessions"
 	sessionsprotocol "github.com/hurtener/Harbor/internal/sessions/protocol"
@@ -958,6 +963,62 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				return stack, fmt.Errorf("sessions/protocol service: %w", ssErr)
 			}
 			muxOpts = append(muxOpts, transports.WithSessionsService(sessionsService))
+		}
+		// Phase 72c (D-108) + Phase 73l (D-120) parity: mount the five
+		// `search.*` methods and the artifacts surface. Production
+		// `cmd/harbor/cmd_dev.go::bootDevStack` wires both at mux
+		// construction; the devstack previously omitted them — a
+		// tests-track-production gap the §17.5 Protocol-track audit's
+		// Auth-column probe surfaced (CLAUDE.md §17.6).
+		if stack.Artifacts != nil {
+			artDriverName := cfg.Artifacts.Driver
+			if artDriverName == "" {
+				artDriverName = "inmem"
+			}
+			artifactsSurface, asErr := protocol.NewArtifactsSurface(protocol.ArtifactsDeps{
+				Store:        stack.Artifacts,
+				Redactor:     stack.Audit,
+				Bus:          bus,
+				Clock:        time.Now,
+				DriverName:   artDriverName,
+				MaxBodyBytes: cfg.Protocol.ResolvedMaxRequestBytes(),
+			})
+			if asErr != nil {
+				return stack, fmt.Errorf("protocol artifacts surface: %w", asErr)
+			}
+			muxOpts = append(muxOpts, transports.WithArtifactsSurface(artifactsSurface))
+		}
+		if stack.Sessions != nil && stack.Tasks != nil && stack.Artifacts != nil {
+			searchDeps := search.Deps{Redactor: stack.Audit, AdminScope: server.SearchAdminScopeFromAuth}
+			searchSessions, seErr := searchsessions.New(stack.Sessions, searchDeps)
+			if seErr != nil {
+				return stack, fmt.Errorf("search sessions: %w", seErr)
+			}
+			searchTasks, seErr := searchtasks.New(stack.Sessions, stack.Tasks, searchDeps)
+			if seErr != nil {
+				return stack, fmt.Errorf("search tasks: %w", seErr)
+			}
+			searchArtifacts, seErr := searchartifacts.New(stack.Artifacts, searchDeps)
+			if seErr != nil {
+				return stack, fmt.Errorf("search artifacts: %w", seErr)
+			}
+			searchers := []search.Searcher{searchSessions, searchTasks, searchArtifacts}
+			if replayer, ok := bus.(events.Replayer); ok {
+				searchEvents, seErr2 := searchevents.New(replayer, searchDeps)
+				if seErr2 != nil {
+					return stack, fmt.Errorf("search events: %w", seErr2)
+				}
+				searchers = append(searchers, searchEvents)
+			}
+			searchRegistry, srErr := search.NewRegistry(searchers...)
+			if srErr != nil {
+				return stack, fmt.Errorf("search registry: %w", srErr)
+			}
+			searchSurface, ssErr := protocol.NewSearchSurface(searchRegistry, server.SearchAdminScopeFromAuth)
+			if ssErr != nil {
+				return stack, fmt.Errorf("search surface: %w", ssErr)
+			}
+			muxOpts = append(muxOpts, transports.WithSearch(searchSurface))
 		}
 		// Phase 73n (D-130): mount the Console Playground-page route
 		// (`runs.set_overrides`). The devstack mirrors the production

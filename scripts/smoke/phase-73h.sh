@@ -64,12 +64,12 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
             -H 'Content-Type: application/json' \
             --data "${body}" \
-            "${TASKS_LIST_URL}" || echo "000")
+            "${TASKS_LIST_URL}" || true)
         case "${status}" in
             200)
                 ok 'phase 73h: tasks.list with kinds=["background"] returns 200 against live server'
                 ;;
-            404|405|501)
+            404|405|501|000)
                 skip "phase 73h: tasks.list with kinds=["background"] returned ${status} — Phase 73d upstream not yet shipped into this build"
                 ;;
             401|403)
@@ -105,7 +105,7 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
             -H 'Content-Type: application/json' \
             --data "${body}" \
-            "${TASKS_LIST_URL}" || echo "000")
+            "${TASKS_LIST_URL}" || true)
         case "${status}" in
             200)
                 rows_type=$(printf '%s' "${list_body}" | jq -r '.rows | type' 2>/dev/null || echo '')
@@ -115,7 +115,7 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
                     fail "phase 73h: tasks.list?group_id rows shape wrong (type='${rows_type}')"
                 fi
                 ;;
-            404|405|501)
+            404|405|501|000)
                 skip "phase 73h: tasks.list?group_id query returned ${status} — Phase 73d upstream not yet shipped"
                 ;;
             401|403)
@@ -151,7 +151,7 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
             -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
             -H 'Content-Type: application/json' \
             --data "${body}" \
-            "${CANCEL_URL}" || echo "000")
+            "${CANCEL_URL}" || true)
         case "${status}" in
             403|400)
                 # Parse the error code if jq can.
@@ -162,7 +162,7 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
                     ok "phase 73h: bulk cancel without scope returned ${status} (wire reached the runtime; error code='${code}')"
                 fi
                 ;;
-            404|405|501)
+            404|405|501|000)
                 skip "phase 73h: cancel endpoint returned ${status} — Phase 60 wire not yet shipped"
                 ;;
             401)

@@ -34,13 +34,29 @@ Two versions move independently in Harbor (RFC §5.3):
   Protocol version promises, what a client should pin, and the
   unknown-field / unknown-method tolerance rules).
 - **Build a client + conformance certification** — a worked **event-viewer
-  client** at `examples/protocol-clients/event-viewer/`: ~100 lines of
+  client** at `examples/protocol-clients/event-viewer/`: ~150 lines of
   stdlib-only Go (no Harbor import) that authenticates, handshakes via
   `runtime.info`, and tails the SSE event stream, compile-gated in preflight
   so the published walkthrough cannot rot. The new
   **conformance-certification page** documents how to run the in-repo
   Protocol conformance suite against a runtime build under test and
   precisely what a pass claims.
+
+### Fixed
+
+- **The methods reference's Auth column now states the deployed scope gates
+  exactly** — several rows over-claimed `console:fleet` cross-tenant fan-in
+  on admin-only (or no-fan-in) read surfaces, and the posture rows omitted
+  the note where it genuinely applies. The column is derived from a
+  per-method machine-readable policy and pinned by a test that drives
+  admin-only and fleet-only tokens against every noted row on a live wire,
+  so the cell cannot silently drift again. The auth-and-identity scope
+  table now states `console:fleet`'s full real grant set, and the
+  pause-model page's wire-capture provenance header is scoped honestly
+  around its transcribed OAuth leg.
+- The smoke-script fleet's dead-server probes uniformly report curl's
+  honest `000` and SKIP instead of failing with a confusing `000000` —
+  the inline fallback shape behind it is swept tree-wide.
 
 (Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
 

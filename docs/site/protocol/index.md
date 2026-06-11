@@ -53,7 +53,7 @@ What a reference cannot teach — how the calls compose:
 ## Build a client, then prove it
 
 **[Build a client](./build-a-client.md)** walks the shortest credible client
-— a ~100-line, SDK-free Go event viewer whose source ships in the repo and is
+— a ~150-line, SDK-free Go event viewer whose source ships in the repo and is
 compile-gated in CI — then points at the reference implementations. When you
 need a compatibility claim,
 **[conformance certification](./conformance-certification.md)** documents the

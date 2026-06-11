@@ -2,7 +2,7 @@
 
 The shortest credible Protocol client, worked end to end: an **event viewer**
 — it authenticates, handshakes, and renders one session's live event stream.
-Roughly a hundred lines of Go, **stdlib only**: no Harbor import, no SDK, no
+Under 160 lines of Go (a fifth of them the doc comment), **stdlib only**: no Harbor import, no SDK, no
 generated code. That is the point of this page — the Protocol is the
 integration surface, and `net/http` + `encoding/json` is a complete toolkit
 for it.
