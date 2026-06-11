@@ -214,8 +214,12 @@ run_parallel_batch() {
             local head_pid="${pids[0]}"
             local head_smoke="${pid_smokes[0]}"
             local head_out="${pid_outputs[0]}"
-            wait "${head_pid}" 2>/dev/null
-            rc=$?
+            # `|| rc=$?`: a bare `wait` on a failed child trips set -e and
+            # kills the whole harness BEFORE the aggregator prints the
+            # batch's buffered output — the failing smoke's report is lost
+            # and its siblings are orphaned mid-run.
+            rc=0
+            wait "${head_pid}" 2>/dev/null || rc=$?
             printf '%s\t%d\t%s\n' "${head_smoke}" "${rc}" "${head_out}" >> "${rc_file}"
             pids=("${pids[@]:1}")
             pid_smokes=("${pid_smokes[@]:1}")
@@ -229,8 +233,8 @@ run_parallel_batch() {
         local p="${pids[${i}]}"
         local s="${pid_smokes[${i}]}"
         local o="${pid_outputs[${i}]}"
-        wait "${p}" 2>/dev/null
-        rc=$?
+        rc=0
+        wait "${p}" 2>/dev/null || rc=$?
         printf '%s\t%d\t%s\n' "${s}" "${rc}" "${o}" >> "${rc_file}"
     done
 
