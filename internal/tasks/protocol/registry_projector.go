@@ -218,6 +218,18 @@ func (p *RegistryProjector) GetTask(ctx context.Context, id identity.Identity, t
 	if task.Result != nil && len(task.Result.Value) > 0 {
 		detail.ResultInline = string(task.Result.Value)
 	}
+	// Phase 84b (D-189) — surface the operator-attached input
+	// artifacts with their per-attachment disposition hints, in spawn
+	// order, so a client can verify its `start` hint round-tripped.
+	if len(task.InputArtifactIDs) > 0 {
+		detail.InputArtifacts = make([]prototypes.TaskInputArtifact, 0, len(task.InputArtifactIDs))
+		for _, artID := range task.InputArtifactIDs {
+			detail.InputArtifacts = append(detail.InputArtifacts, prototypes.TaskInputArtifact{
+				ID:          artID,
+				Disposition: task.InputArtifactDispositions[artID],
+			})
+		}
+	}
 	return detail, nil
 }
 

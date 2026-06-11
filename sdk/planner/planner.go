@@ -121,6 +121,89 @@ type (
 	AnswerEnvelope = internal.AnswerEnvelope
 )
 
+// Attachment disposition policy (Phase 84b — D-189) — aliases of the
+// internal types. The policy core is the headless seam: construct a
+// DispositionPolicy and/or set InputArtifactView.Disposition directly;
+// the Protocol hint and harbor.yaml are thin carriers over it.
+type (
+	// AttachmentDisposition declares how an uploaded input artifact is
+	// handed to the model (ref / inline / provider_native / tool:<name>).
+	AttachmentDisposition = internal.AttachmentDisposition
+	// DispositionPolicy is the per-agent per-MIME map + default.
+	DispositionPolicy = internal.DispositionPolicy
+	// DispositionLayer names the precedence layer that won a resolution.
+	DispositionLayer = internal.DispositionLayer
+	// DispositionDegradation is the typed fact returned when a resolved
+	// disposition cannot be honoured (the caller logs/emits it).
+	DispositionDegradation = internal.DispositionDegradation
+	// DispositionDegradationReason is the typed degradation vocabulary.
+	DispositionDegradationReason = internal.DispositionDegradationReason
+)
+
+// AttachmentDisposition values.
+const (
+	// DispositionRef — ArtifactStub + Fetch.Tool hint (the runtime
+	// default for non-image MIMEs).
+	DispositionRef = internal.DispositionRef
+	// DispositionInline — DataURL inline (image/* only at V1.1; the
+	// runtime default for image/*).
+	DispositionInline = internal.DispositionInline
+	// DispositionProviderNative — provider-side understanding (84c;
+	// degrades to ref with a returned fact until it ships).
+	DispositionProviderNative = internal.DispositionProviderNative
+)
+
+// DispositionLayer values.
+const (
+	// DispositionLayerCallerHint — the per-attachment hint won.
+	DispositionLayerCallerHint = internal.DispositionLayerCallerHint
+	// DispositionLayerAgentPolicy — the per-agent policy map won.
+	DispositionLayerAgentPolicy = internal.DispositionLayerAgentPolicy
+	// DispositionLayerRuntimeDefault — the built-in default won.
+	DispositionLayerRuntimeDefault = internal.DispositionLayerRuntimeDefault
+)
+
+// DispositionDegradationReason values.
+const (
+	// DegradationUnknownTool — tool:<name> named no catalog tool.
+	DegradationUnknownTool = internal.DegradationUnknownTool
+	// DegradationProviderNativeUnavailable — provider_native pre-84c.
+	DegradationProviderNativeUnavailable = internal.DegradationProviderNativeUnavailable
+	// DegradationInlineUnsupportedMIME — inline on a non-image MIME.
+	DegradationInlineUnsupportedMIME = internal.DegradationInlineUnsupportedMIME
+	// DegradationInvalidDisposition — a non-grammar value reached
+	// resolution.
+	DegradationInvalidDisposition = internal.DegradationInvalidDisposition
+)
+
+// ErrInvalidDisposition is the loud ParseDisposition failure.
+var ErrInvalidDisposition = internal.ErrInvalidDisposition
+
+// ResolveDisposition is the pure precedence resolver: per-attachment
+// caller hint > per-agent policy map > runtime default. Returns the
+// resolved disposition and the layer that won.
+var ResolveDisposition = internal.ResolveDisposition
+
+// EffectiveDisposition applies runtime capability constraints to a
+// resolved disposition, returning the honoured disposition plus a
+// typed degradation fact when they differ.
+var EffectiveDisposition = internal.EffectiveDisposition
+
+// DefaultDisposition is the runtime-default layer (image/* → inline,
+// everything else → ref — byte-for-byte the pre-84b dispatch).
+var DefaultDisposition = internal.DefaultDisposition
+
+// ParseDisposition validates a carrier string against the disposition
+// grammar.
+var ParseDisposition = internal.ParseDisposition
+
+// DispositionTool builds the parametrised tool:<name> disposition.
+var DispositionTool = internal.DispositionTool
+
+// DispositionPolicyFromConfig decodes the harbor.yaml
+// `multimodal.disposition` block into a DispositionPolicy.
+var DispositionPolicyFromConfig = internal.DispositionPolicyFromConfig
+
 // Registry + compression vocabulary — aliases of the internal types.
 type (
 	// PlannerConfig is the resolved planner configuration.

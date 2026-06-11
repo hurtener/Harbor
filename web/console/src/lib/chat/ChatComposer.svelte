@@ -38,8 +38,17 @@
      * is set when `running` is true: `'queue'` is the default; `'steer'`
      * is the explicit "inject into the current run" path. When `running`
      * is false, `mode` is undefined and the caller routes to `start`.
+     * `dispositions` (Phase 84b — D-189) carries the per-attachment
+     * disposition hints the operator picked on the attachment chips;
+     * only explicitly-picked attachments appear (Auto sends nothing —
+     * the agent policy / runtime default decides).
      */
-    onsend: (text: string, artifactIDs: string[], mode?: 'queue' | 'steer') => void;
+    onsend: (
+      text: string,
+      artifactIDs: string[],
+      mode?: 'queue' | 'steer',
+      dispositions?: Record<string, string>
+    ) => void;
   } = $props();
 
   // The send-mode picker is hidden when no run is in flight. When a
@@ -51,6 +60,10 @@
 
   let text = $state('');
   let attachments = $state<ChatArtifactRef[]>([]);
+  // Phase 84b (D-189) — per-attachment disposition picks, keyed by
+  // artifact id. '' = Auto (no hint sent; the agent's
+  // `multimodal.disposition` policy map / the runtime default decides).
+  let dispositions = $state<Record<string, string>>({});
   let uploading = $state(false);
   let uploadError = $state('');
   let listening = $state(false);
@@ -87,19 +100,33 @@
 
   function removeAttachment(id: string): void {
     attachments = attachments.filter((a) => a.id !== id);
+    const next = { ...dispositions };
+    delete next[id];
+    dispositions = next;
   }
 
   function send(): void {
     if (!canSend) {
       return;
     }
+    // Only explicitly-picked dispositions ride the wire — Auto ('')
+    // entries are elided so the lower precedence layers decide.
+    const picked: Record<string, string> = {};
+    for (const a of attachments) {
+      const d = dispositions[a.id];
+      if (d !== undefined && d !== '') {
+        picked[a.id] = d;
+      }
+    }
     onsend(
       text.trim(),
       attachments.map((a) => a.id),
-      running ? mode : undefined
+      running ? mode : undefined,
+      Object.keys(picked).length > 0 ? picked : undefined
     );
     text = '';
     attachments = [];
+    dispositions = {};
   }
 
   // 108a-D — drag & drop file upload onto the composer.
@@ -181,6 +208,21 @@
         <li class="attachment">
           <span class="attachment-name">{a.filename}</span>
           <span class="attachment-mime">{a.mime}</span>
+          <!-- Phase 84b (D-189) — optional per-attachment disposition
+               hint. Auto (default) sends no hint: the agent's
+               multimodal.disposition policy / the runtime default
+               (image inline, everything else ref) decides. -->
+          <select
+            class="attachment-disposition"
+            data-testid="chat-attachment-disposition"
+            bind:value={dispositions[a.id]}
+            title="How the runtime hands this attachment to the model"
+          >
+            <option value="">Auto</option>
+            <option value="ref">Reference (tool fetch)</option>
+            <option value="inline">Inline</option>
+            <option value="provider_native">Provider-native</option>
+          </select>
           <button
             type="button"
             class="attachment-remove"
@@ -363,6 +405,15 @@
     font-size: var(--text-xs);
     font-family: var(--font-mono);
     color: var(--color-text-muted);
+  }
+
+  .attachment-disposition {
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    padding: var(--space-0) var(--space-1);
   }
 
   .attachment-remove {

@@ -150,7 +150,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 83x| Real-data layout polish — W4-W11 + N11-N14 (incl. W6 created_at + W8 session-row Go fixes) | web/console + cmd/harbor + internal/protocol/artifacts | §5, §6.4, §6.6, §6.10, §6.13 | 73m, 73p, 83i, 83m | n/a | Shipped |
 | 84 | Reflection / critique loop                    | planner              | §12         | 45                    | n/a  | Post-V1  |
 | 84a| Runtime-capability gate + session aggregates (round-8 F1+F8 closeout) | internal/protocol + web/console | §5.3, §6.4, §7 | 72f, 73c, 73d, 72b, 83w | 90% | Shipped |
-| 84b| Multimodal attachment disposition policy (mechanism→policy; default `ref`) | internal/planner + internal/config + internal/protocol + web/console | §6.4, §6.5, §6.10 | F11/D-166, 107c | n/a | Pending (V1.1.x) |
+| 84b| Multimodal attachment disposition policy (mechanism→policy; default `ref`) | internal/planner + internal/config + internal/protocol + web/console | §6.4, §6.5, §6.10 | F11/D-166, 107c | n/a | Shipped (V1.1.x) |
 | 84c| Provider-native multimodal mechanism (image/audio/video first, files/PDF last; opt-in via 84b) | llm/drivers/bifrost + planner | §6.5, §6.10, §11Q3 | 84b, 107, 32 | n/a | Pending (V1.1.x) |
 | 84d| Embedding client (`Embedder`→bifrost) + semantic memory & skill retrieval (opt-in) | internal/llm + internal/memory + internal/skills | §6.5, §6.6, §6.7 | 32, 23, F11/84b | n/a | Pending (V1.1.x) |
 | 85a| MCP client core-compliance fixes (roots-empty now permanent) | tools/mcp | §6.4    | 28                    | 85%  | Ready now |

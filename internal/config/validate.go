@@ -85,6 +85,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateSkills,
 		c.validateTools,
 		c.validatePlanner,
+		c.validateMultimodal,
 		c.validateCLI,
 	)
 	for _, v := range validators {
@@ -1386,6 +1387,55 @@ func (c *Config) validatePlanner() error {
 				c.Planner.TokenBudget))
 	}
 	return nil
+}
+
+// validateMultimodal validates the Phase 84b (D-189) attachment
+// disposition block. Keys must be `*`, a family wildcard (`type/*`),
+// or an exact `type/subtype` media type; values must satisfy the
+// disposition grammar (`ref` / `inline` / `provider_native` /
+// `tool:<name>`). The grammar locally mirrors
+// `planner.ParseDisposition` — `internal/config` MUST NOT import
+// `internal/planner` (the D-193 import direction; the
+// allowlist-mirror pattern, same as `allowedPlannerDrivers`); the
+// planner package's `TestParseDisposition_ConfigGrammarLockstep`
+// asserts no drift.
+func (c *Config) validateMultimodal() error {
+	for key, value := range c.Multimodal.Disposition {
+		if !validDispositionMIMEKey(key) {
+			return fieldError("multimodal.disposition",
+				fmt.Sprintf("key %q must be \"*\", a family wildcard (\"image/*\"), or an exact media type (\"application/pdf\")", key))
+		}
+		if !validDispositionValue(value) {
+			return fieldError("multimodal.disposition",
+				fmt.Sprintf("value %q for key %q must be one of ref | inline | provider_native | tool:<name>", value, key))
+		}
+	}
+	return nil
+}
+
+// validDispositionMIMEKey reports whether key is a legal
+// `multimodal.disposition` map key: the literal `*`, a `type/*`
+// family wildcard, or an exact `type/subtype` media type.
+func validDispositionMIMEKey(key string) bool {
+	if key == "*" {
+		return true
+	}
+	typ, sub, found := strings.Cut(key, "/")
+	if !found || typ == "" || sub == "" {
+		return false
+	}
+	return !strings.Contains(sub, "/")
+}
+
+// validDispositionValue locally mirrors the planner disposition
+// grammar (see validateMultimodal's doc for the lockstep rationale).
+func validDispositionValue(value string) bool {
+	switch value {
+	case "ref", "inline", "provider_native":
+		return true
+	}
+	name, found := strings.CutPrefix(value, "tool:")
+	return found && name != ""
 }
 
 // allowedReasoningReplayModes mirrors the `planner.ReasoningReplayMode`

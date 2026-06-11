@@ -2,7 +2,7 @@
 
 # Protocol events
 
-The 104 canonical event types a Harbor Runtime can publish, read from the live
+The 105 canonical event types a Harbor Runtime can publish, read from the live
 event-type registry (`internal/events`) as the production driver set populates it.
 Subscribe via `GET /v1/events` (SSE) — see [methods.md](./methods.md#streaming-events)
 and the [streaming semantics guide](./streaming-semantics.md).
@@ -917,6 +917,24 @@ Payload `TaskGroupSealedPayload` — safe payload (delivered typed, verbatim).
 | `GroupID` | `tasks.TaskGroupID` |  |
 | `Members` | `[]tasks.TaskID` |  |
 | `SealedAt` | `int64` |  |
+
+## `task.input_disposition.resolved`
+
+Payload `InputDispositionResolvedPayload` — safe payload (delivered typed, verbatim).
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `Identity` | `identity.Quadruple` |  |
+| `TaskID` | `string` |  |
+| `ArtifactID` | `string` |  |
+| `MIME` | `string` |  |
+| `Disposition` | `string` |  |
+| `Layer` | `string` |  |
+| `Degraded` | `bool` |  |
+| `DegradedFrom` | `string` |  |
+| `DegradationReason` | `string` |  |
+| `Tool` | `string` |  |
+| `OccurredAt` | `time.Time` |  |
 
 ## `task.patch_applied`
 

@@ -707,7 +707,7 @@ After the planner constructs `CompleteRequest` and before the driver (`bifrost`)
 // In-prompt rendering (text-mode JSON, model-friendly):
 //   {"artifact_ref":"ref-abc-def","mime":"image/png","size_bytes":65536,
 //    "hash":"sha256:...","summary":"User-uploaded screenshot at turn 3",
-//    "fetch":{"tool":"artifact.fetch","id":"ref-abc-def"}}
+//    "fetch":{"tool":"artifact_fetch","id":"ref-abc-def"}}
 //
 // Or in multimodal Parts: a text-only ContentPart whose body is the
 // stub JSON above (the binary part is replaced wholesale).

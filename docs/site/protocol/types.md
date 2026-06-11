@@ -2,7 +2,7 @@
 
 # Protocol wire types
 
-The 214 canonical Harbor Protocol wire types, generated from the single-source
+The 215 canonical Harbor Protocol wire types, generated from the single-source
 inventory (`internal/protocol/singlesource.CanonicalWireTypes`) by reflection over the
 declaring packages. Field order is wire order; the Wire key column is the JSON key a
 client reads and writes. The Protocol version is `0.1.0` (RFC §5.3 — bumping it is an
@@ -1854,6 +1854,7 @@ Declared in `internal/protocol/types`.
 | `priority` | `int` | optional (`omitempty`) |
 | `idempotency_key` | `string` | optional (`omitempty`) |
 | `input_artifact_ids` | `[]string` | optional (`omitempty`) |
+| `input_artifact_dispositions` | `map[string]string` | optional (`omitempty`) |
 
 ## StartResponse
 
@@ -1921,6 +1922,7 @@ Declared in `internal/protocol/types`.
 | `result_ref` | `*types.ArtifactRef` — see [`ArtifactRef`](./types.md#artifactref) | optional (`omitempty`) |
 | `result_inline` | `string` | optional (`omitempty`) |
 | `trajectory` | `*types.TaskTrajectoryRef` — see [`TaskTrajectoryRef`](./types.md#tasktrajectoryref) | optional (`omitempty`) |
+| `input_artifacts` | `[]types.TaskInputArtifact` — see [`TaskInputArtifact`](./types.md#taskinputartifact) | optional (`omitempty`) |
 
 ## TaskFilter
 
@@ -1948,6 +1950,15 @@ Declared in `internal/protocol/types`.
 |---|---|---|
 | `identity` | `types.IdentityScope` — see [`IdentityScope`](./types.md#identityscope) |  |
 | `id` | `string` |  |
+
+## TaskInputArtifact
+
+Declared in `internal/protocol/types`.
+
+| Wire key | Go type | Notes |
+|---|---|---|
+| `id` | `string` |  |
+| `disposition` | `string` | optional (`omitempty`) |
 
 ## TaskListAggregates
 

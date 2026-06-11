@@ -401,6 +401,24 @@ type TaskPlannerSnapshotRef struct {
 	Summary string `json:"summary"`
 }
 
+// TaskInputArtifact is one operator-attached input artifact on the
+// `tasks.get` projection (Phase 84b — D-189). It pairs the artifact
+// id with the per-attachment disposition hint the `start` request
+// declared, so a client can verify its hint round-tripped onto the
+// task.
+type TaskInputArtifact struct {
+	// ID is the content-addressed artifact identifier.
+	ID string `json:"id"`
+	// Disposition is the per-attachment caller hint persisted at
+	// spawn (`ref` / `inline` / `provider_native` / `tool:<name>`).
+	// Empty means the caller declared none — the agent's
+	// `multimodal.disposition` policy map or the runtime default
+	// (`image/*` → inline, everything else → ref) decides at run
+	// time; the resolved value is observable on the
+	// `task.input_disposition.resolved` event stream.
+	Disposition string `json:"disposition,omitempty"`
+}
+
 // TaskDetail is the enriched payload `tasks.get` returns. It carries
 // the compact TaskRow projection plus the four enrichment fields the
 // Console Tasks-page detail tabs + right-rail cards render. Heavy
@@ -431,6 +449,11 @@ type TaskDetail struct {
 	// Trajectory is the projected planner reasoning-trace snapshot;
 	// nil when the trajectory is unavailable (evicted or not captured).
 	Trajectory *TaskTrajectoryRef `json:"trajectory,omitempty"`
+	// InputArtifacts lists the operator-attached input artifacts with
+	// their per-attachment disposition hints (Phase 84b — D-189), in
+	// the order the `start` request supplied them. Empty for
+	// text-only tasks.
+	InputArtifacts []TaskInputArtifact `json:"input_artifacts,omitempty"`
 }
 
 // TaskTrajectoryRef is the projected reasoning-trace snapshot from the

@@ -6,6 +6,7 @@ import (
 
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
+	"github.com/hurtener/Harbor/internal/planner"
 	"github.com/hurtener/Harbor/internal/protocol/auth"
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 	"github.com/hurtener/Harbor/internal/protocol/methods"
@@ -292,14 +293,39 @@ func (s *ControlSurface) dispatchStart(ctx context.Context, req any) (*types.Sta
 		}
 	}
 
+	// Phase 84b (D-189) — validate the optional per-attachment
+	// disposition hints at the edge so the registry / run loop only
+	// ever see canonical values. Each key must name an
+	// InputArtifactIDs entry; each value must satisfy the disposition
+	// grammar (planner.ParseDisposition — the planner-homed policy
+	// core this Protocol field is a thin carrier over).
+	if len(sr.InputArtifactDispositions) > 0 {
+		attached := make(map[string]struct{}, len(sr.InputArtifactIDs))
+		for _, artID := range sr.InputArtifactIDs {
+			attached[artID] = struct{}{}
+		}
+		for artID, value := range sr.InputArtifactDispositions {
+			if _, ok := attached[artID]; !ok {
+				return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+					"method %q: input_artifact_dispositions key %q names no input_artifact_ids entry", string(method), artID)
+			}
+			if _, perr := planner.ParseDisposition(value); perr != nil {
+				return nil, protoerrors.Newf(protoerrors.CodeInvalidRequest,
+					"method %q: input_artifact_dispositions[%q] = %q is not a valid disposition (want ref | inline | provider_native | tool:<name>)",
+					string(method), artID, value)
+			}
+		}
+	}
+
 	handle, err := s.tasks.Spawn(ctx, tasks.SpawnRequest{
-		Identity:         identity.Quadruple{Identity: id},
-		Kind:             tasks.KindForeground,
-		Description:      sr.Description,
-		Query:            sr.Query,
-		Priority:         sr.Priority,
-		IdempotencyKey:   sr.IdempotencyKey,
-		InputArtifactIDs: sr.InputArtifactIDs,
+		Identity:                  identity.Quadruple{Identity: id},
+		Kind:                      tasks.KindForeground,
+		Description:               sr.Description,
+		Query:                     sr.Query,
+		Priority:                  sr.Priority,
+		IdempotencyKey:            sr.IdempotencyKey,
+		InputArtifactIDs:          sr.InputArtifactIDs,
+		InputArtifactDispositions: sr.InputArtifactDispositions,
 	})
 	if err != nil {
 		return nil, mapTaskError(string(method), err)

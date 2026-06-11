@@ -629,6 +629,16 @@ type InputArtifactView struct {
 	// for `image/*` MIMEs (the Path 1 inline-bytes case). Nil for
 	// every other MIME (the LLM sees an ArtifactStub ref instead).
 	Bytes []byte
+	// Disposition is the RESOLVED attachment disposition (Phase 84b —
+	// D-189): how this artifact is handed to the model. The run loop
+	// resolves it via [ResolveDisposition] + [EffectiveDisposition]
+	// (per-attachment caller hint > per-agent policy map > runtime
+	// default); a headless library consumer constructing its own
+	// views sets it directly — the consumer IS the top-precedence
+	// layer. The zero value selects the pre-84b per-MIME dispatch in
+	// the materializer, so existing consumers are byte-for-byte
+	// unchanged.
+	Disposition AttachmentDisposition
 }
 
 // ArtifactManifestEntry is one metadata-only row in the session-artifact

@@ -531,6 +531,15 @@ export class ControlNamespace {
 			priority?: number;
 			idempotencyKey?: string;
 			inputArtifactIDs?: string[];
+			/**
+			 * Phase 84b (D-189) — optional per-attachment disposition
+			 * hints, keyed by an `inputArtifactIDs` entry. Values: `ref` /
+			 * `inline` / `provider_native` / `tool:<name>`. The hint is
+			 * the top precedence layer (hint > the agent's
+			 * `multimodal.disposition` config map > the runtime default);
+			 * an omitted key defers to the lower layers.
+			 */
+			inputArtifactDispositions?: Record<string, string>;
 		} = {}
 	): Promise<R> {
 		const body: Record<string, unknown> = { query };
@@ -552,6 +561,12 @@ export class ControlNamespace {
 		// text-only (the omitempty tag elides the field server-side).
 		if (opts.inputArtifactIDs !== undefined && opts.inputArtifactIDs.length > 0) {
 			body.input_artifact_ids = opts.inputArtifactIDs;
+		}
+		if (
+			opts.inputArtifactDispositions !== undefined &&
+			Object.keys(opts.inputArtifactDispositions).length > 0
+		) {
+			body.input_artifact_dispositions = opts.inputArtifactDispositions;
 		}
 		return this.#t.request<R>('/v1/control/start', body);
 	}

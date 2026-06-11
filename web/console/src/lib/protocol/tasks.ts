@@ -219,6 +219,18 @@ export interface TaskArtifactRef {
   size_bytes: number;
 }
 
+/**
+ * One operator-attached input artifact on the `tasks.get` projection
+ * (Phase 84b — D-189): the artifact id plus the per-attachment
+ * disposition hint the `start` request declared (`ref` / `inline` /
+ * `provider_native` / `tool:<name>`; absent = the agent policy /
+ * runtime default decides at run time).
+ */
+export interface TaskInputArtifact {
+  id: string;
+  disposition?: string;
+}
+
 /** The enriched payload `tasks.get` returns. */
 export interface TaskDetail {
   task: TaskRow;
@@ -228,6 +240,8 @@ export interface TaskDetail {
   planner_snapshot?: TaskPlannerSnapshotRef;
   result_ref?: TaskArtifactRef;
   result_inline?: string;
+  /** Phase 84b (D-189) — input artifacts with disposition hints. */
+  input_artifacts?: TaskInputArtifact[];
 }
 
 /** The kanban columns, in mockup order.

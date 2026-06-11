@@ -178,6 +178,15 @@ type Task struct {
 	// the LLM routes to a matching tool through the tool catalog. Empty
 	// is the common case — text-only turns.
 	InputArtifactIDs []string
+	// InputArtifactDispositions maps an InputArtifactIDs entry to the
+	// caller's per-attachment disposition hint (Phase 84b — D-189):
+	// `ref` / `inline` / `provider_native` / `tool:<name>`. The hint
+	// is the TOP precedence layer of the disposition resolution
+	// (hint > agent policy map > runtime default); an absent key
+	// means the caller declared nothing and the lower layers decide.
+	// Values are validated at the Protocol edge before they reach
+	// the registry. Nil is the common case.
+	InputArtifactDispositions map[string]string
 }
 
 // SpawnRequest is the input shape for `Spawn`. Identity is mandatory.
@@ -208,6 +217,12 @@ type SpawnRequest struct {
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
 	// loop's first-turn materializer. Empty is the text-only default.
 	InputArtifactIDs []string
+	// InputArtifactDispositions carries the per-attachment disposition
+	// hints keyed by artifact ID (Phase 84b — D-189). Persisted onto
+	// `Task.InputArtifactDispositions`; consumed by the run loop's
+	// disposition resolution (top precedence layer). Nil is the
+	// default — the agent policy map / runtime default decide.
+	InputArtifactDispositions map[string]string
 }
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape

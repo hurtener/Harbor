@@ -644,6 +644,14 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				}
 				skillsDir = sd
 			}
+			// Phase 84b (D-189): decode the operator's
+			// `multimodal.disposition` block into the planner-homed
+			// policy value (D-094 mirror of cmd_dev.go; fail loud on a
+			// non-grammar value — defense-in-depth behind the validator).
+			dispositionPolicy, dpErr := planner.DispositionPolicyFromConfig(cfg.Multimodal)
+			if dpErr != nil {
+				return stack, fmt.Errorf("devstack multimodal disposition policy: %w", dpErr)
+			}
 			driver, drvErr := newDevStackRunLoopDriver(devStackRunLoopDriverOpts{
 				bus:     bus,
 				runLoop: stack.RunLoop,
@@ -674,6 +682,10 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// (D-094 mirror of cmd_dev.go's projection).
 				tokenBudget: cfg.Planner.TokenBudget,
 				compression: core.Compression,
+				// Phase 84b (D-189) — the per-agent attachment
+				// disposition policy (D-094 mirror of cmd_dev.go's
+				// projection).
+				dispositionPolicy: dispositionPolicy,
 			})
 			if drvErr != nil {
 				return stack, fmt.Errorf("devstack RunLoop driver: %w", drvErr)
@@ -1210,6 +1222,10 @@ type DevStackRunLoopDriver struct {
 	tokenBudget int
 	compression *planner.CompressionRunner
 
+	// Phase 84b (D-189) — per-agent attachment disposition policy
+	// (D-094 mirror of the production driver's field).
+	dispositionPolicy planner.DispositionPolicy
+
 	// Phase 107a parity (D-195 dated-note follow-up) — per-task
 	// trajectory map for the Enricher seam, the D-094 mirror of the
 	// production driver. Trajectories are stored before RunLoop.Run
@@ -1260,6 +1276,9 @@ type devStackRunLoopDriverOpts struct {
 	// budget + the assembly-built runner. Zero/nil = compression off.
 	tokenBudget int
 	compression *planner.CompressionRunner
+
+	// Phase 84b (D-189) — per-agent attachment disposition policy.
+	dispositionPolicy planner.DispositionPolicy
 }
 
 func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopDriver, error) {
@@ -1291,7 +1310,9 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		artifactStore:   opts.artifactStore,
 		tokenBudget:     opts.tokenBudget,
 		compression:     opts.compression,
-		trajectories:    make(map[tasks.TaskID]*planner.Trajectory),
+		// Phase 84b (D-189) — disposition policy passthrough.
+		dispositionPolicy: opts.dispositionPolicy,
+		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 	}, nil
 }
 
@@ -1519,8 +1540,16 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	}
 
 	// Round-7 F11 / D-166 — the SAME promoted input-artifact policy
-	// production calls (Phase 110b — D-195).
-	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger)
+	// production calls (Phase 110b — D-195). Phase 84b (D-189): the
+	// disposition is resolved per attachment by the planner-homed
+	// pure resolver (hint > agent policy > runtime default); this
+	// driver is a THIN caller (D-094 mirror of cmd_dev_runloop.go).
+	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger, runctx.InputArtifactOptions{
+		Hints:   runctx.DispositionHints(task.InputArtifactDispositions),
+		Policy:  d.dispositionPolicy,
+		Catalog: catalogView,
+		Emit:    emit,
+	})
 
 	// Phase 107f (D-176 mirror of cmd/harbor/cmd_dev_runloop.go §17.6
 	// parity): build the read-only session-artifact manifest the planner
