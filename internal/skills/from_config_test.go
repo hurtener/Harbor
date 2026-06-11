@@ -12,10 +12,11 @@ import (
 func TestSnapshotFromConfig_Golden(t *testing.T) {
 	t.Parallel()
 	snap := SnapshotFromConfig(config.SkillsConfig{
-		Driver: "localdb",
-		DSN:    "file:skills.db",
+		Driver:    "localdb",
+		DSN:       "file:skills.db",
+		Retrieval: "semantic",
 	})
-	want := ConfigSnapshot{Driver: "localdb", DSN: "file:skills.db"}
+	want := ConfigSnapshot{Driver: "localdb", DSN: "file:skills.db", Retrieval: RetrievalSemantic}
 	if snap != want {
 		t.Errorf("SnapshotFromConfig = %+v, want %+v", snap, want)
 	}
@@ -28,8 +29,9 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 func TestSnapshotFromConfig_FieldParity_SkillsConfig(t *testing.T) {
 	t.Parallel()
 	projected := map[string]bool{
-		"Driver": true,
-		"DSN":    true,
+		"Driver":    true,
+		"DSN":       true,
+		"Retrieval": true,
 	}
 	excluded := map[string]string{
 		// Phase 111d (D-201): the directory block feeds NewDirectory

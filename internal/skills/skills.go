@@ -181,7 +181,40 @@ const (
 	PathRegex = "regex"
 	// PathExact — exact lowercase-equality fallback produced the row.
 	PathExact = "exact"
+	// PathSemantic — the opt-in semantic retrieval mode produced the
+	// row: embedding-similarity ranking over the identity-scoped
+	// catalog (RetrievalSemantic).
+	PathSemantic = "semantic"
 )
+
+// RetrievalMode declares the opt-in `Search` ranking shape.
+type RetrievalMode string
+
+// RetrievalMode values.
+const (
+	// RetrievalDefault — the zero value: the token-savvy FTS5 →
+	// regex → exact ladder.
+	RetrievalDefault RetrievalMode = ""
+	// RetrievalSemantic — rank by embedding similarity over the
+	// identity-scoped catalog (result path `PathSemantic`). Requires
+	// `Deps.Embedder` — no stub fallback. Capability filtering,
+	// redaction, and the budgeter apply unchanged downstream.
+	RetrievalSemantic RetrievalMode = "semantic"
+)
+
+// Embedder is the injectable text→vector callable the semantic
+// retrieval mode consumes — the consumer-side-interface shape the
+// memory subsystem's `Summarizer` established. The canonical
+// implementation is constructed via the embeddings factory
+// (`internal/embeddings`); any `embeddings.Embedder` satisfies this
+// interface.
+//
+// Concurrent-reuse contract: one `Embedder` instance is safe to
+// share across N concurrent goroutines. Implementers MUST honour
+// `ctx.Done()`.
+type Embedder interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
 
 // SkillStore is Harbor's mandatory skill-storage interface. A single
 // surface; every V1 driver (`localdb` here; Portico post-V1)
@@ -275,6 +308,10 @@ type ConfigSnapshot struct {
 	// honoured for tests. `secret:"true"` redaction lives at the
 	// config-package boundary.
 	DSN string
+	// Retrieval opts in to a `Search` ranking mode. The zero value
+	// keeps the FTS5 → regex → exact ladder; `RetrievalSemantic`
+	// ranks by embedding similarity (requires `Deps.Embedder`).
+	Retrieval RetrievalMode
 }
 
 // Deps carries the runtime dependencies a skills driver needs.
@@ -289,8 +326,17 @@ type ConfigSnapshot struct {
 // in the driver's own DB, not piggybacked onto the StateStore. The
 // Portico driver (post-V1) will fetch from a remote MCP surface and
 // also has no StateStore need.
+// `Embedder` is the injectable text→vector callable the semantic
+// retrieval mode consumes. OPTIONAL — required only when
+// `cfg.Retrieval == RetrievalSemantic`, ignored otherwise. A
+// semantic config without an Embedder fails loudly at `Open`
+// (mirroring the memory registry's Summarizer/Embedder rule) —
+// never a stub fallback (AGENTS.md §13). Existing callers that
+// construct `Deps{Bus}` keep compiling: the zero value is nil,
+// valid for the default retrieval mode.
 type Deps struct {
-	Bus events.EventBus
+	Bus      events.EventBus
+	Embedder Embedder
 }
 
 // Factory builds a `SkillStore` from a `ConfigSnapshot` + `Deps`.
@@ -333,7 +379,7 @@ func Register(name string, factory Factory) {
 // Deps are validated: a missing EventBus returns a wrapped error
 // before the factory runs — fail loudly, never silently degrade.
 func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (SkillStore, error) {
-	if err := validateDeps(deps); err != nil {
+	if err := validateDeps(cfg, deps); err != nil {
 		return nil, err
 	}
 	name := cfg.Driver
@@ -346,15 +392,28 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (SkillStore, error) 
 // OpenDriver opens a specific driver by name; useful for tests that
 // want to exercise the registry against a non-default driver.
 func OpenDriver(name string, cfg ConfigSnapshot, deps Deps) (SkillStore, error) {
-	if err := validateDeps(deps); err != nil {
+	if err := validateDeps(cfg, deps); err != nil {
 		return nil, err
 	}
 	return open(name, cfg, deps)
 }
 
-func validateDeps(d Deps) error {
+func validateDeps(cfg ConfigSnapshot, d Deps) error {
 	if d.Bus == nil {
 		return fmt.Errorf("skills: Deps.Bus is required (events.EventBus)")
+	}
+	// Fail loudly at the registry boundary when semantic retrieval
+	// is configured without an Embedder — surfacing the
+	// misconfiguration before any DB connection opens, never a stub
+	// fallback (AGENTS.md §13). The driver constructor re-checks.
+	switch cfg.Retrieval {
+	case RetrievalDefault:
+	case RetrievalSemantic:
+		if d.Embedder == nil {
+			return fmt.Errorf("skills: Deps.Embedder is required for retrieval mode %q (no stub fallback)", RetrievalSemantic)
+		}
+	default:
+		return fmt.Errorf("skills: unknown retrieval mode %q (expected \"\" or %q)", cfg.Retrieval, RetrievalSemantic)
 	}
 	return nil
 }

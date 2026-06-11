@@ -56,8 +56,12 @@ import (
 // `config.MemoryConfig.RecoveryBacklogMax`; the registry-level
 // `memory.Open` propagates the value via `ConfigSnapshot` (see
 // Phase 24's `memory.ConfigSnapshot` extension).
+// `Embedder` is REQUIRED when the configured retrieval mode is
+// `semantic` (mirroring the Summarizer rule); registry callers get
+// it threaded from `memory.Deps.Embedder`.
 type Options struct {
 	Summarizer         memory.Summarizer
+	Embedder           memory.Embedder
 	RecoveryBacklogMax int
 }
 
@@ -86,12 +90,19 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.Memo
 	if backlog == 0 {
 		backlog = cfg.RecoveryBacklogMax
 	}
+	embedder := opts.Embedder
+	if embedder == nil {
+		embedder = deps.Embedder
+	}
 	execDeps := strategy.Deps{
 		State:              deps.State,
 		Bus:                deps.Bus,
 		Summarizer:         opts.Summarizer,
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: backlog,
+		Embedder:           embedder,
+		Retrieval:          cfg.Retrieval,
+		RetrievalTopK:      cfg.RetrievalTopK,
 	}
 	exec, err := strategy.New(s, execDeps)
 	if err != nil {
@@ -194,6 +205,19 @@ func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Sn
 		return memory.Snapshot{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Snapshot")
 	}
 	return d.exec.Snapshot(ctx, id)
+}
+
+// SearchTurns implements memory.MemoryStore. Identity validated at
+// the boundary; the strategy executor (semantic wrapper when the
+// mode is on) owns the similarity search.
+func (d *driver) SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error) {
+	if d.closed.Load() {
+		return nil, memory.ErrStoreClosed
+	}
+	if memory.ValidateIdentity(id) != nil {
+		return nil, memory.EmitIdentityRejected(ctx, d.bus, id, "SearchTurns")
+	}
+	return d.exec.SearchTurns(ctx, id, query, limit)
 }
 
 func (d *driver) Restore(ctx context.Context, id identity.Quadruple, snap memory.Snapshot) error {

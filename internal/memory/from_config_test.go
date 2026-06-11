@@ -16,6 +16,8 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 		Strategy:           "rolling_summary",
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
+		Retrieval:          "semantic",
+		RetrievalTopK:      7,
 	})
 	want := ConfigSnapshot{
 		Driver:             "sqlite",
@@ -23,6 +25,8 @@ func TestSnapshotFromConfig_Golden(t *testing.T) {
 		Strategy:           StrategyRollingSummary,
 		BudgetTokens:       2048,
 		RecoveryBacklogMax: 32,
+		Retrieval:          RetrievalSemantic,
+		RetrievalTopK:      7,
 	}
 	if snap != want {
 		t.Errorf("SnapshotFromConfig = %+v, want %+v", snap, want)
@@ -41,6 +45,8 @@ func TestSnapshotFromConfig_FieldParity_MemoryConfig(t *testing.T) {
 		"Strategy":           true,
 		"BudgetTokens":       true,
 		"RecoveryBacklogMax": true,
+		"Retrieval":          true,
+		"RetrievalTopK":      true,
 	}
 	excluded := map[string]string{}
 	typ := reflect.TypeOf(config.MemoryConfig{})

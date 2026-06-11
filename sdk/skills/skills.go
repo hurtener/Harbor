@@ -38,6 +38,11 @@ type (
 	Scope = internal.Scope
 	// Selection names the directory selection strategy.
 	Selection = internal.Selection
+	// RetrievalMode names the opt-in Search ranking shape.
+	RetrievalMode = internal.RetrievalMode
+	// Embedder is the injectable text→vector callable the semantic
+	// retrieval mode consumes (any embeddings.Embedder satisfies it).
+	Embedder = internal.Embedder
 )
 
 // DefaultDriver is the driver name Open resolves when the config
@@ -71,6 +76,19 @@ const (
 	// SelectionPinnedThenTop — pinned skills, then top-ranked.
 	SelectionPinnedThenTop = internal.SelectionPinnedThenTop
 )
+
+// RetrievalMode values.
+const (
+	// RetrievalDefault — the token-savvy FTS5 → regex → exact ladder.
+	RetrievalDefault = internal.RetrievalDefault
+	// RetrievalSemantic — embedding-similarity ranking (requires
+	// Deps.Embedder).
+	RetrievalSemantic = internal.RetrievalSemantic
+)
+
+// PathSemantic is the Search result path the semantic retrieval mode
+// reports.
+const PathSemantic = internal.PathSemantic
 
 // Re-exported sentinel errors callers compare via errors.Is.
 var (

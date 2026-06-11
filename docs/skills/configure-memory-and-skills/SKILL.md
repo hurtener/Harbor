@@ -55,6 +55,26 @@ memory:
 
 `budget_tokens` is the hard cap; `summary_keep_recent_turns` is the floor — older turns are summarised together into one assistant-role message. The planner sees: `[summary of turns 1-12] [turn 13] [turn 14] ... [turn 18]`.
 
+### Opt-in semantic retrieval
+
+`memory.retrieval: semantic` layers embedding-similarity search ON TOP of the strategy you picked above — it composes with `rolling_summary`, never replaces it. Turns are embedded as they land (`AddTurn`) and a `SearchTurns` surface ranks them by cosine; `GetLLMContext` keeps its normal summary + recent-turn patch. Vectors persist identity-scoped through the same state store, on all three drivers.
+
+```yaml
+memory:
+  driver: sqlite
+  dsn: /tmp/harbor-validation/my-agent-memory.sqlite
+  strategy: rolling_summary
+  retrieval: semantic        # opt-in; composes with the strategy
+  retrieval_top_k: 5         # optional result cap (default 5)
+
+embeddings:                  # REQUIRED when any retrieval is semantic
+  provider: openai
+  model: text-embedding-3-small
+  api_key: env.OPENAI_API_KEY
+```
+
+The `embeddings:` block is the embedding model/provider pair — configured **separately from the chat `llm` block** (they routinely come from different providers). Enabling a semantic mode without it fails validation loudly, naming the missing keys; there is no silent fallback to non-semantic retrieval and no mock embeddings driver.
+
 ### Identity scoping
 
 Every memory write/read is keyed by `(tenant_id, user_id, session_id)`. The planner cannot read user A's memory from user B's session — the SQL `WHERE` clause filters before the rows reach the planner. This is enforced at the driver level, not at the planner; even a buggy planner cannot leak cross-session.
@@ -118,6 +138,11 @@ Once the skills are in the catalog, the planner sees them at reasoning time two 
 skills:
   driver: localdb
   dsn: /tmp/harbor-validation/my-agent-skills.sqlite    # WAL trap caveat applies
+  # retrieval: semantic            # optional — skill_search ranks by embedding
+  #                                # similarity instead of the FTS5/regex/exact
+  #                                # ladder (requires the embeddings: block; the
+  #                                # capability filter, redaction, and budgeter
+  #                                # apply unchanged on top)
   directory:                       # optional — shapes the per-turn <skills_context> block
     pinned: [triage-incident]      # always listed first, in this order
     max_entries: 10                # 0/unset → planner.skills_context_max (default 5)
@@ -171,5 +196,6 @@ The two are unrelated. The glossary entry pins this distinction (`docs/glossary.
 - [`define-the-agent-yaml`](../define-the-agent-yaml/SKILL.md) — the `memory:` and `skills:` blocks in context.
 - [`add-an-in-process-tool`](../add-an-in-process-tool/SKILL.md) — when a skill becomes "actually run code".
 - [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — the Memory tab + the Skills tab show what the planner saw on each turn.
+- [`docs/recipes/embed-and-retrieve.md`](../../recipes/embed-and-retrieve.md) — the embedding client à la carte + both semantic-retrieval opt-ins from Go.
 - RFC §6.7 — the runtime skill subsystem design.
 - RFC §6.6 — the memory subsystem design.

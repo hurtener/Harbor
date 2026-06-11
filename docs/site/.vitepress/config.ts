@@ -151,6 +151,7 @@ export default defineConfig({
             { text: "Observe an embedded runtime", link: "/recipes/observe-an-embedded-runtime" },
             { text: "Control attachment disposition", link: "/recipes/control-attachment-disposition" },
             { text: "Provider-native attachments", link: "/recipes/provider-native-attachments" },
+            { text: "Embed and retrieve", link: "/recipes/embed-and-retrieve" },
           ],
         },
       ],

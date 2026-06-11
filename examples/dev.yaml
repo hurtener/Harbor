@@ -132,6 +132,13 @@ memory:
   driver: inmem
   strategy: none
   recovery_backlog_max: 16
+  # Opt-in semantic retrieval (Phase 84d — D-191): embeds turns and
+  # serves MemoryStore.SearchTurns by cosine similarity, composing
+  # with the strategy above. Requires a top-level `embeddings:` block
+  # (provider + model + api_key — see examples/harbor.yaml); the
+  # validator fails the boot loudly without one. `skills.retrieval:
+  # semantic` opts skill_search into the same mode.
+  # retrieval: semantic
 
 # D-103 — Planner driver selection (closes issue #126). The V1
 # reference planner is `react` (the LLM-driven ReAct concrete from

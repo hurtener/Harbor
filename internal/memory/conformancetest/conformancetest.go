@@ -54,11 +54,19 @@ import (
 // triple under their control; the suite uses a known identity for
 // happy-path assertions and a partial / empty identity to drive
 // rejection paths.
+//   - `Retrieval` is the retrieval mode the Store is configured
+//     for. Zero (the default mode) makes the suite assert
+//     `SearchTurns` fails loudly with `ErrSemanticDisabled`;
+//     `RetrievalSemantic` forks the semantic-retrieval subtests
+//     (similarity ranking, vector isolation, flush). A semantic
+//     harness must be wired with a deterministic embedder (e.g.
+//     `embeddingstest.New()`).
 type Harness struct {
-	Store    memory.MemoryStore
-	Bus      events.EventBus
-	Strategy memory.Strategy
-	Cleanup  func()
+	Store     memory.MemoryStore
+	Bus       events.EventBus
+	Strategy  memory.Strategy
+	Retrieval memory.RetrievalMode
+	Cleanup   func()
 }
 
 // strategy returns the configured strategy, defaulting to
@@ -424,6 +432,10 @@ func Run(t *testing.T, factory Factory) {
 			"Restore": func(s memory.MemoryStore, q identity.Quadruple) error {
 				return s.Restore(context.Background(), q, memory.Snapshot{})
 			},
+			"SearchTurns": func(s memory.MemoryStore, q identity.Quadruple) error {
+				_, err := s.SearchTurns(context.Background(), q, "probe", 3)
+				return err
+			},
 		}
 		for name, op := range methods {
 			t.Run(name, func(t *testing.T) {
@@ -517,7 +529,7 @@ func Run(t *testing.T, factory Factory) {
 					},
 				}
 				for j := range opsPerGo {
-					switch j % 7 {
+					switch j % 8 {
 					case 0:
 						if err := h.Store.AddTurn(ctx, ident, sampleTurn()); err != nil {
 							errCount.Add(1)
@@ -544,6 +556,14 @@ func Run(t *testing.T, factory Factory) {
 						}
 					case 6:
 						if err := h.Store.Restore(ctx, ident, memory.Snapshot{}); err != nil {
+							errCount.Add(1)
+						}
+					case 7:
+						// `ErrSemanticDisabled` is the documented
+						// answer under the default retrieval mode —
+						// only unexpected failures count.
+						if _, err := h.Store.SearchTurns(ctx, ident, "probe", 3); err != nil &&
+							!errors.Is(err, memory.ErrSemanticDisabled) {
 							errCount.Add(1)
 						}
 					}
@@ -613,6 +633,120 @@ func Run(t *testing.T, factory Factory) {
 		err = h.Store.Restore(ctx, tripleA(), memory.Snapshot{})
 		if !errors.Is(err, memory.ErrStoreClosed) {
 			t.Errorf("Restore after Close: err=%v, want ErrStoreClosed", err)
+		}
+		_, err = h.Store.SearchTurns(ctx, tripleA(), "probe", 3)
+		if !errors.Is(err, memory.ErrStoreClosed) {
+			t.Errorf("SearchTurns after Close: err=%v, want ErrStoreClosed", err)
+		}
+	})
+
+	// Retrieval-mode subtests. The default mode must FAIL LOUDLY on
+	// SearchTurns; the semantic mode must rank, isolate, and flush.
+	t.Run("SearchTurns_DisabledFailsLoudly", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.Retrieval == memory.RetrievalSemantic {
+			t.Skipf("subtest only runs under the default retrieval mode; got %q", h.Retrieval)
+		}
+		_, err := h.Store.SearchTurns(context.Background(), tripleA(), "anything", 3)
+		if !errors.Is(err, memory.ErrSemanticDisabled) {
+			t.Fatalf("SearchTurns under default mode: err=%v, want ErrSemanticDisabled", err)
+		}
+	})
+
+	t.Run("Semantic_SearchTurns_RanksBySimilarity", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.Retrieval != memory.RetrievalSemantic {
+			t.Skipf("subtest only runs under RetrievalSemantic; got %q", h.Retrieval)
+		}
+		ctx := context.Background()
+		turns := []memory.ConversationTurn{
+			{UserMessage: "how do I dock the boat at the harbor pier", AssistantResponse: "tie the boat to the pier cleats"},
+			{UserMessage: "what is the capital of France", AssistantResponse: "Paris is the capital of France"},
+			{UserMessage: "bake a chocolate cake recipe", AssistantResponse: "mix flour sugar cocoa and bake"},
+		}
+		for i, turn := range turns {
+			if err := h.Store.AddTurn(ctx, tripleA(), turn); err != nil {
+				t.Fatalf("AddTurn %d: %v", i, err)
+			}
+		}
+		got, err := h.Store.SearchTurns(ctx, tripleA(), "dock a boat at the pier", 2)
+		if err != nil {
+			t.Fatalf("SearchTurns: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("SearchTurns returned %d results, want 2", len(got))
+		}
+		if got[0].Turn.UserMessage != turns[0].UserMessage {
+			t.Errorf("top result = %q, want the boat/pier turn", got[0].Turn.UserMessage)
+		}
+		if got[0].Score < got[1].Score {
+			t.Errorf("results not ranked: scores %v then %v", got[0].Score, got[1].Score)
+		}
+		// The strategy patch is UNCHANGED by the semantic mode —
+		// composition, not replacement.
+		patch, err := h.Store.GetLLMContext(ctx, tripleA())
+		if err != nil {
+			t.Fatalf("GetLLMContext: %v", err)
+		}
+		if patch.Strategy != h.strategy() {
+			t.Errorf("semantic mode changed the patch strategy: %q, want %q", patch.Strategy, h.strategy())
+		}
+	})
+
+	t.Run("Semantic_CrossSession_Isolation", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.Retrieval != memory.RetrievalSemantic {
+			t.Skipf("subtest only runs under RetrievalSemantic; got %q", h.Retrieval)
+		}
+		ctx := context.Background()
+		q1 := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S1"}}
+		q2 := identity.Quadruple{Identity: identity.Identity{TenantID: "T", UserID: "U", SessionID: "S2"}}
+		if err := h.Store.AddTurn(ctx, q1, memory.ConversationTurn{
+			UserMessage:       "secret topic only session one knows",
+			AssistantResponse: "indeed, session one's secret",
+		}); err != nil {
+			t.Fatalf("AddTurn S1: %v", err)
+		}
+		got, err := h.Store.SearchTurns(ctx, q2, "secret topic only session one knows", 5)
+		if err != nil {
+			t.Fatalf("SearchTurns S2: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("session 2 retrieved %d turn(s) embedded under session 1 — vector isolation breach", len(got))
+		}
+		// And a cross-TENANT probe for the same vectors.
+		qT := identity.Quadruple{Identity: identity.Identity{TenantID: "T2", UserID: "U", SessionID: "S1"}}
+		got, err = h.Store.SearchTurns(ctx, qT, "secret topic only session one knows", 5)
+		if err != nil {
+			t.Fatalf("SearchTurns tenant B: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("tenant B retrieved %d turn(s) embedded under tenant A — vector isolation breach", len(got))
+		}
+	})
+
+	t.Run("Semantic_Flush_DropsVectors", func(t *testing.T) {
+		h := factory()
+		defer h.Cleanup()
+		if h.Retrieval != memory.RetrievalSemantic {
+			t.Skipf("subtest only runs under RetrievalSemantic; got %q", h.Retrieval)
+		}
+		ctx := context.Background()
+		if err := h.Store.AddTurn(ctx, tripleA(), sampleTurn()); err != nil {
+			t.Fatalf("AddTurn: %v", err)
+		}
+		if err := h.Store.Flush(ctx, tripleA()); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		got, err := h.Store.SearchTurns(ctx, tripleA(), sampleTurn().UserMessage, 5)
+		if err != nil {
+			t.Fatalf("SearchTurns after Flush: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("Flush left %d vector entr(ies) behind", len(got))
 		}
 	})
 }
