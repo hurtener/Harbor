@@ -50,6 +50,10 @@ import (
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
 	// Distributed driver — Phase 29 A2A wire RemoteTransport (southbound).
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
+	// Embeddings driver — Phase 84d (D-191) bifrost-backed Embedder,
+	// registered via init(). Feeds the opt-in semantic retrieval
+	// modes in memory + skills and the à-la-carte embed path.
+	_ "github.com/hurtener/Harbor/internal/embeddings/drivers/bifrost"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	// Events driver — Phase 57 StateStore-backed durable event log,

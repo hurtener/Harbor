@@ -26,5 +26,7 @@ func SnapshotFromConfig(cfg config.MemoryConfig) ConfigSnapshot {
 		Strategy:           Strategy(cfg.Strategy),
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: cfg.RecoveryBacklogMax,
+		Retrieval:          RetrievalMode(cfg.Retrieval),
+		RetrievalTopK:      cfg.RetrievalTopK,
 	}
 }

@@ -240,6 +240,55 @@ Default request-queue buffer per provider. Default: `0`.
 
 ---
 
+## Embeddings
+
+The embedding-client block (Phase 84d — D-191): the model/provider
+pair Harbor turns text into vectors with, configured separately from
+the chat `llm` block. Fully optional — but REQUIRED the moment an
+embedding-consuming mode is enabled (`memory.retrieval: semantic` or
+`skills.retrieval: semantic`); the validator names the missing key so
+the boot failure is actionable, and a semantic mode never silently
+degrades to non-semantic retrieval.
+
+### embeddings.driver
+
+Embeddings driver. Default: empty (resolves to `bifrost`).
+Validation: when set, `bifrost` (V1; there is deliberately no mock /
+stub embeddings driver).
+
+### embeddings.provider
+
+Embedding provider (e.g. `openai`). Validation: required when the
+block is set.
+
+### embeddings.model
+
+Embedding model (e.g. `text-embedding-3-small`). Its own operator
+choice — nothing falls back to `llm.model`. Validation: required when
+the block is set.
+
+### embeddings.api_key
+
+Literal key or `env.NAME` reference, matching the `llm.api_key`
+convention. Validation: required when the block is set. Secret:
+redacted.
+
+### embeddings.base_url
+
+Optional endpoint override forwarded to the gateway. Default: empty.
+
+### embeddings.timeout
+
+Optional per-request timeout. Default: `0` (gateway default).
+Validation: >= 0.
+
+### embeddings.dimensions
+
+Optional reduced output dimension for providers that support it.
+Default: `0` (the model's native dimension). Validation: >= 0.
+
+---
+
 ## Governance
 
 ### governance.repair_attempts
@@ -329,6 +378,21 @@ Truncation / rolling-summary budget cap (token estimate). Default:
 Bounded queue size for the `rolling_summary` strategy's recovery
 loop (D-035). Default: `16`. Validation: >= 0.
 
+### memory.retrieval
+
+Opt-in retrieval mode layered ON TOP of the strategy (Phase 84d —
+D-191). Empty (the default) keeps strategy-shaped retrieval;
+`semantic` additionally embeds turns at `AddTurn` and serves
+similarity search via `MemoryStore.SearchTurns`, composing with —
+never replacing — `rolling_summary`. Default: empty. Validation:
+empty or `semantic`; `semantic` requires the `embeddings` block.
+
+### memory.retrieval_top_k
+
+Result cap for a semantic `SearchTurns` when the caller passes no
+limit. Default: `0` (resolves to the subsystem default, 5).
+Validation: >= 0. Ignored unless `memory.retrieval = "semantic"`.
+
 ---
 
 ## Skills
@@ -368,6 +432,16 @@ yet wired** — no production path increments skill usage counters, so
 the ordering would silently degrade to alphabetical; the validator
 fails loud instead (the `tools.http_manifests` precedent). It becomes
 accepted when a usage-tracking path lands.
+
+### skills.retrieval
+
+Opt-in `Search` / `skill_search` ranking mode (Phase 84d — D-191).
+Empty (the default) keeps the token-savvy FTS5 → regex → exact
+ladder; `semantic` ranks by embedding similarity over the
+identity-scoped catalog (result path `semantic`). Capability
+filtering, redaction, and the budgeter apply unchanged on top.
+Default: empty. Validation: empty or `semantic`; `semantic` requires
+the `embeddings` block and `skills.driver` to be set.
 
 ---
 

@@ -384,6 +384,16 @@ func (e *rollingSummaryExec) Health(ctx context.Context, id identity.Quadruple) 
 	return ks.health, nil
 }
 
+// SearchTurns fails loudly: similarity search requires the semantic
+// retrieval wrapper, which composes around this executor when the
+// mode is enabled.
+func (e *rollingSummaryExec) SearchTurns(_ context.Context, _ identity.Quadruple, _ string, _ int) ([]memory.ScoredTurn, error) {
+	if e.isClosed() {
+		return nil, memory.ErrStoreClosed
+	}
+	return nil, memory.ErrSemanticDisabled
+}
+
 func (e *rollingSummaryExec) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error) {
 	if e.isClosed() {
 		return memory.Snapshot{}, memory.ErrStoreClosed

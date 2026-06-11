@@ -13,6 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/embeddings/embeddingstest"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/memory"
@@ -37,13 +38,22 @@ func TestInMem_ConformanceSuite(t *testing.T) {
 
 		t.Run(string(s), func(t *testing.T) {
 			conformancetest.Run(t, func() conformancetest.Harness {
-				return newHarness(t, s)
+				return newHarness(t, s, memory.RetrievalDefault)
 			})
 		})
 	}
+	// Semantic retrieval mode (Phase 84d, D-191): the same suite,
+	// retrieval=semantic, deterministic test embedder. The semantic
+	// wrapper composes around every strategy; one strategy per mode
+	// keeps the matrix bounded (the wrapper is strategy-agnostic).
+	t.Run("semantic/rolling_summary", func(t *testing.T) {
+		conformancetest.Run(t, func() conformancetest.Harness {
+			return newHarness(t, memory.StrategyRollingSummary, memory.RetrievalSemantic)
+		})
+	})
 }
 
-func newHarness(t *testing.T, s memory.Strategy) conformancetest.Harness {
+func newHarness(t *testing.T, s memory.Strategy, retrieval memory.RetrievalMode) conformancetest.Harness {
 	t.Helper()
 	red, err := audit.Open(context.Background(), config.AuditConfig{})
 	if err != nil {
@@ -61,18 +71,23 @@ func newHarness(t *testing.T, s memory.Strategy) conformancetest.Harness {
 	if s == memory.StrategyRollingSummary {
 		opts.Summarizer = strategy.EchoSummarizer{}
 	}
+	if retrieval == memory.RetrievalSemantic {
+		opts.Embedder = embeddingstest.New()
+	}
 	mem, err := inmem.New(memory.ConfigSnapshot{
 		Driver:       "inmem",
 		Strategy:     s,
 		BudgetTokens: 64, // small but non-zero so truncation has work to do
+		Retrieval:    retrieval,
 	}, memory.Deps{State: store, Bus: bus}, opts)
 	if err != nil {
 		t.Fatalf("inmem.New(%q): %v", s, err)
 	}
 	return conformancetest.Harness{
-		Store:    mem,
-		Bus:      bus,
-		Strategy: s,
+		Store:     mem,
+		Bus:       bus,
+		Strategy:  s,
+		Retrieval: retrieval,
 		Cleanup: func() {
 			_ = mem.Close(context.Background())
 			_ = bus.Close(context.Background())

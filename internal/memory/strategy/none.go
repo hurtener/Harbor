@@ -57,6 +57,13 @@ func (e *noneExec) Health(_ context.Context, _ identity.Quadruple) (memory.Healt
 	return memory.HealthHealthy, nil
 }
 
+// SearchTurns fails loudly: similarity search requires the semantic
+// retrieval wrapper, which composes around this executor when the
+// mode is enabled.
+func (e *noneExec) SearchTurns(_ context.Context, _ identity.Quadruple, _ string, _ int) ([]memory.ScoredTurn, error) {
+	return nil, memory.ErrSemanticDisabled
+}
+
 func (e *noneExec) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Snapshot, error) {
 	rec, err := e.state.Load(ctx, id, kindMemoryState)
 	if err != nil {

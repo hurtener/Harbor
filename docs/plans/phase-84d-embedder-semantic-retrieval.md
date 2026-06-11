@@ -59,6 +59,27 @@ embedder's consumer. The project owner redirected the embeddings path toward
 **semantic memory / skill retrieval**; this plan adopts that as the in-wave
 consumer. Recorded in D-189 / D-191.
 
+### §4.3 deviations recorded at ship time (D-191)
+
+- **Driver registration home.** The Goals' original "blank-import at
+  `cmd/harbor`" wording predates Phase 110c (D-196): the bifrost embedder
+  driver registers via the production driver aggregator
+  `internal/drivers/prod`, which `cmd/harbor`, devstack, and embedders
+  import. Library consumers blank-import the aggregator (or the driver) in
+  their own main — documented in the recipe.
+- **Interface carries `Close`.** `Embedder` is `Embed` + a lifecycle
+  `Close`, mirroring `LLMClient`: the production driver owns gateway worker
+  pools that must join on teardown (goroutine-baseline gate).
+- **Skills injection seam.** "Injected at the skills directory /
+  `skill_search` constructor" resolved to the STORE seam:
+  `skills.Deps.Embedder` + the localdb driver's semantic `Search` path
+  (result path `semantic`). The directory is a recency-ordered browse window
+  where similarity ranking doesn't apply; ranking at the store keeps one
+  implementation under `skill_search`, direct `Search`, and future callers.
+- **RFC delta shape.** The §6.5 Embedder-seam addendum pre-landed with the
+  D-189 plans PR; this PR's RFC edit is the D-191 contract sentence in §6.5
+  plus the §6.6 / §6.7 consumer-side settled text.
+
 ## Goals
 
 - `Embedder` interface (`Embed(ctx, []string) ([][]float32, error)`) in
@@ -113,37 +134,37 @@ consumer. Recorded in D-189 / D-191.
 
 ## Acceptance criteria
 
-- [ ] `Embedder` interface + bifrost driver + factory + registry
+- [x] `Embedder` interface + bifrost driver + factory + registry
       (`embeddings.Open(ctx, cfg, deps)` in `internal/embeddings`);
       misconfiguration error lists registered drivers (§4.4).
-- [ ] Embedding model/provider configured separately in `harbor.yaml`; missing
+- [x] Embedding model/provider configured separately in `harbor.yaml`; missing
       config fails loudly at boot (names the key) when an embedding-consuming mode
       is enabled (CLAUDE.md §13 — no silent stub default).
-- [ ] `memory.Deps.Embedder` + the fail-loud registry guard (mirroring the
+- [x] `memory.Deps.Embedder` + the fail-loud registry guard (mirroring the
       `Deps.Summarizer` rule): semantic mode enabled without an embedder →
       construction error naming the dependency; the same guard on the skills
       constructor seam. Both consumers are constructible in Go with no config
       file.
-- [ ] `Embed` fails closed on missing identity in `ctx` (mirrors the LLM edge);
+- [x] `Embed` fails closed on missing identity in `ctx` (mirrors the LLM edge);
       covered by a unit test.
-- [ ] The memory conformance suite (`internal/memory/conformancetest`) gains the
+- [x] The memory conformance suite (`internal/memory/conformancetest`) gains the
       semantic-retrieval cases and **all three drivers** (in-mem / SQLite /
       Postgres) pass them — vector persistence is never a single-driver feature
       (§9).
-- [ ] `docs/recipes/embed-and-retrieve.md` ships the à-la-carte headless path
+- [x] `docs/recipes/embed-and-retrieve.md` ships the à-la-carte headless path
       (factory + `Embed` + ranking; no memory subsystem, no Protocol).
-- [ ] `HARBOR_LIVE_LLM` conformance probe: `Embed` returns non-empty vectors of the
+- [x] `HARBOR_LIVE_LLM` conformance probe: `Embed` returns non-empty vectors of the
       expected dimension against one capable provider.
-- [ ] **Semantic memory retrieval mode** consumes the embedder end-to-end: a turn
+- [x] **Semantic memory retrieval mode** consumes the embedder end-to-end: a turn
       is embedded + retrieved by similarity, identity-scoped, composing with
       rolling_summary — covered by a test.
-- [ ] **Semantic skill retrieval mode** consumes the embedder: `skill_search`
+- [x] **Semantic skill retrieval mode** consumes the embedder: `skill_search`
       returns semantically-ranked skills — covered by a test.
-- [ ] Cross-session isolation test: embeddings/vectors never retrieved across the
+- [x] Cross-session isolation test: embeddings/vectors never retrieved across the
       identity boundary.
-- [ ] Concurrent-reuse: the `Embedder` is concurrent-safe (N≥100 concurrent `Embed`
+- [x] Concurrent-reuse: the `Embedder` is concurrent-safe (N≥100 concurrent `Embed`
       under `-race`, no per-call state on the driver).
-- [ ] Smoke `scripts/smoke/phase-84d.sh` exercises the embed surface + one retrieval
+- [x] Smoke `scripts/smoke/phase-84d.sh` exercises the embed surface + one retrieval
       round-trip.
 
 ## Files added or changed
@@ -162,8 +183,9 @@ consumer. Recorded in D-189 / D-191.
 - `internal/config/config.go` + `loader.go` — embedding model/provider config +
   the opt-in retrieval-mode flags + validation (decoding into
   `embeddings.ConfigSnapshot`).
-- `cmd/harbor/main.go` — blank-import the bifrost embedder driver (binary wiring
-  only; library consumers blank-import in their own main).
+- `internal/drivers/prod/prod.go` — blank-import the bifrost embedder driver
+  (D-196 aggregator; library consumers blank-import the aggregator in their
+  own main).
 - `docs/recipes/embed-and-retrieve.md` — the à-la-carte headless recipe.
 - `scripts/smoke/phase-84d.sh` — embed + retrieval round-trip.
 - `docs/decisions.md` — D-191. `docs/glossary.md` — embedding client + semantic
@@ -200,13 +222,20 @@ consumer. Recorded in D-189 / D-191.
 
 ## Smoke script additions
 
-`scripts/smoke/phase-84d.sh` (live-server): an embedding-enabled boot answers a
-semantic `skill_search` (or a memory-retrieval probe); 404/405/501 / missing-config
-→ SKIP for a build without the embedder wired.
+`scripts/smoke/phase-84d.sh` (unit-tests class; §4.3 deviation from the sketch
+below): static seam/consumer/doc assertions + a built-binary `harbor validate`
+fail-loud round-trip (semantic mode without an `embeddings` block exits 1
+naming the key; with the block exits 0) + the embed→persist→retrieve
+round-trip via the Phase 84d integration tests under `-race`. The original
+sketch ("an embedding-enabled boot answers a semantic `skill_search`") is not
+honest against the preflight dev boot, which deliberately carries NO embedding
+provider (there is no stub embeddings driver — CLAUDE.md §13); the
+live-provider leg is the `HARBOR_LIVE_LLM` conformance probe instead.
 
 ## Coverage target
 
-- `internal/llm/drivers/bifrost` (embed driver): meets the package target.
+- `internal/embeddings` + `internal/embeddings/drivers/bifrost` (embed
+  driver): meets the package target.
 - The memory/skills semantic-retrieval modes: ≥ the touched packages' targets.
 
 ## Dependencies
@@ -237,20 +266,20 @@ semantic `skill_search` (or a memory-retrieval probe); 404/405/501 / missing-con
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve — including the §6.5
+- [x] `make drift-audit` passes
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve — including the §6.5
       addendum this PR adds.
-- [ ] Coverage on touched packages ≥ stated target
-- [ ] Cross-session isolation: embeddings/vectors keyed + filtered by the identity
+- [x] Coverage on touched packages ≥ stated target
+- [x] Cross-session isolation: embeddings/vectors keyed + filtered by the identity
       triple; isolation test passes.
-- [ ] **Primitive + consumer in the same wave (§13):** the `Embedder` primitive
+- [x] **Primitive + consumer in the same wave (§13):** the `Embedder` primitive
       ships with its consumers — semantic memory retrieval AND semantic skill
       retrieval — each exercised end-to-end with a test. No bare primitive.
-- [ ] **No test stub as a production default (§13):** the embedder fails loudly at
+- [x] **No test stub as a production default (§13):** the embedder fails loudly at
       boot when a semantic mode is enabled without a configured provider; no mock
       default.
-- [ ] Concurrent-reuse test (N≥100 `Embed` under `-race`)
-- [ ] Glossary updated (embedding client + semantic retrieval)
-- [ ] RFC §6.5 addendum landed + referenced
+- [x] Concurrent-reuse test (N≥100 `Embed` under `-race`)
+- [x] Glossary updated (embedding client + semantic retrieval)
+- [x] RFC §6.5 addendum landed + referenced
