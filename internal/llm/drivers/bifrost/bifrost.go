@@ -10,6 +10,7 @@ import (
 	bf "github.com/maximhq/bifrost/core"
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/llm"
@@ -25,11 +26,19 @@ const driverName = "bifrost"
 // without spinning up bifrost's queue infrastructure / network /
 // goroutine pool.
 //
+// The file methods serve the provider-native upload pass (the
+// `provider_native` attachment disposition, RFC §6.5): bifrost
+// providers without file support return an `unsupported_operation`
+// error from these methods, which the upload pass degrades loudly to
+// the `ArtifactStub` rendering.
+//
 // Production wires `*bf.Bifrost`; tests inject a stubbed
 // implementation via `newDriverWithClient` (see `export_test.go`).
 type bifrostClient interface {
 	ChatCompletionRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
 	ChatCompletionStreamRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError)
+	FileUploadRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostFileUploadRequest) (*bfschemas.BifrostFileUploadResponse, *bfschemas.BifrostError)
+	FileDeleteRequest(ctx *bfschemas.BifrostContext, req *bfschemas.BifrostFileDeleteRequest) (*bfschemas.BifrostFileDeleteResponse, *bfschemas.BifrostError)
 }
 
 // Driver is the bifrost-backed `llm.Driver` implementation. The
@@ -37,15 +46,26 @@ type bifrostClient interface {
 // callers receive a `*safetyClient` and never construct this directly
 // in production.
 //
-// Concurrent-reuse (D-025): the driver is stateless across calls. The
-// embedded `bifrostClient` is internally synchronized (bifrost owns a
-// queue pool and dispatches per-request goroutines). The `closed` flag
-// is `atomic.Bool` for idempotent Close. Per-call state (identity,
-// model, response shape) lives on the call stack / ctx.
+// Concurrent-reuse (D-025): the driver is stateless across calls
+// except for the provider-file cache, which is internally
+// synchronized (`providerFileCache` guards its map + LRU list with a
+// mutex and is documented as such). The embedded `bifrostClient` is
+// internally synchronized (bifrost owns a queue pool and dispatches
+// per-request goroutines). The `closed` flag is `atomic.Bool` for
+// idempotent Close. Per-call state (identity, model, response shape)
+// lives on the call stack / ctx.
 type Driver struct {
 	client   bifrostClient
 	provider bfschemas.ModelProvider
 	bus      events.EventBus
+	// artifacts is the runtime artifact store the provider-native
+	// upload pass reads attachment bytes from (read-only after
+	// construction; the store itself is internally synchronized).
+	artifacts artifacts.ArtifactStore
+	// files is the identity-scoped provider file_id cache — the
+	// driver-owned lifecycle (TTL + LRU evict with remote delete, plus
+	// a Close-time sweep). Internally synchronized.
+	files *providerFileCache
 	// profiles is the per-model profile map (read-only after construction;
 	// D-025). Used to stamp the model's context-window onto the
 	// `llm.cost.recorded` event so the Console can show context %.
@@ -83,10 +103,12 @@ func New(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return nil, fmt.Errorf("bifrost: Init: %w", err)
 	}
 	return &Driver{
-		client:   inner,
-		provider: account.provider,
-		bus:      deps.Bus,
-		profiles: cfg.ModelProfiles,
+		client:    inner,
+		provider:  account.provider,
+		bus:       deps.Bus,
+		artifacts: deps.Artifacts,
+		files:     newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
+		profiles:  cfg.ModelProfiles,
 	}, nil
 }
 
@@ -118,12 +140,23 @@ func (d *Driver) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	}
 	id := identityQuad(ctx)
 
+	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
+
+	// Provider-native upload pass: any `ProviderNative`-flagged part
+	// without a `ProviderFileID` is uploaded to the provider's file
+	// surface (cache-aware, identity-scoped) and rewritten to the
+	// opaque reference BEFORE translation. Copy-on-write — the
+	// caller's request value is never mutated.
+	var err error
+	req, err = d.applyProviderNative(ctx, bctx, req, id)
+	if err != nil {
+		return llm.CompleteResponse{}, err
+	}
+
 	bfReq, err := translateRequest(d.provider, req)
 	if err != nil {
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: translate request: %w", err)
 	}
-
-	bctx := bfschemas.NewBifrostContext(ctx, bfschemas.NoDeadline)
 
 	if req.Stream {
 		return d.streamComplete(ctx, bctx, bfReq, req, id)
@@ -356,11 +389,18 @@ func processStreamChunk(
 // error-returning teardown is still honoured; the stub client
 // implements neither and opts out cleanly.
 //
+// Close also drains the provider file_id cache and best-effort
+// deletes every cached remote file (`FileDeleteRequest`) so headless
+// consumers that never run a dev loop don't leak provider-side files
+// — the driver owns the full file lifecycle (RFC §6.5). Delete
+// failures are logged at Warn and never block teardown.
+//
 // Idempotent. Subsequent calls return nil.
-func (d *Driver) Close(_ context.Context) error {
+func (d *Driver) Close(ctx context.Context) error {
 	if !d.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	d.cleanupProviderFiles(ctx)
 	switch c := d.client.(type) {
 	case interface{ Cleanup() error }:
 		return c.Cleanup()

@@ -23,6 +23,7 @@ API, read the godoc.
 | [Use memory and skills from Go](use-memory-and-skills-from-go.md) | The canonical skills surface headless: `importer.ImportAndStore` to ingest, the Phase-38 handlers to retrieve, `skills.NewDirectory(...).View` to inject. |
 | [Observe an embedded runtime](observe-an-embedded-runtime.md) | The bus-first observability chain — redactor → bus → `telemetry.New` Logger → metrics bridge → tracer bridge — and the engine run-error hook. |
 | [Control attachment disposition](control-attachment-disposition.md) | The Phase 84b disposition policy — `ref` / `inline` / `provider_native` / `tool:<name>`, headless-first (`InputArtifactView.Disposition`, `DispositionPolicy`, `ResolveDisposition`) with `harbor.yaml` + the Protocol hint as thin carriers. |
+| [Provider-native attachments](provider-native-attachments.md) | The Phase 84c mechanism — the part-level `ProviderNative` flag, the driver-internal `file_id` upload + cache lifecycle, the `llm.provider_file.uploaded` event; fully headless via `llm.Open`. |
 
 ## Conventions used in these recipes
 

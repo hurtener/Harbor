@@ -59,6 +59,16 @@ const (
 	// per stream (terminator marker). SafePayload — deltas are per-session
 	// operator-visible content.
 	EventTypeCompletionChunk events.EventType = "llm.completion.chunk"
+	// EventTypeProviderFileUploaded — emitted by the LLM driver when a
+	// `provider_native`-flagged content part is uploaded to the
+	// provider's file surface and rewritten to an opaque `file_id`
+	// reference (the `provider_native` attachment disposition,
+	// RFC §6.5). The event is the observability surface for
+	// provider-native uploads — the Protocol/Console read it from the
+	// event stream; no task field carries the `file_id`. Cache hits
+	// (an already-uploaded artifact reused within the same identity
+	// scope) do NOT re-emit.
+	EventTypeProviderFileUploaded events.EventType = "llm.provider_file.uploaded"
 )
 
 func init() {
@@ -71,6 +81,7 @@ func init() {
 		EventTypeRetryWithFeedback,
 		EventTypePostureReadAdmin,
 		EventTypeCompletionChunk,
+		EventTypeProviderFileUploaded,
 	} {
 		events.RegisterEventType(t)
 	}
@@ -181,6 +192,37 @@ type RetryWithFeedbackPayload struct {
 	Attempt    int
 	MaxRetries int
 	Reason     string
+	OccurredAt time.Time
+}
+
+// ProviderFileUploadedPayload is the typed payload for
+// EventTypeProviderFileUploaded. SafePayload — the artifact ref,
+// provider name, modality, opaque `file_id`, MIME, and byte count are
+// operator-visible upload metadata, not secret-shaped; the content
+// bytes themselves never ride the event.
+type ProviderFileUploadedPayload struct {
+	events.SafeSealed
+	// Identity is the uploading call's identity quadruple — the same
+	// scope that keys the driver's file_id cache.
+	Identity identity.Quadruple
+	// Provider is the LLM provider the file was uploaded to.
+	Provider string
+	// Model is the request's model name.
+	Model string
+	// ArtifactRef is the Harbor artifact id the bytes came from.
+	// Empty when the part carried inline sub-threshold bytes instead
+	// of an artifact reference.
+	ArtifactRef string
+	// MIME is the uploaded content's media type.
+	MIME string
+	// Modality is the content's modality family derived from the MIME
+	// (`image` / `audio` / `video` / `pdf` / `file`).
+	Modality string
+	// FileID is the opaque provider file reference the upload returned.
+	FileID string
+	// SizeBytes is the uploaded payload's byte length.
+	SizeBytes int64
+	// OccurredAt is the upload wall-clock instant.
 	OccurredAt time.Time
 }
 

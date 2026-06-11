@@ -95,7 +95,7 @@ fi
 
 # TODO(107d): when the surface ships, replace the skip below with:
 #   1. POST a query that elicits several independent tool-calls in one turn.
-#   2. Subscribe to /v1/events/subscribe; assert >=2 tool.invoked events fire
+#   2. Subscribe to /v1/events (SSE); assert >=2 tool.invoked events fire
 #      between two consecutive assistant turns (concurrent dispatch, not the
 #      one-per-turn serialization fallback).
 #   3. Fetch tasks.get; assert a trajectory step carries >=2 branches with one

@@ -210,7 +210,7 @@ func TestEffectiveDisposition_Degradations(t *testing.T) {
 		{"zero passes", "", "application/pdf", catalog, "", "", ""},
 		{"inline image passes", planner.DispositionInline, "image/png", catalog, planner.DispositionInline, "", ""},
 		{"inline non-image degrades", planner.DispositionInline, "application/pdf", catalog, planner.DispositionRef, planner.DegradationInlineUnsupportedMIME, ""},
-		{"provider_native degrades pre-84c", planner.DispositionProviderNative, "image/png", catalog, planner.DispositionRef, planner.DegradationProviderNativeUnavailable, ""},
+		{"provider_native honoured", planner.DispositionProviderNative, "image/png", catalog, planner.DispositionProviderNative, "", ""},
 		{"known tool passes", planner.DispositionTool("pdf.extract"), "application/pdf", catalog, planner.DispositionTool("pdf.extract"), "", ""},
 		{"unknown tool degrades", planner.DispositionTool("nope.tool"), "application/pdf", catalog, planner.DispositionRef, planner.DegradationUnknownTool, "nope.tool"},
 		{"tool with nil catalog kept verbatim", planner.DispositionTool("anything"), "text/csv", nil, planner.DispositionTool("anything"), "", ""},

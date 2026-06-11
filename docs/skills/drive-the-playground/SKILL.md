@@ -51,7 +51,7 @@ The dispatch above is the **runtime default**, not a hardcode. Each attachment c
 - **Auto** (default) — send no hint; the agent's `multimodal.disposition` config map or the runtime default above decides.
 - **Reference (tool fetch)** — force `ref`: the model gets an ArtifactStub + a `Fetch.Tool` pointer even for an image.
 - **Inline** — force the DataURL inline path (`image/*` only at V1.1; other MIMEs degrade to ref with a logged notice).
-- **Provider-native** — opt in to the provider's own document/vision understanding (the Phase 84c mechanism; until it ships this degrades to ref — the degradation is visible on the `task.input_disposition.resolved` event, never silent).
+- **Provider-native** — opt in to the provider's own vision/audio/video/document understanding (Phase 84c — D-190): the LLM driver uploads the attachment to the provider's file surface and the model sees the real content via an opaque `file_id`. The upload is observable on the `llm.provider_file.uploaded` event; a provider without support for the attachment's modality keeps the ArtifactStub reference with a logged notice — never silent.
 
 The pick rides the `start` request as `input_artifact_dispositions` and outranks the agent's config map. Forcing a specific tool (`tool:<name>`) is available via the Protocol field directly (see [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md)).
 

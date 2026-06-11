@@ -249,10 +249,20 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 	if parts[2].File.Artifact.Fetch != nil && parts[2].File.Artifact.Fetch.Tool == "no.such.tool" {
 		t.Fatal("unknown tool name leaked onto the degraded stub")
 	}
-	// img — agent-policy provider_native degraded to ref (84c not
-	// shipped): a stub-text part, NOT an inline ImagePart.
-	if parts[3].Type != llm.PartText || !strings.Contains(parts[3].Text, fmt.Sprintf(`"artifact_ref":%q`, img)) {
-		t.Fatalf("image part is not the ref stub degradation: %+v", parts[3])
+	// img — agent-policy provider_native is honoured since the Phase
+	// 84c mechanism shipped (D-190): a ProviderNative-flagged
+	// ImagePart carrying the ArtifactStub reference (the LLM driver
+	// performs the upload inside Complete; the scripted mock driver
+	// sees the flagged part as-is), NOT inline bytes and NOT a
+	// stub-text degradation.
+	if parts[3].Type != llm.PartImage || parts[3].Image == nil || !parts[3].Image.ProviderNative {
+		t.Fatalf("image part is not the ProviderNative-flagged ImagePart: %+v", parts[3])
+	}
+	if parts[3].Image.Artifact == nil || parts[3].Image.Artifact.Ref != img {
+		t.Fatalf("image part stub = %+v, want ref %q", parts[3].Image.Artifact, img)
+	}
+	if parts[3].Image.DataURL != "" {
+		t.Fatal("provider_native image must not carry inline bytes")
 	}
 
 	// 3. The resolution events: one per attachment, with the winning
@@ -285,9 +295,12 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 		t.Fatalf("pdfB resolution = %+v, want unknown_tool degradation to ref", b)
 	}
 	c := got[img]
-	if c.Disposition != "ref" || c.Layer != string(planner.DispositionLayerAgentPolicy) || !c.Degraded ||
-		c.DegradationReason != string(planner.DegradationProviderNativeUnavailable) {
-		t.Fatalf("img resolution = %+v, want provider_native_unavailable degradation at agent_policy", c)
+	// Since the provider-native mechanism shipped (Phase 84c — D-190),
+	// a policy-resolved provider_native is honoured as-is: the upload
+	// happens inside the LLM driver and the disposition event reports
+	// no degradation.
+	if c.Disposition != "provider_native" || c.Layer != string(planner.DispositionLayerAgentPolicy) || c.Degraded {
+		t.Fatalf("img resolution = %+v, want honoured provider_native at agent_policy", c)
 	}
 
 	// 4. tasks.get reflects the hints on the wire.
