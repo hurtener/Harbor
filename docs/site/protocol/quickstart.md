@@ -199,10 +199,13 @@ Every error on the wire is that one envelope — branch on `code`, never on
    [event](./events.md), [error](./errors.md), and [wire type](./types.md),
    generated from the Runtime's own sources and drift-gated in CI.
 2. **The choreographies** — [auth & identity](./auth-and-identity.md),
-   [streaming semantics](./streaming-semantics.md), and
-   [task control](./task-control.md): sequence and intent, not just shapes.
-3. **Build a client** — the track's second phase walks a complete event-viewer
-   client and the conformance-certification path. Until it lands, the bundled
-   Console is the reference Protocol client, and the
+   [streaming semantics](./streaming-semantics.md),
+   [task control](./task-control.md), [the pause model](./pause-model.md),
+   and [versioning & compatibility](./versioning-and-compatibility.md):
+   sequence and intent, not just shapes.
+3. **[Build a client](./build-a-client.md)** — a complete ~100-line
+   event-viewer client, worked line by line, with the
+   [conformance-certification path](./conformance-certification.md) as the
+   closer. The bundled Console is the reference full client, and the
    [`use-the-harbor-protocol`](../skills/use-the-harbor-protocol/SKILL.md)
    skill is the operator-side recipe.

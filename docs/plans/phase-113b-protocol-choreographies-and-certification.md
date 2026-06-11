@@ -2,7 +2,7 @@
 
 ## Summary
 
-Closes the Protocol adoption track (`docs/notes/protocol-docs-proposal.md`, PR #305) on the foundation 113a laid: choreography guides 4–5 (**the pause model** — `pause.requested` → approve / reject / OAuth-callback / plain resume, durable pauses across restarts, timeout reaps; **versioning & compatibility** — RFC §5.3 made adopter-facing, including the unknown-field / unknown-method tolerance conventions the smoke scripts already encode); the **build-a-client** guide (a ~100-line worked event-viewer client, with the generated TS wire-type module and the Console as reference implementations); and the **conformance-certification** page documenting `internal/protocol/conformance` as the compatibility-claim path — how to run the suite and what passing claims. No sdk-export of the suite (proposal Q3, owner-resolved). Decision: D-210 (reserved; logged at ship).
+Closes the Protocol adoption track (`docs/notes/protocol-docs-proposal.md`, PR #305) on the foundation 113a laid: choreography guides 4–5 (**the pause model** — `pause.requested` → approve / reject / OAuth-callback / plain resume, durable pauses across restarts, timeout reaps; **versioning & compatibility** — RFC §5.3 made adopter-facing, including the unknown-field / unknown-method tolerance conventions the smoke scripts already encode); the **build-a-client** guide (a ~100-line worked event-viewer client, with the hand-maintained TS wire-type module — described accurately per D-132 — and the Console as reference implementations); and the **conformance-certification** page documenting `internal/protocol/conformance` as the compatibility-claim path — how to run the suite and what passing claims. No sdk-export of the suite (proposal Q3, owner-resolved). Decision: D-210 (reserved; logged at ship).
 
 ## RFC anchor
 
@@ -29,7 +29,14 @@ Closes the Protocol adoption track (`docs/notes/protocol-docs-proposal.md`, PR #
 
 ## Findings I'm departing from (if any)
 
-None. One owner-resolved scope pin restated (proposal Q3): the conformance suite is documented as the certification path but is **not** exported through `sdk/` in this phase — the export decision waits for a real third-party ask, and the certification page says so explicitly rather than implying a public runner exists.
+None at planning time. One owner-resolved scope pin restated (proposal Q3): the conformance suite is documented as the certification path but is **not** exported through `sdk/` in this phase — the export decision waits for a real third-party ask, and the certification page says so explicitly rather than implying a public runner exists.
+
+### Ship-time deviations (§4.3, recorded 2026-06-11 — D-210)
+
+- **The OAuth callback route lockstep-greps against the source constant, not the generated reference.** The plan's smoke sketch said every route the pause guide names "appears in 113a's generated reference"; the callback (`GET /v1/tools/oauth/callback`) is a provider-redirect mount, deliberately NOT a canonical Protocol method, so it has no `methods.md` row. `scripts/smoke/phase-113b.sh` pins the guide's quoted route to the exported `auth.CallbackPath` constant in `internal/tools/auth/callback.go` instead — the honest equivalent trip-wire — and the guide states the route's non-method status.
+- **Wire-capture provenance, per the plan's own fallback.** The approve / reject / `DecisionTimeout` legs (SSE frames, `pause.list` snapshots, control request/response pairs) were captured from a runtime assembled with the production drivers (`harbortest/devstack` + a `deny-all`-gated tool driven through the production dispatch path) — a live `harbor dev` capture is infeasible because the dev mock LLM never emits tool calls, so no approval gate ever fires on the preflight server. The OAuth-callback leg is transcribed from the handler + its tests (`internal/tools/auth`) and the page says so. The capture harness was a throwaway; the standing gates are the 111b/111c E2Es + this phase's lockstep greps (the plan's stated test posture).
+- **The worked client compile gate is in-module.** `examples/` is part of the repo module, so the gate is a direct bounded `go build ./examples/protocol-clients/event-viewer` (plus a grep-absence assert that the client carries no `hurtener/Harbor` import — its SDK-free premise) rather than the 112b external-module ceremony, which would be dishonest for a client whose point is zero Harbor imports.
+- **A §17.6-posture docs fix rode along.** `task-control.md` claimed pause-shaped controls cause `task.paused` / `task.resumed`; nothing calls `MarkPaused`/`MarkResumed` on the live pause path — a parked run's task status stays `running`. The line is corrected; the pause guide documents the real semantics (`pause.list` is the authoritative park read).
 
 ## Goals
 

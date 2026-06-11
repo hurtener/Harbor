@@ -104,8 +104,11 @@ A `200` response ([`ControlResponse`](./types.md#controlresponse)) means
 The control's **effect** — the redirected goal taking hold, the pause actually
 blocking the loop, the approval advancing it — is observed on the event
 stream: `control.received` → `control.applied` (or `control.rejected`),
-followed by the lifecycle event it caused (`task.cancelled`, `task.paused`,
-`task.resumed`, …). A client that needs confirmation watches the stream; a
+followed by the event the effect causes (`task.cancelled` for a cancel;
+`pause.requested` / `pause.resumed` for the pause-shaped controls — a parked
+run's task status stays `running`, see
+[the pause model](./pause-model.md)). A client that needs confirmation
+watches the stream; a
 richer synchronous response would couple the Protocol edge to the run loop's
 step timing, so it deliberately does not exist.
 
@@ -125,8 +128,8 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/pause/list" \
 ```
 
 The full pause model — what parks a run (HITL approval, tool-side OAuth),
-durable pauses across restarts, timeout reaps — is choreography 4, landing
-with the track's second phase.
+durable pauses across restarts, timeout reaps — is
+[choreography 4](./pause-model.md).
 
 ## Snapshots: tasks.list and tasks.get
 
