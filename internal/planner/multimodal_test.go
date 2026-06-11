@@ -297,3 +297,112 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestMaterializeInputContent_ProviderNative_PerModality pins the
+// provider_native disposition rendering: a typed part per modality
+// family with the ProviderNative flag set and the canonical
+// ArtifactStub reference carried (the driver uploads from it; a
+// provider without support keeps the stub — RFC §6.5).
+func TestMaterializeInputContent_ProviderNative_PerModality(t *testing.T) {
+	views := []planner.InputArtifactView{
+		{ID: "img-1", MIME: "image/png", SizeBytes: 70_000, Disposition: planner.DispositionProviderNative},
+		{ID: "aud-1", MIME: "audio/wav", SizeBytes: 90_000, Disposition: planner.DispositionProviderNative},
+		{ID: "vid-1", MIME: "video/mp4", SizeBytes: 900_000, Disposition: planner.DispositionProviderNative},
+		{ID: "pdf-1", MIME: "application/pdf", SizeBytes: 50_000, Filename: "q3.pdf", Disposition: planner.DispositionProviderNative},
+	}
+	c := planner.MaterializeInputContent("describe these", views, nil)
+	if len(c.Parts) != 5 {
+		t.Fatalf("Parts = %d, want 5 (goal + 4 attachments)", len(c.Parts))
+	}
+
+	img := c.Parts[1]
+	if img.Type != llm.PartImage || img.Image == nil || !img.Image.ProviderNative {
+		t.Fatalf("image part = %+v, want ProviderNative ImagePart", img)
+	}
+	if img.Image.Artifact == nil || img.Image.Artifact.Ref != "img-1" {
+		t.Errorf("image part Artifact = %+v, want ref img-1", img.Image.Artifact)
+	}
+	if img.Image.ProviderFileID != "" {
+		t.Errorf("materializer must NOT pre-upload: ProviderFileID = %q", img.Image.ProviderFileID)
+	}
+
+	aud := c.Parts[2]
+	if aud.Type != llm.PartAudio || aud.Audio == nil || !aud.Audio.ProviderNative {
+		t.Fatalf("audio part = %+v, want ProviderNative AudioPart", aud)
+	}
+	if aud.Audio.Artifact == nil || aud.Audio.Artifact.Ref != "aud-1" {
+		t.Errorf("audio part Artifact = %+v, want ref aud-1", aud.Audio.Artifact)
+	}
+
+	vid := c.Parts[3]
+	if vid.Type != llm.PartFile || vid.File == nil || !vid.File.ProviderNative {
+		t.Fatalf("video part = %+v, want ProviderNative FilePart", vid)
+	}
+	if vid.File.DocumentType != "" {
+		t.Errorf("video DocumentType = %q, want empty (not a structured document)", vid.File.DocumentType)
+	}
+
+	pdf := c.Parts[4]
+	if pdf.Type != llm.PartFile || pdf.File == nil || !pdf.File.ProviderNative {
+		t.Fatalf("pdf part = %+v, want ProviderNative FilePart", pdf)
+	}
+	if pdf.File.DocumentType != "pdf" {
+		t.Errorf("pdf DocumentType = %q, want pdf", pdf.File.DocumentType)
+	}
+	if pdf.File.Filename != "q3.pdf" {
+		t.Errorf("pdf Filename = %q, want q3.pdf", pdf.File.Filename)
+	}
+}
+
+// TestMaterializeInputContent_ProviderNative_KeepsFetchHint — the
+// carried stub keeps its Fetch.Tool hint so the degraded rendering
+// (provider without upload support) stays actionable for the LLM.
+func TestMaterializeInputContent_ProviderNative_KeepsFetchHint(t *testing.T) {
+	catalog := stubCatalogView{listed: []tools.Tool{
+		{Name: "image.describe", HandlesMIME: []string{"image/*"}},
+	}}
+	c := planner.MaterializeInputContent("x",
+		[]planner.InputArtifactView{
+			{ID: "img-2", MIME: "image/png", SizeBytes: 70_000, Disposition: planner.DispositionProviderNative},
+		},
+		catalog,
+	)
+	img := c.Parts[1]
+	if img.Image == nil || img.Image.Artifact == nil || img.Image.Artifact.Fetch == nil {
+		t.Fatalf("part = %+v, want stub with Fetch hint", img)
+	}
+	if img.Image.Artifact.Fetch.Tool != "image.describe" {
+		t.Errorf("Fetch.Tool = %q, want image.describe", img.Image.Artifact.Fetch.Tool)
+	}
+}
+
+// TestMaterializeInputContent_ProviderNative_DocumentTypeGrammar pins
+// the DocumentType derivation table: subtype token for application/*
+// and text/* (parameters trimmed), empty for everything else and for
+// malformed MIMEs.
+func TestMaterializeInputContent_ProviderNative_DocumentTypeGrammar(t *testing.T) {
+	cases := []struct {
+		mime string
+		want string
+	}{
+		{"application/pdf", "pdf"},
+		{"text/csv; charset=utf-8", "csv"},
+		{"video/mp4", ""},
+		{"weird", ""},
+		{"application/", ""},
+	}
+	for _, tc := range cases {
+		c := planner.MaterializeInputContent("",
+			[]planner.InputArtifactView{
+				{ID: "d", MIME: tc.mime, SizeBytes: 10, Disposition: planner.DispositionProviderNative},
+			},
+			nil,
+		)
+		if len(c.Parts) != 1 || c.Parts[0].File == nil {
+			t.Fatalf("%s: parts = %+v, want one FilePart", tc.mime, c.Parts)
+		}
+		if got := c.Parts[0].File.DocumentType; got != tc.want {
+			t.Errorf("%s: DocumentType = %q, want %q", tc.mime, got, tc.want)
+		}
+	}
+}

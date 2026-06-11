@@ -829,9 +829,12 @@ wildcard (`image/*`), or the literal `*` (the agent-wide default) —
 to a disposition value: `ref` (emit an `ArtifactStub` + `Fetch.Tool`
 hint; the developer processes the bytes via a tool), `inline`
 (DataURL inline; `image/*` only at V1.1), `provider_native` (opt-in
-provider-side understanding; degrades to `ref` with a logged notice
-until Phase 84c ships), or `tool:<name>` (force the named catalog
-tool via `Fetch.Tool`). Precedence: per-attachment Protocol
+provider-side understanding — the LLM driver uploads the attachment
+to the provider's file surface and the model sees it via an opaque
+`file_id` (Phase 84c / D-190); a provider without support for the
+modality degrades to `ref` with a logged notice), or `tool:<name>`
+(force the named catalog tool via `Fetch.Tool`). Precedence:
+per-attachment Protocol
 `disposition` hint > this map > the runtime default (`image/*` →
 `inline`, everything else → `ref` — byte-for-byte the pre-84b
 behaviour). Default: empty (runtime default applies). Validation:

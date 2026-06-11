@@ -117,9 +117,11 @@ func TestResolveInputArtifacts_PolicyLayerAndInlineByteFetch(t *testing.T) {
 }
 
 // TestResolveInputArtifacts_DegradationsLoggedAndEmitted — an unknown
-// `tool:<name>` hint and a pre-84c provider_native policy both degrade
-// to ref with a Warn log AND a degradation-carrying event (CLAUDE.md
-// §13 — never a silent drop).
+// `tool:<name>` hint degrades to ref with a Warn log AND a
+// degradation-carrying event (CLAUDE.md §13 — never a silent drop),
+// while a provider_native policy is honoured as-is now that the
+// Phase 84c driver mechanism ships (the event reports
+// disposition=provider_native, degraded=false).
 func TestResolveInputArtifacts_DegradationsLoggedAndEmitted(t *testing.T) {
 	store := newRunctxArtifactStore(t)
 	ctx := context.Background()
@@ -145,17 +147,18 @@ func TestResolveInputArtifacts_DegradationsLoggedAndEmitted(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("resolved %d views, want 2", len(got))
 	}
-	for i, view := range got {
-		if view.Disposition != planner.DispositionRef {
-			t.Fatalf("views[%d].Disposition = %q, want ref (degraded)", i, view.Disposition)
-		}
+	if got[0].Disposition != planner.DispositionRef {
+		t.Fatalf("views[0].Disposition = %q, want ref (degraded)", got[0].Disposition)
+	}
+	if got[1].Disposition != planner.DispositionProviderNative {
+		t.Fatalf("views[1].Disposition = %q, want provider_native (honoured)", got[1].Disposition)
 	}
 	logText := buf.String()
 	if !strings.Contains(logText, "attachment disposition degraded") {
 		t.Errorf("expected Warn for degradation; log: %s", logText)
 	}
-	if !strings.Contains(logText, "unknown_tool") || !strings.Contains(logText, "provider_native_unavailable") {
-		t.Errorf("expected both degradation reasons in the log; log: %s", logText)
+	if !strings.Contains(logText, "unknown_tool") {
+		t.Errorf("expected the unknown_tool degradation reason in the log; log: %s", logText)
 	}
 	if len(emitted) != 2 {
 		t.Fatalf("emitted %d events, want 2", len(emitted))
@@ -168,8 +171,8 @@ func TestResolveInputArtifacts_DegradationsLoggedAndEmitted(t *testing.T) {
 		t.Fatalf("pdf payload DegradedFrom = %q", p0.DegradedFrom)
 	}
 	p1 := emitted[1].Payload.(runctx.InputDispositionResolvedPayload)
-	if !p1.Degraded || p1.DegradationReason != string(planner.DegradationProviderNativeUnavailable) {
-		t.Fatalf("image payload = %+v, want provider_native_unavailable degradation", p1)
+	if p1.Degraded || p1.Disposition != string(planner.DispositionProviderNative) {
+		t.Fatalf("image payload = %+v, want honoured provider_native (no degradation)", p1)
 	}
 }
 

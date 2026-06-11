@@ -80,10 +80,12 @@ policy := planner.DispositionPolicy{
 // runtime_default) — log it so the resolution is auditable.
 resolved, layer := planner.ResolveDisposition("", policy, "application/pdf")
 
-// Normalise against runtime capability: provider_native degrades to
-// ref until 84c ships; an unknown tool:<name> degrades to ref when a
-// catalog view is supplied. The degradation comes back as a TYPED
-// fact — the resolver never logs; YOU log/emit it (fail-loud).
+// Normalise against runtime capability: an unknown tool:<name>
+// degrades to ref when a catalog view is supplied; non-image inline
+// degrades to ref. provider_native is honoured as-is (the LLM driver
+// performs the upload — see provider-native-attachments.md). Any
+// degradation comes back as a TYPED fact — the resolver never logs;
+// YOU log/emit it (fail-loud).
 effective, degradation := planner.EffectiveDisposition(resolved, "application/pdf", catalogView)
 if degradation != nil {
     logger.Warn("disposition degraded",
@@ -137,5 +139,5 @@ winning layer, and any degradation fact.
 |-------|---------|-------|
 | `ref` | `ArtifactStub` + `Fetch.Tool` hint; the planner processes bytes via a tool | The runtime default for non-image MIMEs |
 | `inline` | DataURL inline | `image/*` only at V1.1; the runtime default for images. Non-image `inline` degrades to `ref` with a returned fact |
-| `provider_native` | The provider's own document/vision understanding | Phase 84c mechanism; until it ships, resolves but degrades to `ref` with a logged notice — never a silent no-op |
+| `provider_native` | The provider's own vision/audio/video/document understanding via a driver-internal `file_id` upload | Opt-in, never the default; see [provider-native-attachments](provider-native-attachments.md). A provider without support for a modality degrades to the `ArtifactStub` reference with a logged notice — never a silent no-op |
 | `tool:<name>` | Force the named catalog tool via `Fetch.Tool` | An unknown name degrades to `ref` + warning (resilience over hard failure) |

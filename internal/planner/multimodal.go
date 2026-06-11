@@ -93,16 +93,85 @@ func materializeOne(a InputArtifactView, catalog ToolCatalogView) llm.ContentPar
 			return imagePartFromBytes(a)
 		}
 		return refPart(a, catalog)
+	case a.Disposition == DispositionProviderNative:
+		return providerNativePart(a, catalog)
 	default:
 		if tool, ok := a.Disposition.ToolName(); ok {
 			return stubPartForcedTool(a, tool)
 		}
 		// DispositionRef — plus the defensive landing for a
-		// provider_native (or non-grammar) value that bypassed
-		// [EffectiveDisposition]: the `ArtifactStub` universal
-		// degradation (RFC §6.5), never a silent drop.
+		// non-grammar value that bypassed [EffectiveDisposition]:
+		// the `ArtifactStub` universal degradation (RFC §6.5),
+		// never a silent drop.
 		return refPart(a, catalog)
 	}
+}
+
+// providerNativePart renders the `provider_native` disposition: a
+// typed part carrying the canonical `ArtifactStub` reference plus the
+// `ProviderNative` flag the LLM driver keys on. The driver uploads
+// the artifact's bytes to the provider's file surface inside
+// `Complete` and rewrites the part to the returned `file_id`; a
+// provider without upload support for the modality keeps the stub —
+// the universal degradation (RFC §6.5). The stub keeps its
+// `Fetch.Tool` hint so the degraded rendering stays actionable.
+//
+// Modality dispatch: `image/*` → ImagePart, `audio/*` → AudioPart,
+// everything else (PDF, video, documents) → FilePart with
+// `DocumentType` set for structured documents.
+func providerNativePart(a InputArtifactView, catalog ToolCatalogView) llm.ContentPart {
+	switch {
+	case strings.HasPrefix(a.MIME, "image/"):
+		return llm.ContentPart{
+			Type: llm.PartImage,
+			Image: &llm.ImagePart{
+				Artifact:       artifactStubFor(a, catalog),
+				MIME:           a.MIME,
+				ProviderNative: true,
+			},
+		}
+	case strings.HasPrefix(a.MIME, "audio/"):
+		return llm.ContentPart{
+			Type: llm.PartAudio,
+			Audio: &llm.AudioPart{
+				Artifact:       artifactStubFor(a, catalog),
+				MIME:           a.MIME,
+				ProviderNative: true,
+			},
+		}
+	default:
+		return llm.ContentPart{
+			Type: llm.PartFile,
+			File: &llm.FilePart{
+				Artifact:       artifactStubFor(a, catalog),
+				MIME:           a.MIME,
+				Filename:       a.Filename,
+				ProviderNative: true,
+				DocumentType:   documentTypeFor(a.MIME),
+			},
+		}
+	}
+}
+
+// documentTypeFor derives the short `DocumentType` token for
+// structured documents — the MIME subtype for `application/*` and
+// `text/*` content (`application/pdf` → "pdf", `text/csv` → "csv").
+// Empty for everything else (video and other non-document MIMEs the
+// FilePart carries without a document hint).
+func documentTypeFor(mime string) string {
+	family, sub, found := strings.Cut(mime, "/")
+	if !found || sub == "" {
+		return ""
+	}
+	if family != "application" && family != "text" {
+		return ""
+	}
+	// Trim media-type parameters (`text/csv; charset=utf-8` → "csv");
+	// the subtype token is otherwise passed through verbatim.
+	if i := strings.IndexByte(sub, ';'); i >= 0 {
+		sub = strings.TrimSpace(sub[:i])
+	}
+	return sub
 }
 
 // materializeDefault is the pre-84b per-MIME dispatch, kept verbatim

@@ -23,8 +23,9 @@ import (
 // the precedence layer that won (caller_hint / agent_policy /
 // runtime_default), and — when the resolved disposition could not be
 // honoured — the typed degradation fact (e.g. an unknown
-// `tool:<name>`, or `provider_native` before the 84c mechanism
-// shipped).
+// `tool:<name>`, or `inline` for a non-image MIME). A resolved
+// `provider_native` is honoured as-is; the provider upload itself is
+// observable via the `llm.provider_file.uploaded` event.
 const EventTypeInputDispositionResolved events.EventType = "task.input_disposition.resolved"
 
 func init() {
@@ -61,8 +62,8 @@ type InputDispositionResolvedPayload struct {
 	// Degraded is true ("" otherwise).
 	DegradedFrom string `json:"degraded_from,omitempty"`
 	// DegradationReason is the typed cause when Degraded is true
-	// (`unknown_tool` / `provider_native_unavailable` /
-	// `inline_unsupported_mime` / `invalid_disposition`).
+	// (`unknown_tool` / `inline_unsupported_mime` /
+	// `invalid_disposition`).
 	DegradationReason string `json:"degradation_reason,omitempty"`
 	// Tool is the unknown tool name when DegradationReason is
 	// `unknown_tool`.

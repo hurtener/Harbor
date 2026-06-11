@@ -3,6 +3,7 @@ package bifrost
 import (
 	bfschemas "github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/events"
 )
 
@@ -16,5 +17,14 @@ func newDriverWithClient(client bifrostClient, provider bfschemas.ModelProvider,
 		client:   client,
 		provider: provider,
 		bus:      bus,
+		files:    newProviderFileCache(defaultFileCacheCapacity, defaultFileCacheTTL),
 	}
+}
+
+// newDriverWithClientAndStore mirrors newDriverWithClient with an
+// artifact store wired, for the provider-native upload-pass tests.
+func newDriverWithClientAndStore(client bifrostClient, provider bfschemas.ModelProvider, bus events.EventBus, store artifacts.ArtifactStore) *Driver {
+	d := newDriverWithClient(client, provider, bus)
+	d.artifacts = store
+	return d
 }
