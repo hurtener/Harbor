@@ -150,6 +150,41 @@ Recorded in D-189.
 - [ ] Smoke `scripts/smoke/phase-84b.sh` asserts a per-attachment disposition hint
       round-trips through `start` and is reflected on `tasks.get`.
 
+## Implementation deviations (§4.3 — recorded at ship time)
+
+- **The Protocol hint carrier is a map, not a per-object field.** The
+  wire has no input-artifact OBJECT on `StartRequest` (only
+  `input_artifact_ids []string`), so the per-attachment hint ships as
+  the additive optional `input_artifact_dispositions map[id]value`
+  (snake_case) rather than a `disposition` field on a (nonexistent)
+  input-artifact shape. `tasks.get` gained the new `TaskInputArtifact`
+  wire shape (`input_artifacts: [{id, disposition}]`) to reflect the
+  hint back. Semantically identical to the plan's criterion.
+- **The thin caller is `runctx.ResolveInputArtifacts`, not a
+  cmd-local helper.** Phase 110b (D-195) promoted the input-artifact
+  resolution out of `cmd_dev_runloop.go` into
+  `internal/runtime/runctx` after this plan was written; the
+  disposition threading landed there (one shared caller — cmd,
+  devstack, and headless consumers all get it), which is strictly
+  better than the plan's cmd+devstack pair.
+- **The composer selector defaults to “Auto” (no hint sent), not a
+  literal `ref` hint.** Sending an explicit `ref` per upload would
+  permanently outrank the agent's `multimodal.disposition` policy map
+  (hint > policy); Auto preserves the plan's intent that the DEFAULT
+  behaviour is `ref`/inline-image while keeping the agent policy
+  reachable from the Playground.
+- **`tasks.get` reflects the persisted caller HINT**; the RESOLVED
+  disposition (which needs the agent policy + catalog at run time) is
+  observable on the new `task.input_disposition.resolved` event —
+  with the winning layer and any typed degradation fact. When a hint
+  is present (the smoke's case) the two coincide.
+- **§17.6 bundled fix (found by this phase's E2E trace):** the LLM-edge
+  auto-materialize pass (`internal/llm/materialize.go`) stamped
+  `Fetch.Tool: "artifact.fetch"` — a tool registered NOWHERE (the real
+  Phase 107c meta-tool is `artifact_fetch`), so every over-threshold
+  attachment's stub pointed the model at a nonexistent tool. Fixed +
+  lockstep-pinned by `TestMaterialize_FetchHint_NamesRegisteredBuiltin`.
+
 ## Files added or changed
 
 - `internal/planner/multimodal.go` — `materializeOne` consults the resolved

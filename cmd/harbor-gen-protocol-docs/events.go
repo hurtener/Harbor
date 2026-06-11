@@ -19,6 +19,7 @@ import (
 	"github.com/hurtener/Harbor/internal/runtime/notifications"
 	"github.com/hurtener/Harbor/internal/runtime/pauseresume"
 	"github.com/hurtener/Harbor/internal/runtime/registry"
+	"github.com/hurtener/Harbor/internal/runtime/runctx"
 	"github.com/hurtener/Harbor/internal/runtime/steering"
 	"github.com/hurtener/Harbor/internal/sessions"
 	"github.com/hurtener/Harbor/internal/skills"
@@ -186,6 +187,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	tasks.EventTypeTaskPatchApplied:           {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskPatchAppliedPayload{})}},
 	tasks.EventTypeTaskPatchRejected:          {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskPatchRejectedPayload{})}},
 	tasks.EventTypeTaskBackgroundAcknowledged: {Payloads: []reflect.Type{reflect.TypeOf(tasks.TaskBackgroundAcknowledgedPayload{})}},
+	runctx.EventTypeInputDispositionResolved:  {Payloads: []reflect.Type{reflect.TypeOf(runctx.InputDispositionResolvedPayload{})}},
 
 	// --- Tools execution + approval + OAuth + MCP southbound.
 	tools.EventTypeToolInvoked:              {Payloads: []reflect.Type{reflect.TypeOf(tools.ToolInvokedPayload{})}},

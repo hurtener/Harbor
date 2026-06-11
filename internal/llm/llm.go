@@ -470,7 +470,7 @@ type Usage struct {
 //
 //	{"artifact_ref":"ref-abc-def","mime":"image/png","size_bytes":65536,
 //	 "hash":"sha256:...","summary":"User-uploaded screenshot at turn 3",
-//	 "fetch":{"tool":"artifact.fetch","id":"ref-abc-def"}}
+//	 "fetch":{"tool":"artifact_fetch","id":"ref-abc-def"}}
 type ArtifactStub struct {
 	Ref       string     `json:"artifact_ref"`
 	MIME      string     `json:"mime"`

@@ -818,3 +818,21 @@ same goal. Default: empty.
 
 Per-driver opaque extras map. Reserved for future drivers'
 per-flow knobs. Default: empty. V1.1 `react` driver ignores it.
+
+## Multimodal
+
+### multimodal.disposition
+
+Per-agent attachment disposition policy (Phase 84b / D-189): a map
+from a MIME key — an exact media type (`application/pdf`), a family
+wildcard (`image/*`), or the literal `*` (the agent-wide default) —
+to a disposition value: `ref` (emit an `ArtifactStub` + `Fetch.Tool`
+hint; the developer processes the bytes via a tool), `inline`
+(DataURL inline; `image/*` only at V1.1), `provider_native` (opt-in
+provider-side understanding; degrades to `ref` with a logged notice
+until Phase 84c ships), or `tool:<name>` (force the named catalog
+tool via `Fetch.Tool`). Precedence: per-attachment Protocol
+`disposition` hint > this map > the runtime default (`image/*` →
+`inline`, everything else → `ref` — byte-for-byte the pre-84b
+behaviour). Default: empty (runtime default applies). Validation:
+keys/values must satisfy the grammar above. Restart-required.

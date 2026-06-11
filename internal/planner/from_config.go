@@ -20,7 +20,11 @@
 
 package planner
 
-import "github.com/hurtener/Harbor/internal/config"
+import (
+	"fmt"
+
+	"github.com/hurtener/Harbor/internal/config"
+)
 
 // ConfigFromOperator maps the operator-facing `config.PlannerConfig`
 // onto the registry-facing `planner.PlannerConfig` boundary (D-103).
@@ -85,4 +89,39 @@ func HintsFromConfig(cfg config.PlannerPlanningHintsCfg) *PlanningHints {
 		Constraints:    cfg.Constraints,
 		PreferredTools: append([]string(nil), cfg.PreferredTools...),
 	}
+}
+
+// DispositionPolicyFromConfig decodes the YAML `multimodal.disposition`
+// block into the planner-homed [DispositionPolicy] (Phase 84b —
+// D-189). The config block is a thin carrier: the literal `*` key
+// decodes onto Default; every other key (exact media type or `type/*`
+// family wildcard) decodes onto ByMIME. Programmatic
+// [DispositionPolicy] construction produces the same value with no
+// config file — that is the seam this projection adapts onto.
+//
+// Values are re-validated via [ParseDisposition] defense-in-depth
+// behind `config.Validate` (the loader's validateMultimodal mirrors
+// the grammar locally per D-193); a non-grammar value fails loud with
+// [ErrInvalidDisposition] rather than decoding a policy that silently
+// drops entries (CLAUDE.md §13).
+func DispositionPolicyFromConfig(cfg config.MultimodalConfig) (DispositionPolicy, error) {
+	if len(cfg.Disposition) == 0 {
+		return DispositionPolicy{}, nil
+	}
+	policy := DispositionPolicy{}
+	for key, value := range cfg.Disposition {
+		d, err := ParseDisposition(value)
+		if err != nil {
+			return DispositionPolicy{}, fmt.Errorf("multimodal.disposition[%q]: %w", key, err)
+		}
+		if key == "*" {
+			policy.Default = d
+			continue
+		}
+		if policy.ByMIME == nil {
+			policy.ByMIME = make(map[string]AttachmentDisposition, len(cfg.Disposition))
+		}
+		policy.ByMIME[key] = d
+	}
+	return policy, nil
 }

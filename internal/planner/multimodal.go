@@ -74,20 +74,87 @@ func MaterializeInputContent(goal string, artifacts []InputArtifactView, catalog
 }
 
 // materializeOne dispatches a single InputArtifactView to its
-// MIME-specific ContentPart. The dispatch is intentionally narrow —
-// the four MIME families that today's vision-capable providers
-// actually handle in-context (image, PDF, audio) get typed parts; the
-// rest fall through to the catch-all ArtifactStub text block.
+// ContentPart. Since Phase 84b (D-189) the materializer is a policy
+// CONSUMER, not the policy author: a non-zero `a.Disposition` (the
+// resolved attachment disposition — caller hint > agent policy >
+// runtime default) selects the branch; the historical per-MIME switch
+// survives verbatim as the zero-disposition fallback (see
+// [materializeDefault]) so consumers that never set the field are
+// byte-for-byte unchanged.
 func materializeOne(a InputArtifactView, catalog ToolCatalogView) llm.ContentPart {
+	switch {
+	case a.Disposition.IsZero():
+		return materializeDefault(a, catalog)
+	case a.Disposition == DispositionInline:
+		// The sub-threshold image fast path. Missing bytes fall back
+		// to the by-reference rendering — the same degradation the
+		// pre-84b dispatch applied to a bytes-less image.
+		if strings.HasPrefix(a.MIME, "image/") && len(a.Bytes) > 0 {
+			return imagePartFromBytes(a)
+		}
+		return refPart(a, catalog)
+	default:
+		if tool, ok := a.Disposition.ToolName(); ok {
+			return stubPartForcedTool(a, tool)
+		}
+		// DispositionRef — plus the defensive landing for a
+		// provider_native (or non-grammar) value that bypassed
+		// [EffectiveDisposition]: the `ArtifactStub` universal
+		// degradation (RFC §6.5), never a silent drop.
+		return refPart(a, catalog)
+	}
+}
+
+// materializeDefault is the pre-84b per-MIME dispatch, kept verbatim
+// as the zero-disposition default map (the default-parity golden test
+// pins it byte-for-byte). The four MIME families that today's
+// vision-capable providers actually handle in-context (image, PDF,
+// audio) get typed parts; the rest fall through to the catch-all
+// ArtifactStub text block.
+func materializeDefault(a InputArtifactView, catalog ToolCatalogView) llm.ContentPart {
 	switch {
 	case strings.HasPrefix(a.MIME, "image/") && len(a.Bytes) > 0:
 		return imagePartFromBytes(a)
+	default:
+		return refPart(a, catalog)
+	}
+}
+
+// refPart renders the by-reference (`ref`) disposition: the typed
+// `FilePart` / `AudioPart` stub carriers for the MIME families the
+// bifrost driver translates natively for capable providers, and the
+// catch-all `ArtifactStub` text block for everything else (including
+// images explicitly declared `ref`, and images whose inline bytes
+// went missing).
+func refPart(a InputArtifactView, catalog ToolCatalogView) llm.ContentPart {
+	switch {
 	case a.MIME == "application/pdf":
 		return filePartFromRef(a, catalog)
 	case strings.HasPrefix(a.MIME, "audio/"):
 		return audioPartFromRef(a, catalog)
 	default:
 		return stubPartFromRef(a, catalog)
+	}
+}
+
+// stubPartForcedTool renders the `tool:<name>` disposition: the
+// catch-all `ArtifactStub` text block with `Fetch.Tool` FORCED to the
+// declared tool, overriding the catalog's `HandlesMIME` discovery.
+// Unknown names were already degraded to `ref` by
+// [EffectiveDisposition] when the caller supplied a catalog view; a
+// name that reaches this branch is emitted verbatim (the stub's fetch
+// pointer is an explicit instruction to the LLM).
+func stubPartForcedTool(a InputArtifactView, tool string) llm.ContentPart {
+	stub := &llm.ArtifactStub{
+		Ref:       a.ID,
+		MIME:      a.MIME,
+		SizeBytes: a.SizeBytes,
+		Summary:   stubSummary(a),
+		Fetch:     &llm.StubFetch{Tool: tool, ID: a.ID},
+	}
+	return llm.ContentPart{
+		Type: llm.PartText,
+		Text: stubAsText(stub, a.Filename),
 	}
 }
 

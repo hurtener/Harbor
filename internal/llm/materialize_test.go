@@ -162,7 +162,7 @@ func TestArtifactStub_RoundTrip(t *testing.T) {
 		SizeBytes: 4096,
 		Hash:      "sha256:deadbeef",
 		Summary:   "screenshot",
-		Fetch:     &llm.StubFetch{Tool: "artifact.fetch", ID: "ref-abc"},
+		Fetch:     &llm.StubFetch{Tool: "artifact_fetch", ID: "ref-abc"},
 	}
 	b, err := stub.MarshalJSON()
 	if err != nil {
@@ -176,7 +176,7 @@ func TestArtifactStub_RoundTrip(t *testing.T) {
 		`"size_bytes":4096`,
 		`"hash":"sha256:deadbeef"`,
 		`"summary":"screenshot"`,
-		`"fetch":{"tool":"artifact.fetch","id":"ref-abc"}`,
+		`"fetch":{"tool":"artifact_fetch","id":"ref-abc"}`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("ArtifactStub JSON %q missing %q", s, want)

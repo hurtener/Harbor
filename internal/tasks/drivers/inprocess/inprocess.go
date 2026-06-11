@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -184,6 +185,15 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 	if len(req.InputArtifactIDs) > 0 {
 		inputArtifactIDs = append([]string(nil), req.InputArtifactIDs...)
 	}
+	// Phase 84b (D-189) — defensive copy of the per-attachment
+	// disposition hint map, same caller-mutation rationale.
+	var inputArtifactDispositions map[string]string
+	if len(req.InputArtifactDispositions) > 0 {
+		inputArtifactDispositions = make(map[string]string, len(req.InputArtifactDispositions))
+		for k, v := range req.InputArtifactDispositions {
+			inputArtifactDispositions[k] = v
+		}
+	}
 	t := &tasks.Task{
 		ID:                id,
 		Identity:          req.Identity,
@@ -199,6 +209,8 @@ func (d *driver) Spawn(ctx context.Context, req tasks.SpawnRequest) (tasks.TaskH
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		InputArtifactIDs:  inputArtifactIDs,
+		// Phase 84b (D-189) — per-attachment disposition hints.
+		InputArtifactDispositions: inputArtifactDispositions,
 	}
 	if err := d.persistLocked(ctx, t); err != nil {
 		return tasks.TaskHandle{}, err
@@ -876,6 +888,24 @@ func spawnRequestsEqual(existing *tasks.Task, existingHash [32]byte, req tasks.S
 	if !stringSliceEqual(existing.InputArtifactIDs, req.InputArtifactIDs) {
 		return false
 	}
+	// Phase 84b (D-189) — disposition hints are part of the task's
+	// content identity too. Same key, same attachments, different
+	// dispositions → conflict.
+	if !stringMapEqual(existing.InputArtifactDispositions, req.InputArtifactDispositions) {
+		return false
+	}
+	return true
+}
+
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
 	return true
 }
 
@@ -911,6 +941,22 @@ func spawnRequestContentHash(req tasks.SpawnRequest) [32]byte {
 	for _, id := range req.InputArtifactIDs {
 		h.Write([]byte{0x1F})
 		h.Write([]byte(id))
+	}
+	// Phase 84b (D-189) — fold the disposition hints in deterministic
+	// (sorted-key) order so "same attachments, different dispositions"
+	// also surfaces as ErrIdempotencyConflict.
+	if len(req.InputArtifactDispositions) > 0 {
+		keys := make([]string, 0, len(req.InputArtifactDispositions))
+		for k := range req.InputArtifactDispositions {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			h.Write([]byte{0x1F})
+			h.Write([]byte(k))
+			h.Write([]byte{0x1E})
+			h.Write([]byte(req.InputArtifactDispositions[k]))
+		}
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))

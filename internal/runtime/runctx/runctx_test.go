@@ -258,7 +258,7 @@ func runctxScope() artifacts.ArtifactScope {
 }
 
 func TestResolveInputArtifacts_EmptyIDsReturnsNil(t *testing.T) {
-	got := runctx.ResolveInputArtifacts(context.Background(), nil, runctxTestQ, nil, slog.Default())
+	got := runctx.ResolveInputArtifacts(context.Background(), nil, runctxTestQ, nil, slog.Default(), runctx.InputArtifactOptions{})
 	if got != nil {
 		t.Errorf("empty ids: got %v, want nil", got)
 	}
@@ -271,7 +271,7 @@ func TestResolveInputArtifacts_EmptyIDsReturnsNil(t *testing.T) {
 func TestResolveInputArtifacts_NilStoreWarnsAndReturnsNil(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	got := runctx.ResolveInputArtifacts(context.Background(), nil, runctxTestQ, []string{"art-1"}, logger)
+	got := runctx.ResolveInputArtifacts(context.Background(), nil, runctxTestQ, []string{"art-1"}, logger, runctx.InputArtifactOptions{})
 	if got != nil {
 		t.Errorf("nil store: got %v, want nil", got)
 	}
@@ -306,7 +306,7 @@ func TestResolveInputArtifacts_TextRefOnly_ImageBytesInlined(t *testing.T) {
 	}
 
 	got := runctx.ResolveInputArtifacts(ctx, store, runctxTestQ,
-		[]string{textRef.ID, imgRef.ID}, slog.Default())
+		[]string{textRef.ID, imgRef.ID}, slog.Default(), runctx.InputArtifactOptions{})
 	if len(got) != 2 {
 		t.Fatalf("resolved %d views, want 2: %#v", len(got), got)
 	}
@@ -338,7 +338,7 @@ func TestResolveInputArtifacts_MissingArtifactSkippedWithWarn(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	got := runctx.ResolveInputArtifacts(ctx, store, runctxTestQ,
-		[]string{"no-such-artifact", ref.ID}, logger)
+		[]string{"no-such-artifact", ref.ID}, logger, runctx.InputArtifactOptions{})
 	if len(got) != 1 || got[0].ID != ref.ID {
 		t.Fatalf("resolved %#v, want only %q", got, ref.ID)
 	}
@@ -384,7 +384,7 @@ func TestResolveInputArtifacts_StoreErrorSkippedWithWarn(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	failing := &erroringStore{ArtifactStore: store, failRefID: "exploding-id"}
 	got := runctx.ResolveInputArtifacts(ctx, failing, runctxTestQ,
-		[]string{"exploding-id", ref.ID}, logger)
+		[]string{"exploding-id", ref.ID}, logger, runctx.InputArtifactOptions{})
 	if len(got) != 1 || got[0].ID != ref.ID {
 		t.Fatalf("resolved %#v, want only %q", got, ref.ID)
 	}
@@ -409,14 +409,14 @@ func TestResolveInputArtifacts_ImageBytesFetchError_RefOnlyFallback(t *testing.T
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	failing := &erroringStore{ArtifactStore: store, failGet: true}
 	got := runctx.ResolveInputArtifacts(ctx, failing, runctxTestQ,
-		[]string{imgRef.ID}, logger)
+		[]string{imgRef.ID}, logger, runctx.InputArtifactOptions{})
 	if len(got) != 1 {
 		t.Fatalf("resolved %d views, want 1 (ref-only fallback keeps the entry)", len(got))
 	}
 	if got[0].Bytes != nil {
 		t.Errorf("Bytes = %v, want nil on bytes-fetch failure", got[0].Bytes)
 	}
-	if !strings.Contains(buf.String(), "image artifact bytes missing") {
+	if !strings.Contains(buf.String(), "inline artifact bytes missing") {
 		t.Errorf("expected Warn for the bytes fallback; log: %s", buf.String())
 	}
 }
@@ -432,7 +432,7 @@ func TestResolveInputArtifacts_IdentityScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutText: %v", err)
 	}
-	got := runctx.ResolveInputArtifacts(ctx, store, runctxTestQ, []string{ref.ID}, slog.Default())
+	got := runctx.ResolveInputArtifacts(ctx, store, runctxTestQ, []string{ref.ID}, slog.Default(), runctx.InputArtifactOptions{})
 	if len(got) != 0 {
 		t.Fatalf("cross-tenant artifact resolved: %#v — isolation breach", got)
 	}
