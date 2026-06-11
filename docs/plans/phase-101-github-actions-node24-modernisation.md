@@ -35,17 +35,19 @@ None.
 
 ## Acceptance criteria
 
-- [ ] Every step in every `.github/workflows/*.yml` file uses a Node-24-capable action version (`actions/checkout@v6`, `actions/setup-go@v6`, `actions/setup-node@v4` or later, `actions/upload-artifact@v4` if Node-24-pinned by maintainer or successor, `actions/download-artifact@v4` ditto, `actions/attest-build-provenance@v4` ditto, etc.).
-- [ ] `grep -rE 'actions/(checkout|setup-go)@v[45]' .github/workflows/` returns zero matches (the two actions whose Node-24 successors exist today are pinned forward).
-- [ ] CI workflow (`ci.yml`) green on the bump PR.
-- [ ] Release workflow (`release.yml`) green when the next `v*` tag push exercises it; SLSA attestations still emit; `checksums.txt` still verifies.
-- [ ] No new deprecation annotations on the bump PR run.
+- [x] Every step in every `.github/workflows/*.yml` file uses a Node-24-capable action version (`actions/checkout@v6`, `actions/setup-go@v6`, `actions/setup-node@v4` or later, `actions/upload-artifact@v4` if Node-24-pinned by maintainer or successor, `actions/download-artifact@v4` ditto, `actions/attest-build-provenance@v4` ditto, etc.). Verified per-action at implementation time: `checkout@v6` / `setup-go@v6` / `setup-node@v6` / `cache@v5` / `upload-artifact@v7` / `download-artifact@v8` / `deploy-pages@v5` / `markdownlint-cli2-action@v23` declare `using: node24`; the two composites (`attest-build-provenance@v4` → `actions/attest@v4.1.0`, `upload-pages-artifact@v5` → `upload-artifact@v7`) wrap node24 actions.
+- [x] `grep -rE 'actions/(checkout|setup-go)@v[45]' .github/workflows/` returns zero matches (the two actions whose Node-24 successors exist today are pinned forward).
+- [x] CI workflow (`ci.yml`) green on the bump PR (PR #315 — all 16 checks pass).
+- [ ] Release workflow (`release.yml`) green when the next `v*` tag push exercises it; SLSA attestations still emit; `checksums.txt` still verifies. (Open until the next `v*` tag; the workflow's bumped actions are the same set CI validated.)
+- [x] No new deprecation annotations on the bump PR run (verified via the Checks API: zero annotations across both workflow runs).
 
 ## Files added or changed
 
-- `.github/workflows/ci.yml` — bump actions versions.
-- `.github/workflows/release.yml` — bump actions versions.
-- `.github/workflows/*` — bump every remaining workflow (codeowners, dependabot config left as-is — they're not action invocations).
+- `.github/workflows/ci.yml` — bump actions versions (`checkout@v6`, `setup-go@v6`, `markdownlint-cli2-action@v23`).
+- `.github/workflows/release.yml` — bump actions versions (`checkout@v6`, `setup-go@v6`).
+- `.github/workflows/docs.yml` — bump actions versions (`checkout@v6`, `setup-go@v6`, `deploy-pages@v5`).
+- `Makefile` — `MARKDOWNLINT_CLI2_VERSION` pin moves `0.12.1 → 0.22.1` in lockstep with the action bump (the local `make markdownlint` gate and CI's action must always lint with the same cli2 version; repo verified clean under 0.22.1 / markdownlint v0.40.0 before the bump).
+- `scripts/drift-audit.sh` — comment naming the action↔pin lockstep updated to v23 / 0.22.1.
 - `scripts/smoke/phase-101.sh` — static-only smoke asserting no deprecated action versions remain.
 
 ## Public API surface

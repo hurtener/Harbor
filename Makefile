@@ -10,7 +10,7 @@ help:
 	@echo "  lint-revive     golangci-lint run --enable-only revive (Phase 80 doc-hygiene gate)"
 	@echo "  preflight       Build + boot + run smoke checks + drift-audit + tear down"
 	@echo "  drift-audit     Verify design coherence (RFC, plans, briefs, mirror)"
-	@echo "  markdownlint    Lint Markdown with the pinned cli2 version CI uses (@v15 → 0.12.1)"
+	@echo "  markdownlint    Lint Markdown with the pinned cli2 version CI uses (@v23 → 0.22.1)"
 	@echo "  wave13-coverage-check  Assert every Console page has a Playwright spec"
 	@echo "  release-build   Build the version-stamped static release artifact into dist/"
 	@echo "  release-dryrun  Exercise the release build end-to-end without a tag (Phase 81)"
@@ -142,8 +142,8 @@ protocol-docs-gen-check: protocol-docs-gen
 	@echo "protocol-docs-gen-check: docs/site/protocol is in sync"
 
 # markdownlint runs the SAME markdownlint-cli2 version CI pins
-# (DavidAnson/markdownlint-cli2-action@v15 bundles markdownlint-cli2
-# 0.12.1) with the SAME globs, so local and CI can never drift on a
+# (DavidAnson/markdownlint-cli2-action@v23 bundles markdownlint-cli2
+# 0.22.1) with the SAME globs, so local and CI can never drift on a
 # rule like MD029 (a v0.33-vs-v0.40 ordered-list gap bit the v1.2.0
 # PR). The version literal below is the pin; bump it in lockstep with
 # the action tag in .github/workflows/ci.yml. Requires npx (node); a
@@ -158,7 +158,7 @@ protocol-docs-gen-check: protocol-docs-gen
 # identical to CI's checkout (245 tracked .md) while still catching a NEW
 # uncommitted plan file (untracked-but-not-ignored) — the exact v1.2.0
 # MD029 failure mode this target exists to prevent.
-MARKDOWNLINT_CLI2_VERSION ?= 0.12.1
+MARKDOWNLINT_CLI2_VERSION ?= 0.22.1
 markdownlint:
 	@if command -v npx >/dev/null 2>&1; then \
 		git ls-files -z --cached --others --exclude-standard -- '*.md' \
