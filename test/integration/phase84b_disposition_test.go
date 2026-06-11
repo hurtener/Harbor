@@ -185,7 +185,9 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 		t.Fatalf("Bus.Subscribe: %v", err)
 	}
 
-	wireCall := func(path string, body string) (*http.Response, string) {
+	// Returns (status, body) rather than *http.Response so the body is
+	// provably closed inside the helper (bodyclose).
+	wireCall := func(path string, body string) (int, string) {
 		req, rErr := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+path, bytes.NewBufferString(body))
 		if rErr != nil {
 			t.Fatalf("NewRequest(%s): %v", path, rErr)
@@ -198,7 +200,7 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 		}
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(resp.Body)
-		return resp, string(raw)
+		return resp.StatusCode, string(raw)
 	}
 
 	// 1. Wire start with the three hints/policy combinations.
@@ -208,9 +210,9 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 		"input_artifact_ids": [%q, %q, %q],
 		"input_artifact_dispositions": {%q: "tool:pdf.extract", %q: "tool:no.such.tool"}
 	}`, devID.TenantID, devID.UserID, devID.SessionID, pdfA, pdfB, img, pdfA, pdfB)
-	resp, raw := wireCall("/v1/control/start", startBody)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("start status = %d, body: %s", resp.StatusCode, raw)
+	status, raw := wireCall("/v1/control/start", startBody)
+	if status != http.StatusOK {
+		t.Fatalf("start status = %d, body: %s", status, raw)
 	}
 	var startResp struct {
 		TaskID string `json:"task_id"`
@@ -291,9 +293,9 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 	// 4. tasks.get reflects the hints on the wire.
 	getBody := fmt.Sprintf(`{"identity": {"tenant": %q, "user": %q, "session": %q}, "id": %q}`,
 		devID.TenantID, devID.UserID, devID.SessionID, taskID)
-	resp, raw = wireCall("/v1/tasks/get", getBody)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("tasks.get status = %d, body: %s", resp.StatusCode, raw)
+	status, raw = wireCall("/v1/tasks/get", getBody)
+	if status != http.StatusOK {
+		t.Fatalf("tasks.get status = %d, body: %s", status, raw)
 	}
 	var detail struct {
 		InputArtifacts []struct {
@@ -321,9 +323,9 @@ func TestE2E_Phase84b_DispositionHint_RoundTrip_ForcedTool_Degradations(t *testi
 		"input_artifact_ids": [%q],
 		"input_artifact_dispositions": {%q: "bogus"}
 	}`, devID.TenantID, devID.UserID, devID.SessionID, pdfA, pdfA)
-	resp, raw = wireCall("/v1/control/start", badBody)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bogus disposition start status = %d (want 400), body: %s", resp.StatusCode, raw)
+	status, raw = wireCall("/v1/control/start", badBody)
+	if status != http.StatusBadRequest {
+		t.Fatalf("bogus disposition start status = %d (want 400), body: %s", status, raw)
 	}
 	if !strings.Contains(raw, "invalid_request") {
 		t.Fatalf("bogus disposition error body missing invalid_request: %s", raw)

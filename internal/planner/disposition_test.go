@@ -411,7 +411,7 @@ func TestResolveDisposition_ConcurrentReuse(t *testing.T) {
 	}
 	catalog := parityCatalog()
 	done := make(chan error, 128)
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		go func(n int) {
 			mime := "application/pdf"
 			if n%2 == 0 {
@@ -434,7 +434,7 @@ func TestResolveDisposition_ConcurrentReuse(t *testing.T) {
 			done <- nil
 		}(i)
 	}
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}

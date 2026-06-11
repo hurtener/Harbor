@@ -97,8 +97,8 @@ func TestMaterialize_FetchHint_NamesRegisteredBuiltin(t *testing.T) {
 	// The lockstep: the hinted name resolves in a catalog carrying the
 	// REAL builtin registrations.
 	cat := tools.NewCatalog()
-	if err := builtin.Register(cat, []string{"artifact_fetch"}); err != nil {
-		t.Fatalf("builtin.Register: %v", err)
+	if err := builtin.RegisterWith(builtin.RegistryContext{Catalog: cat}, []string{"artifact_fetch"}); err != nil {
+		t.Fatalf("builtin.RegisterWith: %v", err)
 	}
 	if _, found := cat.Resolve(stubTool); !found {
 		t.Fatalf("materialized stub hints Fetch.Tool=%q, which the builtin set does not register (want artifact_fetch)", stubTool)
