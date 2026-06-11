@@ -19,18 +19,30 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ### Added
 
-- **The Protocol adoption track** — the published docs site gains a top-level
-  Protocol section for third-party client authors: a four-page **generated
-  contract reference** (methods / events / errors / types) emitted by
-  `cmd/harbor-gen-protocol-docs` from the canonical Protocol sources and
-  drift-gated in CI by `make protocol-docs-gen-check`; the **executed
-  quickstart** ("Speak Protocol in 15 minutes"), whose curl steps the
-  preflight smoke runs against a live dev server on every commit; and
-  choreography guides 1–3 (auth & identity, streaming semantics, task
-  control). The pause-model and versioning choreographies, the
-  build-a-client guide, and the conformance-certification path follow next.
+- **The Protocol adoption track** — the published docs site gains a complete
+  top-level Protocol section for third-party client authors: a four-page
+  **generated contract reference** (methods / events / errors / types)
+  emitted by `cmd/harbor-gen-protocol-docs` from the canonical Protocol
+  sources and drift-gated in CI by `make protocol-docs-gen-check`; the
+  **executed quickstart** ("Speak Protocol in 15 minutes"), whose curl steps
+  the preflight smoke runs against a live dev server on every commit; and
+  **five choreography guides** — auth & identity, streaming semantics, task
+  control, **the pause model** (the full intervention choreography:
+  approve/reject, the OAuth callback leg, plain resume, durable pauses
+  across restarts, timeout reaps — wire examples captured from a
+  production-driver assembly), and **versioning & compatibility** (what the
+  Protocol version promises, what a client should pin, and the
+  unknown-field / unknown-method tolerance rules).
+- **Build a client + conformance certification** — a worked **event-viewer
+  client** at `examples/protocol-clients/event-viewer/`: ~100 lines of
+  stdlib-only Go (no Harbor import) that authenticates, handshakes via
+  `runtime.info`, and tails the SSE event stream, compile-gated in preflight
+  so the published walkthrough cannot rot. The new
+  **conformance-certification page** documents how to run the in-repo
+  Protocol conformance suite against a runtime build under test and
+  precisely what a pass claims.
 
-(Next up: the rest of the Protocol adoption track, the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
+(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
 
 ## [1.3.0] — 2026-06-10
 

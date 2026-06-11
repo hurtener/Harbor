@@ -178,6 +178,21 @@ export default defineConfig({
             { text: "1 — Auth & identity", link: "/protocol/auth-and-identity" },
             { text: "2 — Streaming semantics", link: "/protocol/streaming-semantics" },
             { text: "3 — Task control", link: "/protocol/task-control" },
+            { text: "4 — The pause model", link: "/protocol/pause-model" },
+            {
+              text: "5 — Versioning & compatibility",
+              link: "/protocol/versioning-and-compatibility",
+            },
+          ],
+        },
+        {
+          text: "Adopt",
+          items: [
+            { text: "Build a client", link: "/protocol/build-a-client" },
+            {
+              text: "Conformance certification",
+              link: "/protocol/conformance-certification",
+            },
           ],
         },
       ],

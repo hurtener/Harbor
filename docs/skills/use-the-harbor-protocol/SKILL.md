@@ -14,9 +14,9 @@ The Harbor Protocol is the canonical event/state contract between Runtime and an
 
 Three properties make this practical:
 
-1. **A generated, drift-gated contract reference** — the published [Protocol adoption track](https://hurtener.github.io/Harbor/protocol/) carries four pages (methods / events / errors / types) emitted by `cmd/harbor-gen-protocol-docs` from the Go single sources and gated in CI by `make protocol-docs-gen-check`, plus an executed quickstart and choreography guides. For typed TS wire shapes, vendor the Console's hand-maintained `web/console/src/lib/protocol.ts` (the D-093 TS *generator* was deferred per D-132 — `protocol.ts` is hand-maintained today, kept honest by the Console's own CI).
-2. **Capability advertisement** — `runtime.info.capabilities` tells you at attach which methods this Runtime advertises. Your UI degrades gracefully on stripped-down runtimes.
-3. **Stable Protocol versioning** — breaking changes go through a deprecation window. Pin the version in your client; bump deliberately.
+1. **A generated, drift-gated contract reference** — the published [Protocol adoption track](https://hurtener.github.io/Harbor/protocol/) carries four pages (methods / events / errors / types) emitted by `cmd/harbor-gen-protocol-docs` from the Go single sources and gated in CI by `make protocol-docs-gen-check`, plus an executed quickstart, five choreography guides, a worked build-a-client walkthrough, and the conformance-certification path. For typed TS wire shapes, vendor the Console's hand-maintained `web/console/src/lib/protocol.ts` (the D-093 TS *generator* was deferred per D-132 — `protocol.ts` is hand-maintained today, kept honest by the Console's own CI).
+2. **Capability advertisement** — `runtime.info.capabilities` tells you at attach which Protocol surfaces this Runtime advertises (`task_control`, `events_subscribe`, `runtime_posture`, `topology_snapshot`). Your UI degrades gracefully on stripped-down runtimes.
+3. **Stable Protocol versioning** — breaking changes go through a deprecation window; same-major versions are compatible. Pin the major in your client; tolerate additive change. The full adopter contract is the published [versioning & compatibility choreography](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility).
 
 The Protocol is what makes Harbor headless. The Runtime never imports Console code; the Console never reads internal Runtime objects. Your UI sits in the same posture as the Console.
 
@@ -54,39 +54,33 @@ CORS is default-deny. For browser clients, your origin must be in the Runtime's 
 
 The first call your client makes:
 
-```http
-POST /v1/protocol
-{ "jsonrpc": "2.0", "method": "runtime.info", "id": 0 }
+```bash
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/runtime.info" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {}}'
 ```
 
-The response:
+A real response from a dev Runtime:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 0,
-  "result": {
-    "version": "1.1.0",
-    "protocol_version": "1.1",
-    "capabilities": {
-      "tasks.start": true,
-      "tasks.pause": true,
-      "tasks.resume": true,
-      "events.subscribe": true,
-      "topology.snapshot": true,
-      "artifacts.put": true,
-      "skills.list": true,
-      "...": "..."
-    },
-    "limits": {
-      "max_artifact_size_bytes": 104857600,
-      "max_concurrent_tasks_per_session": 8
-    }
-  }
+  "instance_id": "harbor-dev-192.168.1.7",
+  "display_name": "harbor dev",
+  "build_version": "v0.0.0-dev",
+  "build_commit": "dev",
+  "build_go_version": "go1.26.3",
+  "protocol_version": "0.1.0",
+  "capabilities": ["events_subscribe", "runtime_posture", "task_control"],
+  "uptime_seconds": 16
 }
 ```
 
-Read `capabilities` and shape your UI accordingly. Don't call a method whose capability is `false` — it's a 501 Not Implemented otherwise.
+Two things to read and act on:
+
+- `protocol_version` — the wire-contract version (distinct from `build_version`, the Runtime's own release). Same major ⇒ compatible; on a major mismatch, warn loudly or refuse.
+- `capabilities` — the advertised Protocol surfaces. Shape your UI on this list: a runtime that doesn't advertise `topology_snapshot` gets the topology panel disabled, not a crash. A method outside the Runtime's registry returns the canonical `404 {"code": "unknown_method"}` envelope — treat it (and 405 / 501) as "not served here, degrade", the same SKIP posture Harbor's own smoke scripts encode.
 
 ## 3. Starting a task — the chat-message equivalent
 
@@ -163,30 +157,32 @@ For a chat UI, you'd:
 
 ## 5. Pause + steer + resume
 
-The unified pause/resume primitive (RFC §6.10) is exposed as Protocol methods:
+The unified pause/resume primitive (RFC §3.3) is one wire choreography for every cause — HITL approval, tool-side OAuth, operator pause. The steering verbs share one route shape, `POST /v1/control/{method}`, with the run id and your steering scope in the body's `identity`:
 
-- `tasks.pause(task_id, reason)` — your UI requests a pause (e.g. user clicked "stop" or "steer").
-- `tasks.resume(task_id, payload)` — your UI provides the resume payload (e.g. new user input for steering, an approval decision, an OAuth token).
+```bash
+# park the run at the next planner-step boundary
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/pause" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"run": "'$TASK_ID'", "scope": "owner_user"}}'
 
-For steering during a run:
+# feed it context while parked, then wake it
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/inject_context" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"run": "'$TASK_ID'", "scope": "session_user"}, "payload": {"note": "Actually, make it Barcelona."}}'
 
-```json
-{ "jsonrpc": "2.0", "method": "tasks.pause", "params": {
-  "task_id": "tsk_01HXYZ",
-  "reason": "user_steer"
-}, "id": 2 }
+curl -sS -X POST "$HARBOR_BASE_URL/v1/control/resume" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Harbor-Session: $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"identity": {"run": "'$TASK_ID'", "scope": "owner_user"}}'
 ```
 
-Then:
+The `200 {"accepted": true, …}` means *enqueued*; the effect is narrated on the event stream — `pause.requested` when the run parks, `pause.resumed` (with a typed `Decision` of `approve` / `reject` / `resume` / `timeout`) when it wakes. The planner sees injected context on its next step.
 
-```json
-{ "jsonrpc": "2.0", "method": "tasks.resume", "params": {
-  "task_id": "tsk_01HXYZ",
-  "payload": { "new_input": "Actually, make it Barcelona." }
-}, "id": 3 }
-```
+For HITL: an approval-gated tool emits `tool.approval_requested` with a pause token; your UI routes the human verdict through `POST /v1/control/approve` or `/reject` with `"payload": {"token": "<pause-token>", "reason": "…"}`. `POST /v1/pause/list` is the snapshot of everything currently awaiting a human — reconcile against it on every (re)attach; it is authoritative across Runtime restarts. The full wire choreography (including the OAuth callback leg and `DecisionTimeout` reaps) is the published [pause-model choreography](https://hurtener.github.io/Harbor/protocol/pause-model).
 
-The planner picks up the new input on its next turn. The "steer vs queue" UI choice in [`drive-the-playground`](../drive-the-playground/SKILL.md) §3 maps directly to "POST `tasks.pause`" vs "wait for `task.completed` then POST a new `tasks.start`".
+The "steer vs queue" UI choice in [`drive-the-playground`](../drive-the-playground/SKILL.md) §3 maps directly to "POST `/v1/control/pause` + inject + resume" vs "wait for `task.completed` then POST a new `start`".
 
 ## 6. Artifact upload — multimodal input
 
@@ -280,14 +276,14 @@ That's a working CLI chatbot in 30 lines. Wrap the same in React/Svelte/Vue/what
 - **Every call returns 401.** Token expired (24h TTL) or rotated (`harbor dev` restarted). Re-fetch token, retry.
 - **CORS preflight fails.** Your origin isn't in `server.allowed_origins`. Add it to the yaml + restart Runtime.
 - **SSE stream opens but no events.** The `payload.TaskID` capital-T gotcha — your handler is reading `payload.task_id` (lowercase). Fix the case.
-- **`tasks.start` returns 501 / "method not implemented".** Capability check missed — the Runtime advertised this method as off. Call `runtime.info` first, branch on `capabilities`.
+- **A control call returns `404 {"code": "unknown_method"}` or 405/501.** This runtime doesn't serve that surface. Call `runtime.info` first, branch on `capabilities`, and degrade the feature instead of crashing (the [versioning & compatibility contract](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility)).
 - **Artifact upload returns 413 Payload Too Large.** Above `limits.max_artifact_size_bytes` from `runtime.info`. Chunk uploads aren't supported in V1.1 — bump the Runtime's `artifacts.max_size_bytes`.
-- **Topology snapshot returns 501.** Old Runtime version — `topology.snapshot` landed in V1.1. Upgrade the Runtime.
+- **Topology snapshot rejected.** This Runtime doesn't advertise the `topology_snapshot` capability — check `runtime.info.capabilities` before enabling the panel.
 - **The Console reads internal Runtime objects.** It doesn't — that would be a CLAUDE.md §13 violation. If you suspect leakage, file a bug; the Console reads only what's documented as a Protocol surface.
 
 ## See also
 
-- **The Protocol adoption track** — [the published quickstart + generated reference + choreographies](https://hurtener.github.io/Harbor/protocol/): the adopter-facing contract docs this skill's recipes sit on top of. Start there for any client you intend to maintain.
+- **The Protocol adoption track** — [the published quickstart + generated reference + choreographies](https://hurtener.github.io/Harbor/protocol/): the adopter-facing contract docs this skill's recipes sit on top of. Start there for any client you intend to maintain. The track is complete: five choreographies (including [the pause model](https://hurtener.github.io/Harbor/protocol/pause-model) and [versioning & compatibility](https://hurtener.github.io/Harbor/protocol/versioning-and-compatibility)), the worked [build-a-client guide](https://hurtener.github.io/Harbor/protocol/build-a-client) (its ~100-line SDK-free event viewer ships at `examples/protocol-clients/event-viewer/`), and the [conformance-certification path](https://hurtener.github.io/Harbor/protocol/conformance-certification).
 - [`run-the-dev-loop`](../run-the-dev-loop/SKILL.md) — boot the Runtime + grab the dev token first.
 - [`drive-the-playground`](../drive-the-playground/SKILL.md) — the Console's chat UI; same Protocol underneath.
 - [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — every Console page maps 1:1 to a Protocol method.
