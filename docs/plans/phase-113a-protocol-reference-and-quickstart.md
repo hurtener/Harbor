@@ -28,7 +28,12 @@ Opens the Protocol adoption track on the published docs site (`docs/notes/protoc
 
 ## Findings I'm departing from (if any)
 
-None. Two clarifications that are postures, not departures:
+None at planning time. Two §4.3 deviations recorded at ship (D-209 calls 3–4):
+
+- **`control.HTTPStatus` exported.** The generated `errors.md` HTTP column must read the binding the wire transport actually serves; the pre-113a `httpStatus` was unexported. Renamed-with-export (one call site updated, no behavior change, no Protocol-surface change) so the generator and the transport share one source.
+- **The executed quickstart's steering step accepts both documented outcomes.** Against the preflight mock-LLM dev server a demo run reaches a terminal state in milliseconds, so the page's post-run `cancel` deterministically returns the canonical `404 not_found` envelope (steering targets live inboxes). The page teaches exactly this (acknowledgement-vs-effect; controls target live runs) and the smoke asserts the full shape of whichever outcome occurs — `200 {"accepted": true}` on a still-live run (real-provider path) or `404 {"code": "not_found"}` (mock path). The deterministic not_found leg doubles as the §17.3 failure-mode requirement.
+
+Two clarifications that are postures, not departures:
 
 - **The D-093 TS generator is NOT a dependency.** `cmd/harbor-gen-protocol-ts` was specified by D-093 and formally deferred (D-132 amendment; tracked in issue #179) — `web/console/src/lib/protocol.ts` is hand-maintained today. This phase mirrors D-093's *gate shape* (`git diff --exit-code` after regeneration) for a generator it actually builds; it does not build the TS generator, and nothing here blocks on issue #179. When the TS generator lands it can share this phase's `singlesource`-reflection plumbing.
 - **The owner resolved the proposal's four open questions** per its recommendations (recorded here so the implementor doesn't re-litigate): Q1 registry-read event catalog (Goals below); Q2 OpenAPI deferred (Non-goals); Q3 conformance sdk-export waits for a real third-party ask (113b Non-goals); Q4 versioned docs deferred to the first breaking Protocol change (Risks).

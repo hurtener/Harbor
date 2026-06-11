@@ -6,7 +6,7 @@ import (
 	protoerrors "github.com/hurtener/Harbor/internal/protocol/errors"
 )
 
-// httpStatus maps a canonical Protocol error Code onto a stable HTTP
+// HTTPStatus maps a canonical Protocol error Code onto a stable HTTP
 // status. The mapping is part of the wire contract: a Protocol client
 // branches on the JSON body's `code`, but an intermediary (a proxy, a
 // load balancer, a browser's network panel) branches on the HTTP status,
@@ -16,7 +16,11 @@ import (
 // §8); this function is the one place the Protocol wire transport binds
 // each Code to a status. A Code with no explicit entry falls through to
 // 500 — fail loud rather than silently returning a misleading 200.
-func httpStatus(code protoerrors.Code) int {
+//
+// Exported since Phase 113a (D-209): `cmd/harbor-gen-protocol-docs`
+// renders the published error reference from the SAME binding the wire
+// transport serves, so the docs cannot drift from this function.
+func HTTPStatus(code protoerrors.Code) int {
 	switch code {
 	case protoerrors.CodeInvalidRequest:
 		// Structurally malformed request — the client must fix the

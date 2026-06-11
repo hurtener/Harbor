@@ -534,7 +534,7 @@ func (h *Handler) writeDispatchError(w http.ResponseWriter, r *http.Request, met
 // writeError encodes a *protoerrors.Error as a JSON body with the
 // mapped HTTP status.
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, perr *protoerrors.Error) {
-	h.writeJSON(w, r, httpStatus(perr.Code), perr)
+	h.writeJSON(w, r, HTTPStatus(perr.Code), perr)
 }
 
 // assertBodyMatchesAuthedIdentity is the Phase 61 defence-in-depth

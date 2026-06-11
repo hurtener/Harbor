@@ -8,9 +8,11 @@ name: docs
 # applies to the operator skills themselves.
 #
 # Ported from the sibling Dockyard project's docs workflow (Phase 103 —
-# Dockyard parity) so the two project sites age together. Harbor's
-# `make docs` is npm-only (no generated CLI-reference step), so the
-# build job needs no Go toolchain.
+# Dockyard parity) so the two project sites age together. Since Phase
+# 113a (D-209) the build job also runs `make protocol-docs-gen-check`
+# — the generated Protocol contract reference under docs/site/protocol
+# must match the canonical Go sources — so the job carries the Go
+# toolchain in addition to node.
 on:
   push:
     branches: [main]
@@ -47,6 +49,17 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: docs/site/package-lock.json
+      # Phase 113a (D-209): the generated Protocol contract reference
+      # must be in sync with the canonical Go sources BEFORE the site
+      # builds — a method / error / event / wire-type change without a
+      # regenerated docs/site/protocol fails the same job that would
+      # publish it. The generator compiles against the Protocol
+      # packages, so this job now needs the Go toolchain.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+      - run: make protocol-docs-gen-check
       # `make docs` runs the VitePress build from the canonical in-repo
       # docs. A dead site-internal link is a build failure (the config's
       # ignoreDeadLinks carve-out covers only repo-tree pointers).
