@@ -17,6 +17,13 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
+(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
+
+## [1.3.1] — 2026-06-11
+
+The Protocol adoption track: the docs site gains a complete, drift-proof
+Protocol surface for third-party client authors.
+
 ### Added
 
 - **The Protocol adoption track** — the published docs site gains a complete
