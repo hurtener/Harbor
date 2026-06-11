@@ -47,6 +47,11 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
 	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
 
+	// Multimodal is the attachment-handling policy block (Phase 84b —
+	// D-189). Optional; an omitted block keeps the runtime default
+	// (image/* inline, everything else ref).
+	Multimodal MultimodalConfig `yaml:"multimodal,omitempty"`
+
 	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
 
 	// source records the originating filename for error messages.
@@ -1262,6 +1267,38 @@ func (p PlannerConfig) SkillsContextMaxResolved() int {
 // `skills.SkillStore.Search` and hands the planner via
 // `RunContext.SkillsContext` when `skills_context_max` is unset.
 const DefaultSkillsContextMax = 5
+
+// MultimodalConfig is the YAML carrier of the per-agent attachment
+// disposition policy (Phase 84b — D-189). It is a thin adapter over
+// the planner-homed policy core: `internal/planner` decodes the block
+// into `planner.DispositionPolicy` via `DispositionPolicyFromConfig`;
+// a Go consumer embedding the runtime headless constructs the policy
+// value directly and never touches this block.
+//
+// `Disposition` maps a MIME key to a disposition value:
+//
+//	multimodal:
+//	  disposition:
+//	    "application/pdf": "tool:pdf.extract"  # force a catalog tool
+//	    "image/*": inline                       # family wildcard
+//	    "*": ref                                # agent-wide default
+//
+// Keys: an exact IANA media type (`application/pdf`), a family
+// wildcard (`image/*`), or the literal `*` (the agent-wide default —
+// decoded onto `DispositionPolicy.Default`). Values: `ref` (the
+// runtime default for non-image MIMEs — `ArtifactStub` + `Fetch.Tool`
+// hint), `inline` (DataURL inline; `image/*` only at V1.1),
+// `provider_native` (opt-in provider-side understanding — degrades to
+// `ref` with a logged notice until the Phase 84c mechanism ships), or
+// `tool:<name>` (force the named catalog tool via `Fetch.Tool`).
+//
+// Precedence: a per-attachment Protocol `disposition` hint > this
+// block > the runtime default (`image/*` → inline, everything else →
+// ref — byte-for-byte the pre-84b behaviour). Restart-required (no
+// `reload:"live"` tag).
+type MultimodalConfig struct {
+	Disposition map[string]string `yaml:"disposition,omitempty"`
+}
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
 // `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the

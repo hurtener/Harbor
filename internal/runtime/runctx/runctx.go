@@ -34,9 +34,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
+	"time"
 
 	"github.com/hurtener/Harbor/internal/artifacts"
+	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/identity"
 	"github.com/hurtener/Harbor/internal/memory"
 	"github.com/hurtener/Harbor/internal/planner"
@@ -144,12 +145,65 @@ func ExtractAssistantAnswer(fin planner.Finish) string {
 	return fmt.Sprintf("%v", fin.Payload)
 }
 
-// ResolveInputArtifacts pre-fetches the metadata (+ bytes for
-// `image/*`) for every operator-uploaded artifact ID on a task,
+// InputArtifactOptions carries the Phase 84b (D-189) disposition
+// inputs to [ResolveInputArtifacts]. The zero value reproduces the
+// pre-84b behaviour exactly: no hints, no policy (the runtime default
+// resolves `image/*` → inline, everything else → ref), no catalog
+// validation of `tool:<name>` values, and no event emission.
+type InputArtifactOptions struct {
+	// Hints maps an artifact ID to its per-attachment caller hint —
+	// the top precedence layer. The dev run loop populates it from
+	// `tasks.Task.InputArtifactDispositions` (the Protocol
+	// `disposition` carrier); a headless caller constructs it
+	// directly (or skips this helper entirely and sets
+	// `InputArtifactView.Disposition` on hand-built views).
+	Hints map[string]planner.AttachmentDisposition
+	// Policy is the per-agent disposition policy map — the middle
+	// precedence layer (`harbor.yaml` `multimodal.disposition`, or a
+	// programmatic `planner.DispositionPolicy`).
+	Policy planner.DispositionPolicy
+	// Catalog, when non-nil, validates `tool:<name>` dispositions
+	// against the run's visible tool set: an unknown name degrades
+	// to `ref` with a logged + emitted degradation fact.
+	Catalog planner.ToolCatalogView
+	// Emit, when non-nil, publishes one
+	// [EventTypeInputDispositionResolved] event per resolved
+	// artifact (the dev run loop passes its identity-stamping
+	// emitter). Nil skips emission; the slog records still land.
+	Emit func(events.Event)
+}
+
+// DispositionHints converts the string-typed per-attachment hint map
+// a task record carries (`tasks.Task.InputArtifactDispositions` — the
+// Protocol carrier, validated at the edge via
+// `planner.ParseDisposition`) into the typed hint map
+// [InputArtifactOptions.Hints] expects. Nil in, nil out.
+func DispositionHints(raw map[string]string) map[string]planner.AttachmentDisposition {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]planner.AttachmentDisposition, len(raw))
+	for id, v := range raw {
+		out[id] = planner.AttachmentDisposition(v)
+	}
+	return out
+}
+
+// ResolveInputArtifacts pre-fetches the metadata (+ bytes for inline
+// dispositions) for every operator-uploaded artifact ID on a task,
 // producing the `planner.InputArtifactView` slice the run loop hands
 // to the planner's first turn (Round-7 F11 / D-166; promoted by
 // Phase 110b). The synchronous pre-resolution keeps the planner's
 // prompt assembly I/O-free.
+//
+// Phase 84b (D-189): each view's `Disposition` is resolved here via
+// the pure `planner.ResolveDisposition` (per-attachment caller hint >
+// per-agent policy map > runtime default) + capability normalisation
+// via `planner.EffectiveDisposition`. This helper is a THIN caller —
+// the precedence logic lives in `internal/planner`; the helper adds
+// only the I/O (byte fetch for inline) and the logging/emission of
+// the returned winning-layer + degradation facts (the resolver is
+// pure and never logs).
 //
 // Failures are bounded:
 //   - Nil artifact store with non-empty IDs → empty slice + Warn log
@@ -160,9 +214,9 @@ func ExtractAssistantAnswer(fin planner.Finish) string {
 //   - `GetRef` not-found / errored → skip that ID + Warn (the rest
 //     of the slice survives; the artifact may have been GC'd between
 //     spawn and run).
-//   - `Get` (bytes fetch) errored on an image/* → keep the entry but
-//     leave Bytes nil. The materializer falls back to a stub-text
-//     part for missing-bytes images.
+//   - `Get` (bytes fetch) errored on an inline disposition → keep
+//     the entry but leave Bytes nil. The materializer falls back to
+//     a stub-text part for missing-bytes inlines.
 //
 // The scope on every store call is the run's identity tuple — the
 // artifact store enforces tenant isolation on read. A nil logger
@@ -174,6 +228,7 @@ func ResolveInputArtifacts(
 	q identity.Quadruple,
 	ids []string,
 	logger *slog.Logger,
+	opts InputArtifactOptions,
 ) []planner.InputArtifactView {
 	if len(ids) == 0 {
 		return nil
@@ -208,26 +263,102 @@ func ResolveInputArtifacts(
 				slog.String("artifact_id", id))
 			continue
 		}
+		// Phase 84b (D-189): thin calls into the planner-homed pure
+		// policy core; this caller logs/emits the returned facts.
+		resolved, layer := planner.ResolveDisposition(opts.Hints[id], opts.Policy, ref.MimeType)
+		effective, degradation := planner.EffectiveDisposition(resolved, ref.MimeType, opts.Catalog)
 		view := planner.InputArtifactView{
-			ID:        ref.ID,
-			MIME:      ref.MimeType,
-			SizeBytes: ref.SizeBytes,
-			Filename:  ref.Filename,
+			ID:          ref.ID,
+			MIME:        ref.MimeType,
+			SizeBytes:   ref.SizeBytes,
+			Filename:    ref.Filename,
+			Disposition: effective,
 		}
-		// Image MIMEs need the bytes inline (Path 1 — DataURL).
-		// Everything else stays as a ref the materializer renders as
-		// an `ArtifactStub`.
-		if strings.HasPrefix(ref.MimeType, "image/") {
+		// Inline dispositions need the bytes (Path 1 — DataURL; the
+		// runtime default for `image/*`, byte-for-byte the pre-84b
+		// fetch condition). Everything else stays a ref the
+		// materializer renders as an `ArtifactStub`.
+		if effective == planner.DispositionInline {
 			bytesPayload, getFound, berr := store.Get(ctx, scope, id)
 			if berr != nil || !getFound || len(bytesPayload) == 0 {
-				logger.Warn("runctx: image artifact bytes missing; emitting ref-only fallback",
+				logger.Warn("runctx: inline artifact bytes missing; emitting ref-only fallback",
 					slog.String("run_id", q.RunID),
 					slog.String("artifact_id", id))
 			} else {
 				view.Bytes = bytesPayload
 			}
 		}
+		logResolvedDisposition(logger, q, id, ref.MimeType, effective, layer, degradation)
+		emitResolvedDisposition(opts.Emit, q, id, ref.MimeType, effective, layer, degradation)
 		out = append(out, view)
 	}
 	return out
+}
+
+// logResolvedDisposition records which disposition fired and why
+// (which precedence layer won) — Debug on the honoured path, Warn on
+// a degradation (fail-loud, never a silent drop — CLAUDE.md §13).
+func logResolvedDisposition(
+	logger *slog.Logger,
+	q identity.Quadruple,
+	artifactID, mime string,
+	effective planner.AttachmentDisposition,
+	layer planner.DispositionLayer,
+	degradation *planner.DispositionDegradation,
+) {
+	if degradation != nil {
+		logger.Warn("runctx: attachment disposition degraded",
+			slog.String("run_id", q.RunID),
+			slog.String("artifact_id", artifactID),
+			slog.String("mime", mime),
+			slog.String("requested", string(degradation.From)),
+			slog.String("disposition", string(degradation.To)),
+			slog.String("layer", string(layer)),
+			slog.String("reason", string(degradation.Reason)),
+			slog.String("tool", degradation.Tool))
+		return
+	}
+	logger.Debug("runctx: attachment disposition resolved",
+		slog.String("run_id", q.RunID),
+		slog.String("artifact_id", artifactID),
+		slog.String("mime", mime),
+		slog.String("disposition", string(effective)),
+		slog.String("layer", string(layer)))
+}
+
+// emitResolvedDisposition publishes the
+// `task.input_disposition.resolved` event through the caller's
+// emitter. A nil emit is a no-op (headless callers without a bus).
+func emitResolvedDisposition(
+	emit func(events.Event),
+	q identity.Quadruple,
+	artifactID, mime string,
+	effective planner.AttachmentDisposition,
+	layer planner.DispositionLayer,
+	degradation *planner.DispositionDegradation,
+) {
+	if emit == nil {
+		return
+	}
+	payload := InputDispositionResolvedPayload{
+		Identity:    q,
+		TaskID:      q.RunID,
+		ArtifactID:  artifactID,
+		MIME:        mime,
+		Disposition: string(effective),
+		Layer:       string(layer),
+		OccurredAt:  time.Now(),
+	}
+	if degradation != nil {
+		payload.Degraded = true
+		payload.DegradedFrom = string(degradation.From)
+		payload.DegradationReason = string(degradation.Reason)
+		payload.Tool = degradation.Tool
+	}
+	emit(events.Event{
+		Type:       EventTypeInputDispositionResolved,
+		Identity:   q,
+		OccurredAt: payload.OccurredAt,
+		Payload:    payload,
+	})
 }

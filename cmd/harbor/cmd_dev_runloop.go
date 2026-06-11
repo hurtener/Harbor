@@ -165,6 +165,12 @@ type perTaskRunLoopDriverOpts struct {
 	// default) = compression off, byte-identical behaviour.
 	tokenBudget int
 	compression *planner.CompressionRunner
+
+	// Phase 84b (D-189) — the per-agent attachment disposition policy
+	// decoded from `multimodal.disposition` (the middle precedence
+	// layer of the disposition resolution). Zero value = no agent
+	// policy; the runtime default applies.
+	dispositionPolicy planner.DispositionPolicy
 }
 
 // perTaskRunLoopDriver subscribes to `task.spawned` and drives a
@@ -200,6 +206,9 @@ type perTaskRunLoopDriver struct {
 	// Phase 111e (D-202) — trajectory compression projection.
 	tokenBudget int
 	compression *planner.CompressionRunner
+
+	// Phase 84b (D-189) — per-agent attachment disposition policy.
+	dispositionPolicy planner.DispositionPolicy
 
 	// Phase 107a — per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
@@ -262,9 +271,11 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		maxStepsRunLoop: opts.maxStepsRunLoop,
 		grantedScopes:   append([]string(nil), opts.grantedScopes...),
 		artifactStore:   opts.artifactStore,
-		trajectories:    make(map[tasks.TaskID]*planner.Trajectory),
-		tokenBudget:     opts.tokenBudget,
-		compression:     opts.compression,
+		// Phase 84b (D-189) — disposition policy passthrough.
+		dispositionPolicy: opts.dispositionPolicy,
+		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
+		tokenBudget:       opts.tokenBudget,
+		compression:       opts.compression,
 	}, nil
 }
 
@@ -651,7 +662,18 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// step (per `runloop.go::spec.Base.InputArtifacts = nil` at the
 	// end of the per-step build) so subsequent steps see an empty
 	// slice.
-	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger)
+	// Phase 84b (D-189) — the disposition is resolved per attachment
+	// by the planner-homed pure resolver (hint > agent policy >
+	// runtime default); this driver is a THIN caller. The helper logs
+	// the winning layer / degradation facts and emits one
+	// `task.input_disposition.resolved` event per attachment through
+	// the same identity-stamping emitter the planner telemetry uses.
+	inputArtifacts := runctx.ResolveInputArtifacts(taskCtx, d.artifactStore, q, task.InputArtifactIDs, d.logger, runctx.InputArtifactOptions{
+		Hints:   runctx.DispositionHints(task.InputArtifactDispositions),
+		Policy:  d.dispositionPolicy,
+		Catalog: catalogView,
+		Emit:    emit,
+	})
 
 	// Phase 107f (D-176) — pre-resolve the session-artifact manifest so
 	// the planner renders a read-only `<session_artifacts>` block listing

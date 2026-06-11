@@ -168,7 +168,16 @@ export interface ChatProtocolClient {
 	sendMessage(
 		text: string,
 		artifactIDs: string[],
-		mode?: ChatSendMode
+		mode?: ChatSendMode,
+		/**
+		 * Phase 84b (D-189) — optional per-attachment disposition hints
+		 * keyed by artifact id (`ref` / `inline` / `provider_native` /
+		 * `tool:<name>`). The adapter forwards them on the `start` wire
+		 * field `input_artifact_dispositions`; an absent key defers to
+		 * the agent's `multimodal.disposition` policy map / the runtime
+		 * default (`image/*` → inline, everything else → ref).
+		 */
+		dispositions?: Record<string, string>
 	): Promise<SendMessageResult>;
 	/**
 	 * Record a next-message override. Maps onto the `runs.set_overrides`

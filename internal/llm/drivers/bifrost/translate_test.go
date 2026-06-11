@@ -313,7 +313,7 @@ func TestTranslateRequest_Multimodal_ImageArtifact(t *testing.T) {
 		SizeBytes: 65536,
 		Hash:      "sha256:abc",
 		Summary:   "screenshot",
-		Fetch:     &llm.StubFetch{Tool: "artifact.fetch", ID: "art-123"},
+		Fetch:     &llm.StubFetch{Tool: "artifact_fetch", ID: "art-123"},
 	}
 	req := llm.CompleteRequest{
 		Model: "m",

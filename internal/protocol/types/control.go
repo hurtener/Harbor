@@ -115,6 +115,21 @@ type StartRequest struct {
 	// catalog. The Playground composer's chat-attach control plumbs
 	// uploaded ids through this field. Empty is the text-only default.
 	InputArtifactIDs []string `json:"input_artifact_ids,omitempty"`
+	// InputArtifactDispositions (Phase 84b — D-189) carries the
+	// OPTIONAL per-attachment disposition hint, keyed by an
+	// InputArtifactIDs entry. Values: `ref` (emit an `ArtifactStub` +
+	// `Fetch.Tool` hint — the runtime default for non-image MIMEs),
+	// `inline` (DataURL inline; `image/*` only at V1.1),
+	// `provider_native` (opt-in provider-side understanding — Phase
+	// 84c; degrades to `ref` with a logged notice until it ships), or
+	// `tool:<name>` (force the named catalog tool). The hint is the
+	// TOP precedence layer: hint > the agent's
+	// `multimodal.disposition` config map > the runtime default
+	// (`image/*` → inline, everything else → ref). A key that names
+	// no InputArtifactIDs entry, or a value outside the grammar, is
+	// rejected with CodeInvalidRequest. Omitted (the backward-
+	// compatible default) defers entirely to the lower layers.
+	InputArtifactDispositions map[string]string `json:"input_artifact_dispositions,omitempty"`
 }
 
 // StartResponse is the wire response for the `start` Protocol method.

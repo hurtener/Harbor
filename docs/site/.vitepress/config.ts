@@ -149,6 +149,7 @@ export default defineConfig({
             { text: "Steer and resume a run", link: "/recipes/steer-and-resume-a-run" },
             { text: "Use memory and skills from Go", link: "/recipes/use-memory-and-skills-from-go" },
             { text: "Observe an embedded runtime", link: "/recipes/observe-an-embedded-runtime" },
+            { text: "Control attachment disposition", link: "/recipes/control-attachment-disposition" },
           ],
         },
       ],

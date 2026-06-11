@@ -195,6 +195,7 @@ var typeInstanceIndex = map[string]reflect.Type{
 	"TaskDetail":                        reflect.TypeOf(types.TaskDetail{}),
 	"TaskFilter":                        reflect.TypeOf(types.TaskFilter{}),
 	"TaskGetRequest":                    reflect.TypeOf(types.TaskGetRequest{}),
+	"TaskInputArtifact":                 reflect.TypeOf(types.TaskInputArtifact{}),
 	"TaskListAggregates":                reflect.TypeOf(types.TaskListAggregates{}),
 	"TaskListCursor":                    reflect.TypeOf(types.TaskListCursor{}),
 	"TaskListRequest":                   reflect.TypeOf(types.TaskListRequest{}),

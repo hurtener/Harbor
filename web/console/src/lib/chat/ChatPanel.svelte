@@ -39,7 +39,12 @@
      * trip. `mode` is `'queue'` / `'steer'` when `running` is true,
      * undefined otherwise (the host then calls `start`).
      */
-    onsend: (text: string, artifactIDs: string[], mode?: 'queue' | 'steer') => void;
+    onsend: (
+      text: string,
+      artifactIDs: string[],
+      mode?: 'queue' | 'steer',
+      dispositions?: Record<string, string>
+    ) => void;
   } = $props();
 
   // Phase 108 — keep the newest message (and live streaming deltas) in

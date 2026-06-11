@@ -549,6 +549,16 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
+	// Phase 84b (D-189): decode the operator's `multimodal.disposition`
+	// block into the planner-homed policy value. Fail loud at boot on a
+	// non-grammar value — the validator already gates this, the decode
+	// is defense-in-depth (never a policy that silently drops entries).
+	dispositionPolicy, err := planner.DispositionPolicyFromConfig(cfg.Multimodal)
+	if err != nil {
+		closeAll(ctx)
+		return nil, fmt.Errorf("multimodal disposition policy: %w", err)
+	}
+
 	// Per-task RunLoop driver — subscribes to `task.spawned` events
 	// across every tenant/user/session (the dev binary serves them
 	// all) and launches a goroutine per spawned foreground task that
@@ -619,6 +629,11 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		// RunSpec. Zero/nil = compression off.
 		tokenBudget: cfg.Planner.TokenBudget,
 		compression: stack.Compression,
+		// Phase 84b (D-189): the per-agent attachment disposition policy
+		// decoded from `multimodal.disposition` by the planner-homed
+		// projection — `harbor.yaml` is a thin carrier over
+		// `planner.DispositionPolicy`.
+		dispositionPolicy: dispositionPolicy,
 	})
 	if err != nil {
 		closeAll(ctx)

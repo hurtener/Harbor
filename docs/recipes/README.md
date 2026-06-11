@@ -22,6 +22,7 @@ API, read the godoc.
 | [Steer and resume a run](steer-and-resume-a-run.md) | The ONE pause/resume choreography — two triggers (HITL approval, tool-side OAuth completion) + the durable-pause / max-park lifecycle. |
 | [Use memory and skills from Go](use-memory-and-skills-from-go.md) | The canonical skills surface headless: `importer.ImportAndStore` to ingest, the Phase-38 handlers to retrieve, `skills.NewDirectory(...).View` to inject. |
 | [Observe an embedded runtime](observe-an-embedded-runtime.md) | The bus-first observability chain — redactor → bus → `telemetry.New` Logger → metrics bridge → tracer bridge — and the engine run-error hook. |
+| [Control attachment disposition](control-attachment-disposition.md) | The Phase 84b disposition policy — `ref` / `inline` / `provider_native` / `tool:<name>`, headless-first (`InputArtifactView.Disposition`, `DispositionPolicy`, `ResolveDisposition`) with `harbor.yaml` + the Protocol hint as thin carriers. |
 
 ## Conventions used in these recipes
 

@@ -443,6 +443,23 @@ planner:
   #     - youtube_get_metadata
   #     - http_get
 
+# Phase 84b (D-189) — per-agent attachment disposition policy. The
+# block is OPTIONAL — omit it and the runtime default applies
+# (`image/*` → inline DataURL, everything else → an `ArtifactStub`
+# with a `Fetch.Tool` hint the planner drives via tool-calling).
+# Keys: an exact media type, a `family/*` wildcard, or the literal
+# `*` (the agent-wide default). Values: ref | inline |
+# provider_native | tool:<name>. A per-attachment Protocol
+# `disposition` hint on `start` overrides this map per upload.
+# multimodal:
+#   disposition:
+#     # Route PDFs to a catalog tool instead of the provider:
+#     "application/pdf": "tool:pdf.extract"
+#     # Keep the sub-threshold image fast path explicit:
+#     "image/*": inline
+#     # Agent-wide default for everything else:
+#     "*": ref
+
 # Phase 37 skills subsystem (RFC §6.7). The block is OPTIONAL — omit
 # it entirely and skills stay uninitialised. When set, both `driver`
 # and `dsn` are required.

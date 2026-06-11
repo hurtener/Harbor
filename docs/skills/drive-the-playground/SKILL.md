@@ -44,6 +44,17 @@ The runtime then dispatches based on MIME:
 
 Per-MIME tool dispatch is controlled by `Tool.HandlesMIME(mime) bool` in the tool's spec. A tool that opts in to a MIME gets first-call rights when that MIME shows up in `InputArtifactIDs`.
 
+### Per-attachment disposition override (Phase 84b — D-189)
+
+The dispatch above is the **runtime default**, not a hardcode. Each attachment chip in the composer carries a small disposition selector:
+
+- **Auto** (default) — send no hint; the agent's `multimodal.disposition` config map or the runtime default above decides.
+- **Reference (tool fetch)** — force `ref`: the model gets an ArtifactStub + a `Fetch.Tool` pointer even for an image.
+- **Inline** — force the DataURL inline path (`image/*` only at V1.1; other MIMEs degrade to ref with a logged notice).
+- **Provider-native** — opt in to the provider's own document/vision understanding (the Phase 84c mechanism; until it ships this degrades to ref — the degradation is visible on the `task.input_disposition.resolved` event, never silent).
+
+The pick rides the `start` request as `input_artifact_dispositions` and outranks the agent's config map. Forcing a specific tool (`tool:<name>`) is available via the Protocol field directly (see [`use-the-harbor-protocol`](../use-the-harbor-protocol/SKILL.md)).
+
 ### Limits
 
 - **Max upload size**: governed by `artifacts.max_size_bytes` (default 100MB).

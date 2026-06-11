@@ -252,7 +252,7 @@
 
   function buildChatClient(c: ProtocolClient): ChatProtocolClient {
     return {
-      async sendMessage(text, artifactIDs, mode) {
+      async sendMessage(text, artifactIDs, mode, dispositions) {
         // Round-6 F7 — the Playground V1 chat surface spawns a fresh
         // foreground task per operator turn (no run in flight); session-
         // scoped memory (D-149) carries the conversation across turns.
@@ -301,12 +301,16 @@
         if (mode === 'queue' && activeTaskID !== null) {
           // Stash for the lifecycle watcher to drain when the run
           // terminates. Multiple queued sends are FIFO.
-          queuedSends = [...queuedSends, { text, artifactIDs }];
+          queuedSends = [...queuedSends, { text, artifactIDs, dispositions }];
           return { taskID: activeTaskID };
         }
         const resp = await c.control.start<{ task_id: string }>(text, {
           description: `Playground turn · ${activeAgent}`,
-          inputArtifactIDs: artifactIDs
+          inputArtifactIDs: artifactIDs,
+          // Phase 84b (D-189) — per-attachment disposition hints from
+          // the composer's selector; undefined defers to the agent's
+          // multimodal.disposition policy / the runtime default.
+          inputArtifactDispositions: dispositions
         });
         activeTaskID = resp.task_id;
         // Anchor the live Duration tick — Duration counts up only while a
@@ -410,7 +414,9 @@
   // FIFO queue of "send when current run terminates" messages. The
   // lifecycle watcher below drains the queue with `start` calls as
   // soon as activeTaskID becomes null.
-  let queuedSends = $state<Array<{ text: string; artifactIDs: string[] }>>([]);
+  let queuedSends = $state<
+    Array<{ text: string; artifactIDs: string[]; dispositions?: Record<string, string> }>
+  >([]);
 
   // Run phase derived from real stream + task state (no invented planner
   // state machine — CLAUDE.md §13 / decision #1). 'streaming' while
@@ -726,7 +732,7 @@
       // while a NEW run is already in flight — back to 'queue' it
       // goes). The async push lands in the messages timeline via the
       // page's existing sendMessage handler.
-      await sendMessage(next.text, next.artifactIDs);
+      await sendMessage(next.text, next.artifactIDs, undefined, next.dispositions);
     } catch {
       // Errors surface through the page's existing sendMessage error
       // path; no retry here to avoid burying the operator's intent.
@@ -956,7 +962,8 @@
   async function sendMessage(
     text: string,
     artifactIDs: string[],
-    mode?: 'queue' | 'steer'
+    mode?: 'queue' | 'steer',
+    dispositions?: Record<string, string>
   ): Promise<void> {
     if (chatClient === null) {
       return;
@@ -982,7 +989,7 @@
     messages = [...messages, userMsg];
     status = 'ready';
     try {
-      const resp = await chatClient.sendMessage(text, artifactIDs, mode);
+      const resp = await chatClient.sendMessage(text, artifactIDs, mode, dispositions);
       // Phase 106 (V1.2) — append an empty pending agent bubble.
       // The task.completed SSE handler populates the text from the
       // actual LLM answer when the task finishes.

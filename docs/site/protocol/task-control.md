@@ -46,6 +46,11 @@ curl -sS -X POST "$HARBOR_BASE_URL/v1/control/start" \
   returns the existing task with `"reused": true` instead of spawning twice.
 - `input_artifact_ids` — attach uploaded artifacts (`artifacts.put` first) as
   multimodal inputs; bytes never travel on this request.
+- `input_artifact_dispositions` — optional per-attachment disposition hints
+  keyed by artifact id (`ref` | `inline` | `provider_native` | `tool:<name>`;
+  Phase 84b / D-189). The hint outranks the agent's `multimodal.disposition`
+  config map and the runtime default; `tasks.get` reflects it on
+  `input_artifacts[].disposition`.
 - `priority` — the initial scheduling priority (changeable later via
   `prioritize`).
 

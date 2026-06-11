@@ -174,7 +174,19 @@ func materializeDataURL(
 		SizeBytes: int64(len(bytes)),
 		Hash:      "sha256:" + hex.EncodeToString(sum[:]),
 		Fetch: &StubFetch{
-			Tool: "artifact.fetch",
+			// The REGISTERED Phase 107c meta-tool name
+			// (`internal/tools/builtin/artifact_fetch.go`). The
+			// pre-84b value here was "artifact.fetch" (dot) — a tool
+			// that exists nowhere in the catalog, so every
+			// auto-materialized over-threshold attachment told the
+			// LLM to call a nonexistent tool and the model could not
+			// recover the bytes (the Playground "agent doesn't know
+			// what to do with my image" report). Kept as a string
+			// literal because `internal/llm` cannot import
+			// `internal/tools/builtin` (import direction); the
+			// lockstep is pinned by TestMaterialize_FetchHint_
+			// NamesRegisteredBuiltin in materialize_test.go.
+			Tool: "artifact_fetch",
 			ID:   ref.ID,
 		},
 	}
