@@ -25,8 +25,8 @@ func TestHTTPStatus_Mapping_EveryCanonicalCode(t *testing.T) {
 		protoerrors.CodeRequestTooLarge:       http.StatusRequestEntityTooLarge,
 	}
 	for code, want := range cases {
-		if got := httpStatus(code); got != want {
-			t.Errorf("httpStatus(%q) = %d, want %d", code, got, want)
+		if got := HTTPStatus(code); got != want {
+			t.Errorf("HTTPStatus(%q) = %d, want %d", code, got, want)
 		}
 	}
 }
@@ -69,15 +69,15 @@ func TestHTTPStatus_Mapping_ExhaustiveOverCanonicalCodes(t *testing.T) {
 // which would be wrong — the JWT verified, only the scope set was
 // insufficient.
 func TestStatusFor_CodeIdentityScopeRequired_Returns403(t *testing.T) {
-	if got := httpStatus(protoerrors.CodeIdentityScopeRequired); got != http.StatusForbidden {
-		t.Errorf("httpStatus(CodeIdentityScopeRequired) = %d, want 403 (authenticated but not authorized)", got)
+	if got := HTTPStatus(protoerrors.CodeIdentityScopeRequired); got != http.StatusForbidden {
+		t.Errorf("HTTPStatus(CodeIdentityScopeRequired) = %d, want 403 (authenticated but not authorized)", got)
 	}
 }
 
 // TestHTTPStatus_UnmappedCode_FailsLoudAs500 — an unmapped / unknown
 // Code falls through to 500 rather than masking as a misleading 2xx.
 func TestHTTPStatus_UnmappedCode_FailsLoudAs500(t *testing.T) {
-	if got := httpStatus(protoerrors.Code("not_a_real_code")); got != http.StatusInternalServerError {
-		t.Errorf("httpStatus(unmapped) = %d, want 500", got)
+	if got := HTTPStatus(protoerrors.Code("not_a_real_code")); got != http.StatusInternalServerError {
+		t.Errorf("HTTPStatus(unmapped) = %d, want 500", got)
 	}
 }

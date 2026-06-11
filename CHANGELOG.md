@@ -17,7 +17,20 @@ Two versions move independently in Harbor (RFC §5.3):
 
 ## [Unreleased]
 
-(Next up: the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
+### Added
+
+- **The Protocol adoption track** — the published docs site gains a top-level
+  Protocol section for third-party client authors: a four-page **generated
+  contract reference** (methods / events / errors / types) emitted by
+  `cmd/harbor-gen-protocol-docs` from the canonical Protocol sources and
+  drift-gated in CI by `make protocol-docs-gen-check`; the **executed
+  quickstart** ("Speak Protocol in 15 minutes"), whose curl steps the
+  preflight smoke runs against a live dev server on every commit; and
+  choreography guides 1–3 (auth & identity, streaming semantics, task
+  control). The pause-model and versioning choreographies, the
+  build-a-client guide, and the conformance-certification path follow next.
+
+(Next up: the rest of the Protocol adoption track, the MCP Apps host — interactive, sandboxed `ui://` resources in the Console — the remaining Console polish rounds, godoc hygiene, and the resilient-flows positioning work.)
 
 ## [1.3.0] — 2026-06-10
 
