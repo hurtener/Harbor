@@ -347,6 +347,16 @@ memory:
   # `memory.recovery_dropped` on the events bus. Default 16; must
   # be >= 0.
   recovery_backlog_max: 16
+  # Opt-in retrieval mode (Phase 84d — D-191), layered ON TOP of the
+  # strategy. `semantic` embeds turns at AddTurn and serves
+  # similarity search via MemoryStore.SearchTurns, COMPOSING with
+  # rolling_summary (never replacing it). Requires the `embeddings`
+  # block above. Vectors persist through the configured StateStore
+  # (all three drivers; brute-force cosine at V1 scale).
+  # retrieval: semantic
+  # Result cap for a semantic SearchTurns when the caller passes no
+  # limit. 0/unset → 5.
+  # retrieval_top_k: 5
 
 # D-103 — Planner driver selection (closes issue #126). The §4.4 seam
 # pattern that D-095 uses for OAuth providers, applied to the planner
@@ -490,6 +500,13 @@ planner:
 #     # no production path increments usage counters, so the
 #     # validator rejects it loud until usage tracking lands.
 #     selection: pinned_then_recent
+#   # Opt-in `skill_search` ranking mode (Phase 84d — D-191).
+#   # `semantic` ranks by embedding similarity over the
+#   # identity-scoped catalog (result path "semantic") instead of the
+#   # FTS5 → regex → exact ladder. Requires the `embeddings` block.
+#   # Capability filtering, redaction, and the budgeter apply
+#   # unchanged on top.
+#   retrieval: semantic
 
 tools:
   # Phase 27 HTTP tool driver manifests. NOT YET WIRED at boot (see

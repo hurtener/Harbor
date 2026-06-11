@@ -151,6 +151,21 @@ The retry policy is per-attempt; the `timeout` applies to each individual attemp
 
 Long-running models (deep reasoning, large context) sometimes exceed the default 60s; bump to 120s or 240s for those. The Console's Task page surfaces timeout errors with the provider's verbatim response, so you can tune fast.
 
+## 6. Embeddings are a separate block (not an `llm` knob)
+
+Harbor's embedding client is a sibling seam to the chat client — turning text into vectors gets its **own** provider/model/key, configured at the top-level `embeddings:` block, never inherited from `llm.*`:
+
+```yaml
+embeddings:
+  driver: bifrost                  # the default; omit freely
+  provider: openai
+  model: text-embedding-3-small
+  api_key: env.OPENAI_API_KEY      # same env.NAME convention as llm.api_key
+  # dimensions: 256                # optional reduced output dimension
+```
+
+You only need it when something consumes embeddings — the opt-in semantic retrieval modes (`memory.retrieval: semantic` / `skills.retrieval: semantic`; see [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md)) or your own à-la-carte retrieval (`docs/recipes/embed-and-retrieve.md`). Enabling a semantic mode without the block fails validation loudly naming the missing keys; there is no mock embeddings driver and no fallback to the chat provider.
+
 ## Common failure modes
 
 - **`harbor dev` exits immediately with `ErrMissingAPIKey: env.OPENROUTER_API_KEY not set`.** Source your `.env` or export the var in the shell that ran `harbor dev`. Verify with `echo $OPENROUTER_API_KEY`.
@@ -165,4 +180,4 @@ Long-running models (deep reasoning, large context) sometimes exceed the default
 - [`configure-memory-and-skills`](../configure-memory-and-skills/SKILL.md) — memory budgeting against the context window.
 - [`observe-with-the-console`](../observe-with-the-console/SKILL.md) — the LLM tab in the Console's Task page shows every prompt/completion.
 - Bifrost's full provider matrix: `github.com/maximhq/bifrost`.
-- The CONFIG.md reference: `docs/CONFIG.md#llm`.
+- The CONFIG.md reference: `docs/CONFIG.md#llm` (and `#embeddings` for the embedding client).

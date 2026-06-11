@@ -169,6 +169,9 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		Summarizer:         deps.Summarizer,
 		BudgetTokens:       cfg.BudgetTokens,
 		RecoveryBacklogMax: cfg.RecoveryBacklogMax,
+		Embedder:           deps.Embedder,
+		Retrieval:          cfg.Retrieval,
+		RetrievalTopK:      cfg.RetrievalTopK,
 	})
 	if err != nil {
 		_ = db.Close()
@@ -275,6 +278,19 @@ func (d *driver) Snapshot(ctx context.Context, id identity.Quadruple) (memory.Sn
 		return memory.Snapshot{}, memory.EmitIdentityRejected(ctx, d.bus, id, "Snapshot")
 	}
 	return d.exec.Snapshot(ctx, id)
+}
+
+// SearchTurns implements memory.MemoryStore. Identity validated at
+// the boundary; the strategy executor (semantic wrapper when the
+// mode is on) owns the similarity search.
+func (d *driver) SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error) {
+	if d.closed.Load() {
+		return nil, memory.ErrStoreClosed
+	}
+	if memory.ValidateIdentity(id) != nil {
+		return nil, memory.EmitIdentityRejected(ctx, d.bus, id, "SearchTurns")
+	}
+	return d.exec.SearchTurns(ctx, id, query, limit)
 }
 
 // Restore implements memory.MemoryStore.

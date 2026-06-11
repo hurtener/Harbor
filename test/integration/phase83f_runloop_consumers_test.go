@@ -431,6 +431,10 @@ func (f *failingMemoryStore) Restore(ctx context.Context, q identity.Quadruple, 
 	return f.inner.Restore(ctx, q, snap)
 }
 
+func (f *failingMemoryStore) SearchTurns(ctx context.Context, q identity.Quadruple, query string, limit int) ([]memory.ScoredTurn, error) {
+	return f.inner.SearchTurns(ctx, q, query, limit)
+}
+
 func (f *failingMemoryStore) Close(ctx context.Context) error { return f.inner.Close(ctx) }
 
 // phase83fConfig loads the canonical dev YAML used across the dev-

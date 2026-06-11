@@ -74,6 +74,7 @@ func (c *Config) runValidators(includeIdentity bool) error {
 		c.validateTelemetry,
 		c.validateState,
 		c.validateLLM,
+		c.validateEmbeddings,
 		c.validateGovernance,
 		c.validateEvents,
 		c.validateSessions,
@@ -733,6 +734,73 @@ var allowedMemoryStrategies = map[string]struct{}{
 	"rolling_summary": {},
 }
 
+// allowedRetrievalModes is the retrieval-mode allowlist shared by
+// the memory + skills blocks. Empty keeps each subsystem's default
+// retrieval; "semantic" opts in to embedding-similarity retrieval
+// (which the embeddings block must back — see validateEmbeddings).
+var allowedRetrievalModes = map[string]struct{}{
+	"":         {},
+	"semantic": {},
+}
+
+// allowedEmbeddingsDrivers is the registered embeddings-driver
+// allowlist. The production gateway driver is the only V1 entry;
+// there is deliberately no mock/stub driver (AGENTS.md §13).
+var allowedEmbeddingsDrivers = map[string]struct{}{
+	"bifrost": {},
+}
+
+// validateEmbeddings validates the optional `embeddings:` block and
+// the cross-block invariant that backs the semantic-retrieval
+// modes: enabling `memory.retrieval: semantic` or
+// `skills.retrieval: semantic` REQUIRES a configured embeddings
+// block. The error names the missing key and points at the example
+// config so the boot failure is actionable — a semantic mode never
+// silently degrades to non-semantic retrieval (AGENTS.md §13).
+func (c *Config) validateEmbeddings() error {
+	semanticConsumers := make([]string, 0, 2)
+	if c.Memory.Retrieval == "semantic" {
+		semanticConsumers = append(semanticConsumers, "memory.retrieval")
+	}
+	if c.Skills.Retrieval == "semantic" {
+		semanticConsumers = append(semanticConsumers, "skills.retrieval")
+	}
+
+	if c.Embeddings.IsZero() {
+		if len(semanticConsumers) > 0 {
+			return fieldError("embeddings",
+				fmt.Sprintf("block is required when %s is %q — set embeddings.provider, embeddings.model, and embeddings.api_key (see examples/harbor.yaml)",
+					strings.Join(semanticConsumers, " / "), "semantic"))
+		}
+		return nil
+	}
+
+	if c.Embeddings.Driver != "" {
+		if _, ok := allowedEmbeddingsDrivers[c.Embeddings.Driver]; !ok {
+			return fieldError("embeddings.driver",
+				fmt.Sprintf("must be one of %s, got %q",
+					sortedKeys(allowedEmbeddingsDrivers), c.Embeddings.Driver))
+		}
+	}
+	if c.Embeddings.Provider == "" {
+		return fieldError("embeddings.provider", "must not be empty when the embeddings block is set")
+	}
+	if c.Embeddings.Model == "" {
+		return fieldError("embeddings.model", "must not be empty when the embeddings block is set")
+	}
+	if c.Embeddings.APIKey == "" {
+		return fieldError("embeddings.api_key",
+			"must not be empty when the embeddings block is set (literal or env.NAME reference)")
+	}
+	if c.Embeddings.Timeout < 0 {
+		return fieldError("embeddings.timeout", "must be >= 0")
+	}
+	if c.Embeddings.Dimensions < 0 {
+		return fieldError("embeddings.dimensions", "must be >= 0")
+	}
+	return nil
+}
+
 func (c *Config) validateMemory() error {
 	if c.Memory.Driver == "" {
 		return fieldError("memory.driver", "must not be empty")
@@ -760,6 +828,13 @@ func (c *Config) validateMemory() error {
 	}
 	if c.Memory.RecoveryBacklogMax < 0 {
 		return fieldError("memory.recovery_backlog_max", "must be >= 0")
+	}
+	if _, ok := allowedRetrievalModes[c.Memory.Retrieval]; !ok {
+		return fieldError("memory.retrieval",
+			fmt.Sprintf("must be empty or %q, got %q", "semantic", c.Memory.Retrieval))
+	}
+	if c.Memory.RetrievalTopK < 0 {
+		return fieldError("memory.retrieval_top_k", "must be >= 0")
 	}
 	return nil
 }
@@ -791,12 +866,22 @@ func (c *Config) validateSkills() error {
 	if err := c.validateSkillsDirectory(); err != nil {
 		return err
 	}
+	// Retrieval-mode shape-validation runs unconditionally so a
+	// typo'd `skills.retrieval` fails at load time too.
+	if _, ok := allowedRetrievalModes[c.Skills.Retrieval]; !ok {
+		return fieldError("skills.retrieval",
+			fmt.Sprintf("must be empty or %q, got %q", "semantic", c.Skills.Retrieval))
+	}
 	if c.Skills.Driver == "" && c.Skills.DSN == "" {
 		if len(c.Skills.Directory.Pinned) > 0 ||
 			c.Skills.Directory.MaxEntries != 0 ||
 			c.Skills.Directory.Selection != "" {
 			return fieldError("skills.driver",
 				"must not be empty when skills.directory is set (the directory browses the configured store)")
+		}
+		if c.Skills.Retrieval != "" {
+			return fieldError("skills.driver",
+				"must not be empty when skills.retrieval is set (the retrieval mode shapes the configured store's search)")
 		}
 		return nil
 	}

@@ -53,6 +53,7 @@ import (
 	"github.com/hurtener/Harbor/internal/artifacts"
 	"github.com/hurtener/Harbor/internal/audit"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/embeddings"
 	"github.com/hurtener/Harbor/internal/events"
 	"github.com/hurtener/Harbor/internal/governance"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -114,6 +115,12 @@ type Options struct {
 	// SkillStore, when non-nil, wins over the cfg-opened store. The
 	// caller owns its lifecycle (it is NOT added to the closer chain).
 	SkillStore skills.SkillStore
+
+	// Embedder, when non-nil, wins over the cfg-opened embedding
+	// client. The caller owns its lifecycle (it is NOT added to the
+	// closer chain). Tests inject deterministic embedders; headless
+	// embedders inject a pre-built client.
+	Embedder embeddings.Embedder
 
 	// OAuthProviders pre-populates / overrides entries in the provider
 	// map the catalog Builder consults. Entries here win over
@@ -222,6 +229,13 @@ type Stack struct {
 	// snapshot the client was opened with — posture surfaces project it.
 	LLM         llm.LLMClient
 	LLMSnapshot llm.ConfigSnapshot
+
+	// Embedder is populated when the cfg carries a non-zero
+	// `embeddings` block (or Options.Embedder is set — caller-owned
+	// lifecycle). The semantic retrieval modes in Memory / Skills
+	// consume it via their Deps; it is also directly usable for
+	// à-la-carte embedding (docs/recipes/embed-and-retrieve.md).
+	Embedder embeddings.Embedder
 
 	// Memory / Skills follow cfg.Memory.Driver / cfg.Skills.Driver
 	// (Options.SkillStore wins for Skills).
@@ -443,6 +457,21 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		stack.closers = append(stack.closers, llmClient.Close)
 	}
 
+	// Embeddings: opened when the operator configured the block (or
+	// the caller injected one). The semantic retrieval modes consume
+	// it below; misconfiguration (semantic mode + zero block) is
+	// already rejected by the config validator, and the memory /
+	// skills registries fail loudly again if an embedder is missing.
+	stack.Embedder = opts.Embedder
+	if stack.Embedder == nil && !cfg.Embeddings.IsZero() {
+		emb, embErr := embeddings.Open(ctx, embeddings.SnapshotFromConfig(cfg.Embeddings), embeddings.Deps{})
+		if embErr != nil {
+			return stack, fmt.Errorf("embeddings: %w", embErr)
+		}
+		stack.Embedder = emb
+		stack.closers = append(stack.closers, emb.Close)
+	}
+
 	// Memory (Phase 25a, D-174): ONE memory.Open serves every driver ×
 	// strategy; the Summarizer threads through Deps. For
 	// rolling_summary the Summarizer defaults to the configured LLM —
@@ -465,6 +494,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 			State:      stateStore,
 			Bus:        bus,
 			Summarizer: summarizer,
+			Embedder:   stack.Embedder,
 		})
 		if openErr != nil {
 			return stack, fmt.Errorf("memory: %w", openErr)
@@ -478,7 +508,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	// opens via the exported projection (Phase 110c, D-196).
 	stack.Skills = opts.SkillStore
 	if stack.Skills == nil && cfg.Skills.Driver != "" {
-		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus})
+		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus, Embedder: stack.Embedder})
 		if openErr != nil {
 			return stack, fmt.Errorf("skills: %w", openErr)
 		}

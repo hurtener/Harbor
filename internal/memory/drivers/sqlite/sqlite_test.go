@@ -16,6 +16,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/embeddings/embeddingstest"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -69,6 +70,39 @@ func TestSQLite_ConformanceSuite(t *testing.T) {
 			})
 		})
 	}
+	// Semantic retrieval mode (Phase 84d, D-191): same suite,
+	// retrieval=semantic, deterministic test embedder — the §9
+	// conformance-parity leg for the SQLite driver.
+	t.Run("semantic/rolling_summary", func(t *testing.T) {
+		conformancetest.Run(t, func() conformancetest.Harness {
+			bus, store := buildDeps(t)
+			dbPath := filepath.Join(t.TempDir(), "memory.sqlite")
+			mem, err := memorydriversqlite.New(memory.ConfigSnapshot{
+				Driver:       "sqlite",
+				DSN:          dbPath,
+				Strategy:     memory.StrategyRollingSummary,
+				BudgetTokens: 64,
+				Retrieval:    memory.RetrievalSemantic,
+			}, memory.Deps{
+				State:      store,
+				Bus:        bus,
+				Summarizer: strategy.EchoSummarizer{},
+				Embedder:   embeddingstest.New(),
+			})
+			if err != nil {
+				t.Fatalf("sqlite.New(semantic): %v", err)
+			}
+			return conformancetest.Harness{
+				Store:     mem,
+				Bus:       bus,
+				Strategy:  memory.StrategyRollingSummary,
+				Retrieval: memory.RetrievalSemantic,
+				Cleanup: func() {
+					_ = mem.Close(context.Background())
+				},
+			}
+		})
+	})
 }
 
 // TestSQLite_New_RequiresDSN pins the explicit-DSN-required contract.

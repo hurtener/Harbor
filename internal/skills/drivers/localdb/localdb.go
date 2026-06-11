@@ -119,12 +119,30 @@ func New(cfg skills.ConfigSnapshot, deps skills.Deps) (skills.SkillStore, error)
 		return nil, fmt.Errorf("skills/localdb: migrate: %w", err)
 	}
 
+	// Semantic retrieval (opt-in) requires the injected embedder —
+	// fail loudly at construction, never a stub fallback (the
+	// registry's `skills.Open` also guards; this covers direct `New`
+	// callers).
+	switch cfg.Retrieval {
+	case skills.RetrievalDefault:
+	case skills.RetrievalSemantic:
+		if deps.Embedder == nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("skills/localdb: deps.Embedder is required for retrieval mode %q (no stub fallback)", skills.RetrievalSemantic)
+		}
+	default:
+		_ = db.Close()
+		return nil, fmt.Errorf("skills/localdb: unknown retrieval mode %q (expected \"\" or %q)", cfg.Retrieval, skills.RetrievalSemantic)
+	}
+
 	ftsAvail := detectFTS5(ctx, db)
 
 	return &driver{
 		db:           db,
 		bus:          deps.Bus,
 		ftsAvailable: ftsAvail,
+		retrieval:    cfg.Retrieval,
+		embedder:     deps.Embedder,
 	}, nil
 }
 
@@ -138,6 +156,12 @@ type driver struct {
 	db           *sql.DB
 	bus          events.EventBus
 	ftsAvailable bool
+	// retrieval / embedder configure the opt-in semantic Search
+	// path. Read-only after construction (the concurrent-reuse
+	// contract); nil embedder is only legal under the default
+	// retrieval mode.
+	retrieval skills.RetrievalMode
+	embedder  skills.Embedder
 
 	// closed flips exactly once via CompareAndSwap in Close — the CAS
 	// is the once-only guard, so no mutex is needed around teardown.
@@ -422,7 +446,20 @@ func (d *driver) Search(ctx context.Context, id identity.Quadruple, query string
 		limit = maxSearchN
 	}
 
-	results, path, err := d.search(ctx, id, query, limit)
+	var (
+		results []skills.RankedSkill
+		path    string
+		err     error
+	)
+	if d.retrieval == skills.RetrievalSemantic {
+		// Opt-in semantic ranking. An embedding failure fails the
+		// search loudly — the driver NEVER silently degrades to the
+		// lexical ladder (AGENTS.md §13).
+		results, err = d.searchSemantic(ctx, id, query, limit)
+		path = skills.PathSemantic
+	} else {
+		results, path, err = d.search(ctx, id, query, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

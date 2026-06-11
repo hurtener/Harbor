@@ -23,8 +23,9 @@ import "github.com/hurtener/Harbor/internal/config"
 // constructors; `DirectoryFromConfig` is the directory's projection.
 func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 	return ConfigSnapshot{
-		Driver: cfg.Driver,
-		DSN:    cfg.DSN,
+		Driver:    cfg.Driver,
+		DSN:       cfg.DSN,
+		Retrieval: RetrievalMode(cfg.Retrieval),
 	}
 }
 

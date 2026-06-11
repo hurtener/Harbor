@@ -30,6 +30,7 @@ import (
 	"github.com/hurtener/Harbor/internal/audit"
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
 	"github.com/hurtener/Harbor/internal/config"
+	"github.com/hurtener/Harbor/internal/embeddings/embeddingstest"
 	"github.com/hurtener/Harbor/internal/events"
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
 	"github.com/hurtener/Harbor/internal/identity"
@@ -176,6 +177,39 @@ func TestPostgres_ConformanceSuite(t *testing.T) {
 			})
 		})
 	}
+	// Semantic retrieval mode (Phase 84d, D-191): same suite,
+	// retrieval=semantic, deterministic test embedder — the §9
+	// conformance-parity leg for the Postgres driver.
+	t.Run("semantic/rolling_summary", func(t *testing.T) {
+		dsn := freshSchema(t, baseDSN)
+		conformancetest.Run(t, func() conformancetest.Harness {
+			bus, store := buildDeps(t)
+			m, err := memorydriverpostgres.New(memory.ConfigSnapshot{
+				Driver: "postgres", DSN: dsn,
+				Strategy:     memory.StrategyRollingSummary,
+				BudgetTokens: 64,
+				Retrieval:    memory.RetrievalSemantic,
+			}, memory.Deps{
+				State:      store,
+				Bus:        bus,
+				Summarizer: strategy.EchoSummarizer{},
+				Embedder:   embeddingstest.New(),
+			})
+			if err != nil {
+				t.Fatalf("postgres.New(semantic): %v", err)
+			}
+			truncateAll(t, dsn)
+			return conformancetest.Harness{
+				Store:     m,
+				Bus:       bus,
+				Strategy:  memory.StrategyRollingSummary,
+				Retrieval: memory.RetrievalSemantic,
+				Cleanup: func() {
+					_ = m.Close(context.Background())
+				},
+			}
+		})
+	})
 }
 
 // truncateAll wipes the memory_state table between conformance

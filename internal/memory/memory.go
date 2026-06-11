@@ -73,6 +73,53 @@ const (
 	StrategyRollingSummary Strategy = "rolling_summary"
 )
 
+// RetrievalMode declares the opt-in retrieval shape layered on top
+// of the strategy. The mode COMPOSES with the configured `Strategy`
+// — `rolling_summary` keeps its summary + recent-turn patch
+// unchanged; a semantic mode additionally serves similarity search
+// over embedded turns via `SearchTurns`.
+type RetrievalMode string
+
+// RetrievalMode values.
+const (
+	// RetrievalDefault — the zero value. Retrieval is shaped by the
+	// strategy alone; `SearchTurns` fails loudly with
+	// `ErrSemanticDisabled`.
+	RetrievalDefault RetrievalMode = ""
+	// RetrievalSemantic — turns are embedded at `AddTurn` (vectors
+	// persist alongside the memory records through the same
+	// StateStore floor, identity-scoped) and `SearchTurns` ranks by
+	// cosine similarity. Requires `Deps.Embedder` — no stub
+	// fallback.
+	RetrievalSemantic RetrievalMode = "semantic"
+)
+
+// DefaultSemanticTopK is the `SearchTurns` result cap applied when
+// the caller passes no positive limit and the config carries no
+// `RetrievalTopK`.
+const DefaultSemanticTopK = 5
+
+// Embedder is the injectable text→vector callable the semantic
+// retrieval mode consumes — the same consumer-side-interface shape
+// as `Summarizer`. The canonical implementation is constructed via
+// the embeddings factory (`internal/embeddings`); any
+// `embeddings.Embedder` satisfies this interface.
+//
+// Concurrent-reuse contract: one `Embedder` instance is safe to
+// share across N concurrent goroutines. Implementers MUST honour
+// `ctx.Done()`.
+type Embedder interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// ScoredTurn is one `SearchTurns` result: a stored conversation
+// turn plus its similarity score (cosine, in [-1, 1], higher is
+// closer).
+type ScoredTurn struct {
+	Turn  ConversationTurn
+	Score float64
+}
+
 // Health enumerates the memory subsystem health states.
 //
 // Phase 23 only produces `HealthHealthy`. Phase 24 will drive the
@@ -204,6 +251,15 @@ type MemoryStore interface {
 	// Strategy=none returns an empty `Snapshot{Strategy: StrategyNone}`.
 	Snapshot(ctx context.Context, id identity.Quadruple) (Snapshot, error)
 
+	// SearchTurns returns up to `limit` stored turns ranked by
+	// embedding similarity to `query`, identity-scoped — retrieval
+	// never crosses the `(tenant, user, session)` boundary. Only
+	// the semantic retrieval mode serves it; every other mode fails
+	// loudly with `ErrSemanticDisabled` (never an empty success).
+	// `limit <= 0` falls back to the configured `RetrievalTopK`
+	// (default `DefaultSemanticTopK`). An empty query is an error.
+	SearchTurns(ctx context.Context, id identity.Quadruple, query string, limit int) ([]ScoredTurn, error)
+
 	// Restore imports a previously-captured `Snapshot`. The
 	// Snapshot's Strategy MUST match the driver's configured
 	// Strategy; mismatched strategies (e.g. restoring a
@@ -250,6 +306,13 @@ var (
 	// bytes against a `StrategyNone` driver. Fail loudly; never
 	// silently coerce.
 	ErrInvalidSnapshot = errors.New("memory: invalid snapshot for this strategy")
+
+	// ErrSemanticDisabled — `SearchTurns` was called on a store
+	// whose retrieval mode is not `semantic`. Fail loudly: a
+	// similarity search against a store that never embedded
+	// anything would silently return nothing useful. Enable with
+	// `Retrieval: RetrievalSemantic` + `Deps.Embedder`.
+	ErrSemanticDisabled = errors.New("memory: semantic retrieval not enabled (set retrieval mode \"semantic\" and provide Deps.Embedder)")
 
 	// ErrInvalidHealthTransition — a strategy executor attempted a
 	// `Health` transition outside the documented FSM

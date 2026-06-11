@@ -52,6 +52,13 @@ type Config struct {
 	// (image/* inline, everything else ref).
 	Multimodal MultimodalConfig `yaml:"multimodal,omitempty"`
 
+	// Embeddings is the embedding-client block — the model/provider
+	// pair Harbor turns text into vectors with, configured separately
+	// from the chat `llm` block. Optional; REQUIRED (validated) when
+	// any semantic-retrieval mode is enabled (`memory.retrieval` /
+	// `skills.retrieval` = `semantic`).
+	Embeddings EmbeddingsConfig `yaml:"embeddings,omitempty"`
+
 	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
 
 	// source records the originating filename for error messages.
@@ -130,6 +137,48 @@ type StateConfig struct {
 // cost overrides). The safety net's token-budget guard REQUIRES a
 // profile entry for every model the request mentions; missing
 // profiles surface at request time as `ErrUnsupportedModel`.
+// EmbeddingsConfig is the embedding-client surface — Harbor's
+// text→vector capability (`internal/embeddings`), a sibling seam to
+// the chat client. The embedding model is its own operator choice:
+// chat and embeddings routinely come from different providers, so
+// nothing here falls back to the `llm` block.
+//
+// The whole block is optional. It becomes REQUIRED (enforced by
+// `validateEmbeddings`) the moment an embedding-consuming mode is
+// enabled — `memory.retrieval: semantic` or `skills.retrieval:
+// semantic` — so a semantic mode can never silently degrade to
+// non-semantic behaviour (AGENTS.md §13).
+//
+//   - `Driver` selects the registered embeddings driver. Empty
+//     defaults to `"bifrost"` (the production gateway driver).
+//   - `Provider` / `Model` — the embedding provider + model (e.g.
+//     `openai` / `text-embedding-3-small`). Both required when the
+//     block is in use.
+//   - `APIKey` — literal value or `env.NAME` reference, matching the
+//     `llm.api_key` convention. Required when the block is in use.
+//   - `BaseURL` / `Timeout` — optional network knobs.
+//   - `Dimensions` — optional reduced output dimension for providers
+//     that support it; 0 keeps the model's native dimension.
+//
+// Restart-required (no `reload:"live"`).
+type EmbeddingsConfig struct {
+	Driver     string        `yaml:"driver,omitempty"`
+	Provider   string        `yaml:"provider,omitempty"`
+	Model      string        `yaml:"model,omitempty"`
+	APIKey     string        `yaml:"api_key,omitempty" secret:"true"`
+	BaseURL    string        `yaml:"base_url,omitempty"`
+	Timeout    time.Duration `yaml:"timeout,omitempty"`
+	Dimensions int           `yaml:"dimensions,omitempty"`
+}
+
+// IsZero reports whether the operator left the embeddings block
+// entirely unset. Used by the validator (a zero block is fine unless
+// a semantic mode demands it) and by the runtime assembly (a zero
+// block means no embedder is constructed).
+func (e EmbeddingsConfig) IsZero() bool {
+	return e == EmbeddingsConfig{}
+}
+
 type LLMConfig struct {
 	Driver               string                           `yaml:"driver"`
 	Provider             string                           `yaml:"provider"`
@@ -415,6 +464,19 @@ type MemoryConfig struct {
 	Strategy           string `yaml:"strategy,omitempty"`
 	BudgetTokens       int    `yaml:"budget_tokens,omitempty"`
 	RecoveryBacklogMax int    `yaml:"recovery_backlog_max,omitempty"`
+
+	// Retrieval is the opt-in retrieval mode. Empty (the default)
+	// keeps the strategy-shaped retrieval unchanged; `"semantic"`
+	// additionally embeds turns and serves similarity search
+	// (`MemoryStore.SearchTurns`), COMPOSING with the configured
+	// strategy — it never replaces `rolling_summary`. Requires the
+	// `embeddings` block (validated; no stub fallback).
+	Retrieval string `yaml:"retrieval,omitempty"`
+	// RetrievalTopK caps how many scored turns a semantic
+	// `SearchTurns` returns when the caller passes no limit. 0 uses
+	// the memory subsystem default (5). Ignored unless
+	// `retrieval: semantic`.
+	RetrievalTopK int `yaml:"retrieval_top_k,omitempty"`
 }
 
 // SkillsConfig is owned by the skills subsystem phases.
@@ -435,6 +497,15 @@ type SkillsConfig struct {
 	Driver    string                `yaml:"driver,omitempty"`
 	DSN       string                `yaml:"dsn,omitempty" secret:"true"`
 	Directory SkillsDirectoryConfig `yaml:"directory,omitempty"`
+
+	// Retrieval is the opt-in retrieval mode for `Search` /
+	// `skill_search`. Empty (the default) keeps the token-savvy
+	// FTS5 → regex → exact ladder; `"semantic"` ranks by embedding
+	// similarity over the identity-scoped catalog instead (result
+	// path `"semantic"`). Requires the `embeddings` block (validated;
+	// no stub fallback). Capability filtering, redaction, and the
+	// budgeter apply unchanged on top.
+	Retrieval string `yaml:"retrieval,omitempty"`
 }
 
 // SkillsDirectoryConfig configures the skills virtual directory
