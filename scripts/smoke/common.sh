@@ -89,7 +89,10 @@ assert_status() {
         return
     fi
     local actual
-    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || echo "000")
+    # `|| true`, not `|| echo "000"` — curl prints its own "000" via -w on
+    # connection failure (see skip_if_404). A dead server stays a FAIL here
+    # (no 000 in the case), but the message reports the honest "000".
+    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)
     case "$actual" in
         404|405|501)
             skip "${desc}: ${actual} (surface not yet implemented)"
@@ -112,10 +115,15 @@ skip_if_404() {
         return 1
     fi
     local actual
-    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || echo "000")
+    # On connection failure curl STILL prints its -w '%{http_code}' format
+    # ("000") before exiting non-zero, so an `|| echo "000"` fallback would
+    # produce "000000" and dodge the SKIP case below — the surfaced-then-fixed
+    # Phase 113b finding (a smoke run with no server proceeded as reachable).
+    # `|| true` keeps the single honest "000".
+    actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || true)
     case "$actual" in
-        404|405|501|000)
-            skip "${desc}: ${actual} (surface not yet implemented)"
+        404|405|501|000|'')
+            skip "${desc}: ${actual:-000} (surface not yet implemented)"
             return 1
             ;;
     esac
@@ -161,12 +169,14 @@ assert_post_status() {
         return
     fi
     local actual
+    # `|| true`, not `|| echo "000"` — curl prints its own "000" via -w on
+    # connection failure (see skip_if_404).
     actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -X POST -H 'Content-Type: application/json' -d "$body" "$url" \
-        || echo "000")
+        || true)
     case "$actual" in
-        404|501|000)
-            skip "${desc}: ${actual} (surface not yet implemented)"
+        404|501|000|'')
+            skip "${desc}: ${actual:-000} (surface not yet implemented)"
             return
             ;;
     esac

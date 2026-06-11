@@ -44,10 +44,20 @@ What a reference cannot teach — how the calls compose:
    replay/reconnect, backpressure, aggregation.
 3. **[Task control](./task-control.md)** — the run lifecycle as the wire sees
    it: start, steer, observe, terminal states.
+4. **[The pause model](./pause-model.md)** — `pause.requested` → the
+   intervention surfaces (approve/reject, the OAuth callback, plain resume),
+   durable pauses across restarts, timeout reaps.
+5. **[Versioning & compatibility](./versioning-and-compatibility.md)** — what
+   the Protocol version promises, what to pin, what to tolerate.
 
-Choreographies 4–5 (the pause model; versioning & compatibility), the
-build-a-client guide, and the conformance-certification path land with the
-track's second phase.
+## Build a client, then prove it
+
+**[Build a client](./build-a-client.md)** walks the shortest credible client
+— a ~100-line, SDK-free Go event viewer whose source ships in the repo and is
+compile-gated in CI — then points at the reference implementations. When you
+need a compatibility claim,
+**[conformance certification](./conformance-certification.md)** documents the
+suite Harbor itself is gated on and what passing it means.
 
 ## Who this track serves
 
