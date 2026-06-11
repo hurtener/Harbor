@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -20,7 +21,14 @@ type stubClient struct {
 	chatHandler   func(req *bfschemas.BifrostChatRequest) (*bfschemas.BifrostChatResponse, *bfschemas.BifrostError)
 	streamHandler func(req *bfschemas.BifrostChatRequest) (chan *bfschemas.BifrostStreamChunk, *bfschemas.BifrostError)
 
-	calls atomic.Int64
+	// provider-native file surface recorders / hooks.
+	fileUploads   []*bfschemas.BifrostFileUploadRequest
+	fileDeletes   []*bfschemas.BifrostFileDeleteRequest
+	uploadHandler func(req *bfschemas.BifrostFileUploadRequest) (*bfschemas.BifrostFileUploadResponse, *bfschemas.BifrostError)
+	deleteHandler func(req *bfschemas.BifrostFileDeleteRequest) (*bfschemas.BifrostFileDeleteResponse, *bfschemas.BifrostError)
+
+	calls       atomic.Int64
+	uploadCalls atomic.Int64
 }
 
 func newStubClient() *stubClient {
@@ -51,6 +59,64 @@ func (s *stubClient) ChatCompletionStreamRequest(_ *bfschemas.BifrostContext, re
 		return s.streamHandler(req)
 	}
 	return defaultStreamResponse(req), nil
+}
+
+// FileUploadRequest records the upload and delegates to the
+// configured handler (or returns a deterministic per-call file id).
+func (s *stubClient) FileUploadRequest(_ *bfschemas.BifrostContext, req *bfschemas.BifrostFileUploadRequest) (*bfschemas.BifrostFileUploadResponse, *bfschemas.BifrostError) {
+	s.mu.Lock()
+	s.fileUploads = append(s.fileUploads, req)
+	s.mu.Unlock()
+	n := s.uploadCalls.Add(1)
+	if s.uploadHandler != nil {
+		return s.uploadHandler(req)
+	}
+	return &bfschemas.BifrostFileUploadResponse{
+		ID:       fmt.Sprintf("file-stub-%d", n),
+		Bytes:    int64(len(req.File)),
+		Filename: req.Filename,
+		Purpose:  req.Purpose,
+	}, nil
+}
+
+// FileDeleteRequest records the delete and delegates to the
+// configured handler (or acknowledges).
+func (s *stubClient) FileDeleteRequest(_ *bfschemas.BifrostContext, req *bfschemas.BifrostFileDeleteRequest) (*bfschemas.BifrostFileDeleteResponse, *bfschemas.BifrostError) {
+	s.mu.Lock()
+	s.fileDeletes = append(s.fileDeletes, req)
+	s.mu.Unlock()
+	if s.deleteHandler != nil {
+		return s.deleteHandler(req)
+	}
+	return &bfschemas.BifrostFileDeleteResponse{ID: req.FileID, Deleted: true}, nil
+}
+
+// uploadedFilenames returns the recorded upload filenames (test
+// observability).
+func (s *stubClient) recordedUploads() []*bfschemas.BifrostFileUploadRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*bfschemas.BifrostFileUploadRequest, len(s.fileUploads))
+	copy(out, s.fileUploads)
+	return out
+}
+
+// recordedDeletes returns the recorded delete requests.
+func (s *stubClient) recordedDeletes() []*bfschemas.BifrostFileDeleteRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*bfschemas.BifrostFileDeleteRequest, len(s.fileDeletes))
+	copy(out, s.fileDeletes)
+	return out
+}
+
+// requestsSnapshot returns a copy of every recorded chat request.
+func (s *stubClient) requestsSnapshot() []*bfschemas.BifrostChatRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*bfschemas.BifrostChatRequest, len(s.requests))
+	copy(out, s.requests)
+	return out
 }
 
 // lastRequest returns the most recent recorded request (nil if none).

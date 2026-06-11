@@ -148,8 +148,10 @@ const (
 	// DispositionInline — DataURL inline (image/* only at V1.1; the
 	// runtime default for image/*).
 	DispositionInline = internal.DispositionInline
-	// DispositionProviderNative — provider-side understanding (84c;
-	// degrades to ref with a returned fact until it ships).
+	// DispositionProviderNative — provider-side understanding: the
+	// materializer flags the typed part and the LLM driver uploads
+	// the content inside Complete, rewriting it to a file_id
+	// reference. Opt-in, never the default.
 	DispositionProviderNative = internal.DispositionProviderNative
 )
 
@@ -167,8 +169,6 @@ const (
 const (
 	// DegradationUnknownTool — tool:<name> named no catalog tool.
 	DegradationUnknownTool = internal.DegradationUnknownTool
-	// DegradationProviderNativeUnavailable — provider_native pre-84c.
-	DegradationProviderNativeUnavailable = internal.DegradationProviderNativeUnavailable
 	// DegradationInlineUnsupportedMIME — inline on a non-image MIME.
 	DegradationInlineUnsupportedMIME = internal.DegradationInlineUnsupportedMIME
 	// DegradationInvalidDisposition — a non-grammar value reached

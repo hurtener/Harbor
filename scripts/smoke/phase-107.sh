@@ -102,7 +102,7 @@ ID_HEADERS=(
 # Open an SSE subscription in the background; capture events to a temp file.
 EV_FILE="$(mktemp -t harbor-phase107-events-XXXXXX)"
 trap 'rm -f "${EV_FILE}" 2>/dev/null; kill ${SSE_PID:-} 2>/dev/null || true' EXIT
-SUBSCRIBE_URL="$(api_url /v1/events/subscribe)"
+SUBSCRIBE_URL="$(api_url /v1/events)"
 curl -sS -N "${ID_HEADERS[@]}" "${SUBSCRIBE_URL}" > "${EV_FILE}" 2>&1 &
 SSE_PID=$!
 sleep 1

@@ -1288,9 +1288,11 @@ const DefaultSkillsContextMax = 5
 // decoded onto `DispositionPolicy.Default`). Values: `ref` (the
 // runtime default for non-image MIMEs — `ArtifactStub` + `Fetch.Tool`
 // hint), `inline` (DataURL inline; `image/*` only at V1.1),
-// `provider_native` (opt-in provider-side understanding — degrades to
-// `ref` with a logged notice until the Phase 84c mechanism ships), or
-// `tool:<name>` (force the named catalog tool via `Fetch.Tool`).
+// `provider_native` (opt-in provider-side understanding — the LLM
+// driver uploads the attachment to the provider's file surface and
+// the model sees it via an opaque `file_id`; a provider without
+// support for the modality degrades to `ref` with a logged notice),
+// or `tool:<name>` (force the named catalog tool via `Fetch.Tool`).
 //
 // Precedence: a per-attachment Protocol `disposition` hint > this
 // block > the runtime default (`image/*` → inline, everything else →

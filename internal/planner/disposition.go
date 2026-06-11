@@ -53,9 +53,13 @@ const (
 	// [DispositionDegradation]. The runtime default for `image/*`.
 	DispositionInline AttachmentDisposition = "inline"
 	// DispositionProviderNative hands the artifact to the provider's
-	// own understanding (Phase 84c mechanism). Until 84c ships it
-	// resolves but degrades to ref with a returned degradation fact —
-	// never a silent no-op (CLAUDE.md §13).
+	// own understanding: the materializer emits a typed part with the
+	// `ProviderNative` flag set, and the LLM driver uploads the
+	// content to the provider's file surface inside `Complete`,
+	// rewriting the part to an opaque `file_id` reference (RFC §6.5).
+	// Opt-in only — never the runtime default. A provider without
+	// upload support for the modality degrades loudly to the
+	// `ArtifactStub` reference at the driver.
 	DispositionProviderNative AttachmentDisposition = "provider_native"
 )
 
@@ -219,8 +223,8 @@ func DefaultDisposition(mime string) AttachmentDisposition {
 //
 // The hint is trusted verbatim (carriers validate via
 // [ParseDisposition] at their edge); capability constraints (unknown
-// tool, pre-84c provider_native, non-image inline) are applied by
-// [EffectiveDisposition], which returns typed degradation facts.
+// tool, non-image inline) are applied by [EffectiveDisposition],
+// which returns typed degradation facts.
 func ResolveDisposition(hint AttachmentDisposition, policy DispositionPolicy, mime string) (AttachmentDisposition, DispositionLayer) {
 	if !hint.IsZero() {
 		return hint, DispositionLayerCallerHint
@@ -242,10 +246,6 @@ const (
 	// run proceeds; the caller logs the warning (revisit as a hard
 	// error if operators prefer — plan §risks).
 	DegradationUnknownTool DispositionDegradationReason = "unknown_tool"
-	// DegradationProviderNativeUnavailable — `provider_native`
-	// resolved but the 84c provider mechanism has not shipped. The
-	// §13 honest-degradation seam for the same-wave 84c.
-	DegradationProviderNativeUnavailable DispositionDegradationReason = "provider_native_unavailable"
 	// DegradationInlineUnsupportedMIME — `inline` resolved for a
 	// non-`image/*` MIME; V1.1 inlines images only.
 	DegradationInlineUnsupportedMIME DispositionDegradationReason = "inline_unsupported_mime"
@@ -279,8 +279,12 @@ type DispositionDegradation struct {
 //
 // Constraints at V1.1:
 //
-//   - `provider_native` degrades to ref until the 84c mechanism
-//     ships ([DegradationProviderNativeUnavailable]).
+//   - `provider_native` is honoured as-is — the materializer emits a
+//     `ProviderNative`-flagged typed part and the LLM driver performs
+//     the provider upload inside `Complete`. A provider without
+//     upload support for the modality degrades at the DRIVER (the
+//     `ArtifactStub` universal degradation, with a logged notice) —
+//     not here.
 //   - `tool:<name>` degrades to ref when the catalog view does not
 //     resolve the name ([DegradationUnknownTool]). A nil catalog
 //     skips the check — the forced tool is kept verbatim (the hint
@@ -305,9 +309,7 @@ func EffectiveDisposition(resolved AttachmentDisposition, mime string, catalog T
 			From: resolved, To: DispositionRef, Reason: DegradationInlineUnsupportedMIME,
 		}
 	case resolved == DispositionProviderNative:
-		return DispositionRef, &DispositionDegradation{
-			From: resolved, To: DispositionRef, Reason: DegradationProviderNativeUnavailable,
-		}
+		return DispositionProviderNative, nil
 	}
 	if name, ok := resolved.ToolName(); ok {
 		if catalog != nil {

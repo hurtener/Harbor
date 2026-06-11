@@ -317,32 +317,72 @@ type ContentPart struct {
 // `MIME` is the image MIME type (`image/jpeg`, `image/png`,
 // `image/webp`, ...). `Detail` is a provider hint (`low` / `high` /
 // `auto`); empty string means "use provider default."
+//
+// `ProviderNative` and `ProviderFileID` are additive provider-native
+// upload fields (the `provider_native` attachment disposition,
+// RFC §6.5): they never replace the URL/DataURL/Artifact sum.
+// `ProviderNative` asks the driver to hand the part's content to the
+// provider's own understanding by uploading it and rewriting the part
+// to an opaque provider file reference; any `CompleteRequest` builder
+// may set it directly — no planner, config, or Protocol required.
+// `ProviderFileID` carries the resulting opaque reference; a part
+// arriving with it pre-set skips the upload. A part whose only
+// content is a `ProviderFileID` is legal over-threshold — it carries
+// no inline bytes, so the context-leak edge guard does not fire on
+// it.
 type ImagePart struct {
 	URL      string
 	DataURL  string
 	Artifact *ArtifactStub
 	MIME     string
 	Detail   string
+	// ProviderNative requests the driver-internal provider upload for
+	// this part. See the struct doc.
+	ProviderNative bool
+	// ProviderFileID is the opaque provider file reference produced by
+	// the upload (or pre-set by the caller to reuse a known file).
+	ProviderFileID string
 }
 
 // AudioPart is a multimodal audio input. Same supply forms as
-// `ImagePart`; `MIME` is the audio MIME type.
+// `ImagePart`; `MIME` is the audio MIME type. `ProviderNative` /
+// `ProviderFileID` carry the provider-native upload contract — see
+// the `ImagePart` doc.
 type AudioPart struct {
 	URL      string
 	DataURL  string
 	Artifact *ArtifactStub
 	MIME     string
+	// ProviderNative requests the driver-internal provider upload for
+	// this part. See the `ImagePart` doc.
+	ProviderNative bool
+	// ProviderFileID is the opaque provider file reference produced by
+	// the upload (or pre-set by the caller to reuse a known file).
+	ProviderFileID string
 }
 
 // FilePart is a multimodal file input. Same supply forms as
 // `ImagePart`; `MIME` is the document MIME type. `Filename` is a
 // hint shown to the model when the provider supports it.
+// `ProviderNative` / `ProviderFileID` carry the provider-native
+// upload contract — see the `ImagePart` doc.
 type FilePart struct {
 	URL      string
 	DataURL  string
 	Artifact *ArtifactStub
 	MIME     string
 	Filename string
+	// ProviderNative requests the driver-internal provider upload for
+	// this part. See the `ImagePart` doc.
+	ProviderNative bool
+	// ProviderFileID is the opaque provider file reference produced by
+	// the upload (or pre-set by the caller to reuse a known file).
+	ProviderFileID string
+	// DocumentType disambiguates a structured document for providers
+	// with native document understanding — a short lowercase token
+	// derived from the MIME subtype (`pdf`, `csv`, ...). Optional;
+	// empty for non-document content.
+	DocumentType string
 }
 
 // ResponseFormatKind discriminates a `ResponseFormat`.

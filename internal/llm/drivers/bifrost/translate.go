@@ -234,12 +234,18 @@ func translateParts(in []llm.ContentPart) ([]bfschemas.ChatContentBlock, error) 
 }
 
 // translateImagePart resolves the (URL | DataURL | Artifact) sum into
-// bifrost's image-block shape. Artifact form renders as the canonical
-// `ArtifactStub` JSON inside a text block (D-022 / RFC §6.5) so
-// providers without vision still receive a meaningful description.
+// bifrost's image-block shape. A `ProviderFileID` (set by the
+// driver's provider-native upload pass, or pre-set by the caller)
+// takes precedence and emits the provider file-reference block.
+// Artifact form renders as the canonical `ArtifactStub` JSON inside a
+// text block (D-022 / RFC §6.5) so providers without vision still
+// receive a meaningful description.
 func translateImagePart(p *llm.ImagePart) (bfschemas.ChatContentBlock, error) {
 	if p == nil {
 		return bfschemas.ChatContentBlock{}, fmt.Errorf("ImagePart is nil")
+	}
+	if p.ProviderFileID != "" {
+		return providerFileBlock(p.ProviderFileID, p.MIME, ""), nil
 	}
 	if p.Artifact != nil {
 		return artifactStubBlock(p.Artifact)
@@ -266,11 +272,15 @@ func translateImagePart(p *llm.ImagePart) (bfschemas.ChatContentBlock, error) {
 }
 
 // translateAudioPart resolves the (URL | DataURL | Artifact) sum into
-// bifrost's input-audio block. Artifact form renders as the canonical
-// `ArtifactStub` JSON inside a text block.
+// bifrost's input-audio block. A `ProviderFileID` takes precedence
+// and emits the provider file-reference block. Artifact form renders
+// as the canonical `ArtifactStub` JSON inside a text block.
 func translateAudioPart(p *llm.AudioPart) (bfschemas.ChatContentBlock, error) {
 	if p == nil {
 		return bfschemas.ChatContentBlock{}, fmt.Errorf("AudioPart is nil")
+	}
+	if p.ProviderFileID != "" {
+		return providerFileBlock(p.ProviderFileID, p.MIME, ""), nil
 	}
 	if p.Artifact != nil {
 		return artifactStubBlock(p.Artifact)
@@ -301,11 +311,15 @@ func translateAudioPart(p *llm.AudioPart) (bfschemas.ChatContentBlock, error) {
 }
 
 // translateFilePart resolves the (URL | DataURL | Artifact) sum into
-// bifrost's file-block. Artifact form renders as the canonical
-// `ArtifactStub` JSON inside a text block.
+// bifrost's file-block. A `ProviderFileID` takes precedence and emits
+// the provider file-reference block. Artifact form renders as the
+// canonical `ArtifactStub` JSON inside a text block.
 func translateFilePart(p *llm.FilePart) (bfschemas.ChatContentBlock, error) {
 	if p == nil {
 		return bfschemas.ChatContentBlock{}, fmt.Errorf("FilePart is nil")
+	}
+	if p.ProviderFileID != "" {
+		return providerFileBlock(p.ProviderFileID, p.MIME, p.Filename), nil
 	}
 	if p.Artifact != nil {
 		return artifactStubBlock(p.Artifact)
@@ -347,6 +361,31 @@ func translateFilePart(p *llm.FilePart) (bfschemas.ChatContentBlock, error) {
 			Filename: filename,
 		},
 	}, nil
+}
+
+// providerFileBlock emits bifrost's provider file-reference content
+// block — `{type:"file", file:{file_id}}` on the wire. This is the
+// ONE bifrost chat shape that carries an uploaded `file_id`, so every
+// provider-native modality (image / audio / video / document)
+// translates through it; bifrost's per-provider converters rewrite
+// the reference into the provider's own shape (e.g. Anthropic's
+// `source.file_id` document/image sources). `mime` rides `file_type`
+// as the content hint; `filename` is optional.
+func providerFileBlock(fileID, mime, filename string) bfschemas.ChatContentBlock {
+	id := fileID
+	file := &bfschemas.ChatInputFile{FileID: &id}
+	if mime != "" {
+		mt := mime
+		file.FileType = &mt
+	}
+	if filename != "" {
+		fn := filename
+		file.Filename = &fn
+	}
+	return bfschemas.ChatContentBlock{
+		Type: bfschemas.ChatContentBlockTypeFile,
+		File: file,
+	}
 }
 
 // artifactStubBlock renders an `ArtifactStub` as a text block whose

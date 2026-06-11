@@ -99,6 +99,7 @@ var eventPayloadIndex = map[events.EventType]payloadEntry{
 	llm.EventTypeRetryWithFeedback:     {Payloads: []reflect.Type{reflect.TypeOf(llm.RetryWithFeedbackPayload{})}},
 	llm.EventTypePostureReadAdmin:      {Payloads: []reflect.Type{reflect.TypeOf(llm.PostureReadAdminPayload{})}},
 	llm.EventTypeCompletionChunk:       {Payloads: []reflect.Type{reflect.TypeOf(llm.CompletionChunkPayload{})}},
+	llm.EventTypeProviderFileUploaded:  {Payloads: []reflect.Type{reflect.TypeOf(llm.ProviderFileUploadedPayload{})}},
 
 	// --- Memory.
 	memory.EventTypeMemoryIdentityRejected: {Payloads: []reflect.Type{reflect.TypeOf(memory.MemoryIdentityRejectedPayload{})}},
