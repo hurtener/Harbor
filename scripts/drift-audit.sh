@@ -238,7 +238,7 @@ fi
 
 # -----------------------------------------------------------------------------
 # Markdownlint parity — run the SAME markdownlint-cli2 version CI pins
-# (markdownlint-cli2-action@v15 → markdownlint-cli2 0.12.1, see Makefile
+# (markdownlint-cli2-action@v23 → markdownlint-cli2 0.22.1, see Makefile
 # MARKDOWNLINT_CLI2_VERSION) with CI-identical globs, so local and CI never
 # drift on a rule like MD029 (a v0.33-vs-v0.40 ordered-list gap bit the v1.2.0
 # PR). A clone without npx (node) skips it — CI still enforces the gate.

@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
 # PREFLIGHT_REQUIRES: static-only
 #
-# Phase NN smoke template. Copy to phase-NN.sh, set the surface assertions, make executable.
+# Phase 101 smoke — GitHub Actions Node 24 modernisation.
 #
-#   cp scripts/smoke/_template.sh scripts/smoke/phase-NN.sh
-#   chmod +x scripts/smoke/phase-NN.sh
-#
-# Conventions (AGENTS.md §4.2):
-#   - 404/405/501 → SKIP (so phase-N+1 scripts coexist with phase-N builds).
-#   - At least one OK once the phase has shipped.
-#   - Use helpers from scripts/smoke/common.sh — don't roll new curl wrappers.
-#
-# Classification (D-104 — the `# PREFLIGHT_REQUIRES:` header above):
-#   - static-only — pure file/text greps, golden compares, file-existence
-#     assertions. Runs in the parallel batch BEFORE the dev server boots.
-#   - live-server — hits the booted dev server over HTTP (`api_url`,
-#     `assert_status`, `skip_if_404`, `assert_json_path`) or reads the
-#     preflight server log. Runs serially against the booted instance.
-#   - unit-tests — runs `go test` for one or more packages. Parallelisable;
-#     `go test` schedules its own internal parallelism.
-#
-# Pick `live-server` whenever the smoke depends on `HARBOR_BIND` /
-# `HARBOR_BASE_URL` / `HARBOR_DEV_TOKEN` / `${HARBOR_DATA_DIR}/server.log`
-# or invokes the built `bin/harbor` against a network endpoint. When in
-# doubt, `live-server` is the safe default — misclassifying a
-# server-touching smoke as `static-only` produces nondeterministic flakes.
+# Static-only: asserts no workflow step pins a Node-20-bound action version.
+# GitHub forces Node 24 on JavaScript actions 2026-06-16 and removes the
+# Node 20 runtime 2026-09-16; the deprecated pins are actions/checkout@v4/v5
+# and actions/setup-go@v4/v5 (plus the two repo-specific stragglers asserted
+# below). The workflows' live behaviour is gated by CI itself — every PR run
+# exercises the bumped actions — so the smoke only guards against version
+# regressions reappearing in committed YAML.
 
 set -euo pipefail
 
@@ -34,17 +19,42 @@ cd "${ROOT}"
 # shellcheck source=scripts/smoke/common.sh
 source "scripts/smoke/common.sh"
 
-# ----------------------------------------------------------------------------
-# Phase NN assertions go below. Examples:
-#
-#   assert_status 200 "$(api_url /healthz)" "healthz returns 200"
-#   assert_json_path '.status' 'ok' "$(api_url /readyz)" "readyz reports status=ok"
-#   protocol_call 'sessions/create' '{"tenant":"t1","user":"u1"}' "create session"
-#
-# Until the phase ships, the script can be empty assertions or a single
-# `skip "phase NN: not yet implemented"` to keep preflight green.
-# ----------------------------------------------------------------------------
+# 1. No Node-20-bound actions/checkout or actions/setup-go pins remain.
+if grep -rE 'actions/(checkout|setup-go)@v[45]' .github/workflows/ >/dev/null 2>&1; then
+    fail "phase 101: Node-20-bound actions/checkout or actions/setup-go pin found in .github/workflows/"
+else
+    ok "phase 101: no actions/checkout@v4/v5 or actions/setup-go@v4/v5 pins remain"
+fi
 
-skip "phase NN: smoke skeleton — replace with real assertions when the phase implements its surface"
+# 2. The two repo-specific Node 20 stragglers stay bumped.
+if grep -rE 'DavidAnson/markdownlint-cli2-action@v(1[0-9]|[0-9])$' .github/workflows/ >/dev/null 2>&1; then
+    fail "phase 101: markdownlint-cli2-action pinned below v20 (Node 20 runtime)"
+else
+    ok "phase 101: markdownlint-cli2-action on a Node-24 major (v20+)"
+fi
+
+if grep -rE 'actions/deploy-pages@v[1-4]' .github/workflows/ >/dev/null 2>&1; then
+    fail "phase 101: actions/deploy-pages pinned below v5 (Node 20 runtime)"
+else
+    ok "phase 101: actions/deploy-pages on a Node-24 major (v5+)"
+fi
+
+# 3. Every workflow file still parses as YAML (basic sanity after the bump).
+#    Degrades to SKIP where python3 + PyYAML are unavailable — the parse
+#    check is belt-and-braces; GitHub itself rejects unparsable workflows.
+if python3 -c "import yaml" >/dev/null 2>&1; then
+    yaml_ok=1
+    for wf in .github/workflows/*.yml; do
+        if ! python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "${wf}" >/dev/null 2>&1; then
+            fail "phase 101: ${wf} does not parse as YAML"
+            yaml_ok=0
+        fi
+    done
+    if [ "${yaml_ok}" -eq 1 ]; then
+        ok "phase 101: every .github/workflows/*.yml parses as YAML"
+    fi
+else
+    skip "phase 101: python3 + PyYAML unavailable — YAML parse sanity not run"
+fi
 
 smoke_summary
