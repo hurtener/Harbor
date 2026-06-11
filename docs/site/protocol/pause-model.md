@@ -10,10 +10,12 @@ understood Harbor.
 
 > Methods demonstrated: `pause`, `resume`, `approve`, `reject`, `pause.list`
 
-Every request/response and SSE frame on this page is real wire traffic,
-captured from a runtime assembled with the production drivers (the same
-assembly `harbor dev` boots) running an approval-gated tool — not freehand
-prose. Tokens and timestamps vary; shapes do not.
+Except for the OAuth intervention section (whose frames are transcribed from
+the callback handler and its tests — see the note there), every
+request/response and SSE frame on this page is real wire traffic, captured
+from a runtime assembled with the production drivers (the same assembly
+`harbor dev` boots) running an approval-gated tool — not freehand prose.
+Tokens and timestamps vary; shapes do not.
 
 ## The choreography at a glance
 
@@ -236,10 +238,12 @@ Failure shapes on the callback (JSON bodies, except the success page):
 | 502 | `exchange_failed` | The authorization server rejected the token exchange. |
 | 503 | `provider_closed` | The provider is shut down. |
 
-These shapes are transcribed from the callback handler and its tests
-(`internal/tools/auth`), not from a live capture — exercising them end-to-end
-needs a real authorization server; the Runtime's OAuth-completion E2Es gate
-them on every commit.
+This whole OAuth leg — the `tool.auth_required` frame above (its placeholder
+`state` / `PauseToken` values included) and the failure-shape table — is
+transcribed from the callback handler, the payload type, and their tests
+(`internal/tools/auth`), not from a live capture: exercising it end-to-end
+needs a real authorization server. The Runtime's OAuth-completion E2Es gate
+the shapes on every commit.
 
 The callback path is fixed for `harbor dev` (`/v1/tools/oauth/callback`);
 headless embedders may mount it elsewhere, matching their configured

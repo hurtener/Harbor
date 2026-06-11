@@ -90,9 +90,9 @@ else
     if command -v curl >/dev/null 2>&1; then
         actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
             -X POST -H 'Content-Type: application/json' \
-            -d '{}' "${SESSIONS_LIST_URL}" || echo "000")
+            -d '{}' "${SESSIONS_LIST_URL}" || true)
         case "${actual}" in
-            404|405|501)
+            404|405|501|000)
                 skip 'phase 73c: sessions.list not yet mounted (404/405/501 -> SKIP); will OK once the route registers'
                 ;;
             401)
@@ -118,9 +118,9 @@ else
             -X POST -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${DEV_TOKEN}" \
             -d '{"filter":{},"limit":10}' \
-            "${SESSIONS_LIST_URL}" || echo "000")
+            "${SESSIONS_LIST_URL}" || true)
         case "${status}" in
-            404|405|501)
+            404|405|501|000)
                 skip 'phase 73c: sessions.list happy-path SKIP (route not yet mounted)'
                 ;;
             200)
@@ -149,9 +149,9 @@ else
             -X POST -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${DEV_TOKEN}" \
             -d '{"filter":{"tenant_ids":["smoke-other-tenant"]},"limit":10}' \
-            "${SESSIONS_LIST_URL}" || echo "000")
+            "${SESSIONS_LIST_URL}" || true)
         case "${actual}" in
-            404|405|501)
+            404|405|501|000)
                 skip 'phase 73c: sessions.list cross-tenant check SKIP (route not yet mounted)'
                 ;;
             200)
@@ -173,7 +173,7 @@ else
             -X POST -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${DEV_TOKEN}" \
             -d '{"session_id":"smoke-unknown-session"}' \
-            "${SESSIONS_INSPECT_URL}" || echo "000")
+            "${SESSIONS_INSPECT_URL}" || true)
         case "${actual}" in
             404)
                 ok 'phase 73c: sessions.inspect on an unknown session id returns 404 (CodeNotFound) — route mounted + identity-scoped'
@@ -344,9 +344,9 @@ if [ -n "${DEV_TOKEN:-}" ] && command -v curl >/dev/null 2>&1 && command -v jq >
         -H "Authorization: Bearer ${DEV_TOKEN}" \
         -H "X-Harbor-Session: ${SMOKE_SESS}" \
         -d '{"identity":{},"query":"d170 smoke turn"}' \
-        "${START_URL}" || echo "000")
+        "${START_URL}" || true)
     case "${start_status}" in
-        404|405|501)
+        404|405|501|000)
             skip 'phase 73c/D-171: control.start not mounted (404/405/501 -> SKIP)'
             ;;
         200)

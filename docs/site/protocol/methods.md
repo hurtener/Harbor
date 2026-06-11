@@ -41,7 +41,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `tasks.get` | `POST /v1/tasks/get` | tasks (read-only) | [`TaskGetRequest`](./types.md#taskgetrequest) | [`TaskDetail`](./types.md#taskdetail) | read-only |
-| `tasks.list` | `POST /v1/tasks/list` | tasks (read-only) | [`TaskListRequest`](./types.md#tasklistrequest) | [`TaskListResponse`](./types.md#tasklistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `tasks.list` | `POST /v1/tasks/list` | tasks (read-only) | [`TaskListRequest`](./types.md#tasklistrequest) | [`TaskListResponse`](./types.md#tasklistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 
 ## Sessions
 
@@ -54,7 +54,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `pause.list` | `POST /v1/pause/list` | pause snapshot (read-only) | [`PauseListRequest`](./types.md#pauselistrequest) | [`PauseListResponse`](./types.md#pauselistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `pause.list` | `POST /v1/pause/list` | pause snapshot (read-only) | [`PauseListRequest`](./types.md#pauselistrequest) | [`PauseListResponse`](./types.md#pauselistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 
 ## Search
 
@@ -70,19 +70,19 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `governance.posture` | `POST /v1/control/governance.posture` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`GovernancePostureResponse`](./types.md#governancepostureresponse) | read-only |
-| `llm.posture` | `POST /v1/control/llm.posture` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`LLMPostureResponse`](./types.md#llmpostureresponse) | read-only |
-| `metrics.snapshot` | `POST /v1/control/metrics.snapshot` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`MetricsSnapshot`](./types.md#metricssnapshot) | read-only |
-| `runtime.counters` | `POST /v1/control/runtime.counters` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeCounters`](./types.md#runtimecounters) | read-only |
-| `runtime.drivers` | `POST /v1/control/runtime.drivers` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeDrivers`](./types.md#runtimedrivers) | read-only |
-| `runtime.health` | `POST /v1/control/runtime.health` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeHealth`](./types.md#runtimehealth) | read-only |
-| `runtime.info` | `POST /v1/control/runtime.info` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeInfo`](./types.md#runtimeinfo) | read-only |
+| `governance.posture` | `POST /v1/control/governance.posture` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`GovernancePostureResponse`](./types.md#governancepostureresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `llm.posture` | `POST /v1/control/llm.posture` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`LLMPostureResponse`](./types.md#llmpostureresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `metrics.snapshot` | `POST /v1/control/metrics.snapshot` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`MetricsSnapshot`](./types.md#metricssnapshot) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.counters` | `POST /v1/control/runtime.counters` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeCounters`](./types.md#runtimecounters) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.drivers` | `POST /v1/control/runtime.drivers` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeDrivers`](./types.md#runtimedrivers) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.health` | `POST /v1/control/runtime.health` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeHealth`](./types.md#runtimehealth) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `runtime.info` | `POST /v1/control/runtime.info` | posture (read-only) | [`RuntimeInfoRequest`](./types.md#runtimeinforequest) | [`RuntimeInfo`](./types.md#runtimeinfo) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 
 ## Topology
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `topology.snapshot` | `POST /v1/control/topology.snapshot` | topology (read-only) | [`TopologySnapshotRequest`](./types.md#topologysnapshotrequest) | [`TopologyProjection`](./types.md#topologyprojection) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `topology.snapshot` | `POST /v1/control/topology.snapshot` | topology (read-only) | [`TopologySnapshotRequest`](./types.md#topologysnapshotrequest) | [`TopologyProjection`](./types.md#topologyprojection) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 
 ## Artifacts
 
@@ -98,8 +98,8 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
 | `memory.delete` | `POST /v1/memory/delete` | memory | [`MemoryDeleteRequest`](./types.md#memorydeleterequest) | [`MemoryDeleteResponse`](./types.md#memorydeleteresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `memory.get` | `POST /v1/memory/get` | memory | [`MemoryGetRequest`](./types.md#memorygetrequest) | [`MemoryGetResponse`](./types.md#memorygetresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `memory.health` | `POST /v1/memory/health` | memory | [`MemoryHealthRequest`](./types.md#memoryhealthrequest) | [`MemoryHealthResponse`](./types.md#memoryhealthresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `memory.get` | `POST /v1/memory/get` | memory | [`MemoryGetRequest`](./types.md#memorygetrequest) | [`MemoryGetResponse`](./types.md#memorygetresponse) | read-only |
+| `memory.health` | `POST /v1/memory/health` | memory | [`MemoryHealthRequest`](./types.md#memoryhealthrequest) | [`MemoryHealthResponse`](./types.md#memoryhealthresponse) | read-only |
 | `memory.list` | `POST /v1/memory/list` | memory | [`MemoryListRequest`](./types.md#memorylistrequest) | [`MemoryListResponse`](./types.md#memorylistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `memory.put` | `POST /v1/memory/put` | memory | [`MemoryPutRequest`](./types.md#memoryputrequest) | [`MemoryPutResponse`](./types.md#memoryputresponse) | mutating; requires the verified `admin` scope claim (D-079) |
 | `memory.strategy_trace` | `POST /v1/memory/strategy_trace` | memory | [`MemoryStrategyTraceRequest`](./types.md#memorystrategytracerequest) | [`MemoryStrategyTraceResponse`](./types.md#memorystrategytraceresponse) | read-only |
@@ -111,7 +111,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `tools.content_stats` | `POST /v1/tools/content_stats` | tools | [`ToolContentStatsRequest`](./types.md#toolcontentstatsrequest) | [`ToolContentStats`](./types.md#toolcontentstats) | read-only |
 | `tools.describe` | `POST /v1/tools/describe` | tools | [`ToolDescribeRequest`](./types.md#tooldescriberequest) | [`ToolManifest`](./types.md#toolmanifest) | read-only |
 | `tools.get` | `POST /v1/tools/get` | tools | [`ToolGetRequest`](./types.md#toolgetrequest) | [`Tool`](./types.md#tool) | read-only |
-| `tools.list` | `POST /v1/tools/list` | tools | [`ToolListRequest`](./types.md#toollistrequest) | [`ToolListResponse`](./types.md#toollistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `tools.list` | `POST /v1/tools/list` | tools | [`ToolListRequest`](./types.md#toollistrequest) | [`ToolListResponse`](./types.md#toollistresponse) | read-only |
 | `tools.metrics` | `POST /v1/tools/metrics` | tools | [`ToolMetricsRequest`](./types.md#toolmetricsrequest) | [`ToolMetrics`](./types.md#toolmetrics) | read-only |
 | `tools.revoke_oauth` | `POST /v1/tools/revoke_oauth` | tools | [`ToolRevokeOAuthRequest`](./types.md#toolrevokeoauthrequest) | [`ToolRevokeOAuthResponse`](./types.md#toolrevokeoauthresponse) | mutating; requires the verified `admin` scope claim (D-079) |
 | `tools.set_approval_policy` | `POST /v1/tools/set_approval_policy` | tools | [`ToolSetApprovalPolicyRequest`](./types.md#toolsetapprovalpolicyrequest) | [`ToolSetApprovalPolicyResponse`](./types.md#toolsetapprovalpolicyresponse) | mutating; requires the verified `admin` scope claim (D-079) |
@@ -120,12 +120,12 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `flows.describe` | `POST /v1/flows/describe` | flows | [`FlowDescribeRequest`](./types.md#flowdescriberequest) | [`FlowDescription`](./types.md#flowdescription) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `flows.list` | `POST /v1/flows/list` | flows | [`FlowListRequest`](./types.md#flowlistrequest) | [`FlowListResponse`](./types.md#flowlistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `flows.metrics` | `POST /v1/flows/metrics` | flows | [`FlowMetricsRequest`](./types.md#flowmetricsrequest) | [`FlowMetrics`](./types.md#flowmetrics) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `flows.describe` | `POST /v1/flows/describe` | flows | [`FlowDescribeRequest`](./types.md#flowdescriberequest) | [`FlowDescription`](./types.md#flowdescription) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
+| `flows.list` | `POST /v1/flows/list` | flows | [`FlowListRequest`](./types.md#flowlistrequest) | [`FlowListResponse`](./types.md#flowlistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
+| `flows.metrics` | `POST /v1/flows/metrics` | flows | [`FlowMetricsRequest`](./types.md#flowmetricsrequest) | [`FlowMetrics`](./types.md#flowmetrics) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
 | `flows.run` | `POST /v1/flows/run` | flows | [`FlowRunRequest`](./types.md#flowrunrequest) | [`FlowRunResponse`](./types.md#flowrunresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `flows.runs.describe` | `POST /v1/flows/runs/describe` | flows | [`FlowRunDescribeRequest`](./types.md#flowrundescriberequest) | [`FlowRunDescription`](./types.md#flowrundescription) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `flows.runs.list` | `POST /v1/flows/runs/list` | flows | [`FlowRunsListRequest`](./types.md#flowrunslistrequest) | [`FlowRunsListResponse`](./types.md#flowrunslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `flows.runs.describe` | `POST /v1/flows/runs/describe` | flows | [`FlowRunDescribeRequest`](./types.md#flowrundescriberequest) | [`FlowRunDescription`](./types.md#flowrundescription) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
+| `flows.runs.list` | `POST /v1/flows/runs/list` | flows | [`FlowRunsListRequest`](./types.md#flowrunslistrequest) | [`FlowRunsListResponse`](./types.md#flowrunslistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 
 ## Agents
 
@@ -134,16 +134,16 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `agents.deregister` | `POST /v1/agents/deregister` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
 | `agents.drain` | `POST /v1/agents/drain` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
 | `agents.force_stop` | `POST /v1/agents/force_stop` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `agents.get` | `POST /v1/agents/get` | agents (read-only) | [`AgentGetRequest`](./types.md#agentgetrequest) | [`AgentGetResponse`](./types.md#agentgetresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `agents.governance` | `POST /v1/agents/governance` | agents (read-only) | [`AgentGovernanceRequest`](./types.md#agentgovernancerequest) | [`AgentGovernanceResponse`](./types.md#agentgovernanceresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `agents.list` | `POST /v1/agents/list` | agents (read-only) | [`AgentListRequest`](./types.md#agentlistrequest) | [`AgentListResponse`](./types.md#agentlistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `agents.memory` | `POST /v1/agents/memory` | agents (read-only) | [`AgentMemoryRequest`](./types.md#agentmemoryrequest) | [`AgentMemoryResponse`](./types.md#agentmemoryresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `agents.metrics` | `POST /v1/agents/metrics` | agents (read-only) | [`AgentMetricsRequest`](./types.md#agentmetricsrequest) | [`AgentMetricsResponse`](./types.md#agentmetricsresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `agents.get` | `POST /v1/agents/get` | agents (read-only) | [`AgentGetRequest`](./types.md#agentgetrequest) | [`AgentGetResponse`](./types.md#agentgetresponse) | read-only |
+| `agents.governance` | `POST /v1/agents/governance` | agents (read-only) | [`AgentGovernanceRequest`](./types.md#agentgovernancerequest) | [`AgentGovernanceResponse`](./types.md#agentgovernanceresponse) | read-only |
+| `agents.list` | `POST /v1/agents/list` | agents (read-only) | [`AgentListRequest`](./types.md#agentlistrequest) | [`AgentListResponse`](./types.md#agentlistresponse) | read-only |
+| `agents.memory` | `POST /v1/agents/memory` | agents (read-only) | [`AgentMemoryRequest`](./types.md#agentmemoryrequest) | [`AgentMemoryResponse`](./types.md#agentmemoryresponse) | read-only |
+| `agents.metrics` | `POST /v1/agents/metrics` | agents (read-only) | [`AgentMetricsRequest`](./types.md#agentmetricsrequest) | [`AgentMetricsResponse`](./types.md#agentmetricsresponse) | read-only |
 | `agents.pause` | `POST /v1/agents/pause` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `agents.permissions` | `POST /v1/agents/permissions` | agents (read-only) | [`AgentPermissionsRequest`](./types.md#agentpermissionsrequest) | [`AgentPermissionsResponse`](./types.md#agentpermissionsresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `agents.permissions` | `POST /v1/agents/permissions` | agents (read-only) | [`AgentPermissionsRequest`](./types.md#agentpermissionsrequest) | [`AgentPermissionsResponse`](./types.md#agentpermissionsresponse) | read-only |
 | `agents.restart` | `POST /v1/agents/restart` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `agents.skills` | `POST /v1/agents/skills` | agents (read-only) | [`AgentSkillsRequest`](./types.md#agentskillsrequest) | [`AgentSkillsResponse`](./types.md#agentskillsresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `agents.tools` | `POST /v1/agents/tools` | agents (read-only) | [`AgentToolsRequest`](./types.md#agenttoolsrequest) | [`AgentToolsResponse`](./types.md#agenttoolsresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
+| `agents.skills` | `POST /v1/agents/skills` | agents (read-only) | [`AgentSkillsRequest`](./types.md#agentskillsrequest) | [`AgentSkillsResponse`](./types.md#agentskillsresponse) | read-only |
+| `agents.tools` | `POST /v1/agents/tools` | agents (read-only) | [`AgentToolsRequest`](./types.md#agenttoolsrequest) | [`AgentToolsResponse`](./types.md#agenttoolsresponse) | read-only |
 
 ## MCP servers
 

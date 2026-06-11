@@ -71,8 +71,8 @@ Two elevated scopes exist. There is no third; per-surface scopes
 
 | Scope | Grants |
 |---|---|
-| `admin` | Cross-tenant fan-in on reads; the admin-gated mutations (`artifacts.delete`, `memory.put` / `memory.delete`, the `mcp.servers.*` and `tools.*` admin verbs, the `agents.*` fleet-control verbs, `flows.run`, `auth.rotate_token`); admin impersonation. |
-| `console:fleet` | Fleet observation: cross-tenant `events.subscribe` / `events.aggregate` fan-in. |
+| `admin` | Cross-tenant fan-in on every read surface that has one; the admin-gated mutations (`artifacts.delete`, `memory.put` / `memory.delete`, the `mcp.servers.*` and `tools.*` admin verbs, the `agents.*` fleet-control verbs, `flows.run`, `auth.rotate_token`); admin impersonation. |
+| `console:fleet` | Fleet observation: cross-tenant fan-in on `events.subscribe` / `events.aggregate`, the five `search.*` methods, `sessions.list`, `artifacts.list`, `memory.list`, and the seven posture reads (`runtime.*`, `metrics.snapshot`, `governance.posture`, `llm.posture`). It is observation-only — it satisfies **no** mutation gate, and the admin-only fan-ins (`tasks.list`, `pause.list`, `topology.snapshot`, `flows.list` / `flows.runs.list`) do not consult it. The per-method Auth column in the [methods reference](./methods.md) is the authoritative row-level map. |
 
 Distinct from both: the **steering scope** (`session_user` / `owner_user` /
 `admin`) that travels in a control request's body `scope` field and is checked

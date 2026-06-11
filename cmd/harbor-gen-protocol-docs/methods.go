@@ -44,6 +44,63 @@ type methodEntry struct {
 	// Auth is the posture beyond the identity-mandatory baseline
 	// (empty = baseline only).
 	Auth string
+	// CrossTenant is the machine-readable cross-tenant entitlement for
+	// a read method's fan-in. It is the SINGLE source both the rendered
+	// Auth note (crossTenantNote) and the live-probe lockstep test
+	// (TestGen_AuthColumnMatchesHandlerGates) consult — the §17.5
+	// Protocol-track audit found the hand-typed note had drifted from
+	// the handlers' actual scope gates on ~10 rows, so the cell is now
+	// pinned by driving fleet-only vs admin-only tokens against every
+	// noted row and asserting the observed accept/reject matches.
+	CrossTenant crossTenantPolicy
+}
+
+// crossTenantPolicy enumerates what a read method's handler actually
+// does with a cross-tenant request. The values mirror the deployed
+// gates — document what the code does, never what symmetry suggests.
+type crossTenantPolicy int
+
+const (
+	// crossTenantNone — no cross-tenant fan-in exists under any scope:
+	// the handler overlays the verified identity onto the request (or
+	// rejects a body identity that differs from it), so every caller
+	// sees their own tuple only (e.g. tools.* reads, agents.* reads,
+	// memory.get).
+	crossTenantNone crossTenantPolicy = iota
+	// crossTenantAdminOnly — the cross-tenant filter gate consults the
+	// verified `admin` scope claim ONLY; `console:fleet` is rejected
+	// (tasks.list, pause.list, flows.list, flows.runs.list,
+	// topology.snapshot).
+	crossTenantAdminOnly
+	// crossTenantAdminOrFleet — the cross-tenant filter gate admits the
+	// D-079 closed two-scope set: `admin` OR `console:fleet` (events,
+	// search, sessions.list, artifacts.list, memory.list, posture).
+	crossTenantAdminOrFleet
+	// crossTenantAdminWidens — no rejecting cross-tenant filter shape
+	// exists on the wire; the verified `admin` claim widens result
+	// visibility across tenants instead (flows.describe,
+	// flows.runs.describe, flows.metrics — run aggregates are
+	// tenant-scoped unless admin). Not status-probeable, so the
+	// lockstep test pins only that no rejecting gate is claimed.
+	crossTenantAdminWidens
+)
+
+// crossTenantAuthNote renders the per-policy Auth-column note. One
+// switch — the doc cell and the probe semantics derive from the same
+// crossTenantPolicy value.
+func crossTenantAuthNote(p crossTenantPolicy) string {
+	switch p {
+	case crossTenantAdminOnly:
+		return "cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted)"
+	case crossTenantAdminOrFleet:
+		return "cross-tenant fan-in requires `admin` or `console:fleet`"
+	case crossTenantAdminWidens:
+		return "tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants"
+	case crossTenantNone:
+		return ""
+	default:
+		return ""
+	}
 }
 
 // methodToControlType mirrors the protocol package's (unexported)
@@ -67,10 +124,6 @@ var methodToControlType = map[methods.Method]steering.ControlType{
 // adminNote is the shared auth-posture string for the admin-gated
 // methods (D-079 closed two-scope set).
 const adminNote = "requires the verified `admin` scope claim (D-079)"
-
-// crossTenantNote is the shared auth-posture string for read surfaces
-// whose cross-tenant fan-in gates on the elevated scopes.
-const crossTenantNote = "cross-tenant fan-in requires `admin` or `console:fleet`"
 
 // controlRoute derives the concrete control-transport route for a
 // method from control.RoutePattern.
@@ -109,12 +162,12 @@ func methodTable() map[methods.Method]methodEntry {
 			Route: stream.RoutePattern, Mutates: false,
 			RequestNote:  "no JSON body — the filter travels as query/header values (`X-Harbor-Run`, `X-Harbor-Event-Type`, `?admin=1`, `Last-Event-ID`)",
 			ResponseNote: "SSE stream (`text/event-stream`); see [events.md](./events.md)",
-			Auth:         crossTenantNote,
+			CrossTenant:  crossTenantAdminOrFleet,
 		},
 		methods.MethodEventsAggregate: {
 			Route: stream.AggregateRoutePattern, Mutates: false,
 			Request: "EventAggregateRequest", Response: "EventAggregateResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOrFleet,
 		},
 
 		// --- Search cluster (Phase 72c / D-108) — all five share one shape.
@@ -138,21 +191,21 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodPauseList: {
 			Route: stream.PauseListRoutePattern, Mutates: false,
 			Request: "PauseListRequest", Response: "PauseListResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOnly,
 		},
 
 		// --- Topology (Phase 74 / D-114).
 		methods.MethodTopologySnapshot: {
 			Route: controlRoute(methods.MethodTopologySnapshot), Mutates: false,
 			Request: "TopologySnapshotRequest", Response: "TopologyProjection",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOnly,
 		},
 
 		// --- Artifacts (Phase 73l / D-120 + Phase 108o / D-187).
 		methods.MethodArtifactsList: {
 			Route: controlRoute(methods.MethodArtifactsList), Mutates: false,
 			Request: "ArtifactsListRequest", Response: "ArtifactsListResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOrFleet,
 		},
 		methods.MethodArtifactsPut: {
 			Route: controlRoute(methods.MethodArtifactsPut), Mutates: true,
@@ -172,17 +225,15 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodMemoryList: {
 			Route: stream.MemoryListRoutePattern, Mutates: false,
 			Request: "MemoryListRequest", Response: "MemoryListResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOrFleet,
 		},
 		methods.MethodMemoryGet: {
 			Route: stream.MemoryGetRoutePattern, Mutates: false,
 			Request: "MemoryGetRequest", Response: "MemoryGetResponse",
-			Auth: crossTenantNote,
 		},
 		methods.MethodMemoryHealth: {
 			Route: stream.MemoryHealthRoutePattern, Mutates: false,
 			Request: "MemoryHealthRequest", Response: "MemoryHealthResponse",
-			Auth: crossTenantNote,
 		},
 		methods.MethodMemoryStrategyTrace: {
 			Route: stream.MemoryStrategyTraceRoutePattern, Mutates: false,
@@ -218,7 +269,6 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodToolsList: {
 			Route: wildcardRoute(stream.ToolsRoutePattern, "tools.", methods.MethodToolsList), Mutates: false,
 			Request: "ToolListRequest", Response: "ToolListResponse",
-			Auth: crossTenantNote,
 		},
 		methods.MethodToolsGet: {
 			Route: wildcardRoute(stream.ToolsRoutePattern, "tools.", methods.MethodToolsGet), Mutates: false,
@@ -251,7 +301,7 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodTasksList: {
 			Route: wildcardRoute(stream.TasksRoutePattern, "tasks.", methods.MethodTasksList), Mutates: false,
 			Request: "TaskListRequest", Response: "TaskListResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOnly,
 		},
 		methods.MethodTasksGet: {
 			Route: wildcardRoute(stream.TasksRoutePattern, "tasks.", methods.MethodTasksGet), Mutates: false,
@@ -278,7 +328,7 @@ func methodTable() map[methods.Method]methodEntry {
 		methods.MethodSessionsList: {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsList), Mutates: false,
 			Request: "SessionsListRequest", Response: "SessionsListResponse",
-			Auth: crossTenantNote,
+			CrossTenant: crossTenantAdminOrFleet,
 		},
 		methods.MethodSessionsInspect: {
 			Route: subtreeRoute(stream.SessionsRoutePattern, "sessions.", methods.MethodSessionsInspect), Mutates: false,
@@ -286,11 +336,11 @@ func methodTable() map[methods.Method]methodEntry {
 		},
 
 		// --- Flows (Phase 73i / D-117): five reads + the one admin run.
-		methods.MethodFlowsList:         flowsRead(methods.MethodFlowsList, "FlowListRequest", "FlowListResponse"),
-		methods.MethodFlowsDescribe:     flowsRead(methods.MethodFlowsDescribe, "FlowDescribeRequest", "FlowDescription"),
-		methods.MethodFlowsRunsList:     flowsRead(methods.MethodFlowsRunsList, "FlowRunsListRequest", "FlowRunsListResponse"),
-		methods.MethodFlowsRunsDescribe: flowsRead(methods.MethodFlowsRunsDescribe, "FlowRunDescribeRequest", "FlowRunDescription"),
-		methods.MethodFlowsMetrics:      flowsRead(methods.MethodFlowsMetrics, "FlowMetricsRequest", "FlowMetrics"),
+		methods.MethodFlowsList:         flowsRead(methods.MethodFlowsList, "FlowListRequest", "FlowListResponse", crossTenantAdminOnly),
+		methods.MethodFlowsDescribe:     flowsRead(methods.MethodFlowsDescribe, "FlowDescribeRequest", "FlowDescription", crossTenantAdminWidens),
+		methods.MethodFlowsRunsList:     flowsRead(methods.MethodFlowsRunsList, "FlowRunsListRequest", "FlowRunsListResponse", crossTenantAdminOnly),
+		methods.MethodFlowsRunsDescribe: flowsRead(methods.MethodFlowsRunsDescribe, "FlowRunDescribeRequest", "FlowRunDescription", crossTenantAdminWidens),
+		methods.MethodFlowsMetrics:      flowsRead(methods.MethodFlowsMetrics, "FlowMetricsRequest", "FlowMetrics", crossTenantAdminWidens),
 		methods.MethodFlowsRun: {
 			Route: subtreeRoute(stream.FlowsRoutePattern, "flows.", methods.MethodFlowsRun), Mutates: true,
 			Request: "FlowRunRequest", Response: "FlowRunResponse",
@@ -330,16 +380,19 @@ func searchEntry(m methods.Method) methodEntry {
 	return methodEntry{
 		Route: controlRoute(m), Mutates: false,
 		Request: "SearchRequest", Response: "SearchResponse",
-		Auth: crossTenantNote,
+		CrossTenant: crossTenantAdminOrFleet,
 	}
 }
 
 // postureEntry builds the shared row shape for the seven read-only
 // posture methods (all decode the one RuntimeInfoRequest envelope).
+// Cross-tenant posture reads gate on `admin` OR `console:fleet`
+// (internal/protocol/posture.go).
 func postureEntry(m methods.Method, response string) methodEntry {
 	return methodEntry{
 		Route: controlRoute(m), Mutates: false,
 		Request: "RuntimeInfoRequest", Response: response,
+		CrossTenant: crossTenantAdminOrFleet,
 	}
 }
 
@@ -353,12 +406,14 @@ func mcpEntry(m methods.Method, req, resp string, mutates bool) methodEntry {
 	return e
 }
 
-// agentsRead builds a read-only agents.* row.
+// agentsRead builds a read-only agents.* row. The registry protocol
+// service overlays the verified identity onto every read — no
+// cross-tenant fan-in exists under any scope, so the rows carry no
+// elevated-scope note.
 func agentsRead(m methods.Method, req, resp string) methodEntry {
 	return methodEntry{
 		Route: wildcardRoute(stream.AgentsRoutePattern, "agents.", m), Mutates: false,
 		Request: req, Response: resp,
-		Auth: crossTenantNote,
 	}
 }
 
@@ -371,12 +426,16 @@ func agentsControl(m methods.Method) methodEntry {
 	}
 }
 
-// flowsRead builds a read-only flows.* row.
-func flowsRead(m methods.Method, req, resp string) methodEntry {
+// flowsRead builds a read-only flows.* row. ct is the per-method
+// cross-tenant policy: `flows.list` / `flows.runs.list` carry the
+// admin-only rejecting filter gate (internal/runtime/flow/protocol
+// ErrCrossTenantScope); the describe/metrics reads have no rejecting
+// filter shape — the admin claim widens run visibility instead.
+func flowsRead(m methods.Method, req, resp string, ct crossTenantPolicy) methodEntry {
 	return methodEntry{
 		Route: subtreeRoute(stream.FlowsRoutePattern, "flows.", m), Mutates: false,
 		Request: req, Response: resp,
-		Auth: crossTenantNote,
+		CrossTenant: ct,
 	}
 }
 
@@ -527,16 +586,22 @@ func responseCell(e methodEntry) string {
 	return typeLink(e.Response)
 }
 
-// authCell renders the Auth column for one row.
+// authCell renders the Auth column for one row: the read-only/mutating
+// verb, the explicit Auth posture (admin verbs, steering scopes), and
+// the cross-tenant note derived from the row's crossTenantPolicy.
 func authCell(e methodEntry) string {
 	verb := "read-only"
 	if e.Mutates {
 		verb = "mutating"
 	}
-	if e.Auth == "" {
-		return verb
+	parts := []string{verb}
+	if e.Auth != "" {
+		parts = append(parts, e.Auth)
 	}
-	return verb + "; " + e.Auth
+	if note := crossTenantAuthNote(e.CrossTenant); note != "" {
+		parts = append(parts, note)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // typeLink renders a wire-type name as a link into types.md.

@@ -80,9 +80,9 @@ DEV_IDENTITY='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
 status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || true)
 case "${status}" in
-    404|405|501)
+    404|405|501|000)
         skip "phase 73d: /v1/tasks/list returned ${status} -- tasks surface not mounted on this build"
         skip 'phase 73d: /tasks route lands with 73m harbor console subcommand'
         smoke_summary
@@ -115,7 +115,7 @@ facet_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${LIST_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"statuses":["running"]}}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${facet_status}" == "200" ]]; then
     ok 'phase 73d: tasks.list honours the status facet'
 else
@@ -126,7 +126,7 @@ fi
 #     rejects the token-less request at the edge with 401).
 noident_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || true)
 if [[ "${noident_status}" != "200" && "${noident_status}" != "000" ]]; then
     ok "phase 73d: tasks.list rejects a missing identity (${noident_status})"
 else
@@ -143,7 +143,7 @@ xtenant_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${LIST_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"identities":[{"tenant":"dev"},{"tenant":"other"}]}}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${xtenant_status}" == "200" ]]; then
     ok 'phase 73d: tasks.list admits a cross-tenant filter under the admin-scoped dev token (200)'
 elif [[ "${xtenant_status}" == "403" ]]; then
@@ -159,7 +159,7 @@ get_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${GET_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"id":"task-does-not-exist"}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${get_status}" == "404" ]]; then
     ok 'phase 73d: tasks.get returns 404 for an unknown task id (existence not revealed)'
 else

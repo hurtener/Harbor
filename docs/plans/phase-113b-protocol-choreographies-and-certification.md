@@ -2,7 +2,7 @@
 
 ## Summary
 
-Closes the Protocol adoption track (`docs/notes/protocol-docs-proposal.md`, PR #305) on the foundation 113a laid: choreography guides 4–5 (**the pause model** — `pause.requested` → approve / reject / OAuth-callback / plain resume, durable pauses across restarts, timeout reaps; **versioning & compatibility** — RFC §5.3 made adopter-facing, including the unknown-field / unknown-method tolerance conventions the smoke scripts already encode); the **build-a-client** guide (a ~100-line worked event-viewer client, with the hand-maintained TS wire-type module — described accurately per D-132 — and the Console as reference implementations); and the **conformance-certification** page documenting `internal/protocol/conformance` as the compatibility-claim path — how to run the suite and what passing claims. No sdk-export of the suite (proposal Q3, owner-resolved). Decision: D-210 (reserved; logged at ship).
+Closes the Protocol adoption track (`docs/notes/protocol-docs-proposal.md`, PR #305) on the foundation 113a laid: choreography guides 4–5 (**the pause model** — `pause.requested` → approve / reject / OAuth-callback / plain resume, durable pauses across restarts, timeout reaps; **versioning & compatibility** — RFC §5.3 made adopter-facing, including the unknown-field / unknown-method tolerance conventions the smoke scripts already encode); the **build-a-client** guide (a ~150-line worked event-viewer client, with the hand-maintained TS wire-type module — described accurately per D-132 — and the Console as reference implementations); and the **conformance-certification** page documenting `internal/protocol/conformance` as the compatibility-claim path — how to run the suite and what passing claims. No sdk-export of the suite (proposal Q3, owner-resolved). Decision: D-210 (reserved; logged at ship).
 
 ## RFC anchor
 
@@ -37,6 +37,7 @@ None at planning time. One owner-resolved scope pin restated (proposal Q3): the 
 - **Wire-capture provenance, per the plan's own fallback.** The approve / reject / `DecisionTimeout` legs (SSE frames, `pause.list` snapshots, control request/response pairs) were captured from a runtime assembled with the production drivers (`harbortest/devstack` + a `deny-all`-gated tool driven through the production dispatch path) — a live `harbor dev` capture is infeasible because the dev mock LLM never emits tool calls, so no approval gate ever fires on the preflight server. The OAuth-callback leg is transcribed from the handler + its tests (`internal/tools/auth`) and the page says so. The capture harness was a throwaway; the standing gates are the 111b/111c E2Es + this phase's lockstep greps (the plan's stated test posture).
 - **The worked client compile gate is in-module.** `examples/` is part of the repo module, so the gate is a direct bounded `go build ./examples/protocol-clients/event-viewer` (plus a grep-absence assert that the client carries no `hurtener/Harbor` import — its SDK-free premise) rather than the 112b external-module ceremony, which would be dishonest for a client whose point is zero Harbor imports.
 - **A §17.6-posture docs fix rode along.** `task-control.md` claimed pause-shaped controls cause `task.paused` / `task.resumed`; nothing calls `MarkPaused`/`MarkResumed` on the live pause path — a parked run's task status stays `running`. The line is corrected; the pause guide documents the real semantics (`pause.list` is the authoritative park read).
+- **The 113a-pages regression line lives in `phase-113a.sh`, not here.** The smoke sketch lists "113a's pages still assert green" as a `phase-113b.sh` item; the shipped script carries no such assertion because `scripts/smoke/phase-113a.sh` runs in the same preflight fleet on every commit — the regression gate exists, delegated to the script that owns those pages (recorded at the Protocol-track §17.5 checkpoint).
 
 ## Goals
 
@@ -61,7 +62,7 @@ RFC §5.3 made adopter-facing:
 
 ### (c) The build-a-client guide (`docs/site/protocol/build-a-client.md`)
 
-The shortest credible client, worked end-to-end: a **~100-line event-viewer** (TypeScript or Go; one language in full, the other linked as a variant) that bootstraps auth, calls `runtime.info`, subscribes to `GET /v1/events` (SSE), and renders the event stream for one session — every line shown, runnable as listed. Then the two doors up: the hand-maintained TS wire-type module (`web/console/src/lib/protocol.ts`, kept in lockstep with `CanonicalWireTypes` — described accurately per D-132, NOT as generator output) and the Console itself as the full reference implementations; and the certification page as the closer. The worked client's source ships in the repo (`examples/protocol-clients/event-viewer/`) so the guide quotes a tested artifact instead of freehand prose code — the 113a recipe-cannot-lie posture applied to a client program.
+The shortest credible client, worked end-to-end: a **~150-line event-viewer** (TypeScript or Go; one language in full, the other linked as a variant) that bootstraps auth, calls `runtime.info`, subscribes to `GET /v1/events` (SSE), and renders the event stream for one session — every line shown, runnable as listed. Then the two doors up: the hand-maintained TS wire-type module (`web/console/src/lib/protocol.ts`, kept in lockstep with `CanonicalWireTypes` — described accurately per D-132, NOT as generator output) and the Console itself as the full reference implementations; and the certification page as the closer. The worked client's source ships in the repo (`examples/protocol-clients/event-viewer/`) so the guide quotes a tested artifact instead of freehand prose code — the 113a recipe-cannot-lie posture applied to a client program.
 
 ### (d) The conformance-certification page (`docs/site/protocol/conformance-certification.md`)
 
@@ -93,7 +94,7 @@ The four new pages join the Protocol nav section (`docs/site/.vitepress/config.t
 ## Files added or changed
 
 - `docs/site/protocol/pause-model.md`, `versioning-and-compatibility.md`, `build-a-client.md`, `conformance-certification.md` — hand-written.
-- `examples/protocol-clients/event-viewer/` — the worked client (~100 lines + module/manifest file).
+- `examples/protocol-clients/event-viewer/` — the worked client (~150 lines + module/manifest file).
 - `docs/site/.vitepress/config.ts` — Protocol nav entries for the four pages.
 - `docs/skills/use-the-harbor-protocol/SKILL.md` — cross-links to the completed track (§18).
 - `scripts/smoke/phase-113b.sh` — trip-wires + the worked-client compile gate.
@@ -106,7 +107,7 @@ The four new pages join the Protocol nav section (`docs/site/.vitepress/config.t
 
 ## Test plan
 
-- **Unit:** N/A for Go packages (no runtime code); the worked client carries its own minimal build check (the compile gate) rather than a test suite — it is a teaching artifact, ≤ ~100 lines by design.
+- **Unit:** N/A for Go packages (no runtime code); the worked client carries its own minimal build check (the compile gate) rather than a test suite — it is a teaching artifact, ~150 lines including its doc comment.
 - **Integration:** the worked-client compile gate (smoke) proves the listing builds against the shipped wire types; the docs workflow's dead-link build is the cross-page integration gate (the same §17.1 acceptable shape Phase 103 recorded). The pause choreography's load-bearing live verification already exists — Phase 111b/111c's E2Es exercise the exact wire sequence the guide narrates; the guide's lockstep greps tie the prose to those gated surfaces instead of duplicating a second live harness.
 - **Conformance:** N/A — documents the suite; does not modify it.
 - **Concurrency / leak:** N/A — no runtime artifact.

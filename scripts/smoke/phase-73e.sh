@@ -83,9 +83,9 @@ DEV_IDENTITY='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
 list_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || true)
 case "${list_status}" in
-    404|405|501)
+    404|405|501|000)
         skip 'phase 73e: /v1/agents/* surface not mounted on this build -- SKIP'
         skip 'phase 73e: /agents route lands with 73m harbor console subcommand'
         smoke_summary
@@ -111,7 +111,7 @@ facet_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${LIST_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"status":["active"]}}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${facet_status}" == "200" ]]; then
     ok 'phase 73e: agents.list honours the status facet'
 else
@@ -130,7 +130,7 @@ get_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "$(api_url /v1/agents/get)" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"id":"smoke-unknown-agent"}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 get_code=$(printf '%s' "${get_body}" | jq -r '.code // empty' 2>/dev/null || echo '')
 if [[ "${get_status}" == "404" && "${get_code}" == "not_found" ]]; then
     ok 'phase 73e: agents.get unknown id -> 404 not_found'
@@ -147,7 +147,7 @@ for method in tools memory governance skills permissions; do
         -H "Content-Type: application/json" \
         -X POST "$(api_url "/v1/agents/${method}")" \
         -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"id":"smoke-unknown-agent"}' \
-        2>/dev/null || echo '000')
+        2>/dev/null || true)
     if [[ "${st}" == "404" ]]; then
         ok "phase 73e: agents.${method} reachable (404 on unknown id)"
     else
@@ -158,7 +158,7 @@ metrics_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
     -H "Content-Type: application/json" \
     -X POST "$(api_url /v1/agents/metrics)" -d "${DEV_IDENTITY}" \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${metrics_status}" == "200" ]]; then
     ok 'phase 73e: agents.metrics returns the registry-wide rollup'
 else
@@ -178,7 +178,7 @@ for verb in pause drain restart force_stop deregister; do
         -H "Content-Type: application/json" \
         -X POST "$(api_url "/v1/agents/${verb}")" \
         -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"id":"smoke-unknown-agent","reason":"smoke"}' \
-        2>/dev/null || echo '000')
+        2>/dev/null || true)
     if [[ "${cst}" == "404" ]]; then
         ok "phase 108l: agents.${verb} mounted + admin-gated (404 on unknown id with the control claim)"
     else
@@ -190,7 +190,7 @@ done
 # scope gate is never even reached without a valid identity triple).
 ctl_noident=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
-    -X POST "$(api_url /v1/agents/pause)" -d '{"id":"smoke-unknown-agent"}' 2>/dev/null || echo '000')
+    -X POST "$(api_url /v1/agents/pause)" -d '{"id":"smoke-unknown-agent"}' 2>/dev/null || true)
 if [[ "${ctl_noident}" == "401" ]]; then
     ok 'phase 108l: agents.pause without identity -> 401'
 else
@@ -203,7 +203,7 @@ noident_body=$(curl -s --max-time 5 \
     -X POST "${LIST_URL}" -d '{}' 2>/dev/null || echo '{}')
 noident_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || true)
 ni_code=$(printf '%s' "${noident_body}" | jq -r '.code // empty' 2>/dev/null || echo '')
 if [[ "${noident_status}" == "401" && "${ni_code}" == "identity_required" ]]; then
     ok 'phase 73e: agents.list without identity -> 401 identity_required'

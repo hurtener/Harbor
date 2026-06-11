@@ -34,12 +34,12 @@ DRAFT_BASE="/v1/dev/drafts"
 actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     --data '{"name":"smoke-66-unauth"}' \
-    "$(api_url ${DRAFT_BASE}/)" || echo "000")
+    "$(api_url ${DRAFT_BASE}/)" || true)
 case "$actual" in
     401)
         ok "harbor dev: ${DRAFT_BASE}/ rejects unauthenticated POST (401)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "harbor dev: ${DRAFT_BASE}/ surface not yet implemented (${actual})"
         ;;
     *)
@@ -78,7 +78,7 @@ create_status=$(curl -s -o "${TMP}/create.json" -w '%{http_code}' \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data "{\"name\":\"${DRAFT_NAME}\"}" \
-    "$(api_url ${DRAFT_BASE}/)" || echo "000")
+    "$(api_url ${DRAFT_BASE}/)" || true)
 if [ "${create_status}" = "201" ]; then
     DRAFT_ID="$(jq -r '.draft_id // empty' "${TMP}/create.json" 2>/dev/null || true)"
     if [ -n "${DRAFT_ID}" ] && [ "${DRAFT_ID}" != "null" ]; then
@@ -101,7 +101,7 @@ patch_status=$(curl -s -o "${TMP}/patch.json" -w '%{http_code}' \
     -X PATCH -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{"content":"# smoke-edited\n"}' \
-    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/files/README.md)" || echo "000")
+    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/files/README.md)" || true)
 if [ "${patch_status}" = "200" ]; then
     ok "harbor dev: PATCH ${DRAFT_BASE}/{id}/files/README.md → 200"
 else
@@ -114,7 +114,7 @@ preview_status=$(curl -s -o "${TMP}/preview.json" -w '%{http_code}' \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data '{}' \
-    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/preview)" || echo "000")
+    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/preview)" || true)
 if [ "${preview_status}" = "200" ]; then
     preview_ok="$(jq -r '.ok // empty' "${TMP}/preview.json" 2>/dev/null || true)"
     if [ "${preview_ok}" = "true" ]; then
@@ -133,7 +133,7 @@ save_status=$(curl -s -o "${TMP}/save.json" -w '%{http_code}' \
     -X POST -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${TOKEN}" \
     --data "{\"name\":\"${DRAFT_NAME}\",\"output_dir\":\"${OUT_DIR}\"}" \
-    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/save)" || echo "000")
+    "$(api_url ${DRAFT_BASE}/${DRAFT_ID}/save)" || true)
 if [ "${save_status}" = "200" ]; then
     if [ -f "${OUT_DIR}/harbor.yaml" ]; then
         ok "harbor dev: POST ${DRAFT_BASE}/{id}/save promoted scaffold (harbor.yaml present)"
@@ -147,7 +147,7 @@ fi
 # Delete.
 del_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X DELETE -H "Authorization: Bearer ${TOKEN}" \
-    "$(api_url ${DRAFT_BASE}/${DRAFT_ID})" || echo "000")
+    "$(api_url ${DRAFT_BASE}/${DRAFT_ID})" || true)
 if [ "${del_status}" = "200" ]; then
     ok "harbor dev: DELETE ${DRAFT_BASE}/{id} → 200"
 else
@@ -157,7 +157,7 @@ fi
 # Get after delete.
 get_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Authorization: Bearer ${TOKEN}" \
-    "$(api_url ${DRAFT_BASE}/${DRAFT_ID})" || echo "000")
+    "$(api_url ${DRAFT_BASE}/${DRAFT_ID})" || true)
 if [ "${get_status}" = "404" ]; then
     ok "harbor dev: GET ${DRAFT_BASE}/{id} after DELETE → 404"
 else

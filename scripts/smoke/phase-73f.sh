@@ -76,9 +76,9 @@ DEV_IDENTITY='{"identity":{"tenant":"dev","user":"dev","session":"dev"}}'
 status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d "${DEV_IDENTITY}" 2>/dev/null || true)
 case "${status}" in
-    404|405|501)
+    404|405|501|000)
         skip "phase 73f: /v1/tools/list returned ${status} -- tools surface not mounted on this build"
         skip 'phase 73f: /console/tools route lands with 73m harbor console subcommand'
         smoke_summary
@@ -111,7 +111,7 @@ facet_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${LIST_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"filter":{"transports":["MCP"]}}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 if [[ "${facet_status}" == "200" ]]; then
     ok 'phase 73f: tools.list honours the transport facet'
 else
@@ -127,7 +127,7 @@ if [[ -n "${first_id}" ]]; then
             -H "Content-Type: application/json" \
             -X POST "$(api_url "/v1/tools/${verb}")" \
             -d "{\"identity\":{\"tenant\":\"dev\",\"user\":\"dev\",\"session\":\"dev\"},\"id\":\"${first_id}\"}" \
-            2>/dev/null || echo '000')
+            2>/dev/null || true)
         if [[ "${st}" == "200" ]]; then
             ok "phase 73f: tools.${verb} round-trips for ${first_id}"
         else
@@ -172,7 +172,7 @@ for verb_payload in \
     admin_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -H "Authorization: Bearer ${HARBOR_DEV_TOKEN}" \
         -H "Content-Type: application/json" \
-        -X POST "$(api_url "/v1/tools/${verb}")" -d "${payload}" 2>/dev/null || echo '000')
+        -X POST "$(api_url "/v1/tools/${verb}")" -d "${payload}" 2>/dev/null || true)
     code=$(printf '%s' "${admin_body}" | jq -r '.code // empty' 2>/dev/null || echo '')
     # An admin-scoped token PASSES the gate; on the unknown id the
     # method returns 404 not_found. A 403/identity_scope_required would
@@ -192,7 +192,7 @@ noident_body=$(curl -s --max-time 5 \
     -X POST "${LIST_URL}" -d '{}' 2>/dev/null || echo '{}')
 noident_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
-    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || echo '000')
+    -X POST "${LIST_URL}" -d '{}' 2>/dev/null || true)
 ni_code=$(printf '%s' "${noident_body}" | jq -r '.code // empty' 2>/dev/null || echo '')
 if [[ "${noident_status}" == "401" && "${ni_code}" == "identity_required" ]]; then
     ok 'phase 73f: tools.list without identity -> 401 identity_required'

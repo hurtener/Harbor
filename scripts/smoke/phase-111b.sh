@@ -37,16 +37,16 @@ CALLBACK_URL="$(api_url '/v1/tools/oauth/callback')"
 if ! command -v curl >/dev/null 2>&1; then
     skip "phase 111b: curl not available"
 else
-    probe=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${CALLBACK_URL}" || echo "000")
+    probe=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${CALLBACK_URL}" || true)
     case "$probe" in
-        404|405|501|000*)
+        404|405|501|000)
             skip "phase 111b: callback route not mounted yet / server unreachable (${probe})"
             ;;
         400)
             ok "phase 111b: GET ${CALLBACK_URL} with no params → 400 (mounted, fails loud on garbage)"
             # The route is mounted — the 404 below is the handler's own
             # flow_not_found mapping, not an unmounted route.
-            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${CALLBACK_URL}?state=bogus-smoke-state&code=x" || echo "000")
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${CALLBACK_URL}?state=bogus-smoke-state&code=x" || true)
             if [ "$status" = "404" ]; then
                 ok "phase 111b: bogus state → 404 (flow-not-found mapping live)"
             else

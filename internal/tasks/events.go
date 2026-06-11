@@ -28,10 +28,16 @@ const (
 	// transitions from Pending or Paused → Running.
 	EventTypeTaskStarted events.EventType = "task.started"
 	// EventTypeTaskPaused — emitted by MarkPaused (Running → Paused).
+	// No V1 production caller drives MarkPaused on the live pause path
+	// (a paused run stays `running` in the task projection; pause state
+	// travels on the `pause.*` events — see the Protocol pause model),
+	// so the shipped runtime does not produce this type; the registry
+	// driver contract and the conformance suite keep it canonical.
 	EventTypeTaskPaused events.EventType = "task.paused"
 	// EventTypeTaskResumed — emitted by MarkResumed (Paused → Running).
 	// Distinct from task.started so subscribers can tell pause-resume
-	// from initial start.
+	// from initial start. Like task.paused, not produced on the V1 live
+	// pause path — subscribe to `pause.resumed` for live resume signals.
 	EventTypeTaskResumed events.EventType = "task.resumed"
 	// EventTypeTaskCompleted — emitted by MarkComplete (Running →
 	// Complete; terminal).
