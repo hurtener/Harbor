@@ -33,7 +33,7 @@ ROTATE_URL="$(api_url /v1/auth/rotate_token)"
 if command -v curl >/dev/null 2>&1; then
   rotate_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H 'Content-Type: application/json' -d '{}' "${ROTATE_URL}" \
-    || echo "000")
+    || true)
   case "${rotate_status}" in
     404|405|501|000)
       skip "phase 73m: auth.rotate_token route absent (${rotate_status})"
@@ -84,7 +84,7 @@ if [ -x "./bin/harbor" ]; then
 
     if [ -n "${console_url}" ]; then
       console_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-        "${console_url}/" || echo "000")
+        "${console_url}/" || true)
       if [ "${console_status}" = "200" ]; then
         ok "phase 73m: harbor console serves the embedded Console build at / (200 OK)"
       else

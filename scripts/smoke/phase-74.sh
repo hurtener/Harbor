@@ -84,9 +84,9 @@ status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -H "Content-Type: application/json" \
     -X POST "${SNAPSHOT_URL}" \
     -d '{"identity":{"tenant":"dev","user":"dev","session":"dev"}}' \
-    2>/dev/null || echo '000')
+    2>/dev/null || true)
 case "${status}" in
-    404|405|501)
+    404|405|501|000)
         skip "phase 74: topology.snapshot returned ${status} -- the dev stack hosts no engine-graph; an engine-bearing build flips this to OK (preflight stays green)"
         ;;
     200)

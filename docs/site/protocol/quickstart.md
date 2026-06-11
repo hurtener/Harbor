@@ -203,7 +203,7 @@ Every error on the wire is that one envelope — branch on `code`, never on
    [task control](./task-control.md), [the pause model](./pause-model.md),
    and [versioning & compatibility](./versioning-and-compatibility.md):
    sequence and intent, not just shapes.
-3. **[Build a client](./build-a-client.md)** — a complete ~100-line
+3. **[Build a client](./build-a-client.md)** — a complete ~150-line
    event-viewer client, worked line by line, with the
    [conformance-certification path](./conformance-certification.md) as the
    closer. The bundled Console is the reference full client, and the

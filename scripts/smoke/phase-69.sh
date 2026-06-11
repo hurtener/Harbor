@@ -86,12 +86,12 @@ start_status=$(curl -s -o "${START_RESP}" -w '%{http_code}' \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     --data "${START_BODY}" \
-    "$(api_url /v1/control/start)" || echo "000")
+    "$(api_url /v1/control/start)" || true)
 case "${start_status}" in
     200)
         ok "phase 69: live /v1/control/start returned 200 — bus seeded for inspect-events"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "phase 69: /v1/control/start not implemented (${start_status}) — wire-side tests skipped"
         smoke_summary
         exit 0

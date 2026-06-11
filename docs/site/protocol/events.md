@@ -738,7 +738,7 @@ Payload `RunCancelledPayload` — safe payload (delivered typed, verbatim).
 
 ## `runtime.warning`
 
-Reserved for future runtime-warn emits — registered, no emit path in this version.
+Reserved for future runtime-warn emits — registered, no production Runtime emit path in this version; published only by the Protocol conformance suite as a driver-certification fixture.
 
 ## `session.closed`
 
@@ -936,6 +936,8 @@ Payload `TaskPatchRejectedPayload` — safe payload (delivered typed, verbatim).
 
 ## `task.paused`
 
+Registry-driver scope: emitted by the task registry's MarkPaused transition, which no V1 production caller drives on the live pause path — a paused run stays `running` in the task projection and pause state travels on the `pause.*` events (see the [pause model](./pause-model.md)).
+
 Payload `TaskPausedPayload` — safe payload (delivered typed, verbatim).
 
 | Wire key | Go type | Notes |
@@ -953,6 +955,8 @@ Payload `TaskPrioritisedPayload` — safe payload (delivered typed, verbatim).
 | `NewPriority` | `int` |  |
 
 ## `task.resumed`
+
+Registry-driver scope: emitted by the task registry's MarkResumed transition, which no V1 production caller drives on the live pause path — subscribe to `pause.resumed` for live resume signals (see the [pause model](./pause-model.md)).
 
 Payload `TaskResumedPayload` — safe payload (delivered typed, verbatim).
 

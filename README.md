@@ -218,15 +218,16 @@ the surface and `harbortest/agent_test.go` is the worked example.
 ## Documentation
 
 The published docs site at **<https://hurtener.github.io/Harbor/>** renders
-the operator skills, recipes, and the full reference set (configuration, RFC,
-glossary, decisions log) with navigation and search. It builds from the
-canonical files below — the repo stays the source of truth.
+the operator skills, recipes, the Protocol adoption track (for third-party
+client authors), and the full reference set (configuration, RFC, glossary,
+decisions log) with navigation and search. It builds from the canonical files
+below — the repo stays the source of truth.
 
 | | |
 |--|--|
 | [`docs/skills/INDEX.md`](docs/skills/INDEX.md) | Operator skills — Claude-Code-style playbooks for building agents with Harbor. Start at [`scaffold-a-harbor-agent`](docs/skills/scaffold-a-harbor-agent/SKILL.md). |
 | [`docs/recipes/`](docs/recipes/) | Practical how-to guides, grounded in current APIs. |
-| [`docs/site/protocol/`](docs/site/protocol/) | The Protocol adoption track — build a third-party client against the wire: the executed quickstart, the generated method/event/error/type reference (drift-gated by `make protocol-docs-gen-check`), the five choreography guides (auth, streaming, task control, the pause model, versioning), the worked [event-viewer client](examples/protocol-clients/event-viewer/) (~100 lines, stdlib-only, compile-gated), and the conformance-certification path. |
+| [`docs/site/protocol/`](docs/site/protocol/) | The Protocol adoption track — build a third-party client against the wire: the executed quickstart, the generated method/event/error/type reference (drift-gated by `make protocol-docs-gen-check`), the five choreography guides (auth, streaming, task control, the pause model, versioning), the worked [event-viewer client](examples/protocol-clients/event-viewer/) (~150 lines, stdlib-only, compile-gated), and the conformance-certification path. |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | Full operator-facing reference for every `harbor.yaml` knob. |
 | [`docs/notes/productionization-playbook.md`](docs/notes/productionization-playbook.md) | The audit-driven hardening process — how a working agent becomes a production one. |
 | [`RFC-001-Harbor.md`](RFC-001-Harbor.md) | The design RFC — product intent and every architectural decision. |

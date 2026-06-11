@@ -13,6 +13,9 @@ hero:
       text: Recipes
       link: /recipes/
     - theme: alt
+      text: Build a Protocol client
+      link: /protocol/
+    - theme: alt
       text: View on GitHub
       link: https://github.com/hurtener/Harbor
 
@@ -74,6 +77,7 @@ config into a running stack. The full path is the
 |---------|------|
 | Operator skills — numbered playbooks for building agents | [/skills/](/skills/) |
 | Recipes — copy-paste how-to guides grounded in current APIs | [/recipes/](/recipes/) |
+| Build a third-party client — the Protocol adoption track (executed quickstart, generated reference, choreographies, certification) | [/protocol/](/protocol/) |
 | Every `harbor.yaml` knob | [Configuration reference](/reference/config) |
 | The design RFC | [RFC-001](/reference/rfc) |
 | Vocabulary | [Glossary](/reference/glossary) |

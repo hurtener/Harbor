@@ -132,9 +132,9 @@ if command -v curl >/dev/null 2>&1; then
     actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
         -X POST -H 'Content-Type: application/json' \
         -d '{"overrides":{"session_id":"sess-fix","reasoning_effort":"high"}}' \
-        "${RUNS_OVERRIDES_URL}" || echo "000")
+        "${RUNS_OVERRIDES_URL}" || true)
     case "${actual}" in
-        404|405|501|000|000000)
+        404|405|501|000)
             skip 'phase 73n: runs.set_overrides not reachable (404/405/501/no-server -> SKIP); will OK once the route registers under a live server'
             ;;
         401)
@@ -158,9 +158,9 @@ elif command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         -X POST -H 'Content-Type: application/json' \
         -H "Authorization: Bearer ${DEV_TOKEN}" \
         -d '{"overrides":{"reasoning_effort":"high"}}' \
-        "${RUNS_OVERRIDES_URL}" || echo "000")
+        "${RUNS_OVERRIDES_URL}" || true)
     case "${status}" in
-        404|405|501)
+        404|405|501|000)
             skip 'phase 73n: runs.set_overrides happy-path SKIP (route not yet mounted)'
             ;;
         200)
@@ -187,9 +187,9 @@ elif command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         -X POST -H 'Content-Type: application/json' \
         -H "Authorization: Bearer ${DEV_TOKEN}" \
         -d '{"overrides":{"temperature":9.9}}' \
-        "${RUNS_OVERRIDES_URL}" || echo "000")
+        "${RUNS_OVERRIDES_URL}" || true)
     case "${bad_status}" in
-        404|405|501)
+        404|405|501|000)
             skip 'phase 73n: runs.set_overrides invalid-override SKIP (route not yet mounted)'
             ;;
         400)

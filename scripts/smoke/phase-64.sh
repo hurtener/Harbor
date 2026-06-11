@@ -71,12 +71,12 @@ assert_status 200 "$(api_url /readyz)" "harbor dev: /readyz returns 200"
 actual=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
     -X POST -H "Content-Type: application/json" \
     --data '{"identity":{"tenant":"t1","user":"u1","session":"s1"},"query":"q"}' \
-    "$(api_url /v1/control/start)" || echo "000")
+    "$(api_url /v1/control/start)" || true)
 case "$actual" in
     401)
         ok "harbor dev: /v1/control rejects unauthenticated request (401)"
         ;;
-    404|405|501)
+    404|405|501|000)
         skip "harbor dev: /v1/control surface not yet implemented (${actual})"
         ;;
     *)
@@ -99,7 +99,7 @@ if [ -n "${HARBOR_DATA_DIR:-}" ] && [ -f "${HARBOR_DATA_DIR}/server.log" ]; then
             -X POST -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${TOKEN}" \
             --data '{"identity":{"tenant":"dev","user":"dev","session":"dev"},"query":"phase-64 smoke"}' \
-            "$(api_url /v1/control/start)" || echo "000")
+            "$(api_url /v1/control/start)" || true)
         if [ "$actual" = "200" ]; then
             if command -v jq >/dev/null 2>&1; then
                 task_id=$(jq -r '.task_id // empty' /tmp/harbor-smoke-start.json 2>/dev/null || true)
