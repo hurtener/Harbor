@@ -267,7 +267,7 @@ func (m *Manifest) expandSecrets(source string) error {
 // in the wrapped detail; previously-registered tools remain in the
 // catalog (the caller controls catalog lifetime).
 //
-// Concurrent reuse (D-025): each registered descriptor is safe under
+// Concurrent reuse: each registered descriptor is safe under
 // N concurrent invocations (see RegisterHTTPTool).
 func RegisterManifest(cat tools.ToolCatalog, m *Manifest) error {
 	if cat == nil {

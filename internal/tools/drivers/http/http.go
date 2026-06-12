@@ -47,7 +47,7 @@ var (
 	ErrHTTPStatus = errors.New("http: response status")
 )
 
-// allowedMethods is the HTTP-verb allowlist. Phase 27 ships these
+// allowedMethods is the HTTP-verb allowlist. Harbor ships these
 // five; OPTIONS / HEAD aren't tool-shaped operations.
 var allowedMethods = map[string]struct{}{
 	"GET":    {},
@@ -190,11 +190,11 @@ func WithLoading(m tools.LoadingMode) HTTPOption {
 //
 // Identity-mandatory: the registered descriptor reads the (tenant,
 // user, session) triple from ctx on every Invoke and fails with
-// ErrIdentityMissing when absent. Phase 30 will extend this with
-// tool-side OAuth tokens (per-identity); Phase 27 honours only the
+// ErrIdentityMissing when absent. A later phase will extend this with
+// tool-side OAuth tokens (per-identity); honours only the
 // operator-configured static auth secret.
 //
-// Concurrent reuse (D-025): the produced descriptor is safe for N
+// Concurrent reuse: the produced descriptor is safe for N
 // concurrent goroutines — per-invocation state (request, response,
 // classifier output) lives on the stack; cached templates and
 // compiled schema validators are read-only after construction.
@@ -302,7 +302,7 @@ func RegisterHTTPTool(
 
 // buildHTTPDescriptor packages the compiled artifacts into a
 // `tools.ToolDescriptor` with a single `Invoke` closure that runs
-// through the policy shell exactly ONCE (D-024 no double-wrap).
+// through the policy shell exactly ONCE (no double-wrap).
 //
 // The descriptor is the unit of concurrent reuse: the closure
 // captures only read-only state (cfg, method, compiled templates,
@@ -510,7 +510,7 @@ func buildSuccessResult(resp *http.Response, body []byte) (tools.ToolResult, err
 // classifyHTTPResponse maps a non-2xx response to a Go error whose
 // string carries the status code in a shape ClassifyError can map:
 //
-//   - 4xx (except 429): "status 4xx" → ErrClassPermanent (Phase 26
+//   - 4xx (except 429): "status 4xx" → ErrClassPermanent (
 //     classifier maps unknown strings to Transient by default, so
 //     4xx returns explicitly bubble ErrToolInvalidArgs / sentinel
 //     to terminate retry).
@@ -530,7 +530,7 @@ func classifyHTTPResponse(resp *http.Response, body []byte) error {
 		return &rateLimitError{status: status, delay: delay, snippet: snippet}
 	case status >= 400 && status < 500:
 		// 4xx → permanent. All 4xx wrap ErrToolInvalidArgs so the
-		// Phase 26 classifier maps them to ErrClassPermanent (no
+		// classifier maps them to ErrClassPermanent (no
 		// retry) and the planner-facing event channel surfaces them
 		// as `tool.invalid_args`. The wrapped detail names the
 		// status so operators can distinguish 400 (planner can
@@ -557,7 +557,7 @@ type rateLimitError struct {
 }
 
 // Error formats the status + parsed delay. The string deliberately
-// does NOT match Phase 26 ClassifyError's "status 5xx" / " 500 "
+// does NOT match ClassifyError's "status 5xx" / " 500 "
 // patterns; instead it falls through to the catch-all
 // ErrClassTransient, which is retryable by default. The Retry-After
 // delay is honoured by the driver itself before the error is

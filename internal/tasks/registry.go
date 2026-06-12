@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// DefaultDriver is the Phase 20 production driver name. Phase 87+
+// DefaultDriver is the production driver name. later phases
 // post-V1 work may register additional names; Open switches on
 // `cfg.Driver`.
 const DefaultDriver = "inprocess"

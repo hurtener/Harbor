@@ -7,7 +7,7 @@ import "errors"
 // Trajectory-shaped sentinels (ErrUnserializable, ErrToolContextLost)
 // live in the canonical subpackage internal/planner/trajectory and
 // are re-exported as type aliases at trajectory.go in this package.
-// Pre-Phase-43 stub ErrTrajectoryNotImplemented is retired — Phase 43
+// Pre-Phase-43 stub ErrTrajectoryNotImplemented is retired — Harbor
 // ships the real fail-loudly Serialize contract that replaces it.
 var (
 	// ErrPlannerClosed — operations against a planner whose Close()
@@ -23,7 +23,7 @@ var (
 	// dispatching the decision.
 	ErrInvalidDecision = errors.New("planner: invalid decision")
 
-	// ErrRepairExhausted (Phase 44) — surfaced by the
+	// ErrRepairExhausted — surfaced by the
 	// `internal/planner/repair.RepairLoop` for callers that want to
 	// inspect the graceful-failure path before the loop's terminal
 	// `Finish{NoPath}` is dispatched. The loop's `Run` returns
@@ -35,10 +35,10 @@ var (
 	// surface; this sentinel is the secondary read surface.
 	ErrRepairExhausted = errors.New("planner: schema repair exhausted")
 
-	// ErrIdentityRequired (Phase 48) — a concrete planner observed a
+	// ErrIdentityRequired — a concrete planner observed a
 	// `RunContext.Quadruple` missing one of the four scope components
 	// (tenant / user / session / run). Identity is mandatory at every
-	// planner boundary (§6 rule 9 + D-001). Concrete planners SHOULD
+	// planner boundary (§6 rule 9). Concrete planners SHOULD
 	// wrap this sentinel with their context so the runtime executor
 	// can surface a precise failure (e.g. `fmt.Errorf("%w (missing
 	// run_id)", planner.ErrIdentityRequired)`). The deterministic
@@ -46,7 +46,7 @@ var (
 	// identity at Next boundary consume the same sentinel.
 	ErrIdentityRequired = errors.New("planner: identity required (tenant/user/session/run)")
 
-	// ErrInvalidConfig (Phase 48) — a concrete planner's constructor
+	// ErrInvalidConfig — a concrete planner's constructor
 	// rejected the supplied configuration (empty step set, missing
 	// dependency, contradictory options). The fail-loudly contract:
 	// a malformed configuration MUST surface at construction time,
@@ -55,7 +55,7 @@ var (
 	// step", planner.ErrInvalidConfig)`) is the recommended pattern.
 	ErrInvalidConfig = errors.New("planner: invalid configuration")
 
-	// ErrDeterministicStep (Phase 48) — a `DecisionTreeStep` inside
+	// ErrDeterministicStep — a `DecisionTreeStep` inside
 	// the deterministic planner's walker returned a non-nil error.
 	// The planner wraps the step's error with this sentinel so
 	// callers can distinguish a structural step failure from a
@@ -63,33 +63,33 @@ var (
 	// per §13 — the walker does NOT skip a failing step (a silent
 	// skip would mask operator bugs in the tree).
 	ErrDeterministicStep = errors.New("planner/deterministic: step returned error")
-	// ErrParallelCapExceeded (Phase 47, D-056) — a CallParallel was
+	// ErrParallelCapExceeded — a CallParallel was
 	// emitted with more branches than AbsoluteMaxParallel. The runtime
 	// parallel executor rejects with this sentinel BEFORE any branch
 	// dispatches — atomic-setup-validation discipline per RFC §6.2.
 	// Fail-loudly per §13; never silently truncates the branch list.
 	ErrParallelCapExceeded = errors.New("planner: CallParallel branch count exceeds absolute_max_parallel")
 
-	// ErrParallelInvalidJoin (Phase 47, D-056) — a CallParallel was
+	// ErrParallelInvalidJoin — a CallParallel was
 	// emitted with a JoinSpec whose shape is malformed (e.g. JoinN
 	// with N ≤ 0 or N > len(Branches), or an unknown JoinKind). The
 	// executor rejects at setup time, before any branch dispatches.
 	ErrParallelInvalidJoin = errors.New("planner: CallParallel join spec invalid")
 
-	// ErrParallelBranchInvalidArgs (Phase 47, D-056) — atomic-setup
+	// ErrParallelBranchInvalidArgs — atomic-setup
 	// validation: ANY branch's args fail the descriptor's validator,
 	// the whole CallParallel fails before execution. The wrapped error
 	// names the offending branch index + the upstream validator error.
 	ErrParallelBranchInvalidArgs = errors.New("planner: CallParallel branch failed atomic-setup validation")
 
-	// ErrParallelPauseUnsupported (Phase 47, D-056) — a branch requested
-	// a pause mid-execution. The unified pause/resume primitive lands
-	// at Phase 50; until then, the parallel executor MUST fail loud
-	// per RFC §6.2's parallel-pause-atomicity contract. Phase 50
+	// ErrParallelPauseUnsupported — a branch requested
+	// a pause mid-execution. The unified pause/resume primitive lands;
+	// until then, the parallel executor MUST fail loud
+	// per RFC §6.2's parallel-pause-atomicity contract. The unified pause primitive
 	// upgrades this path to a checkpointed atomic pause.
-	ErrParallelPauseUnsupported = errors.New("planner: CallParallel pause-mid-execution not supported until Phase 50 unified pause primitive")
+	ErrParallelPauseUnsupported = errors.New("planner: CallParallel pause-mid-execution not supported by the unified pause primitive at V1")
 
-	// ErrMemoryBlockUnserializable (Phase 83d, D-146) — a value in
+	// ErrMemoryBlockUnserializable — a value in
 	// `RunContext.MemoryBlocks` (External / Conversation) or in
 	// `RunContext.SkillsContext` could not be encoded to compact JSON
 	// for injection into the ReAct system prompt. The prompt builder
@@ -100,7 +100,7 @@ var (
 	// upstream `json.Marshal` error. Compare via `errors.Is`.
 	ErrMemoryBlockUnserializable = errors.New("planner: memory block is not JSON-serialisable")
 
-	// ErrParallelThresholdUnmet (Phase 47, D-056) — a JoinN parallel
+	// ErrParallelThresholdUnmet — a JoinN parallel
 	// call completed but fewer than N branches succeeded. This is a
 	// runtime-execution outcome, NOT an invalid decision: the
 	// CallParallel was well-formed and passed atomic-setup validation;
@@ -118,5 +118,5 @@ var (
 // soft cap; this constant is the hard cap that protects the runtime
 // from a runaway emission (a buggy LLM emitting 1000 branches).
 //
-// D-056 — Phase 47 settles the value at 50.
+// settles the value at 50.
 const AbsoluteMaxParallel = 50

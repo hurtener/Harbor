@@ -25,14 +25,14 @@ var (
 	// with `Image == nil`). The safety pass rejects loudly rather than
 	// papering over the inconsistency.
 	ErrInvalidContent = errors.New("llm: invalid message content")
-	// ErrContextLeak — runtime-wide invariant violation (D-026). A
+	// ErrContextLeak — runtime-wide invariant violation. A
 	// raw byte / string / DataURL ≥ heavy-output threshold survived
 	// every producer's normalization step and reached the LLM-client
 	// edge. The safety pass fails the request; the bus emits
 	// `llm.context_leak` so operators can find the offending
 	// producer.
-	ErrContextLeak = errors.New("llm: raw heavy content reached LLM-client edge — D-026 violation")
-	// ErrContextWindowExceeded — the token-budget guard fired (D-026).
+	ErrContextLeak = errors.New("llm: raw heavy content reached LLM-client edge — context-window safety-net violation")
+	// ErrContextWindowExceeded — the token-budget guard fired.
 	// The assembled `CompleteRequest`'s estimated token count is
 	// within `ContextWindowReserve` of the model's configured
 	// `ContextWindowTokens` cap. V1 fails loudly; auto-cascade is
@@ -49,7 +49,7 @@ var (
 	// name with no matching `ModelProfile`. Required because the
 	// token-budget guard depends on a profile's context-window cap.
 	ErrUnsupportedModel = errors.New("llm: model has no configured ModelProfile")
-	// ErrInvalidJSONSchema (Phase 35) — the provider returned a
+	// ErrInvalidJSONSchema — the provider returned a
 	// `Complete` whose JSON output did not validate against the
 	// requested schema (or rejected the schema itself at the wire
 	// layer). The downgrade wrapper observes this via
@@ -59,16 +59,16 @@ var (
 	// substrings to handle providers that surface only a free-form
 	// `error` string.
 	ErrInvalidJSONSchema = errors.New("llm: response failed JSON-schema validation")
-	// ErrDowngradeExhausted (Phase 35) — the downgrade wrapper ran
+	// ErrDowngradeExhausted — the downgrade wrapper ran
 	// every step in the chain and the inner call STILL produced
 	// `ErrInvalidJSONSchema`. Surfaces with the wrapped chain history
 	// so operators can correlate against `llm.mode_downgraded` events.
 	ErrDowngradeExhausted = errors.New("llm: structured-output downgrade chain exhausted")
-	// ErrRetryExhausted (Phase 36) — the retry wrapper exceeded the
+	// ErrRetryExhausted — the retry wrapper exceeded the
 	// per-model `MaxRetries` bound. Wraps the chain of validator
 	// failures so operators can see why each attempt failed.
 	ErrRetryExhausted = errors.New("llm: retry-with-feedback budget exhausted")
-	// ErrValidationFailed (Phase 36) — surfaces when the validator
+	// ErrValidationFailed — surfaces when the validator
 	// returns non-nil AND the retry wrapper is NOT registered (the
 	// caller asked for validation without a wrapper to retry). The
 	// wrapper-registered path uses the validator's own error verbatim
@@ -102,7 +102,7 @@ var invalidJSONSchemaErrorMarkers = []string{
 }
 
 // IsInvalidJSONSchemaError reports whether `err` represents a
-// schema-class failure that the Phase 35 downgrade chain should treat
+// schema-class failure that the downgrade chain should treat
 // as a signal to step the request down to the next `OutputMode`.
 //
 // The classifier checks two paths:

@@ -28,7 +28,7 @@ var migrationFilenameRE = regexp.MustCompile(`^(\d+)_[^/]+\.sql$`)
 // migrate applies any forward-only migrations whose version is not
 // already present in `schema_migrations` to the supplied database.
 //
-// Forward-only contract (brief 05 §4 + AGENTS.md §13): migrations are
+// Forward-only contract: migrations are
 // numbered monotonically. Editing a merged migration is forbidden;
 // future schema changes land as new files. Each file ends with
 // `INSERT OR IGNORE INTO schema_migrations(version) VALUES (N);` so

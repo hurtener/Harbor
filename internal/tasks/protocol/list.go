@@ -42,7 +42,7 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 		return prototypes.TaskListResponse{}, err
 	}
 
-	// Cross-tenant gating (D-079). A query naming more than one distinct
+	// Cross-tenant gating. A query naming more than one distinct
 	// tenant is a fan-in — it requires the verified admin scope claim.
 	tenants := distinctTenants(id, req.Filter.Identities)
 	crossTenant := len(tenants) > 1
@@ -105,7 +105,7 @@ func (s *Service) List(ctx context.Context, req prototypes.TaskListRequest, admi
 		Aggregates: aggregates,
 	}
 
-	// Phase 73b (D-126): the opt-in status-counter-strip aggregate. It
+	// the opt-in status-counter-strip aggregate. It
 	// is computed over the FULL identity-scoped task set `all` — NOT the
 	// filtered view — so the Live Runtime header strip reports session-
 	// wide present-tense posture rather than narrowing with the page's
@@ -216,14 +216,14 @@ func filterMatches(f prototypes.TaskFilter, t prototypes.TaskRow) bool {
 			return false
 		}
 	}
-	// Phase 73h (D-128): the Background Jobs page's per-job "Related
+	// the Background Jobs page's per-job "Related
 	// Sessions" tab issues a `tasks.list` with GroupID set to surface
 	// the sibling tasks under the same TaskGroup. An empty GroupID is
 	// the wildcard — most foreground turns aren't group members.
 	if f.GroupID != "" && t.GroupID != f.GroupID {
 		return false
 	}
-	// Phase 73h (D-128): the `Has pending approval` facet. nil = no
+	// the `Has pending approval` facet. nil = no
 	// filter; a non-nil pointer restricts to rows whose
 	// HasPendingApproval equals the pointee.
 	if f.HasPendingApproval != nil && t.HasPendingApproval != *f.HasPendingApproval {

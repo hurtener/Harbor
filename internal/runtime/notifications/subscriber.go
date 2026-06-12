@@ -11,12 +11,12 @@ import (
 
 // Subscriber wires the rules-engine-lite mapper onto a long-lived bus
 // subscription. NewSubscriber + Run together implement the §13
-// primitive-with-consumer rule for Phase 72d: the Subscriber consumes
-// the trigger events Phase 20 / 30 / 31 / 36a / 50 already emit and
+// primitive-with-consumer rule: the Subscriber consumes
+// the trigger events already emit and
 // republishes a `notification.*` event for each match through the
 // same bus.
 //
-// Concurrent-reuse contract (D-025): the Subscriber is a long-lived
+// Concurrent-reuse contract: the Subscriber is a long-lived
 // component constructed once and shared across the bus's lifetime. It
 // owns no per-run state — every call into the mapper is pure. Multiple
 // Subscribers may be wired onto the same bus (rare in production —
@@ -63,7 +63,7 @@ func NewSubscriber(bus events.EventBus, log *slog.Logger) *Subscriber {
 // other Admin-scope subscriber is.
 //
 // Identity-rejection fail-loudly path: if a delivered trigger event
-// arrives with the D-033 `<missing>` identity sentinel in any
+// arrives with the `<missing>` identity sentinel in any
 // component, Run emits a `notification.identity_rejected` event
 // (SafePayload — no caller bytes) AND logs at Error, then continues.
 // The malformed trigger does NOT silently produce a malformed
@@ -121,7 +121,7 @@ func (s *Subscriber) handle(ctx context.Context, trigger events.Event) {
 
 	// Identity-rejection fail-loudly. The bus's ValidateEvent already
 	// requires a non-empty triple on Publish, so a trigger reaching
-	// us has at least the triple components populated. The D-033
+	// us has at least the triple components populated. The memory-subsystem
 	// `<missing>` sentinel substitutes the missing component on
 	// upstream identity-rejection events (memory / skill / agent-
 	// registry) — if such a substituted event ever flows into the
@@ -164,7 +164,7 @@ func (s *Subscriber) handle(ctx context.Context, trigger events.Event) {
 // The Identity on the rejection event echoes whatever the trigger
 // carried, including any `<missing>` substitutions, so the
 // bus's ValidateEvent identity-triple check passes (the bus accepts
-// `<missing>`-substituted identities by construction — D-033).
+// `<missing>`-substituted identities by construction).
 func (s *Subscriber) emitIdentityRejected(ctx context.Context, trigger events.Event) {
 	reason := identityRejectionReason(trigger)
 	s.log.Error("notifications identity rejection",
@@ -215,7 +215,7 @@ func (s *Subscriber) emitRuntimeError(ctx context.Context, trigger events.Event,
 	}
 }
 
-// missingIdentitySentinel is the D-033 substitute string upstream
+// missingIdentitySentinel is the substitute string upstream
 // identity-rejection emitters use to make their rejection event
 // itself bus-publishable. Mirrors memory.missingIdentitySentinel and
 // skills.missingIdentitySentinel — same constant value, same role.

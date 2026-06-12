@@ -34,7 +34,7 @@ func init() {
 
 // BusEnvelopePayload is the typed event payload carrying a
 // distributed.BusEnvelope projection. SafePayload — the envelope's
-// Payload bytes are assumed pre-redacted by the publisher (D-020).
+// Payload bytes are assumed pre-redacted by the publisher.
 type BusEnvelopePayload struct {
 	events.SafeSealed
 	// Envelope is the published BusEnvelope, projected onto the typed
@@ -112,7 +112,7 @@ type transport struct {
 // Exposed for tests that want to skip the registry.
 //
 // Deps are intentionally ignored: the loopback driver is in-process
-// dispatch — it has no EventBus / Cfg consumers at V1. The Phase 29
+// dispatch — it has no EventBus / Cfg consumers at V1. The A2A-wire
 // wire RemoteTransport driver (post-V1) WILL read deps.EventBus to
 // surface transport-level events (`distributed.send_failed` etc.)
 // and deps.Cfg for endpoint configuration; reviewers porting this

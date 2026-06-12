@@ -1,20 +1,20 @@
-// Package assemble is Harbor's assembly entry point (Phase 110d,
-// D-197): the ONE exported, error-returning config→stack fan-out that
+// Package assemble is Harbor's assembly entry point:
+// the ONE exported, error-returning config→stack fan-out that
 // turns a validated *config.Config into a running runtime stack.
 //
 // # What this package replaces
 //
-// Before 110d the dependency-ordered composition — stores → bus → llm
+// Previously the dependency-ordered composition — stores → bus → llm
 // → memory → skills → tasks → catalog (builtins + OAuth + approval +
 // MCP attach) → sessions → planner → run loop, with reverse-order
 // closers and partial-failure cleanup — existed in exactly two places:
 // `cmd/harbor/cmd_dev.go::bootDevStack` (package main) and
 // `harbortest/devstack`'s unexported `tryAssemble` (gated behind a
 // `*testing.T` wrapper). The two copies had already drifted (the
-// devstack MCP attach silently dropped the Phase 26b ToolPolicy
+// devstack MCP attach silently dropped the ToolPolicy
 // projection; the devstack assembly never constructed cfg-declared
 // OAuth providers). Both callers are now thin wrappers over
-// `Assemble`; there is no second ordering left to drift (brief 01 §5 —
+// `Assemble`; there is no second ordering left to drift.
 // one model, no legacy "before" mode).
 //
 // # Scope
@@ -34,11 +34,11 @@
 // before the failure. On success the caller owns the stack and MUST
 // call Close (reverse dependency order, idempotent).
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // The returned *Stack is a compiled artifact: every field is set once
 // during Assemble and never mutated afterwards (Close flips an
-// internal once). The composed subsystems carry their own D-025
+// internal once). The composed subsystems carry their own concurrent-reuse
 // concurrent-reuse guarantees; per-run state lives in ctx +
 // planner.RunContext, never on the stack.
 package assemble
@@ -89,7 +89,7 @@ import (
 var DefaultMCPIdentity = identity.Identity{TenantID: "dev", UserID: "dev", SessionID: "dev"}
 
 // Options carries the injection points the two existing callers need
-// (CLAUDE.md §4.3 / the 110d plan's options-surface rule: the union of
+// (CLAUDE.md §4.3 / the assembly plan's options-surface rule: the union of
 // what cmd/harbor and harbortest/devstack consume today, not a
 // speculative embedder wishlist).
 type Options struct {
@@ -97,18 +97,18 @@ type Options struct {
 	// before the redactor + bus exist). Once the telemetry Logger is
 	// constructed, the assembly threads its Slog() bridge into every
 	// subsequently-built subsystem, so subsystem log lines flow
-	// through the canonical pipeline (Wave C checkpoint audit).
+	// through the canonical pipeline.
 	// Defaults to slog.Default().
 	Logger *slog.Logger
 
 	// LLMSnapshot, when non-nil, overrides the snapshot Assemble would
-	// otherwise project from cfg.LLM via llm.SnapshotFromConfig (Phase
-	// 110c, D-196). `harbor dev` uses this for the D-089 mock-LLM
+	// otherwise project from cfg.LLM via llm.SnapshotFromConfig (
+	// ). `harbor dev` uses this for the mock-LLM
 	// escape hatch; tests flip the driver without rewriting yaml.
 	LLMSnapshot *llm.ConfigSnapshot
 
 	// PlannerOverride, when non-nil, replaces the registry-resolved
-	// planner concrete (D-103). Tests inject stub / scripted / pausing
+	// planner concrete. Tests inject stub / scripted / pausing
 	// planners; production never sets it.
 	PlannerOverride planner.Planner
 
@@ -128,12 +128,12 @@ type Options struct {
 	OAuthProviders map[string]toolauth.OAuthProvider
 
 	// PreRegisterTools is registered on the catalog BEFORE the builtin
-	// registration and the Phase 64a Builder apply, so operator config
+	// registration and the Builder apply, so operator config
 	// in cfg.Tools.Entries can wrap in-process fixtures.
 	PreRegisterTools []tools.ToolDescriptor
 
 	// MCPDefaultIdentity is the transport-event fallback identity for
-	// attached MCP servers (Phase 83m Item 1, D-156). Zero value falls
+	// attached MCP servers. Zero value falls
 	// back to DefaultMCPIdentity.
 	MCPDefaultIdentity identity.Identity
 
@@ -142,20 +142,20 @@ type Options struct {
 	// not require a metrics-exporter driver per test binary.
 	MetricsOptions []telemetry.MetricsOption
 
-	// TelemetryOptions is threaded into telemetry.New (Phase 111f,
-	// D-203). Tests inject telemetry.WithWriter to observe emitted
+	// TelemetryOptions is threaded into telemetry.New.
+	// Tests inject telemetry.WithWriter to observe emitted
 	// records; production callers pass nothing (stdout handler).
 	TelemetryOptions []telemetry.Option
 
-	// TracerOptions is threaded into telemetry.NewTracer (Phase 111f,
-	// D-203). Tests inject telemetry.WithSpanExporter with an
+	// TracerOptions is threaded into telemetry.NewTracer.
+	// Tests inject telemetry.WithSpanExporter with an
 	// in-memory recorder so derived spans are observable without a
 	// collector; production callers pass nothing (exporter selection
 	// follows cfg.Telemetry.OTelEndpoint — noop without a collector).
 	TracerOptions []telemetry.TracerOption
 
 	// ApprovalAuthorizer overrides the resolve-privilege seam threaded
-	// into every catalog-built ApprovalGate (Phase 111f, D-203). Nil
+	// into every catalog-built ApprovalGate. Nil
 	// defaults to the runtime-vocabulary
 	// `approval.NewIdentityAuthorizer()` (originating identity /
 	// control scope). The serving binary and the devstack inject the
@@ -201,11 +201,11 @@ type Stack struct {
 	// Telemetry is the canonical redactor-mandatory structured Logger
 	// (RFC §6.14), constructed with the bus-paired emitter so
 	// Logger.Error emits the slog record AND a `runtime.error` bus
-	// event. Always non-nil after a successful Assemble (Phase 111f,
-	// D-203). The Options.Logger slog logger remains the BOOT logger
+	// event. Always non-nil after a successful Assemble.
+	// The Options.Logger slog logger remains the BOOT logger
 	// for the pre-redactor bootstrap window only; the subsystems the
 	// assembly constructs after this Logger exists receive its Slog()
-	// bridge (Wave C checkpoint audit), and request-scoped emission
+	// bridge, and request-scoped emission
 	// goes through this Logger directly.
 	Telemetry *telemetry.Logger
 
@@ -217,8 +217,8 @@ type Stack struct {
 	// propagation still works).
 	Tracer *telemetry.Tracer
 
-	// RunErrorHandler is the production engine run-error handler
-	// (Phase 111f, D-203): it routes the structured engine.RunError
+	// RunErrorHandler is the production engine run-error handler:
+	// it routes the structured engine.RunError
 	// through Telemetry.Error so a terminal node failure emits the
 	// paired `runtime.error` bus event. Flow composition forwards it
 	// via `flow.WithRunErrorHandler(stack.RunErrorHandler)`.
@@ -256,8 +256,8 @@ type Stack struct {
 	Planner  planner.Planner
 	RunLoop  *steering.RunLoop
 
-	// Compression is the trajectory-compression runner (Phase 111e —
-	// D-202): planner.NewCompressionRunner over the LLM-backed
+	// Compression is the trajectory-compression runner:
+	// planner.NewCompressionRunner over the LLM-backed
 	// summarizer.NewTrajectorySummariser. Non-nil only when
 	// cfg.Planner.TokenBudget > 0 (and the steering band ran) — the
 	// per-task run-loop drivers project it onto RunSpec.Compression
@@ -306,7 +306,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.Redactor = red
 
-	// State BEFORE events (D-197 reconciliation): the durable event-log
+	// State BEFORE events (reconciliation): the durable event-log
 	// driver shares the runtime's StateStore through events.OpenWith,
 	// so the store must outlive the bus — open first, close last.
 	stateStore, err := state.Open(ctx, cfg.State)
@@ -323,7 +323,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.Bus = bus
 	stack.closers = append(stack.closers, bus.Close)
 
-	// Phase 111f (D-203): the canonical telemetry Logger — redactor-
+	// the canonical telemetry Logger — redactor-
 	// mandatory, identity-attributed, bus-paired (RFC §6.14:
 	// "Logger.Error emits both an slog record AND a paired
 	// runtime.error bus event"). Constructed the moment the redactor +
@@ -336,18 +336,18 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.Telemetry = tlog
 
-	// Wave C checkpoint audit: from this point on, every subsystem the
+	// checkpoint audit: from this point on, every subsystem the
 	// assembly constructs with a *slog.Logger (the notifications
 	// subscriber, the pause sweeper, the dispatch executor, the MCP
 	// attach loop, the search-cache warn path, the run loop) logs
 	// through the telemetry pipeline — ctx identity stamping,
 	// mandatory redaction, bus-paired errors. The bare Options.Logger
 	// served only the pre-telemetry bootstrap window above, which
-	// makes the D-203 "bootstrap-only" posture true inside the
+	// makes the "bootstrap-only" posture true inside the
 	// assembly.
 	logger = tlog.Slog()
 
-	// Phase 111f (D-203): the production engine run-error handler —
+	// the production engine run-error handler —
 	// `engine.WithRunErrorHandler`\'s godoc made true. Flow composition
 	// forwards it via `flow.WithRunErrorHandler(stack.RunErrorHandler)`
 	// so a terminal node failure reaches Telemetry.Error and the
@@ -363,8 +363,8 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		)
 	}
 
-	// Phase 56 / 72f: the MetricsRegistry — metrics are a derivation of
-	// the event bus (D-082). BridgeBusToMetrics fans every bus event
+	// the MetricsRegistry — metrics are a derivation of
+	// the event bus. BridgeBusToMetrics fans every bus event
 	// into the registry's counter so `metrics.snapshot` projects live
 	// numbers — never an empty stub (§17.6 F3). The Admin-scope filter
 	// feeds the fleet-wide bridge; it does not widen the isolation
@@ -381,9 +381,9 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	}
 	stack.closers = append(stack.closers, func(context.Context) error { metricsBridgeStop(); return nil })
 
-	// Phase 55 / 111f (D-203): the OTel tracer + the bus→tracer bridge
+	// the OTel tracer + the bus→tracer bridge
 	// — traces become a first-class derivation of the event bus,
-	// symmetric with metrics (brief 06). Exporter selection follows
+	// symmetric with metrics. Exporter selection follows
 	// cfg.Telemetry.OTelEndpoint (noop without a collector); the
 	// production filter scopes the bridge to the canonical lifecycle
 	// pairs so a chatty bus never becomes span flood.
@@ -406,13 +406,13 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.Artifacts = artStore
 	stack.closers = append(stack.closers, artStore.Close)
 
-	// ── Phase 111a (D-198): governance enforcement assembly ─────────
+	// ── governance enforcement assembly ─────────
 	// Populated `governance.identity_tiers` ENFORCE: the Subsystem
 	// (MaxTokens → RateLimiter → CostAccumulator) is built EAGERLY here
 	// — a construction failure fails the boot loud (§13) — and
 	// installed via governance.SetFactory BEFORE llm.Open composes the
 	// wrapper chain, so PreCall gates every Complete on the assembled
-	// client. Empty tiers CLEAR the factory: the latent default (D-044)
+	// client. Empty tiers CLEAR the factory: the latent default
 	// must hold for THIS stack even when an earlier stack in the same
 	// process installed a factory. The seam is process-global (second
 	// SetFactory wins) — the binary assembles exactly one stack;
@@ -434,7 +434,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	} else {
 		governance.ClearFactory()
 	}
-	// ── end Phase 111a governance band ───────────────────────────────
+	// ── end governance band ───────────────────────────────
 
 	// LLM — opened when the cfg names a driver (or the caller pinned a
 	// snapshot). Fail-loud LLM *requirement* policy is the binary's
@@ -472,7 +472,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		stack.closers = append(stack.closers, emb.Close)
 	}
 
-	// Memory (Phase 25a, D-174): ONE memory.Open serves every driver ×
+	// Memory: ONE memory.Open serves every driver ×
 	// strategy; the Summarizer threads through Deps. For
 	// rolling_summary the Summarizer defaults to the configured LLM —
 	// no separate summariser model, no stub fallback (CLAUDE.md §13);
@@ -503,9 +503,9 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		stack.closers = append(stack.closers, ms.Close)
 	}
 
-	// Skills (Phase 83f, D-149): optional. An explicit Options
+	// Skills: optional. An explicit Options
 	// SkillStore wins (caller-owned lifecycle); otherwise the cfg block
-	// opens via the exported projection (Phase 110c, D-196).
+	// opens via the exported projection.
 	stack.Skills = opts.SkillStore
 	if stack.Skills == nil && cfg.Skills.Driver != "" {
 		ss, openErr := skills.Open(ctx, skills.SnapshotFromConfig(cfg.Skills), skills.Deps{Bus: bus, Embedder: stack.Embedder})
@@ -534,7 +534,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		}
 	}
 
-	// D-171: the StateStore-backed SessionRegistry. Sessions are
+	// the StateStore-backed SessionRegistry. Sessions are
 	// per-request + create-on-first-use (no boot-time Open of a fixed
 	// session); the persistent catalog re-discovers sessions across
 	// restarts. RFC §6.9: GC never reaps a session with a RUNNING task
@@ -553,8 +553,8 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 	stack.Sessions = sessionRegistry
 	stack.closers = append(stack.closers, sessionRegistry.CloseRegistry)
 
-	// Phase 73e (D-124): the Agent Registry — the per-runtime-instance
-	// subsystem owning agent registration identity (D-059 / D-060),
+	// the Agent Registry — the per-runtime-instance
+	// subsystem owning agent registration identity,
 	// persisted through the same StateStore as the rest of the runtime.
 	agentRegistry, err := agentregistry.New(agentregistry.Deps{
 		Store:    stateStore,
@@ -565,7 +565,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		return stack, fmt.Errorf("agent registry: %w", err)
 	}
 	stack.Agents = agentRegistry
-	// Phase 83m (Item 3, D-156): every constructed subsystem registers
+	// every constructed subsystem registers
 	// its Close — the V1 Registry flips a closed flag, but a future
 	// driver that owns goroutines must not surface as a leak.
 	stack.closers = append(stack.closers, agentRegistry.Close)
@@ -576,7 +576,7 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 		}
 	}
 
-	// Phase 72d (D-109): the long-lived `notification.*` Subscriber —
+	// the long-lived `notification.*` Subscriber —
 	// the bus consumer that synthesises notification.* events from the
 	// V1 trigger taxonomy. §17.6 F2: it MUST be constructed AND run —
 	// without a live Run the topic has no producer. The goroutine is
@@ -603,10 +603,10 @@ func Assemble(ctx context.Context, cfg *config.Config, opts Options) (*Stack, er
 
 // assembleCatalogBand builds the tool catalog + its middleware chain:
 // search cache, builtins, the unified pause Coordinator, OAuth
-// providers, the Phase 64a catalog Builder (approval gates), the MCP
+// providers, the catalog Builder (approval gates), the MCP
 // attach loop, and the promoted dispatch executor.
 func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, stack *Stack, logger *slog.Logger) error {
-	// Phase 107c / D-167 — the tool SearchCache backs deferred-tool
+	// the tool SearchCache backs deferred-tool
 	// discovery + the `tool_search` / `tool_get` meta-tools. In-memory
 	// DSN by default; a failure here is non-fatal: discovery degrades
 	// to empty (the meta-tools return "no results") rather than wedging
@@ -636,11 +636,11 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		}
 	}
 
-	// Phase 83n / D-153 + 107c / D-167 — opt-in built-in tools BEFORE
+	// opt-in built-in tools BEFORE
 	// the catalog-wiring step so `tools.entries[]` middleware naming a
 	// built-in resolves cleanly. Empty list = no-op; unknown name fails
 	// loud. SkillStore + ArtifactStore are threaded so the skill_* set
-	// / artifact_fetch reach their backing stores. Phase 111d (D-201):
+	// / artifact_fetch reach their backing stores. Note:
 	// Bus + Redactor + GrantedScopes feed the skill_* delegations to
 	// the Phase-38 handlers + Phase-41 generator — the capability
 	// filter, redaction, budgeter, and the generator's audit-mandatory
@@ -657,12 +657,12 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	}
 
 	// The shared pauseresume.Coordinator is the unified pause/resume
-	// primitive (Phase 50 / D-067) — there is NEVER a second
+	// primitive — there is NEVER a second
 	// Coordinator instance (CLAUDE.md §13). WithBus(bus) is mandatory:
 	// it is what makes pause.requested / pause.resumed land on the
-	// canonical event stream (Wave 11.5 §17.5 F1).
-	// WithCheckpointStore(stack.State) is mandatory too (Phase 111c /
-	// D-200 — the §13 primitive-with-consumer closure): every pause is
+	// canonical event stream (.5 §17.5 F1).
+	// WithCheckpointStore(stack.State) is mandatory too (the
+	// the §13 primitive-with-consumer closure): every pause is
 	// checkpointed through the runtime's own StateStore, so pauses
 	// survive a Runtime restart on any durable state driver. Pre-111c
 	// both assemblies constructed the Coordinator storeless with the
@@ -675,7 +675,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		pauseresume.WithMaxParkDuration(cfg.PauseResume.MaxParkDuration),
 	)
 
-	// Phase 111c (D-200) — the pause sweeper: DecisionTimeout's first
+	// the pause sweeper: DecisionTimeout's first
 	// producer. Config-gated on max_park_duration > 0 (the validated
 	// sweep_interval is consumed only here). The goroutine is
 	// cancellable + joined on Close (CLAUDE.md §5): the closer cancels
@@ -703,7 +703,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		})
 	}
 
-	// D-095 — OAuth providers BEFORE the catalog Builder runs so the
+	// OAuth providers BEFORE the catalog Builder runs so the
 	// Builder's Deps.OAuthProviders lookup resolves. Caller-supplied
 	// entries (Options.OAuthProviders) win over same-named cfg
 	// declarations: an overridden cfg entry is NOT constructed at all
@@ -738,13 +738,13 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		providers[name] = p
 	}
 
-	// Phase 64a (D-090) — the catalog wiring Builder: `tools.entries[]`
+	// the catalog wiring Builder: `tools.entries[]`
 	// auto-wraps matching descriptors with declared approval / OAuth
 	// middleware. An entry naming an unregistered tool fails the boot
 	// loud (CLAUDE.md §13 amendment). Empty entries = no-op.
 	gates := make(map[string]*toolapproval.ApprovalGate)
 	if len(cfg.Tools.Entries) > 0 {
-		// Phase 111f (D-203): the injected resolve-privilege seam. The
+		// the injected resolve-privilege seam. The
 		// runtime-vocabulary default admits the steering bridge (the
 		// run\'s own identity) and control-scoped operators; the
 		// serving binary injects the Protocol-side adapter on top so
@@ -771,11 +771,11 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 		}
 	}
 
-	// Phase 83g (D-150) — the MCP southbound consumer: per configured
+	// the MCP southbound consumer: per configured
 	// server, spawn the transport, discover tools, register descriptors
 	// on the catalog, surface the Provider on the Registry. Fail-loud
 	// at boot if a server cannot connect or discover. The promoted
-	// mcpdrv.Attach carries the Phase 26b ToolPolicy projection.
+	// mcpdrv.Attach carries the ToolPolicy projection.
 	mcpDefault := opts.MCPDefaultIdentity
 	if mcpDefault == (identity.Identity{}) {
 		mcpDefault = DefaultMCPIdentity
@@ -800,7 +800,7 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 	stack.OAuthProviders = providers
 	stack.MCPRegistry = mcpRegistry
 
-	// Phase 83i (D-152) / 110a (D-194): the promoted dispatch executor —
+	// the promoted dispatch executor —
 	// the ONE tool-dispatch concrete every caller wires.
 	stack.Executor = dispatch.NewToolExecutor(toolCat, stack.Artifacts, stack.Tasks,
 		dispatch.WithHeavyThreshold(cfg.Artifacts.HeavyOutputThresholdBytes),
@@ -810,8 +810,8 @@ func assembleCatalogBand(ctx context.Context, cfg *config.Config, opts Options, 
 }
 
 // assembleSteeringBand builds the steering Registry, resolves the
-// planner concrete via the §4.4 driver registry (D-103), and
-// constructs the shared RunLoop (Phase 53 / D-071) when a planner and
+// planner concrete via the §4.4 driver registry, and
+// constructs the shared RunLoop when a planner and
 // the catalog band are available. The logger is the telemetry-backed
 // *slog.Logger Assemble threads post-bootstrap.
 func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options, stack *Stack, logger *slog.Logger) error {
@@ -829,7 +829,7 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		stack.Planner = plnr
 	}
 
-	// Phase 111e (D-202): the trajectory-compression runner — built
+	// the trajectory-compression runner — built
 	// when the operator set a non-zero `planner.token_budget`. The
 	// summariser needs a real LLM client; a budget without an LLM is a
 	// misconfiguration surfaced loudly at boot (CLAUDE.md §13 — no
@@ -840,9 +840,9 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 		}
 		// The operator's heavy-output threshold is threaded so the
 		// summariser's aggregate payload budget tracks the SAME limit
-		// the LLM-edge safety pass enforces (Wave C checkpoint audit
+		// the LLM-edge safety pass enforces (checkpoint audit
 		// — a compaction payload must never trip ErrContextLeak on
-		// the run it exists to save). Zero falls back to the D-022
+		// the run it exists to save). Zero falls back to the canonical
 		// default inside the option.
 		trajSumm, err := llmsummarizer.NewTrajectorySummariser(stack.LLM,
 			llmsummarizer.WithTrajectoryHeavyOutputThreshold(cfg.Artifacts.HeavyOutputThresholdBytes))
@@ -854,8 +854,8 @@ func assembleSteeringBand(ctx context.Context, cfg *config.Config, opts Options,
 
 	// The RunLoop needs the planner plus the catalog band's Coordinator
 	// + gates map (the §13 primitive-with-consumer rule applied to the
-	// V1 wiring). One RunLoop instance backs every spawned task
-	// (D-025); the D-097 steering→gate bridge routes wire-side
+	// V1 wiring). One RunLoop instance backs every spawned task;
+	// the steering→gate bridge routes wire-side
 	// APPROVE / REJECT controls to the matching gate's pending map.
 	if opts.SkipRunLoop || stack.Planner == nil || stack.Coordinator == nil {
 		return nil

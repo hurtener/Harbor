@@ -12,7 +12,7 @@ import (
 // cursorVersion is the 1-byte version prefix every opaque pagination
 // cursor carries. A future change to the cursor encoding bumps this; a
 // mismatched version fails loudly with ErrInvalidRequest rather than
-// silently degrading (D-122 risk-mitigation — CLAUDE.md §13).
+// silently degrading (risk-mitigation — CLAUDE.md §13).
 const cursorVersion = "1"
 
 // pageCursor is the decoded form of an opaque `sessions.list`
@@ -32,7 +32,7 @@ type pageCursor struct {
 
 // encodeCursor builds the opaque base64 cursor for the boundary row
 // under the given sort. The wire form is `v|sortKey|cost|sessionID`,
-// base64-url-encoded — opaque to clients (D-122 risk-mitigation).
+// base64-url-encoded — opaque to clients (risk-mitigation).
 func encodeCursor(row prototypes.SessionRow, srt prototypes.SessionSort) string {
 	var sortKeyNanos int64
 	switch srt {

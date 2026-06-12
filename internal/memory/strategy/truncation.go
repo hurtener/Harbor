@@ -18,7 +18,7 @@ import (
 // boundary. No background goroutines; no summariser; no health
 // FSM (always reports `HealthHealthy`).
 //
-// Concurrent-reuse contract (D-025): per-key state lives in
+// Concurrent-reuse contract: per-key state lives in
 // `keys`, a sync.Map of `*keyState` values; each `keyState` has its
 // own mutex so concurrent ops on different keys don't contend.
 type truncationExec struct {
@@ -281,13 +281,13 @@ func quadKeyFor(id identity.Quadruple) quadKey {
 }
 
 // sumTokens returns the token estimate for a buffer of turns. The
-// default estimator is "chars/4 + 1" per brief 04 §2 — cheap to
+// default estimator is "chars/4 + 1" — cheap to
 // compute, calibrated for English, and consistent with the
 // predecessor's default.
 //
-// A future operator-injectable token estimator (brief 04 §2's
+// A future operator-injectable token estimator (the design's
 // `TokenEstimator func(string) int`) is a deliberate non-goal at
-// Phase 24; the constant-shape estimator is good enough for the
+// V1 scope; the constant-shape estimator is good enough for the
 // strategy executor's budget enforcement.
 func sumTokens(turns []memory.ConversationTurn) int {
 	total := 0

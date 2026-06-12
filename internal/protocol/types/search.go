@@ -6,11 +6,11 @@ import (
 )
 
 // SearchIndex is the typed enum of canonical search indexes the
-// runtime-side `search.*` cluster ships in Phase 72c. Four indexes —
+// runtime-side `search.*` cluster ships in a later phase. Four indexes —
 // sessions, tasks, events, artifacts — match the high-cardinality
-// runtime-side split from Brief 11 §CC-4. Console-side Tools / Agents /
+// runtime-side split. Console-side Tools / Agents /
 // Flows / MCP catalog searches do NOT appear here: those land in their
-// per-page Stage-2 Console phases (73c/d/e/f/g/i/k) per the split.
+// per-page Console phases (73c/d/e/f/g/i/k) per the split.
 type SearchIndex string
 
 // Canonical search-index values. The set is closed; a new index is a
@@ -36,7 +36,7 @@ func IsValidSearchIndex(i SearchIndex) bool {
 // optional time-window. The TenantIDs / UserIDs / SessionIDs fields
 // default to the caller's authenticated triple; supplying values that
 // reach OUTSIDE the caller's own scope requires the `auth.ScopeAdmin`
-// scope claim (D-079 closed two-scope set; D-108 reuse for search). A
+// scope claim (closed two-scope set; reuse for search). A
 // missing-claim cross-tenant request is rejected loudly with
 // `CodeAuthRejected` (HTTP 403) — NEVER silently downgraded to an
 // empty result set.
@@ -107,7 +107,7 @@ type SearchRequest struct {
 }
 
 // Default + maximum pagination bounds, shared by every `search.*`
-// method per the Phase 72c plan acceptance criteria. The defaults are
+// method per the phase plan acceptance criteria. The defaults are
 // the wire contract — a client that omits Page / PageSize gets the
 // documented defaults; a client requesting more than the max gets a
 // 400.
@@ -118,7 +118,7 @@ const (
 
 // SearchArtifactRef is the by-reference shape a `SearchResultRow`
 // carries when the underlying entity's preview payload would exceed
-// the heavy-content threshold (D-026). It mirrors a subset of
+// the heavy-content threshold. It mirrors a subset of
 // `internal/artifacts.ArtifactRef` but is a flat wire type — the
 // Protocol owns its vocabulary; runtime Go structs never leak (RFC
 // §5.1 / CLAUDE.md §13 single-source rule).
@@ -137,7 +137,7 @@ type SearchArtifactRef struct {
 
 // SearchResultRow is the uniform result-row shape across all five
 // `search.*` methods. `Preview` is REDACTED via `audit.Redactor` before
-// emission. Heavy payloads (≥ D-026 threshold) ship as a populated
+// emission. Heavy payloads (≥ the heavy-output threshold) ship as a populated
 // `Ref` field, NEVER inline bytes — `Preview` is then empty.
 type SearchResultRow struct {
 	// Index identifies which subsystem produced the row. Required.
@@ -161,7 +161,7 @@ type SearchResultRow struct {
 	// threshold). Empty when Ref is populated.
 	Preview string `json:"preview,omitempty"`
 	// Ref is populated when the underlying entity's preview would
-	// exceed the heavy-content threshold (D-026). The Console fetches
+	// exceed the heavy-content threshold. The Console fetches
 	// the bytes via `artifacts.get` / `artifacts.get_ref` when it
 	// wants them.
 	Ref *SearchArtifactRef `json:"ref,omitempty"`

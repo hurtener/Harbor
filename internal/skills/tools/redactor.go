@@ -13,7 +13,7 @@ import (
 //
 // The disallowed-tool-name replacement variants and the tool-name
 // scrub itself live in [capfilter] — the single source shared with
-// the virtual directory (internal/skills, Phase 39).
+// the virtual directory (internal/skills).
 const piiPlaceholder = "[REDACTED-PII]"
 
 // PII patterns. Compiled once at package load — concurrent reuse is
@@ -69,7 +69,7 @@ func Redact(s skills.Skill, cap CapabilityContext) skills.Skill {
 	// captures the resolved set so subsequent field rewrites stay
 	// in lockstep.
 	//
-	// Brief 04 §4.5: the scrub operates on the planner-facing skill
+	// By design the scrub operates on the planner-facing skill
 	// text, NOT on the skill's `RequiredTools` slice itself —
 	// callers reading provenance from `RequiredTools` still see the
 	// true list. The set/disallowed/replacement/scrub primitives all
@@ -135,7 +135,7 @@ func rewriteSlice(in []string, fn func(string) string) []string {
 // marshalled output. Without this, a `nil` `Tags` slice marshalls as
 // JSON `null` and the schema validator fails the response.
 //
-// Implementation detail of the planner-tool layer — the Phase 37
+// Implementation detail of the planner-tool layer — the
 // `Skill` struct is intentionally tag-less (it is the storage
 // envelope, not a wire shape); the inproc driver's strict-schema
 // validation forces us to materialise nil → empty here.

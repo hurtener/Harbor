@@ -2,8 +2,8 @@
 // Envelope every channel carries, the Headers it routes by, and the
 // helpers (WithRunID, MergeMeta, Identity) downstream phases lean on.
 //
-// Phase 09 (RFC §6.1) ships only the types and pure helpers. The
-// engine itself lands in Phase 10; the bus-emit hooks, reliability
+// This package (RFC §6.1) ships only the types and pure helpers. The
+// engine itself lands in a later phase; the bus-emit hooks, reliability
 // shell, streaming primitive, cancellation, and routers all layer on
 // top of these envelopes without changing them.
 //
@@ -11,10 +11,10 @@
 // `(TenantID, UserID, SessionID, RunID)`. RunID is Harbor's term for
 // what predecessors call `trace_id`; TraceID is reserved for OTel-
 // style traces (which may span multiple runs) and is carried by ctx
-// via internal/telemetry — NOT by the Envelope (RFC §6.1, brief 01).
+// via internal/telemetry — NOT by the Envelope (RFC §6.1).
 //
 // Concurrent reuse contract: this package is types-only. There are no
-// compiled artifacts, no goroutines, no shared mutable state — D-025
+// compiled artifacts, no goroutines, no shared mutable state — the concurrent-reuse contract
 // trivially holds. The pre-merge checkbox documents this as N/A.
 package messages
 
@@ -31,7 +31,7 @@ import (
 // outside the Envelope (carried by ctx via internal/telemetry).
 //
 // Empty fields pass through unchanged at this layer; the engine
-// (Phase 10) enforces non-empty identity at the API boundary.
+// enforces non-empty identity at the API boundary.
 type Envelope struct {
 	Payload    any            `json:"payload"`
 	Headers    Headers        `json:"headers"`
@@ -56,7 +56,7 @@ type Headers struct {
 
 // WithRunID returns a copy of e with RunID replaced. Never mutates
 // the receiver — Envelopes are values that flow through channels, not
-// shared state. Aligns with D-025: per-run state lives in the value
+// shared state. Aligns with the concurrent-reuse contract: per-run state lives in the value
 // passed along the channel, never on a shared artifact.
 //
 // Meta is shallow-copied so the returned envelope can be mutated
@@ -76,7 +76,7 @@ func (e Envelope) WithRunID(id string) Envelope {
 
 // Identity returns the identity.Quadruple derived from the Envelope's
 // (Headers.TenantID, Headers.UserID, SessionID, RunID). Empty fields
-// pass through unchanged — the engine (Phase 10) enforces non-empty
+// pass through unchanged — the engine enforces non-empty
 // at the API boundary; this helper itself never panics so callers can
 // inspect partial envelopes (e.g. in tests, in the JSON unmarshal
 // path) without ceremony.

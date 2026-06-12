@@ -10,8 +10,8 @@ import (
 	"github.com/hurtener/Harbor/internal/config"
 )
 
-// DefaultDriver is the Phase 17 floor — the in-memory driver. Phase 18
-// (SQLite-blob, Postgres-blob) and Phase 19 (S3-style) register
+// DefaultDriver is the floor — the in-memory driver. The
+// SQLite-blob, Postgres-blob, and S3-style drivers register
 // additional names; `Open` switches on `cfg.Driver`.
 const DefaultDriver = "inmem"
 

@@ -1,11 +1,11 @@
-// from_config.go — the exported config→snapshot projection (Phase 110c,
-// D-196). Before 110c the `config.MemoryConfig` → `memory.ConfigSnapshot`
+// from_config.go — the exported config→snapshot projection.
+// Previously the `config.MemoryConfig` → `memory.ConfigSnapshot`
 // projection was an inline literal in `cmd/harbor/cmd_dev.go` with a
-// hand-maintained `harbortest/devstack` mirror — the D-155 silent-field-
+// hand-maintained `harbortest/devstack` mirror — the silent-field-
 // drop class. The projection now lives next to the snapshot type so a
 // new snapshot field and its projection land in the same package.
 //
-// Import direction (D-193): the subsystem imports `internal/config`
+// Import direction: the subsystem imports `internal/config`
 // additively; config stays a leaf. `SnapshotFromConfig` is optional
 // sugar — `Open(ctx, snapshot, deps)` is unchanged and snapshot-first
 // construction remains the headless golden path.

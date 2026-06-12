@@ -30,7 +30,7 @@ const (
 
 // RemoteCallRequest carries the inputs to a `RemoteTransport.Send` or
 // `RemoteTransport.Stream` invocation. The shape is the V1 wire-neutral
-// envelope; Phase 29's A2A driver translates this into the on-the-wire
+// envelope; the A2A driver translates this into the on-the-wire
 // gRPC / JSON-RPC / HTTP+JSON request as configured.
 type RemoteCallRequest struct {
 	// AgentURL is the target A2A agent's interface URL (matches an
@@ -46,7 +46,7 @@ type RemoteCallRequest struct {
 	// message, Stream with Kind=Subscribe for an existing task).
 	TaskID string
 	// Message is the A2A message payload. Caller-side audit redaction
-	// (D-020) MUST have already run.
+	// MUST have already run.
 	Message a2a.Message
 	// Config carries A2A send configuration (accepted output modes,
 	// push-notification config, history length, return-immediately).
@@ -130,11 +130,11 @@ type RemoteTaskEventStream = RemoteEventStream
 
 // RemoteTransport is Harbor's cross-process / cross-host call surface.
 // Every method maps 1:1 to an A2A v1 RPC from the vendored
-// `docs/specifications/a2a.proto`. The mapping is verbatim so Phase 29
+// `docs/specifications/a2a.proto`. The mapping is verbatim so the A2A wire
 // (the southbound A2A driver) consumes the surface without churn.
 //
 // Implementations MUST be safe for concurrent use by N goroutines
-// against a single shared instance (D-025).
+// against a single shared instance.
 //
 // All methods receive identity via `ctx`. Calls without a complete
 // identity triple are rejected with `ErrIdentityRequired` at the

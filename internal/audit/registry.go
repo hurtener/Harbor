@@ -14,7 +14,7 @@ import (
 // one Factory each via init() → Register.
 type Factory func(config.AuditConfig) (Redactor, error)
 
-// DefaultDriver is the production driver name. Phase 03 ships only
+// DefaultDriver is the production driver name. Harbor ships only
 // `patterns`; later phases may register additional drivers (PII
 // tokenizer, semantic redactor) and Open will switch on a
 // `cfg.Driver` field once AuditConfig grows one.
@@ -46,7 +46,7 @@ func Register(name string, factory Factory) {
 	factories[name] = factory
 }
 
-// Open returns a Redactor built by the default driver factory. Phase 03
+// Open returns a Redactor built by the default driver factory. The audit core
 // always picks DefaultDriver; later phases will read a `cfg.Driver`
 // field once AuditConfig grows one. The error wraps ErrUnknownDriver
 // when no factory matches and lists registered drivers.

@@ -1,11 +1,10 @@
 // cmd/harbor/cmd_init.go — `harbor init` subcommand.
-//
-// Phase 83n / D-153. Drops a tiered, commented `harbor.yaml` plus
+// Drops a tiered, commented `harbor.yaml` plus
 // `AGENTS.md`, `CLAUDE.md`, and `README.md` into the operator's
 // chosen target directory. The companion files explain the next
 // steps (edit yaml → validate → scaffold → dev).
 //
-// Every failure path emits a structured CLIError (D-084) — no
+// Every failure path emits a structured CLIError — no
 // hand-rolled JSON, no silent partial writes.
 
 package main
@@ -21,7 +20,7 @@ import (
 )
 
 // Stable CLI error codes for `harbor init`. Each value is a fixed
-// string a smoke test asserts against (D-084 wire contract).
+// string a smoke test asserts against (wire contract).
 const (
 	// CodeInitFileExists fires when one of the four target files
 	// already exists in the target dir. Operators delete the file or
@@ -46,7 +45,7 @@ const (
 )
 
 // initJSONResult is the wire shape `harbor init --json` emits on
-// success. Pinned by D-153.
+// success. Pinned by.
 type initJSONResult struct {
 	Name      string   `json:"name"`
 	TargetDir string   `json:"target_dir"`

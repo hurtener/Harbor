@@ -4,7 +4,7 @@
 // Harbor `Tool` entries (RFC §6.4). Three wire transports are
 // supported (stdio, SSE, streamable-HTTP) with auto-detect.
 //
-// Concurrent reuse (D-025): a constructed *Provider is safe to share
+// Concurrent reuse: a constructed *Provider is safe to share
 // across N concurrent goroutines after Connect returns. All per-call
 // state lives on the goroutine stack + the request `ctx`; descriptor
 // fields are immutable after Discover.
@@ -13,7 +13,7 @@
 // to the remote MCP server in the request's `_meta` map so trust
 // signals flow across the seam.
 //
-// Reliability shell (D-024): every Invoke runs inside
+// Reliability shell: every Invoke runs inside
 // `tools.RunWithPolicy` so timeout / retry / classifier behaviour is
 // identical to the in-process driver.
 package mcp
@@ -28,7 +28,7 @@ import (
 
 // EventTypeMCPResourceUpdated is the canonical event type emitted
 // when the remote MCP server pushes a resource-update notification
-// for a URI the driver previously subscribed to (Phase 28). The
+// for a URI the driver previously subscribed to. The
 // payload is SafePayload by construction — the URI is operator-
 // trust-equivalent (it originates from an operator-configured MCP
 // server) and the source ID is operator-supplied.

@@ -1,8 +1,8 @@
 package planner
 
 // ParallelObservation is the aggregate observation a runtime
-// ToolExecutor produces when it dispatches a [CallParallel] decision
-// (Phase 107d — D-169). It carries one [ParallelBranchObservation] per
+// ToolExecutor produces when it dispatches a [CallParallel] decision.
+// It carries one [ParallelBranchObservation] per
 // branch, in branch-index order (JoinAll semantics), so the planner's
 // trajectory replay can decompose it back into the N native
 // `role:"tool"` messages the provider wire contract requires — exactly
@@ -47,7 +47,7 @@ type ParallelBranchObservation struct {
 
 	// Value is the branch's success result. For the raw aggregate it is
 	// the untruncated tool value; for the LLM-facing aggregate it is the
-	// D-026 projected form (heavy results replaced by an artifact-stub
+	// projected form (heavy results replaced by an artifact-stub
 	// summary). Nil on failure.
 	Value any `json:"value,omitempty"`
 

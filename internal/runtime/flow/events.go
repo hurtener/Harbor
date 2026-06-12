@@ -4,7 +4,7 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 )
 
-// Phase 26a flow event types.
+// flow event types.
 const (
 	// EventTypeFlowBudgetExceeded — emitted by invokeFlow when
 	// any axis of the per-call Budget accumulator fires

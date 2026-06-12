@@ -12,8 +12,8 @@ import (
 	"github.com/hurtener/Harbor/internal/search"
 )
 
-// SearchSurface is the Phase 72c (D-108) Protocol-side dispatcher for
-// the five `search.*` methods. It is transport-agnostic — the Phase 60
+// SearchSurface is the Protocol-side dispatcher for
+// the five `search.*` methods. It is transport-agnostic — the
 // wire transport's `search_handler.go` calls Dispatch from
 // internal/protocol/transports/control via the
 // `transports/control.SearchSurface` interface that this type
@@ -24,9 +24,9 @@ import (
 // fails closed with CodeIdentityRequired (mapped to 401) on a missing
 // triple. Cross-tenant gating reads `search.ErrCrossTenantRequiresAdmin`
 // from the search subsystem and surfaces it as CodeAuthRejected (403)
-// per D-079.
+// per the closed admin-scope set.
 //
-// Concurrent reuse (D-025): the SearchSurface is a compiled artifact —
+// Concurrent reuse: the SearchSurface is a compiled artifact —
 // the registry + adminScope predicate are set once at construction;
 // per-call state lives in ctx + req.
 type SearchSurface struct {
@@ -34,7 +34,7 @@ type SearchSurface struct {
 	adminScope search.ScopeChecker
 }
 
-// NewSearchSurface builds the Phase 72c search dispatcher. The
+// NewSearchSurface builds the search dispatcher. The
 // registry is mandatory; the adminScope predicate is mandatory.
 // Both nil-checked at construction so a misconfigured surface fails at
 // boot instead of nil-panicking on the first request.
@@ -67,7 +67,7 @@ func (s *SearchSurface) Dispatch(ctx context.Context, method methods.Method, req
 			"method %q: request is nil", string(method))
 	}
 
-	// Identity at the edge — read directly from ctx (the Phase 61
+	// Identity at the edge — read directly from ctx (the
 	// auth middleware places it there). Search has no body-side
 	// IdentityScope to backfill from; it's purely ctx-driven.
 	callerID, ok := identity.From(ctx)
@@ -133,12 +133,12 @@ func mapSearchError(method string, err error) error {
 			"method %q: %v", method, err)
 	case stderrors.Is(err, search.ErrCrossTenantRequiresAdmin):
 		// Cross-tenant search without auth.ScopeAdmin lands here per
-		// D-108. Reuses CodeScopeMismatch (mapped to 403 by the wire
+		// Reuses CodeScopeMismatch (mapped to 403 by the wire
 		// status table) — the caller IS authenticated, just not
 		// privileged enough for the scope they asked for. Same shape
 		// as the steering-control scope rejection that lives in
 		// dispatchControl: an authenticated-but-not-authorized caller.
-		// (CodeAuthRejected stays pinned to 401 per D-079 — that code
+		// (CodeAuthRejected stays pinned to 401 per the closed admin-scope set — that code
 		// signals a JWT that failed cryptographic verification, not
 		// a scope shortfall.)
 		return protoerrors.Newf(protoerrors.CodeScopeMismatch,

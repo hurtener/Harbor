@@ -1,8 +1,8 @@
 // Package postgres is Harbor's V1 Postgres-backed StateStore driver.
 //
 // It is the multi-node production target for the §9 persistence
-// triad: the third leg, alongside the in-memory reference (Phase 07)
-// and the SQLite driver (Phase 15). Phase 16 inherits
+// triad: the third leg, alongside the in-memory reference
+// and the SQLite driver. Harbor inherits
 // `internal/state/conformancetest.Run` verbatim — the suite IS the
 // gate; this driver ships zero new conformance scenarios.
 //
@@ -29,7 +29,7 @@
 //     so subsequent calls fast-fail with `ErrStoreClosed` even while
 //     in-flight queries are draining.
 //
-// Per AGENTS.md §5 (D-025), the driver is safe for concurrent reuse
+// Per AGENTS.md §5, the driver is safe for concurrent reuse
 // across N goroutines. The conformance suite's `Concurrent_SaveLoad_NoRace`
 // + the local `concurrent_test.go` enforce this under -race.
 package postgres
@@ -59,7 +59,7 @@ const driverName = "postgres"
 const pgxDriverName = "pgx"
 
 // Connection-pool defaults. Documented in the phase plan; tuning
-// lives in a future Phase 16.1 / config knob, not here.
+// lives in a future config knob, not here.
 const (
 	defaultMaxOpenConns    = 25
 	defaultMaxIdleConns    = 5
@@ -118,7 +118,7 @@ func init() {
 // driver is the Postgres-backed state.StateStore implementation.
 //
 // Fields are immutable after construction except for the atomic
-// `closed` flag (D-025: compiled artifacts are immutable; per-run
+// `closed` flag (compiled artifacts are immutable; per-run
 // state lives in ctx).
 type driver struct {
 	db     *sql.DB
@@ -332,7 +332,7 @@ func (d *driver) Delete(ctx context.Context, q identity.Quadruple, kind string) 
 }
 
 // ListKind implements state.StateStore — the explicitly-elevated
-// maintenance scan (RFC §6.11, D-207). The prefix matches literally:
+// maintenance scan (RFC §6.11). The prefix matches literally:
 // LIKE metacharacters in kindPrefix are escaped so a prefix containing
 // `%` or `_` cannot widen the scan.
 func (d *driver) ListKind(ctx context.Context, scope state.ListScope, kindPrefix string) ([]state.StateRecord, error) {

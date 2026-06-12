@@ -20,7 +20,7 @@ import (
 // bucket map (mirrors `kindGovernanceCost`).
 const kindGovernanceBucket = "governance.bucket"
 
-// RateLimiter is the Phase 36b `Subsystem` implementing a token bucket
+// RateLimiter is the `Subsystem` implementing a token bucket
 // per `(identity, model)`. Bucket state lives in `state.StateStore` so
 // it survives restart; latent default: zero `TierConfig.RateLimit` →
 // no enforcement.
@@ -31,9 +31,9 @@ const kindGovernanceBucket = "governance.bucket"
 //   - `RefillTokens` are added every `RefillInterval` (continuous
 //     accrual via `floor(elapsed / RefillInterval) * RefillTokens`).
 //   - `expected_tokens` per call defaults to `req.MaxTokens` if set,
-//     else 1. Phase 36b consciously does NOT pre-charge `MaxTokens` for
+//     else 1. consciously does NOT pre-charge `MaxTokens` for
 //     unbounded requests — the operator who needs that sets a tier
-//     `MaxTokens` cap (Phase 36b's other policy).
+//     `MaxTokens` cap (the other policy).
 //
 // Concurrency model: per-key state is a `sync.Map`; each `bucketKeyState`
 // has its own mutex for drain serialisation. The fan-out at scale is
@@ -76,7 +76,7 @@ type bucketRecord struct {
 
 const bucketRecordSchema = 1
 
-// NewRateLimiter constructs a Phase 36b RateLimiter. Validates deps.
+// NewRateLimiter constructs a RateLimiter. Validates deps.
 func NewRateLimiter(s state.StateStore, bus events.EventBus, cfg Config) (*RateLimiter, error) {
 	if s == nil {
 		return nil, fmt.Errorf("%w: state.StateStore is required", ErrInvalidConfig)
@@ -290,7 +290,7 @@ func (r *RateLimiter) emitRateLimited(ctx context.Context, q identity.Quadruple,
 }
 
 // requestedTokens classifies the per-call drain amount. `req.MaxTokens`
-// if set; else 1 (the minimum). Phase 36b deliberately does NOT use the
+// if set; else 1 (the minimum). deliberately does NOT use the
 // caller's `Usage.TotalTokens` from a previous call — the bucket models
 // reservation, not actual consumption.
 func requestedTokens(req llm.CompleteRequest) int {

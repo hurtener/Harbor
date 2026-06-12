@@ -3,8 +3,8 @@ package types
 import "time"
 
 // Pause-snapshot pagination bounds, shared by the `pause.list` method
-// per the Phase 72e plan acceptance criteria. The values mirror the
-// Phase 72c `search.*` pagination contract (DefaultSearchPageSize /
+// per the phase plan acceptance criteria. The values mirror the
+// `search.*` pagination contract (DefaultSearchPageSize /
 // MaxSearchPageSize) so a future Console-side pagination component is
 // shared across pages, not re-implemented per-method. A client that
 // omits Page / PageSize gets the documented defaults; a request above
@@ -42,7 +42,7 @@ func IsValidPauseSnapshotState(s PauseSnapshotState) bool {
 
 // PauseArtifactRef is the by-reference shape a `PauseSnapshot` carries
 // when the pause record's `Payload` serialised size meets or exceeds
-// the configured heavy-content threshold (D-026). It mirrors a subset
+// the configured heavy-content threshold. It mirrors a subset
 // of `internal/artifacts.ArtifactRef` but is a flat wire type — the
 // Protocol owns its vocabulary; runtime Go structs never leak (RFC
 // §5.1 / CLAUDE.md §13 single-source rule). It is the same flat shape
@@ -63,13 +63,13 @@ type PauseArtifactRef struct {
 }
 
 // PauseSnapshot is the wire projection of a single Coordinator pause
-// record. Cross-package single source per CLAUDE.md §8 + D-002; the
-// typed Protocol client (D-093) regenerates from this without
+// record. Cross-package single source per CLAUDE.md §8; the
+// typed Protocol client regenerates from this without
 // hand-editing.
 type PauseSnapshot struct {
 	// Token is the opaque runtime-issued pause Token (RFC §6.3). A
 	// client never constructs or parses it; it is the handle the
-	// Phase 54 `resume` / `approve` / `reject` methods take.
+	// `resume` / `approve` / `reject` methods take.
 	Token string `json:"token"`
 	// Reason is one of the four canonical pause reasons (RFC §6.3).
 	Reason string `json:"reason"`
@@ -87,12 +87,12 @@ type PauseSnapshot struct {
 	// Payload is the sanitised pause payload INLINE when its serialised
 	// size is below the heavy-content threshold. Otherwise the runtime
 	// routes it through the ArtifactStore and ships PayloadRef instead
-	// (D-026 — context-window safety net applied to Protocol snapshots).
+	// (context-window safety net applied to Protocol snapshots).
 	// Exactly one of Payload / PayloadRef is populated for a pause
 	// carrying a payload; both are empty for a payload-free pause.
 	Payload map[string]any `json:"payload,omitempty"`
 	// PayloadRef is populated when the pause record's Payload exceeded
-	// the heavy-content threshold (D-026). The Console fetches the
+	// the heavy-content threshold. The Console fetches the
 	// bytes via `artifacts.get` / `artifacts.get_ref` when it wants
 	// them. When PayloadRef is set, Payload is nil.
 	PayloadRef *PauseArtifactRef `json:"payload_ref,omitempty"`
@@ -102,7 +102,7 @@ type PauseSnapshot struct {
 // "the caller's own identity scope, status=paused" — the
 // intervention-queue default. Supplying a `TenantIDs` value that
 // reaches OUTSIDE the caller's own tenant (or naming more than one
-// tenant) requires the `auth.ScopeAdmin` scope claim (D-079); a
+// tenant) requires the `auth.ScopeAdmin` scope claim; a
 // missing-claim cross-tenant request is rejected loudly with
 // `CodeIdentityScopeRequired` (HTTP 403) — NEVER silently downgraded
 // to an empty result set.
@@ -131,7 +131,7 @@ type PauseFilter struct {
 //
 // Identity is mandatory at the Protocol edge per RFC §5.5 — the request
 // flows out of an auth-verified identity in ctx, never trusted from the
-// body. The `Identity` field exists for the Phase 60 trust-based
+// body. The `Identity` field exists for the trust-based
 // carrier-header posture and for body-side echo; the pause-list handler
 // reads the verified identity from ctx (preferred) and defends the body
 // identity against it.
@@ -170,7 +170,7 @@ type PauseListResponse struct {
 	// Truncated is true when a status=resumed filter aged out beyond
 	// the in-memory registry's retention. The Coordinator's
 	// resumed-records retention is bounded by the destructive-on-resume
-	// contract (Phase 50 / coordinator.go) — a resumed Token is
+	// contract (coordinator.go) — a resumed Token is
 	// queryable only until the Coordinator clears it. Operators
 	// inspecting historical resume activity should use
 	// `events.subscribe` on the `pause.resumed` topic instead.

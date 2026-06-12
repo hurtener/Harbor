@@ -1,4 +1,4 @@
-// Package stream — Wave 13 addition (Phase 73n / D-130): the Console
+// Package stream — addition: the Console
 // Playground-page `runs.set_overrides` HTTP handler. Like the Sessions /
 // Tasks / Flows page handlers, this is a one-shot request/response
 // endpoint — POST JSON in, JSON out. It lives in the stream package
@@ -17,7 +17,7 @@
 // — it records an override for the operator's OWN session, so no
 // cross-tenant scope claim is consulted.
 //
-// RunsHandler is a D-025-safe compiled artifact — service / logger are
+// RunsHandler is a concurrency-safe compiled artifact — service / logger are
 // set once at construction; ServeHTTP holds no per-request state.
 package stream
 
@@ -79,7 +79,7 @@ func WithRunsLogger(l *slog.Logger) RunsOption {
 // ErrRunsMisconfigured rather than building a handler that would
 // nil-panic on the first request (CLAUDE.md §5).
 //
-// The returned *RunsHandler is immutable after construction (D-025) and
+// The returned *RunsHandler is immutable after construction and
 // safe for concurrent use by N goroutines.
 func NewRunsHandler(service *runsprotocol.Service, opts ...RunsOption) (*RunsHandler, error) {
 	if service == nil {

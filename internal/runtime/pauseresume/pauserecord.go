@@ -10,9 +10,9 @@ import (
 // FormatVersion is the pause-record wire-format version. RFC §6.3
 // settles the pause-state serialisation format as "JSON with
 // format_version: 1" — aligned with the event bus (also JSON) and
-// operational simplicity (resolves brief 02 Q-2). Phase 50 shipped the
+// operational simplicity. An earlier phase shipped the
 // checkpointRecord envelope with this field as the forward-compat
-// hinge; Phase 51 closes the fail-loudly serialise contract ON it.
+// hinge; Harbor closes the fail-loudly serialise contract ON it.
 //
 // FormatVersion is an int so a future format bump is a single-line
 // change with a deterministic, comparable guard on load (see
@@ -23,14 +23,14 @@ const FormatVersion = 1
 // envelope, failing LOUD on ANY non-JSON-encodable leaf — never
 // silently dropping a field.
 //
-// # The contract (RFC §6.3 + §3.4, D-069)
+// # The contract (RFC §6.3 + §3.4)
 //
-// This is the Phase 51 closure of the silent-context-loss bug for the
-// pause record's OWN envelope. Phase 43 already closed it for the
-// trajectory (trajectory.Trajectory.Serialize); Phase 50 propagated
+// This is the closure of the silent-context-loss bug for the
+// pause record's OWN envelope. already closed it for the
+// trajectory (trajectory.Trajectory.Serialize); propagated
 // trajectory.ErrUnserializable verbatim out of Request. But the pause
 // record carries one more caller-controlled, JSON-tree-shaped field —
-// Payload map[string]any — and Phase 50's checkpoint save reached it
+// Payload map[string]any — and the checkpoint save reached it
 // via a bare json.Marshal. A bare json.Marshal on a non-encodable
 // Payload leaf returns *json.UnsupportedTypeError: technically loud,
 // but WITHOUT the actionable dotted field path the fail-loudly
@@ -49,11 +49,11 @@ const FormatVersion = 1
 //     before touching the in-memory registry or the store).
 //
 // The pre-flight reflective walk is trajectory.ValidateEncodable — the
-// SAME walker Phase 43 uses for the trajectory. Phase 51 does NOT
+// SAME walker Harbor uses for the trajectory. Harbor does NOT
 // re-implement a second fail-loudly serialiser (that would be the
 // CLAUDE.md §13 two-parallel-implementations anti-pattern, exactly the
-// shape the Wave 8 audit's capfilter extraction killed); it shares the
-// Phase 43 primitive. See D-069's "reuse vs share" call.
+// shape the checkpoint audit capfilter extraction killed); it shares the
+// primitive.'s "reuse vs share" call.
 //
 // FormatVersion is stamped here, not trusted from the caller: the
 // caller hands SerializeRecord a checkpointRecord and SerializeRecord
@@ -82,7 +82,7 @@ func SerializeRecord(rec checkpointRecord) ([]byte, error) {
 	// Happy path: the walker passed, so stdlib json.Marshal is the
 	// canonical encoder and cannot fail on the envelope. Map keys are
 	// alphabetised; struct fields encode per JSON tag in declaration
-	// order — the same canonical-ordering discipline D-049 pins for the
+	// order — the same canonical-ordering discipline pinned for the
 	// trajectory, so the pause-record round-trip is byte-stable too.
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -113,7 +113,7 @@ func SerializeRecord(rec checkpointRecord) ([]byte, error) {
 // "JSON with format_version: 1" contract: SerializeRecord stamps it,
 // DeserializeRecord enforces it. A pause record with a missing /
 // zero / unknown version is a corruption or a forward-incompatible
-// write — both fail loud here (D-069).
+// write — both fail loud here.
 func DeserializeRecord(b []byte) (checkpointRecord, error) {
 	if len(b) == 0 {
 		return checkpointRecord{}, fmt.Errorf("%w: empty pause-record bytes", ErrCheckpointCorrupt)

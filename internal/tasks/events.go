@@ -6,13 +6,13 @@ import (
 
 // Task lifecycle event types. Each is registered with the events
 // package's exhaustive registry via init() so Publish accepts them
-// without ErrUnknownEventType. Registration follows the Phase 08
+// without ErrUnknownEventType. Registration follows the
 // sessions precedent — the consumer subsystem registers its own
 // events alongside its typed payloads, keeping the events package
 // free of task-domain knowledge.
 //
-// Phase 20 ships eight types: seven lifecycle transitions plus
-// `task.prioritised` for caller-driven priority updates. Phase 21
+// Harbor ships eight types: seven lifecycle transitions plus
+// `task.prioritised` for caller-driven priority updates. Harbor
 // adds seven more group/patch types — `task.group_created`,
 // `task.group_sealed`, `task.group_resolved`, `task.group_cancelled`,
 // `task.patch_applied`, `task.patch_rejected`,
@@ -142,7 +142,7 @@ type TaskResumedPayload struct {
 // TaskCompletedPayload reports MarkComplete. The result is on the
 // Task record itself; this payload only signals the transition so
 // subscribers do not see an unredacted result by accident. The
-// caller pre-redacts `TaskResult.Value` before MarkComplete (D-020).
+// caller pre-redacts `TaskResult.Value` before MarkComplete.
 //
 // SafePayload by construction.
 type TaskCompletedPayload struct {
@@ -214,8 +214,8 @@ type TaskGroupSealedPayload struct {
 // shape so subscribers (Console, planner, sidecar status emitters)
 // consume one shape regardless of how they're wired.
 //
-// SafePayload by construction. `MemberOutcome.Result` is ref-shaped
-// (D-022, D-026); heavy bytes should already be ArtifactRefs
+// SafePayload by construction. `MemberOutcome.Result` is ref-shaped;
+// heavy bytes should already be ArtifactRefs
 // upstream.
 type TaskGroupResolvedPayload struct {
 	events.SafeSealed

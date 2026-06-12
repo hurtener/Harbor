@@ -1,16 +1,16 @@
-// Package search owns the Harbor Phase 72c (D-108) cross-cutting
+// Package search owns the Harbor cross-cutting
 // search primitive — the four runtime-side per-subsystem indexes
 // (sessions, tasks, events, artifacts) plus the `search.query` palette
 // dispatcher that aggregates them.
 //
 // # Why this package exists
 //
-// Brief 11 §CC-4 split the Console's cross-cutting global search into
+// The Console design split the cross-cutting global search into
 // two halves: runtime-side for high-cardinality entities (sessions,
 // tasks, events, artifacts) and Console-side for slow-moving catalog
 // data (tools, agents, flows, MCP connections). This package owns the
 // runtime-side half. Console-side adapters do NOT live here — they
-// land in their per-page Stage-2 Console phases (73c/d/e/f/g/i/k).
+// land in their per-page Console phases (73c/d/e/f/g/i/k).
 //
 // # The §4.4 seam
 //
@@ -25,19 +25,19 @@
 //
 // Every search call rejects requests with an incomplete identity
 // triple via `ErrIdentityRequired`. Cross-tenant search requires the
-// `auth.ScopeAdmin` claim per D-079; an unauth'd cross-tenant request
+// `auth.ScopeAdmin` claim per the closed admin-scope set; an unauth'd cross-tenant request
 // is rejected with `ErrCrossTenantRequiresAdmin`. The rejection is
 // loud — there is no silent degradation to an empty result set
 // (CLAUDE.md §13).
 //
-// # Heavy-payload bypass (D-026)
+// # Heavy-payload bypass
 //
 // Result rows whose underlying preview payload would exceed the
 // heavy-content threshold ship as a populated `Ref` on the
 // `SearchResultRow`, never inline bytes. Per-index searchers enforce
 // this at the row-construction site.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Every Searcher is a compiled artifact: the dependency reads are set
 // once at construction (the SessionRegistry / TaskRegistry / Replayer
@@ -60,7 +60,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// HeavyPreviewThreshold is the D-026 bound — a `SearchResultRow`
+// HeavyPreviewThreshold is the bound — a `SearchResultRow`
 // preview whose UTF-8 byte length would exceed this value ships as a
 // `*SearchArtifactRef` instead of inline bytes. Single-sourced on
 // `config.DefaultHeavyOutputThresholdBytes` (the one home of the
@@ -84,7 +84,7 @@ var (
 	ErrIdentityRequired = errors.New("search: identity required (tenant/user/session)")
 	// ErrCrossTenantRequiresAdmin — the request's filter expands the
 	// query OUTSIDE the caller's authenticated tenant AND the caller
-	// does not hold the `auth.ScopeAdmin` claim (D-079).
+	// does not hold the `auth.ScopeAdmin` claim.
 	ErrCrossTenantRequiresAdmin = errors.New("search: cross-tenant search requires the auth.ScopeAdmin claim")
 	// ErrInvalidRequest — the request fails structural validation
 	// (PageSize > MaxSearchPageSize, an unknown SearchIndex in
@@ -102,7 +102,7 @@ var (
 )
 
 // Searcher is the §4.4 seam interface — one implementation per
-// canonical runtime-side index. Each implementation is a D-025
+// canonical runtime-side index. Each implementation is a concurrency-safe
 // compiled artifact: every dependency is set once at construction;
 // per-call state lives in `ctx` + `SearchRequest`.
 //
@@ -114,7 +114,7 @@ var (
 //   - Redact every emitted `Preview` via the supplied `audit.Redactor`
 //     before returning (`ErrRedactionFailed` on failure).
 //   - Ship a `*SearchArtifactRef` instead of inline bytes when a
-//     preview would exceed `HeavyPreviewThreshold` (D-026).
+//     preview would exceed `HeavyPreviewThreshold`.
 //   - Honor `ctx.Err()` between long phases of work.
 type Searcher interface {
 	// Index returns the canonical index this Searcher serves.
@@ -127,14 +127,14 @@ type Searcher interface {
 // ScopeChecker is the narrow predicate the Searchers consult to decide
 // whether a cross-tenant request is allowed. The production
 // implementation is `server.SearchAdminScopeFromAuth` — owned by the
-// Runtime's network surface per the D-203 direction rule (runtime
+// Runtime's network surface per the direction rule (runtime
 // packages import protocol TYPES only, never protocol auth /
 // behaviour), so this package never sees the Protocol's auth
 // vocabulary; tests inject a deterministic predicate.
 //
 // The signature deliberately takes `ctx` (not a verified-identity
 // struct) so the implementation can read the verified scope set from
-// the auth context attached by the Phase 61 middleware.
+// the auth context attached by the middleware.
 type ScopeChecker func(ctx context.Context) bool
 
 // Deps bundles the construction-time dependencies every per-index
@@ -380,7 +380,7 @@ func Paginate(all []types.SearchResultRow, req types.SearchRequest) (page, pageS
 }
 
 // SortRowsByOccurredAtDesc orders rows newest-first. V1's ordering
-// contract per the Phase 72c plan: lexicographic match + time-order;
+// contract per the phase plan: lexicographic match + time-order;
 // post-V1 may add relevance scoring.
 func SortRowsByOccurredAtDesc(rows []types.SearchResultRow) {
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -433,10 +433,10 @@ func RedactAndCapPreview(ctx context.Context, redactor audit.Redactor, preview s
 }
 
 // ConcurrentReuseTag is a no-op assertion site — kept as a package-level
-// var so a future static analyser can grep it as the canonical D-025
+// var so a future static analyser can grep it as the canonical concurrent-reuse
 // witness across the search subsystem. The actual enforcement is the
 // concurrent_reuse_test.go N≥100 stress.
-var ConcurrentReuseTag = struct{ Note string }{Note: "search: per-index Searchers are D-025 compiled artifacts; per-call state lives in ctx + req"}
+var ConcurrentReuseTag = struct{ Note string }{Note: "search: per-index Searchers are compiled artifacts under the concurrent-reuse contract; per-call state lives in ctx + req"}
 
 // mu is the search package's only package-level mutable state — and
 // it guards exactly nothing. It's a placeholder so a future addition

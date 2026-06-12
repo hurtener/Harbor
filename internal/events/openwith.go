@@ -1,15 +1,15 @@
-// openwith.go — the deps-aware factory entry point (Phase 110d, D-197).
+// openwith.go — the deps-aware factory entry point.
 //
-// The Phase 05 `Factory` signature deliberately carries no
+// The `Factory` signature deliberately carries no
 // dependencies beyond `(EventsConfig, audit.Redactor)`. That left the
-// Phase 57 durable driver with no factory-path way to SHARE the
+// durable driver with no factory-path way to SHARE the
 // runtime's StateStore: the registry-path factory opens a private
 // store from `events.state_driver` / `events.state_dsn`, and the only
 // way to share the runtime's store was cmd-only direct construction
 // (`durable.New(cfg, r, store)`), bypassing the §4.4 registry.
 //
 // `OpenWith` adds a PARALLEL entry point rather than breaking the
-// registered `Factory` signature (D-197): drivers that want deps
+// registered `Factory` signature: drivers that want deps
 // register a second, deps-aware factory via `RegisterWithDeps`;
 // drivers that ignore deps register nothing extra and `OpenWith`
 // falls back to their plain factory. `Open` keeps its signature and

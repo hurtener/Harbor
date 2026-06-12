@@ -2,9 +2,9 @@ package types
 
 import "time"
 
-// Phase 73c (Wave 13 / D-122) — the Console Sessions-page wire types.
+// the Console Sessions-page wire types.
 //
-// These structs are the single source of truth (D-002 / CLAUDE.md §13)
+// These structs are the single source of truth (CLAUDE.md §13)
 // for the two `sessions.*` Protocol methods the Console Sessions page
 // consumes:
 //
@@ -22,16 +22,16 @@ import "time"
 // closed at the wire edge with CodeIdentityRequired. A cross-tenant
 // filter — a `TenantIDs` entry naming a tenant other than the caller's
 // verified tenant — additionally requires the verified `auth.ScopeAdmin`
-// claim (D-079 closed two-scope set; there is NO new sessions scope) —
+// claim (closed two-scope set; there is NO new sessions scope) —
 // a missing claim fails closed with CodeScopeMismatch (HTTP 403).
 //
-// Carve-outs pinned by D-122:
-//   - NO Priority field on SessionRow (D-065 dropped session-level
+// Carve-outs pinned by design:
+//   - NO Priority field on SessionRow (dropped session-level
 //     priority from V1).
-//   - Saved filters are Console-local (D-061) — the wire shape carries
+//   - Saved filters are Console-local — the wire shape carries
 //     only the inflated filter, NEVER a saved-filter ID.
 //   - SessionsListResponse emits `Truncated bool` rather than a silent
-//     exact total — D-026 fail-loudly: an exact O(N) count under high
+//     exact total — fail-loudly: an exact O(N) count under high
 //     cardinality is not promised.
 
 // Sessions-page pagination bounds for `sessions.list`. Mirrors the
@@ -132,7 +132,7 @@ type SessionFilter struct {
 	UserIDs []string `json:"user_ids,omitempty"`
 	// TenantIDs restricts to sessions whose TenantID is in this set.
 	// A TenantIDs entry naming a tenant other than the caller's
-	// verified tenant requires the `auth.ScopeAdmin` claim (D-079).
+	// verified tenant requires the `auth.ScopeAdmin` claim.
 	TenantIDs []string `json:"tenant_ids,omitempty"`
 	// StartedWindow filters by the session's StartedAt timestamp.
 	StartedWindow Window `json:"started_window,omitempty"`
@@ -147,8 +147,8 @@ type SessionFilter struct {
 	CostAboveCents *int64 `json:"cost_above_cents,omitempty"`
 	// Query is a free-text substring filter over session id + agent
 	// name + user. When non-empty, the runtime forwards it to the
-	// `search.sessions` index (Brief 11 §CC-4) and the SessionFilter
-	// axes are post-search refinements (D-122 — forward then filter).
+	// `search.sessions` index and the SessionFilter
+	// axes are post-search refinements (forward then filter).
 	Query string `json:"query,omitempty"`
 }
 
@@ -176,7 +176,7 @@ type SessionsListRequest struct {
 // shape the Console Sessions-page table renders. Flat, low-cardinality
 // fields — the Console branches on the enum fields.
 //
-// There is NO Priority field — D-065 dropped session-level priority
+// There is NO Priority field — V1 dropped session-level priority
 // from V1.
 type SessionRow struct {
 	// SessionID is the stable session identifier.
@@ -214,7 +214,7 @@ type SessionRow struct {
 	// HasFailedTask reports whether the session has at least one failed
 	// task.
 	HasFailedTask bool `json:"has_failed_task"`
-	// Identity is the impersonation triplet (Phase 72b / D-107). When
+	// Identity is the impersonation triplet. When
 	// the session is a normal non-impersonated run, only the top-level
 	// Tenant/User/Session carry meaning and Impersonating is nil; when
 	// the session is an admin-initiated impersonated run, Actor carries
@@ -228,7 +228,7 @@ type SessionRow struct {
 // SessionsListResponse is the `sessions.list` reply: a page of catalog
 // rows plus the opaque next-page cursor.
 //
-// There is NO exact total count — D-026 fail-loudly: an exact O(N)
+// There is NO exact total count — fail-loudly: an exact O(N)
 // count under high cardinality is not promised. The server emits
 // `Truncated: true` when the candidate set hit Limit+1 rows; the page
 // lazily fetches more pages until NextCursor == "".
@@ -260,7 +260,7 @@ type InterventionSummary struct {
 
 // ArtifactRefSummary is one entry in the right-rail Session Summary's
 // Recent Artifacts card. Capped at MaxSessionArtifactSummaries. It
-// carries metadata only — never inline bytes (D-026).
+// carries metadata only — never inline bytes.
 type ArtifactRefSummary struct {
 	// Filename is the artifact's display filename.
 	Filename string `json:"filename"`

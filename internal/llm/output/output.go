@@ -1,11 +1,11 @@
 // Package output is Harbor's structured-output strategy + downgrade
-// chain (Phase 35 — RFC §6.5).
+// chain (RFC §6.5).
 //
-// The wrapper sits OUTSIDE the Phase 34 corrections layer:
+// The wrapper sits OUTSIDE the corrections layer:
 //
 //	Open() → retry(downgrade(corrections(safety(driver))))
 //
-// — settled by D-043. Reasoning: a downgrade rewrites the request's
+// — a settled ordering. Reasoning: a downgrade rewrites the request's
 // `ResponseFormat` (e.g. `json_schema` → `json_object`); the
 // corrections layer must re-apply its per-provider envelope shaping
 // on the rewritten request, so corrections compose INSIDE downgrade.
@@ -21,7 +21,7 @@
 //     The runtime parses the response locally. **This is NOT
 //     provider-native tool-calling** — the static guard against
 //     bifrost's provider tool-call API symbols extends to this
-//     package (see scripts/smoke/phase-35.sh).
+//     package (see the package's static smoke guard).
 //  3. `OutputModePrompted` — coerce `FormatJSONObject` and append the
 //     schema as a system-prompt instruction.
 //
@@ -36,7 +36,7 @@
 // To / Reason; exhausting the chain surfaces `ErrDowngradeExhausted`
 // wrapping the underlying failure.
 //
-// Concurrent-reuse (D-025): the wrapper is stateless across calls. A
+// Concurrent-reuse: the wrapper is stateless across calls. A
 // `Wrap` returns a value holding the inner `LLMClient`, the snapshot,
 // and the bus reference; all are read-only after construction.
 package output

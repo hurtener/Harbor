@@ -44,7 +44,7 @@ type ListDeps struct {
 	DriverName string
 	// HeavyThreshold is the configured heavy-content byte size
 	// (cfg.Artifacts.HeavyOutputThresholdBytes). It is the single
-	// classification point for the per-row HeavyContent flag (D-026);
+	// classification point for the per-row HeavyContent flag;
 	// `memory.list` and `memory.get` MUST agree, so both read the same
 	// threshold. A zero / non-positive value disables the flag (no row
 	// is reported heavy) — the list still renders.
@@ -56,7 +56,7 @@ type ListDeps struct {
 // shape, applies the request's facet filters, paginates, and attaches
 // the aggregate counters.
 //
-// Identity is mandatory (D-001): an incomplete triple on id fails
+// Identity is mandatory: an incomplete triple on id fails
 // loudly with `memory.ErrIdentityRequired`. The cross-tenant scope
 // gate is the caller's job (the stream handler checks `auth.HasScope`
 // before calling List) — by the time List runs the request is
@@ -272,7 +272,7 @@ func computeAggregates(ctx context.Context, agg *events.Aggregator, rows []proje
 }
 
 // eventCounters sums the 24-hour counts of `memory.identity_rejected`
-// (D-033) and `memory.recovery_dropped` (D-035) events from the events
+// and `memory.recovery_dropped` events from the events
 // Aggregator. A nil Aggregator — or a forward-only bus without replay
 // — yields (0, 0): the page still renders and the right-rail cards
 // subscribe to the live stream for the real-time view. The aggregate
@@ -282,11 +282,11 @@ func computeAggregates(ctx context.Context, agg *events.Aggregator, rows []proje
 // The counters are scoped to the caller's TENANT only — NOT the full
 // triple. A `memory.identity_rejected` event by construction carries a
 // partial identity with `<missing>` substituted for the empty
-// component(s) (D-033), so a triple-scoped filter would never match a
+// component(s), so a triple-scoped filter would never match a
 // rejection whose session was the missing component. Tenant-scoping
 // keeps the rejection count visible while preserving the tenant
 // isolation boundary (CLAUDE.md §6 — the tenant is still the outer
-// boundary; cross-tenant fan-in still requires the D-079 scope claim,
+// boundary; cross-tenant fan-in still requires the admin scope claim,
 // enforced at the wire edge before List runs).
 func eventCounters(ctx context.Context, agg *events.Aggregator, id identity.Quadruple) (rejected, dropped int64) {
 	if agg == nil {
@@ -308,7 +308,7 @@ func eventCounters(ctx context.Context, agg *events.Aggregator, id identity.Quad
 		// degrade to 0; the live event stream is the real-time
 		// source. This is NOT silent degradation of a load-bearing
 		// path: the rejection EVENTS still surface verbatim on the
-		// right-rail card (D-033), only the rolled-up 24h count is
+		// right-rail card, only the rolled-up 24h count is
 		// best-effort.
 		return 0, 0
 	}

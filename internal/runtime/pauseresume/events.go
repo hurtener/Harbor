@@ -12,11 +12,11 @@ const (
 	// EventTypePauseResumed — emitted by Coordinator.Resume when a
 	// pause record terminates. Payload is PauseResumedPayload.
 	EventTypePauseResumed events.EventType = "pause.resumed"
-	// EventTypePausePayloadArtifactRouted — emitted by the Phase 72e
+	// EventTypePausePayloadArtifactRouted — emitted by the
 	// `pause.list` snapshot path when a pause record's Payload
 	// serialised size meets or exceeds the configured heavy-content
 	// threshold and is routed through the ArtifactStore instead of
-	// shipped inline (D-026 — context-window safety net applied to
+	// shipped inline (context-window safety net applied to
 	// Protocol read snapshots). The emit makes the bypass LOUD — a
 	// heavy payload is never silently truncated. Payload is
 	// PausePayloadArtifactRoutedPayload.
@@ -52,7 +52,7 @@ type PauseRequestedPayload struct {
 // `Decision` is the load-bearing typed marker wire consumers (the
 // Console, third-party clients, integration tests) switch on to
 // distinguish approve from reject from generic resume from timeout —
-// the §13 "overloaded `Reason` string" anti-pattern issue #113 / D-096
+// the §13 "overloaded `Reason` string" anti-pattern issue #113
 // closes. `Reason` is the human-readable pause-reason classification
 // preserved for context; `Decision` is the typed channel observers
 // branch on.
@@ -65,7 +65,7 @@ type PauseResumedPayload struct {
 	Reason string
 	// Decision is the typed marker indicating *how* the pause resumed
 	// (approve / reject / resume / timeout). Wire consumers switch on
-	// this value rather than parsing `Reason` strings. See D-096.
+	// this value rather than parsing `Reason` strings.
 	Decision Decision
 }
 
@@ -75,7 +75,7 @@ type PauseResumedPayload struct {
 // Token, the content-addressed artifact ref ID, and the byte sizes
 // involved. NO caller-controlled payload bytes are carried (the heavy
 // payload itself went to the ArtifactStore, which is the whole point
-// of the bypass). Phase 72e (D-110, D-026).
+// of the bypass).
 type PausePayloadArtifactRoutedPayload struct {
 	events.SafeSealed
 	// Token is the opaque pause Token whose Payload was routed.

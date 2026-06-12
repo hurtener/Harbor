@@ -2,25 +2,25 @@
 // runtime-wide invariants that guard every `Complete` call.
 //
 // The interface is **one method**, `Complete(ctx, req) (resp, error)`
-// (RFC §6.5). Tool dispatch is the runtime's job (RFC §6.4 + brief 07
+// (RFC §6.5). Tool dispatch is the runtime's job (RFC §6.4
 // "code-level tool calling"); the LLM client is reduced to a JSON-
 // producing chat-completion adapter. Provider-native tool-calling
 // shapes (the `tools=` request parameter, the `tool_choice=` mode
 // selector, OpenAI's `function_call`, Anthropic's `tool_use` blocks,
 // Gemini's function-calling protocol, etc.) never appear in this
-// package — the static guard in `scripts/smoke/phase-32.sh` enforces
+// package — the static guard in the package's static smoke guard enforces
 // the boundary by greppping for the canonical symbol names.
 //
 // The message envelope is provider-agnostic: `ChatMessage.Content`
 // is a sum-type that carries either `Text *string` (the common case)
-// or `Parts []ContentPart` for multimodal input (D-021).
+// or `Parts []ContentPart` for multimodal input.
 // Multimodal parts (`ImagePart`, `AudioPart`, `FilePart`) each carry
 // one of three supply forms — `URL`, `DataURL`, or `Artifact` — and
 // the runtime auto-materializes inline `DataURL` content above the
 // heavy-output threshold into `ArtifactRef`s before persistence and
-// emit (D-022).
+// emit.
 //
-// **Context-window safety net (D-026).** Every `Complete` call routes
+// **Context-window safety net.** Every `Complete` call routes
 // through a catch-all pass at the LLM-client edge that (a) auto-
 // materializes oversize `DataURL` content, (b) asserts no raw heavy
 // content survived ANY producer's normalization step (else
@@ -37,7 +37,7 @@
 // likewise have to compose `enforceContextSafety` to maintain the
 // runtime invariant.
 //
-// Concurrent-reuse contract (D-025): one `LLMClient` is safe to
+// Concurrent-reuse contract: one `LLMClient` is safe to
 // share across N concurrent goroutines. Mutable state on the client
 // (or the `Driver`) is forbidden; per-call state lives in `ctx` and
 // the request value. The package-level `concurrent_test.go` pins
@@ -56,10 +56,10 @@ import (
 // Streaming is signalled via `req.Stream` + `req.OnContent` /
 // `req.OnReasoning`; cancellation flows through `ctx`. The runtime
 // owns prompt construction, tool semantics, parsing, and parallel
-// dispatch — see RFC §6.4 + brief 07.
+// dispatch — see RFC §6.4.
 //
 // Implementations MUST be safe for N concurrent goroutines against a
-// single shared instance (D-025).
+// single shared instance.
 type LLMClient interface {
 	Complete(ctx context.Context, req CompleteRequest) (CompleteResponse, error)
 	// Close releases driver-held resources (HTTP connection pools,
@@ -88,17 +88,17 @@ type Driver interface {
 }
 
 // CompleteRequest is the LLM-call payload. Settled in RFC §6.5;
-// shaped by D-021 (multimodal sum-type), D-026 (safety-net
+// shaped by the multimodal sum-type and safety-net
 // invariants).
 //
 // `Messages` is the chat thread — role + content only. The system /
 // user / assistant roles are the entire vocabulary; tool-result
 // rendering happens at the `ObservationRenderer` layer as user-role
-// messages (RFC §6.4 + brief 07 §5).
+// messages (RFC §6.4).
 //
 // `ResponseFormat` is an optional structured-output hint. `nil` means
 // "plain text"; `json_object` requests provider JSON mode;
-// `json_schema` carries a caller-supplied JSON Schema. Phase 35 owns
+// `json_schema` carries a caller-supplied JSON Schema. Harbor owns
 // the per-provider downgrade chain `json_schema → json_object → text`.
 //
 // `Stream` + `OnContent` / `OnReasoning` cooperate: when `Stream` is
@@ -114,8 +114,8 @@ type Driver interface {
 // reasoning controls (bifrost's `ChatReasoning`). `""` means "do not
 // touch the provider default."
 //
-// `Extra` is provider-passthrough sanitized by Phase 34's correction
-// layer. Phase 32 stores the field but does not interpret it.
+// `Extra` is provider-passthrough sanitized by the correction
+// layer. Harbor stores the field but does not interpret it.
 type CompleteRequest struct {
 	Model           string
 	Messages        []ChatMessage
@@ -128,7 +128,7 @@ type CompleteRequest struct {
 	Stops           []string
 	ReasoningEffort ReasoningEffort
 	Extra           map[string]any
-	// Validator (Phase 36) is the caller-supplied post-response
+	// Validator is the caller-supplied post-response
 	// validation hook. When non-nil, the retry wrapper invokes it
 	// after each successful `Complete`; a non-nil return triggers a
 	// corrective re-ask bounded by `ModelProfile.MaxRetries`. The
@@ -139,20 +139,20 @@ type CompleteRequest struct {
 	// `nil` Validator (the default) disables the retry loop entirely;
 	// the wrapper is a no-op pass-through. Validators MUST be safe for
 	// concurrent invocation against the same compiled artifact (the
-	// wrapper itself enforces D-025; the validator runs once per call).
+	// wrapper itself enforces the concurrent-reuse contract; the validator runs once per call).
 	Validator func(CompleteResponse) error
 
-	// Tools (Phase 107c / D-167) is the per-turn tool catalog. When
+	// Tools is the per-turn tool catalog. When
 	// nil the driver calls the provider without the tool-calling
 	// block (text-only completion — preserves non-React planner
 	// behavior).
 	Tools []ToolDeclaration
-	// ToolChoice (Phase 107c / D-167) is the per-provider tool-choice
+	// ToolChoice is the per-provider tool-choice
 	// passthrough. "" means "do not emit a tool_choice field"; "auto"
 	// lets the provider decide; "required" forces the model to emit at
 	// least one tool call; "none" suppresses tool calls entirely.
 	ToolChoice string
-	// ParallelToolCalls (Phase 107c / D-167) is the per-turn knob for
+	// ParallelToolCalls is the per-turn knob for
 	// parallel function-calling (default true for supporting providers;
 	// bifrost maps it per provider). The planner sets this per the
 	// operator's yaml knob + the runloop executor's capability signal.
@@ -164,10 +164,10 @@ type CompleteRequest struct {
 // `Content` is the full assembled assistant message — for streaming
 // calls the driver concatenates `OnContent` deltas into `Content`
 // before returning. The runtime parses `Content` into a
-// `PlannerAction` per brief 07; the LLM never emits provider-native
+// `PlannerAction`; the LLM never emits provider-native
 // tool calls.
 //
-// `ToolCalls` (Phase 107c / D-167) carries provider-validated
+// `ToolCalls` carries provider-validated
 // structured tool-call entries. When non-empty, the planner reads
 // ToolCalls as its primary decision discriminator (native tool-calling
 // path). Empty for text-only responses and for providers without
@@ -182,10 +182,10 @@ type CompleteRequest struct {
 // the driver does not read a reasoning channel. Reasoning is captured
 // content, NOT replayed into prompts: the planner persists it on
 // `trajectory.Step.ReasoningTrace` and only re-injects it when an
-// operator opts into replay (D-148). Phase 83e (RFC §6.2 + §6.5).
+// operator opts into replay (RFC §6.2 + §6.5).
 //
 // `Cost` + `Usage` propagate the provider's reported figures.
-// Governance (Phase 36a/36b) subscribes to `llm.cost.recorded` events
+// Governance subscribes to `llm.cost.recorded` events
 // emitted by the runtime when a `Complete` returns; the event payload
 // re-stamps these shapes.
 type CompleteResponse struct {
@@ -196,8 +196,8 @@ type CompleteResponse struct {
 	Usage     Usage
 }
 
-// ToolCallStructured is a provider-validated tool-call entry (Phase
-// 107c / D-167). Carries the provider-assigned call ID (round-trips
+// ToolCallStructured is a provider-validated tool-call entry (
+// ). Carries the provider-assigned call ID (round-trips
 // on `ChatMessage.ToolCallID` when the result is threaded back into
 // the next turn), the tool name (matches `tools.Tool.Name`), and
 // provider-validated JSON args.
@@ -220,8 +220,8 @@ type ToolCallStructured struct {
 	Index uint16
 }
 
-// ToolDeclaration is the per-turn tool declarator the LLM sees (Phase
-// 107c / D-167). Carries the tool name, operator-facing description,
+// ToolDeclaration is the per-turn tool declarator the LLM sees (
+// ). Carries the tool name, operator-facing description,
 // and the args JSON Schema.
 type ToolDeclaration struct {
 	Name        string
@@ -231,7 +231,7 @@ type ToolDeclaration struct {
 
 // Role is the chat-message role. Settled at the four canonical
 // values; `RoleTool` is the in-Harbor convention for the user-role
-// rendering of tool observations (brief 07 §5 — the rendering itself
+// rendering of tool observations (the rendering itself
 // happens at `ObservationRenderer`, not here; this constant exists
 // so callers that construct an explicit user-message describing a
 // tool result can label it for clarity).
@@ -257,13 +257,13 @@ type ChatMessage struct {
 	Role    Role
 	Content Content
 	Name    *string
-	// ToolCallID (Phase 107c / D-167) is the provider-assigned
+	// ToolCallID is the provider-assigned
 	// tool-call identifier carried on RoleTool messages. Rendered
 	// as the native tool-result role with matching call ID when
 	// the provider supports it; falls back to user-role rendering
 	// on providers without native tool-result roles.
 	ToolCallID *string
-	// ToolCalls (Phase 107c / D-167) is the per-message structured
+	// ToolCalls is the per-message structured
 	// tool-call slice carried on RoleAssistant messages that replay
 	// a prior planner step's CallTool emission into the next turn's
 	// thread. When non-empty, the bifrost translator emits an
@@ -312,7 +312,7 @@ type ContentPart struct {
 // provider-fetchable remote URL. `DataURL` is an inline
 // `data:image/...;base64,...` payload — above the heavy-output
 // threshold the runtime materializes it to `Artifact`. `Artifact`
-// is the canonical Harbor reference (D-022).
+// is the canonical Harbor reference.
 //
 // `MIME` is the image MIME type (`image/jpeg`, `image/png`,
 // `image/webp`, ...). `Detail` is a provider hint (`low` / `high` /
@@ -403,9 +403,9 @@ const (
 // `CompleteRequest`. `nil` means "plain text" (equivalent to
 // `Kind: FormatText`).
 //
-// Phase 35 owns the per-provider downgrade chain
+// Harbor owns the per-provider downgrade chain
 // `json_schema → json_object → text` on `invalid_json_schema` errors;
-// Phase 32 stores the field and the safety-net pass treats the JSON
+// Harbor stores the field and the safety-net pass treats the JSON
 // schema bytes as opaque metadata (no token-estimate contribution).
 type ResponseFormat struct {
 	Kind       ResponseFormatKind
@@ -426,7 +426,7 @@ const (
 )
 
 // OutputMode selects the request-shaping strategy for structured
-// output (Phase 35; RFC §6.5). Three modes:
+// output (RFC §6.5). Three modes:
 //
 //   - `OutputModeNative` — pass `FormatJSONSchema` through unchanged.
 //     The provider validates against the schema natively. Default for
@@ -441,9 +441,9 @@ const (
 //     IMPORTANT: this is NOT a passthrough to provider-native
 //     tool-calling APIs (`tools=` / `tool_choice=` / `function_call` /
 //     `tool_use`). Harbor's runtime owns tool dispatch (RFC §6.4 /
-//     brief 07); `OutputModeTools` is purely a prompted-output
-//     technique. The static guard in `scripts/smoke/phase-35.sh`
-//     enforces this boundary.
+//     by design); `OutputModeTools` is purely a prompted-output
+//     technique. The package's static smoke guard enforces this
+//     boundary.
 //
 //   - `OutputModePrompted` — coerce `FormatJSONObject` and inline the
 //     schema as a system-prompt instruction. The LLM-side parse is
@@ -472,8 +472,8 @@ const (
 // Cost is the provider-reported cost breakdown. Values are USD.
 // Fields are zero when the provider doesn't report a category.
 //
-// Governance (Phase 36a) subscribes to `llm.cost.recorded` events to
-// drive per-identity accumulators; Phase 36a's payload re-stamps
+// Governance subscribes to `llm.cost.recorded` events to
+// drive per-identity accumulators; the payload re-stamps
 // these fields.
 type Cost struct {
 	InputTokensCost     float64
@@ -491,13 +491,13 @@ type Usage struct {
 	TotalTokens      int
 	LatencyMS        int64
 	// ProviderExtras — opaque provider-specific bag (e.g. cache
-	// hit/miss). Phase 32 does not interpret these fields; Phase 34+
+	// hit/miss). Harbor does not interpret these fields; later phases
 	// may read them for correction-layer decisions.
 	ProviderExtras map[string]string
 }
 
 // ArtifactStub is the model-agnostic JSON shape the LLM sees in
-// place of heavy content during prompt assembly (RFC §6.5, D-026).
+// place of heavy content during prompt assembly (RFC §6.5).
 // The same shape is used whether the substituted content originated
 // from a tool result, a memory turn, or a multimodal input.
 //
@@ -556,8 +556,8 @@ func (s ArtifactStub) MarshalJSON() ([]byte, error) {
 }
 
 // ModelProfile carries per-model knobs. Keyed by canonical model
-// name in `LLMConfig.ModelProfiles`. Phase 32 ships the shape +
-// `ContextWindowTokens` + `TokenEstimator` consumers; Phase 33+
+// name in `LLMConfig.ModelProfiles`. Harbor ships the shape +
+// `ContextWindowTokens` + `TokenEstimator` consumers; later phases
 // consume the rest.
 type ModelProfile struct {
 	// ContextWindowTokens is the model's hard input-token cap.
@@ -565,20 +565,20 @@ type ModelProfile struct {
 	ContextWindowTokens int
 	// TokenEstimator selects the estimator the safety net runs.
 	// "" / "chars_div_4" — default chars/4 + role-overhead.
-	// Phase 33+ may register tiktoken-equivalent estimators by name.
+	// Later phases may register tiktoken-equivalent estimators by name.
 	TokenEstimator string
-	// JSONSchemaMode — Phase 32-era placeholder; the config loader
-	// normalises this string into `OutputMode` at snapshot time
-	// (Phase 35). Direct callers SHOULD set `OutputMode`; this field
+	// JSONSchemaMode — legacy placeholder; the config loader
+	// normalises this string into `OutputMode` at snapshot time.
+	// Direct callers SHOULD set `OutputMode`; this field
 	// is read only when `OutputMode` is `OutputModeUnset`.
 	JSONSchemaMode string
-	// OutputMode (Phase 35) — Harbor-side structured-output strategy.
+	// OutputMode — Harbor-side structured-output strategy.
 	// Drives the request-shaping in `internal/llm/output` and the
 	// downgrade chain. See `OutputMode` constants for semantics.
 	// Zero value (`OutputModeUnset`) falls back to the per-known-
 	// provider default (see `corrections.DefaultOutputModeFor`).
 	OutputMode OutputMode
-	// DefaultMaxTokens — Phase 36b's identity-tier override target.
+	// DefaultMaxTokens — the identity-tier override target.
 	DefaultMaxTokens *int
 	// ReasoningEffort — request-level default applied by the
 	// corrections layer (`corrections.Complete`) when the caller left
@@ -588,21 +588,21 @@ type ModelProfile struct {
 	// `ReasoningRouteThinking`).
 	ReasoningEffort ReasoningEffort
 	// CostOverrides — per-1M-token rates when the provider doesn't
-	// report cost (some OpenRouter routes don't). Phase 36a reads.
+	// report cost (some OpenRouter routes don't). Harbor reads.
 	CostOverrides *CostTable
-	// Corrections — per-provider quirk flags consumed by the Phase 34
+	// Corrections — per-provider quirk flags consumed by the
 	// `internal/llm/corrections` layer. Zero-valued struct means
 	// "no corrections needed for this model"; the corrections layer
 	// runs a no-op pass for default-shaped profiles.
 	Corrections CorrectionsProfile
-	// MaxRetries (Phase 36) — caps the validator-driven corrective
+	// MaxRetries — caps the validator-driven corrective
 	// re-asks performed by the retry wrapper. Zero (default) maps to
 	// `DefaultMaxRetries` (1). A negative value is rejected at config
 	// validation.
 	MaxRetries int
 }
 
-// CorrectionsProfile carries the per-model quirk flags the Phase 34
+// CorrectionsProfile carries the per-model quirk flags the
 // `internal/llm/corrections` layer dispatches on. The types live in
 // the `llm` package so the corrections sub-package can consume them
 // without an import cycle (logic lives in `internal/llm/corrections`).
@@ -612,7 +612,7 @@ type ModelProfile struct {
 // behaviour (no reorder, no schema mutation, OpenAI-style envelopes,
 // usage backfill off).
 //
-// Per RFC §6.5 + brief 03 §4: this is the operator-controlled surface
+// Per RFC §6.5: this is the operator-controlled surface
 // for adapting Harbor's neutral `CompleteRequest` shape to per-provider
 // expectations. The corrections layer is the ONLY consumer.
 type CorrectionsProfile struct {
@@ -641,7 +641,7 @@ type CorrectionsProfile struct {
 }
 
 // MessageOrderingPolicy enumerates the message-reordering modes the
-// Phase 34 corrections layer supports. Operator-set in
+// corrections layer supports. Operator-set in
 // `ModelProfile.Corrections.MessageOrdering`.
 type MessageOrderingPolicy string
 
@@ -651,12 +651,12 @@ const (
 	// OrderingSystemFirstStrict collapses all system-role messages
 	// to the front of the slice and emits an alternating
 	// user/assistant tail. Required by NIM and some OpenAI-compatible
-	// proxies that reject mid-thread `system` messages (brief 03 §4).
+	// proxies that reject mid-thread `system` messages.
 	OrderingSystemFirstStrict MessageOrderingPolicy = "system_first_strict"
 )
 
 // SchemaSanitizationMode enumerates the JSON-Schema-mutation modes the
-// Phase 34 `SchemaSanitizer` supports. Operator-set in
+// `SchemaSanitizer` supports. Operator-set in
 // `ModelProfile.Corrections.SchemaMode`.
 type SchemaSanitizationMode string
 
@@ -675,7 +675,7 @@ const (
 )
 
 // ReasoningRouting enumerates the `ReasoningEffort` routing modes the
-// Phase 34 corrections layer supports. Operator-set in
+// corrections layer supports. Operator-set in
 // `ModelProfile.Corrections.ReasoningEffortRouting`.
 type ReasoningRouting string
 
@@ -694,7 +694,7 @@ const (
 )
 
 // ResponseFormatProfile enumerates the `response_format` envelope
-// shapes the Phase 34 corrections layer can emit. Operator-set in
+// shapes the corrections layer can emit. Operator-set in
 // `ModelProfile.Corrections.ResponseFormatShape`.
 type ResponseFormatProfile string
 
@@ -714,14 +714,14 @@ const (
 	ResponseFormatJSONOnly ResponseFormatProfile = "json_only"
 	// ResponseFormatAnthropic packages the schema into Anthropic's
 	// tool-schema-style envelope, surfaced in
-	// `req.Extra["anthropic_tool_schema"]`. Phase 33's bifrost
+	// `req.Extra["anthropic_tool_schema"]`. the bifrost
 	// driver passes `Extra` opaquely; the Anthropic provider
-	// converter consumes the key (or future Phase 35 logic does).
+	// converter consumes the key (or future logic does).
 	ResponseFormatAnthropic ResponseFormatProfile = "anthropic"
 )
 
 // CostTable carries fallback per-1M-token rates. Used when the
-// provider's response doesn't include cost. Phase 36a consumes.
+// provider's response doesn't include cost. Harbor consumes.
 type CostTable struct {
 	InputPer1M     float64
 	OutputPer1M    float64

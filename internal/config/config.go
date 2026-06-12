@@ -3,7 +3,7 @@
 // Configuration is loaded once at boot via Load (or LoadFromBytes for
 // tests). After Load returns, the *Config is immutable; subsystems
 // hold a *Config reference and read from it concurrently. This is the
-// concurrent-reuse contract from D-025.
+// concurrent-reuse contract from.
 //
 // The struct layout uses one sub-struct per RFC §6 subsystem so that
 // future phases can extend their slice without cross-package import
@@ -14,7 +14,7 @@
 // Two struct tag conventions augment the standard yaml tag:
 //
 //   - `reload:"live"` opts a field into hot-reload. The default is
-//     `restart` (whether explicitly tagged or absent). Phase 02 ships
+//     `restart` (whether explicitly tagged or absent). Harbor ships
 //     the mechanism; no field opts in yet.
 //   - `secret:"true"` marks a field whose value must be redacted by
 //     MarshalForLogging. A name-based fallback also redacts fields
@@ -41,14 +41,14 @@ type Config struct {
 	Sessions  SessionsConfig  `yaml:"sessions,omitempty"`  // owned by sessions phases
 	Artifacts ArtifactsConfig `yaml:"artifacts,omitempty"` // owned by artifacts phases
 	Events    EventsConfig    `yaml:"events,omitempty"`    // owned by events phases
-	Audit     AuditConfig     `yaml:"audit,omitempty"`     // owned by Phase 03 + audit phases
+	Audit     AuditConfig     `yaml:"audit,omitempty"`     // owned by the audit subsystem
 	Protocol  ProtocolConfig  `yaml:"protocol,omitempty"`  // owned by protocol phases
 	CLI       CLIConfig       `yaml:"cli,omitempty"`       // owned by CLI phases
 	Tools     ToolsConfig     `yaml:"tools,omitempty"`     // owned by tools subsystem phases (26 / 27 / 28 / 29)
-	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by planner phases (D-103)
+	Planner   PlannerConfig   `yaml:"planner,omitempty"`   // owned by the planner subsystem
 
-	// Multimodal is the attachment-handling policy block (Phase 84b —
-	// D-189). Optional; an omitted block keeps the runtime default
+	// Multimodal is the attachment-handling policy block.
+	// Optional; an omitted block keeps the runtime default
 	// (image/* inline, everything else ref).
 	Multimodal MultimodalConfig `yaml:"multimodal,omitempty"`
 
@@ -59,7 +59,7 @@ type Config struct {
 	// `skills.retrieval` = `semantic`).
 	Embeddings EmbeddingsConfig `yaml:"embeddings,omitempty"`
 
-	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by pause/resume phases (50 / 51 / 111c — D-200)
+	PauseResume PauseResumeConfig `yaml:"pauseresume,omitempty"` // owned by the pause/resume subsystem
 
 	// source records the originating filename for error messages.
 	// Empty when LoadFromBytes is called without a name. Unexported so
@@ -69,12 +69,12 @@ type Config struct {
 
 // ServerConfig is the network surface for the Harbor binary.
 //
-// AllowedOrigins is the Phase 83v CORS allowlist for the
-// D-091 multi-process Console+Runtime posture. Each entry is an exact
+// AllowedOrigins is the CORS allowlist for the
+// multi-process Console+Runtime posture. Each entry is an exact
 // origin (`scheme://host[:port]`) the Runtime accepts cross-origin
 // requests from. Empty list (the default) = no CORS headers = same-
-// origin only (the pre-83v posture). The validator rejects `*` (or any
-// wildcard shape) unless CORSDevAllowAny is true. See D-162 + CLAUDE.md
+// origin only (the original posture). The validator rejects `*` (or any
+// wildcard shape) unless CORSDevAllowAny is true, per CLAUDE.md
 // §7 — never wildcard in production.
 //
 // CORSDevAllowAny is the explicit, dev-only escape hatch that opens the
@@ -116,10 +116,10 @@ type StateConfig struct {
 }
 
 // LLMConfig is the default LLM client surface for the runtime
-// (Phase 32+).
+// (the LLM subsystem).
 //
-// `Driver` selects the §4.4 LLM driver. Phase 32 ships `"mock"`;
-// Phase 33 registers `"bifrost"`. Empty defaults to `"mock"` so a
+// `Driver` selects the §4.4 LLM driver. Harbor ships `"mock"`;
+// Harbor registers `"bifrost"`. Empty defaults to `"mock"` so a
 // missing configuration value does NOT silently route real LLM
 // traffic — operators opt in to bifrost explicitly.
 //
@@ -188,13 +188,13 @@ type LLMConfig struct {
 	Timeout              time.Duration                    `yaml:"timeout"`
 	ContextWindowReserve float64                          `yaml:"context_window_reserve,omitempty"`
 	ModelProfiles        map[string]LLMModelProfileConfig `yaml:"model_profiles,omitempty"`
-	// Corrections toggles + per-model-profile-override the Phase 34
+	// Corrections toggles + per-model-profile-override the
 	// provider-correction layer. Omitted = enabled (production
 	// default). See `LLMCorrectionsConfig` for the wire shape.
 	Corrections LLMCorrectionsConfig `yaml:"corrections,omitempty"`
 
 	// CustomProviders is the registry of operator-declared
-	// OpenAI-compatible providers (Phase 33a). Each entry adds a new
+	// OpenAI-compatible providers. Each entry adds a new
 	// `ModelProvider` to the bifrost account so operators can wire
 	// NIM, vLLM, ollama, lm-studio, in-house gateways, or any other
 	// OpenAI-compatible endpoint via yaml without per-provider Go
@@ -206,14 +206,14 @@ type LLMConfig struct {
 
 	// NetworkDefaults applies to every provider (native + custom)
 	// when the per-provider override is absent. Zero-valued fields
-	// fall through to bifrost's package-level defaults (Phase 33a
+	// fall through to bifrost's package-level defaults (a
 	// unification of timeout/retry knobs that were previously
 	// scattered). Restart-required.
 	NetworkDefaults LLMNetworkDefaults `yaml:"network_defaults,omitempty"`
 }
 
 // LLMCustomProviderConfig declares one operator-configured
-// OpenAI-compatible LLM endpoint (Phase 33a). At least one entry is
+// OpenAI-compatible LLM endpoint. At least one entry is
 // required when `LLMConfig.Provider` names a non-native provider.
 //
 // Fields:
@@ -228,7 +228,7 @@ type LLMConfig struct {
 //     at `New` (`ErrMissingAPIKey`).
 //   - `Models` — the model-name allowlist bifrost forwards to this
 //     provider. At least one entry required.
-//   - `BaseProviderType` — wire family. Phase 33a accepts only `""`
+//   - `BaseProviderType` — wire family. V1 accepts only `""`
 //     (default to `"openai"`) and `"openai"`. Future phases widen.
 //   - `Timeout` / `MaxRetries` / `RetryBackoff*` / `Concurrency` /
 //     `BufferSize` — per-provider overrides. Zero-valued → fall back
@@ -255,9 +255,9 @@ type LLMCustomProviderConfig struct {
 
 // LLMNetworkDefaults are the operator-tunable defaults that apply to
 // every provider (native + custom) when the per-provider override is
-// absent (Phase 33a). Zero-valued fields fall through to bifrost's
+// absent. Zero-valued fields fall through to bifrost's
 // package-level defaults so an operator who omits the block sees
-// today's Phase 33 behaviour unchanged.
+// today's behaviour unchanged.
 type LLMNetworkDefaults struct {
 	Timeout             time.Duration `yaml:"timeout,omitempty"`
 	MaxRetries          int           `yaml:"max_retries,omitempty"`
@@ -267,7 +267,7 @@ type LLMNetworkDefaults struct {
 	BufferSize          int           `yaml:"buffer_size,omitempty"`
 }
 
-// LLMCorrectionsConfig is the top-level toggle for the Phase 34
+// LLMCorrectionsConfig is the top-level toggle for the
 // per-provider correction layer. The layer is enabled by default;
 // operators set `enabled: false` only for testing scenarios that
 // need to exercise the safety pass in isolation.
@@ -281,22 +281,22 @@ type LLMCorrectionsConfig struct {
 
 // LLMModelProfileConfig is one entry in `LLMConfig.ModelProfiles`.
 // Keyed by canonical model name (e.g. `"anthropic/claude-sonnet-4"`,
-// `"google/gemini-3.1-flash-lite"`). Phase 32 ships the shape;
-// Phase 33+ consume the fields.
+// `"google/gemini-3.1-flash-lite"`). Harbor ships the shape;
+// later LLM phases consume the fields.
 //
 //   - `ContextWindowTokens` is the model's hard input-token cap.
 //     REQUIRED (> 0); the safety net's token-budget guard uses it.
 //   - `TokenEstimator` selects the estimator algorithm. "" / "chars_div_4"
-//     — default chars/4 + per-message overhead. Phase 33+ may
+//     default chars/4 + per-message overhead. Later phases may
 //     register tiktoken-equivalent estimators by name.
-//   - `JSONSchemaMode` — Phase 35 reads ("native" / "tools" /
-//     "prompted"). Phase 32 stores opaque.
-//   - `DefaultMaxTokens` — Phase 36b's identity-tier override
+//   - `JSONSchemaMode` — reads ("native" / "tools" /
+//     "prompted"). Harbor stores opaque.
+//   - `DefaultMaxTokens` — the identity-tier override
 //     target. nil → use the runtime/governance default.
 //   - `ReasoningEffort` — request-level default. Empty string →
 //     "use provider default."
 //   - `CostOverrides` — fallback per-1M-token rates when the
-//     provider doesn't include cost in its response. Phase 36a
+//     provider doesn't include cost in its response. Harbor
 //     reads when accumulating identity-scoped cost.
 type LLMModelProfileConfig struct {
 	ContextWindowTokens int                     `yaml:"context_window_tokens"`
@@ -305,12 +305,12 @@ type LLMModelProfileConfig struct {
 	DefaultMaxTokens    *int                    `yaml:"default_max_tokens,omitempty"`
 	ReasoningEffort     string                  `yaml:"reasoning_effort,omitempty"`
 	CostOverrides       *LLMCostOverridesConfig `yaml:"cost_overrides,omitempty"`
-	// Corrections — per-model overrides for the Phase 34 correction
+	// Corrections — per-model overrides for the correction
 	// layer. nil → use the per-provider defaults baked into
 	// `internal/llm/corrections.defaultProfileFor`. See
 	// `LLMCorrectionsProfileConfig` for the wire shape.
 	Corrections *LLMCorrectionsProfileConfig `yaml:"corrections,omitempty"`
-	// MaxRetries (Phase 36) — caps the validator-driven retry loop the
+	// MaxRetries — caps the validator-driven retry loop the
 	// `internal/llm/retry` wrapper runs against this model. Zero (the
 	// default) maps to `llm.DefaultMaxRetries` (1). Negative is
 	// rejected by `validateLLM`.
@@ -318,7 +318,7 @@ type LLMModelProfileConfig struct {
 }
 
 // LLMCorrectionsProfileConfig is one per-model profile override for
-// the Phase 34 correction layer. Each field is the operator-facing
+// the correction layer. Each field is the operator-facing
 // string form of the equivalent `internal/llm` enum
 // (`MessageOrderingPolicy`, `SchemaSanitizationMode`, `ReasoningRouting`,
 // `ResponseFormatProfile`). Empty string → use the per-provider
@@ -340,7 +340,7 @@ type LLMCorrectionsProfileConfig struct {
 }
 
 // LLMCostOverridesConfig is a per-model cost-table override (used
-// when the provider response doesn't include cost). Phase 36a reads.
+// when the provider response doesn't include cost). Harbor reads.
 type LLMCostOverridesConfig struct {
 	InputPer1M     float64 `yaml:"input_per_1m_tokens"`
 	OutputPer1M    float64 `yaml:"output_per_1m_tokens"`
@@ -350,10 +350,10 @@ type LLMCostOverridesConfig struct {
 
 // GovernanceConfig holds the V1 governance policy surface — per-tier
 // cost ceilings, rate limits, and MaxTokens caps, declared through
-// `IdentityTiers` (Phase 36a + 36b). Hot-reload is not yet wired;
+// `IdentityTiers`. Hot-reload is not yet wired;
 // every field is restart-required.
 //
-// **Enforcement is wired** (Phase 111a, D-198): a populated
+// **Enforcement is wired**: a populated
 // `IdentityTiers` map is composed into the enforcement Subsystem
 // (MaxTokens → rate limit → cost ceiling) by the production assembly
 // (`assemble.Assemble` → `governance.SetFactory` → the `llm.Open`
@@ -361,11 +361,11 @@ type LLMCostOverridesConfig struct {
 // and the same map also drives the read-only `governance.posture`
 // Protocol surface.
 //
-// **Latent default (Wave 7b scoping, D-044):** an empty `IdentityTiers`
+// **Latent default:** an empty `IdentityTiers`
 // map + empty `DefaultTier` keeps the surface fully latent — no
 // enforcement, no wrapper in the LLM chain.
 //
-// **Removed in D-081 (chore/governance-config-consolidation):** the
+// **Removed (governance-config consolidation):** the
 // pre-Phase-36a single-knob fields `default_max_tokens`,
 // `cost_ceiling_usd`, and `rate_limit_tps` are no longer accepted on
 // `GovernanceConfig`. They were validated-but-ignored stubs: the
@@ -385,7 +385,7 @@ type GovernanceConfig struct {
 	DefaultTier string `yaml:"default_tier,omitempty"`
 
 	// IdentityTiers maps tier name to its policy bundle. Empty is the
-	// latent default (no enforcement, D-044); populated tiers are
+	// latent default (no enforcement); populated tiers are
 	// enforced at the LLM edge AND projected on the read-only posture
 	// surface (see the type godoc above). Each entry's fields are
 	// independently declared — `budget_ceiling_usd` for cost ceilings,
@@ -393,18 +393,18 @@ type GovernanceConfig struct {
 	IdentityTiers map[string]GovernanceTierConfig `yaml:"identity_tiers,omitempty"`
 }
 
-// GovernanceTierConfig is one tier's policy bundle (Phase 36a + 36b).
+// GovernanceTierConfig is one tier's policy bundle.
 // Each field is independently opt-in: set the cost field only to enforce
 // the cost ceiling, leave the rest zero-valued for latent behaviour.
 //
-// `BudgetCeilingUSD` — Phase 36a. Per-identity cost ceiling. PreCall
+// `BudgetCeilingUSD` — Per-identity cost ceiling. PreCall
 // blocks when the (identity, tier) accumulator total ≥ this. 0 = no
 // ceiling.
 //
-// `RateLimit` — Phase 36b. Per-(identity, model) token bucket. Zero-
+// `RateLimit` — Per-(identity, model) token bucket. Zero-
 // valued (Capacity == 0) = no rate limit.
 //
-// `MaxTokens` — Phase 36b. Per-call cap. Requests whose `MaxTokens`
+// `MaxTokens` — Per-call cap. Requests whose `MaxTokens`
 // exceed this fail loudly with `ErrMaxTokensExceeded`. 0 = no cap.
 type GovernanceTierConfig struct {
 	BudgetCeilingUSD float64                   `yaml:"budget_ceiling_usd,omitempty"`
@@ -412,7 +412,7 @@ type GovernanceTierConfig struct {
 	MaxTokens        int                       `yaml:"max_tokens,omitempty"`
 }
 
-// GovernanceRateLimitConfig is the token-bucket shape (Phase 36b).
+// GovernanceRateLimitConfig is the token-bucket shape.
 // `Capacity` is the bucket ceiling (max reservable tokens).
 // `RefillTokens` are added every `RefillInterval`. A zero `Capacity`
 // disables the rate limit entirely.
@@ -432,8 +432,8 @@ type RuntimeConfig struct{}
 
 // MemoryConfig is owned by the memory subsystem phases.
 //
-// `Driver` selects a `memory.MemoryStore` driver. Phase 23 ships
-// only `"inmem"`; Phase 25 adds `"sqlite"` and `"postgres"`. Default
+// `Driver` selects a `memory.MemoryStore` driver. Harbor ships
+// only `"inmem"`; Harbor adds `"sqlite"` and `"postgres"`. Default
 // `inmem`.
 //
 // `DSN` is required when `Driver` is `"sqlite"` or `"postgres"`.
@@ -442,8 +442,8 @@ type RuntimeConfig struct{}
 // string for Postgres). `secret:"true"` redacts the value in
 // audit-redacted logs.
 //
-// `Strategy` selects the memory shape: `"none"` (Phase 23), or
-// `"truncation"` / `"rolling_summary"` (Phase 24). Default `none`.
+// `Strategy` selects the memory shape: `"none"`, or
+// `"truncation"` / `"rolling_summary"`. Default `none`.
 // `memory.Open` rejects strategies the configured driver does not
 // implement with `ErrStrategyNotImplemented`.
 //
@@ -452,7 +452,7 @@ type RuntimeConfig struct{}
 // unbounded.
 //
 // `RecoveryBacklogMax` is the bounded queue size for the
-// `rolling_summary` strategy's recovery loop (D-035). Default 16
+// `rolling_summary` strategy's recovery loop. Default 16
 // (applied by the loader when the section is omitted). Overflow
 // drops oldest and emits `memory.recovery_dropped` on the bus.
 // Ignored by the `none` and `truncation` strategies.
@@ -481,8 +481,8 @@ type MemoryConfig struct {
 
 // SkillsConfig is owned by the skills subsystem phases.
 //
-// `Driver` selects a `skills.SkillStore` driver. Phase 37 ships the
-// `"localdb"` driver only; Phase 49 (Portico) adds `"portico"`.
+// `Driver` selects a `skills.SkillStore` driver. Harbor ships the
+// `"localdb"` driver only; a later phase adds `"portico"`.
 // Default `localdb`.
 //
 // `DSN` is required when `Driver` is `"localdb"`. The format mirrors
@@ -491,8 +491,8 @@ type MemoryConfig struct {
 // redacts the value in audit-redacted logs.
 //
 // `Directory` shapes the Phase-39 virtual directory the run loop
-// injects as the per-turn `<skills_context>` prompt block (Phase
-// 111d — D-201). All fields optional; restart-required.
+// injects as the per-turn `<skills_context>` prompt block (
+// ). All fields optional; restart-required.
 type SkillsConfig struct {
 	Driver    string                `yaml:"driver,omitempty"`
 	DSN       string                `yaml:"dsn,omitempty" secret:"true"`
@@ -509,8 +509,8 @@ type SkillsConfig struct {
 }
 
 // SkillsDirectoryConfig configures the skills virtual directory
-// (Phase 39 / D-052) the run loop consumes as the `<skills_context>`
-// producer (Phase 111d — D-201). The injected block is a bounded,
+// the run loop consumes as the `<skills_context>`
+// producer. The injected block is a bounded,
 // stable, pinned-then-recent browse window — identity-scoped,
 // capability-filtered, redacted; per-query relevance retrieval stays
 // the LLM's job via the `skill_search` meta-tool.
@@ -528,22 +528,22 @@ type SkillsConfig struct {
 //     Selection but is REJECTED by the operator validator until a
 //     production usage-bump path lands — no shipped path increments
 //     UseCount, so the ordering would silently degrade to
-//     alphabetical (Wave C checkpoint audit; D-201 addendum).
+//     alphabetical.
 type SkillsDirectoryConfig struct {
 	Pinned     []string `yaml:"pinned,omitempty"`
 	MaxEntries int      `yaml:"max_entries,omitempty"`
 	Selection  string   `yaml:"selection,omitempty"`
 }
 
-// TasksConfig configures the TaskRegistry driver and the Phase 21
+// TasksConfig configures the TaskRegistry driver and the
 // backgroundtasks-config knobs. `Driver` selects the registered
-// driver name; Phase 20 ships only `"inprocess"`.
+// driver name; Harbor ships only `"inprocess"`.
 //
 // `RetainTurnTimeout` is the maximum time the runtime engine will
 // block a foreground turn waiting for retain-turn groups to resolve.
 // Defaults to 5 minutes (RFC §6.8); zero or negative values are
 // rejected by validation. Consumed by the engine wiring scheduled
-// for Phase 60+ (runtime↔tasks integration); validated today so an
+// for the runtime↔tasks integration; validated today so an
 // operator's deployment is rejected for an invalid value even
 // before the consumer lands.
 //
@@ -551,7 +551,7 @@ type SkillsDirectoryConfig struct {
 // hops a planner runtime may take before requiring user
 // confirmation. Defaults to 8 (RFC §6.8); zero or negative values
 // are rejected by validation. Consumed by the planner concretes
-// (Phase 42+); same "validate today, consume later" pattern as
+// (the planner runtime); same "validate today, consume later" pattern as
 // `RetainTurnTimeout`.
 //
 // Restart-required (no `reload:"live"` tag).
@@ -561,10 +561,10 @@ type TasksConfig struct {
 	ContinuationHopLimit int           `yaml:"continuation_hop_limit"`
 }
 
-// DistributedConfig configures Harbor's distributed contracts (Phase
-// 22). `BusDriver` selects the MessageBus driver; `RemoteDriver`
+// DistributedConfig configures Harbor's distributed contracts (
+// ). `BusDriver` selects the MessageBus driver; `RemoteDriver`
 // selects the RemoteTransport driver. V1 ships only `"loopback"` for
-// both. Post-V1 phase 86 adds durable bus drivers; Phase 29 adds the
+// both. Post-V1 Harbor adds durable bus drivers; Harbor adds the
 // A2A wire RemoteTransport driver. Restart-required (no `reload:"live"`).
 type DistributedConfig struct {
 	BusDriver    string `yaml:"bus_driver"`
@@ -581,12 +581,11 @@ type SessionsConfig struct {
 	SweepInterval time.Duration `yaml:"sweep_interval"`
 }
 
-// PauseResumeConfig configures the pause lifecycle (Phase 111c /
-// D-200; RFC §3.3 + §6.3).
+// PauseResumeConfig configures the pause lifecycle (RFC §3.3 + §6.3).
 //
 // `MaxParkDuration` is the ceiling on how long a pause may stay parked
 // before the runtime's pause sweeper resumes it with the typed
-// `timeout` Decision (`pause.resumed`, D-096) and the waiting run
+// `timeout` Decision (`pause.resumed`) and the waiting run
 // terminates as a constraints-conflict. Zero (the default) means
 // pauses never expire and the sweeper is not started — the pre-111c
 // behaviour. Negative values are rejected by validation.
@@ -612,10 +611,10 @@ type PauseResumeConfig struct {
 //
 // `Driver` selects an artifacts driver. V1 ships five drivers:
 // `inmem` (the floor; per-process lifetime, no persistence), `fs`
-// (single-binary production target), `sqlite` (Phase 18 — SQLite-
-// backed, durable across restart), `postgres` (Phase 18 —
+// (single-binary production target), `sqlite` (SQLite-
+// backed, durable across restart), `postgres` (
 // Postgres-backed, durable across restart, multi-replica safe), and
-// `s3` (Phase 19 — S3-compatible object-store-backed, durable;
+// `s3` (S3-compatible object-store-backed, durable;
 // presigned-URL `GetRef` via the optional `Presigner` capability).
 // Default `inmem`.
 //
@@ -634,13 +633,13 @@ type PauseResumeConfig struct {
 //
 // `HeavyOutputThresholdBytes` is the byte size at which the runtime
 // mandatorily routes a payload through the ArtifactStore. Default
-// 32 KB (D-022, RFC §6.10). Per-tool overrides land at Phase 26 via
+// 32 KB (RFC §6.10). Per-tool overrides land at via
 // the tool catalog; the field is the runtime-wide default. Consumed
-// by the tool dispatcher (Phase 26+) and the LLM-edge catch-all
-// (Phase 32) — validated today so an operator's deployment is
+// by the tool dispatcher and the LLM-edge catch-all
+// validated today so an operator's deployment is
 // rejected for an invalid value even before the consumers land.
 //
-// S3* fields configure the Phase 19 S3-style driver (AWS S3 / MinIO /
+// S3* fields configure the S3-style driver (AWS S3 / MinIO /
 // Cloudflare R2 / any S3-compat backend). `S3Bucket` is required when
 // `Driver == "s3"`. `S3Region` defaults to "us-east-1" when unset.
 // `S3Endpoint` is the base URL for non-AWS backends (MinIO / R2);
@@ -665,9 +664,9 @@ type ArtifactsConfig struct {
 }
 
 // EventsConfig configures the event bus driver and its in-process
-// limits. Phase 05 filled the previously-reserved slot with the
-// inmem driver's defaults; Phase 06 adds ReplayBufferSize for the
-// in-memory ring buffer that backs Replayer. Phase 57 registers the
+// limits. filled the previously-reserved slot with the
+// inmem driver's defaults; Harbor adds ReplayBufferSize for the
+// in-memory ring buffer that backs Replayer. Harbor registers the
 // `durable` driver and adds the two optional StateStore-selection
 // fields below without changing the existing field shape.
 //
@@ -678,10 +677,10 @@ type ArtifactsConfig struct {
 // configured.
 //
 // StateDriver / StateDSN select the StateStore the `durable` driver
-// (Phase 57) persists events through. They are OPTIONAL and ignored
+// persists events through. They are OPTIONAL and ignored
 // by every other driver: when Driver=="durable" and StateDriver is
 // empty, the durable driver auto-degrades to a best-effort in-memory
-// ring buffer and emits a loud runtime.warning (D-074) — replay is
+// ring buffer and emits a loud runtime.warning — replay is
 // then NOT durable across restarts. StateDSN is required whenever
 // StateDriver is a non-inmem driver (sqlite / postgres), mirroring
 // StateConfig's driver/DSN pairing.
@@ -696,33 +695,33 @@ type EventsConfig struct {
 	StateDSN                 string        `yaml:"state_dsn,omitempty" secret:"true"`
 }
 
-// AuditConfig is owned by Phase 03 + later audit phases.
+// AuditConfig is owned by the audit subsystem.
 type AuditConfig struct{}
 
-// ToolsConfig is owned by the tools subsystem phases (Phase 26+).
+// ToolsConfig is owned by the tools subsystem.
 // The block is optional — operators who don't attach external tool
 // sources omit it entirely.
 //
 // `HTTPManifests` lists paths to UTCP-style YAML manifests for
-// Phase 27's HTTP driver. The boot-path loader is NOT yet wired —
+// the HTTP driver. The boot-path loader is NOT yet wired —
 // no production path calls `LoadManifest` / `RegisterManifest` —
 // so `Validate` REJECTS a non-empty list rather than letting a
 // populated knob silently do nothing (§13; SDK friction audit,
 // docs/notes/sdk-friction-audit.md §1). An empty list is valid and
 // is what the shipped examples carry. HTTP tools are registered
-// programmatically via the Phase 27 driver until the loader lands.
+// programmatically via the driver until the loader lands.
 //
-// `MCPServers` lists Phase 28's MCP southbound attachments. Each
+// `MCPServers` lists the MCP southbound attachments. Each
 // entry boots a `*mcp.Provider` whose discovered tools / resources
 // / prompts are merged into the runtime catalog.
 //
-// `A2APeers` lists Phase 29's A2A peers. The wire driver
+// `A2APeers` lists the A2A peers. The wire driver
 // (`internal/distributed/drivers/a2a`) reads this slice at
 // construction.
 //
 // `Entries` lists per-tool catalog wiring declarations: operators
 // attach approval policies and / or OAuth bindings to a tool name
-// without writing Go wiring code. Phase 64a (D-090) — the catalog
+// without writing Go wiring code. The catalog
 // builder reads this list at boot and auto-wraps each named tool's
 // descriptor with the declared middleware. An entry whose Name does
 // not resolve to a registered tool fails the catalog build loud
@@ -730,10 +729,10 @@ type AuditConfig struct{}
 // approval policy or OAuth provider also fails loud.
 //
 // Restart-required (no `reload:"live"` tag): adding / removing tool
-// providers at runtime is a Phase 91+ Protocol surface concern.
+// providers at runtime is a later Protocol-surface concern.
 //
-// `OAuthProviders` closes D-090's deferred "OAuth provider construction"
-// gap (issue #116 / D-095). Each entry declares one named OAuth provider
+// `OAuthProviders` closes the deferred "OAuth provider construction"
+// gap (issue #116). Each entry declares one named OAuth provider
 // resolved at boot through the `internal/tools/auth` driver registry
 // (§4.4 seam). The V1 default driver is `oauth2` (generic OAuth2/PKCE
 // Authorization Code flow). When any `tools.entries[].oauth.provider`
@@ -742,7 +741,7 @@ type AuditConfig struct{}
 //
 // `OAuthTokenKEKEnv` names the env var holding the 32-byte hex-encoded
 // key-encryption key (KEK) the OAuth token store consumes for
-// AES-256-GCM encryption at rest (§7 + Phase 30). Required whenever
+// AES-256-GCM encryption at rest (§7). Required whenever
 // `OAuthProviders` is non-empty; the dev-stack reads the env at boot
 // and fails closed when the env value is empty or wrong-length.
 type ToolsConfig struct {
@@ -764,7 +763,7 @@ type ToolsConfig struct {
 	BuiltIn []string `yaml:"built_in,omitempty"`
 
 	// Custom lists operator-declared custom tools whose Go shell is
-	// generated by `harbor scaffold` (Phase 83o / D-154). Each entry
+	// generated by `harbor scaffold`. Each entry
 	// names the tool, gives a one-line description, and declares its
 	// input + output shape as a flat map of `field: type` (V1.1
 	// supports `string`, `integer`, `number`, `boolean`, `[]string`).
@@ -782,8 +781,8 @@ type ToolsConfig struct {
 	// `AuthScopes` are entirely contained in this set; tools that
 	// require a missing scope are invisible to the planner.
 	//
-	// Phase 83m (Item 6, D-156): the field closes the runloop's
-	// `nil /* TODO Phase 83m */` hard-code that left the catalog
+	// the field closes the runloop's
+	// `nil /* TODO */` hard-code that left the catalog
 	// unfiltered. Empty list = no scopes granted (the existing latent
 	// default — tools that declare AuthScopes are invisible). The
 	// scopes are operator-defined per their tool sources; the
@@ -794,7 +793,7 @@ type ToolsConfig struct {
 	// trigger a re-evaluation of every catalog descriptor).
 	GrantedScopes []string `yaml:"granted_scopes,omitempty"`
 
-	// SearchCacheDSN is the SQLite DSN backing the Phase 107c tool
+	// SearchCacheDSN is the SQLite DSN backing the tool
 	// SearchCache (FTS5 + regex fallback). Empty means the dev binary
 	// uses an in-memory cache (the V1 default — discovery state lives
 	// for the process lifetime). Operators can point at an on-disk
@@ -804,7 +803,7 @@ type ToolsConfig struct {
 }
 
 // CustomToolConfig declares one operator-defined custom tool whose Go
-// shell is generated by `harbor scaffold` (Phase 83o / D-154). Each
+// shell is generated by `harbor scaffold`. Each
 // entry yields one `tools/<name>.go` stub + matching test file in the
 // scaffolded project.
 //
@@ -832,7 +831,7 @@ type CustomToolConfig struct {
 }
 
 // ToolOAuthProviderConfig declares one operator-configured OAuth
-// provider (D-095, closes issue #116 and D-090's deferred construction
+// provider (closes issue #116 and the deferred construction
 // gap). Each entry resolves to a self-registered driver in
 // `internal/tools/auth/drivers/<name>/` via the §4.4 seam pattern. The
 // constructed `auth.OAuthProvider` is keyed by `Name` in the catalog
@@ -894,8 +893,8 @@ type ToolOAuthProviderConfig struct {
 	Extra           map[string]string `yaml:"extra,omitempty"`
 }
 
-// ToolEntryConfig is one per-tool catalog wiring declaration. Phase
-// 64a / D-090. The shape is intentionally small: the catalog builder
+// ToolEntryConfig is one per-tool catalog wiring declaration.
+// The shape is intentionally small: the catalog builder
 // looks up the registered tool by `Name`, then applies whichever of
 // `Approval` and / or `OAuth` are populated.
 //
@@ -932,7 +931,6 @@ type ToolEntryConfig struct {
 	// LoadingMode controls when this tool appears in the planner's
 	// prompt-time catalog. "" or "always" = every turn (default).
 	// "deferred" = hidden by default; the LLM discovers via meta-tools.
-	// Phase 107c / D-167.
 	LoadingMode string `yaml:"loading_mode,omitempty"`
 	// Approval declares an approval-gate wiring for this tool. Omit
 	// for tools that need no gating. When present, `Approval.Policy`
@@ -942,12 +940,11 @@ type ToolEntryConfig struct {
 	// OAuth declares an OAuth binding for this tool. Omit for tools
 	// that need no OAuth. When present, `OAuth.Provider` MUST name a
 	// configured OAuth source and `OAuth.BindingScope` MUST be one of
-	// "user" / "agent" (Phase 30 D-083).
+	// "user" / "agent".
 	OAuth *ToolOAuthConfig `yaml:"oauth,omitempty"`
 }
 
 // ToolApprovalConfig declares an approval-gate wiring for one tool.
-// Phase 64a / D-090.
 type ToolApprovalConfig struct {
 	// Policy names which bundled approval policy to apply. The
 	// catalog builder maps this name onto a concrete
@@ -969,14 +966,14 @@ type ToolApprovalConfig struct {
 	RequireTags []string `yaml:"require_tags,omitempty"`
 }
 
-// ToolOAuthConfig declares an OAuth binding for one tool. Phase 64a
-// / D-090.
+// ToolOAuthConfig declares an OAuth binding for one tool. It
+// /.
 type ToolOAuthConfig struct {
 	// Provider names the OAuth source the tool binds to. The catalog
 	// builder consults the configured OAuth registry; a name that
 	// resolves to no source fails the catalog build loud.
 	Provider string `yaml:"provider"`
-	// BindingScope is "user" or "agent" (Phase 30 / D-083). An
+	// BindingScope is "user" or "agent". An
 	// invalid value fails the catalog build with a wrapped error
 	// naming the offending value.
 	BindingScope string `yaml:"binding_scope"`
@@ -1000,8 +997,8 @@ type MCPServerConfig struct {
 	Command       []string          `yaml:"command,omitempty"`
 	Headers       map[string]string `yaml:"headers,omitempty" secret:"true"`
 	KeepAlive     time.Duration     `yaml:"keep_alive,omitempty"`
-	// Policy is the per-server default tool reliability policy
-	// (Phase 26b). Optional; nil preserves today's behaviour exactly
+	// Policy is the per-server default tool reliability policy.
+	// Optional; nil preserves today's behaviour exactly
 	// (every tool inherits `tools.DefaultPolicy()` — 30 s per-attempt
 	// deadline / 4 total attempts). When set, it projects to the
 	// `mcpdrv.Config.DefaultPolicy` applied to every tool this server
@@ -1017,7 +1014,7 @@ type MCPServerConfig struct {
 }
 
 // ToolPolicyConfig is the operator-facing YAML projection of
-// `tools.ToolPolicy` (Phase 26b). It is the single config→policy
+// `tools.ToolPolicy`. It is the single config→policy
 // translation surface (CLAUDE.md §13): the projection helper in
 // `policy_projection.go` is the only code that maps these fields onto
 // a `tools.ToolPolicy`. There is no second policy definition.
@@ -1078,7 +1075,7 @@ type A2APeerConfig struct {
 
 // ProtocolConfig is owned by the protocol-server phases.
 //
-// `MaxRequestBytes` is the Phase 73l (D-120) upper bound on an
+// `MaxRequestBytes` is the upper bound on an
 // `artifacts.put` upload body. A body above this is rejected with the
 // canonical `CodeRequestTooLarge` / HTTP 413 — fail loud, never silently
 // truncate. Optional; a zero value resolves to `DefaultMaxRequestBytes`
@@ -1090,7 +1087,7 @@ type ProtocolConfig struct {
 
 // DefaultMaxRequestBytes is the `ProtocolConfig.MaxRequestBytes` value
 // applied when the operator configured none — 4 MiB, the spec's
-// "moderate-size upload" posture for the Phase 73l artifacts.put
+// "moderate-size upload" posture for the artifacts.put
 // pipeline.
 const DefaultMaxRequestBytes = 4 << 20
 
@@ -1107,7 +1104,7 @@ func (c ProtocolConfig) ResolvedMaxRequestBytes() int {
 
 // CLIConfig is owned by the CLI phases.
 //
-// `DevHotReload` configures the Phase 65 (D-099) `harbor dev` hot-reload
+// `DevHotReload` configures the `harbor dev` hot-reload
 // watcher: fsnotify-driven graceful-drain restart when a watched file
 // changes. The block is opt-out (`Enabled: true` is the default applied
 // by the loader). Restart-required at the harbor-dev level (a change to
@@ -1116,7 +1113,7 @@ type CLIConfig struct {
 	DevHotReload DevHotReloadConfig `yaml:"dev_hot_reload,omitempty"`
 }
 
-// DevHotReloadConfig configures the Phase 65 (D-099) `harbor dev`
+// DevHotReloadConfig configures the `harbor dev`
 // hot-reload watcher. The block is opt-out — the loader populates
 // defaults that match the §13 "test stubs as production defaults"
 // amendment for dev seams: on by default, fail-loud at boot when the
@@ -1140,7 +1137,7 @@ type CLIConfig struct {
 //     directory) the fsnotify watcher monitors. The dev cmd unions this
 //     with the loaded config file's directory so a config edit also
 //     triggers a reload. Default: `[".harbor/agents"]` — the
-//     project-local Phase 66 draft-save directory.
+//     project-local draft-save directory.
 //
 // Restart-required (no `reload:"live"` tag): the watcher itself is the
 // reload mechanism; reconfiguring the watcher at runtime would race the
@@ -1169,16 +1166,16 @@ const (
 )
 
 // PlannerConfig selects the planner concrete the runtime constructs at
-// boot. The §4.4 seam pattern applied to the planner — closes D-097's
+// boot. The §4.4 seam pattern applied to the planner — closes the
 // "future phases will read cfg.Planner" note and CLAUDE.md §1.3's
-// swappable-planner property gap (D-103, closes issue #126). Mirrors
-// D-095's `ToolOAuthProviderConfig` structurally — same shape, same
+// swappable-planner property gap (closes issue #126). Mirrors
+// the `ToolOAuthProviderConfig` structurally — same shape, same
 // validator pattern, same registry pattern (`internal/planner` driver
 // registry; `cmd/harbor/main.go` blank-imports each driver).
 //
 // `Driver` selects a self-registered planner driver in
 // `internal/planner/<name>/`. V1 ships only the `react` driver (the
-// reference LLM-driven ReAct planner — Phase 45 / D-051). Empty
+// reference LLM-driven ReAct planner —). Empty
 // defaults to `react` so a missing configuration value boots with the
 // V1 reference planner unchanged; operators opt into alternates
 // explicitly when later phases land them (Plan-Execute, Workflow,
@@ -1192,7 +1189,7 @@ const (
 //
 // `ExtraGuidance` is operator-supplied domain-specific guidance
 // injected into the rendered ReAct system prompt's
-// `<additional_guidance>` section (Phase 83a, RFC §6.2). Empty (the
+// `<additional_guidance>` section (RFC §6.2). Empty (the
 // default) omits the section entirely. The string is rendered
 // verbatim — the operator owns its content hygiene. It flows to the
 // react driver's `WithSystemPromptExtra` Option at construction;
@@ -1201,7 +1198,7 @@ const (
 //
 // `ReasoningReplay` controls whether the ReAct planner re-injects a
 // prior step's captured provider-side reasoning trace into the next
-// turn's prompt (Phase 83e — D-148). The enum has two values:
+// turn's prompt. The enum has two values:
 // `never` (the default for ALL models — a prior step's captured
 // reasoning is never re-injected) and `text` (prepend the captured
 // trace as a text block above the prior `{tool, args}` action JSON).
@@ -1209,42 +1206,42 @@ const (
 // loudly pre-boot. There is no `provider_native` mode in V1.
 //
 // `MaxToolExamplesPerTool` caps how many curated examples the ReAct
-// prompt's `<available_tools>` section renders per tool (Phase 83b —
-// D-144). Examples are ranked `minimal` > `common` > `edge-case` >
+// prompt's `<available_tools>` section renders per tool.
+// Examples are ranked `minimal` > `common` > `edge-case` >
 // untagged; the renderer keeps the top N. Zero (the default) resolves
 // to 3 inside the react driver. The validator rejects negative values
 // loudly pre-boot. Other drivers ignore it.
 //
-// `ParallelToolCalls` toggles native parallel tool-call emission
-// (Phase 107d — D-169). Pointer-bool so an omitted key (nil) resolves
+// `ParallelToolCalls` toggles native parallel tool-call emission.
+// Pointer-bool so an omitted key (nil) resolves
 // to `true` — the React planner emits a native `CallParallel` when the
 // LLM returns N>1 tool-calls in one response, and the dev `ToolExecutor`
 // dispatches the branches concurrently. An explicit `false` selects the
-// Phase 107c serialization fallback (one `CallTool` per step via
+// serialization fallback (one `CallTool` per step via
 // `RunContext.PendingToolCalls`). It flows to the react driver's
 // `WithParallelToolCalls` Option only when non-nil; other drivers ignore
 // it. No validator rule beyond "bool" — both states are correct.
 //
 // `SkillsContextMax` caps how many skill bodies the run loop fetches
 // from `skills.SkillStore.Search` and hands the planner via
-// `RunContext.SkillsContext` (Phase 83f — D-149). Zero (the default)
+// `RunContext.SkillsContext`. Zero (the default)
 // resolves to `DefaultSkillsContextMax` (5) via
 // `SkillsContextMaxResolved()` — the one source of the default since
-// Phase 110c (D-196); the validator rejects negatives loudly pre-boot.
+// the config consolidation; the validator rejects negatives loudly pre-boot.
 // Consumed by the per-task run loop (cmd + devstack + headless
 // assemblies); library consumers that build their own RunContext
 // resolve through the same method.
 //
 // `PlanningHints` is the operator-supplied per-run planning steering
-// the dev run loop projects onto `RunContext.PlanningHints` (Phase 83f
-// — D-149). Renders into the ReAct prompt's `<planning_constraints>`
+// the dev run loop projects onto `RunContext.PlanningHints`.
+// Renders into the ReAct prompt's `<planning_constraints>`
 // via 83c. V1.1 ships only `Constraints` and `PreferredTools`; the
 // richer Go-struct fields (`ParallelGroups`, `DisallowTools`,
 // `Budget`) remain reachable via a custom planner Option, not via
 // `harbor.yaml`. The block is omitted entirely when empty.
 //
-// `TokenBudget` is the trajectory-compression threshold (Phase 111e —
-// D-202). When > 0 the per-task run loop projects it onto
+// `TokenBudget` is the trajectory-compression threshold.
+// When > 0 the per-task run loop projects it onto
 // `RunSpec.Base.Budget.TokenBudget` and the runtime assembly
 // constructs the trajectory compression runner (the LLM-backed
 // `TrajectorySummariser` over the configured LLM client); the
@@ -1279,7 +1276,7 @@ type PlannerConfig struct {
 }
 
 // ParallelToolCallsEnabled resolves the optional `parallel_tool_calls`
-// knob (Phase 107d — D-169). Nil (unset) resolves to `true` — native
+// knob. Nil (unset) resolves to `true` — native
 // parallel tool-call emission is the default. A non-nil value is
 // honoured verbatim. The dev stack reads this when no driver-boundary
 // passthrough is wanted; the `*bool` itself flows through the planner
@@ -1289,8 +1286,8 @@ func (p PlannerConfig) ParallelToolCallsEnabled() bool {
 	return p.ParallelToolCalls == nil || *p.ParallelToolCalls
 }
 
-// SpawnDepthCap resolves the optional `absolute_max_spawn_depth` knob
-// (Phase 107e — D-170). A non-positive value (unset or zero) resolves to
+// SpawnDepthCap resolves the optional `absolute_max_spawn_depth` knob.
+// A non-positive value (unset or zero) resolves to
 // `DefaultSpawnDepthCap`: a SpawnTask whose child would exceed this
 // ParentTaskID-chain depth is rejected loudly so a background sub-agent
 // cannot recurse without bound. The cap bounds depth, not breadth.
@@ -1302,30 +1299,30 @@ func (p PlannerConfig) SpawnDepthCap() int {
 }
 
 // DefaultSpawnDepthCap is the ONE source of the spawn-depth default
-// (Phase 110c — D-196; deduped from the former unexported mirror pair
+// (deduped from the former unexported mirror pair
 // `config.defaultSpawnDepthCap` / `cmd/harbor::defaultMaxSpawnDepth`).
 // The tool executor's constructor clamp references this constant; no
 // other literal copy of the value is allowed.
 const DefaultSpawnDepthCap = 4
 
-// DefaultHeavyOutputThresholdBytes is the ONE source of the D-026 /
-// D-022 heavy-output threshold default (32 KiB; RFC §6.10): the byte
+// DefaultHeavyOutputThresholdBytes is the ONE source of the
+// heavy-output threshold default (32 KiB; RFC §6.10): the byte
 // size at which the runtime promotes heavy content to artifact-backed
 // stubs. `Defaults()` seeds
 // `ArtifactsConfig.HeavyOutputThresholdBytes` from it; the dispatch
 // executor's safety floor (`internal/runtime/dispatch`), the LLM-edge
 // snapshot default (`llm.DefaultHeavyOutputThreshold`), and the search
 // preview bound (`search.HeavyPreviewThreshold`) all reference this
-// constant (the `DefaultSpawnDepthCap` precedent — Wave B audit
+// constant (the `DefaultSpawnDepthCap` precedent — checkpoint audit
 // follow-up). No other literal copy of the value is allowed.
 const DefaultHeavyOutputThresholdBytes = 32 * 1024
 
 // SkillsContextMaxResolved resolves the optional `skills_context_max`
-// knob (Phase 83f — D-149). A non-positive value (unset or zero)
-// resolves to `DefaultSkillsContextMax`. Phase 110c (D-196) re-homed
+// knob. A non-positive value (unset or zero)
+// resolves to `DefaultSkillsContextMax`. re-homed
 // the zero→default resolution here from run-loop literals (the
 // cmd/devstack pair each carried its own `= 5` constant — the
-// D-155-class duplicate-default mechanism).
+// duplicate-default drift mechanism).
 func (p PlannerConfig) SkillsContextMaxResolved() int {
 	if p.SkillsContextMax <= 0 {
 		return DefaultSkillsContextMax
@@ -1340,7 +1337,7 @@ func (p PlannerConfig) SkillsContextMaxResolved() int {
 const DefaultSkillsContextMax = 5
 
 // MultimodalConfig is the YAML carrier of the per-agent attachment
-// disposition policy (Phase 84b — D-189). It is a thin adapter over
+// disposition policy. It is a thin adapter over
 // the planner-homed policy core: `internal/planner` decodes the block
 // into `planner.DispositionPolicy` via `DispositionPolicyFromConfig`;
 // a Go consumer embedding the runtime headless constructs the policy
@@ -1374,7 +1371,7 @@ type MultimodalConfig struct {
 }
 
 // PlannerPlanningHintsCfg is the YAML-facing subset of the planner's
-// `PlanningHints` (Phase 83f — D-149). V1.1 ships two fields; the
+// `PlanningHints`. V1.1 ships two fields; the
 // richer Go-struct fields stay reachable through a custom planner
 // Option, not the YAML surface. An empty struct projects to nil on
 // `RunContext.PlanningHints`, so the `<planning_constraints>` prompt

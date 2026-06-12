@@ -28,7 +28,7 @@ type agentCardEntry struct {
 }
 
 // agentCardCache is the per-driver TTL cache for fetched AgentCards.
-// Internally synchronized; safe for N concurrent goroutines (D-025).
+// Internally synchronized; safe for N concurrent goroutines.
 // Coalesces concurrent first-time fetches via a per-URL inflight map
 // so a stampede of N concurrent Discover calls results in one HTTP GET.
 type agentCardCache struct {
@@ -197,7 +197,7 @@ func splitScheme(raw string) (string, string, bool) {
 const agentCardMaxBytes int64 = 1 << 20
 
 // firstJSONRPCInterface returns the AgentInterface declaring
-// ProtocolBinding == "JSONRPC", or nil when none. Phase 29 only
+// ProtocolBinding == "JSONRPC", or nil when none. only
 // implements the JSON-RPC binding.
 func firstJSONRPCInterface(card *a2a.AgentCard) *a2a.AgentInterface {
 	for i := range card.SupportedInterfaces {

@@ -1,10 +1,10 @@
-// Package artifacts implements the Phase 72c `search.artifacts`
+// Package artifacts implements the `search.artifacts`
 // runtime-side index — a server-enforced search over the artifact
 // store's catalog, scoped to the caller's identity triple unless the
-// `auth.ScopeAdmin` claim is present (D-079).
+// `auth.ScopeAdmin` claim is present.
 //
 // Every result row carries a populated `Ref` (artifacts are
-// by-reference by construction per D-026); `Preview` is the redacted
+// by-reference by construction); `Preview` is the redacted
 // filename / mime summary.
 package artifacts
 

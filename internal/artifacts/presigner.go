@@ -14,15 +14,15 @@ import (
 // (InMem / FS / SQLite-blob / Postgres-blob) without bolting a
 // separate signing service onto Harbor — which is out of V1 scope.
 //
-// Per RFC §6.10 + brief 05 §3, presigned URLs are the read-side
-// hand-off path for media-class artifacts (D-021, D-022): the runtime
+// Per RFC §6.10, presigned URLs are the read-side
+// hand-off path for media-class artifacts: the runtime
 // hands a Console / Protocol client a time-bounded HTTPS URL the
 // client downloads directly from object storage, bypassing the
 // runtime's bytes path entirely.
 //
 // Callers that need presigned URLs type-assert the `ArtifactStore`
 // they hold to `Presigner`; absence is a typed error
-// (`ErrPresignUnsupported`), not a silent fallback. The Phase 19 S3
+// (`ErrPresignUnsupported`), not a silent fallback. The S3
 // driver is the only V1 driver implementing this capability.
 //
 // Identity is mandatory at the Presigner boundary just like every
@@ -39,7 +39,7 @@ type Presigner interface {
 	// to a downstream consumer for direct download of the artifact's
 	// bytes. Read-side only — there is no PresignPut / PresignDelete
 	// counterpart at V1 (write-side presigned URLs are an attack
-	// surface; documented in the Phase 19 plan).
+	// surface; documented in the phase plan).
 	//
 	// Returns a wrapped error when:
 	//   - the scope fails identity validation (`ErrIdentityRequired`),

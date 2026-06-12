@@ -1,5 +1,5 @@
 // Package protocol implements the eight `agents.*` Protocol methods the
-// Console Agents page (Phase 73e / D-124) consumes:
+// Console Agents page consumes:
 //
 //   - agents.list        — paginated, faceted agent catalog projection.
 //   - agents.get         — one agent's full registration-identity
@@ -29,18 +29,18 @@
 // package-level global; the triple flows in via the request. The
 // registry filters by the (tenant, user, session) tuple, NEVER by
 // `agent_id` — `agent_id` is a registration identity, not a WHERE-clause
-// isolation key (D-059, CLAUDE.md §6 clarifying note).
+// isolation key (CLAUDE.md §6 clarifying note).
 //
 // # No `agents.*` control method
 //
 // The five agent-control verbs the Agents page exposes (Pause / Drain /
 // Restart / Force-Stop / Deregister) are NOT `agents.*` methods — they
-// are the EXISTING shipped `registry.*` control verbs (D-066), gated on
-// the elevated control-scope claim. Phase 73e mints NO control method;
+// are the EXISTING shipped `registry.*` control verbs, gated on
+// the elevated control-scope claim. Harbor mints NO control method;
 // the page invokes the shipped registry control surface. All eight
 // `agents.*` methods here are READ-ONLY projections (CLAUDE.md §13).
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
 // share across N concurrent goroutines: it holds only the Projector

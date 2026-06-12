@@ -12,7 +12,7 @@ import (
 // Metadata carries the Console-facing descriptive fields a registered
 // flow advertises beyond its runnable Definition. The runnable
 // Definition (the engine graph) is tenant-agnostic; Metadata is the
-// catalog-row decoration the Flows page (Phase 73i) renders.
+// catalog-row decoration the Flows page renders.
 type Metadata struct {
 	// Owner is the agent / team that registered the flow. May be empty.
 	Owner string
@@ -22,14 +22,14 @@ type Metadata struct {
 	// "graph" / "workflow" / "deterministic". Empty defaults to "graph".
 	PlannerFamily string
 	// Source is the source-of-truth reference — a Go path or a YAML
-	// descriptor path (D-023: Go-coded V1; YAML V1.1). A string
+	// descriptor path (Go-coded V1; YAML V1.1). A string
 	// reference, never executable code.
 	Source string
 }
 
 // RunRecord is a single recorded invocation of a registered flow. The
 // Registry keeps a bounded run-history ring per flow; the Flows-page
-// Catalog (Phase 73i) projects these into the wire `FlowRun` rows.
+// Catalog projects these into the wire `FlowRun` rows.
 //
 // A RunRecord is identity-scoped: run history is tenant-scoped (a
 // non-admin Console caller sees only their own tenant's runs), so the
@@ -59,7 +59,7 @@ type RunRecord struct {
 	// NodeStates is the run's per-node execution timeline.
 	NodeStates []NodeRunRecord
 	// Output is the run's final output preview (post-redaction). The
-	// Catalog applies the D-026 heavy-content bypass before shipping it.
+	// Catalog applies the heavy-content bypass before shipping it.
 	Output string
 }
 
@@ -88,18 +88,18 @@ type registeredFlow struct {
 // maxRunHistoryPerFlow bounds the per-flow run-history ring. A flow
 // with a high invocation rate keeps only the most recent N records;
 // the Flows page paginates over this bounded window. The bound is the
-// floor protection the Phase 73i plan names against an unbounded
+// floor protection the phase plan names against an unbounded
 // `flows.runs.list` cost.
 const maxRunHistoryPerFlow = 1000
 
 // Registry is the runtime's source-of-truth for registered flows and
-// their run history. It is the seam the Phase 73i Console Flows-page
+// their run history. It is the seam the Console Flows-page
 // Catalog reads from. It is NOT a test stub — it is a real runtime
 // subsystem: a flow registers into it at agent-definition time, the run
 // loop records each invocation, and the Console projects the catalog
 // from it.
 //
-// Concurrent reuse (D-025): the Registry is safe for N concurrent
+// Concurrent reuse: the Registry is safe for N concurrent
 // callers — every field access is guarded by an RWMutex. Registration
 // and run recording take the write lock; catalog reads take the read
 // lock. The Registry holds no per-call state.

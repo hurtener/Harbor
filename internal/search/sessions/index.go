@@ -1,13 +1,13 @@
-// Package sessions implements the Phase 72c `search.sessions`
+// Package sessions implements the `search.sessions`
 // runtime-side index — a server-enforced search over session lifecycle
 // records, scoped to the caller's identity triple unless the
-// `auth.ScopeAdmin` claim is present (D-079).
+// `auth.ScopeAdmin` claim is present.
 //
 // The Searcher consumes the narrow `sessions.SessionLister` interface
 // (implemented by `*sessions.Registry`) — it does NOT re-implement
 // listing or open the StateStore directly. Filtering, redaction,
 // pagination, and heavy-payload bypass all run inside Search per the
-// Phase 72c contract.
+// contract.
 package sessions
 
 import (
@@ -21,7 +21,7 @@ import (
 )
 
 // Searcher serves the `search.sessions` index. Built once at boot via
-// New; immutable after construction (D-025). Safe for N concurrent
+// New; immutable after construction. Safe for N concurrent
 // Search calls against one instance.
 type Searcher struct {
 	lister sessionsubsys.SessionLister

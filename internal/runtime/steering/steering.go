@@ -1,12 +1,12 @@
 // Package steering ships Harbor's per-run steering inbox + the
 // nine-event control taxonomy + the Protocol-edge validation /
-// sanitisation pass (RFC §6.3, brief 02 §2-§4).
+// sanitisation pass (RFC §6.3).
 //
-// # What Phase 52 ships
+// # What Harbor ships
 //
 // Steering is a Runtime capability surfaced over the Protocol.
 // Planners observe accumulated `Control` signals via `RunContext`;
-// they NEVER touch the inbox. The Runtime owns the inbox. Phase 52
+// they NEVER touch the inbox. The Runtime owns the inbox. This package
 // lands the data structures and the edge enforcement:
 //
 //   - The nine-type control taxonomy (`ControlType` + the canonical
@@ -24,17 +24,17 @@
 //     with `ErrScopeMismatch` (the Protocol projection maps that to
 //     403 + an audit emit).
 //
-// # What Phase 53 adds (the run-loop wiring)
+// # What Harbor adds (the run-loop wiring)
 //
-// Phase 52 shipped the primitive (taxonomy + inbox + validation +
-// scope). Phase 53 ships `RunLoop` — the per-run planner-step loop
+// An earlier phase shipped the primitive (taxonomy + inbox + validation +
+// scope). Harbor ships `RunLoop` — the per-run planner-step loop
 // that is the §13 first consumer of BOTH this primitive AND the
-// Phase 50 `pauseresume.Coordinator`:
+// `pauseresume.Coordinator`:
 //
 //   - `RunLoop.Run` drives a `planner.Planner` to a terminal
 //     `planner.Finish`, draining the per-run `Inbox` exactly ONCE per
 //     step boundary (`Inbox.Drain` — never mid-tool-call, the
-//     drain-between-steps invariant from brief 02 §6).
+//     drain-between-steps invariant).
 //   - The nine control events' side effects are applied (`apply.go`):
 //     CANCEL hard/soft, PAUSE/RESUME/APPROVE/REJECT onto the unified
 //     `pauseresume.Coordinator`, INJECT_CONTEXT/REDIRECT/USER_MESSAGE
@@ -49,15 +49,15 @@
 //   - `control.received` / `control.applied` lifecycle events are
 //     emitted (`events.go`).
 //
-// See D-071 and the phase-53 plan's "§13 primitive-with-consumer —
+// and the phase plan's "§13 primitive-with-consumer —
 // discharged here" section.
 //
 // # Pause-family controls converge on the unified primitive
 //
 // `PAUSE` / `RESUME` / `APPROVE` / `REJECT` are taxonomy entries here
-// — Phase 52 validates them and scope-checks them. Phase 53 wires
+// validates them and scope-checks them. Harbor wires
 // their side effects onto the ONE pause/resume primitive
-// (`internal/runtime/pauseresume`, Phase 50) — Phase 52 does NOT
+// (`internal/runtime/pauseresume`) — does NOT
 // reinvent pause coordination (CLAUDE.md §7 rule 4).
 //
 // # Fail loudly
@@ -69,7 +69,7 @@
 // fails closed with `ErrScopeMismatch`. An unknown control type is
 // rejected with `ErrUnknownControlType`.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // The process-wide `Registry` is a compiled artifact: immutable
 // after construction, with the per-run inbox map behind a

@@ -17,7 +17,7 @@ import (
 
 // coordinator is the V1 process-local Coordinator implementation.
 //
-// Concurrent reuse contract (D-025): every field below is either set
+// Concurrent reuse contract: every field below is either set
 // once at construction (store, registry, bus, now — all immutable
 // after New returns) or is the registry map guarded by mu. There is no
 // per-run state on the struct: Request / Resume / Status read their
@@ -42,7 +42,7 @@ type coordinator struct {
 	// (CLAUDE.md §11 — time-sensitive tests use a controllable clock).
 	// Set once at construction.
 	now func() time.Time
-	// maxPark is the OPTIONAL max-park duration (Phase 111c / D-200).
+	// maxPark is the OPTIONAL max-park duration.
 	// When > 0, every pause carries an expiry derived from
 	// PausedAt + maxPark; the pause sweeper (sweeper.go) resumes
 	// expired pauses with DecisionTimeout. Zero (the default) means
@@ -51,7 +51,7 @@ type coordinator struct {
 	maxPark time.Duration
 
 	// mu guards pauses. The map is the coordinator's only mutable
-	// state and is documented internally-synchronised per the D-025
+	// state and is documented internally-synchronised per the concurrent-reuse
 	// concurrent-reuse contract (CLAUDE.md §5).
 	mu sync.Mutex
 	// pauses is the process-local pause registry, keyed by Token.
@@ -81,11 +81,10 @@ type pauseEntry struct {
 	// decision is the typed Decision the pause was resumed with; the
 	// zero value while State == StatusPaused. Recorded so Status (and
 	// the RunLoop's out-of-band timeout detection) can distinguish a
-	// timeout-reaped pause from an approve / reject / generic resume
-	// (Phase 111c / D-200).
+	// timeout-reaped pause from an approve / reject / generic resume.
 	decision Decision
 	// deletePending marks a RESUMED entry whose checkpoint delete
-	// failed (Wave C checkpoint audit): Resume flips the state before
+	// failed: Resume flips the state before
 	// the store delete, so a delete failure would otherwise orphan the
 	// checkpoint forever — the sweeper skips non-paused entries and
 	// Resume rejects an already-resumed token. The sweeper's
@@ -104,9 +103,9 @@ type Option func(*coordinator)
 // pauses survive a Runtime restart. When NOT set, pauses are
 // process-local only and explicitly do not survive restart.
 //
-// Phase 50 deliberately does not mint a parallel persistence-driver
+// deliberately does not mint a parallel persistence-driver
 // seam: state.StateStore is already the §4.4 persistence seam (three
-// V1 drivers at conformance parity). See D-067.
+// V1 drivers at conformance parity).
 func WithCheckpointStore(s state.StateStore) Option {
 	return func(c *coordinator) { c.store = s }
 }
@@ -144,12 +143,12 @@ func WithBus(b events.EventBus) Option {
 }
 
 // WithMaxParkDuration sets the operator-configured ceiling on how long
-// a pause may stay parked (Phase 111c / D-200, RFC §3.3's typed
-// `timeout` Decision — D-096). When d > 0, every pause carries an
+// a pause may stay parked (RFC §3.3's typed
+// `timeout` Decision). When d > 0, every pause carries an
 // expiry derived from PausedAt + d, and the pause sweeper (RunSweeper)
 // resumes expired pauses with DecisionTimeout — terminal for the
 // waiting run (a deadline the human missed is a constraint the
-// planner cannot resolve; mirrors D-071's REJECT posture). A
+// planner cannot resolve; mirrors the REJECT posture). A
 // non-positive d is the documented "never expire" default — today's
 // pre-111c behaviour, not an error.
 func WithMaxParkDuration(d time.Duration) Option {
@@ -161,7 +160,7 @@ func WithMaxParkDuration(d time.Duration) Option {
 }
 
 // New constructs the V1 process-local Coordinator. The returned value
-// is immutable after construction (D-025) and safe for concurrent use
+// is immutable after construction and safe for concurrent use
 // by N goroutines.
 //
 // With no options, the Coordinator is fully process-local: no
@@ -201,7 +200,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		return Pause{}, fmt.Errorf("%w: %q", ErrInvalidReason, req.Reason)
 	}
 
-	// Fail-loudly serialise contract (Phase 51 / D-069): the pause
+	// Fail-loudly serialise contract: the pause
 	// Payload is the pause record's caller-controlled wire shape — it
 	// MUST be JSON-encodable whether or not a checkpoint store is
 	// configured. A non-encodable leaf is rejected LOUD here, before a
@@ -237,7 +236,7 @@ func (c *coordinator) Request(ctx context.Context, req PauseRequest) (Pause, err
 		pausedAt:   pausedAt,
 		trajectory: req.Trajectory,
 	}
-	// Max-park expiry (Phase 111c / D-200): derived from PausedAt + the
+	// Max-park expiry: derived from PausedAt + the
 	// construction-time knob. Zero maxPark ⇒ zero expiresAt ⇒ the pause
 	// never expires (the default).
 	if c.maxPark > 0 {
@@ -300,7 +299,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 
 	// Fail loudly on an unknown Decision — a `pause.resumed` event with
 	// an untyped Decision defeats the marker the field exists for
-	// (issue #113, D-096). Validated BEFORE identity / token lookup so
+	// (issue #113). Validated BEFORE identity / token lookup so
 	// the contract violation surfaces verbatim without touching any
 	// pause record.
 	if !IsValidDecision(decision) {
@@ -350,10 +349,10 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// a concurrent Resume of the same token cannot both pass the
 	// not-yet-resumed check; the registry Get is O(1) (sync.Map load).
 	//
-	// DecisionTimeout deliberately SKIPS the re-attach (D-207): a
+	// DecisionTimeout deliberately SKIPS the re-attach: a
 	// timeout resume is terminal — the waiting run finishes with
 	// Finish{ConstraintsConflict} and the planner is never re-entered
-	// with the trajectory (D-200 call 4), so the non-serialisable tool
+	// with the trajectory (call 4), so the non-serialisable tool
 	// half is never needed. Requiring it would wedge the sweeper's
 	// crash-orphan reap forever: a crashed process's handle registry
 	// is empty by definition, so a crash-orphaned checkpoint whose
@@ -382,7 +381,7 @@ func (c *coordinator) Resume(ctx context.Context, token Token, decision Decision
 	// A failed delete (or a resumed entry that no longer serialises)
 	// additionally marks the entry delete-pending so the sweeper's
 	// retryPendingDeletes pass re-attempts the cleanup — the
-	// checkpoint must not orphan silently (Wave C checkpoint audit;
+	// checkpoint must not orphan silently (checkpoint audit;
 	// the sweeper's expired scan only selects StatusPaused entries, so
 	// without the flag nothing would ever retry).
 	if c.store != nil {
@@ -477,7 +476,7 @@ func (c *coordinator) rehydrate(ctx context.Context, token Token) (*pauseEntry, 
 	// Re-stamp the max-park expiry from THIS Coordinator's knob: the
 	// deadline is derived (PausedAt + maxPark), never persisted, so a
 	// restarted Runtime with a different max_park_duration applies its
-	// own ceiling to rehydrated pauses (Phase 111c / D-200).
+	// own ceiling to rehydrated pauses.
 	if c.maxPark > 0 && entry.state == StatusPaused {
 		entry.expiresAt = entry.pausedAt.Add(c.maxPark)
 	}
@@ -527,7 +526,7 @@ func (e *pauseEntry) toCheckpoint() (checkpointRecord, error) {
 	rec := checkpointRecord{
 		// FormatVersion is set here for completeness; SerializeRecord
 		// re-stamps it to the current FormatVersion on every write, so
-		// the version field is single-sourced there (Phase 51 / D-069).
+		// the version field is single-sourced there.
 		FormatVersion: FormatVersion,
 		Token:         e.token,
 		Reason:        e.reason,

@@ -42,11 +42,11 @@ type bifrostClient interface {
 }
 
 // Driver is the bifrost-backed `llm.Driver` implementation. The
-// Phase 32 safety pass wraps this struct via the registry (`llm.Open`);
+// safety pass wraps this struct via the registry (`llm.Open`);
 // callers receive a `*safetyClient` and never construct this directly
 // in production.
 //
-// Concurrent-reuse (D-025): the driver is stateless across calls
+// Concurrent-reuse: the driver is stateless across calls
 // except for the provider-file cache, which is internally
 // synchronized (`providerFileCache` guards its map + LRU list with a
 // mutex and is documented as such). The embedded `bifrostClient` is
@@ -66,8 +66,8 @@ type Driver struct {
 	// driver-owned lifecycle (TTL + LRU evict with remote delete, plus
 	// a Close-time sweep). Internally synchronized.
 	files *providerFileCache
-	// profiles is the per-model profile map (read-only after construction;
-	// D-025). Used to stamp the model's context-window onto the
+	// profiles is the per-model profile map (read-only after construction).
+	// Used to stamp the model's context-window onto the
 	// `llm.cost.recorded` event so the Console can show context %.
 	profiles map[string]llm.ModelProfile
 
@@ -77,7 +77,7 @@ type Driver struct {
 // Compile-time assertion: *Driver implements llm.Driver.
 var _ llm.Driver = (*Driver)(nil)
 
-// New constructs a bifrost-backed `llm.Driver`. The Phase 32 safety
+// New constructs a bifrost-backed `llm.Driver`. The safety
 // pass wraps the returned driver; operators reach this via
 // `llm.Open(ctx, cfg, deps)` with `cfg.Driver = "bifrost"`.
 //
@@ -119,7 +119,7 @@ func init() {
 	llm.Register(driverName, New)
 }
 
-// Complete is the Driver entry point. The Phase 32 safety pass has
+// Complete is the Driver entry point. The safety pass has
 // already validated identity, materialized oversize content, run the
 // leak-detection pass, and run the token-budget guard upstream — by
 // the time this method runs, `req` is safe to translate and dispatch.
@@ -187,7 +187,7 @@ func (d *Driver) unaryComplete(
 //
 // Cancellation: a `select` on `ctx.Done()` lets the driver abandon
 // the bifrost chunk reader as soon as the caller cancels — the
-// runtime never blocks waiting for upstream to drain (brief 08
+// runtime never blocks waiting for upstream to drain (a design premise:
 // §"Cancellation caveat"). Bifrost's worker goroutine continues
 // draining the upstream HTTP body until completion, but Harbor is no
 // longer reading from the channel; the goroutine exits when the
@@ -263,7 +263,7 @@ readLoop:
 		// silent success-with-no-content.
 		return llm.CompleteResponse{}, fmt.Errorf("bifrost: stream returned no chunks")
 	}
-	// Reasoning capture (Phase 83e): prefer the message-level
+	// Reasoning capture: prefer the message-level
 	// `ReasoningDetails` a final stream chunk carried — bifrost's
 	// canonical normalised surface — over the per-delta accumulator.
 	// Fall back to the accumulated builder when the stream emitted
@@ -324,12 +324,12 @@ func processStreamChunk(
 		// Collect message-level normalised reasoning details. Bifrost
 		// emits `reasoning_details[]` on stream deltas for providers
 		// whose stream carries the normalised tail (the Gemini-direct
-		// path among them — brief 13 §2.6); the driver prefers these
+		// path among them); the driver prefers these
 		// over the per-delta `delta.Reasoning` accumulator.
 		if len(delta.ReasoningDetails) > 0 {
 			*details = append(*details, delta.ReasoningDetails...)
 		}
-		// Phase 107c / D-167 — accumulate streamed tool-call deltas.
+		// accumulate streamed tool-call deltas.
 		// Per the OpenAI streaming spec (also followed by Anthropic via
 		// Bedrock, Gemini's OpenAI-compat surface, and OpenRouter): the
 		// FIRST delta for a tool call carries `id + name`; subsequent
@@ -378,10 +378,10 @@ func processStreamChunk(
 
 // Close releases the underlying bifrost instance. Bifrost owns its
 // own goroutines for the queue/dispatcher — `(*Bifrost).Shutdown()`
-// joins the per-provider worker pools. Pre-Wave-C this method probed
+// joins the per-provider worker pools. Previously this method probed
 // only for a `Cleanup() error` shape, which `*bf.Bifrost` does NOT
 // expose — a production stack Close therefore leaked bifrost's entire
-// worker pool (~1000 goroutines per provider). Found by the Wave C
+// worker pool (~1000 goroutines per provider). Found by the
 // composed E2E's goroutine-baseline assertion
 // (test/integration/wavec_test.go) and fixed per CLAUDE.md §17.6
 // (fix what the integration test finds, wherever the bug lives). Both
@@ -424,7 +424,7 @@ func identityQuad(ctx context.Context) identity.Quadruple {
 }
 
 // mergeStreamedToolCall merges one streamed tool-call delta into the
-// accumulator (Phase 107c / D-167; step 10/11 audit revision).
+// accumulator (step 10/11 audit revision).
 //
 // Per the OpenAI streaming spec, tool-call deltas use `index` as the
 // stable per-tool-call discriminator across SSE chunks. The first

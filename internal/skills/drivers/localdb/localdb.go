@@ -1,10 +1,9 @@
 // Package localdb is Harbor's SQLite-backed `skills.SkillStore`
-// driver (Phase 37). It is the first leg of the skills persistence
-// triad (LocalDB now, Portico post-V1) defined by RFC §6.7 + brief
-// 04 §4.3.
+// driver. It is the first leg of the skills persistence
+// triad (LocalDB now, Portico post-V1) defined by RFC §6.7.
 //
 // The driver is built on `modernc.org/sqlite` — a CGo-free SQLite
-// engine (D-013, AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
+// engine (AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
 //
 // Operating model:
 //
@@ -15,8 +14,8 @@
 //     `database/sql`'s connection lifecycle.
 //   - WAL journal mode is pinned at open. `busy_timeout=5000`
 //     absorbs `SQLITE_BUSY` retries. `db.SetMaxOpenConns(1)` pins
-//     the pool to a single connection — matches Phase 15's
-//     StateStore + Phase 25's MemoryStore for the same reason
+//     the pool to a single connection — matches the
+//     StateStore + the MemoryStore for the same reason
 //     (BEGIN IMMEDIATE doesn't honor busy_timeout across pool
 //     connections; pinning serialises writers at the Go layer).
 //   - The schema is applied via embedded `migrations/*.sql` files
@@ -25,7 +24,7 @@
 //   - FTS5 availability is detected at open by attempting to
 //     execute a probe query against the `skills_fts` virtual table.
 //     If FTS5 is unavailable, the driver still serves Search via
-//     the regex/exact fallback ladder (brief 04 §4.4); read paths
+//     the regex/exact fallback ladder; read paths
 //     never fail because of missing FTS5.
 //
 // Skill state lives in this driver's OWN `skills` + `skills_fts`
@@ -33,14 +32,14 @@
 // StateStore. The injected `events.EventBus` dep IS used (for the
 // identity-rejection emit path AND the four `skill.*` audit
 // events). The skills `Deps` struct does NOT carry a `StateStore`
-// (D-034 analog).
+// (analog).
 //
 // The driver self-registers under `"localdb"` from its `init()`.
 // The production binary picks it up via blank import in
 // `cmd/harbor/main.go`; tests may call `New` directly to skip the
 // registry.
 //
-// Concurrency contract (D-025):
+// Concurrency contract:
 //
 //   - The driver struct holds a `*sql.DB` (an internally-
 //     synchronized connection pool, pinned to one connection), an
@@ -403,7 +402,7 @@ func (d *driver) List(ctx context.Context, id identity.Quadruple, filter skills.
 		args = append(args, filter.TaskType)
 	}
 	// Tag any-of filter: implemented by JSON contains via LIKE on
-	// tags_text. For Phase 37 the corpus is small; a proper index
+	// tags_text. For the corpus is small; a proper index
 	// can land later if hot.
 	for _, tag := range filter.Tags {
 		sb.WriteString(` AND tags_text LIKE ?`)
@@ -530,12 +529,12 @@ func (d *driver) Close(_ context.Context) error {
 	return nil
 }
 
-// augmentDSNForPragmas mirrors memory/sqlite + state/sqlite (D-207
+// augmentDSNForPragmas mirrors memory/sqlite + state/sqlite (the
 // added the per-Open `:memory:` isolation).
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
-	// across Opens (D-207).
+	// across Opens.
 	if dsn == ":memory:" {
 		unique, err := uniqueMemoryDSN()
 		if err != nil {
@@ -574,8 +573,8 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	return dsn + sep + strings.Join(parts, "&"), nil
 }
 
-// uniqueMemoryDSN mints a per-Open named in-memory database URI
-// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// uniqueMemoryDSN mints a per-Open named in-memory database URI.
+// `mode=memory` keeps it off disk; `cache=shared` lets every
 // connection in THIS store's pool see the same database; the
 // crypto-random name keeps two `:memory:` stores — this subsystem's or
 // any other's — fully isolated within one process (the previous
@@ -620,7 +619,7 @@ func isMemoryDSN(dsn string) bool {
 // detectFTS5 probes whether the SQLite build supports FTS5 by
 // running a no-op query against the `skills_fts` virtual table.
 // `modernc.org/sqlite` compiles FTS5 in by default, but this is the
-// guard brief 04 §4.4 requires: read paths never fail because of
+// guard the search design requires: read paths never fail because of
 // missing FTS5 — they fall back through the ranking ladder.
 func detectFTS5(ctx context.Context, db *sql.DB) bool {
 	var n int

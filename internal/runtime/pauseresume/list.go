@@ -8,7 +8,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// Pause-list pagination bounds (Phase 72e / D-110). The defaults mirror
+// Pause-list pagination bounds. The defaults mirror
 // the Protocol-edge types.PauseListRequest contract — a List caller
 // that leaves Page / PageSize zero gets the documented defaults; a
 // PageSize above the max fails closed with ErrInvalidPage (never a
@@ -30,7 +30,7 @@ const (
 // releases the lock, then filters / sorts / paginates the value copies.
 // It never mutates the registry, never calls Resume, never touches the
 // checkpoint store. The Coordinator's in-memory registry IS the index
-// (brief 05 — the runtime owns the index; the Protocol exposes a
+// (the runtime owns the index; the Protocol exposes a
 // paginated method, never a client-side filter over a full dump).
 //
 // Resumed-record retention: the Coordinator's resume path is
@@ -47,7 +47,7 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 	}
 
 	// Identity-mandatory — fail closed on an incomplete triple
-	// (CLAUDE.md §6 rule 9 + D-001). No identity-downgrading knob.
+	// (CLAUDE.md §6 rule 9). No identity-downgrading knob.
 	if err := identity.Validate(req.Identity); err != nil {
 		return ListResponse{}, fmt.Errorf("%w: %w", ErrIdentityRequired, err)
 	}
@@ -140,7 +140,7 @@ func (c *coordinator) List(ctx context.Context, req ListRequest) (ListResponse, 
 	// resumed records but the registry holds no resumed entries at all
 	// — the destructive-on-resume contract means resumed records are
 	// transient, so an empty resumed slice is the operator-visible
-	// "this is not a complete history" signal (Phase 72e plan §"Risks").
+	// "this is not a complete history" signal.
 	truncated := resumedRequested && !resumedSeen
 
 	return ListResponse{

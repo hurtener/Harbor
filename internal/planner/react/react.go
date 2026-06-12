@@ -1,12 +1,12 @@
 // Package react ships Harbor's reference LLM-driven planner concrete
-// (Phase 45 — RFC §6.2 + RFC §3.2 — the first concrete sitting on the
+// (RFC §6.2 + RFC §3.2 — the first concrete sitting on the
 // `internal/planner.Planner` seam).
 //
-// Phase 107c (D-167) cut the planner over to provider-native tool-
+// cut the planner over to provider-native tool-
 // calling: each per-step [llm.CompleteRequest] carries the visible
 // catalog in `req.Tools`, and the response's typed
 // [llm.CompleteResponse.ToolCalls] slice drives [planner.Decision]
-// directly via [projectResponse]. The Phase 44 [repair.RepairLoop]
+// directly via [projectResponse]. The [repair.RepairLoop]
 // remains in-tree for the `declarative_action` escape-hatch meta-tool
 // (step 10 wires the dispatch); the main React path no longer parses
 // JSON envelopes out of `resp.Content` and no longer runs the
@@ -16,7 +16,7 @@
 // Each [ReActPlanner.Next] call:
 //
 //  1. Honours ctx.Err() and the run's identity quadruple
-//     (§6 rule 9 + D-001 — identity is mandatory; the runtime fails
+//     (§6 rule 9 — identity is mandatory; the runtime fails
 //     closed).
 //  2. Checks the [MaxSteps] circuit breaker. When the run's prior
 //     trajectory carries ≥ MaxSteps recorded steps, the planner emits
@@ -36,8 +36,8 @@
 //     observability, and uses it as the deferred-loading surface for
 //     this turn's `req.Tools`.
 //  6. Builds the [llm.CompleteRequest] via the configured
-//     [PromptBuilder]. The default builder (Phase 83a, reshaped by
-//     Phase 107c) assembles the nine XML-tagged structured sections
+//     [PromptBuilder]. The default builder (reshaped by
+//     the native-tool-calling cutover) assembles the nine XML-tagged structured sections
 //     — `<identity>`, `<tool_discovery>`, `<tool_usage>`,
 //     `<reasoning>`, `<tone>`, `<error_handling>`,
 //     `<available_tools>` (name + description quick-reference;
@@ -45,7 +45,7 @@
 //     `<additional_guidance>` / `<planning_constraints>` injection
 //     surfaces. The prompt asks for a final answer as plain
 //     `resp.Content` and tool steps as native `resp.ToolCalls`; the
-//     Phase 83e `{tool, args}` JSON envelope is RETIRED on the main
+//     `{tool, args}` JSON envelope is RETIRED on the main
 //     path (declarative_action keeps it for backward compat).
 //  7. Stamps `req.Tools` from `rc.Catalog.List()` (which already
 //     filters by the run's identity scope + `LoadingAlways` per
@@ -55,7 +55,7 @@
 //     emission is enabled per turn.
 //  8. Wires the per-step streaming callbacks
 //     ([planner.RunContext.OnChunk]) into `req.Stream` /
-//     `req.OnContent` / `req.OnReasoning` (Phase 107). The wiring
+//     `req.OnContent` / `req.OnReasoning`. The wiring
 //     formerly lived inside the repair loop; under the cutover the
 //     planner owns it (the repair loop is no longer called on the
 //     native path).
@@ -74,9 +74,9 @@
 //     - `len(resp.ToolCalls) == 0 && resp.Content == ""` →
 //     [planner.Finish]{Reason: [planner.FinishNoPath]}.
 //  11. Threads the captured `resp.Reasoning` through
-//     [planner.RunContext.OnReasoning] (Phase 83m item 8) so the
+//     [planner.RunContext.OnReasoning] so the
 //     runloop's trajectory-append path stamps
-//     `trajectory.Step.ReasoningTrace` (Phase 83e — D-148 replay).
+//     `trajectory.Step.ReasoningTrace` (replay).
 //  12. Emits [planner.EventTypePlannerDecision] carrying the resolved
 //     Decision shape + the captured reasoning trace.
 //  13. Resets `rc.RepairCounters` for the step (a clean native step
@@ -90,29 +90,29 @@
 // arrive via [planner.RunContext.Control] and are honoured at step
 // boundary by the planner concrete that emits them.
 //
-// **Wake-on-resolution (D-032).** [ReActPlanner] implements
-// [planner.WakeAware] returning [planner.WakePush]. Phase 47 wires the
-// emission path end-to-end (D-056): a non-retain-turn `_spawn_task`
+// **Wake-on-resolution.** [ReActPlanner] implements
+// [planner.WakeAware] returning [planner.WakePush]. Harbor wires the
+// emission path end-to-end: a non-retain-turn `_spawn_task`
 // emission returns control to the runtime; the runtime registers the
 // planner against [tasks.TaskRegistry.WatchGroup]; on the
 // [tasks.GroupCompletion] delivery the runtime re-invokes `Next` with
 // the resolved `MemberOutcome` slice surfaced through
-// `RunContext.Trajectory.Background`. The conformance pack (Phase 49)
+// `RunContext.Trajectory.Background`. The conformance pack
 // asserts the round-trip:
 //
 //	planner.ResolveWakeMode(reactPlanner) == planner.WakePush
 //
-// **Concurrent-reuse (D-025).** [ReActPlanner] is a reusable artifact:
+// **Concurrent-reuse.** [ReActPlanner] is a reusable artifact:
 // one constructed instance is safe to share across N concurrent
 // runs. The receiver is read-only after construction; per-call state
 // lives on the stack and in the run's [planner.RunContext].
 // `d025_test.go` pins N=128 invocations under `-race`.
 //
 // **Import-graph contract (§13).** The react package MUST NOT import
-// `internal/runtime/...`. The Phase 42
+// `internal/runtime/...`. The
 // [internal/planner/conformance.TestImportGraph_PlannerDoesNotImportRuntime]
 // covers the new package by construction (it walks the whole planner
-// subtree). The Phase 45 smoke script asserts the same via grep.
+// subtree). The smoke script asserts the same via grep.
 package react
 
 import (
@@ -132,7 +132,6 @@ import (
 // Decision; `"_finish"` never reaches the runtime as a real tool
 // call. The leading underscore is a documented convention; future
 // runtime catalog registration MAY reject `_`-prefixed tool names.
-// D-051.
 const FinishToolName = "_finish"
 
 // SpawnTaskToolName is the reserved tool name the LLM emits to spawn
@@ -150,14 +149,14 @@ const AwaitTaskToolName = "_await_task"
 // DefaultMaxSteps is the planner-side circuit-breaker default for the
 // observed trajectory step count. Set small enough to surface bugs
 // quickly; large enough to leave 3-step scenarios headroom. The
-// runtime's hop / cost budget (Phase 47+) is the authoritative gate;
-// the planner-side cap is defence in depth (§13 + D-051).
+// runtime's hop / cost budget is the authoritative gate;
+// the planner-side cap is defence in depth (§13).
 const DefaultMaxSteps = 12
 
 // DefaultSystemPrompt is the sentinel value the planner sends as the
 // leading system-prompt argument when [WithSystemPrompt] is not set.
 //
-// Phase 83a (RFC §6.2, brief 13 §2.1) replaced the former flat-string
+// The structured-prompt work (RFC §6.2) replaced the former flat-string
 // prompt with the twelve XML-tagged structured sections assembled by
 // `defaultBuilder.buildSystemContent`. The structured sections ARE the
 // default prompt content; this constant is the routing sentinel the
@@ -169,7 +168,7 @@ const DefaultMaxSteps = 12
 // `WithSystemPrompt("")` falls back to it, and `buildSystemContent`
 // branches on identity-equality with it.
 //
-// The old single-string Phase 45/47 prompt constant is intentionally
+// The old single-string prompt constant is intentionally
 // removed (not renamed to `legacyDefaultSystemPrompt`) — the golden
 // fixture `testdata/golden_default_prompt.txt` is the normative spec
 // for the rendered default prompt going forward, and a dangling
@@ -183,7 +182,7 @@ const DefaultSystemPrompt = "harbor.react.default-system-prompt"
 // genuinely policy-shaped knobs).
 //
 // Implementations MUST be safe for concurrent use (the planner is a
-// reusable artifact per D-025; the prompt builder is read on every
+// reusable artifact per the concurrent-reuse contract; the prompt builder is read on every
 // Next call).
 type PromptBuilder interface {
 	// Build returns the LLM request to send for the current step.
@@ -212,7 +211,7 @@ func WithMaxSteps(n int) Option {
 }
 
 // WithRepairAttempts passes the [repair.Config.RepairAttempts] knob
-// through to Phase 44's loop. Default [repair.DefaultRepairAttempts]
+// through to the loop. Default [repair.DefaultRepairAttempts]
 // (3).
 func WithRepairAttempts(n int) Option {
 	return func(p *ReActPlanner) {
@@ -222,7 +221,7 @@ func WithRepairAttempts(n int) Option {
 
 // WithMaxConsecutiveArgFailures passes the
 // [repair.Config.MaxConsecutiveArgFailures] storm-guard counter
-// through to Phase 44's loop. Default
+// through to the loop. Default
 // [repair.DefaultMaxConsecutiveArgFailures] (2).
 func WithMaxConsecutiveArgFailures(n int) Option {
 	return func(p *ReActPlanner) {
@@ -230,7 +229,7 @@ func WithMaxConsecutiveArgFailures(n int) Option {
 	}
 }
 
-// WithArgFillEnabled toggles Phase 44's schema-repair path. When
+// WithArgFillEnabled toggles the schema-repair path. When
 // false, the loop surfaces the parser's first action verbatim and
 // lets the dispatcher reject misshaped args. Default true.
 func WithArgFillEnabled(b bool) Option {
@@ -250,8 +249,8 @@ func WithPromptBuilder(b PromptBuilder) Option {
 	}
 }
 
-// WithReasoningReplay sets the agent-configured reasoning-replay mode
-// (Phase 83e — D-148). The runtime wires this from
+// WithReasoningReplay sets the agent-configured reasoning-replay mode.
+// The runtime wires this from
 // `config.PlannerConfig.ReasoningReplay`. The default — and the value
 // for an empty / unset mode — is [planner.ReasoningReplayNever]: a
 // prior step's captured reasoning is NEVER re-injected into the next
@@ -271,8 +270,8 @@ func WithReasoningReplay(mode planner.ReasoningReplayMode) Option {
 }
 
 // WithMaxToolExamplesPerTool caps how many curated examples each tool
-// renders in the `<available_tools>` section of the system prompt
-// (Phase 83b — D-144). The runtime wires this from
+// renders in the `<available_tools>` section of the system prompt.
+// The runtime wires this from
 // `config.PlannerConfig.MaxToolExamplesPerTool`. A value ≤ 0 (the
 // default) resolves to [defaultMaxToolExamples] (3) at render time.
 // Examples are ranked `minimal` > `common` > `edge-case` > untagged;
@@ -287,18 +286,18 @@ func WithMaxToolExamplesPerTool(n int) Option {
 	}
 }
 
-// WithParallelToolCalls toggles native parallel tool-call emission
-// (Phase 107d — D-169). Default `true`: when the LLM returns N>1
+// WithParallelToolCalls toggles native parallel tool-call emission.
+// Default `true`: when the LLM returns N>1
 // tool-calls in one response, the projector emits a native
 // [planner.CallParallel] and the runtime executor dispatches the
-// branches concurrently. `false`: the Phase 107c serialization fallback
+// branches concurrently. `false`: the serialization fallback
 // fires instead — the head becomes a [planner.CallTool] and the tail is
 // queued on [planner.RunContext.PendingToolCalls], one dispatch per
 // step. The reserved-name co-occurrence guard (AC-21) is independent of
 // this knob and fires in both modes.
 //
 // The runtime wires this from `config.PlannerConfig.ParallelToolCalls`
-// (nil → true). Read-only after construction (D-025).
+// (nil → true). Read-only after construction.
 func WithParallelToolCalls(b bool) Option {
 	return func(p *ReActPlanner) {
 		p.parallelToolCalls = b
@@ -325,7 +324,7 @@ func WithSystemPrompt(s string) Option {
 
 // WithSystemPromptExtra injects operator-supplied guidance into the
 // `<additional_guidance>` section of the rendered system prompt
-// (Phase 83a, RFC §6.2, brief 13 §2.1 section 11). The string is
+// (RFC §6.2 section 11). The string is
 // rendered verbatim; the operator is responsible for content hygiene.
 // An empty (or whitespace-only) string is a no-op — the
 // `<additional_guidance>` section is then omitted from the prompt
@@ -343,7 +342,7 @@ func WithSystemPromptExtra(s string) Option {
 }
 
 // ReActPlanner is Harbor's reference LLM-driven planner. Reusable
-// artifact (D-025): the receiver is read-only after construction;
+// artifact: the receiver is read-only after construction;
 // per-call state lives on the stack and in the [planner.RunContext].
 //
 // All fields are set at construction by [New] (with [Option] applied);
@@ -351,11 +350,11 @@ func WithSystemPromptExtra(s string) Option {
 type ReActPlanner struct {
 	// client is the LLM client. Composed by the LLM registry's
 	// [llm.Open] with retry + downgrade + corrections + safety +
-	// governance per D-043; the planner consumes the composed
+	// governance; the planner consumes the composed
 	// surface and adds NO parallel layers (§13).
 	client llm.LLMClient
 
-	// repairCfg is the Phase 44 repair loop configuration the
+	// repairCfg is the repair loop configuration the
 	// planner applies on every Next. The loop is constructed once
 	// per Next call (cheap — the loop's only state is the cfg + the
 	// parser, both immutable).
@@ -379,39 +378,39 @@ type ReActPlanner struct {
 	// [WithSystemPromptExtra]; empty by default. Applied to the
 	// in-package [defaultBuilder] at construction (`New`); an operator-
 	// supplied [WithPromptBuilder] owns its own assembly and ignores
-	// this field. Read-only after construction (D-025).
+	// this field. Read-only after construction.
 	extraGuidance string
 
-	// reasoningReplay is the agent-configured reasoning-replay mode
-	// (Phase 83e — D-148). Set via [WithReasoningReplay] from
+	// reasoningReplay is the agent-configured reasoning-replay mode.
+	// Set via [WithReasoningReplay] from
 	// `config.PlannerConfig.ReasoningReplay`; defaults to
 	// [planner.ReasoningReplayNever]. Applied to the default prompt
 	// builder at construction; a per-run RunContext override wins at
 	// render time.
 	reasoningReplay planner.ReasoningReplayMode
 
-	// parallelToolCalls toggles native parallel tool-call emission
-	// (Phase 107d — D-169). Set via [WithParallelToolCalls]; defaults to
+	// parallelToolCalls toggles native parallel tool-call emission.
+	// Set via [WithParallelToolCalls]; defaults to
 	// `true` in [New]. When true, an N>1-ToolCall response projects to a
-	// native [planner.CallParallel]; when false, the Phase 107c
+	// native [planner.CallParallel]; when false, the
 	// serialization fallback (head CallTool + PendingToolCalls tail)
 	// fires. Also gates the per-turn `req.ParallelToolCalls` provider
-	// hint. Read-only after construction (D-025).
+	// hint. Read-only after construction.
 	parallelToolCalls bool
 
 	// maxToolExamples is the agent-configured per-tool curated-example
-	// cap for the rendered <available_tools> section (Phase 83b —
-	// D-144). Set via [WithMaxToolExamplesPerTool] from
+	// cap for the rendered <available_tools> section.
+	// Set via [WithMaxToolExamplesPerTool] from
 	// `config.PlannerConfig.MaxToolExamplesPerTool`; a value ≤ 0
 	// resolves to [defaultMaxToolExamples] (3) at render time. Applied
 	// to the default prompt builder at construction; read-only
-	// thereafter (D-025).
+	// thereafter.
 	maxToolExamples int
 
 	// stepsTaken is a process-wide diagnostic counter. NOT used
 	// for any per-call semantics (those are derived from the
 	// RunContext + ctx); maintained as `atomic.Int64` so the
-	// D-025 reuse contract isn't broken by a bare int field. The
+	// reuse contract isn't broken by a bare int field. The
 	// field is read-only from the outside (no exported accessor at
 	// V1 — observability flows through events.Event).
 	stepsTaken atomic.Int64
@@ -437,7 +436,7 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 		builder:           defaultBuilder{},
 		systemPrompt:      DefaultSystemPrompt,
 		reasoningReplay:   planner.ReasoningReplayNever,
-		parallelToolCalls: true, // Phase 107d (D-169): native parallel is the default.
+		parallelToolCalls: true, // native parallel is the default.
 		repairCfg: repair.Config{
 			ArgFillEnabled:            true,
 			RepairAttempts:            repair.DefaultRepairAttempts,
@@ -449,13 +448,13 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 	}
 	// Finalise the in-package builder with operator-supplied
 	// <additional_guidance> content and the agent-configured
-	// reasoning-replay mode (Phase 83a + 83e — D-148). Skipped when an
+	// reasoning-replay mode. Skipped when an
 	// operator injected their own builder via WithPromptBuilder — a
 	// custom builder owns its own prompt assembly and replay handling
 	// (the option order is "later overrides earlier", so a
 	// WithPromptBuilder after a WithSystemPromptExtra is the operator's
 	// deliberate choice). The builder is rebuilt as a fresh value so it
-	// stays an immutable compiled artifact (D-025).
+	// stays an immutable compiled artifact.
 	if _, ok := p.builder.(defaultBuilder); ok {
 		p.builder = defaultBuilder{
 			extraGuidance:    p.extraGuidance,
@@ -466,8 +465,8 @@ func New(client llm.LLMClient, opts ...Option) *ReActPlanner {
 	return p
 }
 
-// WakeMode declares the planner's wake-on-resolution strategy (D-032
-// + Phase 45 spec). ReAct ships the `push` mode: a non-retain-turn
+// WakeMode declares the planner's wake-on-resolution strategy (a
+// + spec). ReAct ships the `push` mode: a non-retain-turn
 // SpawnTask emission (deferred to a later phase) would return control
 // to the runtime; the runtime would register the planner against
 // [tasks.TaskRegistry.WatchGroup]; on `GroupCompletion` the runtime
@@ -487,9 +486,9 @@ func (p *ReActPlanner) StepsTaken() int64 {
 // Next implements [planner.Planner]. The flow is documented in the
 // package godoc.
 //
-// **Native tool-calling path (Phase 107c — D-167).** Next issues
+// **Native tool-calling path.** Next issues
 // exactly ONE [llm.LLMClient.Complete] and routes the response through
-// [projectResponse]. The Phase 44 [repair.RepairLoop] is not called on
+// [projectResponse]. The [repair.RepairLoop] is not called on
 // the main path; the declarative_action escape-hatch (step 10) is the
 // only consumer that re-enters the loop. A response with no
 // ToolCalls and no Content maps to [planner.Finish]{NoPath}; non-empty
@@ -523,7 +522,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		return p.maxStepsExceeded(ctx, rc), nil
 	}
 
-	// AC-13 / AC-20c (Phase 107c step 10 — D-167). When the previous
+	// AC-13 / AC-20c. When the previous
 	// step dispatched `declarative_action`, the meta-tool's structured
 	// observation carries a `repair_outcome` field classifying the
 	// dispatch's failure mode (args validation, multi-action,
@@ -578,7 +577,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// `rc.DiscoveredTools` at run start; the planner re-derives the
 	// union per step (cross-step persistence via rc-by-value is the
 	// runtime's concern — re-derivation is the V1.3 mechanism that
-	// keeps the planner stateless per D-025). The stamped slice is
+	// keeps the planner stateless per the concurrent-reuse contract). The stamped slice is
 	// informational on `rc.DiscoveredTools`; the same set drives this
 	// turn's `req.Tools` construction.
 	rc.DiscoveredTools = mergeDiscovered(rc.DiscoveredTools, deriveDiscoveredFromTrajectory(rc.Trajectory))
@@ -586,7 +585,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// Build the LLM request via the configured prompt builder. The
 	// builder reads from rc; it MUST NOT mutate rc.
 	//
-	// Phase 83d (D-146): the in-package [defaultBuilder] can fail
+	// the in-package [defaultBuilder] can fail
 	// loudly when a `RunContext.MemoryBlocks` tier or a `SkillsContext`
 	// entry is not JSON-serialisable. The [PromptBuilder] interface
 	// signature is fixed, so the planner drives the default builder via
@@ -594,7 +593,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// [planner.ErrMemoryBlockUnserializable] from `Next` — never a
 	// silently dropped memory tier. An operator-supplied builder owns
 	// its own assembly and uses the interface `Build` (custom builders
-	// do not render the Phase 83d wrappers).
+	// do not render the wrappers).
 	var req llm.CompleteRequest
 	if db, ok := p.builder.(defaultBuilder); ok {
 		var buildErr error
@@ -615,21 +614,21 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// discovered tools (AC-18) are resolved by name and appended
 	// without duplication.
 	req.Tools = buildToolDeclarations(rc, rc.DiscoveredTools)
-	// Phase 107d (D-169): the provider-side parallel hint tracks the
+	// the provider-side parallel hint tracks the
 	// `parallel_tool_calls` knob. When ON (the default), the projector
 	// maps an N>1-ToolCall response to a native [planner.CallParallel]
 	// the dev executor dispatches concurrently. When OFF, the hint is
 	// cleared so the provider emits one tool-call at a time and the
-	// Phase 107c serialization fallback (head + PendingToolCalls tail)
+	// serialization fallback (head + PendingToolCalls tail)
 	// stays the path of record.
 	req.ParallelToolCalls = p.parallelToolCalls
 
-	// Phase 107 streaming wiring. Under the Phase 44 era the repair
-	// loop owned the OnContent/OnReasoning fan-out; the Phase 107c
+	// streaming wiring. Under the era the repair
+	// loop owned the OnContent/OnReasoning fan-out; the
 	// cutover moved the Complete call into the planner, so the
 	// streaming hooks are wired here. A nil rc.OnChunk skips the
 	// streaming path (the LLM driver returns the full response on
-	// unary Complete). Per D-025, the closures capture rc (per-run
+	// unary Complete). The closures capture rc (per-run
 	// stack value), never planner state.
 	if rc.OnChunk != nil {
 		req.Stream = true
@@ -641,7 +640,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		}
 	}
 
-	// Single LLM call — the Phase 44 salvage/repair ladder is BYPASSED
+	// Single LLM call — the salvage/repair ladder is BYPASSED
 	// on the native path (AC-20c). The projector reads `resp.ToolCalls`
 	// directly; `resp.Content` is treated as the model's preamble (when
 	// ToolCalls are present) or its terminal answer (when ToolCalls are
@@ -665,7 +664,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		rc.OnPendingToolCalls(rc.PendingToolCalls)
 	}
 
-	// Phase 83c (D-145) + Phase 107c step 10 (D-167): clear the per-run
+	// clear the per-run
 	// RepairCounters on a clean native step. The native path bypasses
 	// the schema-repair pipeline entirely, so an empty RepairOutcome
 	// reflects what actually happened — no parser/args failures, no
@@ -684,7 +683,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 		updateRepairCounters(rc, final, repair.RepairOutcome{})
 	}
 
-	// Phase 83e (D-147): emit planner.decision carrying the captured
+	// emit planner.decision carrying the captured
 	// provider-side reasoning trace. The event is the observability
 	// surface `harbor inspect-runs` replays to reconstruct a run's
 	// reasoning channel; the audit redactor processes the payload on
@@ -692,7 +691,7 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 	// sensitive).
 	p.emitDecision(rc, final, resp.Reasoning)
 
-	// Phase 83m item 8: hand the captured reasoning trace to the
+	// item 8: hand the captured reasoning trace to the
 	// runloop via the per-step `RunContext.OnReasoning` callback. The
 	// runloop copies it onto `trajectory.Step.ReasoningTrace` when it
 	// appends the step — without this, `ReasoningReplay=text` mode is
@@ -715,8 +714,8 @@ func (p *ReActPlanner) Next(ctx context.Context, rc planner.RunContext) (planner
 }
 
 // emitDecision publishes a [planner.EventTypePlannerDecision] event
-// carrying the resolved Decision shape + the captured reasoning trace
-// (Phase 83e — D-147). Best-effort; a nil Emit closure (tests without
+// carrying the resolved Decision shape + the captured reasoning trace.
+// Best-effort; a nil Emit closure (tests without
 // observability) is a no-op. The event is the load-bearing surface
 // `harbor inspect-runs` replays to reconstruct a run's reasoning
 // channel; the audit redactor processes the payload on the bus before
@@ -772,7 +771,7 @@ func decisionKindAndTool(dec planner.Decision) (kind, tool string) {
 
 // maxStepsExceeded builds the terminal [planner.Finish] AND emits the
 // [planner.EventTypePlannerMaxStepsExceeded] event. Same fail-loudly
-// shape as Phase 44's `gracefulFailure` — every breaker path runs
+// shape as the `gracefulFailure` — every breaker path runs
 // through this function so the observability trail is complete.
 func (p *ReActPlanner) maxStepsExceeded(ctx context.Context, rc planner.RunContext) planner.Finish {
 	now := nowFromRC(rc)
@@ -793,7 +792,7 @@ func (p *ReActPlanner) maxStepsExceeded(ctx context.Context, rc planner.RunConte
 
 	// Emit FIRST so a panic in the Finish-construction path can't
 	// silently drop the breaker observation. (The Finish construction
-	// is pure value-shaping, but defence in depth matches the Phase 44
+	// is pure value-shaping, but defence in depth matches the
 	// pattern.)
 	emitMaxStepsExceeded(ctx, rc, p.maxSteps, stepsObserved, lastTool, now)
 
@@ -812,7 +811,7 @@ func (p *ReActPlanner) maxStepsExceeded(ctx context.Context, rc planner.RunConte
 
 // emitMaxStepsExceeded publishes the planner.max_steps_exceeded event.
 // Best-effort; never blocks on the bus (subscribers handle their own
-// drop policies per Phase 05).
+// drop policies).
 func emitMaxStepsExceeded(
 	ctx context.Context,
 	rc planner.RunContext,
@@ -855,8 +854,8 @@ func nowFromRC(rc planner.RunContext) time.Time {
 // assertIdentity rejects calls whose [planner.RunContext.Quadruple]
 // is missing any of the four scope components. Returns wrapped
 // [llm.ErrIdentityMissing] for parity with the LLM-client edge (and
-// the Phase 44 repair loop) — the planner fails closed with the same
-// sentinel the rest of the runtime uses (§6 rule 9 + D-001).
+// the repair loop) — the planner fails closed with the same
+// sentinel the rest of the runtime uses (§6 rule 9).
 func assertIdentity(rc planner.RunContext) error {
 	q := rc.Quadruple
 	if q.TenantID == "" || q.UserID == "" || q.SessionID == "" || q.RunID == "" {

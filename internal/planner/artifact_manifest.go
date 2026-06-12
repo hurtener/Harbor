@@ -9,7 +9,7 @@ import (
 
 // BuildArtifactManifest maps a session's listed artifact refs onto the
 // metadata-only [ArtifactManifestEntry] slice the planner renders into
-// the read-only `<session_artifacts>` prompt block (Phase 107f — D-176).
+// the read-only `<session_artifacts>` prompt block.
 //
 // It is the SINGLE source of the run-loop ↔ devstack manifest build so
 // the production dev run loop and the test harness cannot diverge
@@ -57,8 +57,8 @@ func BuildArtifactManifest(refs []artifacts.ArtifactRef) []ArtifactManifestEntry
 }
 
 // ResolveProvenance derives the human-readable origin string the
-// manifest shows for an artifact, from its opaque `Source` map (Phase
-// 107f — D-176). Resolution order:
+// manifest shows for an artifact, from its opaque `Source` map (
+// ). Resolution order:
 //
 //  1. The canonical `source` key when it is a non-empty string
 //     (e.g. "user_upload", "tool", "flow").
@@ -67,9 +67,9 @@ func BuildArtifactManifest(refs []artifacts.ArtifactRef) []ArtifactManifestEntry
 //  4. Otherwise a `producer` key → that value verbatim.
 //  5. Otherwise "unknown".
 //
-// The else-chain keeps EXISTING artifacts (put before Phase 107f, so
+// The else-chain keeps EXISTING artifacts (put previously, so
 // carrying no canonical `source` key) resolving to a real provenance
-// instead of "unknown" — no back-fill migration needed (D-176).
+// instead of "unknown" — no back-fill migration needed.
 func ResolveProvenance(src map[string]any) string {
 	if src == nil {
 		return "unknown"

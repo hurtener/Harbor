@@ -7,11 +7,11 @@
 // at `Kind = "session.lifecycle"` with `RunID = ""` — sessions are
 // session-scoped, not run-scoped.
 //
-// Phase 08 ships a single concrete *Registry implementation that sits
-// over Phase 07's StateStore, codifying the typed-wrapper-over-generic
-// contract from D-027. There is no driver pluralism at the session
+// Harbor ships a single concrete *Registry implementation that sits
+// over the StateStore, codifying the typed-wrapper-over-generic
+// StateStore contract. There is no driver pluralism at the session
 // layer; driver pluralism lives at StateStore (in-mem / SQLite / Postgres
-// at Phases 07 / 15 / 16). Per AGENTS.md §4.4, optional-capability
+// already). Per AGENTS.md §4.4, optional-capability
 // ceremony is forbidden when all V1 drivers (here: implementations)
 // will implement everything.
 //
@@ -33,8 +33,8 @@
 //
 // Lifecycle events (`session.opened / .touched / .closed / .gc_reaped`)
 // land on the EventBus as `SafePayload` types — they're Harbor-internal
-// markers with no secret-shaped fields by construction (RFC §6.13,
-// D-028). Subscribers can extract typed fields directly, no redactor
+// markers with no secret-shaped fields by construction (RFC §6.13).
+// Subscribers can extract typed fields directly, no redactor
 // walk in between.
 package sessions
 
@@ -51,10 +51,10 @@ import (
 // afterwards. Closed transitions to true on Close; ClosedAt stays zero
 // while Closed is false.
 //
-// Limits and Context are reserved slots — Phase 36a/b will populate
-// Limits with the cost / token ceilings; Phase 23+ will populate
+// Limits and Context are reserved slots — later phases will populate
+// Limits with the cost / token ceilings and
 // Context with the (version, hash, llm/tool ctx, memory, artifacts)
-// quintuple sketched in RFC §6.9. Phase 08 round-trips both fields
+// quintuple sketched in RFC §6.9. round-trips both fields
 // through marshal/unmarshal but applies no validation.
 type Session struct {
 	ID           string
@@ -68,8 +68,8 @@ type Session struct {
 	Context      map[string]any
 }
 
-// SessionLimits is reserved for Phase 36a (cost ceilings) and Phase 26
-// (tool catalog). Empty in Phase 08; round-trips through marshal.
+// SessionLimits is reserved for later phases (cost ceilings, tool
+// catalog). Empty at V1; round-trips through marshal.
 type SessionLimits struct {
 	// Reserved.
 }
@@ -124,13 +124,13 @@ func (p GCPolicy) withDefaults() GCPolicy {
 	return out
 }
 
-// SessionRegistry is the public surface every consumer (Phase 09
-// envelope writer, Phase 60 Protocol surface, Phase 72-75 Console
-// subscribers, etc.) talks to. One concrete impl ships in Phase 08
+// SessionRegistry is the public surface every consumer (
+// envelope writer, Protocol surface, Console
+// subscribers, etc.) talks to. One concrete impl ships in a later phase
 // (`*Registry`); driver pluralism lives at the StateStore layer.
 type SessionRegistry interface {
 	Open(ctx context.Context, id string, ident identity.Identity) (*Session, error)
-	// EnsureOpen is the create-on-first-use entry point (D-171): it
+	// EnsureOpen is the create-on-first-use entry point: it
 	// returns the live session for ident, creating it if absent and
 	// no-opping if already open. A closed session is NOT revived
 	// (ErrReopenAfterClose). See the concrete impl for full semantics.
@@ -147,7 +147,7 @@ type SessionRegistry interface {
 	CloseRegistry(ctx context.Context) error
 }
 
-// SessionLister is the narrow read-side capability the Phase 72c
+// SessionLister is the narrow read-side capability the
 // `search.sessions` Searcher consumes. The triple `(tenant, user,
 // session)` is the load-bearing isolation key (CLAUDE.md §6); the
 // listing is server-enforced per the supplied SessionListFilter. The

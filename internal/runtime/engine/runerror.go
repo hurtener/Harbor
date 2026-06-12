@@ -15,8 +15,8 @@ import (
 // subscribers can scope by the multi-isolation triple.
 type RunError struct {
 	// RunID identifies the run the failed envelope belonged to.
-	// Empty when the envelope had no RunID (Phase 10 allows that;
-	// Phase 13 will tighten when FetchByRun arrives).
+	// Empty when the envelope had no RunID (allows that;
+	// A later phase will tighten when FetchByRun arrives).
 	RunID string
 	// TenantID, UserID, SessionID complete the identity triple from
 	// the failing envelope. Used by audit subscribers + slog
@@ -27,7 +27,7 @@ type RunError struct {
 	// NodeName is the unique node identifier within the engine.
 	NodeName string
 	// NodeID is reserved for future stable runtime identifiers; for
-	// Phase 11 it mirrors NodeName (engines are single-process and
+	// it mirrors NodeName (engines are single-process and
 	// the Name is the stable id).
 	NodeID string
 	// Code categorises the failure. See RunErrorCode constants.
@@ -114,7 +114,7 @@ const (
 	// or panicked. The most common terminal-failure code.
 	CodeNodeException RunErrorCode = "node_exception"
 	// CodeRunCancelled — the engine's context (or the per-run cancel
-	// flag, Phase 13) was triggered before invocation completed.
+	// flag) was triggered before invocation completed.
 	CodeRunCancelled RunErrorCode = "run_cancelled"
 	// CodeDeadlineExceeded — the envelope's wall-clock DeadlineAt
 	// expired before the worker invoked the node. Distinct from

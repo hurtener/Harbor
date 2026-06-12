@@ -8,17 +8,17 @@ import (
 	"github.com/hurtener/Harbor/internal/planner/repair"
 )
 
-// Dynamic-augmentation pass — Phase 83c (D-145).
+// Dynamic-augmentation pass.
 //
-// Phase 44 catches and repairs malformed JSON *inside* one planner
+// catches and repairs malformed JSON *inside* one planner
 // step. It does NOT tell the LLM "you have been doing this wrong" —
 // without an across-step signal, the same misformatted-action bug
-// repeats every step until the MaxSteps circuit breaker trips (brief
-// 13 §2.2). Phase 83c closes that across-step feedback loop:
+// repeats every step until the MaxSteps circuit breaker trips (a known
+// failure mode). Harbor closes that across-step feedback loop:
 //
 //   - The runtime carries a per-run [planner.RepairCounters] on the
 //     [planner.RunContext] and increments the matching counter when
-//     Phase 44's repair pipeline had to fix an output (the increment
+//     the repair pipeline had to fix an output (the increment
 //     sites live in internal/planner/repair). A clean turn resets the
 //     relevant counter.
 //   - The ReAct prompt builder reads the counters every turn and, for
@@ -30,13 +30,13 @@ import (
 //     [planner.EventTypePlannerRepairGuidanceInjected] event so the
 //     Console / operator can see when the LLM is struggling.
 //
-// Repair guidance does NOT replicate Phase 44's per-step repair: it
-// counts failures Phase 44 had to repair and escalates if the trend
+// Repair guidance does NOT replicate the per-step repair: it
+// counts failures had to repair and escalates if the trend
 // does not reverse. Parallel-branch failures (a `parallel` plan whose
 // branches fail at tool execution) are tool-execution failures, not
 // LLM-output-format failures — they do NOT increment these counters.
 //
-// **Concurrent-reuse (D-145 + D-025).** The counters live on the
+// **Concurrent-reuse.** The counters live on the
 // per-run [planner.RunContext], never on the `ReActPlanner` artifact.
 // The render helpers below are pure functions of their `rc` argument;
 // they read counters, never write them, and never touch package
@@ -48,7 +48,7 @@ import (
 // critical. A zero counter has no tier (the empty string).
 type RepairTier string
 
-// Repair-guidance escalation tiers (Phase 83c — D-145).
+// Repair-guidance escalation tiers.
 const (
 	// RepairTierNone is the absence of a tier — the counter is 0, so
 	// no guidance block is rendered.
@@ -65,7 +65,7 @@ const (
 )
 
 // repairTierFor maps a raw counter value to its escalation tier. The
-// mapping is the load-bearing tier policy (brief 13 §2.2):
+// mapping is the load-bearing tier policy:
 //
 //	count <= 0 → none      count == 1 → reminder
 //	count == 2 → warning   count >= 3 → critical
@@ -91,14 +91,14 @@ const (
 	counterMultiAction = "multi_action"
 )
 
-// Repair-guidance hint copy — Phase 83c (D-145). The copy lives in
+// Repair-guidance hint copy — The copy lives in
 // exported constants so operators can grep it and so a copy change
 // shows up as a reviewable diff (the nine golden fixtures under
 // testdata/repair_guidance/ pin the rendered bodies). Each tier opens
 // with its own tier name so a copy-paste typo that reuses the wrong
 // tier's text is caught by the smoke script.
 //
-// Copy-design note (brief 13 §2.2 risk): an over-aggressive `critical`
+// Copy-design note: an over-aggressive `critical`
 // hint can confuse the model. The copy escalates in firmness, not in
 // volume — `critical` is direct and specific, not shouty.
 const (
@@ -230,7 +230,7 @@ func resolveRepairGuidance(c *planner.RepairCounters) []repairGuidanceBlock {
 // section (the builder appends it below operator-supplied guidance).
 //
 // The function is a pure read of `c`: it never mutates the counters
-// and never touches package state, so it is safe under the D-025
+// and never touches package state, so it is safe under the concurrent-reuse
 // concurrent-reuse contract.
 func renderRepairGuidance(c *planner.RepairCounters) string {
 	blocks := resolveRepairGuidance(c)
@@ -245,7 +245,7 @@ func renderRepairGuidance(c *planner.RepairCounters) string {
 }
 
 // updateRepairCounters applies one planner step's outcome to the
-// per-run [planner.RepairCounters] (Phase 83c — D-145). It is the
+// per-run [planner.RepairCounters]. It is the
 // runtime-side increment/reset call the plan assigns to "the runtime"
 // — the ReAct planner owns it because the planner subtree cannot
 // import internal/runtime (§13 import-graph contract) and the planner
@@ -277,7 +277,7 @@ func renderRepairGuidance(c *planner.RepairCounters) string {
 //
 // The counters are the per-run [planner.RunContext] pointee — mutating
 // them here is per-run-scoped state, NOT mutable state on the shared
-// planner artifact (D-145 + D-025).
+// planner artifact.
 func updateRepairCounters(rc planner.RunContext, final planner.Decision, outcome repair.RepairOutcome) {
 	c := rc.RepairCounters
 	if c == nil {

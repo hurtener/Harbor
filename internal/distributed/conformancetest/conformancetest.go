@@ -11,8 +11,8 @@
 //	RunBus(t, factory)            — MessageBus correctness
 //	RunRemoteTransport(t, factory) — RemoteTransport correctness
 //
-// Downstream drivers (post-V1 durable bus at phase 86, A2A wire
-// RemoteTransport at phase 29) wire their own *_test.go that calls
+// Downstream drivers (post-V1 durable bus, A2A wire
+// RemoteTransport) wire their own *_test.go that calls
 // the matching Run.
 //
 // The RemoteTransport factory returns a transport plus an
@@ -91,7 +91,7 @@ type BusFactory func(t *testing.T) (bus distributed.MessageBus, eb events.EventB
 //   - Publish_AtLeastOnce_DeliversToSubscribers
 //   - Publish_Identity_Mandatory
 //   - Publish_AfterClose_Errors
-//   - Concurrent_Publish_NoRace (D-025)
+//   - Concurrent_Publish_NoRace
 //   - GoroutineLeak_AfterClose
 func RunBus(t *testing.T, factory BusFactory) {
 	t.Helper()
@@ -307,7 +307,7 @@ type AgentBinding func(url string, agent loopback.Agent)
 //   - Subscribe_RespectsClose
 //   - PushNotificationConfig_Crud_RoundTrip
 //   - GetExtendedAgentCard_HappyPath
-//   - Concurrent_Send_NoRace (D-025)
+//   - Concurrent_Send_NoRace
 //   - GoroutineLeak_AfterClose
 func RunRemoteTransport(t *testing.T, factory RemoteTransportFactory) {
 	t.Helper()

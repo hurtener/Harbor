@@ -13,14 +13,14 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// serveMCP is the Phase 73k (D-119) MCP-Connections REST adapter. It
+// serveMCP is the MCP-Connections REST adapter. It
 // decodes the body into the per-method `mcp.servers.*` request wire
 // type, backfills the body identity from the auth-verified identity in
 // ctx when the body left it empty (same posture as servePosture), and
 // dispatches through the configured MCPSurface.
 //
 // The MCPSurface itself enforces identity-mandatory + the admin-scope
-// gate (D-079) on the three admin verbs and the two control-plane verbs
+// gate on the three admin verbs and the two control-plane verbs
 // (refresh_discovery / probe). The transport does not re-implement those
 // gates (CLAUDE.md §13 forbids a second validator).
 func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request, method methods.Method) {
@@ -37,7 +37,7 @@ func (h *Handler) serveMCP(w http.ResponseWriter, r *http.Request, method method
 		return
 	}
 
-	// Phase 61 defence-in-depth: when auth.Middleware ran, r.Context()
+	// defence-in-depth: when auth.Middleware ran, r.Context()
 	// carries the verified identity; backfill an empty body identity
 	// from it, and reject a body claiming a different (user, session).
 	// The Tenant deliberately may differ — a cross-tenant MCP read is an
@@ -133,7 +133,7 @@ func mcpIdentityScope(req any) *types.IdentityScope {
 	}
 }
 
-// backfillMCPIdentity threads the Phase 61 verified identity into the
+// backfillMCPIdentity threads the verified identity into the
 // MCP request body — same posture as backfillPostureIdentity.
 func backfillMCPIdentity(r *http.Request, req any) *protoerrors.Error {
 	scope := mcpIdentityScope(req)

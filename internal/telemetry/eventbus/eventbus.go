@@ -1,5 +1,5 @@
-// Package eventbus is the adapter that connects Phase 04's
-// telemetry.BusEmitter seam to Phase 05's events.EventBus. The
+// Package eventbus is the adapter that connects the
+// telemetry.BusEmitter seam to the events.EventBus. The
 // adapter lives in its own package — neither `internal/telemetry`
 // nor `internal/events` import the other, so the dependency edge
 // passes through the wiring layer where it belongs.

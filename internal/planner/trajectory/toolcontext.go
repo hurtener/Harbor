@@ -12,7 +12,7 @@ package trajectory
 type HandleID string
 
 // ToolContext is the planner-facing tool-handle bundle. The split
-// (RFC §6.3 + brief 02 §4) closes the predecessor's silent-context-
+// (RFC §6.3) closes the predecessor's silent-context-
 // loss bug:
 //
 //   - Serializable carries JSON-encodable values shared across tool

@@ -18,7 +18,7 @@ const EnvelopeVersion uint32 = 1
 
 // KEKSizeBytes is the required length of the key-encryption key
 // (AES-256). A wrong-length KEK fails the boot loud per CLAUDE.md §13
-// amendment (PR #91 / D-082).
+// amendment (PR #91).
 const KEKSizeBytes = 32
 
 // nonceSize is GCM's standard nonce size in bytes.
@@ -29,7 +29,7 @@ const nonceSize = 12
 // ciphertext+tag]" so KEK rotation (post-V1) can decrypt legacy
 // records before re-encrypting under the new key.
 //
-// Concurrent reuse (D-025): The constructed Sealer is safe for N
+// Concurrent reuse: The constructed Sealer is safe for N
 // concurrent goroutines — cipher.AEAD's Seal / Open are
 // concurrency-safe per crypto/cipher's documented contract, and the
 // Sealer holds only the immutable AEAD reference after construction.

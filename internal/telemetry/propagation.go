@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
-// W3C TraceContext propagation carriers (RFC §6.14, brief 06 §"Key
+// W3C TraceContext propagation carriers (RFC §6.14
 // data shapes"). Harbor propagates a trace across three southbound
 // idioms, each with an Inject* / Extract* half so trace continuity
 // holds across HTTP and stdio process boundaries:
@@ -30,7 +30,7 @@ import (
 // a remote trace id is best-effort.
 //
 // These helpers are standalone functions, NOT Tracer methods, so the
-// southbound transport drivers (Phase 27 tools/HTTP, Phase 28
+// southbound transport drivers (tools/HTTP, the
 // tools/MCP) can wire them in without holding a *Tracer reference.
 
 // W3C header / map / env key names.

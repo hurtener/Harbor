@@ -12,7 +12,7 @@ import (
 // ErrRouteNotFound — predicate / union routing produced no target and
 // the router has no Default. Wraps with a human-readable suffix
 // indicating which router (predicate vs union) and what went wrong.
-// Phase 11's RunError will subsume this error code; Phase 14 ships the
+// the RunError will subsume this error code; Harbor ships the
 // typed sentinel so callers can errors.Is.
 var ErrRouteNotFound = errors.New("routers: no branch matched and no default configured")
 
@@ -36,19 +36,19 @@ type PredicateBranch struct {
 // downstream filtering — see "Honoring RoutePolicy in adjacency"
 // below).
 //
-// For Phase 14, the recommended adjacency shape is:
+// The recommended adjacency shape is:
 //
 //	router → branchA, branchB, branchC
 //
 // where every branch node guards its NodeFunc with a RoutePolicy
 // check at entry (returning a no-op envelope if the policy does not
 // target it). This keeps the engine's worker loop unchanged from
-// Phase 10 — routers are pure node-level concerns.
+// routers are pure node-level concerns.
 //
 // A more elegant adjacency shape (engine-level RoutePolicy honoring)
-// is reserved for a follow-up phase that extends Phase 10's worker;
-// Phase 14 stays out of engine.go to avoid colliding with the
-// parallel Phase 11 fork.
+// is reserved for a follow-up phase that extends the worker;
+// Harbor stays out of engine.go to avoid colliding with the
+// parallel fork.
 type PredicateRouter struct {
 	Branches []PredicateBranch
 	Default  *engine.NodeRef

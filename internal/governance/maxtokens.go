@@ -8,14 +8,14 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
-// MaxTokensEnforcer is the Phase 36b Subsystem that gates `req.MaxTokens`
+// MaxTokensEnforcer is the Subsystem that gates `req.MaxTokens`
 // against the resolved identity tier's cap. Stateless — no StateStore
 // dependency. Fail-loud per master plan line 420 + RFC §6.15 line 1122.
 //
 // Latent default: with `TierConfig.MaxTokens == 0` for the resolved tier,
 // PreCall is a permit no-op. Same with an unresolved tier.
 //
-// Concurrency: the enforcer holds no mutable state beyond `Config`; D-025
+// Concurrency: the enforcer holds no mutable state beyond `Config`; the concurrent-reuse contract
 // is trivially satisfied. Operators may share one enforcer across the
 // entire runtime.
 type MaxTokensEnforcer struct {

@@ -5,7 +5,7 @@
 // `internal/artifacts` does not import the standard library `testing`
 // package (precedent: `internal/state/conformancetest`).
 //
-// Downstream drivers (Phase 18 SQLite-blob + Postgres-blob, Phase 19
+// Downstream drivers (SQLite-blob + Postgres-blob, the
 // S3-style) consume it via:
 //
 //	import "github.com/hurtener/Harbor/internal/artifacts/conformancetest"
@@ -54,7 +54,7 @@ type Factory func() (artifacts.ArtifactStore, func())
 //   - Get_CrossTenant_Isolation
 //   - Delete_CrossTenant_Isolation
 //   - Put_AfterClose_Errors
-//   - Concurrent_PutGet_NoRace (D-025)
+//   - Concurrent_PutGet_NoRace
 //   - Close_Idempotent
 //   - GoroutineLeak_AfterClose
 //   - Scoped_AutoStamps_Scope

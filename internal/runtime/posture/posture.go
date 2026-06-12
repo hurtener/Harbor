@@ -4,7 +4,7 @@
 //
 // # Why this package exists (§17.6 F3)
 //
-// The Phase 72f posture surface takes a `Counters` and a `Metrics`
+// The posture surface takes a `Counters` and a `Metrics`
 // callback. The `harbor dev` / `harbor console` boot path and the
 // `harbortest/devstack` test-fixture assembler BOTH need to wire those
 // callbacks to live state — not to an empty `types.RuntimeCounters{}` /
@@ -21,7 +21,7 @@
 // zero for a counter the runtime genuinely cannot measure is honest,
 // not a silent degradation of a known value.
 //
-// Metrics projects the Phase 56 telemetry.MetricsRegistry's bus-fed
+// Metrics projects the telemetry.MetricsRegistry's bus-fed
 // counter snapshot onto the Protocol-shaped `types.MetricsSnapshot`.
 package posture
 
@@ -53,8 +53,8 @@ import (
 // boot, so CountersProvider returns a func that simply reports zeros
 // for the missing subsystem rather than nil-panicking on first request.
 //
-// Round-5 walkthrough fix: pre-fix the MCP counter was hard-coded zero
-// (Phase 73i shipped before Phase 83w F6 wired the MCP registry into
+// a walkthrough fix: pre-fix the MCP counter was hard-coded zero
+// (An earlier phase shipped previously F6 wired the MCP registry into
 // the Console-facing surface). With the registry now reachable from
 // the dev boot path, threading it into CountersProvider makes the
 // Overview page's MCP CONNECTIONS pillar honest — it reports the
@@ -110,7 +110,7 @@ func CountersProvider(taskReg tasks.TaskRegistry, lister sessions.SessionLister,
 }
 
 // MetricsProvider returns a `protocol.PostureDeps.Metrics` seam that
-// projects the Phase 56 telemetry.MetricsRegistry's live counter
+// projects the telemetry.MetricsRegistry's live counter
 // snapshot onto the Protocol-shaped `types.MetricsSnapshot`.
 //
 // A registry Snapshot failure is logged at Warn and degrades to an
@@ -139,7 +139,7 @@ func MetricsProvider(reg *telemetry.MetricsRegistry, log *slog.Logger) func(cont
 	}
 }
 
-// HealthFromConfig builds the Phase 72f `runtime.health` seam from the
+// HealthFromConfig builds the `runtime.health` seam from the
 // resolved config. The in-process dev / devstack assembly is fully wired
 // by the time the posture surface is constructed, so every
 // persistence-shaped subsystem reports `ready`.
@@ -148,7 +148,7 @@ func MetricsProvider(reg *telemetry.MetricsRegistry, log *slog.Logger) func(cont
 // `harbor dev` / `harbor console` boot path and the
 // `harbortest/devstack` fixture assembler — neither hand-rolls its own
 // copy, so the fixture cannot drift from production (CLAUDE.md §17.6;
-// D-132 / Wave 13 NIT cleanup).
+// a checkpoint cleanup).
 func HealthFromConfig(cfg *config.Config) []types.SubsystemHealth {
 	subs := []string{"state", "events"}
 	if cfg.Artifacts.Driver != "" {
@@ -164,7 +164,7 @@ func HealthFromConfig(cfg *config.Config) []types.SubsystemHealth {
 	return out
 }
 
-// DriversFromConfig builds the Phase 72f `runtime.drivers` seam — the
+// DriversFromConfig builds the `runtime.drivers` seam — the
 // configured driver name per persistence-shaped subsystem. Never the
 // DSN (CLAUDE.md §7) — the driver name only.
 //

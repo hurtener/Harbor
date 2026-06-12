@@ -6,26 +6,26 @@ import (
 	"time"
 )
 
-// Phase 73l (Wave 13 / D-120) — the artifacts-page Protocol wire types.
+// the artifacts-page Protocol wire types.
 //
-// Phase 73l ships three Protocol methods over the runtime's content-
-// addressed artifact store (Phases 17–19, Shipped):
+// Harbor ships three Protocol methods over the runtime's content-
+// addressed artifact store:
 //
 //   - artifacts.list    — the identity-scope-filtered catalog, with the
-//     Phase 73l filter extensions (mime / source / size / created /
+//     filter extensions (mime / source / size / created /
 //     tags) applied as a Go-side projection over the driver's slice.
 //   - artifacts.put     — the Console (and Playground) file-upload
-//     pipeline per Brief 11 §PG-2; routes through audit.Redactor then
+//     pipeline; routes through audit.Redactor then
 //     ArtifactStore.PutBytes and returns the canonical ArtifactRef.
 //   - artifacts.get_ref — the read-side presigned-URL resolver per
-//     D-022 / D-026; type-asserts the store to artifacts.Presigner.
+//     contract; type-asserts the store to artifacts.Presigner.
 //
 // Every type here is a flat, Protocol-owned struct — never a re-export
 // of internal/artifacts Go types (RFC §5.1 reject-on-sight smell). In
 // particular, heavy bytes NEVER travel inline through these wire types:
 // artifacts.list returns metadata-only rows, artifacts.get_ref returns a
 // presigned URL, and artifacts.put accepts the upload bytes only on the
-// request leg (the response is a reference). This is the D-026 context-
+// request leg (the response is a reference). This is the context-
 // window safety net read into the Protocol surface.
 
 // ArtifactSource is the closed enum of artifact producers. A free-text
@@ -71,7 +71,7 @@ func IsValidArtifactSource(s ArtifactSource) bool {
 // Identity is mandatory: Tenant / User / Session must be non-empty for
 // artifacts.put and artifacts.get_ref. Task is optional for session-
 // scoped artifacts. For artifacts.list, empty fields are wildcards
-// (tenant-wide listing requires the admin scope per D-079).
+// (tenant-wide listing requires the admin scope per the closed admin-scope set).
 type ArtifactScope struct {
 	// Tenant / User / Session are the mandatory isolation triple. An
 	// empty component fails put / get_ref closed at the Protocol edge.
@@ -106,7 +106,7 @@ type TimeRange struct {
 
 // ArtifactRef is the flat Protocol projection of the storage-side
 // internal/artifacts.ArtifactRef. It carries the catalog-rendering
-// metadata a Console row needs — never the artifact bytes (D-026).
+// metadata a Console row needs — never the artifact bytes.
 type ArtifactRef struct {
 	// ID is the content-addressed identifier
 	// (`{namespace}_{sha256[:12]}`).
@@ -135,7 +135,7 @@ type ArtifactRow struct {
 	Ref ArtifactRef `json:"ref"`
 	// Tags is the chip list assigned by the producing planner / tool.
 	// Sourced from the storage-side `Source["tags"]` projection — never
-	// promoted onto the storage ArtifactRef shape (D-120 open-question
+	// promoted onto the storage ArtifactRef shape (open-question
 	// resolution: project on the Protocol row, not the storage struct).
 	Tags []string `json:"tags,omitempty"`
 	// Source is the producer of the artifact — one of the four canonical
@@ -149,15 +149,15 @@ type ArtifactRow struct {
 }
 
 // ArtifactsListRequest is the wire request for the artifacts.list
-// Protocol method. The Phase 73l filter extensions — MimeType, Source,
+// Protocol method. The filter extensions — MimeType, Source,
 // SizeRange, CreatedRange, Tags — are all optional; an empty field is a
 // wildcard. The handler applies them as a Go-side projection over the
 // driver's returned slice (the V1 ArtifactStore.List signature is not
-// extended — driver conformance stays untouched, D-120).
+// extended — driver conformance stays untouched).
 type ArtifactsListRequest struct {
 	// Scope is the caller's identity scope. A list filter treats empty
 	// fields as wildcards; a Tenant differing from the caller's verified
-	// tenant requires the admin scope per D-079.
+	// tenant requires the admin scope per the closed admin-scope set.
 	Scope ArtifactScope `json:"scope"`
 	// MimeType is an OR-set of IANA media types. Empty == wildcard.
 	MimeType []string `json:"mime_type,omitempty"`
@@ -186,7 +186,7 @@ const (
 )
 
 // ArtifactsListResponse is the wire response for artifacts.list. Rows is
-// the metadata-only page slice — never artifact bytes (D-026).
+// the metadata-only page slice — never artifact bytes.
 type ArtifactsListResponse struct {
 	// Rows is the page slice, at most Limit rows. Empty when the filter
 	// matched nothing.
@@ -221,7 +221,7 @@ type ArtifactsPutOpts struct {
 }
 
 // ArtifactsPutRequest is the wire request for the artifacts.put Protocol
-// method (Brief 11 §PG-2). The upload bytes travel inline on the request
+// method. The upload bytes travel inline on the request
 // leg only — the response is a reference, never an echo of the body.
 // Body size is bounded by config.ProtocolConfig.MaxRequestBytes; an
 // oversize body is rejected with CodeRequestTooLarge.
@@ -239,7 +239,7 @@ type ArtifactsPutRequest struct {
 
 // ArtifactsPutResponse is the wire response for artifacts.put. It
 // carries the canonical ArtifactRef the store minted — never the
-// uploaded bytes (D-026).
+// uploaded bytes.
 type ArtifactsPutResponse struct {
 	// Ref is the content-addressed reference to the stored artifact.
 	Ref ArtifactRef `json:"ref"`
@@ -279,7 +279,7 @@ const (
 // ArtifactsGetRefResponse is the wire response for artifacts.get_ref. It
 // carries the time-bounded presigned URL plus the artifact metadata —
 // the Console's Preview / Download / Share all consume this single
-// shape per D-022 / D-026.
+// shape.
 type ArtifactsGetRefResponse struct {
 	// Ref is the artifact metadata reference.
 	Ref ArtifactRef `json:"ref"`
@@ -340,9 +340,9 @@ func (r ArtifactsListResponse) MarshalJSON() ([]byte, error) {
 }
 
 // ArtifactsDeleteRequest is the wire request for the `artifacts.delete`
-// method (Phase 108o / D-187) — the admin-gated "evict an artifact"
-// mutation. Identity is mandatory (full triple); admin scope is required
-// (D-079). Heavy bytes never cross the wire — only the scope + the
+// method — the admin-gated "evict an artifact"
+// mutation. Identity is mandatory (full triple); admin scope is required.
+// Heavy bytes never cross the wire — only the scope + the
 // content-addressed id.
 type ArtifactsDeleteRequest struct {
 	// Scope is the artifact's isolation scope. The triple is mandatory.

@@ -40,14 +40,14 @@ var ErrAggregateIdentityRequired = errors.New("events: aggregate filter must spe
 
 // Aggregator is the compiled artifact that produces time-bucketed
 // event-type counts over a window. It is a reusable artifact in the
-// D-025 sense: bus and clock are set once at construction and never
+// sense: bus and clock are set once at construction and never
 // mutated; Aggregate() holds no per-request state on the Aggregator
 // (each request creates its own buckets slice). One Aggregator serves
 // N concurrent requests safely (concurrent_test.go pins it under
 // -race).
 //
 // The aggregator consumes the bus's Replayer surface for the historical
-// snapshot — runtime-side aggregation per brief 11 §CC-4 ("events are
+// snapshot — runtime-side aggregation ("events are
 // high-cardinality runtime-side; the runtime owns the index and
 // exposes a search method"). When the bus does not implement Replayer
 // (a forward-only driver), Aggregate returns ErrReplayUnavailable —
@@ -73,7 +73,7 @@ func WithAggregatorClock(c AggregatorClock) AggregatorOption {
 // NewAggregator builds the aggregator over a bus. bus is mandatory —
 // a nil fails loud rather than producing an aggregator that nil-panics
 // on the first request. The returned *Aggregator is immutable after
-// construction (D-025) and safe for concurrent use.
+// construction and safe for concurrent use.
 func NewAggregator(bus EventBus, opts ...AggregatorOption) (*Aggregator, error) {
 	if bus == nil {
 		return nil, fmt.Errorf("events: NewAggregator: bus is nil")

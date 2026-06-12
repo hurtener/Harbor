@@ -7,7 +7,7 @@
 // concatenation into SQL (AGENTS.md §9). Advisory locks serialise
 // the migration runner so multi-replica boots are race-free.
 //
-// # Strategy delegation (Phase 25a, D-174)
+// # Strategy delegation
 //
 // All three memory strategies (`none`, `truncation`,
 // `rolling_summary`) are implemented by the driver-agnostic
@@ -16,7 +16,7 @@
 // `memory.identity_rejected` emit + the `closed` flag) and delegates
 // every `MemoryStore` method to a `strategy.StrategyExecutor`. The
 // executor persists state through the injected `state.StateStore`
-// (D-027 typed wrapper, `Kind = "memory.state"`). When that
+// (typed wrapper, `Kind = "memory.state"`). When that
 // StateStore is itself Postgres-backed (the operator's
 // `state.driver: postgres`), the memory strategies persist durably —
 // which is what makes `truncation` / `rolling_summary` survive a
@@ -30,7 +30,7 @@
 // (never edited — migrations are forward-only, AGENTS.md §9 / §13)
 // for back-compat with rows written by the pre-25a strategy=none path.
 //
-// Per AGENTS.md §5 (D-025), the driver is safe for concurrent reuse
+// Per AGENTS.md §5, the driver is safe for concurrent reuse
 // across N goroutines.
 package postgres
 
@@ -60,8 +60,8 @@ const driverName = "postgres"
 const pgxDriverName = "pgx"
 
 // Connection-pool defaults. Documented in the phase plan; tuning
-// lives in a future config knob, not here. Values mirror the Phase
-// 16 StateStore + Phase 18 ArtifactStore drivers for consistency.
+// lives in a future config knob, not here. Values mirror the
+// StateStore + ArtifactStore drivers for consistency.
 const (
 	defaultMaxOpenConns    = 25
 	defaultMaxIdleConns    = 5
@@ -73,7 +73,7 @@ const (
 // call `New` directly to skip the registry.
 //
 // The configured strategy is resolved by the shared
-// `strategy.StrategyExecutor` (Phase 25a, D-174): `none`,
+// `strategy.StrategyExecutor`: `none`,
 // `truncation`, and `rolling_summary` all delegate to the executor,
 // which persists through `deps.State`. `rolling_summary` requires a
 // non-nil `deps.Summarizer`; the executor's `New` rejects a nil
@@ -153,7 +153,7 @@ func init() {
 // driver is the Postgres-backed `memory.MemoryStore` implementation.
 //
 // Fields are immutable after construction except for the atomic
-// `closed` flag and the internally-synchronised executor (D-025).
+// `closed` flag and the internally-synchronised executor.
 type driver struct {
 	strategy memory.Strategy
 	db       *sql.DB

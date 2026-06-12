@@ -3,12 +3,12 @@ package steering
 import "errors"
 
 // Sentinel errors. Callers compare via errors.Is. The Protocol-edge
-// projection (Phase 54) maps ErrScopeMismatch to a 403 + an audit
+// projection maps ErrScopeMismatch to a 403 + an audit
 // emit, and ErrPayloadInvalid / ErrUnknownControlType to a 400.
 var (
 	// ErrIdentityRequired — a steering operation was called with an
 	// identity quadruple missing one of (tenant, user, session, run).
-	// The inbox fails closed (CLAUDE.md §6 rule 9 + D-001); there is
+	// The inbox fails closed (CLAUDE.md §6 rule 9); there is
 	// no identity-downgrading knob. The run component is mandatory
 	// too: the inbox is per-run.
 	ErrIdentityRequired = errors.New("steering: identity quadruple incomplete")

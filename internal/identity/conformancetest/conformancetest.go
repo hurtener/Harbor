@@ -32,8 +32,8 @@ import (
 
 // Run executes the canonical identity-correctness suite against the
 // context produced by factory. The suite proves that the identity
-// invariants (D-001 fail-closed validation, ctx round-trip, key
-// independence, D-025 race-free concurrent reuse) hold in the caller's
+// invariants (fail-closed validation, ctx round-trip, key
+// independence, race-free concurrent reuse) hold in the caller's
 // environment.
 func Run(t *testing.T, factory func() context.Context) {
 	t.Helper()

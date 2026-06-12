@@ -1,8 +1,8 @@
 // Package approval ships Harbor's tool-side synchronous approval-gate
-// subsystem — the second consumer of the unified pause/resume primitive
-// (Phase 50 / D-067), layered on the same Coordinator + bus + steering
-// inbox seams Phase 30 (tool-side OAuth) built. Where Phase 30's gate
-// is "we need a bearer token from an authorization server," Phase 31's
+// subsystem — the second consumer of the unified pause/resume primitive,
+// layered on the same Coordinator + bus + steering
+// inbox seams the tool-side OAuth work built. Where the gate
+// is "we need a bearer token from an authorization server," the
 // gate is "we need a human to say yes" — same primitive, simpler
 // payload (no token, no URL, no third-party flow).
 //
@@ -22,7 +22,7 @@
 //     `tool.approval_requested` (audit-redacted) onto the bus.
 //
 //  4. An admin / fleet-control caller resolves the approval by
-//     submitting APPROVE / REJECT through the Phase 53 steering inbox
+//     submitting APPROVE / REJECT through the steering inbox
 //     (or, in-process, via `ApprovalGate.ResolveApproval`). The
 //     Coordinator resumes the parked run; the gate's per-pause channel
 //     unblocks.
@@ -36,12 +36,12 @@
 //  6. REJECT → the gate publishes `tool.rejected` (the master-plan
 //     acceptance event) and returns `(nil, *ErrToolRejected)`.
 //
-// # Distinct from Phase 30 OAuth
+// # Distinct from OAuth
 //
-// Phase 30's gate uses `ReasonExternalEvent` (waiting on an
-// out-of-band callback). Phase 31's gate uses
+// the gate uses `ReasonExternalEvent` (waiting on an
+// out-of-band callback). the gate uses
 // `ReasonApprovalRequired` (the textbook RFC §6.3 reason for a HITL
-// approval gate — brief 02 §"Pause-reason taxonomy"). The two paths
+// approval gate — the pause-reason taxonomy). The two paths
 // share the Coordinator but emit different events with different
 // shapes:
 //
@@ -52,7 +52,7 @@
 // conceptual feature" — the approval gate is NOT another pause
 // primitive; it is another CONSUMER of the one primitive.
 //
-// # Resolve authorization (Phase 111f, D-203)
+// # Resolve authorization
 //
 // Approval resolution is privileged. Who may resolve is decided by
 // the INJECTED `GateDeps.Authorizer` seam (see authorizer.go): the
@@ -61,14 +61,14 @@
 // `registry.WithControlScope` claim) for direct construction and the
 // in-process steering bridge; the Protocol-side
 // `internal/server.ProtocolScopeAuthorizer` adapter (admin /
-// console:fleet — Phase 61's verified-JWT scope claims) at
+// console:fleet — the verified-JWT scope claims) at
 // wire-driven gate assembly. Unauthorized resolvers are rejected with
-// a wrapped `ErrResolveForbidden`. The Phase 54 Protocol edge also
+// a wrapped `ErrResolveForbidden`. The Protocol edge also
 // enforces the RFC §6.3 steering scopes at the JWT boundary; the
 // in-process check is the second line of defence.
 //
 // This package deliberately imports NO `internal/protocol/auth` —
-// per the D-203 direction rule, runtime packages may import
+// per the direction rule, runtime packages may import
 // `internal/protocol/types` (data), never protocol auth / methods /
 // transports (behaviour).
 //
@@ -84,7 +84,7 @@
 // invocation, so a redactor that elides a secret does NOT corrupt the
 // executed call.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // `*ApprovalGate` is a compiled artifact: immutable after construction
 // except for a mutex-guarded pending-resolutions map. One gate is
@@ -96,12 +96,12 @@
 // `NewApprovalGate(GateDeps{})` with a nil `Policy` fails loud with
 // `ErrPolicyRequired`. Approval gates with no policy attached are dead
 // code at best, a privilege-escalation footgun at worst — the binary
-// REFUSES to construct one. Compare Phase 61's `NewMux` requiring
+// REFUSES to construct one. Compare the `NewMux` requiring
 // `WithValidator` after PR #95.
 //
 // # §13 primitive-with-consumer
 //
-// The primitive Phase 31 ships is `ApprovalGate` + the typed event
+// The primitive Harbor ships is `ApprovalGate` + the typed event
 // triple `(tool.approval_requested, tool.approved, tool.rejected)` +
 // the `*ErrToolRejected` sentinel. The first consumers are:
 //
@@ -110,10 +110,10 @@
 //     `pauseresume.Coordinator` + real `events.EventBus` + real
 //     `audit.Redactor` + real `steering.Inbox`.
 //   - `concurrent_test.go` — N≥128 concurrent invocations under
-//     `-race` (the D-025 obligation).
+//     `-race` (the obligation).
 //
 // A later phase wires the gate into the runtime dispatcher so every
-// gated tool call routes through it automatically; Phase 31 ships
+// gated tool call routes through it automatically; Harbor ships
 // the gate as the explicit middleware tools opt into.
 package approval
 
@@ -183,7 +183,7 @@ type ApprovalRequest struct {
 // `Reason` is the operator-facing classification the gate carries on
 // `tool.approval_requested` so the Console can render
 // "Approval required: <Reason>." It is NOT raw user data — operators
-// keep Reason values to a small, stable set (the Phase 56 cardinality
+// keep Reason values to a small, stable set (the cardinality
 // rule). The gate trusts the policy here; if Reason ever needs
 // redaction, the policy is the bug.
 //

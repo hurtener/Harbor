@@ -9,7 +9,7 @@ import (
 )
 
 // deprecatedGovernanceKeys is the closed set of YAML keys the loader
-// strips from the `governance:` block and warns about (D-081). Each
+// strips from the `governance:` block and warns about. Each
 // key was a PRE-Phase-36a single-knob stub that the loader validated
 // but the governance enforcement engine never consumed — exactly the
 // confusion trap CLAUDE.md §13's "Test stubs as production defaults
@@ -29,13 +29,13 @@ var deprecatedGovernanceKeys = map[string]struct{}{
 
 // deprecatedFieldReplacement is the migration pointer emitted with
 // every `config.deprecated_field` warning. Every removed governance
-// knob is rebuilt under `governance.identity_tiers` (Phase 36a/36b)
+// knob is rebuilt under `governance.identity_tiers`
 // — operators do not get individual replacement keys.
 const deprecatedFieldReplacement = "governance.identity_tiers"
 
 // deprecatedFieldRemovedIn names the release the validated-but-ignored
 // keys were removed in. Kept as a constant so the warning text stays
-// in lockstep with the decision (D-081) and the example yaml.
+// in lockstep with the decision and the example yaml.
 const deprecatedFieldRemovedIn = "v0.x"
 
 // stripDeprecatedGovernanceKeys parses `data` as YAML, removes every

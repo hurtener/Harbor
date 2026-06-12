@@ -1,4 +1,4 @@
-// Multimodal first-turn materialization (Round-7 F11 / D-166).
+// Multimodal first-turn materialization.
 //
 // The Playground composer's chat-attach control uploads files via
 // `artifacts.put` and the operator clicks Send. The runtime carries
@@ -9,7 +9,7 @@
 // the planner calls when assembling its first-turn user message:
 //
 //   - `image/*` → `llm.ImagePart{DataURL: data:<mime>;base64,<bytes>}`
-//     (Path 1 from D-166: bytes inline at the LLM edge so vision-
+//     (Path 1 of the multimodal design: bytes inline at the LLM edge so vision-
 //     capable providers actually see the image). The base64 encoding
 //     is bounded by the operator's upload (the runtime ArtifactStore
 //     itself caps each artifact size; the materializer is a
@@ -74,7 +74,7 @@ func MaterializeInputContent(goal string, artifacts []InputArtifactView, catalog
 }
 
 // materializeOne dispatches a single InputArtifactView to its
-// ContentPart. Since Phase 84b (D-189) the materializer is a policy
+// ContentPart. Since the materializer is a policy
 // CONSUMER, not the policy author: a non-zero `a.Disposition` (the
 // resolved attachment disposition — caller hint > agent policy >
 // runtime default) selects the branch; the historical per-MIME switch
@@ -228,7 +228,7 @@ func stubPartForcedTool(a InputArtifactView, tool string) llm.ContentPart {
 }
 
 // imagePartFromBytes constructs `llm.ImagePart` with `DataURL` inline.
-// Path 1 from D-166 — operator-uploaded inputs reach the provider
+// Path 1 of the multimodal design — operator-uploaded inputs reach the provider
 // inline so vision-capable models actually see the image. The bytes
 // were pre-fetched by the run loop; this function is byte-level
 // passthrough into base64.
@@ -277,7 +277,7 @@ func audioPartFromRef(a InputArtifactView, catalog ToolCatalogView) llm.ContentP
 // bifrost driver's existing `translateImagePart` artifact branch,
 // translateAudioPart, etc.) wrapped in a `PartText` — the
 // `ArtifactStub.MarshalJSON` shape is the canonical reference
-// description (RFC §6.5 / D-022). The LLM routes to a matching tool
+// description (RFC §6.5). The LLM routes to a matching tool
 // via the catalog, optionally hinted by `Fetch.Tool` when the
 // catalog advertises a `HandlesMIME` match.
 func stubPartFromRef(a InputArtifactView, catalog ToolCatalogView) llm.ContentPart {
@@ -368,7 +368,7 @@ func stubAsText(stub *llm.ArtifactStub, filename string) string {
 	stubBytes, err := stub.MarshalJSON()
 	if err != nil {
 		// MarshalJSON on ArtifactStub is well-behaved (the canonical
-		// shape is byte-stable per D-022). Fail loudly enough to
+		// shape is byte-stable). Fail loudly enough to
 		// surface in tests but degrade gracefully at runtime — the
 		// LLM still sees the ref + filename and can route from there.
 		return fmt.Sprintf("Attachment (ref=%s, mime=%s): %s", stub.Ref, stub.MIME, filename)

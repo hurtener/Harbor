@@ -6,7 +6,7 @@ import (
 
 // EventTypeMemoryIdentityRejected is emitted on the events bus when
 // a `MemoryStore` method is called with a missing identity triple
-// (D-001 fail-closed contract). The store ALSO returns
+// (fail-closed contract). The store ALSO returns
 // `ErrIdentityRequired`; the bus emit makes the rejection
 // observable from the Console / audit pipeline.
 //
@@ -18,7 +18,7 @@ const EventTypeMemoryIdentityRejected events.EventType = "memory.identity_reject
 // EventTypeMemoryHealthChanged is emitted on every `Health` FSM
 // transition under `rolling_summary`. Subscribers (Console, audit
 // pipeline) render the transition; SREs alert on `degraded`
-// duration. Phase 24, RFC §6.6, D-035.
+// duration. RFC §6.6.
 //
 // The observable health-transition emit is the explicit exception
 // to AGENTS.md §13's "no silent degradation" rule — degraded mode
@@ -29,20 +29,20 @@ const EventTypeMemoryHealthChanged events.EventType = "memory.health_changed"
 // EventTypeMemoryRecoveryDropped is emitted when the
 // `rolling_summary` recovery backlog overflows `RecoveryBacklogMax`
 // and the executor drops the oldest queued batch to make room. Per
-// D-035 (bounded recovery loop).
+// the bounded recovery loop.
 const EventTypeMemoryRecoveryDropped events.EventType = "memory.recovery_dropped"
 
 // EventTypeMemoryItemPut is emitted on the events bus when an admin adds
-// a memory turn through the `memory.put` Protocol method (Phase 108n /
-// D-186). It is the audit trail for the mutation: the Console / audit
+// a memory turn through the `memory.put` Protocol method
+// It is the audit trail for the mutation: the Console / audit
 // pipeline observes who added what (by key) and when. SafePayload by
 // construction — it carries the deterministic (hashed) turn key only,
 // never the operator-supplied turn text.
 const EventTypeMemoryItemPut events.EventType = "memory.item_put"
 
 // EventTypeMemoryItemDeleted is emitted on the events bus when an admin
-// evicts a memory turn through the `memory.delete` Protocol method (Phase
-// 108n / D-186). The audit trail for the eviction. SafePayload — the
+// evicts a memory turn through the `memory.delete` Protocol method (
+// ). The audit trail for the eviction. SafePayload — the
 // hashed key only, never any record value bytes.
 const EventTypeMemoryItemDeleted events.EventType = "memory.item_deleted"
 
@@ -55,7 +55,7 @@ func init() {
 }
 
 // MemoryMutationPayload is the audit payload for the `memory.item_put` /
-// `memory.item_deleted` events (Phase 108n / D-186). SafePayload by
+// `memory.item_deleted` events. SafePayload by
 // construction: `Operation` is a bounded enumerable string ("put" /
 // "delete"); `Key` is the deterministic content-addressed turn key (a
 // sha256 prefix), never operator-supplied bytes. The record value text is

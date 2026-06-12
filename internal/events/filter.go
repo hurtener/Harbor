@@ -34,7 +34,7 @@ import (
 // is true but the scope claim is absent. (CLAUDE.md §5 "fail loudly.")
 //
 // WireConversion is a pure value type: zero package-level state, safe
-// for concurrent use (D-025).
+// for concurrent use.
 type WireConversion struct {
 	// Filter is the bus-facing predicate the caller passes to Subscribe.
 	// Triple components are backfilled from the caller's identity.
@@ -134,7 +134,7 @@ func FilterFromWire(
 
 // MatchWire reports whether ev satisfies the wire EventFilter (header
 // fields only — payload bytes are explicitly out of scope per the
-// EventFilter godoc + Brief 11 §CC-4). The matcher is identity +
+// EventFilter godoc). The matcher is identity +
 // type + window — exactly the surface the aggregator and any post-
 // filtering consumer iterate.
 //
@@ -154,7 +154,7 @@ func FilterFromWire(
 //     ev.OccurredAt must be < Until (exclusive).
 //
 // MatchWire is a pure function — no package-level state, safe for
-// concurrent use (D-025).
+// concurrent use.
 func MatchWire(ev Event, wire prototypes.EventFilter) bool {
 	// Type set.
 	if len(wire.EventTypes) > 0 {

@@ -15,13 +15,13 @@ var (
 	ErrPeerNotAllowed = errors.New("a2a: peer URL is not in the registered allowlist")
 
 	// ErrNoJSONRPCInterface — the discovered AgentCard declares no
-	// AgentInterface with `ProtocolBinding == "JSONRPC"`. Phase 29 only
+	// AgentInterface with `ProtocolBinding == "JSONRPC"`. only
 	// implements the JSON-RPC binding; HTTP+JSON and gRPC bindings on
 	// the same card are read-only metadata.
 	ErrNoJSONRPCInterface = errors.New("a2a: AgentCard exposes no JSONRPC interface")
 
 	// ErrAgentCardSchemaInvalid — the fetched AgentCard JSON failed to
-	// parse against the Phase 22 Go shapes.
+	// parse against the Go shapes.
 	ErrAgentCardSchemaInvalid = errors.New("a2a: AgentCard schema invalid")
 
 	// ErrJSONRPCError — the peer returned a JSON-RPC error envelope.

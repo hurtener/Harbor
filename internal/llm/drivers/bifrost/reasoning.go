@@ -11,7 +11,7 @@ import (
 
 // ErrReasoningBudgetTooLow is the typed error the request translator
 // returns when an operator-requested reasoning budget falls below a
-// provider-specific floor. Phase 83e fails LOUDLY (CLAUDE.md §5
+// provider-specific floor. fails LOUDLY (CLAUDE.md §5
 // fail-loudly) rather than silently clamping: the operator sees the
 // constraint and corrects their config. Compare via [errors.Is].
 var ErrReasoningBudgetTooLow = errors.New("bifrost: provider-specific reasoning budget below floor")
@@ -19,8 +19,7 @@ var ErrReasoningBudgetTooLow = errors.New("bifrost: provider-specific reasoning 
 // anthropicReasoningMinTokens is Anthropic's documented minimum for
 // `reasoning.max_tokens` (extended-thinking budget). Requests below
 // this floor are rejected by the Anthropic API; Harbor surfaces the
-// rejection at translation time before the request leaves the process
-// (brief 13 §2.6 — "Anthropic requires `reasoning.max_tokens >= 1024`").
+// rejection at translation time before the request leaves the process.
 const anthropicReasoningMinTokens = 1024
 
 // anthropicReasoningBudget maps Harbor's `ReasoningEffort` enum to an
@@ -46,7 +45,7 @@ func anthropicReasoningBudget(e llm.ReasoningEffort) int {
 // reasoningFromMessage walks a bifrost assistant message's normalised
 // `ReasoningDetails` slice and returns the concatenated plain-text
 // reasoning trace. This is bifrost's documented canonical surface for
-// provider reasoning (brief 13 §2.6): every provider — OpenRouter
+// provider reasoning: every provider — OpenRouter
 // thinking-class models AND the native Gemini path — populates
 // `reasoning_details[]` on the response message. Reading it here
 // closes the Gemini-direct black hole (where the per-delta
@@ -56,7 +55,7 @@ func anthropicReasoningBudget(e llm.ReasoningEffort) int {
 // Only `reasoning.text` and `reasoning.summary` entries contribute —
 // `reasoning.encrypted` (signature-bearing thinking blocks) is skipped
 // because V1 ships no `provider_native` replay mode that would round-
-// trip them (D-148). `reasoning.content_blocks` carry structured block
+// trip them. `reasoning.content_blocks` carry structured block
 // data without a flat text field; they are skipped for the same
 // reason. A nil/empty slice returns the empty string.
 //
@@ -91,7 +90,7 @@ func joinReasoningDetails(details []bfschemas.ChatReasoningDetails) string {
 			}
 		default:
 			// reasoning.encrypted / reasoning.content_blocks — skipped.
-			// V1 has no provider_native replay mode (D-148); encrypted
+			// V1 has no provider_native replay mode; encrypted
 			// signature blocks have no use until that lands.
 		}
 	}

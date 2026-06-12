@@ -12,11 +12,11 @@ import (
 )
 
 // TrajectorySummary is the canonical name for the trajectory's
-// compaction artefact. Aliased onto the Phase 43 [trajectory.Summary]
+// compaction artefact. Aliased onto the [trajectory.Summary]
 // struct: same shape, the alias matches RFC §6.2 + the master-plan
-// Phase 46 vocabulary so callers outside the trajectory package use
+// vocabulary so callers outside the trajectory package use
 // the RFC name. Five fields per RFC §6.2: `Goals`, `Facts`, `Pending`,
-// `LastOutputDigest`, `Note`. D-055.
+// `LastOutputDigest`, `Note`.
 type TrajectorySummary = trajectory.Summary
 
 // Summariser is the runtime-side interface a configured compaction
@@ -31,14 +31,14 @@ type TrajectorySummary = trajectory.Summary
 // bug is loud, not silent.
 //
 // Implementations MUST be safe for concurrent use across runs (the
-// runner is a reusable artifact per D-025; the summariser is called
+// runner is a reusable artifact per the concurrent-reuse contract; the summariser is called
 // under the run's ctx from MaybeCompress).
 //
 // The production implementation is the LLM-backed
-// TrajectorySummariser in internal/llm/summarizer (Phase 111e,
-// D-202): it binds an LLM client + a versioned compaction prompt,
+// TrajectorySummariser in internal/llm/summarizer:
+// it binds an LLM client + a versioned compaction prompt,
 // invokes [llm.LLMClient.Complete] over the trajectory's
-// planner-facing projection (Phase 35 structured-output JSON-schema
+// planner-facing projection (structured-output JSON-schema
 // mode with the existing downgrade ladder), and parses the response
 // into the five [TrajectorySummary] fields. The production call site
 // is the steering RunLoop's step loop, which calls
@@ -54,11 +54,11 @@ type Summariser interface {
 // [trajectory.Trajectory.Serialize] bytes and returns `len/4 + 1` —
 // mirroring [internal/llm/tokens.go]'s `chars4Estimator` so the two
 // estimators agree (single surface; no parallel implementation per
-// §13). D-055.
+// §13).
 //
 // Estimator errors propagate; an [trajectory.ErrUnserializable] from
 // Serialize is the typical failure mode and is surfaced verbatim
-// (Phase 43 fail-loudly contract).
+// (fail-loudly contract).
 type TokenEstimator func(tr *Trajectory) (int, error)
 
 // DefaultTokenEstimator is the chars/4 estimator backed by
@@ -72,9 +72,9 @@ type TokenEstimator func(tr *Trajectory) (int, error)
 // the LLM-edge estimator (which adds 256 tokens per non-text part);
 // trajectories don't typically carry multimodal parts directly in
 // LLMContext (heavy content is upstream of the trajectory per the
-// D-026 safety pass), so the simpler walker is sufficient at Phase
-// 46. A future estimator that structurally walks the trajectory is a
-// Phase 47+ refinement; the [TokenEstimator] functional-option seam
+// safety pass), so the simpler walker is sufficient.
+// A future estimator that structurally walks the trajectory is a
+// later refinement; the [TokenEstimator] functional-option seam
 // is the unwind point.
 func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 	if tr == nil {
@@ -96,10 +96,10 @@ func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 // CompressionRunner drives the "estimate → optional summariser → stamp
 // Trajectory.Summary" loop the runtime invokes between planner steps.
 // The production cadence is the steering RunLoop's step boundary
-// (Phase 111e — one MaybeCompress call per step, gated on
+// (one MaybeCompress call per step, gated on
 // Budget.TokenBudget > 0 and a configured runner).
 //
-// Reusable artifact (D-025): one constructed instance is safe to
+// Reusable artifact: one constructed instance is safe to
 // share across N concurrent runs; per-call state lives entirely in
 // `ctx` + [RunContext] + the per-call serialised bytes. The receiver
 // is read-only after construction.
@@ -108,7 +108,7 @@ func DefaultTokenEstimator(tr *Trajectory) (int, error) {
 // already-stamped trajectory returns nil without invoking the
 // summariser — this short-circuit IS the V1.1.x "one compression per
 // run, no auto-cascade" scope fence (RFC §6.5; re-compaction cadence
-// is the recorded D-202 follow-up). The layer that owns a future
+// is the recorded follow-up). The layer that owns a future
 // re-compaction policy clears the summary before re-invoking.
 type CompressionRunner struct {
 	summariser Summariser
@@ -184,11 +184,11 @@ func NewCompressionRunner(summariser Summariser, opts ...CompressionOption) *Com
 // raw history. The success-path emit pairs with the failure-path emit
 // so compression is observable in both directions.
 //
-// **Identity is mandatory (§6 rule 9 + D-001).** A partial quadruple
+// **Identity is mandatory (§6 rule 9).** A partial quadruple
 // returns wrapped [llm.ErrIdentityMissing] — parity with the
 // react/repair planner's identity-rejection sentinel.
 //
-// **Reusable (D-025).** Safe to invoke concurrently against a single
+// **Reusable.** Safe to invoke concurrently against a single
 // shared runner from N goroutines. Per-call state lives in ctx + rc
 // + the per-call serialised bytes; the receiver is read-only.
 func (r *CompressionRunner) MaybeCompress(
@@ -207,7 +207,7 @@ func (r *CompressionRunner) MaybeCompress(
 	}
 
 	// Idempotency: already compressed, nothing to do. This is the
-	// V1.1.x single-compression scope fence (D-202); a future
+	// V1.1.x single-compression scope fence; a future
 	// re-compaction policy clears tr.Summary before re-invoking.
 	if tr.Summary != nil {
 		return nil
@@ -217,7 +217,7 @@ func (r *CompressionRunner) MaybeCompress(
 	if err != nil {
 		// Fail-loudly per §13: emit the failure event before
 		// returning so observability picks up the estimator failure
-		// (typically a Phase 43 ErrUnserializable surfaced through
+		// (typically an ErrUnserializable surfaced through
 		// Serialize).
 		emitCompressionFailed(ctx, rc, tr, 0, "estimator_error", err)
 		return fmt.Errorf("planner.CompressionRunner.MaybeCompress: estimator: %w", err)
@@ -250,7 +250,7 @@ func (r *CompressionRunner) MaybeCompress(
 	}
 
 	stepsBefore := len(tr.Steps)
-	// Stamp the summary. Phase 46 does NOT truncate the Steps slice;
+	// Stamp the summary. Harbor does NOT truncate the Steps slice;
 	// the planner observes the compacted view through the prompt
 	// builder's summary-only rendering. A future phase MAY truncate;
 	// the StepsBefore / StepsAfter event-payload fields are the seam.
@@ -283,9 +283,9 @@ var (
 // assertCompressionIdentity rejects calls whose [RunContext.Quadruple]
 // is missing any of the four scope components. Returns wrapped
 // [llm.ErrIdentityMissing] for parity with the LLM-client edge (and
-// the Phase 44 repair loop and Phase 45 react planner) — the runner
+// the repair loop and react planner) — the runner
 // fails closed with the same sentinel the rest of the runtime uses
-// (§6 rule 9 + D-001).
+// (§6 rule 9).
 func assertCompressionIdentity(rc RunContext) error {
 	q := rc.Quadruple
 	if q.TenantID == "" || q.UserID == "" || q.SessionID == "" || q.RunID == "" {
@@ -299,7 +299,7 @@ func assertCompressionIdentity(rc RunContext) error {
 
 // emitCompressionSucceeded publishes trajectory.compressed onto the
 // run's emit closure. Best-effort; never blocks (subscribers handle
-// their own drop policies per Phase 05). nil Emit means "no
+// their own drop policies). nil Emit means "no
 // observability wired" — typical in tests; production runtime always
 // wires Emit.
 func emitCompressionSucceeded(

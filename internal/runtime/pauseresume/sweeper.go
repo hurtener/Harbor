@@ -12,16 +12,16 @@ import (
 	"github.com/hurtener/Harbor/internal/state"
 )
 
-// This file ships the pause sweeper (Phase 111c / D-200) — the
+// This file ships the pause sweeper — the
 // exported maintenance loop that gives the pause lifecycle an END.
-// Before 111c, Resume was the ONLY checkpoint-deletion path: a
+// Previously, Resume was the ONLY checkpoint-deletion path: a
 // cancel-while-paused run (or an operator who simply never answered an
 // approval) orphaned its pause record + checkpoint forever. The
 // sweeper is the backstop: it walks the Coordinator's registry and,
 // for every pause past its max-park deadline (WithMaxParkDuration),
 // calls Coordinator.Resume with DecisionTimeout — that enum value's
-// FIRST producer (RFC §3.3 / D-096; the "Phase 50 does not yet emit
-// this" note in decision.go is closed by this file).
+// FIRST producer (RFC §3.3; the not-yet-emitted note that
+// previously sat in decision.go is closed by this file).
 //
 // # Why the scan is registry-internal, not Coordinator.List
 //
@@ -33,7 +33,7 @@ import (
 // cannot enumerate tenants it has never seen, so a List-shaped scan
 // would require widening the §6 isolation surface with a wildcard.
 // The plan's Risks section anticipated exactly this and the recorded
-// resolution (D-200, plan §"Ship-time deviations") is: the sweeper
+// resolution (plan §"Ship-time deviations") is: the sweeper
 // lives in THIS package and snapshots the registry directly
 // (value-copies under the mutex, same shape List itself uses), while
 // every MUTATION goes through the public Coordinator.Resume under the
@@ -41,10 +41,10 @@ import (
 // and pause.resumed emit all run unmodified. No storage-level identity
 // filter is bypassed and no elevated List shape is minted.
 //
-// D-200 recorded one V1 boundary on this design: checkpoints orphaned
+// One recorded V1 boundary on this design: checkpoints orphaned
 // by a PROCESS CRASH were invisible (the registry scan only sees
 // in-process pauses; rehydrate-on-demand needs someone to ask by
-// Token). D-207 closes it: the StateStore gained its one explicitly-
+// Token). A follow-up closes it: the StateStore gained its one explicitly-
 // elevated maintenance scan (state.StateStore.ListKind, RFC §6.11),
 // and every sweep pass first rescues `pauseresume.checkpoint:` rows
 // with no live registry entry back into the registry
@@ -58,7 +58,7 @@ import (
 // for the waiting run: the steering RunLoop observes the timeout and
 // finishes the run with Finish{ConstraintsConflict} — a deadline the
 // human missed is a constraint the planner cannot resolve (mirrors
-// D-071's REJECT posture). Never a silent unpark-and-continue.
+// the REJECT posture). Never a silent unpark-and-continue.
 
 // DefaultSweepInterval is the sweep cadence applied when no
 // WithSweepInterval option is given. Mirrors the documented
@@ -97,8 +97,8 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 }
 
 // RunSweeper runs the pause sweeper until ctx is cancelled. It is the
-// ONE exported entry into the pause-lifecycle maintenance loop (Phase
-// 111c / D-200): on every tick it scans the Coordinator's pause
+// ONE exported entry into the pause-lifecycle maintenance loop (
+// ): on every tick it scans the Coordinator's pause
 // registry and resumes each pause past its max-park deadline with
 // DecisionTimeout, under the pause's own identity scope.
 //
@@ -121,12 +121,12 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 // not shield every other expired pause from being reaped. A PRE-flip
 // failure leaves the entry paused, so the next pass's expired scan
 // retries it (a lost tool-context handle is no longer in this class —
-// timeout resumes skip the handle re-attach, D-207); a POST-flip
+// timeout resumes skip the handle re-attach); a POST-flip
 // failure (the checkpoint delete after Resume already flipped the
 // entry) marks the entry delete-pending and the next pass's
 // retryPendingDeletes phase re-attempts the delete + the skipped
 // pause.resumed emit — a resumed-but-undeleted checkpoint must never
-// orphan silently (Wave C checkpoint audit). Losing a reap race to a
+// orphan silently. Losing a reap race to a
 // legitimate concurrent Resume (ErrAlreadyResumed / ErrPauseNotFound)
 // is benign — the pause resolved exactly once — and is not logged as a
 // failure.
@@ -134,7 +134,7 @@ func WithSweeperLogger(l *slog.Logger) SweeperOption {
 // Each pass also rescues CRASH-ORPHANED checkpoints — store rows whose
 // pause was never rehydrated because the process that parked it died —
 // into the registry via the StateStore's maintenance scan
-// (rescanCrashOrphans, D-207), so the max-park ceiling applies to them
+// (rescanCrashOrphans), so the max-park ceiling applies to them
 // like any live pause.
 func RunSweeper(ctx context.Context, coord Coordinator, opts ...SweeperOption) error {
 	c, ok := coord.(*coordinator)
@@ -172,7 +172,7 @@ func RunSweeper(ctx context.Context, coord Coordinator, opts ...SweeperOption) e
 }
 
 // sweepOnce performs one sweep pass: rescue crash-orphaned checkpoints
-// into the registry (rescanCrashOrphans — D-207), then snapshot the
+// into the registry (rescanCrashOrphans), then snapshot the
 // expired pauses at the Coordinator's clock and Resume each with
 // DecisionTimeout under the pause's own identity. Returns the count of
 // successfully reaped pauses. The only error return is ctx
@@ -226,13 +226,13 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 			// Benign race: a legitimate Resume won between the snapshot
 			// and this call. The pause resolved exactly once — the
 			// loser's error is the documented contract (plan §"Test
-			// plan" / D-200), not a failure.
+			// plan"), not a failure.
 		default:
 			// A substantive reap failure. Loud, then continue. Two
 			// classes, both retried by the next pass: a PRE-flip
 			// failure leaves the entry paused and the expired scan
 			// re-selects it (timeout resumes skip the tool-context
-			// re-attach — D-207 — so a lost handle is no longer in
+			// re-attach — so a lost handle is no longer in
 			// this class); a POST-flip failure (checkpoint-delete
 			// store error after Resume already flipped the entry) is
 			// marked delete-pending by Resume itself and re-attempted
@@ -254,13 +254,13 @@ func sweepOnce(ctx context.Context, c *coordinator, logger *slog.Logger) (int, e
 }
 
 // rescanCrashOrphans rescues checkpoint rows that have no live pause
-// record into the registry (Phase 111c's recorded V1 boundary, closed
-// by D-207). A pause checkpointed by a process that then CRASHED is
+// record into the registry (the recorded V1 boundary, closed
+// by). A pause checkpointed by a process that then CRASHED is
 // invisible to the registry scan: rehydrate-on-demand (Status /
 // Resume) recovers it only if someone asks by Token, so an unasked-for
 // checkpoint leaked forever. The rescan walks the store's
 // `pauseresume.checkpoint:` kinds via the StateStore's maintenance
-// scan (state.StateStore.ListKind — D-207's RFC §6.11 amendment;
+// scan (state.StateStore.ListKind — the RFC §6.11 amendment;
 // MaintenanceScoped is the explicit elevation claim, and every
 // MUTATION still goes through the public Resume under the pause's own
 // identity, exactly like the registry scan above) and installs every
@@ -318,7 +318,7 @@ func (c *coordinator) rescanCrashOrphans(ctx context.Context, logger *slog.Logge
 		}
 		// Re-stamp the expiry from THIS Coordinator's knob — same
 		// discipline as rehydrate (the deadline is derived, never
-		// persisted; D-200).
+		// persisted).
 		if c.maxPark > 0 && entry.state == StatusPaused {
 			entry.expiresAt = entry.pausedAt.Add(c.maxPark)
 		}
@@ -343,7 +343,7 @@ func (c *coordinator) rescanCrashOrphans(ctx context.Context, logger *slog.Logge
 
 // retryPendingDeletes re-attempts the checkpoint delete (and the
 // skipped pause.resumed emit) for every resumed entry whose original
-// delete failed (Wave C checkpoint audit — the orphan class Resume's
+// delete failed (checkpoint audit — the orphan class Resume's
 // state-flip-before-delete ordering creates). Runs on every sweep
 // pass, not only when something expired, so a wedged store that
 // recovers drains its backlog on the next tick. The only error return

@@ -532,7 +532,7 @@ func doImport(ctx context.Context, store artifacts.ArtifactStore, src ImportSour
 			// Stash the raw frontmatter so Export reproduces byte-stable.
 			"_importer.frontmatter_raw": string(rawFM.Bytes),
 			// Stash the source hash so callers (e.g. attachment-scope
-			// stamping in Phase 60+) can derive a stable task ID.
+			// stamping in later phases) can derive a stable task ID.
 			"_importer.source_sha256": sourceHashHex(src.Bytes),
 		},
 	}

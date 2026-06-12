@@ -20,7 +20,7 @@ import (
 var ErrRunCancelled = errors.New("engine: run cancelled")
 
 // ErrConcurrentFetchByRun — two goroutines called FetchByRun for the
-// same RunID at the same time. Per brief 01 §5 ("no half-measure"),
+// same RunID at the same time. Per the "no half-measure" rule,
 // the dispatcher's per-run subqueue has a single consumer; concurrent
 // fetchers fight for ordering and the API forbids the contention
 // rather than serializing under the hood.
@@ -87,17 +87,17 @@ func WithCancelTTL(d time.Duration) Option {
 // (false, nil) when the run had no observable presence (e.g. already
 // completed, never started, second Cancel call).
 //
-// The four-step propagation per brief 01 §4:
+// The four-step propagation:
 //
 //  1. Set the per-run cancellation flag (atomic; observable
 //     immediately by every worker / shell loop / capacity waiter).
 //  2. Drain queued envelopes for the run from every channel
 //     (non-blocking; counted via droppedCount).
 //  3. Cancel in-flight worker invocations: workers observe the flag
-//     between iterations AND between retries (Phase 11's shell
+//     between iterations AND between retries (the shell
 //     polls ctx.Err and the per-run flag at every loop boundary).
 //     Workers return *RunError(CodeRunCancelled).
-//  4. Release the run's capacity waiter (Phase 12) so any blocked
+//  4. Release the run's capacity waiter so any blocked
 //     EmitChunk returns ErrRunCancelled, and drain its egress
 //     subqueue so an in-flight FetchByRun returns ErrRunCancelled.
 //
@@ -165,7 +165,7 @@ func (e *engine) Cancel(ctx context.Context, runID string) (bool, error) {
 		wasActive = true
 	}
 
-	// Step 4: release Phase 12 capacity waiters + drain the per-run
+	// Step 4: release capacity waiters + drain the per-run
 	// subqueue.
 	if e.releaseRunCapacity(runID) {
 		wasActive = true
@@ -177,7 +177,7 @@ func (e *engine) Cancel(ctx context.Context, runID string) (bool, error) {
 		}
 	}
 
-	// Phase 14 follow-up: fire registered cancel observers (subflows
+	// follow-up: fire registered cancel observers (subflows
 	// mirror parent.Cancel into their child engines). Snapshot under
 	// the lock; fire outside so a slow child.Cancel can't stall us.
 	for _, obs := range e.snapshotCancelObservers(runID) {
@@ -188,7 +188,7 @@ func (e *engine) Cancel(ctx context.Context, runID string) (bool, error) {
 		wasActive = true
 	}
 
-	// Best-effort bus emit. Match Phase 08's pattern: a bus error must
+	// Best-effort bus emit. Match the pattern: a bus error must
 	// not block the lifecycle method.
 	e.publishRunCancelled(ctx, runID, rc)
 
@@ -379,10 +379,10 @@ func (e *engine) releaseRunCapacity(runID string) bool {
 }
 
 // publishRunCancelled is the best-effort runtime.run_cancelled bus
-// emit path. Matches Phase 08's "a bus error doesn't block lifecycle"
+// emit path. Matches the "a bus error doesn't block lifecycle"
 // contract via the configured RunErrorHandler-style hook.
 //
-// Phase 13 introduces the RunCancelledHandler seam so the engine
+// Harbor introduces the RunCancelledHandler seam so the engine
 // package stays a leaf (no telemetry import). Production wiring
 // installs the handler in cmd/harbor; tests can install a recording
 // callback.

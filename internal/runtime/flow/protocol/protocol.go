@@ -1,5 +1,5 @@
 // Package protocol implements the runtime side of the Console Flows
-// page (Phase 73i / D-117). It is the transport-agnostic surface the
+// page. It is the transport-agnostic surface the
 // six `flows.*` Protocol methods dispatch through:
 //
 //   - flows.list           — paginated catalog of registered flows
@@ -10,7 +10,7 @@
 //   - flows.metrics         — a flow's time-bucketed sparkline metrics
 //
 // Five methods are read-only; `flows.run` is the single mutating
-// method. The Flows page is view-only at V1 (D-063) — there is no
+// method. The Flows page is view-only at V1 — there is no
 // authoring surface here, by construction.
 //
 // # The source-of-truth seam (§4.4)
@@ -31,18 +31,18 @@
 // tenant-scoped: a non-admin caller sees only their own tenant's runs.
 // A cross-tenant filter (a `Tenants` value reaching outside the
 // caller's own tenant, or naming more than one tenant) requires the
-// verified `auth.ScopeAdmin` claim (D-079) — the Surface fails closed
+// verified `auth.ScopeAdmin` claim — the Surface fails closed
 // with ErrCrossTenantScope when the claim is absent.
 //
-// # The mutating gate (D-079)
+// # The mutating gate
 //
 // `flows.run` mutates: it launches a run. It is gated on identity AND
 // the verified `auth.ScopeAdmin` claim. The Surface never mints a new
-// scope (D-079 closed two-scope set) — `auth.ScopeAdmin` is the run
+// scope (closed two-scope set) — `auth.ScopeAdmin` is the run
 // entitlement. A request without the claim fails closed with
 // ErrRunScopeRequired.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A Surface is a compiled artifact: every field is set once at
 // construction and never mutated. ServeMethod holds no per-call state —
@@ -117,7 +117,7 @@ type Catalog interface {
 	ListRuns(ctx context.Context, id identity.Identity, adminScoped bool, flowID string, tenants []string) ([]prototypes.FlowRun, error)
 	// DescribeRun returns a single run's per-node timeline + output
 	// reference. An unknown run id returns ErrNotFound. The
-	// implementation routes heavy outputs by-reference (D-026).
+	// implementation routes heavy outputs by-reference.
 	DescribeRun(ctx context.Context, id identity.Identity, adminScoped bool, runID string) (prototypes.FlowRunDescription, error)
 	// FlowMetrics returns a flow's time-bucketed sparkline aggregates
 	// over the requested window. An unknown flow id returns ErrNotFound.
@@ -137,7 +137,7 @@ type Invoker interface {
 }
 
 // Surface is the transport-agnostic Flows-page Protocol surface. It is
-// a compiled artifact (D-025): catalog + invoker are set once at
+// a compiled artifact: catalog + invoker are set once at
 // construction and never mutated; ServeMethod holds no per-call state.
 type Surface struct {
 	catalog Catalog
@@ -244,7 +244,7 @@ func (s *Surface) RunsList(ctx context.Context, req prototypes.FlowRunsListReque
 
 // RunsDescribe handles `flows.runs.describe`. It validates identity +
 // the run id and dispatches to the Catalog. Heavy outputs are routed
-// by-reference by the Catalog (D-026).
+// by-reference by the Catalog.
 func (s *Surface) RunsDescribe(ctx context.Context, req prototypes.FlowRunDescribeRequest, adminScoped bool) (prototypes.FlowRunDescription, error) {
 	id, err := toIdentity(req.Identity)
 	if err != nil {
@@ -261,8 +261,8 @@ func (s *Surface) RunsDescribe(ctx context.Context, req prototypes.FlowRunDescri
 }
 
 // Run handles `flows.run` — the single mutating Flows-page method. It
-// validates identity, gates the call on the verified admin scope claim
-// (D-079), and dispatches to the Invoker. A request without the claim
+// validates identity, gates the call on the verified admin scope claim,
+// and dispatches to the Invoker. A request without the claim
 // fails closed with ErrRunScopeRequired.
 func (s *Surface) Run(ctx context.Context, req prototypes.FlowRunRequest, adminScoped bool) (prototypes.FlowRunResponse, error) {
 	id, err := toIdentity(req.Identity)

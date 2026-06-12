@@ -13,7 +13,7 @@ import (
 )
 
 // noneExec implements StrategyExecutor for `StrategyNone`. The
-// surface intentionally matches Phase 23's InMem driver verbatim —
+// surface intentionally matches the InMem driver verbatim —
 // AddTurn is a no-op, GetLLMContext returns empty, EstimateTokens
 // returns 0, Flush is a no-op, Health is `HealthHealthy`, and the
 // Snapshot/Restore round-trip goes through `state.StateStore`.
@@ -119,7 +119,7 @@ type memoryStateRecord struct {
 }
 
 // persistRecord marshals the typed record and writes through the
-// injected StateStore (D-027 typed wrapper).
+// injected StateStore (typed wrapper).
 func persistRecord(ctx context.Context, st state.StateStore, id identity.Quadruple, rec memoryStateRecord) error {
 	bytes, err := json.Marshal(rec)
 	if err != nil {

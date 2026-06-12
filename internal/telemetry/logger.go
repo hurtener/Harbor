@@ -4,20 +4,20 @@
 //
 //  1. A pinned eight-attribute identity surface (tenant_id, user_id,
 //     session_id, run_id, task_id, trace_id, span_id, tool). The first
-//     five flow from ctx via the Phase 01 identity helpers; the rest
-//     are passthrough keys reserved for OTel wiring (Phase 55).
+//     five flow from ctx via the identity helpers; the rest
+//     are passthrough keys reserved for OTel wiring.
 //  2. Mandatory redaction: every record's attribute values AND the
 //     msg string flow through audit.Redactor before the slog handler
-//     sees them. Redaction failures are fail-loudly (D-020) — the
+//     sees them. Redaction failures are fail-loudly — the
 //     record is replaced with a sentinel line, never silently emitted
 //     unredacted.
-//  3. A BusEmitter seam so Phase 05+ can fire a paired runtime.error
-//     bus event without re-opening this package (RFC §6.14, brief 06).
+//  3. A BusEmitter seam so the event bus can fire a paired runtime.error
+//     bus event without re-opening this package (RFC §6.14).
 //
 // A *Logger is built once at boot via New, then shared across every
 // emit path. WithIdentity / WithRun / With return derived loggers
 // that carry additional bound attributes; the base *Logger stays
-// unchanged. Concurrent reuse is enforced by D-025 — the shipping
+// unchanged. Concurrent reuse is enforced by contract — the shipping
 // test suite runs N≥100 goroutines through a single shared instance
 // under -race.
 package telemetry
@@ -40,7 +40,7 @@ import (
 var (
 	// ErrLoggerNotConfigured — the constructor received an invalid
 	// TelemetryConfig (unknown LogFormat, unknown LogLevel, etc).
-	// Phase 02 already validates these but the constructor must not
+	// already validates these but the constructor must not
 	// trust upstream; misconfiguration here is a fail-loudly.
 	ErrLoggerNotConfigured = errors.New("telemetry: logger not configured")
 	// ErrRedactorMissing — the constructor was given a nil redactor.
@@ -149,8 +149,8 @@ func (l *Logger) WithRun(q identity.Quadruple) *Logger {
 }
 
 // With returns a derived Logger carrying additional bound attributes.
-// In Phase 04 this is the only path for task_id, trace_id, span_id,
-// and tool — Phase 55 wires OTel-driven trace_id / span_id auto-stamping.
+// In this is the only path for task_id, trace_id, span_id,
+// and tool — wires OTel-driven trace_id / span_id auto-stamping.
 func (l *Logger) With(attrs ...slog.Attr) *Logger {
 	return l.derive(attrs...)
 }

@@ -2,8 +2,7 @@ package planner
 
 // AnswerEnvelope is the canonical JSON shape `tasks.TaskResult.Value`
 // carries when a run-loop driver completes a task from a
-// [Finish] with reason [FinishGoal] (Phase 106; named and exported by
-// Phase 110a):
+// [Finish] with reason [FinishGoal]:
 //
 //	{"answer": "<llm text>", "finish_reason": "<FinishReason>", "tool_calls_seen": <int>}
 //
@@ -13,12 +12,12 @@ package planner
 // `internal/runtime/dispatch`'s AwaitTask / retain-turn SpawnTask
 // observation parses it back for the awaiting planner.
 //
-// The encoding is byte-compatible with the Phase 106 map-literal shape
+// The encoding is byte-compatible with the map-literal shape
 // (keys in the same order; pinned by the golden test in
 // answer_envelope_test.go). Forward-compatible — future phases extend
 // with new keys; never break existing ones.
 //
-// Phase 110a (D-194) named and exported what was an implicit cmd↔cmd
+// named and exported what was an implicit cmd↔cmd
 // wire contract (the SDK friction audit's Pattern 1 / P3 finding): one
 // `package main` file marshalled what another parsed, with no named
 // type anywhere. Home rationale (import direction, recorded in the
@@ -41,7 +40,7 @@ type AnswerEnvelope struct {
 
 // Terminal task-error codes a run-loop driver stamps on
 // `tasks.TaskError.Code` when a run ends without FinishGoal
-// (Phase 106 / D-098; named and exported by Phase 110a).
+// (exported for run-loop drivers).
 const (
 	// TaskErrorCodeRunLoopError marks a run whose RunLoop.Run returned
 	// a non-cancellation error.
@@ -49,7 +48,7 @@ const (
 	// TaskErrorCodeCancelled marks a run whose RunLoop.Run surfaced
 	// context.Canceled. The FSM has no auto-cancelled status (Cancel
 	// is the external-caller surface and requires a reason); Failed
-	// with this code is the closest terminal match — see D-098.
+	// with this code is the closest terminal match —
 	TaskErrorCodeCancelled = "cancelled"
 )
 

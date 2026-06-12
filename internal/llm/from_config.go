@@ -1,11 +1,10 @@
-// from_config.go — the exported config→snapshot projection (Phase 110c,
-// D-196).
+// from_config.go — the exported config→snapshot projection.
 //
-// Before 110c the `config.LLMConfig` → `llm.ConfigSnapshot` projection
+// Previously the `config.LLMConfig` → `llm.ConfigSnapshot` projection
 // lived as unexported `package main` helpers in `cmd/harbor/cmd_dev.go`
 // (`copyModelProfiles` / `copyCustomProviders` / `copyNetworkDefaults` /
 // `disableCorrectionsFromConfig`), hand-duplicated in
-// `harbortest/devstack`. That mechanism shipped the D-155 silent-field-
+// `harbortest/devstack`. That mechanism shipped the silent-field-
 // drop bug (CustomProviders / NetworkDefaults / Corrections dropped from
 // the snapshot) and a second live drop found by the same parity gate
 // this file ships (per-model `cost_overrides:` + `corrections:` dropped
@@ -14,7 +13,7 @@
 // land in the same package — and the field-parity test in
 // from_config_test.go fails the build when they don't.
 //
-// Import direction (settled by the Wave B re-homing program, D-193):
+// Import direction (settled by the SDK re-homing program):
 // the subsystem imports `internal/config` ADDITIVELY. `internal/config`
 // stays a leaf with no subsystem imports; `SnapshotFromConfig` is one
 // optional helper on the side, never a required path — `Open(ctx,
@@ -30,7 +29,7 @@ import "github.com/hurtener/Harbor/internal/config"
 // onto the llm package's decoupled ConfigSnapshot. Every config-sourced
 // snapshot field is populated here — cmd/harbor, harbortest/devstack,
 // and headless embedders all call this ONE projection (closing the
-// D-155 / audit-B3 silent-field-drop class).
+// silent-field-drop bug class).
 //
 // `art` supplies `HeavyOutputThresholdBytes` → `HeavyOutputThreshold`
 // (the snapshot mirrors it so the llm package does not re-import the
@@ -58,7 +57,7 @@ func SnapshotFromConfig(cfg config.LLMConfig, art config.ArtifactsConfig) Config
 		ContextWindowReserve: cfg.ContextWindowReserve,
 		HeavyOutputThreshold: art.HeavyOutputThresholdBytes,
 		ModelProfiles:        modelProfilesFromConfig(cfg.ModelProfiles),
-		// Phase 83l / D-155 — these three were the original production
+		// these three were the original production
 		// field-drop bug: an operator-declared custom provider was
 		// silently ignored at boot ("declared custom: (none)").
 		CustomProviders:    customProvidersFromConfig(cfg.CustomProviders),
@@ -72,7 +71,7 @@ func SnapshotFromConfig(cfg config.LLMConfig, art config.ArtifactsConfig) Config
 // value — both packages own their own struct types so a copy keeps the
 // seam decoupled.
 //
-// Phase 110c §17.6 cross-fix: the absorbed cmd/devstack
+// Cross-fix: the absorbed cmd/devstack
 // `copyModelProfiles` helpers silently dropped `CostOverrides` and
 // `Corrections` — an operator's per-model `cost_overrides:` /
 // `corrections:` yaml validated cleanly and then did nothing (the
@@ -125,7 +124,7 @@ func modelProfilesFromConfig(in map[string]config.LLMModelProfileConfig) map[str
 
 // customProvidersFromConfig projects `config.LLMCustomProviderConfig`
 // entries onto the `llm.CustomProviderSpec` shape the bifrost driver
-// reads (Phase 33a; D-155 fix lineage).
+// reads.
 func customProvidersFromConfig(in []config.LLMCustomProviderConfig) []CustomProviderSpec {
 	if len(in) == 0 {
 		return nil
@@ -151,7 +150,7 @@ func customProvidersFromConfig(in []config.LLMCustomProviderConfig) []CustomProv
 }
 
 // networkDefaultsFromConfig projects the operator's `network_defaults`
-// block onto the snapshot (Phase 33a; D-155 fix lineage).
+// block onto the snapshot.
 func networkDefaultsFromConfig(in config.LLMNetworkDefaults) NetworkDefaults {
 	return NetworkDefaults{
 		Timeout:             in.Timeout,

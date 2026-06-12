@@ -11,11 +11,11 @@ import "errors"
 // when a handle cannot be re-attached on resume). The Coordinator
 // propagates both verbatim; callers reach them via errors.As against
 // the trajectory package's struct sentinels. Redefining them here
-// would fork the fail-loudly contract Phase 43 already owns.
+// would fork the fail-loudly contract already owns.
 var (
 	// ErrIdentityRequired — Request / Resume / Status was called with
 	// an identity triple missing one of (tenant, user, session). The
-	// Coordinator fails closed (CLAUDE.md §6 rule 9 + D-001); there is
+	// Coordinator fails closed (CLAUDE.md §6 rule 9); there is
 	// no identity-downgrading knob.
 	ErrIdentityRequired = errors.New("pauseresume: identity triple incomplete")
 
@@ -52,7 +52,7 @@ var (
 	// not one of the four canonical values (approve / reject / resume
 	// / timeout). Fails closed rather than emitting a `pause.resumed`
 	// event with an untyped Decision — the §13 fail-loudly contract
-	// the typed Decision marker exists to enforce (issue #113, D-096).
+	// the typed Decision marker exists to enforce (issue #113).
 	ErrInvalidDecision = errors.New("pauseresume: invalid resume decision")
 
 	// ErrUnsupportedFormatVersion — a pause record loaded from the
@@ -61,23 +61,22 @@ var (
 	// a newer Runtime). The load-side half of the RFC §6.3 "JSON with
 	// format_version: 1" contract: rather than silently mis-decoding a
 	// forward-incompatible record against the current schema, the load
-	// fails loud (Phase 51 / D-069).
+	// fails loud.
 	ErrUnsupportedFormatVersion = errors.New("pauseresume: unsupported pause-record format_version")
 
 	// ErrInvalidPage — Coordinator.List was called with a pagination
 	// shape outside the accepted bounds: a negative Page, a negative
 	// PageSize, or a PageSize above MaxListPageSize. The List path
 	// fails closed rather than silently clamping — a silent clamp would
-	// defeat the per-row identity boundary the snapshot guarantees
-	// (Phase 72e / D-110).
+	// defeat the per-row identity boundary the snapshot guarantees.
 	ErrInvalidPage = errors.New("pauseresume: invalid pause-list pagination")
 
 	// ErrCrossTenantScope — Coordinator.List was called with a
 	// ListFilter naming a tenant other than the caller's own (or more
 	// than one tenant) without ListRequest.AdminScoped set. Cross-tenant
-	// pause visibility requires the verified auth.ScopeAdmin claim
-	// (D-079); the Coordinator fails closed rather than leaking
-	// foreign-tenant pause records (Phase 72e / D-110).
+	// pause visibility requires the verified auth.ScopeAdmin claim;
+	// the Coordinator fails closed rather than leaking
+	// foreign-tenant pause records.
 	ErrCrossTenantScope = errors.New("pauseresume: cross-tenant pause-list requires the admin scope claim")
 
 	// ErrSweeperMisconfigured — RunSweeper was started against a
@@ -86,6 +85,6 @@ var (
 	// concrete registry), or one constructed without
 	// WithMaxParkDuration (nothing would ever expire — a sweeper that
 	// silently spins forever reaping nothing is the §13
-	// silent-degradation shape). Phase 111c / D-200.
+	// silent-degradation shape).
 	ErrSweeperMisconfigured = errors.New("pauseresume: sweeper misconfigured")
 )

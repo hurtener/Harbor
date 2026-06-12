@@ -7,8 +7,8 @@ import (
 )
 
 // Scope is the privilege tier a steering caller presents. It is a
-// trust-based claim in Phase 52 — cryptographic verification arrives
-// with Protocol auth (Phase 61), mirroring the events package's
+// trust-based claim in a later phase — cryptographic verification arrives
+// with Protocol auth, mirroring the events package's
 // Admin-claim posture (RFC §6.3 + events.Filter.Admin). The Protocol
 // edge derives the Scope from the caller's JWT scope claim before
 // calling CheckScope.
@@ -50,7 +50,7 @@ func IsValidScope(s Scope) bool {
 
 // requiredScope maps each control type to the minimum caller Scope
 // that may submit it (RFC §6.3 "Steering authn/authz", resolving
-// brief 02 Q-3):
+// a settled design question):
 //
 //   - CANCEL, APPROVE, REJECT, PAUSE, RESUME — "the originating
 //     user/admin scope" → ScopeOwnerUser (admin satisfies it by
@@ -94,11 +94,11 @@ func RequiredScope(t ControlType) (Scope, bool) {
 //   - a caller scope below the control type's per-type minimum →
 //     ErrScopeMismatch.
 //
-// callerScope is the (trust-based at Phase 52) Scope the Protocol
+// callerScope is the (trust-based) Scope the Protocol
 // edge derived from the caller's JWT. callerTenant is the tenant the
 // caller authenticated under; runIdentity is the run the steering
 // targets. CheckScope is pure and holds no state — safe for
-// concurrent use (D-025).
+// concurrent use.
 func CheckScope(t ControlType, callerScope Scope, callerTenant string, runIdentity identity.Quadruple) error {
 	if !IsValidControlType(t) {
 		return fmt.Errorf("%w: %q", ErrUnknownControlType, string(t))

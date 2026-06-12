@@ -32,7 +32,7 @@ func init() {
 }
 
 // exporter satisfies telemetry.SpanExporter. It is stateless — a
-// single value is shared across every NewTracer call (D-025: no
+// single value is shared across every NewTracer call (no
 // per-construction mutable state).
 type exporter struct{}
 

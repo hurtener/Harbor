@@ -1,6 +1,6 @@
-// cmd/harbor/cmd_dev.go — `harbor dev` v1 (Phase 64, D-089).
+// cmd/harbor/cmd_dev.go — `harbor dev` v1.
 //
-// `harbor dev` boots an embedded Harbor Runtime + opens the Phase 60
+// `harbor dev` boots an embedded Harbor Runtime + opens the
 // Protocol transports on `127.0.0.1:<port>`. This is the moment the
 // binary stops being a driver-registration stub and starts running a
 // real LLM-backed runtime — the §13 "test stubs as production
@@ -26,7 +26,7 @@
 //  9. The steering registry (process-wide).
 // 10. The Protocol ControlSurface + the SSE/REST mux from
 //     `internal/protocol/transports`.
-// 11. The Phase 61 JWT auth.Validator (mandatory at the edge) +
+// 11. The JWT auth.Validator (mandatory at the edge) +
 //     the dev-only ephemeral ES256 KeySet + a default-identity dev
 //     token printed at startup.
 // 12. An http.Server bound to `127.0.0.1:<port>` with /healthz +
@@ -39,12 +39,12 @@
 // one-line error naming the field and points to `examples/dev.yaml`,
 // then exits non-zero. No silent fallback to the mock; the only path
 // to the mock at runtime is the explicit `HARBOR_DEV_ALLOW_MOCK=1`
-// escape hatch (D-089).
+// escape hatch.
 //
 // # The dev-only escape hatch
 //
-// `HARBOR_DEV_ALLOW_MOCK=1` (env var, not a CLI flag — pinned in
-// D-089) tells the dev subcommand to:
+// `HARBOR_DEV_ALLOW_MOCK=1` (env var, not a CLI flag — pinned in)
+// tells the dev subcommand to:
 //   - blank-import the mock LLM driver so its init() registration
 //     fires and `llm.Open(cfg{Driver:"mock"})` resolves;
 //   - skip the bifrost-knobs validation gate that would otherwise
@@ -143,7 +143,7 @@ const (
 )
 
 // EnvDevAllowMock is the env var name that unlocks the dev-only mock
-// LLM path. Pinned in D-089. The choice between an env var and a CLI
+// LLM path. The choice between an env var and a CLI
 // flag was settled on the env var because preflight invokes
 // `./bin/harbor dev` without arguments — an env var lets the smoke
 // flow without changing the preflight harness.
@@ -169,12 +169,12 @@ const DefaultDevConfig = "harbor.yaml"
 //	--port <int>     default 18080 (also overridable via HARBOR_BIND env).
 //
 // The escape hatch is an env var (`HARBOR_DEV_ALLOW_MOCK=1`), not a
-// flag — see D-089.
+// flag —
 func newDevCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dev",
 		Short: "boot the local Runtime + Protocol server",
-		Long: `Boot a local Harbor Runtime, open the Phase 60 Protocol transports
+		Long: `Boot a local Harbor Runtime, open the Protocol transports
 onto a 127.0.0.1 listener, and serve until SIGINT / SIGTERM.
 
 The default port is ` + fmt.Sprintf("%d", DefaultDevPort) + `; override via --port or
@@ -201,7 +201,7 @@ Examples:
 	}
 	cmd.Flags().String(flagDevConfig, DefaultDevConfig, "path to harbor.yaml")
 	cmd.Flags().Int(flagDevPort, DefaultDevPort, "loopback port for the Protocol server")
-	// Phase 65 (D-099) — operator-facing escape hatch for hot-reload.
+	// operator-facing escape hatch for hot-reload.
 	// The default boot enables the watcher per cfg.CLI.DevHotReload.Enabled
 	// (which defaults to true via the loader); passing --no-hot-reload
 	// forces the watcher off regardless of config. The flag is the §13
@@ -224,7 +224,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 	bindAddrOverride := os.Getenv("HARBOR_BIND")
 	if bindAddrOverride != "" {
 		// HARBOR_BIND=host:port overrides --port (used by preflight,
-		// D-104 in particular — `HARBOR_BIND=127.0.0.1:0` requests an
+		// in particular — `HARBOR_BIND=127.0.0.1:0` requests an
 		// ephemeral port). The override is a single env var so an
 		// operator who needs to bind beyond 127.0.0.1 can drive both
 		// host AND port from the same surface. We parse the port out
@@ -261,7 +261,7 @@ func runDev(cmd *cobra.Command, _ []string) error {
 		return emitCLIError(cmd, bootErrorToCLIError(err))
 	}
 
-	// Phase 65 (D-099) — hot-reload supervisor. The supervisor owns the
+	// hot-reload supervisor. The supervisor owns the
 	// active devStack lifecycle from this point: on a file change it
 	// drains the current stack per `cli.dev_hot_reload.policy`, calls
 	// `bootDevStack` again with the same opts, and swaps the result in.
@@ -338,11 +338,11 @@ func runDev(cmd *cobra.Command, _ []string) error {
 }
 
 // devBootOptions bundles the inputs `bootDevStack` consumes. Kept as
-// a struct so tests can drive the boot in isolation (Phase 64
+// a struct so tests can drive the boot in isolation (
 // integration test) without re-creating cobra wiring.
 //
 // `bindAddr` is the operator override path for the listener address.
-// It's read by `runDev` from the `HARBOR_BIND` env var (D-104 — the
+// It's read by `runDev` from the `HARBOR_BIND` env var (the
 // preflight harness sets `HARBOR_BIND=127.0.0.1:0` so a non-zero
 // ephemeral port is OS-assigned) and threaded explicitly here so
 // `bootDevStack` does NOT read the env var directly. Tests that
@@ -360,8 +360,8 @@ type devBootOptions struct {
 	// serveConsole, when true, mounts the embedded SvelteKit Console
 	// build (cmd/harbor/console_embed.go) onto the boot router at `/`
 	// with SPA fallback. Set ONLY by the `harbor console` subcommand
-	// (Phase 73m / D-129) — `harbor dev` leaves it false so the Console
-	// build is NEVER embedded into the dev-loop surface (D-091 binding
+	// `harbor dev` leaves it false so the Console
+	// build is NEVER embedded into the dev-loop surface (binding
 	// rule). The Protocol surface (`/v1/*`) is identical either way; the
 	// flag only adds the static-asset routes.
 	serveConsole bool
@@ -387,7 +387,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 
 	// LLM seam — fail loud per §13 when no provider configured AND
 	// the operator did not explicitly opt into the mock. This gate is
-	// dev-cmd POLICY (the D-089 escape hatch), so it runs BEFORE the
+	// dev-cmd POLICY (the escape hatch), so it runs BEFORE the
 	// promoted assembly: `assemble.Assemble` itself stays policy-free
 	// (a headless embedder decides its own LLM-requirement posture).
 	if err := validateLLMProvider(cfg, opts.allowMock); err != nil {
@@ -406,8 +406,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	registerMockIfDevAllowMock(opts.allowMock, opts.stderr)
 
 	// Build the LLM ConfigSnapshot via the exported projection (Phase
-	// 110c, D-196 — the one config→snapshot mapping cmd, devstack, and
-	// headless embedders share; closes the D-155 recurrence class).
+	// the one config→snapshot mapping cmd, devstack, and
+	// headless embedders share; closes the recurrence class).
 	// When the dev-only escape hatch fired, override the driver to
 	// "mock" regardless of what harbor.yaml said — the operator's
 	// intent ("give me the mock") is explicit via the env var, and
@@ -421,7 +421,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		llmCfg.APIKey = ""
 	}
 
-	// Phase 110d (D-197): the config→stack fan-out is the promoted
+	// the config→stack fan-out is the promoted
 	// `internal/runtime/assemble` entry point — bootDevStack is a thin
 	// wrapper that adds only the cmd-only legs (Protocol surfaces, the
 	// listener/mux/CORS band, dev auth, drafts, seeding). The assembly
@@ -435,7 +435,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 			UserID:    DevUser,
 			SessionID: DevSession,
 		},
-		// Phase 111f (D-203): the serving binary assembles gates for
+		// the serving binary assembles gates for
 		// wire-driven resolution — the Protocol-side scope adapter
 		// preserves today\'s admin / console:fleet acceptance and
 		// falls through to the runtime-vocabulary default for the
@@ -485,7 +485,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		runLoop         = stack.RunLoop
 	)
 
-	// Phase 111d (D-201) — the Phase-39 skills Directory, built once
+	// the Phase-39 skills Directory, built once
 	// over the configured SkillStore. It is the run loop's
 	// `<skills_context>` producer: a bounded pinned-then-recent browse
 	// window (identity-scoped, capability-filtered, redacted) replaces
@@ -503,7 +503,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		}
 	}
 
-	// Phase 83w F6 (D-164) — wire the Phase 73k MCPSurface over the
+	// wire the MCPSurface over the
 	// constructed MCP Registry so the Console MCP Connections page's
 	// twelve `mcp.servers.*` methods resolve to live data instead of
 	// returning `unknown_method`. The dev binary's OAuth side is a
@@ -528,7 +528,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("mcp surface: %w", err)
 	}
 
-	// Phase 74 (D-114): the ControlSurface is built WITHOUT a
+	// the ControlSurface is built WITHOUT a
 	// topology accessor. `harbor dev`'s runtime is planner/RunLoop-
 	// shaped — it hosts no `engine.Engine` node-graph — so there is no
 	// topology to project. A `topology.snapshot` call against this
@@ -536,10 +536,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// the smoke script's 404 → SKIP convention picks up cleanly. This
 	// is the documented nil-safe path, NOT a wiring gap (CLAUDE.md
 	// §17.6): a Runtime that hosts an engine wires it via
-	// protocol.WithTopologyAccessor; the Phase 74 integration test
+	// protocol.WithTopologyAccessor; the integration test
 	// does exactly that through harbortest/devstack.AssembleOpts.
 	surface, err := protocol.NewControlSurface(taskReg, steeringReg,
-		// D-171 — create-on-first-use: a `start` on a not-yet-existing
+		// create-on-first-use: a `start` on a not-yet-existing
 		// session materialises its registry row so the Console's
 		// sessions.list surfaces the conversation from the first turn.
 		protocol.WithSessionEnsurer(newSessionEnsurerAdapter(sessionRegistry)),
@@ -549,7 +549,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol: %w", err)
 	}
 
-	// Phase 84b (D-189): decode the operator's `multimodal.disposition`
+	// decode the operator's `multimodal.disposition`
 	// block into the planner-homed policy value. Fail loud at boot on a
 	// non-grammar value — the validator already gates this, the decode
 	// is defense-in-depth (never a policy that silently drops entries).
@@ -563,8 +563,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// across every tenant/user/session (the dev binary serves them
 	// all) and launches a goroutine per spawned foreground task that
 	// calls `runLoop.Run` with the task's identity quadruple. This is
-	// the wiring that closes issue #114 (Phase 53's RunLoop had zero
-	// production consumers before D-097). The driver shuts down with
+	// the wiring that closes issue #114 (the RunLoop had zero
+	// production consumers before). The driver shuts down with
 	// the rest of the stack — its closer cancels the subscription's
 	// ctx and waits for every in-flight goroutine to drain.
 	//
@@ -580,56 +580,56 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		bus:      bus,
 		runLoop:  runLoop,
 		planner:  plnr,
-		tasks:    taskReg, // D-098: the FSM the driver advances on RunLoop exit (closes #123)
+		tasks:    taskReg, // the FSM the driver advances on RunLoop exit (closes #123)
 		taskKind: tasks.KindForeground,
-		// Phase 107e (D-170): drive KindBackground tasks too, so a
+		// drive KindBackground tasks too, so a
 		// planner-emitted SpawnTask (a background sub-goal) actually runs
 		// through a planner sub-run. Recursion is bounded at the spawn
 		// site by the dev executor's absolute_max_spawn_depth cap.
 		driveBackground: true,
-		// Phase 83f (D-149): per-run consumer wiring. Each of the
+		// per-run consumer wiring. Each of the
 		// optional surfaces is projected onto RunContext when the
 		// corresponding subsystem / config block is configured; nil
 		// surfaces leave the planner's matching wrapper omitted.
 		memory: memStore,
-		// Phase 111d (D-201): the Phase-39 Directory is the
+		// the Phase-39 Directory is the
 		// `<skills_context>` producer — pinned-then-recent,
 		// identity-scoped, capability-filtered, redacted. Replaces
 		// the raw SkillStore.Search + keyword-extraction path.
 		skillsDirectory: skillsDir,
-		// Phase 110c (D-196): the YAML hints projection lives on its
+		// the YAML hints projection lives on its
 		// owning package (planner.HintsFromConfig), not as a
 		// package-main helper.
 		planningHints: planner.HintsFromConfig(cfg.Planner.PlanningHints),
-		// Phase 83i (D-152): tool dispatch + Catalog projection +
+		// tool dispatch + Catalog projection +
 		// Trajectory. Closes the structural gap that made multi-step
 		// ReAct broken against real LLMs.
 		catalog: toolCat,
-		// Phase 110a (D-194) / 110d (D-197): the executor is the promoted
+		// the executor is the promoted
 		// `internal/runtime/dispatch` concrete, constructed by the ONE
 		// assembly fan-out — cmd/harbor consumes the assembled instance
 		// the same way devstack (and any headless embedder) does.
 		executor:        stack.Executor,
 		maxStepsRunLoop: cfg.Planner.MaxSteps,
-		// Phase 83m (Item 6, D-156): operator-declared granted scopes
+		// operator-declared granted scopes
 		// flow into the per-run catalog view's CatalogFilter, closing
-		// the runloop's `nil /* TODO Phase 83m */` hard-code. Empty
+		// the runloop's `nil /* TODO */` hard-code. Empty
 		// list = no scopes granted (the existing latent default).
 		grantedScopes: append([]string(nil), cfg.Tools.GrantedScopes...),
-		// Round-7 F11 / D-166: multimodal materializer reads bytes /
+		// multimodal materializer reads bytes /
 		// metadata from the artifact store when a task's
 		// InputArtifactIDs is non-empty. The same `artStore` the
 		// dispatch executor already consumes is reused — there is one
 		// canonical ArtifactStore per dev stack.
 		artifactStore: artStore,
-		// Phase 111e (D-202): trajectory compression. The assembly built
+		// trajectory compression. The assembly built
 		// the runner (LLM-backed TrajectorySummariser) when the operator
 		// set a non-zero `planner.token_budget`; the driver projects the
 		// budget onto each run's Base.Budget and hands the runner to the
 		// RunSpec. Zero/nil = compression off.
 		tokenBudget: cfg.Planner.TokenBudget,
 		compression: stack.Compression,
-		// Phase 84b (D-189): the per-agent attachment disposition policy
+		// the per-agent attachment disposition policy
 		// decoded from `multimodal.disposition` by the planner-homed
 		// projection — `harbor.yaml` is a thin carrier over
 		// `planner.DispositionPolicy`.
@@ -660,7 +660,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
 
-	// Phase 73m (D-129): the `auth.rotate_token` surface — the single
+	// the `auth.rotate_token` surface — the single
 	// net-new Console Settings-page Protocol method. The dev signer is
 	// the V1 auth.TokenIssuer (it re-mints ephemeral ES256 tokens for
 	// the caller's verified identity); a real OIDC-backed deployment
@@ -676,10 +676,10 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("auth: rotate surface: %w", err)
 	}
 
-	// Phase 73l (D-120): the artifacts surface backing the Console
+	// the artifacts surface backing the Console
 	// Artifacts page — `artifacts.list` (catalog), `artifacts.put`
-	// (upload pipeline per Brief 11 §PG-2), `artifacts.get_ref`
-	// (presigned-URL resolver per D-022 / D-026). Wired with the live
+	// (the Console upload pipeline), `artifacts.get_ref`
+	// (presigned-URL resolver). Wired with the live
 	// artifact store, the audit redactor, and the bus so an operator
 	// gets a working artifacts surface out of the box (no seam to wire —
 	// CLAUDE.md §13). The dev artifact store defaults to the `inmem`
@@ -703,7 +703,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol artifacts surface: %w", err)
 	}
 
-	// Phase 73f: the Console Tools-page Protocol service. The catalog
+	// the Console Tools-page Protocol service. The catalog
 	// projector is built over the same tool catalog the runtime
 	// dispatches against, so the Console renders the live registered
 	// set. The bus + redactor are wired so the two admin methods'
@@ -724,18 +724,18 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("tools/protocol service: %w", err)
 	}
 
-	// Phase 73e (D-124): the Console Agents-page Protocol service. The
+	// the Console Agents-page Protocol service. The
 	// Agent Registry is the per-runtime-instance subsystem owning agent
-	// registration identity (D-059 / D-060); it is constructed over the
+	// registration identity; it is constructed over the
 	// same StateStore the rest of the runtime persists through, so the
 	// Console renders the live registered set. A fresh dev stack with no
 	// agents registered correctly serves an empty catalog ("no agents
 	// yet" is the right empty state, not a missing surface). The eight
 	// `agents.*` methods are READ-ONLY projections; the five
 	// agent-control verbs the page exposes are the EXISTING shipped
-	// `registry.*` control verbs (D-066), not new methods (CLAUDE.md
+	// `registry.*` control verbs, not new methods (CLAUDE.md
 	// §13). The Registry itself (and its Close) is owned by the
-	// assembly (Phase 110d, D-197).
+	// assembly.
 	agentsProjector, err := agentsprotocol.NewRegistryProjector(agentRegistry)
 	if err != nil {
 		closeAll(ctx)
@@ -743,7 +743,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	}
 	agentsService, err := agentsprotocol.NewService(agentsProjector,
 		agentsprotocol.WithLogger(opts.logger),
-		// Phase 108l (D-184): inject the in-process registry as the
+		// inject the in-process registry as the
 		// fleet-control mutate seam so the five agents.* control verbs
 		// (pause / drain / restart / force_stop / deregister) drive the
 		// real registry behind the admin-gated Protocol surface.
@@ -754,7 +754,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("registry/protocol service: %w", err)
 	}
 
-	// Phase 73i (D-117): the Console Flows-page surface. The dev stack
+	// the Console Flows-page surface. The dev stack
 	// boots an empty flow.Registry — flows register into it at
 	// agent-definition time, so a fresh dev stack with no graph-family
 	// agents correctly serves an empty catalog ("no flows registered"
@@ -763,8 +763,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// heavy-content threshold so the Console Flows page works out of
 	// the box (no seam for the operator to wire — CLAUDE.md §13). The
 	// FuncInvoker's launcher delegates to the task registry's
-	// `SpawnTool` path — running an existing flow is permitted at V1
-	// (D-063).
+	// `SpawnTool` path — running an existing flow is permitted at V1.
 	flowRegistry := flow.NewRegistry()
 	flowCatalog, err := flowprotocol.NewRegistryCatalog(flowRegistry, artStore, cfg.Artifacts.HeavyOutputThresholdBytes)
 	if err != nil {
@@ -797,7 +796,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("flow protocol surface: %w", err)
 	}
 
-	// Phase 73d (D-123): the Console Tasks-page Protocol service. The
+	// the Console Tasks-page Protocol service. The
 	// registry projector is built over the same TaskRegistry the
 	// runtime drives, so the Console renders the live task set. The bus
 	// + redactor are wired so a cross-tenant `tasks.list` fan-in's
@@ -822,8 +821,8 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("tasks/protocol service: %w", err)
 	}
 
-	// Phase 73c (D-122): the Console Sessions-page Protocol service.
-	// The registry is StateStore-backed (Phase 08) — the same store
+	// the Console Sessions-page Protocol service.
+	// The registry is StateStore-backed — the same store
 	// the task registry uses, so the Console Sessions page renders the
 	// live session set. The ListerProjector wraps the registry's
 	// SessionLister surface; the service's bus + redactor are wired so
@@ -831,7 +830,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// `audit.admin_scope_used` event (CLAUDE.md §13 — the admin path is
 	// never a silent no-op).
 	//
-	// D-171: the registry is constructed earlier (alongside the
+	// the registry is constructed earlier (alongside the
 	// ControlSurface) and is NO LONGER force-Opened with a fixed "dev"
 	// session at boot. Boot-time Open crashed against a persisted-closed
 	// session (reopen-after-close is forbidden). Sessions are now
@@ -853,7 +852,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("sessions/protocol service: %w", err)
 	}
 
-	// Phase 73n (D-130): the Console Playground-page Runs service. The
+	// the Console Playground-page Runs service. The
 	// override Store is an in-process artifact (the next-message
 	// override slot is ephemeral per-runtime state — there is no
 	// persistence-shaped seam). Wired unconditionally so the Console
@@ -868,7 +867,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("runs/protocol service: %w", err)
 	}
 
-	// Phase 72f / 72g (D-111 / D-112): the single posture surface — the
+	// the single posture surface — the
 	// seven read-only posture Protocol methods. The five `runtime.*` /
 	// `metrics.*` reads (72f) project the runtime's build identity,
 	// per-subsystem health, live counters, configured drivers, and a
@@ -876,7 +875,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// reads (72g) project the operator-configured `IdentityTiers`
 	// (latent by default) and the bound LLM provider/model/region + the
 	// boot-captured MockMode flag. All seven are read-only; a
-	// cross-tenant read gates on `auth.ScopeAdmin` (D-079) and the
+	// cross-tenant read gates on `auth.ScopeAdmin` and the
 	// governance / llm cross-tenant reads emit a `*.posture_read_admin`
 	// audit event. There is exactly ONE NewPostureSurface call site per
 	// binary.
@@ -887,7 +886,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	// MetricsRegistry's bus-fed counter snapshot for Metrics. They are
 	// NEVER an empty stub.
 	//
-	// Phase 111a (D-198): populated `governance.identity_tiers` are
+	// populated `governance.identity_tiers` are
 	// ENFORCED by the shared assembly (assemble.Assemble installs the
 	// enforcement Subsystem via governance.SetFactory before llm.Open).
 	// This posture provider stays what it always was — the read-only
@@ -914,7 +913,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		Bus:         bus,
 		DisplayName: "harbor dev",
 		InstanceID:  devInstanceID(),
-		// Round-8 F1 / phase 84a: `harbor dev` against an agent yaml is
+		// `harbor dev` against an agent yaml is
 		// planner/RunLoop-shaped — no engine-graph topology accessor is
 		// wired into the ControlSurface. Advertising
 		// `topology_snapshot` here would lie about the wire. Future
@@ -926,7 +925,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("protocol posture surface: %w", err)
 	}
 
-	// Phase 72c (D-108): the `search.*` cluster surface — the five
+	// the `search.*` cluster surface — the five
 	// search methods backed by the live sessions / tasks / events /
 	// artifacts subsystems. Wired so an operator gets a working search
 	// surface out of the box (CLAUDE.md §13 — no seam to hand-wire).
@@ -969,52 +968,52 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("search surface: %w", err)
 	}
 
-	// The long-lived `notification.*` Subscriber (Phase 72d / D-109) is
-	// constructed and run by the assembly (Phase 110d, D-197).
+	// The long-lived `notification.*` Subscriber is
+	// constructed and run by the assembly.
 
 	mux, err := transports.NewMux(surface, bus,
 		transports.WithLogger(opts.logger),
 		transports.WithValidator(validator),
 		transports.WithPostureSurface(postureSurface),
-		// Phase 72c (D-108): mount the five `search.*` methods.
+		// mount the five `search.*` methods.
 		transports.WithSearch(searchSurface),
 		transports.WithArtifactsSurface(artifactsSurface),
-		// Phase 83w F6 (D-164): mount the twelve `mcp.servers.*` methods
+		// mount the twelve `mcp.servers.*` methods
 		// so the Console MCP Connections page renders live data instead
 		// of an "unknown_method" red error on every visit.
 		transports.WithMCPSurface(mcpSurface),
-		// Phase 72e: mount the `pause.list` snapshot route. The
+		// mount the `pause.list` snapshot route. The
 		// production path always wires the unified Coordinator + the
 		// artifact store + the configured heavy-content threshold so
 		// the Console intervention queue works out of the box (no seam
 		// for the operator to wire — CLAUDE.md §13).
 		transports.WithPauseList(coord, artStore, cfg.Artifacts.HeavyOutputThresholdBytes),
-		// Phase 73j (D-118): mount the three `memory.*` read routes for
+		// mount the three `memory.*` read routes for
 		// the Console Memory page. The handler reuses the artifact
 		// store + heavy-content threshold supplied to WithPauseList for
-		// the D-026 heavy-value bypass. When no memory driver is
+		// the heavy-value bypass. When no memory driver is
 		// configured (memStore is nil) the routes are left un-mounted.
 		transports.WithMemory(memStore, cfg.Memory.Driver),
-		// Phase 73f: mount the `tools.*` route family so the Console
+		// mount the `tools.*` route family so the Console
 		// Tools page has a live Protocol surface.
 		transports.WithToolsService(toolsService),
-		// Phase 73i: mount the six Console Flows-page routes.
+		// mount the six Console Flows-page routes.
 		transports.WithFlows(flowsSurface),
-		// Phase 73d: mount the two Console Tasks-page read routes.
+		// mount the two Console Tasks-page read routes.
 		transports.WithTasksService(tasksService),
-		// Phase 73e: mount the eight `agents.*` read routes so the
+		// mount the eight `agents.*` read routes so the
 		// Console Agents page has a live Protocol surface.
 		transports.WithAgentsService(agentsService),
-		// Phase 73c (D-122): mount the two Console Sessions-page routes
+		// mount the two Console Sessions-page routes
 		// (`sessions.list` / `sessions.inspect`) so the Console Sessions
 		// page has a live Protocol surface.
 		transports.WithSessionsService(sessionsService),
-		// Phase 73n (D-130): mount the Console Playground-page route
+		// mount the Console Playground-page route
 		// (`runs.set_overrides`) so the Playground can record
 		// next-message reasoning-effort / temperature / max-tokens /
 		// system-prompt overrides.
 		transports.WithRunsService(runsService),
-		// Phase 73m (D-129): mount the `auth.rotate_token` route so the
+		// mount the `auth.rotate_token` route so the
 		// Console Settings page "Rotate token" action has a live
 		// Protocol surface.
 		transports.WithAuthSurface(rotateSurface),
@@ -1047,12 +1046,12 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		//nolint:errcheck // readiness-probe response write; a failure is non-actionable and the probe just retries
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
-	// Phase 66 / D-100 — `harbor dev` draft-save scaffolding. The
+	// `harbor dev` draft-save scaffolding. The
 	// draft store materialises agent skeletons under `.harbor/drafts/
 	// <tenant>/<user>/<session>/<draft_id>/` (operator's working dir;
 	// scoped by identity to keep concurrent operators isolated per §6).
-	// The handler is wrapped in the same auth.Middleware as the Phase
-	// 60 transports so every draft endpoint inherits the JWT
+	// The handler is wrapped in the same auth.Middleware as the
+	// transports so every draft endpoint inherits the JWT
 	// validator + identity-in-ctx invariant. Mounted on
 	// `/v1/dev/drafts/` — Go's http.ServeMux longest-prefix-match
 	// resolves this BEFORE the `/v1/` Protocol catch-all below.
@@ -1066,7 +1065,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		closeAll(ctx)
 		return nil, fmt.Errorf("devdraft: %w", err)
 	}
-	// Phase 83m (Item 3, D-156): append the draft store's Close to
+	// append the draft store's Close to
 	// the closer chain. The V1 Store is a no-op (no goroutines, no
 	// persistent handles) — the contract is "every constructed
 	// subsystem registers its Close" so a future SQLite-backed Draft
@@ -1092,7 +1091,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		bindAddr = opts.bindAddr
 	}
 
-	// Phase 105 (V1.2) — dev-only bootstrap endpoint. Mints a fresh
+	// dev-only bootstrap endpoint. Mints a fresh
 	// dev token + returns the full connection envelope the Console
 	// needs for a one-click "Attach to local Runtime" button.
 	// Loopback-gated; mounted WITHOUT auth middleware — the loopback
@@ -1107,14 +1106,14 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	)
 	router.Handle("POST /v1/dev/bootstrap.json", bootstrapHandler)
 
-	// Phase 111b (D-199) — the tool-OAuth callback endpoint: the
+	// the tool-OAuth callback endpoint: the
 	// completion leg of the unified pause/resume choreography (RFC
 	// §6.4 + §3.3). The authorization server redirects the user's
 	// browser here; the handler exchanges (state, code) via
 	// Provider.CompleteFlow, persists the token, and resumes the
 	// parked pause record with the typed DecisionResume marker. The
 	// provider map is the SAME assembly output the catalog Builder
-	// consumed (assemble.Stack.OAuthProviders — D-197), so the flow
+	// consumed (assemble.Stack.OAuthProviders), so the flow
 	// records the wrapper parked are the records this route
 	// completes. Mounted WITHOUT auth middleware by design: the
 	// redirect carries no Harbor JWT — the unguessable one-time
@@ -1127,19 +1126,19 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 	router.Handle(toolauth.CallbackRoutePattern,
 		toolauth.CallbackHandler(stack.OAuthProviders, toolauth.WithCallbackLogger(opts.logger)))
 
-	// Forward every other Protocol-prefixed path to the Phase 60 mux.
+	// Forward every other Protocol-prefixed path to the mux.
 	// The draft handler is registered above; this catch-all picks up
 	// everything else under /v1/.
 	router.Handle("/v1/", mux)
 
-	// Phase 73m (D-129): when booted via `harbor console`, mount the
+	// when booted via `harbor console`, mount the
 	// embedded SvelteKit Console build at `/` with SPA fallback. The
 	// Protocol surface (`/v1/*`, `/healthz`) registered above takes
 	// precedence — Go's http.ServeMux longest-prefix-match resolves a
 	// `/v1/...` request to the Protocol mux and only a non-`/v1/`
 	// non-`/healthz` path falls through to the Console asset handler.
 	// `harbor dev` leaves serveConsole false — the Console build is
-	// NEVER embedded into the dev-loop surface (D-091 binding rule).
+	// NEVER embedded into the dev-loop surface (binding rule).
 	if opts.serveConsole {
 		consoleHandler, err := newConsoleAssetHandler(opts.logger)
 		if err != nil {
@@ -1149,7 +1148,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		router.Handle("/", consoleHandler)
 	}
 
-	// Phase 83v (D-162) — CORS middleware. Default-deny: empty allowlist
+	// CORS middleware. Default-deny: empty allowlist
 	// = no CORS headers = same-origin only (the pre-83v posture).
 	// `server.cors_dev_allow_any: true` opens the door to any origin and
 	// prints a loud stderr banner so the posture is visibly dev-only
@@ -1189,7 +1188,7 @@ func bootDevStack(ctx context.Context, opts devBootOptions) (*devStack, error) {
 		return nil, fmt.Errorf("dev token: %w", err)
 	}
 
-	// Phase 75a (D-131): the dev-only runtime-entity fixture seeder.
+	// the dev-only runtime-entity fixture seeder.
 	// When `HARBOR_DEV_SEED_FIXTURES=1`, populate the registries with
 	// a deterministic fixture set so the Console e2e Playwright suite
 	// (which boots `harbor console`) renders real rows instead of
@@ -1250,28 +1249,28 @@ type devStack struct {
 	// label is the subcommand name ("dev" or "console") used in the
 	// boot log lines. The stderr `HARBOR_DEV_TOKEN=` / `HARBOR_DEV_BOUND=`
 	// contract lines keep the `DEV_` prefix regardless of label — the
-	// preflight + e2e harnesses parse those exact prefixes (D-104).
+	// preflight + e2e harnesses parse those exact prefixes.
 	label    string
 	closeFns []func(context.Context) error
 	// bus is the canonical event bus. Exposed so regression tests
-	// can assert wire-side invariants — F1 from the Wave 11.5 §17.5
+	// can assert wire-side invariants — F1 from the.5 §17.5
 	// audit (pauseresume.New must be bus-wired in production so
-	// D-096's typed Decision marker reaches subscribers).
+	// the typed Decision marker reaches subscribers).
 	bus events.EventBus
-	// Phase 64a (D-090) surfaces — the tool catalog + Coordinator are
+	// surfaces — the tool catalog + Coordinator are
 	// constructed by bootDevStack; future phases that grow per-tool
 	// dispatch logic read these from the stack.
 	toolCatalog  tools.ToolCatalog
 	coordinator  pauseresume.Coordinator
 	appliedGates map[string]*toolapproval.ApprovalGate
-	// D-097 surfaces — the shared `steering.RunLoop` and its per-task
+	// surfaces — the shared `steering.RunLoop` and its per-task
 	// driver. The driver's lifecycle is tied to the stack via its
 	// Close func registered in closers; tests inspect the RunLoop
 	// directly for the wire-side APPROVE/REJECT bridge invariants.
 	runLoop       *steering.RunLoop
 	runLoopDriver *perTaskRunLoopDriver
 
-	// Phase 66 / D-100 — the draft-save scaffolding store. Exposed
+	// the draft-save scaffolding store. Exposed
 	// so tests + the devstack helper can inspect / probe the on-disk
 	// state without going through the HTTP surface. Production code
 	// reaches the store ONLY via the HTTP handler the dev mux mounts
@@ -1319,7 +1318,7 @@ func (s *devStack) serve(ctx context.Context) error {
 	// `:18080` — and (b) we can emit a parseable
 	// `HARBOR_DEV_BOUND=<host:port>` line on stderr that the preflight
 	// harness reads to discover the actual port the OS handed us.
-	// D-104 pins this contract; the line MUST appear exactly once per
+	// this contract is pinned; the line MUST appear exactly once per
 	// boot, on stderr, with that exact prefix.
 	listener, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {

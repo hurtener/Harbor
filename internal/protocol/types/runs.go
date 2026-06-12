@@ -2,12 +2,12 @@ package types
 
 import "time"
 
-// Package-level note (runs.go): the `runs.*` Protocol wire types
-// (Phase 73n / D-130). Today the surface holds a single method —
+// Package-level note (runs.go): the `runs.*` Protocol wire types.
+// Today the surface holds a single method —
 // `runs.set_overrides` — the Console Playground page's reasoning-effort
 // / temperature / max-tokens / system-prompt override recorder.
 //
-// `RunOverrides` is the single-source wire projection (D-002) of the
+// `RunOverrides` is the single-source wire projection of the
 // next-message override parameters. It is declared HERE and nowhere
 // else; `internal/runtime/runs/protocol` consumes this type rather than
 // redeclaring it.

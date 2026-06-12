@@ -1,5 +1,5 @@
 // Package protocol implements the two `sessions.*` Protocol methods the
-// Console Sessions page (Phase 73c / D-122) consumes:
+// Console Sessions page consumes:
 //
 //   - sessions.list    — paginated, filtered SessionRegistry projection.
 //   - sessions.inspect — full per-session snapshot for the detail view.
@@ -20,7 +20,7 @@
 // identity-downgrading knob. The Service NEVER reads identity from a
 // package-level global; the triple flows in via the request.
 //
-// # Cross-tenant gating (D-079)
+// # Cross-tenant gating
 //
 // A `sessions.list` whose `Filter.TenantIDs` names a tenant other than
 // the caller's verified tenant requires the verified `auth.ScopeAdmin`
@@ -28,11 +28,11 @@
 // computes from the verified JWT scope set; a false value on a
 // cross-tenant filter fails closed with `ErrCrossTenantScope`. There is
 // NO `sessions.admin` scope — the closed two-scope set (`admin` +
-// `console:fleet`) is the only admit surface (D-079). On a successful
+// `console:fleet`) is the only admit surface. On a successful
 // admin-scope query the Service emits an `audit.admin_scope_used`
 // event.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
 // share across N concurrent goroutines: it holds only the Projector
@@ -64,7 +64,7 @@ var (
 	ErrIdentityRequired = errors.New("sessions/protocol: identity scope incomplete")
 	// ErrCrossTenantScope — a `sessions.list` filter named a tenant
 	// outside the caller's verified tenant without the verified
-	// `auth.ScopeAdmin` claim (D-079).
+	// `auth.ScopeAdmin` claim.
 	ErrCrossTenantScope = errors.New("sessions/protocol: cross-tenant filter requires the admin scope claim")
 	// ErrInvalidRequest — the request was structurally invalid (an
 	// out-of-range limit, an unknown enum, a malformed cursor).
@@ -93,7 +93,7 @@ type Projector interface {
 }
 
 // Service implements the two `sessions.*` Protocol methods. It is a
-// D-025-safe compiled artifact — immutable after NewService.
+// safe for concurrent reuse compiled artifact — immutable after NewService.
 type Service struct {
 	projector Projector
 	bus       events.EventBus // optional — nil ⇒ admin audit emit is logged only
@@ -142,7 +142,7 @@ func WithLogger(l *slog.Logger) Option {
 // projector is mandatory — a nil fails loud with ErrMisconfigured
 // rather than building a Service that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *Service is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewService(projector Projector, opts ...Option) (*Service, error) {
 	if projector == nil {
 		return nil, fmt.Errorf("%w: Projector is nil", ErrMisconfigured)
@@ -169,7 +169,7 @@ func validIdentity(scope prototypes.IdentityScope) (identity.Identity, error) {
 }
 
 // isCrossTenant reports whether the filter names a tenant other than
-// the caller's verified tenant — the predicate that gates the D-079
+// the caller's verified tenant — the predicate that gates the
 // admin-scope requirement.
 func isCrossTenant(callerTenant string, f prototypes.SessionFilter) bool {
 	for _, t := range f.TenantIDs {
@@ -181,7 +181,7 @@ func isCrossTenant(callerTenant string, f prototypes.SessionFilter) bool {
 }
 
 // List implements the `sessions.list` method. It validates identity,
-// enforces the D-079 cross-tenant gate, resolves the identity-scoped
+// enforces the cross-tenant gate, resolves the identity-scoped
 // rows from the Projector, applies the facet filter + sort + cursor
 // pagination, and emits an `audit.admin_scope_used` event on a
 // successful admin-scope query.
@@ -251,7 +251,7 @@ func (s *Service) List(ctx context.Context, req prototypes.SessionsListRequest, 
 	page := filtered[start:]
 
 	// Truncated: the candidate set has more than Limit rows past the
-	// cursor — D-026 fail-loudly, never a silent total.
+	// cursor — fail-loudly, never a silent total.
 	truncated := len(page) > limit
 	if truncated {
 		page = page[:limit]

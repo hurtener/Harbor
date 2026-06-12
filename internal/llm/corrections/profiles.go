@@ -7,7 +7,7 @@ import (
 )
 
 // estimateRequestTokens mirrors the safety-pass estimator (chars/4 +
-// per-message overhead) so the backfill numbers match Phase 32's
+// per-message overhead) so the backfill numbers match the
 // token-budget guard. Kept inline so the corrections package does
 // not depend on `internal/llm`'s unexported `estimateTokens` helper.
 //
@@ -20,7 +20,7 @@ import (
 //     count a constant 16 tokens — close enough that operator
 //     dashboards see consistent numbers without paying for marshal.
 //
-// Synthetic; not a replacement for a real tokenizer. Phase 33+ may
+// Synthetic; not a replacement for a real tokenizer. Later phases may
 // register tiktoken-equivalent estimators via
 // `ModelProfile.TokenEstimator`; this fallback runs when the named
 // estimator is empty or "chars_div_4".
@@ -60,7 +60,7 @@ func estimateStringTokens(s string) int {
 // the model name prefix.
 //
 // The defaults table is intentionally small and conservative: the
-// per-provider quirks listed in brief 03 §4 + brief 08 are encoded
+// per-provider quirks catalogued in the MCP research notes are encoded
 // as defaults so an operator who omits the corrections block still
 // gets sensible behaviour when running against a known model. An
 // operator who overrides the profile in `harbor.yaml` wins.
@@ -85,7 +85,7 @@ func ProfileFor(cfg llm.ConfigSnapshot, model string) llm.CorrectionsProfile {
 //   - `openai/o1*`, `openai/o3*` → ReasoningRouteThinking +
 //     SchemaOpenAIStrict.
 //   - `deepseek/deepseek-reasoner*` → ReasoningRouteThinking.
-//   - `nim/*` → OrderingSystemFirstStrict (brief 03 §4: NIM
+//   - `nim/*` → OrderingSystemFirstStrict (NIM
 //     rejects mid-thread system).
 //   - `anthropic/*` → ResponseFormatAnthropic (envelope shape).
 //
@@ -117,7 +117,7 @@ func defaultProfileFor(model string) llm.CorrectionsProfile {
 }
 
 // DefaultOutputModeFor returns the per-known-provider default
-// `OutputMode` for the supplied model name. Phase 35 reads this when
+// `OutputMode` for the supplied model name. Harbor reads this when
 // the operator's profile leaves `OutputMode` unset.
 //
 // Defaults:

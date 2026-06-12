@@ -14,7 +14,7 @@ import (
 )
 
 // flowOutputArtifactNamespace is the artifact namespace heavy flow-run
-// outputs are routed under (D-026). A dedicated namespace keeps the
+// outputs are routed under. A dedicated namespace keeps the
 // content-addressed IDs distinguishable from other artifact producers.
 const flowOutputArtifactNamespace = "flow_run_output"
 
@@ -24,11 +24,11 @@ const flowOutputArtifactNamespace = "flow_run_output"
 // NOT a test stub (CLAUDE.md §13): it is the real catalog backed by the
 // real registry; the binary wires it at boot.
 //
-// Heavy run outputs are routed by-reference through an ArtifactStore
-// (D-026): a run whose final output meets or exceeds the configured
+// Heavy run outputs are routed by-reference through an ArtifactStore:
+// a run whose final output meets or exceeds the configured
 // heavy-content threshold ships a FlowArtifactRef, never inline bytes.
 //
-// Concurrent reuse (D-025): the RegistryCatalog is a compiled artifact
+// Concurrent reuse: the RegistryCatalog is a compiled artifact
 // — registry / store / threshold are set once at construction. Every
 // method reads through the registry's own RWMutex; the catalog holds no
 // per-call state.
@@ -41,7 +41,7 @@ type RegistryCatalog struct {
 	// clock so a time-sensitive run-count assertion is not a
 	// wall-clock-rollover time bomb (CLAUDE.md §11 "time-sensitive
 	// tests use a controllable clock"). Set once at construction; never
-	// mutated (D-025).
+	// mutated.
 	clock func() time.Time
 }
 
@@ -50,7 +50,7 @@ type CatalogOption func(*RegistryCatalog)
 
 // WithCatalogClock overrides the wall-clock seam the trailing-24h-window
 // run aggregates read. A nil clock keeps the default `time.Now`.
-// Production never sets this; the Phase 73i flows integration test
+// Production never sets this; the flows integration test
 // injects a fixed clock so its run-count assertions are deterministic
 // regardless of the real wall clock.
 func WithCatalogClock(now func() time.Time) CatalogOption {
@@ -141,7 +141,7 @@ func (c *RegistryCatalog) ListRuns(ctx context.Context, id identity.Identity, ad
 
 // DescribeRun projects a single run's per-node timeline + final-output
 // reference. A run whose output exceeds the heavy-content threshold
-// (D-026) is routed by-reference through the ArtifactStore.
+// is routed by-reference through the ArtifactStore.
 func (c *RegistryCatalog) DescribeRun(ctx context.Context, id identity.Identity, adminScoped bool, runID string) (prototypes.FlowRunDescription, error) {
 	rec, ok := c.registry.RunByID(runID)
 	if !ok {
@@ -195,7 +195,7 @@ func (c *RegistryCatalog) FlowMetrics(ctx context.Context, id identity.Identity,
 // threshold. Below the threshold it returns (nil, nil) — the caller
 // ships the output inline. At or above it routes the output through the
 // ArtifactStore and returns the by-reference FlowArtifactRef. A store
-// failure fails loud — never a silent truncation (D-026, §13).
+// failure fails loud — never a silent truncation (§13).
 func (c *RegistryCatalog) maybeRouteHeavyOutput(ctx context.Context, rec flow.RunRecord) (*prototypes.FlowArtifactRef, error) {
 	if len(rec.Output) < c.threshold {
 		return nil, nil
@@ -209,7 +209,7 @@ func (c *RegistryCatalog) maybeRouteHeavyOutput(ctx context.Context, rec flow.Ru
 		MimeType:  "text/plain",
 		Namespace: flowOutputArtifactNamespace,
 		Source: map[string]any{
-			// Phase 107f (D-176): stamp the canonical `source`
+			// stamp the canonical `source`
 			// discriminator so artifacts.list and the session-artifact
 			// manifest project a real provenance instead of a blank
 			// source. The wire layer (internal/protocol/artifacts.go)
@@ -219,7 +219,7 @@ func (c *RegistryCatalog) maybeRouteHeavyOutput(ctx context.Context, rec flow.Ru
 			"source": "flow",
 			// methods.MethodFlowsRunsDescribe is the single source for
 			// the `flows.runs.describe` wire string (CLAUDE.md §8) — used
-			// here so the Phase 58 single-source checker does not flag
+			// here so the single-source checker does not flag
 			// the artifact-provenance literal.
 			"producer": string(methods.MethodFlowsRunsDescribe),
 			"run_id":   rec.RunID,

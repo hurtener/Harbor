@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73j / D-118): the three
+// Package stream — additions: the three
 // `memory.*` read handlers. Like `events.aggregate` and `pause.list`,
 // these are one-shot request/response — POST JSON in, JSON out — and
 // they live in the stream package because their identity + cross-tenant
@@ -13,16 +13,16 @@
 //	POST /v1/memory/health
 //
 // The handler reads identity from r.Context() (auth.Middleware) or the
-// X-Harbor-* carrier headers (Phase 60 fallback), decodes the JSON body,
+// X-Harbor-* carrier headers (fallback), decodes the JSON body,
 // gates cross-tenant filters on auth.HasScope(ScopeAdmin) OR
-// auth.HasScope(ScopeConsoleFleet) — the D-079 closed two-scope set, NO
+// auth.HasScope(ScopeConsoleFleet) — the admin closed two-scope set, NO
 // new memory scope (audit B1) — projects the answer from the memory
 // subsystem, and encodes the response. The response body is the wire
 // types.Memory* JSON; on failure, a JSON error body with the canonical
 // Protocol Code.
 //
 // All three methods are READ-ONLY. The memory mutation surface
-// (`memory.put` / `memory.delete`) is deferred to Phase 73 / post-V1
+// (`memory.put` / `memory.delete`) is deferred to a later phase / post-V1
 // (page-memory.md §10); this handler ships no mutation path.
 package stream
 
@@ -70,9 +70,9 @@ var ErrMemoryHandlerMisconfigured = errors.New("stream: memory handler missing a
 
 // MemoryHandler serves the three `memory.*` read routes. It is the wire
 // adapter over the memory subsystem: decode the request, gate on the
-// D-079 scope claim if the filter is cross-tenant, project the answer
+// scope claim if the filter is cross-tenant, project the answer
 // via internal/memory/protocol, encode the response. The handler is a
-// D-025-safe compiled artifact — every field is set once at
+// safe for concurrent reuse compiled artifact — every field is set once at
 // construction; ServeHTTP holds no per-request state.
 type MemoryHandler struct {
 	store      memory.MemoryStore
@@ -146,7 +146,7 @@ func WithMemoryDriverName(name string) MemoryOption {
 // (cfg.Artifacts.HeavyOutputThresholdBytes); a non-positive value fails
 // loud (a zero threshold would route every value).
 //
-// The returned *MemoryHandler is immutable after construction (D-025)
+// The returned *MemoryHandler is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewMemoryHandler(store memory.MemoryStore, artStore artifacts.ArtifactStore, threshold int, opts ...MemoryOption) (*MemoryHandler, error) {
 	if store == nil {
@@ -235,7 +235,7 @@ func (h *MemoryHandler) serveStrategyTrace(w http.ResponseWriter, r *http.Reques
 }
 
 // servePut answers `POST /v1/memory/put` — the admin-gated, audited
-// "add a memory turn" mutation (D-079).
+// "add a memory turn" mutation.
 func (h *MemoryHandler) servePut(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusMethodNotAllowed,
@@ -271,7 +271,7 @@ func (h *MemoryHandler) servePut(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveDelete answers `POST /v1/memory/delete` — the admin-gated, audited
-// "evict a memory turn" mutation (D-079).
+// "evict a memory turn" mutation.
 func (h *MemoryHandler) serveDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMemoryError(w, protoerrors.CodeInvalidRequest, http.StatusMethodNotAllowed,
@@ -312,7 +312,7 @@ func (h *MemoryHandler) serveDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // assertMemoryAdmin gates a mutation method on the verified `admin` scope
-// claim (D-079). Unlike the cross-tenant READ gate (which admits `admin`
+// claim. Unlike the cross-tenant READ gate (which admits `admin`
 // OR `console:fleet`), a runtime-state MUTATION requires `admin` strictly —
 // `console:fleet` is a cross-runtime observation claim, never a write
 // entitlement. Fails closed with CodeIdentityScopeRequired (403).
@@ -350,7 +350,7 @@ func (h *MemoryHandler) serveList(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cross-tenant gate — a filter naming a tenant other than the
 	// caller's own, or more than one tenant, requires the verified
-	// `admin` (or `console:fleet`) scope claim from the D-079 closed
+	// `admin` (or `console:fleet`) scope claim from the closed
 	// two-scope set. NO new memory scope (audit B1).
 	if memoryCrossTenantRequested(req.Filter.TenantIDs, id.TenantID) && !memoryHasAdminScope(r.Context()) {
 		writeMemoryError(w, protoerrors.CodeIdentityScopeRequired, http.StatusForbidden,
@@ -532,7 +532,7 @@ func memoryCrossTenantRequested(tenantIDs []string, callerTenant string) bool {
 	return tenantIDs[0] != callerTenant
 }
 
-// memoryHasAdminScope reports whether ctx carries the D-079 closed
+// memoryHasAdminScope reports whether ctx carries the closed
 // two-scope set's cross-tenant entitlement — `admin` OR `console:fleet`.
 // NO new memory scope is consulted (audit B1).
 func memoryHasAdminScope(ctx context.Context) bool {
@@ -557,7 +557,7 @@ func classifyMemoryError(err error) (protoerrors.Code, int, string) {
 			"memory: record not found"
 	case errors.Is(err, memprotocol.ErrContextLeak):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
-			"memory: heavy value reached the response path inline (D-026) — failed loudly"
+			"memory: heavy value reached the response path inline — failed loudly"
 	case errors.Is(err, memory.ErrStoreClosed):
 		return protoerrors.CodeRuntimeError, http.StatusInternalServerError,
 			"memory: store is closed"

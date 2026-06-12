@@ -1,7 +1,7 @@
 // cmd/harbor/cmd_console.go — the `harbor console` subcommand
-// (Phase 73m / D-129; RFC §7, D-091).
+// (RFC §7).
 //
-// D-091 pins the Console deployment model: the Harbor Runtime ships
+// pins the Console deployment model: the Harbor Runtime ships
 // headless, and the full SvelteKit Console is served EXCLUSIVELY by the
 // `harbor console` subcommand, which bakes the static build into
 // `cmd/harbor` via `embed.FS` (console_embed.go). The Console build is
@@ -11,25 +11,25 @@
 // # Why `harbor console` is self-contained
 //
 // `harbor console` boots the SAME embedded Runtime stack `harbor dev`
-// boots (config load, every subsystem, the Phase 60 Protocol mux) AND
+// boots (config load, every subsystem, the Protocol mux) AND
 // additionally mounts the embedded Console static build at `/`. The
 // result is a single, self-contained Console deployment: an operator
 // runs `harbor console`, opens the printed URL in a browser, and the
 // Console is already attached to a live Runtime on the same process.
-// D-091's "the Console can also run on a different machine, attached to
+// the "the Console can also run on a different machine, attached to
 // a remote Runtime" remains true — the Console is a Protocol client and
 // the operator can re-point it at any remote Runtime via the Settings
 // page Connected-Runtimes card. The co-resident Runtime is the
 // zero-config default, not a constraint.
 //
-// This does NOT violate the D-091 binding rule: the rule forbids
+// This does NOT violate the binding rule: the rule forbids
 // embedding the Console into `harbor dev`. `harbor console` IS the
-// subcommand D-091 designates to serve the Console.
+// subcommand designates to serve the Console.
 //
 // # Identity + auth posture
 //
 // The Protocol surface `harbor console` serves is gated by the SAME
-// Phase 61 JWT auth.Middleware + identity-scope checks as `harbor dev`
+// JWT auth.Middleware + identity-scope checks as `harbor dev`
 // — every `/v1/*` call carries a verified `(tenant, user, session)`
 // triple. The static Console assets at `/` are public (an SPA's HTML /
 // JS bundle is not a secret); the Console authenticates to the Protocol
@@ -82,7 +82,7 @@ const DefaultConsolePort = 18790
 //	--config <path>  default `harbor.yaml`
 //	--port <int>     default 18790
 //	--bind <host:port> overrides --port; `127.0.0.1:0` requests an
-//	                   ephemeral port (the D-104 pattern the e2e
+//	                   ephemeral port (the pattern the e2e
 //	                   harness uses).
 //
 // The subcommand deliberately mirrors `harbor dev`'s flag surface so an
@@ -95,7 +95,7 @@ func newConsoleCmd() *cobra.Command {
 		Long: `Serve the Harbor Console.
 
 ` + "`harbor console`" + ` bakes the static SvelteKit Console build into the
-binary (D-091) and serves it at ` + "`/`" + `, alongside an embedded Harbor
+binary and serves it at ` + "`/`" + `, alongside an embedded Harbor
 Runtime + Protocol surface on the same port. Open the printed URL in a
 browser and the Console is already attached to a live Runtime.
 
@@ -108,7 +108,7 @@ The default port is ` + fmt.Sprintf("%d", DefaultConsolePort) + `; override via 
 address on stderr (HARBOR_DEV_BOUND=host:port).
 
 The Console build is served ONLY by this subcommand — never by
-` + "`harbor dev`" + ` (D-091 binding rule).
+` + "`harbor dev`" + ` (a binding deployment-posture rule).
 
 Examples:
   harbor console
@@ -135,7 +135,7 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 	bindFlag, _ := cmd.Flags().GetString(flagConsoleBind)  //nolint:errcheck // flag statically registered; lookup cannot fail
 
 	// `--bind` (or HARBOR_BIND) overrides `--port`. `127.0.0.1:0`
-	// requests an ephemeral port — the D-104 pattern the e2e harness
+	// requests an ephemeral port — the pattern the e2e harness
 	// uses to run sibling Consoles concurrently without colliding.
 	bindAddrOverride := bindFlag
 	if bindAddrOverride == "" {
@@ -210,7 +210,7 @@ func runConsole(cmd *cobra.Command, _ []string) error {
 // embedded file (`/_app/...`, `/favicon.png`, …) serves that file; a
 // request for any other path serves `index.html` so SvelteKit's
 // client-side router resolves the route (the adapter-static `fallback`
-// contract). The handler is immutable after construction (D-025).
+// contract). The handler is immutable after construction.
 type consoleAssetHandler struct {
 	assets   fs.FS
 	fileSrv  http.Handler

@@ -1,11 +1,10 @@
-// cmd/harbor/cmd_inspect_events.go — `harbor inspect-events` (Phase 69,
-// D-101).
+// cmd/harbor/cmd_inspect_events.go — `harbor inspect-events`.
 //
-// Tails or snapshots the Phase 60 SSE event stream against a running
+// Tails or snapshots the SSE event stream against a running
 // Harbor Runtime. Identity-scoped filtering by tenant/user/session/run
 // plus optional repeatable --type filters land server-side via the
 // existing X-Harbor-Event-Type carrier header (no new Protocol method
-// — the consumer reuses the surface Phase 60 shipped, which matches
+// the consumer reuses the surface An earlier phase shipped, which matches
 // the §13 primitive-with-consumer rule by exercising existing
 // primitives rather than minting unused ones).
 //
@@ -43,7 +42,7 @@ func newInspectEventsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inspect-events",
 		Short: "tail or filter the event bus of a running Runtime",
-		Long: `Connect to a running Harbor Runtime's Phase 60 SSE event stream and
+		Long: `Connect to a running Harbor Runtime's SSE event stream and
 emit each frame on stdout. Identity-scoped filtering by tenant /
 user / session / run plus optional repeatable --type filters land
 server-side. Output is one event per line — human-readable by default,

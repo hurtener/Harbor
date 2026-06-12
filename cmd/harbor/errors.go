@@ -12,11 +12,11 @@
 // (CLAUDE.md §8 — Protocol error codes are single-sourced under
 // internal/protocol/errors; this file does NOT add a Protocol code).
 //
-// Wire shape (--json mode), pinned by D-084:
+// Wire shape (--json mode), pinned:
 //
 //	{"error":"<message>","code":"<code>","hint":"<hint>"}
 //
-// Human shape (default), pinned by D-084:
+// Human shape (default), pinned:
 //
 //	Error: harbor <subcommand>: <message> [(<hint>)]
 package main
@@ -33,7 +33,7 @@ import (
 // NOT reach into internal/protocol/errors (the Protocol wire surface
 // is a different concern; CLAUDE.md §8).
 const (
-	// CodeNotImplemented is emitted by every Phase 63 stub
+	// CodeNotImplemented is emitted by every stub
 	// subcommand. The §13 amendment requires stubs to exit non-zero
 	// with a structured error pointing to the implementing phase;
 	// this is that code.
@@ -58,14 +58,14 @@ type CLIError struct {
 	// Code is the stable error code (e.g. CodeNotImplemented). A
 	// caller / smoke test asserts against this.
 	Code string `json:"code"`
-	// Hint is an optional follow-up — e.g. "see phase 64 — harbor
+	// Hint is an optional follow-up — e.g. "see `harbor
 	// dev v1". Empty hint OK; the JSON field is omitted when empty
 	// to keep the wire shape compact.
 	Hint string `json:"hint,omitempty"`
 }
 
 // Error implements the error interface. Rendering is the human-mode
-// form pinned by D-084:
+// form pinned:
 //
 //	harbor <subcommand>: <message> [(<hint>)]
 //

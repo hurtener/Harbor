@@ -7,7 +7,7 @@ import (
 	prototypes "github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// Phase 73h (Wave 13 Stage 2.3 / D-128) — the wire-to-runtime
+// the wire-to-runtime
 // `tasks.list` filter translator.
 //
 // The Console Background Jobs page (and the Tasks page) issue a
@@ -20,7 +20,7 @@ import (
 //
 // `ListFilterFromWire` is the single translator between them. It is a
 // PURE function — no goroutines, no shared state, no per-call mutation
-// of any artifact (D-025). The Protocol `tasks/protocol.Service`
+// of any artifact. The Protocol `tasks/protocol.Service`
 // already applies the rich multi-valued facet filtering (status sets,
 // kind sets, group / approval / search) on TOP of the registry result;
 // this translator narrows ONLY the facets the registry's single-valued
@@ -68,7 +68,7 @@ var ErrInvalidListFilter = errors.New("tasks: invalid tasks.list wire filter")
 // The function is pure: it allocates and returns a fresh
 // `tasks.TaskFilter`, reads only its argument, and holds no state. It
 // is therefore trivially safe for concurrent use by N goroutines
-// (D-025) — there is no reusable artifact to leak.
+// there is no reusable artifact to leak.
 func ListFilterFromWire(wire *prototypes.TaskFilter) (TaskFilter, error) {
 	if wire == nil {
 		return TaskFilter{}, nil

@@ -1,9 +1,9 @@
 // Package inmem is Harbor's V1 in-memory MemoryStore driver. It is
 // the test reference for the conformance suite — every later
-// driver (SQLite + Postgres at Phase 25) inherits the same suite
+// driver (SQLite + Postgres) inherits the same suite
 // verbatim.
 //
-// At Phase 24 the driver supports all three strategies:
+// At the driver supports all three strategies:
 //
 //   - `none` — AddTurn is a no-op; GetLLMContext returns empty.
 //   - `truncation` — recent-window buffer with `OverflowDropOldest`
@@ -11,11 +11,11 @@
 //   - `rolling_summary` — recent-window + background-summarised
 //     long-term context with the `healthy → retry → degraded →
 //     recovering → healthy` FSM. The injectable
-//     `memory.Summarizer` (LLM-backed at Phase 32+; stubbed via
+//     `memory.Summarizer` (LLM-backed in later phases; stubbed via
 //     `strategy.EchoSummarizer` for tests) is consumed via
 //     `inmem.Options.Summarizer`.
 //
-// Per D-027 (typed wrapper over StateStore), every successful
+// As a typed wrapper over StateStore, every successful
 // mutation lands as a `state.StateStore` record at `Kind =
 // "memory.state"` so the StateStore conformance suite covers the
 // persistence path. The driver itself holds no per-key buffer
@@ -45,8 +45,8 @@ import (
 //
 // `Summarizer` is REQUIRED when the configured strategy is
 // `rolling_summary`. The `New` constructor rejects a nil
-// summariser for that strategy with a wrapped error. As of Phase 25a
-// (D-174) the registry path (`memory.Open`) injects the summariser
+// summariser for that strategy with a wrapped error. Since the strategy work
+// the registry path (`memory.Open`) injects the summariser
 // via `memory.Deps.Summarizer`, so `rolling_summary` is registry-
 // reachable too; this `Options.Summarizer` field remains for direct
 // `New` callers that want explicit control.
@@ -55,7 +55,7 @@ import (
 // uses the default. Operators set this through
 // `config.MemoryConfig.RecoveryBacklogMax`; the registry-level
 // `memory.Open` propagates the value via `ConfigSnapshot` (see
-// Phase 24's `memory.ConfigSnapshot` extension).
+// the `memory.ConfigSnapshot` extension).
 // `Embedder` is REQUIRED when the configured retrieval mode is
 // `semantic` (mirroring the Summarizer rule); registry callers get
 // it threaded from `memory.Deps.Embedder`.
@@ -68,7 +68,7 @@ type Options struct {
 // New constructs a `MemoryStore` directly. Exposed for tests +
 // production callers that want full control over the strategy
 // `Options`; production callers using `memory.Open` go through the
-// registry, which (Phase 25a, D-174) threads `memory.Deps.Summarizer`
+// registry, which threads `memory.Deps.Summarizer`
 // into `Options` so every strategy — `none`, `truncation`, and
 // `rolling_summary` — is registry-reachable.
 //
@@ -117,7 +117,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps, opts Options) (memory.Memo
 
 func init() {
 	memory.Register("inmem", func(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error) {
-		// Registry path (Phase 25a, D-174): the summariser now
+		// Registry path: the summariser now
 		// threads through `memory.Deps.Summarizer`, so every strategy
 		// — including `rolling_summary` — is constructable through the
 		// registry. `rolling_summary` without a Summarizer fails loud
@@ -131,7 +131,7 @@ func init() {
 // owns identity-rejection emit + the closed flag; per-key state +
 // strategy logic live behind the strategy executor.
 //
-// Concurrent-reuse contract (D-025): one instance is safe to share
+// Concurrent-reuse contract: one instance is safe to share
 // across N concurrent goroutines. The closed flag is `atomic.Bool`
 // + a sync.Mutex serialises Close to guarantee idempotency.
 type driver struct {

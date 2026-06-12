@@ -3,8 +3,8 @@ package types
 import "time"
 
 // Memory-page pagination bounds, shared by the `memory.list` method per
-// the Phase 73j plan acceptance criteria. The values mirror the Phase
-// 72c `search.*` / Phase 72e `pause.list` pagination contracts so a
+// the phase plan acceptance criteria. The values mirror the
+// `search.*` / `pause.list` pagination contracts so a
 // future Console-side pagination component is shared across pages, not
 // re-implemented per-method. A client that omits Page / PageSize gets
 // the documented defaults; a request above the max — or negative —
@@ -41,7 +41,7 @@ func IsValidMemoryScope(s MemoryScope) bool {
 
 // MemoryStrategyName is the typed enum of the memory strategies a
 // `memory.list` filter facet accepts. The three V1 values map onto the
-// runtime-side `memory.Strategy` taxonomy (Phase 24); the overlay-chip
+// runtime-side `memory.Strategy` taxonomy; the overlay-chip
 // names (`pinned`, `episodic`, `recent`, `persistent`) are reserved for
 // post-V1 strategies and intentionally NOT in the closed set — a filter
 // naming an unshipped strategy is rejected with CodeInvalidRequest, not
@@ -49,7 +49,7 @@ func IsValidMemoryScope(s MemoryScope) bool {
 type MemoryStrategyName string
 
 // Canonical V1 memory-strategy names — the wire projection of the
-// `memory.Strategy` taxonomy shipped at Phase 24.
+// `memory.Strategy` taxonomy shipped.
 const (
 	MemoryStrategyNone           MemoryStrategyName = "none"
 	MemoryStrategyTruncation     MemoryStrategyName = "truncation"
@@ -94,12 +94,12 @@ func IsValidMemoryDriver(d MemoryDriverName) bool {
 // on this row shape: a row carries the `SizeBytes` count and the
 // `HeavyContent` flag, and the Console calls `memory.get` for the
 // per-item detail (which produces an `MemoryArtifactRef` above the
-// heavy-content threshold per D-026). Cross-package single source per
-// CLAUDE.md §8 + D-002; the typed Protocol client (D-093) regenerates
+// heavy-content threshold). Cross-package single source per
+// CLAUDE.md §8; the typed Protocol client regenerates
 // from this without hand-editing.
 //
-// D-065 invariant: there is NO `Priority` field. The `Pinned` strategy
-// overlay chip is a Phase 24 strategy, not a session-level priority
+// invariant: there is NO `Priority` field. The `Pinned` strategy
+// overlay chip is a strategy, not a session-level priority
 // dimension — no priority surfaces on a memory row, ever.
 type MemoryItem struct {
 	// Key is the memory record key — a deterministic per-record
@@ -130,7 +130,7 @@ type MemoryItem struct {
 	// value. A count only — the bytes themselves are never inlined on
 	// this row shape.
 	SizeBytes int64 `json:"size_bytes"`
-	// HeavyContent is true when SizeBytes meets or exceeds the D-026
+	// HeavyContent is true when SizeBytes meets or exceeds the
 	// heavy-content threshold; the Console renders a heavy-content icon
 	// and `memory.get` returns a `MemoryArtifactRef` for the value.
 	HeavyContent bool `json:"heavy_content,omitempty"`
@@ -143,16 +143,16 @@ type MemoryItem struct {
 // means "the caller's own identity scope, every record." Supplying a
 // `TenantIDs` value that reaches OUTSIDE the caller's own tenant (or
 // names more than one tenant) requires the `auth.ScopeAdmin` (or
-// `auth.ScopeConsoleFleet`) scope claim from the D-079 closed two-scope
+// `auth.ScopeConsoleFleet`) scope claim from the closed two-scope
 // set; a missing-claim cross-tenant request is rejected loudly with
 // `CodeIdentityScopeRequired` (HTTP 403) — NEVER silently downgraded to
 // an empty result set. There is NO dedicated memory scope: cross-tenant
-// memory listing gates on the same closed set every other Stage-2 page
+// memory listing gates on the same closed set every other page
 // uses (audit B1 resolution).
 type MemoryFilter struct {
 	// TenantIDs narrows to a tenant set; empty = the caller's own
 	// tenant. A foreign tenant OR len>1 requires auth.ScopeAdmin
-	// (D-079 closed set).
+	// (closed set).
 	TenantIDs []string `json:"tenant_ids,omitempty"`
 	// UserIDs narrows to a user set within the visible tenants.
 	UserIDs []string `json:"user_ids,omitempty"`
@@ -174,7 +174,7 @@ type MemoryFilter struct {
 	HasTTLExpiring bool `json:"has_ttl_expiring,omitempty"`
 	// ContentSearch is an optional substring matched against the
 	// post-redaction record value text. The match is runtime-side
-	// (brief 11 §CC-4) — never a Console-side scan over an exported
+	// never a Console-side scan over an exported
 	// snapshot.
 	ContentSearch string `json:"content_search,omitempty"`
 }
@@ -183,7 +183,7 @@ type MemoryFilter struct {
 //
 // Identity is mandatory at the Protocol edge per RFC §5.5 — the request
 // flows out of an auth-verified identity in ctx, never trusted from the
-// body. The `Identity` field exists for the Phase 60 trust-based
+// body. The `Identity` field exists for the trust-based
 // carrier-header posture and for body-side echo; the memory-list
 // handler reads the verified identity from ctx (preferred) and defends
 // the body identity against it.
@@ -207,8 +207,8 @@ type MemoryListRequest struct {
 
 // MemoryAggregates carries the page-level counters the Memory page's
 // sub-header strip renders. The 24-h-window counters derive from
-// `events.aggregate` (Phase 72a) over the `memory.*` event types —
-// runtime-side computation per brief 11 §CC-4.
+// `events.aggregate` over the `memory.*` event types —
+// runtime-side computation
 type MemoryAggregates struct {
 	// Total is the total record count across the filtered set.
 	Total int64 `json:"total"`
@@ -216,10 +216,10 @@ type MemoryAggregates struct {
 	// within (now, now+1h].
 	ExpiringIn1h int64 `json:"expiring_in_1h"`
 	// IdentityRejected24h is the count of `memory.identity_rejected`
-	// events (D-033) observed in the last 24 hours.
+	// events observed in the last 24 hours.
 	IdentityRejected24h int64 `json:"identity_rejected_24h"`
 	// RecoveryDropped24h is the count of `memory.recovery_dropped`
-	// events (D-035) observed in the last 24 hours. The shipped wire
+	// events observed in the last 24 hours. The shipped wire
 	// string is `memory.recovery_dropped` — page-memory.md §12 names a
 	// mockup-refinement `memory.overflow_drop_oldest`; this phase uses
 	// the shipped constant (see the phase plan "Findings I'm departing
@@ -249,7 +249,7 @@ type MemoryListResponse struct {
 
 // MemoryArtifactRef is the by-reference shape `memory.get` returns when
 // the record's value serialised size meets or exceeds the configured
-// heavy-content threshold (D-026). It mirrors a subset of
+// heavy-content threshold. It mirrors a subset of
 // `internal/artifacts.ArtifactRef` but is a flat wire type — the
 // Protocol owns its vocabulary; runtime Go structs never leak (RFC
 // §5.1 / CLAUDE.md §13 single-source rule). It is the same flat shape
@@ -295,7 +295,7 @@ type MemoryGetRequest struct {
 
 // MemoryItemDetail is the `memory.get` result. EXACTLY ONE of `Value` /
 // `ValueArtifact` is populated; never both. Above the heavy-content
-// threshold (D-026), `Value` is empty and `ValueArtifact` carries the
+// threshold, `Value` is empty and `ValueArtifact` carries the
 // by-reference stub; below it, `Value` carries the post-redaction
 // bytes and `ValueArtifact` is nil. A driver that returns raw heavy
 // bytes is a leak — the runtime fails loudly rather than inlining them.
@@ -304,10 +304,10 @@ type MemoryItemDetail struct {
 	// `memory.list` returns).
 	Item MemoryItem `json:"item"`
 	// Value is the post-redaction record value, populated ONLY when
-	// SizeBytes is below the heavy-content threshold (D-026).
+	// SizeBytes is below the heavy-content threshold.
 	Value []byte `json:"value,omitempty"`
 	// ValueArtifact is populated when SizeBytes meets or exceeds the
-	// heavy-content threshold (D-026). The Console fetches the bytes
+	// heavy-content threshold. The Console fetches the bytes
 	// via `artifacts.get` against this stub. When ValueArtifact is set,
 	// Value is nil — and vice-versa.
 	ValueArtifact *MemoryArtifactRef `json:"value_artifact,omitempty"`
@@ -326,7 +326,7 @@ type MemoryGetResponse struct {
 
 // MemoryHealthRequest is the wire request for the `memory.health`
 // method. The identity is read from ctx; the body Identity is the
-// Phase 60 carrier-header echo, defended against the verified identity.
+// carrier-header echo, defended against the verified identity.
 type MemoryHealthRequest struct {
 	// Identity is the request's identity scope. The triple is
 	// mandatory; an incomplete triple fails closed with
@@ -336,8 +336,8 @@ type MemoryHealthRequest struct {
 
 // MemoryHealthAggregate carries the aggregate memory-health counters
 // the Memory page's right-rail Memory-health card renders. The 24-h-
-// window counters derive from `events.aggregate` (Phase 72a) over the
-// `memory.*` event types — runtime-side computation per brief 11 §CC-4.
+// window counters derive from `events.aggregate` over the
+// `memory.*` event types — runtime-side computation
 type MemoryHealthAggregate struct {
 	// Total is the total memory-record count for the caller's scope.
 	Total int64 `json:"total"`
@@ -345,10 +345,10 @@ type MemoryHealthAggregate struct {
 	// the next hour.
 	ExpiringIn1h int64 `json:"expiring_in_1h"`
 	// IdentityRejected24h is the count of `memory.identity_rejected`
-	// events (D-033) observed in the last 24 hours.
+	// events observed in the last 24 hours.
 	IdentityRejected24h int64 `json:"identity_rejected_24h"`
 	// RecoveryDropped24h is the count of `memory.recovery_dropped`
-	// events (D-035) observed in the last 24 hours.
+	// events observed in the last 24 hours.
 	RecoveryDropped24h int64 `json:"recovery_dropped_24h"`
 	// DriverByScope maps each memory scope to the persistence driver
 	// backing it — e.g. {"session":"inmem", "tenant":"postgres"}. The
@@ -367,7 +367,7 @@ type MemoryHealthResponse struct {
 }
 
 // MemoryStrategyTraceRequest is the wire request for the
-// `memory.strategy_trace` method (Phase 108n / D-186). Identity is
+// `memory.strategy_trace` method. Identity is
 // mandatory; the verified identity in ctx is preferred and the body
 // Identity is defended against it.
 type MemoryStrategyTraceRequest struct {
@@ -377,8 +377,8 @@ type MemoryStrategyTraceRequest struct {
 }
 
 // MemoryStrategyTrace is the wire projection of how the configured memory
-// strategy is compacting the caller's session memory RIGHT NOW (Phase
-// 108n / D-186). It is the honest, read-only projection of the strategy's
+// strategy is compacting the caller's session memory RIGHT NOW (
+// ). It is the honest, read-only projection of the strategy's
 // live `GetLLMContext` + `Health` output — NOT a fabricated per-step
 // "selection with rejections" (the `rolling_summary` strategy summarises;
 // it does not select-and-reject candidates). Every field is real runtime
@@ -416,7 +416,7 @@ type MemoryStrategyTraceResponse struct {
 }
 
 // MemoryTurnInput is the operator-supplied conversation turn the
-// `memory.put` admin method appends (Phase 108n / D-186). It carries only
+// `memory.put` admin method appends. It carries only
 // the user / assistant text — never trajectory internals; the runtime owns
 // the timestamp.
 type MemoryTurnInput struct {
@@ -426,9 +426,9 @@ type MemoryTurnInput struct {
 	AssistantResponse string `json:"assistant_text"`
 }
 
-// MemoryPutRequest is the wire request for the `memory.put` method (Phase
-// 108n / D-186) — the admin-gated, audited "add a memory turn" mutation.
-// Identity is mandatory; admin scope is required (D-079).
+// MemoryPutRequest is the wire request for the `memory.put` method (
+// ) — the admin-gated, audited "add a memory turn" mutation.
+// Identity is mandatory; admin scope is required.
 type MemoryPutRequest struct {
 	// Identity is the request's identity scope. The triple is mandatory.
 	Identity IdentityScope `json:"identity"`
@@ -447,8 +447,8 @@ type MemoryPutResponse struct {
 }
 
 // MemoryDeleteRequest is the wire request for the `memory.delete` method
-// (Phase 108n / D-186) — the admin-gated, audited "evict a memory turn"
-// mutation. Identity is mandatory; admin scope is required (D-079).
+// the admin-gated, audited "evict a memory turn"
+// mutation. Identity is mandatory; admin scope is required.
 type MemoryDeleteRequest struct {
 	// Identity is the request's identity scope. The triple is mandatory.
 	Identity IdentityScope `json:"identity"`

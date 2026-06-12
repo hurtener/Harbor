@@ -9,10 +9,10 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// ControlEvent is the canonical steering record (RFC §6.3, brief 02
+// ControlEvent is the canonical steering record (RFC §6.3
 // §2 `ControlEvent`). It is what the Protocol edge constructs from an
 // inbound control request, validates, scope-checks, and enqueues on
-// the run's Inbox. Phase 53 drains these between planner steps and
+// the run's Inbox. drains these between planner steps and
 // projects the result onto RunContext.Control.
 type ControlEvent struct {
 	// Type is one of the nine canonical control types. An invalid
@@ -22,7 +22,7 @@ type ControlEvent struct {
 	// match the Inbox's own quadruple — Enqueue rejects a mismatch
 	// (an event for run A must never land on run B's inbox).
 	Identity identity.Quadruple
-	// CallerScope is the (trust-based at Phase 52) Scope the Protocol
+	// CallerScope is the (trust-based) Scope the Protocol
 	// edge derived from the submitting caller's JWT. Enqueue runs
 	// CheckScope against it.
 	CallerScope Scope
@@ -34,8 +34,8 @@ type ControlEvent struct {
 	// ValidatePayload against it.
 	Payload map[string]any
 	// EventID is the caller-supplied idempotency / correlation key
-	// (ULID-shaped, mirrors events.EventID). Optional at Phase 52 —
-	// Phase 53's control-history dedupe uses it. Empty is permitted.
+	// (ULID-shaped, mirrors events.EventID). Optional —
+	// the control-history dedupe uses it. Empty is permitted.
 	EventID string
 	// EnqueuedAt is stamped by Inbox.Enqueue from the Inbox's Clock.
 	// Callers MUST NOT pre-fill it; a non-zero value is rejected so
@@ -50,7 +50,7 @@ type ControlEvent struct {
 //
 // An Inbox is concurrent-safe: N Protocol-edge goroutines may
 // Enqueue while the run loop Drains, all against one Inbox — the
-// queue is mutex-guarded (D-025). Per-run state never leaks across
+// queue is mutex-guarded. Per-run state never leaks across
 // runs because each Inbox holds only its own run's events and is
 // keyed by its own quadruple.
 //
@@ -65,7 +65,7 @@ type Inbox struct {
 	closed bool
 
 	// notify is a 1-buffered "something was enqueued" signal channel.
-	// Enqueue does a non-blocking send on it; WaitForEvent (Phase 53's
+	// Enqueue does a non-blocking send on it; WaitForEvent (the
 	// RunLoop, while a pause is outstanding) selects on it so the loop
 	// blocks instead of busy-spinning on Drain. The 1-buffer + non-
 	// blocking send is the standard coalesced-signal pattern: N
@@ -129,7 +129,7 @@ func (in *Inbox) Enqueue(ev ControlEvent) error {
 	in.queue = append(in.queue, ev)
 
 	// Coalesced wake: a non-blocking send on the 1-buffered notify
-	// channel. A waiter (Phase 53's RunLoop, blocked in WaitForEvent
+	// channel. A waiter (the RunLoop, blocked in WaitForEvent
 	// while a pause is outstanding) wakes and Drains everything; a full
 	// buffer means a wake is already pending — N enqueues coalesce to
 	// one wake, which is correct because the waiter always drains the
@@ -147,7 +147,7 @@ func (in *Inbox) Enqueue(ev ControlEvent) error {
 }
 
 // WaitForEvent blocks until the inbox has at least one queued event, the
-// inbox is retired, or ctx is cancelled. It is the surface Phase 53's
+// inbox is retired, or ctx is cancelled. It is the surface the
 // RunLoop uses to wait — without busy-spinning — for a steering control
 // to arrive while a run is paused (a pause is outstanding and the
 // planner must not be re-entered until a RESUME / APPROVE / REJECT lands).
@@ -190,7 +190,7 @@ func (in *Inbox) WaitForEvent(ctx context.Context) error {
 }
 
 // Drain atomically removes and returns every queued ControlEvent in
-// FIFO order, leaving the inbox empty. This is the surface Phase 53's
+// FIFO order, leaving the inbox empty. This is the surface the
 // run loop calls between planner steps. Drain on an empty inbox
 // returns an empty (non-nil) slice. Drain on a retired inbox returns
 // ErrInboxNotFound.
@@ -212,7 +212,7 @@ func (in *Inbox) Drain() ([]ControlEvent, error) {
 }
 
 // Len returns the number of currently-queued events. Primarily for
-// tests and observability; Phase 53's run loop uses Drain.
+// tests and observability; the run loop uses Drain.
 func (in *Inbox) Len() int {
 	in.mu.Lock()
 	defer in.mu.Unlock()

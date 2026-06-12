@@ -17,7 +17,7 @@
 //
 // V1 ships the insecure (no-TLS) transport: the collector is expected
 // to be a sidecar or same-trust-zone process — identical stance to the
-// Phase 55 otlp span-exporter driver. TLS to a remote collector is
+// otlp span-exporter driver. TLS to a remote collector is
 // post-V1 (it needs a cert-config surface that does not exist yet —
 // adding one is an RFC change, not a driver tweak).
 //
@@ -46,7 +46,7 @@ func init() {
 }
 
 // exporter satisfies telemetry.MetricExporter. Stateless — one value
-// shared across every NewMetricsRegistry call (D-025: no
+// shared across every NewMetricsRegistry call (no
 // per-construction mutable state on the driver itself; the constructed
 // PeriodicReader is per-MetricsRegistry).
 type exporter struct{}

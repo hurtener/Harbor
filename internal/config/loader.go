@@ -28,7 +28,7 @@ var (
 	ErrConfigNotFound = errors.New("config: file not found")
 )
 
-// envPrefix is the env-var override prefix per the brief 06 layering
+// envPrefix is the env-var override prefix per the layering
 // rule: HARBOR_<SECTION>_<FIELD> (case-insensitive on the right of
 // the prefix, single-level nesting). Two-level nesting is supported
 // by joining sub-paths with another underscore.
@@ -61,7 +61,7 @@ func resolveLoadConfig(opts []LoadOption) loadConfig {
 
 // WithLogger overrides the slog.Logger the config loader emits
 // structured warnings on (e.g. the `config.deprecated_field` warning
-// surfaced when a removed YAML key appears in a config — D-081). A
+// surfaced when a removed YAML key appears in a config). A
 // nil logger keeps the default (`slog.Default()`); callers that want
 // to capture the warnings in a test build a logger over a bytes
 // buffer and pass it here.
@@ -116,7 +116,7 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ..
 	lc := resolveLoadConfig(opts)
 	// Strip deprecated governance keys from the byte stream BEFORE the
 	// strict decode would reject them. Each stripped key emits a single
-	// `config.deprecated_field` slog.Warn (D-081). Operators migrating
+	// `config.deprecated_field` slog.Warn. Operators migrating
 	// from a pre-Phase-36a config rebuild the values under
 	// `governance.identity_tiers`.
 	cleaned, err := stripDeprecatedGovernanceKeys(data, source, lc.logger)
@@ -140,8 +140,8 @@ func loadFromBytesNamed(ctx context.Context, data []byte, source string, opts ..
 // WithOverrides applies a flat key->string override map to a
 // previously-loaded *Config and re-validates. Keys are dotted paths
 // matching the YAML field names ("server.bind_addr", "llm.model").
-// This is the seam for CLI flag layering (Phase 64) and Console
-// pushed config (post-V1); Phase 02 ships only the mechanism.
+// This is the seam for CLI flag layering and Console
+// pushed config (post-V1); Harbor ships only the mechanism.
 func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: WithOverrides called with nil *Config", ErrConfigInvalid)
@@ -163,7 +163,7 @@ func WithOverrides(c *Config, overrides map[string]string) (*Config, error) {
 // audit redaction patterns) are intentionally absent so Validate
 // fails loudly when an operator omits them.
 //
-// Exported in Phase 110c (D-196): before then this baseline was
+// Exported in a later phase: before then this baseline was
 // loader-private, so a YAML-loaded config and a hand-built config got
 // DIFFERENT baselines and factories compensated inconsistently (events
 // fails loud on zero values; sessions self-defaults). `Load` starts
@@ -197,7 +197,7 @@ func Defaults() *Config {
 			Driver: "inmem",
 		},
 		LLM: LLMConfig{
-			// Phase 64 / D-089 flipped the default from "mock" to
+			// flipped the default from "mock" to
 			// "bifrost". A config with an empty `llm.driver` now
 			// defaults to the production driver — missing config keys
 			// fail loud rather than silently routing through a stub.
@@ -212,9 +212,9 @@ func Defaults() *Config {
 			// the LLM seam.
 			Driver:               "bifrost",
 			Timeout:              60 * time.Second,
-			ContextWindowReserve: 0.05, // 5% safety margin (Phase 32 / D-026)
+			ContextWindowReserve: 0.05, // 5% safety margin
 			Corrections: LLMCorrectionsConfig{
-				// Phase 34 — corrections enabled by default. Operators
+				// corrections enabled by default. Operators
 				// who omit the field get the production behaviour.
 				// `*bool` distinguishes "operator didn't set" (nil →
 				// loader fills with true) from "operator explicitly
@@ -240,7 +240,7 @@ func Defaults() *Config {
 			HardCap:       720 * time.Hour,
 			SweepInterval: 15 * time.Minute,
 		},
-		// Phase 111c (D-200) — pause lifecycle. MaxParkDuration 0 = pauses
+		// pause lifecycle. MaxParkDuration 0 = pauses
 		// never expire and no sweeper is started (the documented default);
 		// SweepInterval is the sweeper cadence once an operator opts in.
 		PauseResume: PauseResumeConfig{
@@ -251,7 +251,7 @@ func Defaults() *Config {
 			Driver:                    "inmem",
 			FSRoot:                    "",
 			HeavyOutputThresholdBytes: DefaultHeavyOutputThresholdBytes,
-			// Phase 19: S3-style driver defaults. Region defaults to
+			// S3-style driver defaults. Region defaults to
 			// us-east-1 (covers MinIO + plain R2); UsePathStyle
 			// defaults to false (AWS native — operators flip on for
 			// MinIO / older R2 endpoints).
@@ -272,9 +272,9 @@ func Defaults() *Config {
 			Strategy:           "none",
 			RecoveryBacklogMax: 16,
 		},
-		// D-103 — closes issue #126. The V1 planner-driver default is
-		// "react" (the reference LLM-driven ReAct concrete — Phase 45 /
-		// D-051). A config with an empty `planner.driver` boots with
+		// closes issue #126. The V1 planner-driver default is
+		// "react" (the reference LLM-driven ReAct concrete — /).
+		// A config with an empty `planner.driver` boots with
 		// the reference planner unchanged; operators opt into
 		// alternates explicitly when later phases land them (Plan-
 		// Execute, Workflow, Graph, Deterministic, Supervisor,
@@ -285,12 +285,12 @@ func Defaults() *Config {
 			Driver: "react",
 		},
 		CLI: CLIConfig{
-			// Phase 65 / D-099 — `harbor dev` hot-reload defaults. The
+			// `harbor dev` hot-reload defaults. The
 			// block is opt-out: Enabled defaults to true; the `--no-hot-
 			// reload` CLI flag is the operator-facing escape hatch.
 			// Policy `drain` waits for in-flight RunLoops to finish up to
 			// DrainTimeout before restarting. WatchRoots defaults to the
-			// Phase 66 project-local drafts directory.
+			// project-local drafts directory.
 			DevHotReload: DevHotReloadConfig{
 				Enabled:      boolPtr(true),
 				Policy:       DevHotReloadPolicyDrain,

@@ -1,8 +1,8 @@
 // Package repair ships Harbor's reusable salvage / schema-repair /
 // graceful-failure / multi-action-salvage ladder for planner steps
-// (RFC §6.2, Phase 44 — see docs/plans/phase-44-schema-repair.md).
+// (RFC §6.2).
 //
-// The ladder runs in this order — the order is load-bearing (D-050):
+// The ladder runs in this order — the order is load-bearing:
 //
 //  1. **Salvage.** Parse the LLM's response into one or more
 //     [planner.CallTool] actions. Tolerant of fenced JSON
@@ -36,15 +36,15 @@
 //     [Config.ArgFillEnabled] = false.
 //
 // **Composition note.** The repair loop is OUTSIDE the LLM call (it
-// consumes the response). The Phase 36 retry-with-feedback wrapper is
+// consumes the response). The retry-with-feedback wrapper is
 // INSIDE the LLM call (it wraps a single attempt). Both layers exist;
 // they handle different concerns:
 //
 //   - retry wrapper: a single Complete attempt's [llm.CompleteResponse]
 //     was malformed at the [llm.Validator] callback (an LLM-CALL
-//     concern; Phase 36 owns the bound + re-ask shape).
+//     concern; Harbor owns the bound + re-ask shape).
 //   - repair loop:   the response's parsed [planner.CallTool] failed
-//     the tool's schema (an OUTPUT-SHAPE concern; Phase 44 owns the
+//     the tool's schema (an OUTPUT-SHAPE concern; Harbor owns the
 //     ladder + graceful failure).
 //
 // The two-parallel-implementations rule (CLAUDE.md §13) bans embedding
@@ -52,13 +52,13 @@
 // package; the loop calls [llm.LLMClient].Complete (which already has
 // retry composed at the registry edge) and operates on the response.
 //
-// **Concurrent-reuse contract (D-025).** [RepairLoop] is a reusable
+// **Concurrent-reuse contract.** [RepairLoop] is a reusable
 // artifact: one constructed loop is safe to share across N concurrent
 // runs. The receiver is read-only after construction; per-call state
 // lives on the stack and in the run's [planner.RunContext]. The
 // package's d025_test.go pins N=128 invocations under `-race`.
 //
-// **Identity is mandatory (§6 rule 9; D-001).** The loop refuses to
+// **Identity is mandatory (§6 rule 9).** The loop refuses to
 // run when [planner.RunContext.Quadruple] is incomplete. The LLM
 // client's [llm.ErrIdentityMissing] is also surfaced verbatim when
 // the supplied client rejects a Complete call for missing identity.
@@ -77,19 +77,19 @@ import (
 	"github.com/hurtener/Harbor/internal/planner"
 )
 
-// Default knob values (RFC §6.2 + brief 02 §6 spec). The loop falls
+// Default knob values (RFC §6.2 spec). The loop falls
 // back to these whenever [Config] carries a non-positive value — a
 // defensive default so a zero-value Config behaves correctly.
 const (
 	// DefaultRepairAttempts is the LLM re-ask budget when
-	// [Config.RepairAttempts] is unset. Brief 07 §10's predecessor
+	// [Config.RepairAttempts] is unset — an inherited
 	// default; the storm guard ([Config.MaxConsecutiveArgFailures])
 	// is the load-bearing terminator.
 	DefaultRepairAttempts = 3
 	// DefaultMaxConsecutiveArgFailures is the consecutive-failure
 	// counter cap that trips graceful failure when set to its default.
 	// Strictly less than [DefaultRepairAttempts] so the storm guard
-	// fires BEFORE the attempts budget runs out — brief 07 §10's
+	// fires BEFORE the attempts budget runs out — the design's
 	// failure-mode-blind mitigation.
 	DefaultMaxConsecutiveArgFailures = 2
 
@@ -125,9 +125,9 @@ type Config struct {
 // descriptors) per RFC §6.2; the descriptor-bound validator lives in
 // the runtime catalog. The repair loop accepts a validator-lookup
 // function so the planner package stays isolated from descriptors
-// (Phase 42 import-graph contract).
+// (import-graph contract).
 //
-// Callers (Phase 45 ReAct, Phase 48 Deterministic) wire this from the
+// Callers (ReAct, Deterministic) wire this from the
 // runtime engine they already have a handle on; tests pass a stub.
 //
 // Contract:
@@ -149,7 +149,7 @@ type ToolValidator func(toolName string, args json.RawMessage) error
 var ErrToolUnknown = errors.New("repair: tool unknown to catalog")
 
 // RepairLoop is the salvage → repair → graceful-failure → multi-action-
-// salvage driver. Reusable artifact (D-025): one instance is safe to
+// salvage driver. Reusable artifact: one instance is safe to
 // share across N concurrent runs; per-call state lives on the stack
 // and in the [planner.RunContext].
 //
@@ -162,7 +162,7 @@ type RepairLoop struct {
 
 // RunResult is the outcome of one [RepairLoop.Run] step. It bundles
 // the resolved [planner.Decision] with the provider-side reasoning
-// trace captured from the LLM response (Phase 83e — D-147). The caller
+// trace captured from the LLM response. The caller
 // (the ReAct planner) stamps `Reasoning` onto
 // `trajectory.Step.ReasoningTrace`; the loop itself never replays it.
 //
@@ -171,13 +171,13 @@ type RepairLoop struct {
 // the reasoning of the final, successful response. Empty when the
 // provider surfaced no reasoning.
 //
-// `Repair` carries the Phase 83c across-step failure classification
-// (D-145): the ReAct planner reads it to update the per-run
+// `Repair` carries the across-step failure classification:
+// the ReAct planner reads it to update the per-run
 // [planner.RepairCounters] so the next turn's prompt builder can
 // escalate repair guidance. The loop itself does NOT mutate the
 // counters — it only classifies; the counters live on the per-run
 // [planner.RunContext] and the planner owns the increment/reset call
-// (D-145 + D-025: no mutable state on the shared loop artifact).
+// (no mutable state on the shared loop artifact).
 type RunResult struct {
 	// Decision is the resolved planner decision for the step.
 	Decision planner.Decision
@@ -185,11 +185,11 @@ type RunResult struct {
 	// response that produced Decision. Empty when none was surfaced.
 	Reasoning string
 	// Repair carries the across-step failure classification for the
-	// step (Phase 83c — D-145).
+	// step.
 	Repair RepairOutcome
 }
 
-// RepairOutcome is the Phase 83c (D-145) across-step failure
+// RepairOutcome is the across-step failure
 // classification of one [RepairLoop.Run] step. The ReAct planner maps
 // it onto the per-run [planner.RepairCounters]:
 //
@@ -267,7 +267,7 @@ func (l *RepairLoop) Config() Config {
 //
 // Returns a [RunResult] bundling the resolved Decision with the
 // provider-side reasoning trace captured from the LLM response that
-// produced it (Phase 83e — D-147). The caller stamps the trace onto
+// produced it. The caller stamps the trace onto
 // `trajectory.Step.ReasoningTrace`.
 func (l *RepairLoop) Run(
 	ctx context.Context,
@@ -294,7 +294,7 @@ func (l *RepairLoop) Run(
 		// loop ultimately returns.
 		lastReasoning string
 		// argsRepaired records whether ANY args-validation failure
-		// fired during the step — the Phase 83c (D-145) across-step
+		// fired during the step — the across-step
 		// classification the ReAct planner maps onto the ArgsRepair
 		// counter. Distinct from `consecutiveArgFails`, which is the
 		// storm-guard counter reset semantics never touch.
@@ -306,9 +306,9 @@ func (l *RepairLoop) Run(
 			return RunResult{}, err
 		}
 
-		// Phase 107 — per-step streaming. When rc.OnChunk is set, flip
+		// per-step streaming. When rc.OnChunk is set, flip
 		// Stream=true and wire the OnContent / OnReasoning callbacks to
-		// forward deltas through rc.OnChunk. Per D-025, the callback
+		// forward deltas through rc.OnChunk. The callback
 		// closures are per-run on the stack, not on the shared artifact.
 		if rc.OnChunk != nil {
 			current.Stream = true
@@ -324,7 +324,7 @@ func (l *RepairLoop) Run(
 		resp, err := client.Complete(ctx, current)
 		if err != nil {
 			// LLM-call errors bubble verbatim — retry-with-feedback
-			// (Phase 36) is composed INSIDE the client, not here.
+			// is composed INSIDE the client, not here.
 			// We never silently swallow upstream errors.
 			return RunResult{}, err
 		}
@@ -333,7 +333,7 @@ func (l *RepairLoop) Run(
 
 		// Step 1: Salvage — parse the response.
 		actions, parseErr := l.parser.Parse(resp.Content)
-		// Phase 83e (D-147): the action schema is `{tool, args}`. A
+		// the action schema is `{tool, args}`. A
 		// model that still emits `reasoning` / `thought` has those
 		// fields silently stripped; emit one telemetry event per
 		// dropped field so the drift is observable without failing the
@@ -346,8 +346,8 @@ func (l *RepairLoop) Run(
 			reasons = append(reasons, truncate(reason))
 			consecutiveArgFails++
 			// A parser failure is an LLM-output-format failure — count
-			// it toward the Phase 83c args-repair classification so the
-			// next turn's prompt builder escalates guidance (D-145).
+			// it toward the args-repair classification so the
+			// next turn's prompt builder escalates guidance.
 			argsRepaired = true
 			if l.tripped(consecutiveArgFails) {
 				return RunResult{
@@ -404,8 +404,8 @@ func (l *RepairLoop) Run(
 			safeName(bad.Tool), firstBadErr.Error())
 		reasons = append(reasons, truncate(reason))
 		consecutiveArgFails++
-		// A schema-repair failure is the canonical Phase 83c args-
-		// repair signal (D-145).
+		// A schema-repair failure is the canonical args-
+		// repair signal.
 		argsRepaired = true
 
 		if l.tripped(consecutiveArgFails) {
@@ -455,7 +455,7 @@ func (l *RepairLoop) gracefulFailure(
 	emitRepairExhausted(ctx, rc, attempts, consecutiveArgFails, reasons, now)
 
 	// Build the terminal Finish. Metadata carries:
-	//   - "followup": true — brief 02 §6 spec'd value; signals the
+	//   - "followup": true — the spec'd value; signals the
 	//     runtime/UX should ask the user for a retry / clarification.
 	//   - "repair_attempts": int — the attempts the loop burned.
 	//   - "repair_consecutive_arg_failures": int — storm-guard count.
@@ -482,7 +482,7 @@ func (l *RepairLoop) gracefulFailure(
 
 // emitRepairExhausted publishes the planner.repair_exhausted event.
 // Best-effort; never blocks on the bus (subscribers handle their own
-// drop policies per Phase 05).
+// drop policies).
 func emitRepairExhausted(
 	ctx context.Context,
 	rc planner.RunContext,
@@ -519,7 +519,7 @@ func emitRepairExhausted(
 
 // emitExtraFieldsDropped publishes one
 // [planner.EventTypePlannerActionExtraFieldDropped] event per
-// Phase 83e-narrowed extra field (`reasoning` / `thought` — D-147) the
+// narrowed extra field (`reasoning` / `thought`) the
 // LLM response carried. The narrowed action schema is `{tool, args}`;
 // extra fields are stripped, NOT errored — this is a soft telemetry
 // signal, not a fail-loudly surface. Best-effort; never blocks on the
@@ -587,7 +587,7 @@ func promote(actions []planner.CallTool) planner.Decision {
 // is missing any of the four scope components. Returns
 // [llm.ErrIdentityMissing] for parity with the LLM-client edge — the
 // repair loop fails closed with the same sentinel the rest of the
-// runtime uses (§6 rule 9 + D-001).
+// runtime uses (§6 rule 9).
 func assertIdentity(rc planner.RunContext) error {
 	q := rc.Quadruple
 	if q.TenantID == "" || q.UserID == "" || q.SessionID == "" || q.RunID == "" {

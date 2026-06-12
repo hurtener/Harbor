@@ -11,7 +11,7 @@ import (
 )
 
 // SkillListArgs is the LLM-facing input shape for the `skill_list`
-// built-in (Phase 111d / D-201 — the Phase-38 third tool's first
+// built-in (— the Phase-38 third tool's first
 // production registration). The `capability` field is omitted and
 // server-computed (see skill_capability.go).
 type SkillListArgs struct {

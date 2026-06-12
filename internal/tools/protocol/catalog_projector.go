@@ -29,10 +29,10 @@ import (
 // than failing — the defaults are honest ("we don't have this data"),
 // not silent degradation of a known value.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // CatalogProjector is immutable after NewCatalogProjector: it holds the
-// catalog + annotator references. The catalog is itself D-025-safe; the
+// catalog + annotator references. The catalog is itself safe for concurrent reuse; the
 // projector adds no mutable state. The optional admin backends mutate
 // runtime state, but that mutation lives behind the catalog / annotator
 // implementations, internally synchronised there.
@@ -86,7 +86,7 @@ func WithAnnotator(a Annotator) CatalogProjectorOption {
 
 // NewCatalogProjector builds the V1 production Projector over a
 // tools.ToolCatalog. The catalog is mandatory — a nil fails loud with
-// ErrMisconfigured. The returned *CatalogProjector is D-025-safe.
+// ErrMisconfigured. The returned *CatalogProjector is safe for concurrent reuse.
 func NewCatalogProjector(catalog tools.ToolCatalog, opts ...CatalogProjectorOption) (*CatalogProjector, error) {
 	if catalog == nil {
 		return nil, fmt.Errorf("%w: tools.ToolCatalog is nil", ErrMisconfigured)

@@ -17,16 +17,16 @@ import (
 // Deps carries the runtime dependencies the LLM client subsystem
 // consumes. Both are mandatory — fail-loudly at construction.
 //
-//   - `Artifacts` is the auto-materialize target (D-022). Inline
+//   - `Artifacts` is the auto-materialize target. Inline
 //     `DataURL` content above the heavy-output threshold is rewritten
 //     as an `Artifact` whose bytes live in the store.
 //   - `Bus` is the canonical event bus. The safety pass publishes
 //     `llm.image.materialized` / `llm.context_leak` /
-//     `llm.context_window_exceeded`; the request-emit path (Phase 36a
+//     `llm.context_window_exceeded`; the request-emit path (
 //     subscriber lands here) publishes `llm.cost.recorded`.
 //
 // The package does NOT depend on `state.StateStore` — the LLM client
-// is stateless across calls (D-025).
+// is stateless across calls.
 type Deps struct {
 	Artifacts artifacts.ArtifactStore
 	Bus       events.EventBus
@@ -38,7 +38,7 @@ type Deps struct {
 // pattern).
 //
 //   - `Driver` selects the §4.4 factory. Empty defaults to
-//     `DefaultDriver` (Phase 32 = "mock"; Phase 33 will leave the
+//     `DefaultDriver` (originally "mock"; the production flip leaves the
 //     default explicit at the caller — operator must opt-in to
 //     `bifrost`).
 //   - `ContextWindowReserve` is the safety-net token-budget margin
@@ -53,16 +53,16 @@ type Deps struct {
 //     model in the `CompleteRequest`; missing → `ErrUnsupportedModel`.
 //
 // `Provider` / `Model` / `APIKey` / `BaseURL` / `Timeout` are the
-// Phase-33 bifrost-driver knobs. Phase 32 stores them so the
+// Phase-33 bifrost-driver knobs. Harbor stores them so the
 // snapshot's shape is stable across phases; the mock driver ignores
-// them. Phase 33's bifrost driver will read them.
+// them. the bifrost driver will read them.
 type ConfigSnapshot struct {
 	Driver               string
 	ContextWindowReserve float64
 	HeavyOutputThreshold int
 	ModelProfiles        map[string]ModelProfile
 
-	// DisableCorrections opts OUT of the Phase 34 per-provider
+	// DisableCorrections opts OUT of the per-provider
 	// correction layer. Zero-value (false) = corrections enabled —
 	// production callers wire `corrections.Wrap(safetyClient(driver))`
 	// so quirks like NIM message reordering, OpenAI strict-schema
@@ -78,26 +78,26 @@ type ConfigSnapshot struct {
 	// yaml field (default true) into this inverse.
 	DisableCorrections bool
 
-	// DisableDowngrade opts OUT of the Phase 35 structured-output
+	// DisableDowngrade opts OUT of the structured-output
 	// downgrade chain. Zero-value (false) = enabled. Inverse-named so
 	// production callers get the right behaviour by default.
 	DisableDowngrade bool
 
-	// DisableRetry opts OUT of the Phase 36 retry-with-feedback
+	// DisableRetry opts OUT of the retry-with-feedback
 	// wrapper. Zero-value (false) = enabled. The wrapper is a no-op
 	// when `CompleteRequest.Validator` is nil, so disabling is only
 	// useful for tests that need to isolate the downgrade layer.
 	DisableRetry bool
 
-	// DisableGovernance opts OUT of the Phase 36a/36b governance
+	// DisableGovernance opts OUT of the governance
 	// wrapper. Zero-value (false) = enabled — but the wrapper is also
 	// a no-op pass-through when no `governance.Factory` has been
-	// registered, so the latent default (Wave 7b scoping) requires
+	// registered, so the latent default requires
 	// neither flag flip nor factory wiring. Tests that want to bypass
 	// even a registered factory flip this true.
 	DisableGovernance bool
 
-	// Bifrost-driver knobs (Phase 33).
+	// Bifrost-driver knobs.
 	Provider string
 	Model    string
 	APIKey   string
@@ -105,7 +105,7 @@ type ConfigSnapshot struct {
 	Timeout  time.Duration
 
 	// CustomProviders is the operator-declared registry of
-	// OpenAI-compatible providers (Phase 33a). When `Provider`
+	// OpenAI-compatible providers. When `Provider`
 	// matches a custom entry's `Name`, the entry's `BaseURL` /
 	// `APIKeyEnvVar` / `Models` / network knobs apply (legacy
 	// `APIKey` / `BaseURL` / `Timeout` ignored for that case). The
@@ -121,7 +121,7 @@ type ConfigSnapshot struct {
 }
 
 // CustomProviderSpec is one operator-declared OpenAI-compatible
-// provider (Phase 33a). The bifrost driver maps each entry to a
+// provider. The bifrost driver maps each entry to a
 // `bfschemas.ProviderConfig` with `CustomProviderConfig.BaseProviderType =
 // schemas.OpenAI`. Zero-valued network knobs fall through to
 // `ConfigSnapshot.NetworkDefaults`, which itself falls through to
@@ -153,7 +153,7 @@ type CustomProviderSpec struct {
 
 // NetworkDefaults are the operator-tunable defaults bifrost applies
 // to every provider (native + custom) when the per-provider override
-// is absent (Phase 33a). Zero-valued fields fall through to
+// is absent. Zero-valued fields fall through to
 // bifrost's package-level defaults.
 type NetworkDefaults struct {
 	Timeout             time.Duration
@@ -168,9 +168,8 @@ type NetworkDefaults struct {
 // Drivers expose one `Factory` each via `init()` → `Register`.
 type Factory func(cfg ConfigSnapshot, deps Deps) (Driver, error)
 
-// DefaultDriver names the production LLM driver Phase 64 (D-089)
-// flipped this constant to point at — `"bifrost"`, the pure-Go LLM
-// gateway shipped by Phase 33. Before Phase 64 this was `"mock"`; the
+// DefaultDriver names the production LLM driver — `"bifrost"`, the
+// pure-Go LLM gateway. Before the default flip this was `"mock"`; the
 // flip closes the §13 "test stubs as production defaults" amendment
 // for the LLM seam.
 //
@@ -183,7 +182,7 @@ type Factory func(cfg ConfigSnapshot, deps Deps) (Driver, error)
 // build hits `ErrUnknownDriver: "mock" (registered: bifrost)` rather
 // than silently routing through a stub.
 //
-// Dev-only escape hatch (D-089): the `harbor dev` subcommand reads
+// Dev-only escape hatch: the `harbor dev` subcommand reads
 // `HARBOR_DEV_ALLOW_MOCK=1` and, when set, blank-imports the mock
 // driver itself (the conditional blank-import lives at the
 // subcommand boundary, not in `main.go`) AND prints a stderr banner
@@ -197,12 +196,12 @@ const DefaultDriver = "bifrost"
 // every test wiring also touching the config layer.
 const (
 	DefaultContextWindowReserve = 0.05 // 5%
-	// DefaultHeavyOutputThreshold (32 KiB; D-022 / RFC §6.10) is
+	// DefaultHeavyOutputThreshold (32 KiB; RFC §6.10) is
 	// single-sourced on `config.DefaultHeavyOutputThresholdBytes` so
 	// the snapshot default cannot drift from the operator-config
 	// default (the DefaultSpawnDepthCap precedent).
 	DefaultHeavyOutputThreshold = config.DefaultHeavyOutputThresholdBytes
-	// DefaultMaxRetries (Phase 36) — the retry-with-feedback bound
+	// DefaultMaxRetries — the retry-with-feedback bound
 	// when `ModelProfile.MaxRetries` is zero. Conservative: one
 	// corrective re-ask after the original attempt.
 	DefaultMaxRetries = 1
@@ -212,7 +211,7 @@ var (
 	factoriesMu sync.RWMutex
 	factories   = map[string]Factory{}
 
-	// correctionsWrapperMu guards correctionsWrapper. Phase 34's
+	// correctionsWrapperMu guards correctionsWrapper. the
 	// corrections package self-registers via init() — the hook
 	// pattern avoids a package import cycle (corrections imports
 	// llm). Callers that don't import the corrections package see
@@ -220,19 +219,19 @@ var (
 	correctionsWrapperMu sync.RWMutex
 	correctionsWrapper   func(LLMClient, ConfigSnapshot) LLMClient
 
-	// downgradeWrapperMu guards downgradeWrapper. Phase 35's output
+	// downgradeWrapperMu guards downgradeWrapper. the output
 	// package self-registers via init(); blank-imported in
 	// `cmd/harbor/main.go`.
 	downgradeWrapperMu sync.RWMutex
 	downgradeWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
 
-	// retryWrapperMu guards retryWrapper. Phase 36's retry package
+	// retryWrapperMu guards retryWrapper. the retry package
 	// self-registers via init().
 	retryWrapperMu sync.RWMutex
 	retryWrapper   func(LLMClient, ConfigSnapshot, Deps) LLMClient
 
-	// governanceWrapperMu guards governanceWrapper. Phase 36a/36b's
-	// governance package self-registers via init() (D-044). The
+	// governanceWrapperMu guards governanceWrapper. the
+	// governance package self-registers via init(). The
 	// governance wrapper composes OUTSIDE the rest of the chain —
 	// outermost layer in `Open` — so PreCall fires before retry /
 	// downgrade / corrections / safety / driver and PostCall fires
@@ -246,14 +245,14 @@ var (
 	// `RegisterDefaultOutputModeResolver`. The hook pattern keeps
 	// `applyDefaults` free of an `internal/llm/corrections` import
 	// (corrections imports `internal/llm`, so the reverse would cycle).
-	// Wave-end audit FAIL #1: without this hook, `corrections.DefaultOutputModeFor`
+	// checkpoint audit FAIL #1: without this hook, `corrections.DefaultOutputModeFor`
 	// was dead code and three doc sites lied about per-known-provider
 	// fallback.
 	defaultOutputModeResolverMu sync.RWMutex
 	defaultOutputModeResolver   func(model string) OutputMode
 )
 
-// RegisterCorrectionsWrapper installs the Phase 34 corrections
+// RegisterCorrectionsWrapper installs the corrections
 // wrapper hook. Called once from `internal/llm/corrections.init()`;
 // the production binary picks up the registration by blank-importing
 // the corrections package.
@@ -287,7 +286,7 @@ func resetCorrectionsWrapperForTesting() {
 	correctionsWrapper = nil
 }
 
-// RegisterDowngradeWrapper installs the Phase 35 structured-output
+// RegisterDowngradeWrapper installs the structured-output
 // downgrade wrapper hook. Called once from
 // `internal/llm/output.init()`; the production binary blank-imports
 // `internal/llm/output` so the registration fires at boot.
@@ -316,7 +315,7 @@ func resetDowngradeWrapperForTesting() {
 	downgradeWrapper = nil
 }
 
-// RegisterRetryWrapper installs the Phase 36 retry-with-feedback
+// RegisterRetryWrapper installs the retry-with-feedback
 // wrapper hook. Called once from `internal/llm/retry.init()`; the
 // production binary blank-imports `internal/llm/retry`.
 //
@@ -342,11 +341,11 @@ func resetRetryWrapperForTesting() {
 	retryWrapper = nil
 }
 
-// RegisterGovernanceWrapper installs the Phase 36a/36b governance
+// RegisterGovernanceWrapper installs the governance
 // wrapper hook. Called once from `internal/governance.init()`; the
 // production binary blank-imports the package so the hook lands at
 // boot. Governance composes OUTSIDE the entire downstream chain
-// (D-043 + D-044) — the wrapper sits at the outermost layer in `Open`
+// the wrapper sits at the outermost layer in `Open`
 // so `PreCall` fires before retry / downgrade / corrections / safety
 // even reach the driver.
 //
@@ -378,7 +377,7 @@ func resetGovernanceWrapperForTesting() {
 
 // Register installs a driver factory under `name`. Drivers self-
 // register from their package `init()`; `cmd/harbor` blank-imports
-// the production driver to trigger registration (Phase 33+).
+// the production driver to trigger registration.
 //
 // Re-registering the same name panics — the registration model is
 // write-once-at-init and a duplicate signals a build misconfig.
@@ -471,9 +470,9 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 
 	client := LLMClient(newSafetyClient(drv, cfg, deps))
 
-	// Phase 34: compose corrections OUTSIDE the safety wrapper so the
+	// compose corrections OUTSIDE the safety wrapper so the
 	// safety pass sees the post-correction (final outgoing) payload.
-	// D-041 settled the order.
+	// The order is deliberate.
 	if !cfg.DisableCorrections {
 		correctionsWrapperMu.RLock()
 		wrap := correctionsWrapper
@@ -485,10 +484,10 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		}
 	}
 
-	// Phase 35: downgrade composes OUTSIDE corrections. A downgrade
+	// downgrade composes OUTSIDE corrections. A downgrade
 	// rewrites `ResponseFormat`; the corrections layer must re-apply
 	// its per-provider envelope shaping to the new format on each
-	// downgraded attempt. D-043 settles this order.
+	// downgraded attempt. This order is deliberate.
 	if !cfg.DisableDowngrade {
 		downgradeWrapperMu.RLock()
 		wrap := downgradeWrapper
@@ -500,10 +499,10 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		}
 	}
 
-	// Phase 36: retry-with-feedback composes OUTSIDE downgrade. A
+	// retry-with-feedback composes OUTSIDE downgrade. A
 	// validator-driven retry adds a fresh corrective turn to the
 	// messages; the new message sequence flows through downgrade +
-	// corrections + safety on each attempt. D-043 settles this order.
+	// corrections + safety on each attempt. This order is deliberate.
 	if !cfg.DisableRetry {
 		retryWrapperMu.RLock()
 		wrap := retryWrapper
@@ -515,7 +514,7 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 		}
 	}
 
-	// Phase 36a / 36b (D-044): governance composes OUTSIDE retry —
+	// governance composes OUTSIDE retry —
 	// PreCall fires before the entire chain reaches the driver, so
 	// `ErrBudgetExceeded` / `ErrRateLimited` / `ErrMaxTokensExceeded`
 	// short-circuit without burning a retry attempt or downgrade pass.
@@ -537,7 +536,7 @@ func Open(_ context.Context, cfg ConfigSnapshot, deps Deps) (LLMClient, error) {
 // WarnWrapperNotSeated is the message [Open] emits (via slog.Warn) once
 // per production wrapper layer whose hook was never seated by its blank
 // import. Exported so tests that gate on the warning's PRESENCE or
-// ABSENCE (e.g. the Phase 110c aggregator integration test) reference
+// ABSENCE (e.g. the aggregator integration test) reference
 // the one source of truth — a message rewording breaks the gate loudly
 // instead of silently turning it into a tautological pass.
 const WarnWrapperNotSeated = "llm: wrapper hook not seated — composing client WITHOUT this production layer"
@@ -545,7 +544,7 @@ const WarnWrapperNotSeated = "llm: wrapper hook not seated — composing client 
 // warnUnseatedWrapper emits the boot-time [WarnWrapperNotSeated]
 // warning Open's godoc documents. One call per missing wrapper, at
 // Open time. Uses slog.Default(): the LLM Deps deliberately carry no
-// logger (the client is stateless across calls, D-025), and a
+// logger (the client is stateless across calls), and a
 // boot-time composition warning is exactly what the process default
 // logger exists for.
 func warnUnseatedWrapper(layer, importPath string) {
@@ -555,8 +554,8 @@ func warnUnseatedWrapper(layer, importPath string) {
 	)
 }
 
-// applyDefaults populates zero-valued fields with the Phase 32
-// defaults. Cheap; idempotent. Also normalises Phase 35's
+// applyDefaults populates zero-valued fields with the
+// defaults. Cheap; idempotent. Also normalises the
 // `JSONSchemaMode` string into the typed `OutputMode` so the rest of
 // the stack reads one source of truth.
 func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
@@ -591,7 +590,7 @@ func applyDefaults(cfg ConfigSnapshot) ConfigSnapshot {
 					p.OutputMode = OutputModePrompted
 				}
 			}
-			// Per-known-provider default fallback (Wave 7b audit FAIL
+			// Per-known-provider default fallback (checkpoint audit FAIL
 			// #1): if the operator did not declare an OutputMode AND
 			// the legacy JSONSchemaMode mapping above did not resolve
 			// it, ask the corrections package for the per-model

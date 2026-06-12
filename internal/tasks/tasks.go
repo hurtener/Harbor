@@ -3,12 +3,12 @@
 // uses to spawn, list, cancel, and prioritise both foreground runs
 // and background tasks under one `TaskID` namespace.
 //
-// Phase 20 ships the per-task surface (Spawn / Get / List / Cancel /
-// Prioritize / Mark*); Phase 21 lays groups + retain-turn + patches
+// Harbor ships the per-task surface (Spawn / Get / List / Cancel /
+// Prioritize / Mark*); Harbor lays groups + retain-turn + patches
 // on top. Bundling the whole TaskService into one phase would slow
 // the wave-end E2E + delay the per-task surface that downstream
-// phases (steering Phase 53, planner Phase 42) want as a stable
-// foundation. The split is recorded in `docs/decisions.md` as D-030.
+// subsystems (steering, planner) want as a stable
+// foundation. The split is recorded in `docs/decisions.md` as.
 //
 // Lifecycle FSM (enforced at the driver):
 //
@@ -41,7 +41,7 @@
 //     in their current state.
 //
 // Identity. The triple `(tenant, user, session)` is mandatory at
-// every API boundary (D-001). Empty tenant/user/session in
+// every API boundary. Empty tenant/user/session in
 // `SpawnRequest.Identity` (or the ctx Identity for Get/Cancel) is
 // rejected with `ErrIdentityRequired`. RunID is task-scoped: the
 // foreground run IS a task; the background task has its own ID.
@@ -49,9 +49,9 @@
 // Persistence. Each lifecycle transition writes through the
 // configured `state.StateStore` as `StateRecord{Kind:
 // "task.lifecycle", Bytes: marshal(task)}`. The wrapper layer is
-// the typed adapter per D-027 — opaque bytes go to the leaf store.
+// the typed adapter — opaque bytes go to the leaf store.
 // Caller-side audit redaction runs against `Description`, `Query`,
-// `Result`, and `Error` BEFORE Save (per D-020).
+// `Result`, and `Error` BEFORE Save.
 //
 // Bus events. Each lifecycle transition emits one of the registered
 // `task.*` event types on the configured `events.EventBus`; payloads
@@ -61,7 +61,7 @@
 //
 // SpawnTool. The `SpawnTool` surface lifts from RFC §6.8 verbatim
 // so the FSM models `task.tool` lifecycle today. Actual tool
-// dispatch wiring lands at Phase 26+; in Phase 20 `SpawnTool`
+// dispatch wiring lands in later phases; in `SpawnTool`
 // returns a `TaskHandle` whose execution body is a no-op stub —
 // the task persists at `StatusPending` and never auto-advances.
 package tasks
@@ -80,12 +80,12 @@ import (
 )
 
 // LifecycleKind is the StateStore Kind constant for task-lifecycle
-// records. Centralised so callers / tests / Phase 60 Protocol mappers
+// records. Centralised so callers / tests / Protocol mappers
 // reference one symbol.
 const LifecycleKind = "task.lifecycle"
 
 // TaskID is the unified identifier covering both foreground runs
-// and background tasks (brief 05 §1). ULID-shaped at construction
+// and background tasks. ULID-shaped at construction
 // time; the registry assigns the value, callers do not.
 type TaskID string
 
@@ -117,7 +117,7 @@ const (
 	// StatusRunning is the active-execution state.
 	StatusRunning TaskStatus = "running"
 	// StatusPaused is the pause-state for retain-turn / HITL flows.
-	// Phase 21 layers retain-turn semantics on top; Phase 20 only
+	// layers retain-turn semantics on top; only
 	// enforces the FSM transition Running → Paused → Running.
 	StatusPaused TaskStatus = "paused"
 	// StatusComplete is a terminal state — execution finished
@@ -145,8 +145,8 @@ const (
 // quadruple is captured immutably on Spawn; the runtime engine drives
 // state transitions via the registry's Mark* methods.
 //
-// Group/patch fields are reserved for Phase 21 — the surface is
-// intentionally narrow at Phase 20 so the Phase 21 PR adds those
+// Group/patch fields are Reserved for a later phase — the surface is
+// intentionally narrow at so the PR adds those
 // fields against a stable shape.
 type Task struct {
 	ID                TaskID
@@ -166,12 +166,12 @@ type Task struct {
 	UpdatedAt         int64 // unix nanoseconds
 	// ToolCount is the running count of tool dispatches the runtime
 	// has performed against this task. Advanced exclusively through
-	// `TaskRegistry.IncrementToolCount` — never set directly by callers
-	// (Phase 83m item 7). Projected to `prototypes.TaskRow.ToolCount`
+	// `TaskRegistry.IncrementToolCount` — never set directly by callers.
+	// Projected to `prototypes.TaskRow.ToolCount`
 	// for the Console Tasks page.
 	ToolCount int
 	// InputArtifactIDs carry operator-uploaded multimodal inputs the
-	// run consumes on its first planner turn (Round-7 F11 / D-166).
+	// run consumes on its first planner turn.
 	// The run loop materializes these into `RunContext.InputArtifacts`
 	// via the per-MIME dispatcher: image bytes inline as
 	// `ImagePart.DataURL`; everything else stays as an `ArtifactStub`
@@ -179,7 +179,7 @@ type Task struct {
 	// is the common case — text-only turns.
 	InputArtifactIDs []string
 	// InputArtifactDispositions maps an InputArtifactIDs entry to the
-	// caller's per-attachment disposition hint (Phase 84b — D-189):
+	// caller's per-attachment disposition hint:
 	// `ref` / `inline` / `provider_native` / `tool:<name>`. The hint
 	// is the TOP precedence layer of the disposition resolution
 	// (hint > agent policy map > runtime default); an absent key
@@ -196,7 +196,7 @@ type Task struct {
 // `PropagateOnCancel` defaults to "cascade" when empty; "isolate"
 // is opt-in for tasks that must survive a parent's cancellation.
 //
-// `GroupID` (Phase 21, optional) wires the new task into an existing
+// `GroupID` (optional) wires the new task into an existing
 // `TaskGroup`. The driver verifies the group is `Open` (sealed or
 // terminal groups reject with `ErrGroupSealed`) and registers the
 // new task as a member. Empty `GroupID` is the default — most
@@ -213,12 +213,12 @@ type SpawnRequest struct {
 	NotifyOnComplete  bool
 	GroupID           TaskGroupID
 	// InputArtifactIDs are operator-uploaded multimodal inputs the
-	// task carries onto its first planner turn (Round-7 F11 / D-166).
+	// task carries onto its first planner turn.
 	// Persisted onto `Task.InputArtifactIDs`; consumed by the run
 	// loop's first-turn materializer. Empty is the text-only default.
 	InputArtifactIDs []string
 	// InputArtifactDispositions carries the per-attachment disposition
-	// hints keyed by artifact ID (Phase 84b — D-189). Persisted onto
+	// hints keyed by artifact ID. Persisted onto
 	// `Task.InputArtifactDispositions`; consumed by the run loop's
 	// disposition resolution (top precedence layer). Nil is the
 	// default — the agent policy map / runtime default decide.
@@ -227,13 +227,13 @@ type SpawnRequest struct {
 
 // SpawnToolRequest is the input shape for `SpawnTool`. The shape
 // lifts from RFC §6.8 verbatim so the FSM models tool-task lifecycle
-// today; actual tool dispatch wiring lands at Phase 26.
+// today; actual tool dispatch wiring lands.
 //
-// Phase 20's `SpawnTool` execution body is a no-op stub: the task is
+// the `SpawnTool` execution body is a no-op stub: the task is
 // persisted at `StatusPending` and never auto-advances. The runtime
-// engine (Phase 26) drives the lifecycle once dispatch is wired.
+// engine drives the lifecycle once dispatch is wired.
 //
-// `GroupID` (Phase 21, optional) wires the new tool task into an
+// `GroupID` (optional) wires the new tool task into an
 // existing `TaskGroup`. See `SpawnRequest.GroupID` for the contract.
 type SpawnToolRequest struct {
 	Identity          identity.Quadruple
@@ -276,10 +276,10 @@ type TaskSummary struct {
 }
 
 // TaskResult carries the successful-completion payload. `Value` is
-// pre-redacted by the caller (D-020); the registry stores it
+// pre-redacted by the caller; the registry stores it
 // verbatim.
 //
-// Phase 106 (V1.2) pins the answer-envelope contract: when the
+// The answer-envelope contract is pinned: when the
 // run-loop driver (cmd/harbor/cmd_dev_runloop.go::handleSpawn)
 // produces TaskResult from a planner.Finish, `Value` is the JSON
 // encoding of:
@@ -309,7 +309,7 @@ type TaskError struct {
 // TaskRegistry is the orchestration surface for the task subsystem.
 //
 // Implementations MUST be safe for concurrent use by N goroutines
-// against a single shared instance (D-025). Mutable state must be
+// against a single shared instance. Mutable state must be
 // guarded; per-call state lives in `ctx`, never on the driver.
 //
 // The Mark* methods are the lifecycle drive-points called by the
@@ -321,8 +321,8 @@ type TaskRegistry interface {
 	// when the request's identity triple is incomplete.
 	Spawn(ctx context.Context, req SpawnRequest) (TaskHandle, error)
 
-	// SpawnTool creates a task representing a tool invocation. Phase
-	// 20 ships the surface; tool dispatch wiring lands at Phase 26+
+	// SpawnTool creates a task representing a tool invocation. Harbor
+	// ships the surface; tool dispatch wiring lands in later phases
 	// — the persisted task stays at `StatusPending` until then.
 	SpawnTool(ctx context.Context, req SpawnToolRequest) (TaskHandle, error)
 
@@ -348,7 +348,7 @@ type TaskRegistry interface {
 	// does not exist.
 	Cancel(ctx context.Context, id TaskID, reason string) (bool, error)
 
-	// Prioritize updates the task's `Priority`. Phase 20 stores the
+	// Prioritize updates the task's `Priority`. Harbor stores the
 	// value but does not preempt or reorder execution — scheduling is
 	// the runtime engine's concern. Emits `task.prioritised`.
 	//
@@ -377,7 +377,7 @@ type TaskRegistry interface {
 	MarkFailed(ctx context.Context, id TaskID, err TaskError) error
 
 	// IncrementToolCount atomically increments `Task.ToolCount` by 1
-	// and persists the updated record (Phase 83m item 7). NOT
+	// and persists the updated record. NOT
 	// idempotent — every call increments. The new value is reflected
 	// on the next `Get` / `List` projection (`prototypes.TaskRow.ToolCount`).
 	//
@@ -446,8 +446,8 @@ type TaskRegistry interface {
 	// `ErrPatchNotFound` on a missing patch ID.
 	//
 	// Patches are persisted through StateStore under `Kind =
-	// "task.patch"`. The patch payload is opaque bytes (D-027); the
-	// actual context-patch shape lives at the planner (Phase 42+).
+	// "task.patch"`. The patch payload is opaque bytes; the
+	// actual context-patch shape lives at the planner.
 	//
 	// Emits `task.patch_applied` or `task.patch_rejected` on a real
 	// transition; no re-emit on the no-op path.
@@ -502,7 +502,7 @@ type TaskRegistry interface {
 	// a delivery).
 	//
 	// Concurrent reuse: multiple subscribers on the same group all
-	// receive the same payload (D-025).
+	// receive the same payload.
 	WatchGroup(sessionID identity.Identity, groupID TaskGroupID) (<-chan GroupCompletion, func(), error)
 
 	// Close releases registry resources. Subsequent operations return
@@ -525,7 +525,7 @@ var (
 	ErrIdempotencyConflict = errors.New("tasks: idempotency key reused with divergent SpawnRequest")
 	// ErrIdentityRequired — Spawn / Get / List / Cancel / Prioritize
 	// / Mark* called with an Identity missing one of (tenant, user,
-	// session). Identity is mandatory (D-001).
+	// session). Identity is mandatory.
 	ErrIdentityRequired = errors.New("tasks: identity required (tenant/user/session)")
 	// ErrUnknownDriver — Open was asked for a driver name no
 	// registered factory handles.
@@ -605,16 +605,16 @@ type Factory func(deps Dependencies) (TaskRegistry, error)
 // (or test helpers); the registry never reaches into ctx for these.
 type Dependencies struct {
 	// Store is the StateStore used to persist task lifecycle records
-	// (D-027 typed-wrapper-over-generic). Required.
+	// (typed-wrapper-over-generic). Required.
 	Store state.StateStore
 	// Bus is the EventBus where lifecycle events land. Required.
 	Bus events.EventBus
 	// Redactor is the audit redactor applied to Description / Query
-	// / Result / Error BEFORE Save (D-020). Required; wiring code
+	// / Result / Error BEFORE Save. Required; wiring code
 	// passes the global redactor here.
 	Redactor audit.Redactor
-	// Cfg carries Phase 20's TasksConfig (driver name today; Phase
-	// 21 adds RetainTurnTimeout + ContinuationHopLimit).
+	// Cfg carries the TasksConfig (driver name today; Harbor
+	// adds RetainTurnTimeout + ContinuationHopLimit).
 	Cfg config.TasksConfig
 }
 

@@ -1,7 +1,7 @@
 // Package mock is Harbor's test-grade LLM driver. It self-registers
 // under `"mock"` via init() and is the default driver in
 // `internal/llm` (DefaultDriver = "mock"). Production deployments
-// configure Phase 33's `bifrost` driver explicitly.
+// configure the `bifrost` driver explicitly.
 //
 // The driver supports:
 //
@@ -19,7 +19,7 @@
 //   - Cost/Usage reporting (synthetic; lets governance tests run
 //     without a real provider).
 //
-// Concurrent-reuse (D-025): the driver itself is stateless. The
+// Concurrent-reuse: the driver itself is stateless. The
 // only mutable state is the `closed` atomic.Bool which guards Close
 // idempotency. Concurrent Complete calls are safe by construction.
 //
@@ -31,7 +31,7 @@
 //     Useful for ErrClientClosed / retry-path tests.
 //   - `Options.SeenIdentity` is an optional sink channel that
 //     receives the identity from every Complete call. Used by the
-//     D-025 concurrent-reuse test to verify no context bleed.
+//     concurrent-reuse test to verify no context bleed.
 package mock
 
 import (
@@ -91,7 +91,7 @@ func New(opts Options) *Driver {
 // init self-registers the mock driver under "mock".
 //
 // Production binaries blank-import this package via cmd/harbor
-// (Phase 64+); tests blank-import as needed.
+// (the dev-mode gate); tests blank-import as needed.
 func init() {
 	llm.Register("mock", func(cfg llm.ConfigSnapshot, deps llm.Deps) (llm.Driver, error) {
 		return New(Options{}), nil

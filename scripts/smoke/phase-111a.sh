@@ -54,7 +54,7 @@ assert_grep_absent 'enforcement is not yet wired' docs/skills/validate-and-packa
 
 # --- 3. The documented headless / multi-runtime escape ----------------------
 
-assert_grep_present 'Multi-runtime limitation \(D-198\)' internal/governance/registry.go \
+assert_grep_present 'Multi-runtime limitation' internal/governance/registry.go \
     'phase 111a: SetFactory godoc documents the process-global limitation'
 assert_grep_present 'governance\.Wrap' docs/recipes/embed-harbor-headless.md \
     'phase 111a: the headless recipe carries the Wrap composition'

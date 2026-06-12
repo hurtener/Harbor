@@ -12,16 +12,16 @@ import (
 // SessionsAdminQueryPayload is the typed SafePayload published on the
 // canonical `audit.admin_scope_used` event when an operator runs a
 // cross-tenant `sessions.list` / `sessions.inspect` query under the
-// verified `auth.ScopeAdmin` claim. Phase 73c / D-122.
+// verified `auth.ScopeAdmin` claim.
 //
 // SafePayload by construction: every field is a bounded identity
 // component or a Protocol method name — no caller-supplied bytes reach
 // the bus. The Sessions wire surface rejects malformed requests at the
 // Protocol edge before the emit.
 //
-// The payload is distinct from `auth.AdminScopeUsedPayload` (Phase 72b
-// impersonation), `events.AdminScopeUsedPayload` (Phase 05 Subscribe),
-// and `toolsprotocol.ToolsAdminActionPayload` (Phase 73f) — all ride
+// The payload is distinct from `auth.AdminScopeUsedPayload` (
+// impersonation), `events.AdminScopeUsedPayload` (Subscribe),
+// and `toolsprotocol.ToolsAdminActionPayload` — all ride
 // the same canonical `audit.admin_scope_used` event type, but each emit
 // source declares its own typed payload. A subscriber type-switches.
 type SessionsAdminQueryPayload struct {

@@ -1,12 +1,12 @@
 // Package protocol implements the two `tasks.*` read methods the
-// Console Tasks page (Phase 73d / D-123) consumes:
+// Console Tasks page consumes:
 //
 //   - tasks.list — paginated, faceted task-row projection + per-status
 //     aggregates + cursor pagination.
 //   - tasks.get  — enriched single-task detail: parent-session ref,
 //     parent-task ref, cost rollup, planner-snapshot ref.
 //
-// The Console Tasks page consumes the EXISTING Phase 54 task-control
+// The Console Tasks page consumes the EXISTING task-control
 // verbs (`cancel` / `pause` / `resume` / `prioritize` / `approve` /
 // `reject`) for mutation — there is NO `tasks.*` mutating method
 // (CLAUDE.md §13 "no parallel implementations"). Both methods here are
@@ -27,7 +27,7 @@
 // identity-downgrading knob. The Service NEVER reads identity from a
 // package-level global; the triple flows in via the request.
 //
-// # Cross-tenant gating (D-079)
+// # Cross-tenant gating
 //
 // A `tasks.list` whose `Filter.Identities` names more than one distinct
 // tenant is a cross-tenant fan-in. The Service receives an
@@ -42,7 +42,7 @@
 // A `tasks.get` for a TaskID outside the caller's tenant returns
 // `ErrTaskNotFound` — existence is never revealed across tenants.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
 // share across N concurrent goroutines: it holds only the Projector
@@ -71,7 +71,7 @@ var (
 	// triple. RFC §5.5 / CLAUDE.md §6 rule 9 — fails closed.
 	ErrIdentityRequired = errors.New("tasks/protocol: identity scope incomplete")
 	// ErrScopeMismatch — a cross-tenant `tasks.list` fan-in was issued
-	// without the verified `auth.ScopeAdmin` claim (D-079).
+	// without the verified `auth.ScopeAdmin` claim.
 	ErrScopeMismatch = errors.New("tasks/protocol: cross-tenant query requires the admin scope claim")
 	// ErrTaskNotFound — the requested TaskID is not visible to the
 	// caller's identity scope (covers both genuine absence and a
@@ -101,7 +101,7 @@ type Projector interface {
 	GetTask(ctx context.Context, id identity.Identity, taskID string) (prototypes.TaskDetail, error)
 }
 
-// Service implements the two `tasks.*` read methods. It is a D-025-safe
+// Service implements the two `tasks.*` read methods. It is a concurrency-safe
 // compiled artifact — immutable after NewService.
 type Service struct {
 	projector Projector
@@ -152,7 +152,7 @@ func WithLogger(l *slog.Logger) Option {
 // projector is mandatory — a nil fails loud with ErrMisconfigured
 // rather than building a Service that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *Service is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewService(projector Projector, opts ...Option) (*Service, error) {
 	if projector == nil {
 		return nil, fmt.Errorf("%w: Projector is nil", ErrMisconfigured)

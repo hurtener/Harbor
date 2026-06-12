@@ -1,11 +1,11 @@
 package conformancetest
 
-// Phase 21 conformance subtests for the group + retain-turn + patch
+// conformance subtests for the group + retain-turn + patch
 // + WatchGroup surface. Subtests live in this file for navigability
-// — the Phase 20 per-task suite stays in `conformancetest.go`.
+// the per-task suite stays in `conformancetest.go`.
 //
 // `runGroupSubtests` is invoked by the main `Run` function so
-// downstream drivers (post-V1 durable queue at Phase 87+) inherit
+// downstream drivers (post-V1 durable queue in later phases) inherit
 // both halves of the suite verbatim.
 //
 // Two driver-internal helpers (`AddMemberToGroup`,
@@ -39,7 +39,7 @@ import (
 // pattern can inherit the test suite by satisfying this interface
 // on their driver type.
 //
-// The seam exists because Phase 21 doesn't wire `SpawnTool`'s tool
+// The seam exists because doesn't wire `SpawnTool`'s tool
 // dispatch yet — the conformance suite seeds members directly to
 // exercise the resolve gate.
 type groupSeeder interface {
@@ -47,7 +47,7 @@ type groupSeeder interface {
 }
 
 // patchSeeder is implemented by drivers that expose the test-only
-// "create a pending patch" helper. Phase 21 ships the transition
+// "create a pending patch" helper. Harbor ships the transition
 // surface (ApplyPatch); the seeder exists so the conformance suite
 // can drive transitions without coupling to a planner concrete.
 type patchSeeder interface {
@@ -386,7 +386,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 	})
 
 	t.Run("WatchGroup_RefShaped_MemberResultRoundTrips", func(t *testing.T) {
-		// MemberOutcome.Result is ref-shaped per D-022 / D-026. Producers
+		// MemberOutcome.Result is ref-shaped. Producers
 		// (tools, sub-tasks) must already be substituting heavy outputs
 		// with ArtifactRefs upstream; the registry round-trips whatever
 		// the caller put in. This subtest stuffs an ArtifactRef-shaped
@@ -742,11 +742,11 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 	})
 
 	t.Run("WatchGroup_MultipleSubscribers_AllReceive", func(t *testing.T) {
-		// D-025 concurrent-reuse angle on the new subscriber path.
+		// concurrent-reuse angle on the new subscriber path.
 		// N=4 concurrent WatchGroup calls; all 4 must receive the same
-		// payload at resolve time. Mirrors Phase 20's
+		// payload at resolve time. Mirrors the
 		// Concurrent_SpawnGetCancel_NoRace but targets the wake-up
-		// surface introduced in Phase 21.
+		// surface introduced earlier.
 		r, cleanup := factory()
 		defer cleanup()
 		ctx := ctxA()
@@ -941,7 +941,7 @@ func runGroupSubtests(t *testing.T, factory Factory) {
 	})
 
 	t.Run("Group_Concurrent_AddRemoveSeal_NoRace", func(t *testing.T) {
-		// D-025: N≥64 concurrent group operations against a single
+		// N≥64 concurrent group operations against a single
 		// shared TaskRegistry under -race. Asserts no data races, no
 		// goroutine leak after teardown.
 		r, cleanup := factory()

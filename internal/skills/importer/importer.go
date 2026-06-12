@@ -1,7 +1,7 @@
 // Package importer ships Harbor's Skills.md importer — the
-// predecessor's gap-closer (RFC §6.7, brief 04 §4.7). The importer
+// predecessor's gap-closer (RFC §6.7). The importer
 // is a YAML-frontmatter + line-based Markdown-body parser that
-// round-trips a Skills.md source through the Phase 37
+// round-trips a Skills.md source through the
 // `skills.Skill` envelope (Origin=PackImport) and back, byte-stable.
 //
 // The byte-stable round-trip is the gate: `Export(Import(b)) == b`
@@ -9,7 +9,7 @@
 // golden corpus under `testdata/golden`. Authors hand-order YAML
 // keys; the importer preserves their ordering by carrying the raw
 // frontmatter bytes verbatim between the `---` fences and only
-// parsing the YAML for field extraction (D-053).
+// parsing the YAML for field extraction.
 //
 // Attachments — inline `![alt](path)` references — resolve to
 // `artifacts.ArtifactRef` via the injected `Deps.Store` (option (b)
@@ -19,17 +19,17 @@
 // verbatim. Path-traversal is blocked at `path_safety.go` per
 // CLAUDE.md §7 rule 5.
 //
-// Concurrent reuse (D-025): one `*Importer` is safe to share across
+// Concurrent reuse: one `*Importer` is safe to share across
 // N goroutines under `-race`. The struct has no per-call mutable
 // state on itself; everything lives in `ctx` + `Import` / `Export`
-// args. The injected `ArtifactStore` is itself D-025 safe per
-// Phase 17's conformance suite.
+// args. The injected `ArtifactStore` is itself safe per
+// the conformance suite.
 //
 // Identity-mandatory contract: the importer does NOT take an
 // `identity.Quadruple` directly — its responsibility is parse +
 // upload + canonicalise. The caller threads the identity through
 // when they hand the produced `Skill` to `skills.SkillStore.Upsert`;
-// Phase 37's contract owns the identity-rejection emit there.
+// the contract owns the identity-rejection emit there.
 //
 // Failure modes (sentinel-typed; compare via errors.Is):
 //
@@ -67,7 +67,7 @@ type ImportSource struct {
 	Bytes []byte
 	// PathHint names the source file (used for slugified-name
 	// fallback when frontmatter lacks `name`). Empty is acceptable;
-	// the resulting Skill will fail the Phase 37 validator with
+	// the resulting Skill will fail the validator with
 	// `Name empty` in that case.
 	PathHint string
 	// AllowedRoot is the operator-declared safe filesystem root for
@@ -78,7 +78,7 @@ type ImportSource struct {
 	AllowedRoot string
 	// Scope is the ArtifactScope under which attachments upload.
 	// The importer does not synthesise the scope itself — callers
-	// (Phase 60+ upload handlers) thread the identity quadruple plus
+	// (later upload handlers) thread the identity quadruple plus
 	// the import-task ID through. Required when AllowedRoot is set;
 	// ignored when AllowedRoot is empty (no uploads happen).
 	Scope artifacts.ArtifactScope
@@ -109,7 +109,7 @@ type AttachmentMapping struct {
 }
 
 // Importer is the importer entry point. Safe to share across N
-// concurrent goroutines (D-025); per-call state lives in the
+// concurrent goroutines; per-call state lives in the
 // Import / Export arguments.
 type Importer interface {
 	// Import parses Skills.md bytes into a skills.Skill record.

@@ -31,8 +31,8 @@ var (
 	ErrNodeNotFound = errors.New("engine: node not found")
 	// ErrNotImplemented — a method that lands in a later phase was
 	// called. Reserved for forward stubs; no current method returns
-	// this (Phase 10's Cancel + FetchByRun stubs were filled in Phase
-	// 13). Callers that errors.Is on this can detect "this surface
+	// this (the Cancel + FetchByRun stubs were filled in a later phase).
+	// Callers that errors.Is on this can detect "this surface
 	// isn't ready yet" without crashing.
 	ErrNotImplemented = errors.New("engine: not implemented in this phase")
 	// ErrDuplicateNodeName — two adjacencies referenced different
@@ -40,8 +40,8 @@ var (
 	// Name; duplicates are a build mis-configuration.
 	ErrDuplicateNodeName = errors.New("engine: duplicate node name")
 	// ErrDeadlineExceeded — the worker observed an Envelope whose
-	// DeadlineAt has passed before it could invoke the node. Phase 11
-	// will promote this to a structured RunError; Phase 10 returns
+	// DeadlineAt has passed before it could invoke the node. The timeout layer
+	// will promote this to a structured RunError; Harbor returns
 	// the typed sentinel directly.
 	ErrDeadlineExceeded = errors.New("engine: envelope deadline exceeded")
 	// ErrEmptyAdjacencies — New was called with an empty adjacency

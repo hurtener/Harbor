@@ -40,13 +40,13 @@ None.
 
 ## Acceptance criteria
 
-- [ ] `grep -rE '(Phase|phase-)[0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
-- [ ] `grep -rE '\bD-[0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
-- [ ] `grep -rE '\bbrief [0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
-- [ ] `grep -rE '\b(Wave|Round|Stage)[ -][0-9A-Z]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
-- [ ] `scripts/drift-audit.sh` gains a new check that runs the four greps above and fails on a hit; the check is reset-safe so existing OKs don't depend on it.
-- [ ] Every package under `internal/` whose godoc comment was edited still compiles + tests pass under `-race`.
-- [ ] pkg.go.dev render of `github.com/hurtener/Harbor` after the next module fetch carries zero "Phase NN" strings (sampled across the top-level packages).
+- [x] `grep -rE '(Phase|phase-)[0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
+- [x] `grep -rE '\bD-[0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
+- [x] `grep -rE '\bbrief [0-9]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
+- [x] `grep -rE '\b(Wave|Round|Stage)[ -][0-9A-Z]+' --include='*.go' internal/ cmd/ | grep -v '_test\.go'` returns zero matches.
+- [x] `scripts/drift-audit.sh` gains a new check that runs the four greps above and fails on a hit; the check is reset-safe so existing OKs don't depend on it.
+- [x] Every package under `internal/` whose godoc comment was edited still compiles + tests pass under `-race`.
+- [ ] pkg.go.dev render of `github.com/hurtener/Harbor` after the next module fetch carries zero "Phase NN" strings (sampled across the top-level packages). *(Can only be sampled after the next module fetch / tag; the in-repo greps above are zero, so the next render is expected to be clean — verify post-release.)*
 
 ## Files added or changed
 
@@ -91,10 +91,10 @@ None — the cleanup removes existing terminology rather than introducing new.
 
 ## Pre-merge checklist
 
-- [ ] `make drift-audit` passes (with the new check active)
-- [ ] `make preflight` passes
-- [ ] `make check-mirror` passes
-- [ ] All cross-references (`RFC §X.Y`, `brief NN`) resolve
+- [x] `make drift-audit` passes (with the new check active)
+- [x] `make preflight` passes
+- [x] `make check-mirror` passes
+- [x] All cross-references (`RFC §X.Y`, `brief NN`) resolve
 - [ ] Coverage on touched packages ≥ stated target — N/A (no behavior changes)
 - [ ] If multi-isolation paths changed: cross-session isolation test passes — N/A (comments only)
 - [ ] Concurrent-reuse test — N/A (no reusable artifact built; existing artifacts unchanged)

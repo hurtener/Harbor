@@ -88,7 +88,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `artifacts.delete` | `POST /v1/control/artifacts.delete` | artifacts | [`ArtifactsDeleteRequest`](./types.md#artifactsdeleterequest) | [`ArtifactsDeleteResponse`](./types.md#artifactsdeleteresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `artifacts.delete` | `POST /v1/control/artifacts.delete` | artifacts | [`ArtifactsDeleteRequest`](./types.md#artifactsdeleterequest) | [`ArtifactsDeleteResponse`](./types.md#artifactsdeleteresponse) | mutating; requires the verified `admin` scope claim |
 | `artifacts.get_ref` | `POST /v1/control/artifacts.get_ref` | artifacts | [`ArtifactsGetRefRequest`](./types.md#artifactsgetrefrequest) | [`ArtifactsGetRefResponse`](./types.md#artifactsgetrefresponse) | read-only |
 | `artifacts.list` | `POST /v1/control/artifacts.list` | artifacts | [`ArtifactsListRequest`](./types.md#artifactslistrequest) | [`ArtifactsListResponse`](./types.md#artifactslistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
 | `artifacts.put` | `POST /v1/control/artifacts.put` | artifacts | [`ArtifactsPutRequest`](./types.md#artifactsputrequest) | [`ArtifactsPutResponse`](./types.md#artifactsputresponse) | mutating |
@@ -97,11 +97,11 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `memory.delete` | `POST /v1/memory/delete` | memory | [`MemoryDeleteRequest`](./types.md#memorydeleterequest) | [`MemoryDeleteResponse`](./types.md#memorydeleteresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `memory.delete` | `POST /v1/memory/delete` | memory | [`MemoryDeleteRequest`](./types.md#memorydeleterequest) | [`MemoryDeleteResponse`](./types.md#memorydeleteresponse) | mutating; requires the verified `admin` scope claim |
 | `memory.get` | `POST /v1/memory/get` | memory | [`MemoryGetRequest`](./types.md#memorygetrequest) | [`MemoryGetResponse`](./types.md#memorygetresponse) | read-only |
 | `memory.health` | `POST /v1/memory/health` | memory | [`MemoryHealthRequest`](./types.md#memoryhealthrequest) | [`MemoryHealthResponse`](./types.md#memoryhealthresponse) | read-only |
 | `memory.list` | `POST /v1/memory/list` | memory | [`MemoryListRequest`](./types.md#memorylistrequest) | [`MemoryListResponse`](./types.md#memorylistresponse) | read-only; cross-tenant fan-in requires `admin` or `console:fleet` |
-| `memory.put` | `POST /v1/memory/put` | memory | [`MemoryPutRequest`](./types.md#memoryputrequest) | [`MemoryPutResponse`](./types.md#memoryputresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `memory.put` | `POST /v1/memory/put` | memory | [`MemoryPutRequest`](./types.md#memoryputrequest) | [`MemoryPutResponse`](./types.md#memoryputresponse) | mutating; requires the verified `admin` scope claim |
 | `memory.strategy_trace` | `POST /v1/memory/strategy_trace` | memory | [`MemoryStrategyTraceRequest`](./types.md#memorystrategytracerequest) | [`MemoryStrategyTraceResponse`](./types.md#memorystrategytraceresponse) | read-only |
 
 ## Tools
@@ -113,8 +113,8 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `tools.get` | `POST /v1/tools/get` | tools | [`ToolGetRequest`](./types.md#toolgetrequest) | [`Tool`](./types.md#tool) | read-only |
 | `tools.list` | `POST /v1/tools/list` | tools | [`ToolListRequest`](./types.md#toollistrequest) | [`ToolListResponse`](./types.md#toollistresponse) | read-only |
 | `tools.metrics` | `POST /v1/tools/metrics` | tools | [`ToolMetricsRequest`](./types.md#toolmetricsrequest) | [`ToolMetrics`](./types.md#toolmetrics) | read-only |
-| `tools.revoke_oauth` | `POST /v1/tools/revoke_oauth` | tools | [`ToolRevokeOAuthRequest`](./types.md#toolrevokeoauthrequest) | [`ToolRevokeOAuthResponse`](./types.md#toolrevokeoauthresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `tools.set_approval_policy` | `POST /v1/tools/set_approval_policy` | tools | [`ToolSetApprovalPolicyRequest`](./types.md#toolsetapprovalpolicyrequest) | [`ToolSetApprovalPolicyResponse`](./types.md#toolsetapprovalpolicyresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `tools.revoke_oauth` | `POST /v1/tools/revoke_oauth` | tools | [`ToolRevokeOAuthRequest`](./types.md#toolrevokeoauthrequest) | [`ToolRevokeOAuthResponse`](./types.md#toolrevokeoauthresponse) | mutating; requires the verified `admin` scope claim |
+| `tools.set_approval_policy` | `POST /v1/tools/set_approval_policy` | tools | [`ToolSetApprovalPolicyRequest`](./types.md#toolsetapprovalpolicyrequest) | [`ToolSetApprovalPolicyResponse`](./types.md#toolsetapprovalpolicyresponse) | mutating; requires the verified `admin` scope claim |
 
 ## Flows
 
@@ -123,7 +123,7 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `flows.describe` | `POST /v1/flows/describe` | flows | [`FlowDescribeRequest`](./types.md#flowdescriberequest) | [`FlowDescription`](./types.md#flowdescription) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
 | `flows.list` | `POST /v1/flows/list` | flows | [`FlowListRequest`](./types.md#flowlistrequest) | [`FlowListResponse`](./types.md#flowlistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 | `flows.metrics` | `POST /v1/flows/metrics` | flows | [`FlowMetricsRequest`](./types.md#flowmetricsrequest) | [`FlowMetrics`](./types.md#flowmetrics) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
-| `flows.run` | `POST /v1/flows/run` | flows | [`FlowRunRequest`](./types.md#flowrunrequest) | [`FlowRunResponse`](./types.md#flowrunresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `flows.run` | `POST /v1/flows/run` | flows | [`FlowRunRequest`](./types.md#flowrunrequest) | [`FlowRunResponse`](./types.md#flowrunresponse) | mutating; requires the verified `admin` scope claim |
 | `flows.runs.describe` | `POST /v1/flows/runs/describe` | flows | [`FlowRunDescribeRequest`](./types.md#flowrundescriberequest) | [`FlowRunDescription`](./types.md#flowrundescription) | read-only; tenant-scoped results; the verified `admin` scope claim widens run visibility across tenants |
 | `flows.runs.list` | `POST /v1/flows/runs/list` | flows | [`FlowRunsListRequest`](./types.md#flowrunslistrequest) | [`FlowRunsListResponse`](./types.md#flowrunslistresponse) | read-only; cross-tenant fan-in requires the verified `admin` scope claim (`console:fleet` is not consulted) |
 
@@ -131,17 +131,17 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `agents.deregister` | `POST /v1/agents/deregister` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `agents.drain` | `POST /v1/agents/drain` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `agents.force_stop` | `POST /v1/agents/force_stop` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `agents.deregister` | `POST /v1/agents/deregister` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim |
+| `agents.drain` | `POST /v1/agents/drain` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim |
+| `agents.force_stop` | `POST /v1/agents/force_stop` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim |
 | `agents.get` | `POST /v1/agents/get` | agents (read-only) | [`AgentGetRequest`](./types.md#agentgetrequest) | [`AgentGetResponse`](./types.md#agentgetresponse) | read-only |
 | `agents.governance` | `POST /v1/agents/governance` | agents (read-only) | [`AgentGovernanceRequest`](./types.md#agentgovernancerequest) | [`AgentGovernanceResponse`](./types.md#agentgovernanceresponse) | read-only |
 | `agents.list` | `POST /v1/agents/list` | agents (read-only) | [`AgentListRequest`](./types.md#agentlistrequest) | [`AgentListResponse`](./types.md#agentlistresponse) | read-only |
 | `agents.memory` | `POST /v1/agents/memory` | agents (read-only) | [`AgentMemoryRequest`](./types.md#agentmemoryrequest) | [`AgentMemoryResponse`](./types.md#agentmemoryresponse) | read-only |
 | `agents.metrics` | `POST /v1/agents/metrics` | agents (read-only) | [`AgentMetricsRequest`](./types.md#agentmetricsrequest) | [`AgentMetricsResponse`](./types.md#agentmetricsresponse) | read-only |
-| `agents.pause` | `POST /v1/agents/pause` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `agents.pause` | `POST /v1/agents/pause` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim |
 | `agents.permissions` | `POST /v1/agents/permissions` | agents (read-only) | [`AgentPermissionsRequest`](./types.md#agentpermissionsrequest) | [`AgentPermissionsResponse`](./types.md#agentpermissionsresponse) | read-only |
-| `agents.restart` | `POST /v1/agents/restart` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `agents.restart` | `POST /v1/agents/restart` | agents — fleet control | [`AgentControlRequest`](./types.md#agentcontrolrequest) | [`AgentControlResponse`](./types.md#agentcontrolresponse) | mutating; requires the verified `admin` scope claim |
 | `agents.skills` | `POST /v1/agents/skills` | agents (read-only) | [`AgentSkillsRequest`](./types.md#agentskillsrequest) | [`AgentSkillsResponse`](./types.md#agentskillsresponse) | read-only |
 | `agents.tools` | `POST /v1/agents/tools` | agents (read-only) | [`AgentToolsRequest`](./types.md#agenttoolsrequest) | [`AgentToolsResponse`](./types.md#agenttoolsresponse) | read-only |
 
@@ -156,11 +156,11 @@ error envelopes are catalogued in [errors.md](./errors.md).
 | `mcp.servers.policy` | `POST /v1/control/mcp.servers.policy` | mcp servers | [`MCPServerPolicyRequest`](./types.md#mcpserverpolicyrequest) | [`MCPServerPolicyResponse`](./types.md#mcpserverpolicyresponse) | read-only |
 | `mcp.servers.probe` | `POST /v1/control/mcp.servers.probe` | mcp servers | [`MCPServerProbeRequest`](./types.md#mcpserverproberequest) | [`MCPServerProbeResponse`](./types.md#mcpserverproberesponse) | mutating |
 | `mcp.servers.prompts` | `POST /v1/control/mcp.servers.prompts` | mcp servers | [`MCPServerPromptsRequest`](./types.md#mcpserverpromptsrequest) | [`MCPServerPromptsResponse`](./types.md#mcpserverpromptsresponse) | read-only |
-| `mcp.servers.refresh_binding` | `POST /v1/control/mcp.servers.refresh_binding` | mcp servers | [`MCPServerRefreshBindingRequest`](./types.md#mcpserverrefreshbindingrequest) | [`MCPServerRefreshBindingResponse`](./types.md#mcpserverrefreshbindingresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `mcp.servers.refresh_binding` | `POST /v1/control/mcp.servers.refresh_binding` | mcp servers | [`MCPServerRefreshBindingRequest`](./types.md#mcpserverrefreshbindingrequest) | [`MCPServerRefreshBindingResponse`](./types.md#mcpserverrefreshbindingresponse) | mutating; requires the verified `admin` scope claim |
 | `mcp.servers.refresh_discovery` | `POST /v1/control/mcp.servers.refresh_discovery` | mcp servers | [`MCPServerRefreshDiscoveryRequest`](./types.md#mcpserverrefreshdiscoveryrequest) | [`MCPServerRefreshDiscoveryResponse`](./types.md#mcpserverrefreshdiscoveryresponse) | mutating |
 | `mcp.servers.resources` | `POST /v1/control/mcp.servers.resources` | mcp servers | [`MCPServerResourcesRequest`](./types.md#mcpserverresourcesrequest) | [`MCPServerResourcesResponse`](./types.md#mcpserverresourcesresponse) | read-only |
-| `mcp.servers.revoke_binding` | `POST /v1/control/mcp.servers.revoke_binding` | mcp servers | [`MCPServerRevokeBindingRequest`](./types.md#mcpserverrevokebindingrequest) | [`MCPServerRevokeBindingResponse`](./types.md#mcpserverrevokebindingresponse) | mutating; requires the verified `admin` scope claim (D-079) |
-| `mcp.servers.set_raw_html_trust` | `POST /v1/control/mcp.servers.set_raw_html_trust` | mcp servers | [`MCPServerSetRawHTMLTrustRequest`](./types.md#mcpserversetrawhtmltrustrequest) | [`MCPServerSetRawHTMLTrustResponse`](./types.md#mcpserversetrawhtmltrustresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `mcp.servers.revoke_binding` | `POST /v1/control/mcp.servers.revoke_binding` | mcp servers | [`MCPServerRevokeBindingRequest`](./types.md#mcpserverrevokebindingrequest) | [`MCPServerRevokeBindingResponse`](./types.md#mcpserverrevokebindingresponse) | mutating; requires the verified `admin` scope claim |
+| `mcp.servers.set_raw_html_trust` | `POST /v1/control/mcp.servers.set_raw_html_trust` | mcp servers | [`MCPServerSetRawHTMLTrustRequest`](./types.md#mcpserversetrawhtmltrustrequest) | [`MCPServerSetRawHTMLTrustResponse`](./types.md#mcpserversetrawhtmltrustresponse) | mutating; requires the verified `admin` scope claim |
 
 ## Runs
 
@@ -172,4 +172,4 @@ error envelopes are catalogued in [errors.md](./errors.md).
 
 | Method | Route | Classification | Request | Response | Auth (beyond identity) |
 |---|---|---|---|---|---|
-| `auth.rotate_token` | `POST /v1/auth/rotate_token` | auth | [`AuthRotateTokenRequest`](./types.md#authrotatetokenrequest) | [`AuthRotateTokenResponse`](./types.md#authrotatetokenresponse) | mutating; requires the verified `admin` scope claim (D-079) |
+| `auth.rotate_token` | `POST /v1/auth/rotate_token` | auth | [`AuthRotateTokenRequest`](./types.md#authrotatetokenrequest) | [`AuthRotateTokenResponse`](./types.md#authrotatetokenresponse) | mutating; requires the verified `admin` scope claim |

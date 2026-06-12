@@ -1,5 +1,5 @@
 // Package concurrency ships Harbor's runtime concurrency primitives —
-// Phase 14 of the runtime kernel chain (RFC §6.1).
+// of the runtime kernel chain (RFC §6.1).
 //
 // Two stateless helpers:
 //
@@ -9,7 +9,7 @@
 //     remaining producers via ctx; short-read returns ErrJoinKShortRead.
 //
 // Both are pure functions — no shared state, no compiled artifacts,
-// trivially safe to call from N concurrent runs (D-025 N/A by
+// trivially safe to call from N concurrent runs (concurrent-reuse safe by
 // construction).
 package concurrency
 

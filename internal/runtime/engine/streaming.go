@@ -26,7 +26,7 @@ type StreamFrame struct {
 	Meta     map[string]any
 }
 
-// Sentinel errors specific to streaming. Phase 10 sentinels (e.g.
+// Sentinel errors specific to streaming. sentinels (e.g.
 // ErrEngineStopped, ErrIdentityRequired) cover engine-wide failures;
 // these cover stream-shape-specific ones.
 var (
@@ -192,7 +192,7 @@ func (rc *runCapacity) cancel() {
 // pending-frame count has reached its RunCapacity (default = the
 // engine's DefaultQueueSize, 64). The block is per-run, never per-
 // engine — a single run's saturation does not pause other runs (this
-// is the deadlock-prevention guarantee from brief 01 §4).
+// is the deadlock-prevention guarantee).
 //
 // The frame is wrapped in an Envelope whose Payload is the
 // StreamFrame and whose identity inherits from the originating

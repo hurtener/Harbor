@@ -1,6 +1,6 @@
 // attach.go — the exported boot-time MCP server attachment helper
-// (Phase 110d, D-197; absorbs cmd/harbor's attachDevMCPServer from
-// Phase 83g / D-150 INCLUDING the Phase 26b config→ToolPolicy
+// (absorbs cmd/harbor's attachDevMCPServer from
+// INCLUDING the config→ToolPolicy
 // projection that the devstack mirror had silently dropped).
 //
 // Attach wires ONE configured MCP server into a running stack: it
@@ -44,7 +44,7 @@ type AttachDeps struct {
 	Logger *slog.Logger
 	// DefaultIdentity is the FALLBACK identity stamped on server-pushed
 	// events that arrive without an inflight call (transport-side
-	// notifications — Phase 83m Item 1, D-156). Per-call subscriptions
+	// notifications — Item 1). Per-call subscriptions
 	// stamp the inflight caller's ctx-resident identity via the
 	// driver's pushIdentity helper; this default only covers
 	// transport-level events.
@@ -73,7 +73,7 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 	if mode == "" {
 		mode = TransportAuto
 	}
-	// Phase 26b — project the operator-facing policy YAML onto the
+	// project the operator-facing policy YAML onto the
 	// driver's runtime ToolPolicy fields. A nil ms.Policy leaves
 	// DefaultPolicy zero-valued, so every tool inherits
 	// tools.DefaultPolicy() at dispatch. A projection error (e.g. an
@@ -132,14 +132,14 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 		InitialState: ServerStateOnline,
 		// Surface the configured per-server policy on the registry so the
 		// Console's mcp.servers.list / mcp.servers.policy read the policy
-		// the operator actually set, not tools.DefaultPolicy() (Phase 26b
-		// wave-audit fix). Per-tool overrides are not part of the registry
+		// the operator actually set, not tools.DefaultPolicy() (an
+		// audit fix). Per-tool overrides are not part of the registry
 		// projection; the per-server default is the headline.
 		Policy: defaultPolicy,
 	}); regErr != nil {
 		return fmt.Errorf("registry.Register: %w", regErr)
 	}
-	// Round-4 (P1+P2): seed the registry's per-server stats from the
+	// (P1+P2): seed the registry's per-server stats from the
 	// boot-time discovery so mcp.servers.list reports the actual
 	// tool_count + a real last_discovery_at instead of zero values on a
 	// just-booted Runtime.
@@ -157,12 +157,12 @@ func Attach(ctx context.Context, ms config.MCPServerConfig, deps AttachDeps) err
 }
 
 // ProjectToolPolicies converts an MCPServerConfig's operator-facing
-// policy YAML (Phase 26b) into the driver's runtime ToolPolicy fields:
+// policy YAML into the driver's runtime ToolPolicy fields:
 // the per-server default and the per-tool override map (keyed by the
 // MCP server-side tool name). The config package owns the single
 // config→policy translation seam (config.ToolPolicyConfig.ToToolPolicy);
 // this helper performs only the trivial primitive→tools.ToolPolicy copy.
-// It lives next to the driver (Phase 110d, D-197 — promoted from
+// It lives next to the driver (— promoted from
 // cmd/harbor, where it was stranded because internal/config cannot
 // import internal/tools). Any projection error (e.g. an unknown
 // retry_on class) is returned so the boot path fails loud (CLAUDE.md §5).
@@ -199,7 +199,7 @@ func ProjectToolPolicies(ms config.MCPServerConfig) (tools.ToolPolicy, map[strin
 // image into the runtime tools.ToolPolicy. Fields the operator omitted
 // stay zero so tools.ToolPolicy's own per-field resolved() fall-through
 // fills them with the package default at dispatch (per-field semantics,
-// Phase 26b). RetryOn strings become tools.ErrorClass values; they were
+// the policy layer). RetryOn strings become tools.ErrorClass values; they were
 // already validated against the allowlist by ToToolPolicy.
 func toolPolicyFromProjected(p config.ProjectedToolPolicy) tools.ToolPolicy {
 	var retryOn []tools.ErrorClass

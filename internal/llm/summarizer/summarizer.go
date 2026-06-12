@@ -1,7 +1,6 @@
 // Package summarizer is the home of Harbor's production LLM-backed
-// summarisation: the memory-subsystem `memory.Summarizer` (Phase 64,
-// D-089) and the planner-trajectory `planner.Summariser` (Phase 111e,
-// D-202).
+// summarisation: the memory-subsystem `memory.Summarizer`
+// and the planner-trajectory `planner.Summariser`.
 //
 // # Two interfaces — do not conflate
 //
@@ -11,12 +10,11 @@
 //   - `memory.Summarizer` (Summarizer, `New`) — the memory
 //     subsystem's rolling-summary compactor: conversation window
 //     (previous summary + evicted turns) in, free-text summary out.
-//     Phase 64 / D-089.
 //   - `planner.Summariser` (TrajectorySummariser,
 //     `NewTrajectorySummariser`) — the runtime's trajectory
 //     compression producer: a run's Trajectory in, the five-field
 //     `planner.TrajectorySummary` out (structured-output JSON-schema
-//     mode). Phase 111e / D-202; invoked by
+//     mode).; invoked by
 //     `planner.CompressionRunner.MaybeCompress` from the steering
 //     RunLoop when `Budget.TokenBudget` is exceeded.
 //
@@ -28,7 +26,7 @@
 // The remainder of this doc describes the memory-subsystem
 // Summarizer; see trajectory.go for the TrajectorySummariser.
 //
-// Before Phase 64 / D-089 the only `memory.Summarizer` Harbor shipped
+// Before the only `memory.Summarizer` Harbor shipped
 // was `strategy.EchoSummarizer` — a deterministic test stub that
 // concatenated turns into a single string. The runtime's
 // `rolling_summary` strategy required an *injected* Summarizer with no
@@ -36,19 +34,19 @@
 // rolling_summary` would have crashed with `nil Summarizer` (or worse,
 // silently fallen back to a test stub if a future PR wired one).
 //
-// Phase 64 closes that seam: `summarizer.New(client)` composes an
+// Harbor closes that seam: `summarizer.New(client)` composes an
 // `llm.LLMClient` with a versioned compaction prompt and returns a
 // `memory.Summarizer` ready to wire into `memory.Open(...,
 // Deps{Summarizer: ...})`. The dev server wires this when an operator
 // configures `memory.strategy: rolling_summary` (the same conditional
-// the Phase 24 spec laid down).
+// the spec laid down).
 //
 // # The compaction prompt
 //
 // The prompt is versioned (`PromptVersion`) so a later prompt-craft
 // improvement bumps the constant and the prior version stays available
 // for golden-test pinning. The template uses an instruction-tuned
-// shape that works against every Phase 33 native provider:
+// shape that works against every native provider:
 //
 //   - One system message anchors the summariser persona: "You are a
 //     concise meeting-minutes summariser. Compress the conversation
@@ -59,7 +57,7 @@
 //     reformatting beyond a stable line-prefix scheme so the LLM sees
 //     consistent input shape across calls.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // `Summarizer` is a compiled artifact: the embedded `llm.LLMClient`
 // and the compaction prompt template are set once at construction
@@ -71,7 +69,7 @@
 //
 // `Summarize` is identity-mandatory: the request's
 // `identity.Quadruple` is propagated into ctx via `identity.With`
-// before the LLM call so the safety pass (Phase 32) sees the same
+// before the LLM call so the safety pass sees the same
 // identity the memory subsystem's caller supplied. The LLM-edge audit
 // + governance + retry layers all key on this identity; without it,
 // the safety pass rejects with `ErrIdentityRequired`.
@@ -81,16 +79,16 @@
 // An LLM call that fails surfaces the wrapped error verbatim — the
 // summariser does NOT silently degrade to an echo or a truncation.
 // Callers handle `Summarize` errors via the
-// `memory.strategy.rolling_summary` health FSM (Phase 24): the strategy
+// `memory.strategy.rolling_summary` health FSM: the strategy
 // transitions from healthy → retry → degraded as failures accumulate.
 //
 // # §13 primitive-with-consumer
 //
-// Phase 64's `harbor dev` subcommand is the §13 first consumer of
+// the `harbor dev` subcommand is the §13 first consumer of
 // this Summarizer. The dev wiring constructs `summarizer.New(client)`
 // and passes it through `memory.Deps.Summarizer` when the operator
-// configured `memory.strategy: rolling_summary`. Without Phase 64 the
-// summariser would be a dormant primitive; with Phase 64 it is wired
+// configured `memory.strategy: rolling_summary`. Without the
+// summariser would be a dormant primitive; with it is wired
 // end-to-end on the production code path.
 package summarizer
 
@@ -120,10 +118,10 @@ const systemPromptV1 = `You are Harbor's rolling conversation summariser. Compre
 // fixed labels so the LLM sees a consistent shape across calls.
 const userPromptHeader = `Compress the following conversation excerpt into an updated rolling summary.`
 
-// Summarizer is the production LLM-backed `memory.Summarizer` Phase
-// 64 ships. Construct via `New`; do not construct directly.
+// Summarizer is the production LLM-backed `memory.Summarizer` Harbor
+// ships. Construct via `New`; do not construct directly.
 //
-// `Summarizer` is a compiled artifact (D-025): every field is set
+// `Summarizer` is a compiled artifact: every field is set
 // once at construction and never mutated. One Summarizer is safe to
 // share across N concurrent Summarize goroutines.
 type Summarizer struct {
@@ -168,9 +166,9 @@ func New(client llm.LLMClient, opts ...Option) (*Summarizer, error) {
 
 // Summarize implements `memory.Summarizer`. It composes a chat
 // request from the previous summary + the new turns, sends it
-// through the LLM client (which runs through the Phase 32 safety
-// pass + Phase 34 corrections + Phase 35 downgrade + Phase 36 retry
-// + Phase 36a/36b governance chain), and returns the assistant's
+// through the LLM client (which runs through the safety
+// pass + corrections + downgrade + retry
+// + governance chain), and returns the assistant's
 // reply verbatim as the new rolling summary.
 //
 // Identity is mandatory: `id` is injected into ctx via

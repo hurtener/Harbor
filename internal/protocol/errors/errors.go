@@ -1,7 +1,7 @@
 // Package errors is the single source of truth for Harbor Protocol error
 // codes (CLAUDE.md §8: "Error codes live in
 // internal/protocol/errors/errors.go. Add new codes there and only
-// there."). The Phase 58 lint formalises this — Phase 54 lays the
+// there."). The lint formalises this — lays the
 // foundation so that lint is a no-op formalisation.
 //
 // # The shape
@@ -14,13 +14,13 @@
 // the thing a client switches on.
 //
 // `*Error` implements the `error` interface, so a ControlSurface handler
-// returns a `*Error` and a transport adapter (Phase 60) type-asserts it
+// returns a `*Error` and a transport adapter type-asserts it
 // to map the Code onto an HTTP status. Until the wire transport lands,
 // the in-process caller reaches the Code via errors.As.
 //
 // # Why these codes
 //
-// The Phase 54 task-control surface needs exactly the codes below: a
+// The task-control surface needs exactly the codes below: a
 // malformed request, a missing identity scope (RFC §5.5: "the Protocol
 // rejects any request without an identity scope"), a steering scope
 // mismatch (RFC §6.3 per-event scopes), an out-of-bounds control payload
@@ -41,7 +41,7 @@ import (
 // Runtime refactor, and a Protocol client branches on the Code.
 type Code string
 
-// The Phase 54 task-control surface error codes.
+// The task-control surface error codes.
 const (
 	// CodeInvalidRequest — the request was structurally malformed: a
 	// wrong wire type for the method, a nil request, a request body the
@@ -76,7 +76,7 @@ const (
 	// classify into a more specific code. The catch-all; a transport
 	// adapter maps it to a 500.
 	CodeRuntimeError Code = "runtime_error"
-	// CodeAuthRejected — Phase 61 Protocol auth: the request carried a
+	// CodeAuthRejected — Protocol auth: the request carried a
 	// JWT bearer that failed cryptographic / structural verification —
 	// a malformed token, an `alg` outside the asymmetric allowlist
 	// (CLAUDE.md §7 rule 1), an invalid signature, an expired or
@@ -87,14 +87,14 @@ const (
 	// client that gets CodeAuthRejected has one but it failed to
 	// verify. Maps to HTTP 401.
 	CodeAuthRejected Code = "auth_rejected"
-	// CodeIdentityScopeRequired — Wave 13 (Phase 72 / 72a; D-105 / D-106)
+	// CodeIdentityScopeRequired —
 	// events surface: the request was authenticated and identified, but
 	// the caller's scope set does not authorise the requested fan-in.
 	// The canonical example is a cross-tenant (`?admin=1`)
 	// `events.subscribe` request, or a cross-tenant `events.aggregate`
 	// filter (one that names a tenant other than the caller's, or more
 	// than one tenant), submitted by a JWT lacking `auth.ScopeAdmin`
-	// OR `auth.ScopeConsoleFleet` (D-079 closed two-scope set; there
+	// OR `auth.ScopeConsoleFleet` (closed two-scope set; there
 	// is NO new `events.crosstenant` scope). HTTP status 403 (the
 	// request is authenticated; the scope set does not authorize the
 	// operation).
@@ -116,11 +116,11 @@ const (
 	// token. The Go-level distinction stays available for in-process
 	// callers that need it.
 	CodeIdentityScopeRequired Code = "identity_scope_required"
-	// CodePresignUnsupported — Phase 73l (Wave 13 / D-120) artifacts
+	// CodePresignUnsupported — artifacts
 	// surface: an `artifacts.get_ref` request reached an ArtifactStore
 	// driver that does not implement the `artifacts.Presigner` capability
 	// (the in-mem / fs / sqlite-blob / postgres-blob drivers — only the
-	// Phase 19 S3 driver implements it). The resolver fails loud rather
+	// S3 driver implements it). The resolver fails loud rather
 	// than silently falling back to byte-streaming, so a backend
 	// misconfiguration is observable. The Console renders the typed code
 	// as "Preview not available — driver does not support presigned URLs"
@@ -128,7 +128,7 @@ const (
 	// Implemented) — the request is well-formed, the surface is real, but
 	// the configured driver cannot satisfy it.
 	CodePresignUnsupported Code = "presign_unsupported"
-	// CodeRequestTooLarge — Phase 73l (Wave 13 / D-120) artifacts
+	// CodeRequestTooLarge — artifacts
 	// surface: an `artifacts.put` request body exceeded the configured
 	// `config.ProtocolConfig.MaxRequestBytes` bound. Fails loud rather
 	// than silently truncating the upload. Maps to HTTP 413 (Payload Too
@@ -162,12 +162,12 @@ func IsValidCode(c Code) bool {
 
 // Codes returns a deterministic snapshot of every canonical Protocol
 // error code, lexicographically sorted. Mirrors the
-// `methods.Methods()` shape so a CI build gate (e.g. the Phase 62
+// `methods.Methods()` shape so a CI build gate (e.g. the
 // conformance suite's error-code matrix exhaustiveness check) can
 // derive the canonical set from this function rather than hardcoding
 // the count.
 //
-// PR #91 / D-082: added per the Wave 10 audit's WARN-4. The previous
+// PR #91: added per the checkpoint audit WARN-4. The previous
 // shape (the conformance suite hardcoding `len(errorCodeMatrix) != 8`)
 // would have allowed a new canonical code to land WITHOUT a matrix
 // entry as long as the count happened to match; deriving from

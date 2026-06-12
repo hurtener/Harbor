@@ -1,7 +1,7 @@
-// importandstore.go — the exported one-call ingest path (Phase 111d,
-// D-201). The Phase-40 importer shipped a complete parse pipeline and
+// importandstore.go — the exported one-call ingest path.
+// The Phase-40 importer shipped a complete parse pipeline and
 // then no shipped path invoked it: the only non-test consumers were
-// devdraft's path-safety reuse (brief 04 §4.7 — "a Harbor-defining
+// devdraft's path-safety reuse ("a Harbor-defining
 // feature that is unreachable is not shipped"). ImportAndStore
 // composes the existing Import pipeline with the SkillStore upsert +
 // the settled conflict policy, and is the ONE implementation the
@@ -78,7 +78,7 @@ func WithOverwrite() ImportStoreOption {
 // resolution rooted at the file's directory), and upserts the
 // resulting `Origin=pack` skill into `store` under `id`.
 //
-// Conflict policy (fail-loud, RFC §6.7 + brief 04 §4.8):
+// Conflict policy (fail-loud, RFC §6.7):
 //
 //   - An existing skill with the same name under the calling identity
 //     rejects with wrapped ErrDuplicateSkillName unless WithOverwrite
@@ -100,7 +100,7 @@ func WithOverwrite() ImportStoreOption {
 // `ErrAttachmentOutsideRoot` — so callers (and the CLI verb) can
 // print the validator's own message.
 //
-// Concurrency note (Wave C checkpoint audit; D-201 addendum): the
+// Concurrency note: the
 // duplicate-name gate is check-then-act — the V1 SkillStore interface
 // has no conditional insert, so the Get→Upsert window is serialised
 // behind a PROCESS-LOCAL mutex here. That fully closes the race for

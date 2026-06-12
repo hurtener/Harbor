@@ -19,7 +19,7 @@ import (
 const PerIndexTimeout = 5 * time.Second
 
 // Query is the `search.query` palette dispatcher — the runtime-side
-// half of Brief 11 §CC-4's "single search box in the Console header"
+// half of the Console design's "single search box in the Console header"
 // experience. It concurrently fans out to every requested runtime-side
 // index in the registry, merges the result rows, applies the union
 // pagination, and returns one paginated `SearchResponse`.
@@ -35,7 +35,7 @@ const PerIndexTimeout = 5 * time.Second
 //     (`ErrUnknownIndex`); they NEVER fall through to a silent skip.
 //   - Per-index failures fan-in: a single index's failure does NOT
 //     fail the whole `search.query` — the dispatcher emits a
-//     best-effort union (per Brief 11 §CC-4's "graceful degradation
+//     best-effort union (per the design's "graceful degradation
 //     on backend stutter"). The failure mode is logged via the
 //     redactor's logger contract elsewhere; for the wire response the
 //     other indexes' rows still ship. This is the ONE exception to the
@@ -45,7 +45,7 @@ const PerIndexTimeout = 5 * time.Second
 //   - Carries NO index of its own; emits NO events.
 //
 // `Query` is a pure function over the registry, ctx, callerID, and
-// req — no per-call state lives on `*SearcherRegistry` (D-025).
+// req — no per-call state lives on `*SearcherRegistry`.
 func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identity, adminScope ScopeChecker, req types.SearchRequest) (types.SearchResponse, error) {
 	if reg == nil {
 		return types.SearchResponse{}, fmt.Errorf("%w: nil SearcherRegistry", ErrInvalidRequest)
@@ -134,7 +134,7 @@ func Query(ctx context.Context, reg *SearcherRegistry, callerID identity.Identit
 			}
 			// Soft per-index failure — log via the redactor pipeline
 			// upstream; the aggregator emits the union of the
-			// remaining indexes (Brief 11 §CC-4 graceful degradation).
+			// remaining indexes (graceful degradation by design).
 			continue
 		}
 		merged = append(merged, r.rows...)

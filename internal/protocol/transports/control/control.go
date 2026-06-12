@@ -1,7 +1,7 @@
 // Package control is the Harbor Protocol REST/JSON control transport —
 // the client→server half of the wire binding RFC §5.4 resolves to (SSE
 // for events + REST/JSON for control). It is a thin adapter over the
-// transport-agnostic protocol.ControlSurface that Phase 54 shipped: a
+// transport-agnostic protocol.ControlSurface that An earlier phase shipped: a
 // Handler decodes an HTTP request body into the Protocol wire request
 // type the method expects, calls ControlSurface.Dispatch, and encodes
 // the wire response — or maps a *protocol/errors.Error onto an HTTP
@@ -17,7 +17,7 @@
 // (internal/protocol/methods). `start` carries a types.StartRequest;
 // the nine steering controls carry a types.ControlRequest. The method
 // name is read from the path, never hardcoded — the handler validates
-// it against methods.IsValidMethod and the Phase 58 single-source lint
+// it against methods.IsValidMethod and the single-source lint
 // forbids a method string literal anywhere under internal/protocol/
 // outside the methods package.
 //
@@ -28,10 +28,10 @@
 // re-validate it: ControlSurface.Dispatch already fails closed on an
 // incomplete triple with CodeIdentityRequired, which status.go maps to
 // 401. The edge structure — decode, hand the whole request to Dispatch,
-// map the error — is the single choke point Phase 61 slots JWT
+// map the error — is the single choke point slots JWT
 // validation into without reshaping the handler.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Handler is a compiled artifact: the ControlSurface and the logger are
 // set once at construction and never mutated. ServeHTTP holds no
@@ -75,9 +75,9 @@ const maxBodyBytes = 64 << 10
 
 // Handler is the Protocol REST/JSON control transport. It is built once
 // per Runtime process via NewHandler and shared across every control
-// request; ServeHTTP is safe for concurrent use by N goroutines (D-025).
+// request; ServeHTTP is safe for concurrent use by N goroutines.
 //
-// Phase 72b extension: when `bus` AND `redactor` are wired via
+// extension: when `bus` AND `redactor` are wired via
 // WithEventBus / WithRedactor, the handler accepts admin-impersonation
 // requests (IdentityScope.Impersonating set) and emits a redacted
 // `audit.admin_scope_used` event on the bus on every accepted
@@ -86,12 +86,12 @@ const maxBodyBytes = 64 << 10
 // accepted without the audit emit (CLAUDE.md §5, §7 rule 6, §13 "Silent
 // degradation").
 //
-// Phase 72c (D-108): when constructed with `WithSearchSurface`, the
+// when constructed with `WithSearchSurface`, the
 // handler routes the five `search.*` methods to the search dispatcher
 // instead of the task-control ControlSurface. The same handler still
-// serves all the Phase 54 task-control methods unchanged.
+// serves all the task-control methods unchanged.
 //
-// Phase 72f / 72g (D-111 / D-112): when constructed with
+// when constructed with
 // `WithPostureSurface`, the handler routes the seven posture methods —
 // the five `runtime.*` / `metrics.*` reads plus `governance.posture` /
 // `llm.posture` — to the posture dispatcher. Like the search surface,
@@ -111,7 +111,7 @@ type Handler struct {
 }
 
 // MCPSurface is the narrow contract the control transport calls into for
-// the twelve `mcp.servers.*` Protocol methods (Phase 73k / D-119). The
+// the twelve `mcp.servers.*` Protocol methods. The
 // production implementation is *protocol.MCPSurface; tests inject a
 // deterministic surface. A nil surface means the handler rejects MCP
 // calls with CodeUnknownMethod — preserving the 404 → SKIP path the
@@ -138,8 +138,8 @@ type SearchSurface interface {
 
 // PostureSurface is the narrow contract the control transport calls
 // into for the seven posture Protocol methods — the five `runtime.*` /
-// `metrics.*` reads (Phase 72f / D-111) plus `governance.posture` and
-// `llm.posture` (Phase 72g / D-112). The production implementation is
+// `metrics.*` reads plus `governance.posture` and
+// `llm.posture`. The production implementation is
 // *protocol.PostureSurface; tests inject a deterministic surface. A nil
 // surface means the handler rejects posture calls with
 // CodeUnknownMethod — preserving the 404 → SKIP path the smoke script
@@ -159,7 +159,7 @@ type PostureSurface interface {
 }
 
 // ArtifactsSurface is the narrow contract the control transport calls
-// into for the three Phase 73l (D-120) artifacts methods —
+// into for the three artifacts methods —
 // `artifacts.list`, `artifacts.put`, `artifacts.get_ref`. The production
 // implementation is *protocol.ArtifactsSurface; tests inject a
 // deterministic surface. A nil surface means the handler rejects
@@ -188,7 +188,7 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // WithEventBus wires the canonical events.EventBus into the handler so
-// the Phase 72b admin-impersonation gate can publish a typed
+// the admin-impersonation gate can publish a typed
 // `audit.admin_scope_used` event onto the bus when an impersonation
 // request is accepted. The bus is OPTIONAL — when not supplied, the
 // handler refuses impersonation requests with CodeRuntimeError (the
@@ -230,7 +230,7 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
-// WithSearchSurface wires the Phase 72c search dispatcher into the
+// WithSearchSurface wires the search dispatcher into the
 // control handler. When supplied, the handler routes the five
 // `search.*` methods to s.Dispatch instead of falling through to the
 // task-control ControlSurface. Optional — handlers built without it
@@ -242,7 +242,7 @@ func WithSearchSurface(s SearchSurface) Option {
 	}
 }
 
-// WithPostureSurface wires the Phase 72f / 72g posture dispatcher into
+// WithPostureSurface wires the posture dispatcher into
 // the control handler. When supplied, the handler routes the seven
 // posture methods — the five `runtime.*` / `metrics.*` reads plus
 // `governance.posture` / `llm.posture` — to s.Dispatch instead of
@@ -255,7 +255,7 @@ func WithPostureSurface(s PostureSurface) Option {
 	}
 }
 
-// WithArtifactsSurface wires the Phase 73l (D-120) artifacts dispatcher
+// WithArtifactsSurface wires the artifacts dispatcher
 // into the control handler. When supplied, the handler routes the three
 // artifacts methods — `artifacts.list`, `artifacts.put`,
 // `artifacts.get_ref` — to s.Dispatch instead of falling through to the
@@ -271,7 +271,7 @@ func WithArtifactsSurface(s ArtifactsSurface) Option {
 	}
 }
 
-// WithMCPSurface wires the Phase 73k (D-119) MCP-Connections dispatcher
+// WithMCPSurface wires the MCP-Connections dispatcher
 // into the control handler. When supplied, the handler routes the twelve
 // `mcp.servers.*` methods to s.Dispatch instead of falling through to
 // the task-control ControlSurface. Optional — handlers built without it
@@ -289,13 +289,13 @@ func WithMCPSurface(s MCPSurface) Option {
 // would nil-panic on the first request (CLAUDE.md §5).
 //
 // The bus + redactor are OPTIONAL at construction so existing tests
-// that don't exercise the Phase 72b impersonation path can call
+// that don't exercise the impersonation path can call
 // `NewHandler(surface)` unchanged. Production callers (transports.NewMux)
 // MUST wire both via WithEventBus + WithRedactor; an impersonation
 // request without them is rejected with CodeRuntimeError (CLAUDE.md §13
 // "Silent degradation" — no quiet accept).
 //
-// The returned *Handler is immutable after construction (D-025) and safe
+// The returned *Handler is immutable after construction and safe
 // for concurrent use by N goroutines.
 func NewHandler(surface *protocol.ControlSurface, opts ...Option) (*Handler, error) {
 	if surface == nil {
@@ -335,7 +335,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 72c (D-108): the five `search.*` methods route through a
+	// the five `search.*` methods route through a
 	// separate SearchSurface — they're not steering controls, they
 	// don't reach the task registry, and their wire shape is
 	// `*types.SearchRequest`. If no SearchSurface is wired, fall
@@ -351,7 +351,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 72f / 72g (D-111 / D-112): the seven posture methods — the
+	// the seven posture methods — the
 	// five `runtime.*` / `metrics.*` reads plus `governance.posture` /
 	// `llm.posture` — route through a separate PostureSurface. They are
 	// read-only runtime-config / observability projections, not
@@ -370,7 +370,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 73l (D-120): the three `artifacts.*` methods route through a
+	// the three `artifacts.*` methods route through a
 	// separate ArtifactsSurface — they're not steering controls, they
 	// don't reach the task registry, and they carry their own wire
 	// shapes (ArtifactsListRequest / ArtifactsPutRequest /
@@ -389,7 +389,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 73k (D-119): the twelve `mcp.servers.*` methods route
+	// the twelve `mcp.servers.*` methods route
 	// through a separate MCPSurface — they reach the runtime's MCP
 	// driver registry + OAuth provider, not the steering inbox. If no
 	// MCPSurface is wired, fall through to the unknown-method path so
@@ -420,14 +420,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 61: when auth.Middleware ran before us, r.Context() carries
+	// when auth.Middleware ran before us, r.Context() carries
 	// the verified identity (via identity.With). The body's
 	// IdentityScope MUST match the verified one — defence in depth so a
 	// caller cannot present a valid JWT for tenant T1 while submitting
 	// a control body claiming tenant T2. Mismatch fails closed (401)
 	// with CodeIdentityRequired before Dispatch is called.
 	//
-	// When NO middleware ran (Phase 60 trust-based posture), there is
+	// When NO middleware ran (trust-based posture), there is
 	// no ctx-identity and the check is a no-op — Dispatch's existing
 	// identity-from-body gate covers it.
 	if perr := assertBodyMatchesAuthedIdentity(r, req); perr != nil {
@@ -435,7 +435,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 72b: admin-impersonation gate. When the body's
+	// admin-impersonation gate. When the body's
 	// IdentityScope carries `Impersonating`, the handler validates the
 	// full triplet (Actor / Requester / Impersonating) and gates on
 	// auth.ScopeAdmin on the verified JWT before allowing Dispatch.
@@ -459,7 +459,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase 72b: emit the audit.admin_scope_used event AFTER a
+	// emit the audit.admin_scope_used event AFTER a
 	// successful Dispatch. Identity is mandatory, capability (admin
 	// scope) is mandatory, and the audit emit is mandatory whenever
 	// impersonation was accepted (CLAUDE.md §5 + §7 rule 6). The
@@ -495,7 +495,7 @@ func decodeRequest(method methods.Method, body []byte) (any, *protoerrors.Error)
 		}
 		return &sr, nil
 	}
-	// Phase 74 (D-114): `topology.snapshot` carries a flat
+	// `topology.snapshot` carries a flat
 	// TopologySnapshotRequest (just the identity scope) — neither a
 	// StartRequest nor a ControlRequest.
 	if methods.IsTopologyMethod(method) {
@@ -537,17 +537,17 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, perr *proto
 	h.writeJSON(w, r, HTTPStatus(perr.Code), perr)
 }
 
-// assertBodyMatchesAuthedIdentity is the Phase 61 defence-in-depth
+// assertBodyMatchesAuthedIdentity is the defence-in-depth
 // check: when auth.Middleware ran before this handler, r.Context()
 // carries the verified identity, and the request body's IdentityScope
 // MUST match it. A mismatch is a malicious / buggy client trying to
 // borrow another tenant's identity using a valid token — fail closed.
 //
-// When no middleware ran (Phase 60 trust-based posture), ctx carries
+// When no middleware ran (trust-based posture), ctx carries
 // no identity and the check returns nil — Dispatch's existing
 // identity-from-body gate is authoritative.
 //
-// Phase 72b: when the body carries `Impersonating`, the top-level
+// when the body carries `Impersonating`, the top-level
 // Tenant/User/Session components are *deliberately* the impersonated
 // identity, not the JWT identity. The verified JWT identity is carried
 // in `Actor` and checked separately by `assertImpersonationShape`. This
@@ -567,11 +567,11 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 	case *types.ControlRequest:
 		bodyScope = v.Identity
 	case *types.TopologySnapshotRequest:
-		// Phase 74 (D-114): a topology.snapshot body carries a flat
+		// a topology.snapshot body carries a flat
 		// IdentityScope. The body-vs-JWT match still applies — EXCEPT
 		// the cross-tenant case: a topology.snapshot caller MAY name a
 		// tenant other than its JWT's when it holds the admin scope
-		// (the Dispatch-side D-079 gate verifies the scope). We
+		// (the Dispatch-side gate verifies the scope). We
 		// therefore backfill an empty body but do NOT reject a
 		// non-matching tenant here — Dispatch's admin gate owns that
 		// decision. User / Session still must match the JWT (a topology
@@ -592,7 +592,7 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 	default:
 		return nil
 	}
-	// Phase 72b: impersonation-shaped bodies bypass this check; the
+	// impersonation-shaped bodies bypass this check; the
 	// dedicated impersonation gate (assertImpersonationShape) owns the
 	// verification of the impersonation triplet against the JWT.
 	if bodyScope.IsImpersonating() {
@@ -600,7 +600,7 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 	}
 	// An empty body identity is permitted when ctx carries one — the
 	// body-side gate in Dispatch will see the JWT-derived identity via
-	// the request body once we backfill it. To keep Phase 60's flat
+	// the request body once we backfill it. To keep the flat
 	// IdentityScope-on-the-body contract, callers SHOULD echo the
 	// JWT identity in the body; we backfill the body when the body's
 	// IdentityScope is empty so the existing Dispatch gate sees a
@@ -627,7 +627,7 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 	return nil
 }
 
-// assertImpersonationShape is the Phase 72b admin-impersonation gate.
+// assertImpersonationShape is the admin-impersonation gate.
 // It returns (impersonating, error):
 //
 //   - impersonating == false, err == nil → no impersonation on the
@@ -647,7 +647,7 @@ func assertBodyMatchesAuthedIdentity(r *http.Request, req any) *protoerrors.Erro
 //     (no silent accept without the audit emit — CLAUDE.md §13).
 //  3. JWT carries auth.ScopeAdmin? → if not, refuse with
 //     CodeScopeMismatch (impersonation is an admin-only feature per
-//     Brief 11 §CC-2).
+//     the Console design).
 //  4. Impersonating triple complete? → if not, refuse with
 //     CodeIdentityRequired (identity is mandatory; the impersonated
 //     triple is identity too — CLAUDE.md §6 rule 9).
@@ -688,7 +688,7 @@ func (h *Handler) assertImpersonationShape(r *http.Request, method methods.Metho
 
 	// (3) admin scope is mandatory — read from the verified scope set
 	// on ctx (auth.Middleware injected it). HasScope returns false
-	// when no scopes are attached (Phase 60 trust-based posture or
+	// when no scopes are attached (trust-based posture or
 	// non-admin token), which is the safe default for a privilege
 	// check.
 	if !auth.HasScope(r.Context(), auth.ScopeAdmin) {
@@ -778,12 +778,12 @@ func (h *Handler) assertImpersonationShape(r *http.Request, method methods.Metho
 }
 
 // emitAdminScopeUsed publishes the typed
-// `audit.admin_scope_used` event with an AdminScopeUsedPayload (Phase
-// 72b) onto the wired event bus. The payload runs through the wired
+// `audit.admin_scope_used` event with an AdminScopeUsedPayload (
+// ) onto the wired event bus. The payload runs through the wired
 // audit.Redactor BEFORE the publish so any redaction rule that would
 // rewrite a string field (e.g. a configurable PII rule) takes effect at
 // the audit boundary, per CLAUDE.md §7 rule 6 ("every payload goes
-// through audit.Redactor") + D-020 (Audit owns redaction).
+// through audit.Redactor"; Audit owns redaction).
 //
 // The event's Identity is the IMPERSONATED triple so a Console
 // subscribing to events for the impersonated session sees the audit
@@ -810,13 +810,13 @@ func (h *Handler) emitAdminScopeUsed(ctx context.Context, method methods.Method,
 		return fmt.Errorf("control: emitAdminScopeUsed called with non-impersonation scope (gate ordering bug)")
 	}
 
-	// CLAUDE.md §7 rule 6 + D-020 — run the impersonation fields
+	// CLAUDE.md §7 rule 6 — run the impersonation fields
 	// through the audit redactor BEFORE building the typed payload.
 	// The redactor walks a flat `map[string]any` of the fields the
 	// payload carries; we extract redacted strings back (with the
 	// pre-redaction fallback) and assemble the typed
-	// `AdminScopeUsedPayload`. This mirrors the Phase 61 audit
-	// pattern in `internal/protocol/auth/auth.go::audit` (D-082): the
+	// `AdminScopeUsedPayload`. This mirrors the audit
+	// pattern in `internal/protocol/auth/auth.go::audit`: the
 	// redactor IS run, but the published payload is the typed
 	// `SafePayload` so subscribers see the canonical shape (no
 	// `RedactedMap` ambiguity for an audit type the operator's

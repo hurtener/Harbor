@@ -2,9 +2,9 @@ package types
 
 import "time"
 
-// Phase 73f (Wave 13 / D-116) — the Console Tools-page wire types.
+// the Console Tools-page wire types.
 //
-// These structs are the single source of truth (D-002) for the seven
+// These structs are the single source of truth for the seven
 // `tools.*` Protocol methods the Console Tools page consumes:
 //
 //   - tools.list           — ToolListRequest  → ToolListResponse
@@ -25,7 +25,7 @@ import "time"
 // rule 9): a request whose embedded IdentityScope is incomplete fails
 // closed at the wire edge with CodeIdentityRequired. The two admin
 // methods additionally require the verified `auth.ScopeAdmin` claim
-// (D-079; there is NO `tools.admin` scope) — a missing claim fails
+// (there is NO `tools.admin` scope) — a missing claim fails
 // closed with CodeIdentityScopeRequired (HTTP 403).
 
 // Tools-page pagination bounds for `tools.list`. Mirrors the
@@ -291,11 +291,10 @@ type ToolManifest struct {
 	// AuthScopes lists the scopes a planner step's identity must carry
 	// for the tool to be visible.
 	AuthScopes []string `json:"auth_scopes"`
-	// OAuthBindingScope is the tool's OAuth binding scope per D-083
+	// OAuthBindingScope is the tool's OAuth binding scope
 	// ("user" | "agent" | "" when the tool requires no OAuth).
 	OAuthBindingScope string `json:"oauth_binding_scope"`
-	// RetryAttempts is the reliability shell's configured retry budget
-	// (D-024).
+	// RetryAttempts is the reliability shell's configured retry budget.
 	RetryAttempts int `json:"retry_attempts"`
 	// TimeoutMS is the reliability shell's per-attempt timeout in
 	// milliseconds (0 when the policy applies its default).
@@ -303,7 +302,7 @@ type ToolManifest struct {
 	// LoadingMode is the prompt-time loading mode ("always" | "deferred").
 	LoadingMode string `json:"loading_mode"`
 	// DisplayModes maps a MIME type to its negotiated MCP-Apps
-	// DisplayMode (D-062); empty for non-MCP tools.
+	// DisplayMode; empty for non-MCP tools.
 	DisplayModes map[string]string `json:"display_modes"`
 }
 
@@ -359,7 +358,7 @@ type ToolContentBucket struct {
 
 // ToolContentStats is the `tools.content_stats` reply — the per-tool
 // distribution of recent result sizes vs the heavy-content threshold
-// (RFC §6.5 / D-026) plus the negotiated DisplayMode snapshot (D-062).
+// (RFC §6.5) plus the negotiated DisplayMode snapshot.
 type ToolContentStats struct {
 	// ID echoes the requested tool ID.
 	ID string `json:"id"`
@@ -367,20 +366,20 @@ type ToolContentStats struct {
 	// power-of-two byte range, ascending.
 	Histogram []ToolContentBucket `json:"histogram"`
 	// HeavyThresholdBytes is the configured heavy-content threshold
-	// (D-026) — results at or above this size route through the
+	// results at or above this size route through the
 	// ArtifactStore by-reference.
 	HeavyThresholdBytes int64 `json:"heavy_threshold_bytes"`
 	// HeavyCount is the number of recent results at or above the
 	// heavy-content threshold.
 	HeavyCount int64 `json:"heavy_count"`
 	// NegotiatedDisplay maps a MIME type to its negotiated MCP-Apps
-	// DisplayMode (D-062); empty for non-MCP tools.
+	// DisplayMode; empty for non-MCP tools.
 	NegotiatedDisplay map[string]string `json:"negotiated_display"`
 }
 
 // ToolSetApprovalPolicyRequest is the `tools.set_approval_policy`
 // request body. ADMIN method — requires the verified `auth.ScopeAdmin`
-// claim (D-079).
+// claim.
 type ToolSetApprovalPolicyRequest struct {
 	// Identity is the (tenant, user, session) scope. Mandatory.
 	Identity IdentityScope `json:"identity"`
@@ -402,7 +401,7 @@ type ToolSetApprovalPolicyResponse struct {
 }
 
 // ToolRevokeOAuthRequest is the `tools.revoke_oauth` request body.
-// ADMIN method — requires the verified `auth.ScopeAdmin` claim (D-079).
+// ADMIN method — requires the verified `auth.ScopeAdmin` claim.
 type ToolRevokeOAuthRequest struct {
 	// Identity is the (tenant, user, session) scope. Mandatory.
 	Identity IdentityScope `json:"identity"`

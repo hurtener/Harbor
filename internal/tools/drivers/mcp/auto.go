@@ -9,7 +9,7 @@ import (
 )
 
 // MCPTransportMode selects the wire transport for one MCP attachment.
-// Mirrors brief 03 §4 ("`MCPTransportMode = Auto | SSE |
+// Mirrors the settled transport design ("`MCPTransportMode = Auto | SSE |
 // StreamableHTTP`"). Stdio is the implicit fourth mode: selected
 // when `Auto` sees a `Command` but no `URL`.
 type MCPTransportMode string

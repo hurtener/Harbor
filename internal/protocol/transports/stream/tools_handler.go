@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73f): the `tools.*` HTTP
+// Package stream — additions: the `tools.*` HTTP
 // handler. Like `pause.list` and `events.aggregate`, the seven Tools-
 // page methods are one-shot request/response — POST JSON in, JSON out
 // — and the handler lives in the stream package because its identity +
@@ -15,9 +15,9 @@
 //	set_approval_policy | revoke_oauth
 //
 // The handler reads identity from r.Context() (auth.Middleware) or the
-// X-Harbor-* carrier headers (Phase 60 fallback), decodes the JSON body
+// X-Harbor-* carrier headers (fallback), decodes the JSON body
 // into the method-specific wire request, gates the two admin methods on
-// the verified `auth.ScopeAdmin` claim (D-079 — there is NO `tools.admin`
+// the verified `auth.ScopeAdmin` claim (there is NO `tools.admin`
 // scope), dispatches into the toolsprotocol.Service, and encodes the
 // response. On failure, a JSON error body with the canonical Protocol
 // Code, identical in shape to the REST control transport's error body.
@@ -62,7 +62,7 @@ var ErrToolsMisconfigured = errors.New("stream: tools handler missing a mandator
 // ToolsHandler serves `POST /v1/tools/{method}`. It is the wire adapter
 // over a toolsprotocol.Service: resolve identity, decode the request,
 // gate admin methods on scope, dispatch, encode. The handler is a
-// D-025-safe compiled artifact — every field is set once at
+// safe for concurrent reuse compiled artifact — every field is set once at
 // construction; ServeHTTP holds no per-request state.
 type ToolsHandler struct {
 	service *toolsprotocol.Service
@@ -87,7 +87,7 @@ func WithToolsLogger(l *slog.Logger) ToolsOption {
 // service is mandatory — a nil fails loud with ErrToolsMisconfigured
 // rather than building a handler that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *ToolsHandler is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewToolsHandler(service *toolsprotocol.Service, opts ...ToolsOption) (*ToolsHandler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("%w: tools/protocol.Service is nil", ErrToolsMisconfigured)
@@ -139,7 +139,7 @@ func (h *ToolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// adminScoped is the verified-JWT scope decision. The toolsprotocol
-	// Service enforces the admin gate (D-079) — a false value on an
+	// Service enforces the admin gate — a false value on an
 	// admin method fails closed with CodeIdentityScopeRequired (403).
 	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
 

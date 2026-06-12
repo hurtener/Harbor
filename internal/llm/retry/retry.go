@@ -1,4 +1,4 @@
-// Package retry is Harbor's retry-with-feedback wrapper (Phase 36 —
+// Package retry is Harbor's retry-with-feedback wrapper (
 // RFC §6.5).
 //
 // When `CompleteRequest.Validator` is non-nil, the wrapper runs the
@@ -9,7 +9,7 @@
 // `ModelProfile.MaxRetries` (default 1) and emits one
 // `llm.retry_with_feedback` event per retry.
 //
-// Composition: the retry wrapper is the OUTERMOST layer (D-043):
+// Composition: the retry wrapper is the OUTERMOST layer:
 //
 //	Open() → retry(downgrade(corrections(safety(driver))))
 //
@@ -21,7 +21,7 @@
 // A `nil` Validator (the common case) makes the wrapper a pure
 // pass-through.
 //
-// Concurrent-reuse (D-025): the wrapper is stateless across calls.
+// Concurrent-reuse: the wrapper is stateless across calls.
 // `Wrap` returns a value holding the inner `LLMClient`, the snapshot,
 // and the deps; all are read-only after construction.
 package retry

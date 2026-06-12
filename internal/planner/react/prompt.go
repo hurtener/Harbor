@@ -14,10 +14,10 @@ import (
 
 // defaultBuilder is the in-package [PromptBuilder]. It produces a
 // conversation whose shape depends on whether the trajectory has been
-// compacted (Phase 46):
+// compacted:
 //
-//  1. System message: the ten XML-tagged sections (brief 13 §2.1,
-//     reshaped by Phase 107c — D-167) assembled by
+//  1. System message: the ten XML-tagged sections (one per concern,
+//     reshaped by) assembled by
 //     [buildSystemContent] —
 //     `<identity>`, `<tool_discovery>`, `<heavy_results>`,
 //     `<tool_usage>`, `<reasoning>`, `<tone>`, `<error_handling>`,
@@ -25,7 +25,7 @@ import (
 //     `<planning_constraints>` — in that fixed order, separated by
 //     `\n\n`. Optional sections (`<additional_guidance>`,
 //     `<planning_constraints>`) are omitted entirely when empty.
-//     Phase 107c deletes `<output_format>`, `<action_schema>`,
+//     deletes `<output_format>`, `<action_schema>`,
 //     `<finishing>`, and `<parallel_execution>` (the prompt-engineered
 //     JSON-action shapes — parallel emission is now a native-side
 //     property: the runtime accepts multiple `ToolCalls` in one
@@ -38,29 +38,29 @@ import (
 //     followed by — when rc.Trajectory.Summary is non-nil — a single
 //     compacted block that lists the summary's Goals / Facts /
 //     Pending / LastOutputDigest / Note fields.
-//  3. **Trajectory rendering — Phase 46 contract (D-055):**
+//  3. **Trajectory rendering — contract:**
 //     - When `rc.Trajectory.Summary == nil`: render each completed
 //     Step as an assistant turn (the prior planner action as JSON) +
 //     a user turn (the rendered observation, preferring
-//     LLMObservation over raw Observation per D-026 heavy-content
+//     LLMObservation over raw Observation heavy-content
 //     discipline).
 //     - When `rc.Trajectory.Summary != nil`: SKIP the per-step loop.
 //     The summary block in the user message (block 2) IS the
-//     trajectory representation. Brief 02 §4: "The compressed
+//     trajectory representation. By design: "The compressed
 //     digest replaces the raw step history in subsequent prompt
 //     builds." Rendering both would double-count tokens and defeat
 //     the compression.
 //  4. Optional background-task outcomes block: resolved
 //     [planner.BackgroundResult] entries surface as a final user
-//     message (the D-032 push-wake seam). Renders independently of
+//     message (the push-wake seam). Renders independently of
 //     compaction.
 //
-// `extraGuidance` is operator-supplied content (Phase 83a — set by
+// `extraGuidance` is operator-supplied content (set by
 // [WithSystemPromptExtra] / `PlannerConfig.ExtraGuidance`) injected
 // into the `<additional_guidance>` section. Empty → the section is
-// omitted entirely (unless Phase 83c repair guidance fills it).
+// omitted entirely (unless repair guidance fills it).
 //
-// **Dynamic-augmentation pass — Phase 83c contract (D-145).** Build
+// **Dynamic-augmentation pass — contract.** Build
 // merges two runtime-supplied, per-turn surfaces into the otherwise
 // static twelve-section layout:
 //
@@ -68,17 +68,17 @@ import (
 //     content, the builder appends escalating repair guidance
 //     (`reminder → warning → critical`) for each non-zero
 //     `RunContext.RepairCounters` field. This closes the across-step
-//     feedback loop Phase 44's per-step repair leaves open (brief 13
-//     §2.2). One [planner.EventTypePlannerRepairGuidanceInjected]
+//     feedback loop the per-step repair leaves open. One
+//     [planner.EventTypePlannerRepairGuidanceInjected]
 //     event is emitted per rendered block.
 //   - `<planning_constraints>` (section 12) — rendered from
 //     `RunContext.PlanningHints`; omitted entirely when nil / empty.
 //
 // Both surfaces are read from `rc`; the builder still MUST NOT mutate
 // `rc`. The counters live on the per-run `rc`, never on the builder
-// or planner struct (D-145 + D-025).
+// or planner struct.
 //
-// **Reasoning replay — Phase 83e contract (D-148).** The builder
+// **Reasoning replay — contract.** The builder
 // resolves the effective [planner.ReasoningReplayMode] via
 // [planner.EffectiveReasoningReplay] — the per-run
 // `RunContext.ReasoningReplay` override wins over the agent-configured
@@ -94,7 +94,7 @@ import (
 // The builder reads from rc; it MUST NOT mutate rc. The result is
 // always safe to discard / re-build per call — the builder is
 // stateless. All fields are set at construction; a `defaultBuilder`
-// value is immutable thereafter, so it satisfies the D-025 concurrent-
+// value is immutable thereafter, so it satisfies the concurrent-
 // reuse contract trivially (no mutable state, no locks needed).
 type defaultBuilder struct {
 	// extraGuidance is operator-supplied domain-specific guidance.
@@ -107,8 +107,8 @@ type defaultBuilder struct {
 	// Zero value ("" → resolves to never) is the safe default.
 	configuredReplay planner.ReasoningReplayMode
 	// maxToolExamples is retained for backward compatibility with
-	// react.go's constructor (Phase 107c step 8 does not touch
-	// react.go). Under native tool-calling (Phase 107c — D-167) the
+	// react.go's constructor (step 8 does not touch
+	// react.go). Under native tool-calling the
 	// <available_tools> prompt section renders name+description only
 	// (schemas live in req.Tools[]), so renderTool no longer reads
 	// this field. It will be deleted when step 9 wires the projector.
@@ -118,8 +118,8 @@ type defaultBuilder struct {
 // Build implements [PromptBuilder].
 //
 // Build cannot return an error (the [PromptBuilder] interface is fixed
-// — D-146 keeps the signature). Memory / skills injection
-// (Phase 83d) CAN fail loudly when a `RunContext.MemoryBlocks` tier or
+// keeps the signature). Memory / skills injection
+// CAN fail loudly when a `RunContext.MemoryBlocks` tier or
 // a `SkillsContext` entry is not JSON-serialisable. The ReAct planner
 // therefore drives the default builder via [defaultBuilder.buildRequest]
 // — the error-returning worker — and surfaces
@@ -147,11 +147,11 @@ func (b defaultBuilder) Build(rc planner.RunContext, systemPrompt string) llm.Co
 // buildRequest is the error-returning worker behind [Build]. The ReAct
 // planner calls it directly so memory / skills serialisation failures
 // surface loudly as [planner.ErrMemoryBlockUnserializable] from `Next`
-// (D-146 — fail-loud, never a silently dropped memory tier).
+// (fail-loud, never a silently dropped memory tier).
 func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string) (llm.CompleteRequest, error) {
 	req := b.baseRequest(rc, systemPrompt)
 
-	// Phase 83d (D-146): memory + skills injection. The wrappers are
+	// memory + skills injection. The wrappers are
 	// emitted as SEPARATE system-role messages immediately after the
 	// base twelve-section system message — NOT concatenated into it —
 	// so Console traces and debugging tools can isolate each tier.
@@ -172,7 +172,7 @@ func (b defaultBuilder) buildRequest(rc planner.RunContext, systemPrompt string)
 	return req, nil
 }
 
-// baseRequest builds the request WITHOUT the Phase 83d memory / skills
+// baseRequest builds the request WITHOUT the memory / skills
 // injection — the twelve-section system message, the user block, and
 // the trajectory replay. [buildRequest] splices the injection messages
 // in afterwards.
@@ -190,7 +190,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 		Content: textContent(sysContent),
 	})
 
-	// Phase 83c (D-145): emit one planner.repair_guidance_injected
+	// emit one planner.repair_guidance_injected
 	// event per escalating guidance block merged into
 	// <additional_guidance> this turn. The emit reflects exactly what
 	// the LLM will see — a nil RepairCounters / all-zero counters is a
@@ -200,7 +200,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 
 	// 2. User block: goal/query + optional summary.
 	userContent := buildUserContent(rc)
-	// Round-7 F11 / D-166 — when the run carries operator-uploaded
+	// when the run carries operator-uploaded
 	// input artifacts (first-turn only; the run loop nils the slice
 	// on subsequent turns so this block is a no-op once the planner
 	// is mid-trajectory), the materializer fans them out into typed
@@ -217,16 +217,16 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 		Content: userMessageContent,
 	})
 
-	// 3. Trajectory rendering. Phase 46 contract (D-055): when
+	// 3. Trajectory rendering. contract: when
 	// rc.Trajectory.Summary is non-nil, SKIP the per-step assistant +
 	// user pair loop. The compacted summary in the user block above is
 	// the trajectory representation; rendering both would double-count
-	// tokens and defeat the compression (brief 02 §4: "The compressed
+	// tokens and defeat the compression ("The compressed
 	// digest replaces the raw step history in subsequent prompt
 	// builds."). When Summary is nil, render the raw step history as
-	// before (the Phase 45 V1 minimum-viable shape).
+	// before (the V1 minimum-viable shape).
 	//
-	// Phase 107c (D-167) — native tool-calling replay (AC-20a / AC-20b).
+	// native tool-calling replay (AC-20a / AC-20b).
 	// A trajectory Step whose Action is a `planner.CallTool` now renders
 	// as a pair of native chat messages:
 	//
@@ -246,7 +246,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	// A `_finish` reserved-name call terminates the run, so it never
 	// reaches the trajectory as a completed Step. But `_spawn_task` /
 	// `_await_task` are NON-terminal control meta-tools: the runloop
-	// dispatches them through the ToolExecutor (Phase 107e — D-170) and
+	// dispatches them through the ToolExecutor and
 	// appends a trajectory Step exactly like a CallTool. Those steps
 	// replay through [renderNativeControlStep] as native tool_call +
 	// RoleTool pairs (consistent with how the model emitted them, and —
@@ -259,7 +259,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 		if rc.Trajectory.Summary == nil {
 			replayMode := planner.EffectiveReasoningReplay(rc, b.configuredReplay)
 			for i, step := range rc.Trajectory.Steps {
-				// Phase 107d (D-169): a CallParallel step renders as ONE
+				// a CallParallel step renders as ONE
 				// assistant message carrying N tool_calls + N RoleTool
 				// messages, one per branch, each ToolCallID matched to the
 				// branch's CallID (AC-9). Decomposed from the AC-4
@@ -278,7 +278,7 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 					}
 					continue
 				}
-				// Phase 107e (D-170): a SpawnTask / AwaitTask step (the
+				// a SpawnTask / AwaitTask step (the
 				// `_spawn_task` / `_await_task` control meta-tools the model
 				// emits natively) replays as a native tool_call + RoleTool
 				// pair, consistent with the CallTool path above.
@@ -308,12 +308,12 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 			}
 		}
 		// Optional: emit any resolved background-task outcomes (push
-		// wake — D-032 / Phase 45 spec) as a final user message so
+		// wake) as a final user message so
 		// the planner sees them on the very next step. This block
 		// fires regardless of compaction — background outcomes are
 		// the latest signal the planner has and must reach it on the
 		// NEXT step. (A future phase MAY route them through the
-		// summariser; Phase 46 keeps them as a separate trailing
+		// summariser; Harbor keeps them as a separate trailing
 		// user turn.)
 		if len(rc.Trajectory.Background) > 0 {
 			if bg := renderBackground(rc.Trajectory.Background); bg != "" {
@@ -330,12 +330,12 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 	}
 }
 
-// The eleven static section bodies (Phase 107c — D-167 resizes from
-// twelve). Brief 13 §4 carries the verbatim adapted copy; the
+// The eleven static section bodies (resizes from
+// twelve). The design notes carry the verbatim adapted copy; the
 // constants below are that copy, split at the XML tag boundaries so
-// each section is independently editable (brief 13 §2.1 design
-// property 1). Phases 83b/c/d extend these section anchors; Phase
-// 107c deletes `<output_format>`, `<action_schema>`, and
+// each section is independently editable (design
+// property 1). Sibling layers extend these section anchors; the
+// native-tool-calling cutover deletes `<output_format>`, `<action_schema>`, and
 // `<finishing>` (the prompt-engineered JSON-action instruction
 // block) and replaces them with `<tool_discovery>` + the
 // `<heavy_results>` explainer for the out-of-context artifact
@@ -343,12 +343,12 @@ func (b defaultBuilder) baseRequest(rc planner.RunContext, systemPrompt string) 
 //
 // The `{{current_date}}` placeholder in <identity> is the ONLY
 // template marker the builder resolves at Build time; everything else
-// is static text. (Smoke phase-83a.sh asserts no other `{{` markers
+// is static text. (The static smoke guard asserts no other `{{` markers
 // survive into the golden fixture.)
 const (
 	// sectionIdentityTemplate carries a `{{current_date}}` marker the
 	// builder resolves per-call. Date-only (no time-of-day) keeps the
-	// prompt stable across a session for KV-cache hit rates (brief 13
+	// prompt stable across a session for KV-cache hit rates (a key
 	// §4 note on `{{current_date}}`).
 	sectionIdentityTemplate = `<identity>
 You are an autonomous reasoning agent that solves tasks by selecting and orchestrating tools.
@@ -470,12 +470,12 @@ If you cannot complete the task after reasonable attempts:
 </error_handling>`
 )
 
-// buildSystemContent assembles the nine XML-tagged sections (Phase 107c
-// D-167) in their fixed order, separated by `\n\n`.
+// buildSystemContent assembles the nine XML-tagged sections
+// in their fixed order, separated by `\n\n`.
 //
 //  1. <identity>             — role framing + current date.
 //  2. <tool_discovery>       — native tool-calling instructions +
-//     deferred-loading meta-tools (Phase 107c — D-167).
+//     deferred-loading meta-tools.
 //  3. <heavy_results>        — factual explainer for out-of-context
 //     storage of large tool results + the artifact_fetch meta-tool.
 //  4. <tool_usage>           — side_effects taxonomy + invocation rules.
@@ -485,12 +485,12 @@ If you cannot complete the task after reasonable attempts:
 //     the wire form).
 //  7. <error_handling>       — recovery framing; no requires_followup.
 //  8. <available_tools>      — name + description quick reference
-//     (schemas live in the provider's native Tools[] declaration —
-//     Phase 107c — D-167).
-//  9. <additional_guidance>  — operator-supplied content + Phase 83c
+//     (schemas live in the provider's native Tools[] declaration —).
+//  9. <additional_guidance>  — operator-supplied content + the
 //     per-turn repair guidance. OMITTED only when BOTH are empty.
-//  10. <planning_constraints> — runtime-supplied PlanningHints
-//     (Phase 83c). OMITTED when nil / empty.
+//  10. <planning_constraints> — runtime-supplied PlanningHints.
+//
+// OMITTED when nil / empty.
 //
 // `systemPrompt` is the legacy override surface ([WithSystemPrompt]):
 // when an operator passes a non-default string it REPLACES the entire
@@ -501,7 +501,7 @@ If you cannot complete the task after reasonable attempts:
 //
 // `maxToolExamples` is retained for backward compatibility with the
 // builder field (react.go still sets it — step 9 deletes). Under
-// Phase 107c native tool-calling, `renderAvailableToolsSection`
+// native tool-calling, `renderAvailableToolsSection`
 // ignores it and renders name+description only. The param will be
 // removed when step 9 lands.
 func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int, rc planner.RunContext) string {
@@ -528,13 +528,13 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 	}
 
 	// Section 10: <available_tools> — always present (renders a
-	// "no tools" marker when the catalog is empty). Phase 83b: the cap
+	// "no tools" marker when the catalog is empty). The cap
 	// is threaded from the builder so each tool's curated examples are
 	// bounded; the builder value carries the resolved knob.
 	sections = append(sections, renderAvailableToolsSection(rc, maxToolExamples))
 
 	// Section 11: <additional_guidance> — operator-supplied guidance
-	// PLUS the Phase 83c per-turn repair guidance (D-145). The repair
+	// PLUS the per-turn repair guidance. The repair
 	// guidance is the across-step feedback loop: when a
 	// `RunContext.RepairCounters` field is non-zero, an escalating
 	// `reminder → warning → critical` block is merged below the
@@ -545,8 +545,8 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 	}
 
 	// Section 12: <planning_constraints> — runtime-supplied planning
-	// hints (Phase 83c — D-145). Rendered from `RunContext.PlanningHints`
-	// and omitted entirely when nil / empty (brief 13 §2.1: optional
+	// hints. Rendered from `RunContext.PlanningHints`
+	// and omitted entirely when nil / empty (optional
 	// sections are omitted, never emitted as empty tag pairs).
 	if hints := renderPlanningConstraints(rc); hints != "" {
 		sections = append(sections, hints)
@@ -557,15 +557,15 @@ func buildSystemContent(systemPrompt, extraGuidance string, maxToolExamples int,
 
 // renderIdentitySection resolves the `{{current_date}}` marker in the
 // <identity> section to today's UTC date in `YYYY-MM-DD` form. Date-
-// only is deliberate (brief 13 §4): the value stays stable across a
+// only is deliberate: the value stays stable across a
 // session, which helps KV-cache hit rates. No time-of-day component.
 func renderIdentitySection() string {
 	date := time.Now().UTC().Format("2006-01-02")
 	return strings.ReplaceAll(sectionIdentityTemplate, "{{current_date}}", date)
 }
 
-// renderAvailableToolsSection renders the <available_tools> section
-// (Phase 107c — D-167). Under native tool-calling, the prompt-side
+// renderAvailableToolsSection renders the <available_tools> section.
+// Under native tool-calling, the prompt-side
 // catalog is a name+description quick-reference only — schemas,
 // side_effects, and examples live in the provider's native Tools[]
 // declaration. `maxToolExamples` is ignored (kept for backward compat
@@ -578,7 +578,7 @@ func renderIdentitySection() string {
 // the `req.Tools` construction in `react.Next` (AC-17) so the LLM's
 // prompt and its native tool surface stay in sync.
 func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) string {
-	// Phase 107c (D-167): `maxToolExamples` is ignored — schemas live
+	// `maxToolExamples` is ignored — schemas live
 	// in req.Tools[]; the prompt renders name+description only.
 	_ = maxToolExamples
 
@@ -623,7 +623,7 @@ func renderAvailableToolsSection(rc planner.RunContext, maxToolExamples int) str
 }
 
 // buildAdditionalGuidance composes the `<additional_guidance>` section
-// body (Phase 83c — D-145): operator-supplied guidance first, then the
+// body: operator-supplied guidance first, then the
 // per-turn repair guidance below it when a `RunContext.RepairCounters`
 // field has tripped. A blank line separates the two when both are
 // present. Returns the empty string when neither contributes — the
@@ -644,7 +644,7 @@ func buildAdditionalGuidance(extraGuidance string, rc planner.RunContext) string
 }
 
 // renderToolNameDesc renders a tool as name + description only for the
-// prompt-side <available_tools> quick reference (Phase 107c — D-167).
+// prompt-side <available_tools> quick reference.
 // Schemas, side_effects, and examples live in the provider's native
 // Tools[] declaration; the prompt duplicates none of them.
 func renderToolNameDesc(t tools.Tool) string {
@@ -665,8 +665,8 @@ func renderToolNameDesc(t tools.Tool) string {
 // prompt-engineered shape are not needed and have been removed.
 
 // renderPlanningConstraints renders the <planning_constraints> section
-// (brief 13 §2.1 section 12) from `RunContext.PlanningHints`
-// (Phase 83c — D-145). Returns the empty string when the hints are
+// from `RunContext.PlanningHints`.
+// Returns the empty string when the hints are
 // nil or carry no content, so the section is omitted from the prompt
 // (acceptance criterion: missing optional injections omit their
 // section). The render is delegated to [renderPlanningHints].
@@ -731,8 +731,8 @@ func listTools(rc planner.RunContext) []tools.Tool {
 
 // renderNativeStepPair projects a single trajectory step into a pair
 // of native chat messages — an assistant `tool_calls` block + a
-// matching `tool` role observation — per the Phase 107c contract
-// (D-167 / AC-20a / AC-20b). Returns (assistantMsg, *toolMsg, true)
+// matching `tool` role observation — per the contract
+// (native tool-calling cutover). Returns (assistantMsg, *toolMsg, true)
 // when the step's Action is a `planner.CallTool`; the third return is
 // false for any other Action shape (the caller falls back to the
 // legacy assistant-text + user-observation pair so observability
@@ -754,7 +754,7 @@ func listTools(rc planner.RunContext) []tools.Tool {
 // step will append the matching RoleTool message when the observation
 // lands.
 //
-// `replayMode` controls reasoning replay (Phase 83e — D-148). When
+// `replayMode` controls reasoning replay. When
 // set to [planner.ReasoningReplayText] AND the step carries a
 // non-empty `ReasoningTrace`, the captured reasoning is prepended as
 // a text block in the assistant message's Content body (above the
@@ -769,7 +769,7 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 		callID = fmt.Sprintf("react.callid.%d", stepIdx)
 	}
 	// Replay the model's prior preamble prose so the assistant turn
-	// retains its narrative thread. Reasoning-replay (D-148) layers
+	// retains its narrative thread. Reasoning-replay layers
 	// on top: when `ReasoningReplay=text` AND the step has a
 	// provider-side ReasoningTrace, the trace is appended below the
 	// preamble.
@@ -832,9 +832,9 @@ func renderNativeStepPair(step planner.Step, replayMode planner.ReasoningReplayM
 // renderNativeControlStep projects a trajectory step whose Action is a
 // [planner.SpawnTask] or [planner.AwaitTask] — the two NON-terminal
 // planner-control meta-tools the model emits as native tool-calls
-// (`_spawn_task` / `_await_task`; Phase 47 / D-056, declared natively
-// since Phase 107c, first dispatched on the dev path by Phase 107e /
-// D-170) — back into the native tool-call wire shape, mirroring
+// (`_spawn_task` / `_await_task`; declared natively from the start,
+// first dispatched on the dev path by the background-task work)
+// — back into the native tool-call wire shape, mirroring
 // [renderNativeStepPair] for CallTool: ONE assistant message carrying the
 // reserved tool name + reconstructed args, paired with ONE RoleTool
 // message carrying the dispatch observation. Returns
@@ -942,7 +942,7 @@ func awaitTaskReplayArgs(d planner.AwaitTask) json.RawMessage {
 
 // renderNativeParallelStep projects a trajectory step whose Action is a
 // [planner.CallParallel] into the native multi-tool-call wire shape
-// (Phase 107d — D-169 / AC-9): ONE assistant [llm.ChatMessage] whose
+// (/ AC-9): ONE assistant [llm.ChatMessage] whose
 // `ToolCalls` slice carries every branch's `{ID, Name, Args}`, followed
 // by N `RoleTool` messages — one per branch — each `ToolCallID` matched
 // to its branch and `Content` set to that branch's projected
@@ -959,7 +959,7 @@ func awaitTaskReplayArgs(d planner.AwaitTask) json.RawMessage {
 //
 // Per-branch observations are decomposed from the AC-4 aggregate
 // ([planner.ParallelObservation]) carried on `step.LLMObservation`
-// (preferred — the D-026 projected forms) or `step.Observation`. The
+// (preferred — the projected forms) or `step.Observation`. The
 // aggregate's branches are matched to assistant tool-calls by their
 // `Index` (the deterministic merge key — robust to empty/duplicate
 // CallIDs). When no aggregate is present (e.g. the runloop wrapped a
@@ -1041,7 +1041,7 @@ func renderNativeParallelStep(step planner.Step, call planner.CallParallel, repl
 
 // parallelBranchBodiesByIndex extracts the AC-4 aggregate observation
 // from a CallParallel step and returns a map keyed by branch Index.
-// Prefers `step.LLMObservation` (the D-026 projected forms) over the raw
+// Prefers `step.LLMObservation` (the projected forms) over the raw
 // `step.Observation`. Returns (nil, false) when neither slot carries a
 // [planner.ParallelObservation].
 func parallelBranchBodiesByIndex(step planner.Step) (map[int]planner.ParallelBranchObservation, bool) {
@@ -1070,7 +1070,7 @@ func parallelBranchBodiesByIndex(step planner.Step) (map[int]planner.ParallelBra
 // renderParallelBranchBody renders one branch's observation body for its
 // RoleTool message. Errors surface first (the planner needs to see
 // them); otherwise heavy-content wrappers project through the existing
-// inlined-preview path (D-026), falling back to the generic renderer.
+// inlined-preview path, falling back to the generic renderer.
 func renderParallelBranchBody(b planner.ParallelBranchObservation) string {
 	if b.Error != "" {
 		return "Tool error: " + oneLine(b.Error)
@@ -1112,7 +1112,7 @@ func renderParallelFallbackBody(step planner.Step) string {
 // native RoleTool message. Failures + errors surface first (the
 // planner needs to see them to course-correct); otherwise the
 // LLMObservation projection is preferred over the raw Observation per
-// D-026 heavy-content discipline. Returns the empty string when no
+// heavy-content discipline. Returns the empty string when no
 // observation is available yet (the runtime appended the Action but
 // dispatch hasn't completed).
 //
@@ -1152,7 +1152,7 @@ func renderNativeObservation(step planner.Step) string {
 // (body, true) when the input matched a wrapper shape; (body, false)
 // otherwise (the caller falls through to the standard renderAny path).
 //
-// Recognised shapes (D-026 heavy-content boundary):
+// Recognised shapes (heavy-content boundary):
 //
 //  1. `*llm.ArtifactStub` — the multimodal materialiser shape from
 //     `internal/llm/materialize.go`. `Summary` is treated as the
@@ -1163,7 +1163,7 @@ func renderNativeObservation(step planner.Step) string {
 //  2. `map[string]any` carrying both `preview` and `artifact_ref`
 //     keys — the runtime tool-executor's heavy-truncation-summary
 //     shape (`internal/runtime/dispatch.HeavyTruncationSummary`,
-//     the exported shape contract; Phase 110a — D-194).
+//     the exported shape contract).
 //     `preview` is the head bytes of the JSON-encoded payload;
 //     `truncated: true` is the executor's explicit signal that the
 //     full bytes live in the artifact store under `artifact_ref`.
@@ -1191,7 +1191,7 @@ func renderHeavyContentObservation(obs any) (string, bool) {
 // renderArtifactStubObservation projects an `*llm.ArtifactStub` into
 // the inlined-preview-plus-footer body shape. Uses `Summary` as the
 // preview text (the materialiser's operator-overridable per-producer
-// description; D-026); empty Summary falls back to a minimal marker
+// description); empty Summary falls back to a minimal marker
 // so the LLM still sees the ref + the fetch hint.
 func renderArtifactStubObservation(stub *llm.ArtifactStub) string {
 	preview := oneLine(stub.Summary)
@@ -1333,7 +1333,7 @@ func artifactFetchFooter(ref, mime string, size int64) string {
 }
 
 // renderAssistantTurn renders one prior trajectory step as the
-// assistant turn for the next prompt. It is the Phase 83e (D-148)
+// assistant turn for the next prompt. It is the
 // replay-aware wrapper around [renderActionForLLM]: when `replayMode`
 // is [planner.ReasoningReplayText] AND the step carries a non-empty
 // `ReasoningTrace`, the trace is prepended as a text block ABOVE the
@@ -1343,7 +1343,7 @@ func artifactFetchFooter(ref, mime string, size int64) string {
 // Returns the empty string when the action itself is unrenderable
 // (the prompt builder skips empty messages).
 //
-// Phase 107c (D-167): this function is retained for the legacy
+// this function is retained for the legacy
 // non-CallTool action fallback path in [defaultBuilder.baseRequest]
 // — CallTool actions now route through [renderNativeStepPair] and
 // emit native assistant `tool_calls` + RoleTool ChatMessage pairs.
@@ -1367,7 +1367,7 @@ func renderAssistantTurn(step planner.Step, replayMode planner.ReasoningReplayMo
 // Decision shapes; non-CallTool actions render as a JSON object
 // carrying the shape's name + a debug field.
 //
-// Phase 83e (D-147) narrowed the echoed envelope to `{tool, args}` —
+// An earlier phase narrowed the echoed envelope to `{tool, args}` —
 // the former `reasoning` key is dropped, matching the narrowed
 // `planner.CallTool` shape. Captured reasoning is replayed (when the
 // agent opts in) as a separate text block by [renderAssistantTurn],
@@ -1378,7 +1378,7 @@ func renderAssistantTurn(step planner.Step, replayMode planner.ReasoningReplayMo
 // trajectory shapes the planner doesn't recognise).
 //
 // The echoed envelope carries `{tool, args}` only — `reasoning` is
-// NOT replayed (brief 13 §2.6 + the Phase 83a prompt-side alignment:
+// NOT replayed (matching the prompt-side alignment:
 // reasoning is captured from the provider channel, never re-injected
 // across turns).
 func renderActionForLLM(action any) string {
@@ -1389,7 +1389,7 @@ func renderActionForLLM(action any) string {
 	case planner.CallTool:
 		// Echo the JSON envelope the LLM emitted, normalised. No
 		// `reasoning` key — the prompt's <action_schema> and the
-		// trajectory replay both omit it (brief 13 §2.6).
+		// trajectory replay both omit it.
 		env := map[string]any{
 			"tool": a.Tool,
 			"args": json.RawMessage(safeArgs(a.Args)),
@@ -1425,9 +1425,9 @@ func renderActionForLLM(action any) string {
 }
 
 // renderObservationForLLM picks the projection the planner shows to
-// the LLM. Per D-026 ("heavy content discipline"), the planner prefers
+// the LLM. Per the heavy-content discipline, the planner prefers
 // LLMObservation over raw Observation: producer-side renderers
-// (Phase 44+) populate LLMObservation as the compressed / redacted
+// populate LLMObservation as the compressed / redacted
 // projection; raw Observation may carry full tool results that aren't
 // safe to round-trip through the LLM.
 //
@@ -1451,9 +1451,9 @@ func renderObservationForLLM(step planner.Step) string {
 }
 
 // renderBackground renders resolved background-task outcomes as a
-// JSON-encoded user message. Phase 45 ships the read path (D-032 push
+// JSON-encoded user message. Harbor ships the read path (push
 // wake declaration); the runtime engine populates
-// `rc.Trajectory.Background` in Phase 47+.
+// `rc.Trajectory.Background` in later phases.
 func renderBackground(bg map[string]planner.BackgroundResult) string {
 	if len(bg) == 0 {
 		return ""
@@ -1497,7 +1497,7 @@ func renderAny(v any) string {
 }
 
 // safeArgs returns the args slice, or `{}` when empty/nil — matches
-// the Phase 44 parser's normalisation so the echoed envelope is
+// the parser's normalisation so the echoed envelope is
 // byte-identical to the LLM's original (modulo whitespace).
 func safeArgs(raw []byte) []byte {
 	if len(raw) == 0 {

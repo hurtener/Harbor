@@ -1,5 +1,4 @@
-// authorizer.go — the injected resolve-privilege seam (Phase 111f,
-// D-203).
+// authorizer.go — the injected resolve-privilege seam.
 //
 // Pre-111f, ResolveApproval hard-coded a Protocol-vocabulary check
 // (`internal/protocol/auth` scope claims on ctx), which forced the
@@ -18,7 +17,7 @@
 //     today's admin / console:fleet acceptance exactly and falls
 //     through to the runtime default for in-process callers.
 //
-// D-203 records the direction rule this closes: runtime packages may
+// A recorded decision pins the direction rule this closes: runtime packages may
 // import `internal/protocol/types` (pure data projection); they must
 // never import protocol auth / methods / transports (behaviour).
 package approval
@@ -44,7 +43,7 @@ var (
 	ErrAuthorizerRequired = errors.New("approval: ResolveAuthorizer required at construction")
 
 	// ErrResolveForbidden — the gate's configured ResolveAuthorizer
-	// rejected the resolving ctx. The Phase 111f replacement for the
+	// rejected the resolving ctx. The replacement for the
 	// pre-seam ErrApprovalScopeRequired: same fail-closed posture,
 	// runtime vocabulary. With the default IdentityAuthorizer it means
 	// the ctx carried neither the pause's originating identity tuple
@@ -72,13 +71,13 @@ type PendingInfo struct {
 }
 
 // ResolveAuthorizer is the injected privilege check deciding who may
-// resolve a pending approval (Phase 111f, D-203). `AuthorizeResolve`
+// resolve a pending approval. `AuthorizeResolve`
 // returns nil to permit the resolution, or an error (conventionally
 // wrapping ErrResolveForbidden) to reject it. The gate calls it after
 // locating the pending entry and BEFORE driving the Coordinator, so
 // an unauthorized resolver never mutates pause state.
 //
-// Implementations MUST be safe for concurrent use (D-025): one
+// Implementations MUST be safe for concurrent use: one
 // authorizer instance serves every ResolveApproval call on the gate.
 type ResolveAuthorizer interface {
 	// AuthorizeResolve reports whether the caller represented by ctx

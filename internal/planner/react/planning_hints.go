@@ -9,16 +9,16 @@ import (
 )
 
 // renderPlanningHints renders the `<planning_constraints>` section
-// body from a [planner.PlanningHints] (Phase 83c — D-145). It returns
+// body from a [planner.PlanningHints]. It returns
 // the empty string when `h` is nil or carries no content, so the
-// prompt builder omits the optional section entirely (brief 13 §2.1
+// prompt builder omits the optional section entirely (optional
 // design property: optional sections are omitted, never emitted as
 // empty tag pairs).
 //
 // Every field is rendered only when non-empty — a partial PlanningHints
 // produces a partial section with no blank lines for the absent
 // fields. The render is a pure function of `h`: no mutation, no
-// package state, safe under the D-025 concurrent-reuse contract.
+// package state, safe under the concurrent-reuse contract.
 //
 // The returned string is the FULL section including the
 // `<planning_constraints>` / `</planning_constraints>` tag pair, so

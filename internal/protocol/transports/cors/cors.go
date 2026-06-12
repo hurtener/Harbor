@@ -1,5 +1,5 @@
-// Package cors is the Harbor Protocol CORS middleware — the Phase 83v
-// security primitive that unlocks the D-091 multi-process Console+Runtime
+// Package cors is the Harbor Protocol CORS middleware — the
+// security primitive that unlocks the multi-process Console+Runtime
 // posture (Console on one origin attaches to a Runtime on a different
 // origin) without weakening the browser-side enforcement contract.
 //
@@ -32,7 +32,7 @@
 // validator rejects `*` (or any wildcard shape) when the flag is
 // unset.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Wrap returns an immutable middleware: the allowlist is set once at
 // construction and read by every concurrent request without
@@ -66,11 +66,11 @@ const (
 //   - Content-Type — POST bodies
 //   - Last-Event-ID — SSE resume
 //   - X-Harbor-Tenant / X-Harbor-User / X-Harbor-Session — the Console's
-//     identity envelope (`web/console/src/lib/protocol/client.ts`). Round-3
+//     identity envelope (`web/console/src/lib/protocol/client.ts`).
 //     walkthrough caught the omission: the browser's preflight allow-
 //     headers check failed because these custom headers were not listed,
 //     blocking every cross-origin request even though the server-side
-//     auth had nothing to reject. (Round 3 / post-83v structural fix.)
+//     auth had nothing to reject. (/ post-83v structural fix.)
 const (
 	allowMethods = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
 	allowHeaders = "Authorization, Content-Type, Last-Event-ID, X-Harbor-Tenant, X-Harbor-User, X-Harbor-Session"
@@ -111,7 +111,7 @@ type Config struct {
 // Origin header) pass through untouched.
 //
 // Wrap returns an immutable handler safe for concurrent use by N
-// goroutines (D-025) — the allowlist is read-only after construction.
+// goroutines — the allowlist is read-only after construction.
 func Wrap(next http.Handler, cfg Config) http.Handler {
 	if next == nil {
 		// Fail loud rather than mounting a half-wired middleware that

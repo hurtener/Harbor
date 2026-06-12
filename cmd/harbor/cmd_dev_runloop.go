@@ -1,10 +1,10 @@
 // cmd/harbor/cmd_dev_runloop.go — the per-task RunLoop driver
-// (D-097, closes issue #114; D-098, closes issue #123).
+// (closes issue #114 and issue #123).
 //
 // `harbor dev` previously had no production consumer for
 // `steering.RunLoop` — a `start` request reached
 // `tasks.TaskRegistry.Spawn` and the task sat there forever (no
-// goroutine drove it through a Planner). The Wave 11 §17.5 audit's
+// goroutine drove it through a Planner). The §17.5 audit's
 // finding A3 pinned this as a §13 "test stubs as production defaults"
 // concern read sideways: the binary advertised itself as a runtime
 // but the planner-step loop was dead code in main.go.
@@ -23,7 +23,7 @@
 //     out of `StatusPending`, calls `runLoop.Run(ctx, spec)`, and
 //     translates the RunLoop's exit shape into `tasks.MarkComplete` /
 //     `tasks.MarkFailed` so the task FSM reaches a terminal state.
-//     This bridge is the D-098 closure of D-097's deliberate carve-out:
+//     This bridge is the closure of the deliberate carve-out:
 //     the per-task goroutine owns the FSM transition because it ALREADY
 //     owns the per-task lifecycle (it spawned the goroutine, it
 //     observes the Run return shape) — shape 1 of the two shapes
@@ -41,7 +41,7 @@
 //
 // # Per-task RunLoop lifecycle
 //
-// One RunLoop instance backs every spawned task (D-025: the RunLoop
+// One RunLoop instance backs every spawned task (the RunLoop
 // is concurrent-safe). The TaskID doubles as the RunID — the task
 // IS the run at this layer (RFC §6.8). When a task.spawned event
 // arrives:
@@ -50,11 +50,11 @@
 //	rl.Run(ctx, steering.RunSpec{Planner: planner, Base: planner.RunContext{Quadruple: q, Goal: ...}, TaskID: payload.TaskID})
 //
 // The goal string is NOT carried on the task.spawned payload —
-// `TaskSpawnedPayload` is a SafeSealed bookkeeping struct (D-020).
+// `TaskSpawnedPayload` is a SafeSealed bookkeeping struct.
 // The goal lives on the persisted `Task.Query` field; the driver
 // looks it up via `taskReg.Get` after the spawn event arrives.
-// (Wave 12+ may extend the spawn payload with the goal to avoid the
-// extra read; the current shape keeps the payload secret-safe.)
+// (A later phase may extend the spawn payload with the goal to avoid
+// the extra read; the current shape keeps the payload secret-safe.)
 //
 // # Identity propagation
 //
@@ -102,27 +102,27 @@ import (
 // a nil any of them returns ErrPerTaskRunLoopMisconfigured from
 // newPerTaskRunLoopDriver. The TaskRegistry is what the driver calls
 // MarkRunning / MarkComplete / MarkFailed on to advance the FSM
-// (D-098, closes issue #123).
+// (closes issue #123).
 type perTaskRunLoopDriverOpts struct {
 	logger   *slog.Logger
 	bus      events.EventBus
 	runLoop  *steering.RunLoop
 	planner  planner.Planner
-	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit (D-098)
+	tasks    tasks.TaskRegistry // mandatory: the FSM the driver advances on Run exit
 	taskKind tasks.TaskKind     // KindForeground at V1; the driver spawns RunLoops for this kind
 
-	// driveBackground (Phase 107e — D-170) widens the driver to ALSO
+	// driveBackground widens the driver to ALSO
 	// drive KindBackground tasks — the ones a planner-emitted SpawnTask
 	// creates. False (the default / legacy test path) keeps the
 	// foreground-only behaviour. Recursion is bounded at the spawn site
 	// by the dev executor's absolute_max_spawn_depth cap, not here.
 	driveBackground bool
 
-	// Phase 83f (D-149) — RunContext consumer wiring. All three of
+	// RunContext consumer wiring. All three of
 	// memory / skillsDirectory / planningHints are OPTIONAL: a dev
 	// stack that did not open the respective subsystem hands nil; the
 	// driver projects the corresponding RunContext field to nil and
-	// the planner omits the wrapper. Phase 111d (D-201): the skills
+	// the planner omits the wrapper. The skills
 	// surface is the Phase-39 `skills.Directory` — the bounded,
 	// pinned-then-recent, capability-filtered `<skills_context>`
 	// producer (the directory carries its own MaxEntries cap; the
@@ -131,7 +131,7 @@ type perTaskRunLoopDriverOpts struct {
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
-	// Phase 83i (D-152) — tool dispatch + Catalog projection +
+	// tool dispatch + Catalog projection +
 	// Trajectory. The tool catalog is the shared catalog the rest of
 	// the dev stack already populated (in-process tools, MCP-discovered
 	// tools, etc.). MaxStepsRunLoop caps the runloop's outer step
@@ -141,14 +141,14 @@ type perTaskRunLoopDriverOpts struct {
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
 
-	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes
+	// operator-declared GrantedScopes
 	// threaded into the per-run catalog view's CatalogFilter. Tools
 	// whose AuthScopes exceed this set are invisible to the planner.
 	// Nil / empty list means no scopes granted (the existing latent
 	// default before the plumb-through).
 	grantedScopes []string
 
-	// Round-7 F11 / D-166 — the artifact store the multimodal
+	// the artifact store the multimodal
 	// materializer reads from. Required only when `task.InputArtifactIDs`
 	// is non-empty (text-only tasks never touch the store). A nil
 	// store with input artifacts on the task degrades gracefully —
@@ -156,9 +156,9 @@ type perTaskRunLoopDriverOpts struct {
 	// routes via the catalog.
 	artifactStore artifacts.ArtifactStore
 
-	// Phase 111e (D-202) — trajectory compression. `tokenBudget`
+	// trajectory compression. `tokenBudget`
 	// projects onto RunSpec.Base.Budget.TokenBudget (the per-run
-	// runtime budget — brief 02 §planner-knobs: a run option, never
+	// runtime budget — a run option, never
 	// planner state); `compression` is the assembly-built
 	// planner.CompressionRunner the runloop invokes at each step
 	// boundary when the budget is non-zero. Both zero/nil (the
@@ -166,7 +166,7 @@ type perTaskRunLoopDriverOpts struct {
 	tokenBudget int
 	compression *planner.CompressionRunner
 
-	// Phase 84b (D-189) — the per-agent attachment disposition policy
+	// the per-agent attachment disposition policy
 	// decoded from `multimodal.disposition` (the middle precedence
 	// layer of the disposition resolution). Zero value = no agent
 	// policy; the runtime default applies.
@@ -183,34 +183,34 @@ type perTaskRunLoopDriver struct {
 	planner         planner.Planner
 	tasks           tasks.TaskRegistry
 	taskKind        tasks.TaskKind
-	driveBackground bool // Phase 107e (D-170) — also drive KindBackground tasks
+	driveBackground bool // also drive KindBackground tasks
 
-	// Phase 83f (D-149) per-run consumer wiring; Phase 111d (D-201)
+	// per-run consumer wiring; the canonical-skills work
 	// — Directory as the skills surface. See driver opts godoc.
 	memory          memory.MemoryStore
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
-	// Phase 83i (D-152) — tool dispatch + Catalog projection.
+	// tool dispatch + Catalog projection.
 	catalog         tools.ToolCatalog
 	executor        steering.ToolExecutor
 	maxStepsRunLoop int
 
-	// Phase 83m (Item 6, D-156) — operator-declared GrantedScopes.
+	// operator-declared GrantedScopes.
 	grantedScopes []string
 
-	// Round-7 F11 / D-166 — artifact store handle for the multimodal
+	// artifact store handle for the multimodal
 	// materializer.
 	artifactStore artifacts.ArtifactStore
 
-	// Phase 111e (D-202) — trajectory compression projection.
+	// trajectory compression projection.
 	tokenBudget int
 	compression *planner.CompressionRunner
 
-	// Phase 84b (D-189) — per-agent attachment disposition policy.
+	// per-agent attachment disposition policy.
 	dispositionPolicy planner.DispositionPolicy
 
-	// Phase 107a — per-task trajectory map for the Enricher seam.
+	// per-task trajectory map for the Enricher seam.
 	// Trajectories are stored before RunLoop.Run and retained after
 	// completion for tasks.get enrichment. Reads are safe under RLock;
 	// writes acquire the full mutex. An evicted task returns nil.
@@ -271,7 +271,7 @@ func newPerTaskRunLoopDriver(opts perTaskRunLoopDriverOpts) (*perTaskRunLoopDriv
 		maxStepsRunLoop: opts.maxStepsRunLoop,
 		grantedScopes:   append([]string(nil), opts.grantedScopes...),
 		artifactStore:   opts.artifactStore,
-		// Phase 84b (D-189) — disposition policy passthrough.
+		// disposition policy passthrough.
 		dispositionPolicy: opts.dispositionPolicy,
 		trajectories:      make(map[tasks.TaskID]*planner.Trajectory),
 		tokenBudget:       opts.tokenBudget,
@@ -292,7 +292,7 @@ func (d *perTaskRunLoopDriver) Start(ctx context.Context) error {
 	// Admin-scoped subscription: the driver listens across every
 	// (tenant, user, session) triple via §6 rule 5's elevated-
 	// subscription path. The bus auto-emits `audit.admin_scope_used`
-	// per Phase 05 — observability of every admin-scoped subscribe is
+	// observability of every admin-scoped subscribe is
 	// the audit trail the rule requires.
 	sub, err := d.bus.Subscribe(d.subCtx, events.Filter{
 		Admin: true,
@@ -335,7 +335,7 @@ func (d *perTaskRunLoopDriver) subscribeLoop() {
 
 // drivesKind reports whether the driver runs a planner sub-run for a
 // task of the given kind. It always drives its configured taskKind; with
-// driveBackground set (Phase 107e — D-170) it additionally drives
+// driveBackground set it additionally drives
 // KindBackground.
 func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
 	if kind == d.taskKind {
@@ -346,7 +346,7 @@ func (d *perTaskRunLoopDriver) drivesKind(kind tasks.TaskKind) bool {
 
 // handleEvent dispatches one `task.spawned` event. The driver drives
 // its configured `taskKind` (KindForeground) and — when driveBackground
-// is set (Phase 107e — D-170) — KindBackground tasks too, the ones a
+// is set — KindBackground tasks too, the ones a
 // planner-emitted SpawnTask creates. A KindBackground task is driven
 // identically to a foreground one (a planner sub-run against its Query);
 // recursion is bounded at the spawn site by the dev executor's
@@ -393,7 +393,7 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // d.subCtx so Close cancels every in-flight run.
 //
 // The planner Goal is left empty at this layer: TaskSpawnedPayload
-// (a SafeSealed struct, D-020) does not carry the user-facing Query.
+// (a SafeSealed struct) does not carry the user-facing Query.
 // The runtime executor reading the persisted Task.Query is a later
 // phase; this driver wires the SHAPE (RunLoop drives a planner per
 // spawned task) without re-introducing a goal-fetch path here.
@@ -401,7 +401,7 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 // ReAct planner falls through to its default prompt builder which
 // surfaces this case cleanly via the LLM's "I have no goal" response.
 //
-// # FSM bridge (D-098, closes issue #123)
+// # FSM bridge (closes issue #123)
 //
 // The task FSM is Pending → Running → {Complete, Failed} (the inprocess
 // driver's isValidTransition table). The driver therefore must:
@@ -427,12 +427,12 @@ func (d *perTaskRunLoopDriver) handleEvent(ev events.Event) {
 //     explicit cancel of the run's ctx). The FSM has no
 //     "auto-cancelled by ctx" path — Cancel(ctx, id, reason) is the
 //     external-caller surface and requires a reason. We map ctx.Canceled
-//     to MarkFailed with code="cancelled". Rationale (documented in
-//     D-098): the run did not reach a successful goal; Failed is the
-//     correct terminal state. An operator who wants explicit cancellation
-//     semantics calls TaskRegistry.Cancel directly (which routes through
-//     the Cancel path and uses StatusCancelled); the driver's ctx-cancel
-//     is a forced-shutdown signal, not a deliberate cancel decision.
+//     to MarkFailed with code="cancelled". Rationale: the run did not
+//     reach a successful goal; Failed is the correct terminal state. An
+//     operator who wants explicit cancellation semantics calls
+//     TaskRegistry.Cancel directly (which routes through the Cancel
+//     path and uses StatusCancelled); the driver's ctx-cancel is a
+//     forced-shutdown signal, not a deliberate cancel decision.
 //
 // On any Mark* error after Run returns, the driver logs Warn but does
 // NOT panic — the per-task goroutine returns cleanly so the next
@@ -480,7 +480,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return
 	}
 
-	// Phase 83f (D-149): build the per-run consumer state BEFORE
+	// build the per-run consumer state BEFORE
 	// handing the RunSpec to the RunLoop. The four primitives the
 	// 83-band shipped now have a real production consumer.
 	//
@@ -517,7 +517,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// spans runs within a session; skills are stored per-session). The
 	// fetch quadruple zeroes RunID so the run inherits the session's
 	// accumulated state rather than seeing only its own (empty) per-run
-	// slice. D-149; Directory wiring D-201.
+	// slice. Directory wiring.
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil {
@@ -544,14 +544,14 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 
 	var skillsCtx []any
 	if d.skillsDirectory != nil {
-		// Phase 111d (D-201): the Phase-39 Directory is the
+		// the Phase-39 Directory is the
 		// `<skills_context>` producer — a bounded, STABLE
 		// pinned-then-recent browse window (identity-scoped via
 		// taskCtx, capability-filtered against the run's visible-tool
 		// set, redacted). Per-query relevance retrieval is the LLM's
 		// job via the `skill_search` meta-tool (107c); a stable
 		// prompt prefix beats a per-turn query-churned block (the
-		// D-176 manifest-pattern / KV-cache framing).
+		// manifest-pattern / KV-cache framing).
 		views, sErr := d.skillsDirectory.View(taskCtx, skills.DirectoryCapability{
 			AllowedTools: tools.VisibleNames(d.catalog, tools.CatalogFilter{
 				TenantID:      q.TenantID,
@@ -579,11 +579,11 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	}
 
 	// Step 3: per-run RepairCounters. ONE pointer per run, threaded
-	// onto RunContext; Phase 44's repair pipeline increments it.
-	// D-145 (counters scope to RunContext, not the planner artifact).
+	// onto RunContext; the repair pipeline increments it.
+	// (counters scope to RunContext, not the planner artifact).
 	counters := &planner.RepairCounters{}
 
-	// Step 4 (Phase 83i — D-152): per-run Trajectory + the per-run
+	// Step 4: per-run Trajectory + the per-run
 	// Catalog view. The Trajectory is appended to by the runloop
 	// after every non-Finish, non-RequestPause step; without it the
 	// planner sees an empty trajectory every step and (with a real
@@ -595,13 +595,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	traj := &planner.Trajectory{Query: task.Query}
 	var catalogView planner.ToolCatalogView
 	if d.catalog != nil {
-		// Phase 83m (Item 6, D-156): the catalog view's CatalogFilter
+		// the catalog view's CatalogFilter
 		// now receives the operator-configured `tools.granted_scopes`
 		// list. Tools whose AuthScopes exceed this set are invisible
 		// to the planner; an empty list preserves the prior behaviour
 		// (tools without AuthScopes are always visible; tools with
 		// AuthScopes are filtered out).
-		// Phase 110a (D-194): the per-run view is the promoted
+		// the per-run view is the promoted
 		// `tools.NewPlannerView` — constructed per run (never cached;
 		// the filter carries the run's identity triple).
 		catalogView = tools.NewPlannerView(d.catalog, tools.CatalogFilter{
@@ -612,20 +612,20 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		})
 	}
 
-	// Phase 83i (D-152) — wire the planner's event-emit closure so
+	// wire the planner's event-emit closure so
 	// `planner.decision` / `planner.finish` / `planner.repair_guidance_injected`
 	// reach the bus. Without this the entire planner-side telemetry
 	// stream is silent (operators / Console / inspect-runs see only
-	// llm.cost.recorded). The closure (promoted constructor — Phase
-	// 110b, D-195) stamps the run's identity quadruple on every event
+	// llm.cost.recorded). The closure (a promoted constructor)
+	// stamps the run's identity quadruple on every event
 	// and Warns loudly on publish failure, so a bus-close mid-run logs
 	// rather than races. The driver-lifetime d.subCtx bounds every
-	// publish (D-207, closing D-195's correction): on the durable bus
+	// publish (closing the correction): on the durable bus
 	// driver, persistence stops at driver Close instead of late emits
 	// writing past teardown.
 	emit := events.IdentityStampingEmitterContext(d.subCtx, d.bus, q, d.logger)
 
-	// Phase 83m item 7: per-run OnToolDispatched hook that advances
+	// item 7: per-run OnToolDispatched hook that advances
 	// the task's `ToolCount` registry-side after every successful
 	// CallTool dispatch. The dev binary closes the seam from the
 	// runloop's side (the executor returned without error) to the
@@ -640,29 +640,29 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		return nil
 	}
 
-	// Phase 107 — per-run OnChunk closure. Translates bifrost streaming
+	// per-run OnChunk closure. Translates bifrost streaming
 	// deltas into `llm.completion.chunk` bus events under the run's
 	// identity quadruple, with identity on the Event ENVELOPE (the
-	// trap the promoted constructor encodes — Phase 110b, D-195; see
+	// trap the promoted constructor encodes —; see
 	// `llm.NewChunkPublisher`'s godoc for the 280-rejected-chunks
-	// history). Per D-025: the closure is per-run on the stack; N
+	// history). Per the concurrent-reuse contract the closure is per-run on the stack; N
 	// concurrent runs see N independent closures. The one-line adapter
 	// bridges the constructor's string-typed kind (import direction:
 	// `planner` imports `llm`, so `llm` cannot name `planner.ChunkKind`).
-	// The driver-lifetime d.subCtx bounds every publish (D-207).
+	// The driver-lifetime d.subCtx bounds every publish.
 	chunkPub := llm.NewChunkPublisherContext(d.subCtx, d.bus, q, string(taskID), d.logger)
 	onChunk := func(delta string, done bool, kind planner.ChunkKind) {
 		chunkPub(delta, done, string(kind))
 	}
 
-	// Round-7 F11 / D-166 — pre-resolve operator-uploaded input
+	// pre-resolve operator-uploaded input
 	// artifacts so the planner's first-turn materializer renders them
-	// as multimodal Content.Parts (promoted policy — Phase 110b,
-	// D-195). The runloop clears `Base.InputArtifacts` after the first
+	// as multimodal Content.Parts (promoted policy).
+	// The runloop clears `Base.InputArtifacts` after the first
 	// step (per `runloop.go::spec.Base.InputArtifacts = nil` at the
 	// end of the per-step build) so subsequent steps see an empty
 	// slice.
-	// Phase 84b (D-189) — the disposition is resolved per attachment
+	// the disposition is resolved per attachment
 	// by the planner-homed pure resolver (hint > agent policy >
 	// runtime default); this driver is a THIN caller. The helper logs
 	// the winning layer / degradation facts and emits one
@@ -675,7 +675,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		Emit:    emit,
 	})
 
-	// Phase 107f (D-176) — pre-resolve the session-artifact manifest so
+	// pre-resolve the session-artifact manifest so
 	// the planner renders a read-only `<session_artifacts>` block listing
 	// every artifact already in this session (uploads + prior tool
 	// results), each fetchable by ref via `artifact_fetch`. List is
@@ -696,25 +696,25 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			SkillsContext:    skillsCtx,
 			RepairCounters:   counters,
 			PlanningHints:    d.planningHints,  // nil when operator left the config block empty
-			Catalog:          catalogView,      // Phase 83i (D-152) — populates <available_tools>
-			Trajectory:       traj,             // Phase 83i (D-152) — runloop appends per step
-			Emit:             emit,             // Phase 83i (D-152) — planner-side telemetry
-			OnChunk:          onChunk,          // Phase 107 — per-token streaming to bus
-			InputArtifacts:   inputArtifacts,   // Round-7 F11 / D-166 — first-turn multimodal inputs
-			SessionArtifacts: sessionArtifacts, // Phase 107f / D-176 — read-only cross-turn manifest
-			// Phase 111e (D-202) — the per-run token budget the runloop's
+			Catalog:          catalogView,      // populates <available_tools>
+			Trajectory:       traj,             // runloop appends per step
+			Emit:             emit,             // planner-side telemetry
+			OnChunk:          onChunk,          // per-token streaming to bus
+			InputArtifacts:   inputArtifacts,   // first-turn multimodal inputs
+			SessionArtifacts: sessionArtifacts, // read-only cross-turn manifest
+			// the per-run token budget the runloop's
 			// compression gate reads. Zero = compression off.
 			Budget: planner.Budget{TokenBudget: d.tokenBudget},
 		},
 		TaskID:           taskID,
-		ToolExecutor:     d.executor,   // Phase 83i (D-152) — dispatch CallTool decisions
-		OnToolDispatched: dispatchHook, // Phase 83m item 7 — advance Task.ToolCount on dispatch
+		ToolExecutor:     d.executor,   // dispatch CallTool decisions
+		OnToolDispatched: dispatchHook, // item 7 — advance Task.ToolCount on dispatch
 		MaxSteps:         d.maxStepsRunLoop,
-		Compression:      d.compression, // Phase 111e (D-202) — trajectory compression runner
+		Compression:      d.compression, // trajectory compression runner
 	}
-	// Phase 107a — save the trajectory ref before Run so the Enricher
+	// save the trajectory ref before Run so the Enricher
 	// can read it post-completion (including concurrently — the map is
-	// mutex-guarded per D-025).
+	// mutex-guarded per the concurrent-reuse contract).
 	d.trajMu.Lock()
 	d.trajectories[taskID] = traj
 	d.trajMu.Unlock()
@@ -725,7 +725,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 		// The FSM has no auto-cancelled status (Cancel is the external-
 		// caller surface and requires a reason); Failed is the closest
 		// terminal match for a ctx-cancelled run that did not reach a
-		// goal. See D-098 for the full rationale.
+		// goal.
 		code := planner.TaskErrorCodeRunLoopError
 		if errors.Is(err, context.Canceled) {
 			code = planner.TaskErrorCodeCancelled
@@ -759,7 +759,7 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 	// is a non-success terminal (the run finished but did not satisfy
 	// the goal) and maps to Failed with the reason as the error code.
 	if fin.Reason == planner.FinishGoal {
-		// Phase 83i (D-152) — Memory writeback. The 83d/83f read path
+		// Memory writeback. The 83d/83f read path
 		// is wired (run loop hands MemoryBlocks to the planner); the
 		// write path was the missing half. Without a writeback the
 		// session-scoped memory stays empty forever and the operator's
@@ -781,13 +781,13 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 			}
 		}
 
-		// Phase 106 (V1.2) — populate the answer envelope so Protocol
+		// populate the answer envelope so Protocol
 		// consumers (Console Playground, CLI, third-party UIs) read the
 		// actual assistant response via tasks.get → result_inline.
 		// Pre-106, this was tasks.TaskResult{} — the projector had
 		// nothing to project and the Playground hardcoded a placeholder.
-		// Phase 110a (D-194): the shape is the exported
-		// `planner.AnswerEnvelope` (byte-compatible with the Phase 106
+		// the shape is the exported
+		// `planner.AnswerEnvelope` (byte-compatible with the
 		// map literal — pinned by the planner-side golden test).
 		payload := planner.AnswerEnvelope{
 			Answer:        runctx.ExtractAssistantAnswer(fin),
@@ -837,8 +837,8 @@ func (d *perTaskRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID)
 }
 
 // resolveSessionArtifacts builds the session-artifact manifest the
-// planner renders into the read-only `<session_artifacts>` block (Phase
-// 107f — D-176). It lists `ArtifactStore.List` scoped to the run's
+// planner renders into the read-only `<session_artifacts>` block (
+// ). It lists `ArtifactStore.List` scoped to the run's
 // `(tenant, user, session)` triple — TaskID is left empty so the
 // wildcard match returns every artifact in the session (uploads + tool-
 // and flow-materialised results from prior turns), not just the current
@@ -917,7 +917,7 @@ func (d *perTaskRunLoopDriver) Close(_ context.Context) error {
 
 // TrajectoryByTaskID returns the planner trajectory for a completed run,
 // or nil when the task's trajectory has been evicted or never existed.
-// Reads are safe under concurrent access (RLock / D-025).
+// Reads are safe under concurrent access (RLock).
 func (d *perTaskRunLoopDriver) TrajectoryByTaskID(taskID tasks.TaskID) *planner.Trajectory {
 	d.trajMu.RLock()
 	defer d.trajMu.RUnlock()

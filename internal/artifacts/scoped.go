@@ -33,7 +33,7 @@ type ScopedArtifacts struct {
 // `ErrIdentityRequired` if scope is invalid (empty tenant/user/session).
 //
 // Tools and runtime construct ScopedArtifacts at the consumer
-// boundary (e.g. tool dispatcher, Phase 26+); they then never see the
+// boundary (e.g. the tool dispatcher); they then never see the
 // raw `ArtifactScope` again.
 func NewScoped(store ArtifactStore, scope ArtifactScope) *ScopedArtifacts {
 	if store == nil {

@@ -4,14 +4,14 @@
 //     `Publish` is the canonical publication primitive. V1 ships an
 //     in-process loopback driver (`internal/distributed/drivers/loopback`);
 //     durable backends (NATS / Redis Streams / Postgres-as-queue) land in
-//     post-V1 phase 86.
+//     post-V1.
 //
 //   - `RemoteTransport` — the cross-process / cross-host call surface,
 //     designed end-to-end against the full A2A v1 spec (vendored at
 //     `docs/specifications/a2a.proto`). Every A2A RPC maps to a Go
 //     method here; every A2A message type has a counterpart in
 //     `internal/distributed/a2a`. V1 ships an in-process loopback
-//     driver; the actual A2A wire driver lands in Phase 29 (southbound).
+//     driver; the actual A2A wire driver lands in a later phase (southbound).
 //
 // Both surfaces follow the §4.4 driver-registry seam: an interface here,
 // concrete drivers under `drivers/<name>/`, a factory + registry that
@@ -32,7 +32,7 @@
 // durable drivers WILL produce duplicates under partition + retry.
 // Pinning the contract at at-least-once from t=0 means consumers
 // that work against loopback also work against post-V1 drivers — this
-// is intentional API hardening per D-031.
+// is intentional API hardening.
 package distributed
 
 import (
@@ -76,9 +76,9 @@ type BusEnvelope struct {
 	// on `(TaskID, Edge, EventID)`. ULID-shaped; callers SHOULD use
 	// `events.NewEventID` (or a state-store equivalent) to generate.
 	EventID events.EventID
-	// Payload is the redacted bytes the consumer will see. Phase 22's
+	// Payload is the redacted bytes the consumer will see. the
 	// loopback driver passes the bytes through verbatim; durable
-	// drivers may compress / encrypt. Caller-side redaction (D-020)
+	// drivers may compress / encrypt. Caller-side redaction
 	// is mandatory BEFORE Publish.
 	Payload json.RawMessage
 	// Headers carry transport-level key/value pairs (trace context,
@@ -108,13 +108,13 @@ func (e BusEnvelope) Validate() error {
 
 // MessageBus is Harbor's at-least-once cross-worker fan-out edge.
 // Implementations MUST be safe for concurrent use by N goroutines
-// against a single shared instance (D-025).
+// against a single shared instance.
 //
 // Subscribe is intentionally NOT on this interface in V1: the loopback
 // driver projects the bus through the typed `events.EventBus` so
 // subscribers wired to the event bus see the envelopes as typed
 // events. A `Subscribe`-shaped method lands when a durable driver
-// does (post-V1 phase 86); the contract is purposely narrow at V1.
+// does (post-V1); the contract is purposely narrow at V1.
 type MessageBus interface {
 	// Publish delivers env to its subscribers. At-least-once delivery;
 	// consumers MUST be idempotent on `(TaskID, Edge, EventID)`.

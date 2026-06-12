@@ -23,7 +23,7 @@ import (
 // fail-closed guard against an unbounded stream.
 const artifactsMaxBodyBytes = 8 << 20
 
-// serveArtifacts is the Phase 73l (D-120) artifacts-method REST adapter.
+// serveArtifacts is the artifacts-method REST adapter.
 // It decodes the body into the wire request type the method expects,
 // backfills the body identity from the auth-verified identity in ctx
 // when the body left it empty (same posture as servePosture's
@@ -36,7 +36,7 @@ const artifactsMaxBodyBytes = 8 << 20
 //     triple fails closed at the surface edge.
 //   - Cross-tenant gating (CodeScopeMismatch / 403) — a request whose
 //     scope Tenant differs from the ctx-verified tenant requires the
-//     admin scope claim per D-079.
+//     admin scope claim per the closed admin-scope set.
 //   - Body bounds (CodeRequestTooLarge / 413) — an artifacts.put body
 //     above the configured MaxRequestBytes.
 //   - Presigner capability (CodePresignUnsupported / 501) — an
@@ -55,7 +55,7 @@ func (h *Handler) serveArtifacts(w http.ResponseWriter, r *http.Request, method 
 		return
 	}
 
-	// Phase 61 defence-in-depth: when auth.Middleware ran, backfill an
+	// defence-in-depth: when auth.Middleware ran, backfill an
 	// empty body identity from the verified JWT, and reject a body whose
 	// user/session disagree with it. The Tenant deliberately may differ
 	// (a cross-tenant artifacts.list is a legitimate admin request the
@@ -120,7 +120,7 @@ func decodeArtifactsRequest(method methods.Method, body []byte) (any, *types.Art
 	}
 }
 
-// backfillArtifactsIdentity threads the Phase 61 verified identity into
+// backfillArtifactsIdentity threads the verified identity into
 // the artifacts request body's ArtifactScope. When ctx carries a
 // verified identity:
 //

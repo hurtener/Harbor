@@ -1,19 +1,19 @@
 // Package governance is Harbor's policy middleware between the runtime
 // and the LLM-edge chain. It owns identity-scoped enforcement of cost
-// ceilings (Phase 36a), per-call MaxTokens (Phase 36b), and rate limits
-// (Phase 36b). The package composes OUTSIDE Phase 36's retry wrapper —
-// see D-043 for the full chain order:
+// ceilings, per-call MaxTokens, and rate limits.
+// The package composes OUTSIDE the retry wrapper —
+// for the full chain order:
 //
 //	governance(retry(downgrade(corrections(safety(driver)))))
 //
-// Governance ships LATENT at V1 (per the Wave 7b scoping decision): the
+// Governance ships LATENT at V1 (per the V1 scoping): the
 // interface + math + events + persistence all ship and wire, but every
 // enforcement path is operator-opt-in. With zero `Governance.IdentityTiers`
 // configured (the loader's default), every `PreCall` permits and every
 // `PostCall` is an accumulator update only — no ceilings fire, no events
 // emit beyond the accumulator's own bookkeeping.
 //
-// Concurrent reuse (D-025): one Subsystem instance is safe to share
+// Concurrent reuse: one Subsystem instance is safe to share
 // across N concurrent goroutines. Per-key state lives in a `sync.Map` of
 // `*identityState`; each `identityState` uses atomic primitives for its
 // counters (lock-free CAS for monetary float64 sums; atomic for integer
@@ -35,7 +35,7 @@ import (
 // Subsystem is governance's enforcement seam — the interface
 // `governance.Wrap` consumes to gate / observe an LLM call. Implementations
 // MUST be safe for N concurrent invocations against a single shared
-// instance (D-025).
+// instance.
 //
 // `PreCall` is invoked before the wrapped `LLMClient.Complete`. A non-nil
 // return short-circuits the call: the wrapper returns the error directly

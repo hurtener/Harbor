@@ -11,7 +11,7 @@ import (
 // ctx. It prefers a full Quadruple (Identity + RunID) and falls back
 // to a bare Identity. A context carrying neither — or one whose triple
 // is incomplete — fails closed with ErrIdentityRequired (CLAUDE.md §6
-// rule 9 + D-001: identity is mandatory; there is no opt-out knob).
+// rule 9: identity is mandatory; there is no opt-out knob).
 //
 // Used by Resume to validate the resuming scope against the pause's
 // recorded scope. Request takes its identity from PauseRequest.Identity

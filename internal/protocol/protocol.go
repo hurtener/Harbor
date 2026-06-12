@@ -1,6 +1,6 @@
 // Package protocol is the Harbor Protocol layer's runtime-side surface —
 // the transport-agnostic handlers that translate a Protocol method call
-// into a runtime action. Phase 54 ships the **task control surface**:
+// into a runtime action. Harbor ships the **task control surface**:
 // the ControlSurface type, which maps the ten canonical task-control
 // methods (internal/protocol/methods) onto the already-shipped runtime.
 //
@@ -11,23 +11,23 @@
 // runtime-side half of the task-control contract: it accepts the
 // Protocol wire types (internal/protocol/types — flat, Protocol-owned
 // structs, never re-exports of runtime Go types), reaches the runtime
-// ONLY through the public Phase 20 tasks.TaskRegistry + Phase 52/53
+// ONLY through the public tasks.TaskRegistry + the
 // steering.Registry surfaces, and returns Protocol wire types. A
 // Protocol method that mapped 1:1 onto an internal Go signature would be
 // the RFC §5.1 reject-on-sight smell — the control methods deliberately
 // take a flat IdentityScope + payload map, and ControlSurface does the
 // translation.
 //
-// # Transport-agnostic — the wire transport is Phase 60
+// # Transport-agnostic — the wire transport is a sibling layer
 //
 // RFC §5.4 leaves the wire transport (SSE+REST-leaning) not-yet-locked,
-// and says "the relevant phase blocks until it resolves." Phase 54 takes
+// and says "the relevant phase blocks until it resolves." takes
 // the explicit consequence: it ships the transport-AGNOSTIC surface now.
 // ControlSurface.Dispatch(ctx, method, req) is a plain Go entry point —
-// a Phase 60 HTTP/SSE handler is a thin adapter that decodes a request,
+// a HTTP/SSE handler is a thin adapter that decodes a request,
 // calls Dispatch, and encodes the response (or maps a *errors.Error onto
 // an HTTP status). The whole surface is in-process-invocable and
-// testable today, which is what lets the Wave 9 E2E exercise it as a
+// testable today, which is what lets the E2E exercise it as a
 // real §13 consumer.
 //
 // # Identity scope is enforced at the edge (RFC §5.5, CLAUDE.md §6)
@@ -35,9 +35,9 @@
 // Every method fails closed on an incomplete identity triple — RFC §5.5:
 // "the Protocol rejects any request without an identity scope." The nine
 // steering-control methods additionally require a run id (they target a
-// specific run's inbox) and run the Phase 52 per-event scope check via
+// specific run's inbox) and run the per-event scope check via
 // steering.Inbox.Enqueue → steering.CheckScope. The IdentityScope.Scope
-// claim is trust-based until Phase 61 Protocol auth — exactly the posture
+// claim is trust-based until a later phase Protocol auth — exactly the posture
 // events.Filter.Admin holds until then.
 //
 // # Single source for types / methods / errors (CLAUDE.md §8)
@@ -45,10 +45,10 @@
 // Every Protocol message struct is in internal/protocol/types; every
 // method name is in internal/protocol/methods; every error code is in
 // internal/protocol/errors. This package defines NONE of those — it only
-// consumes them. Phase 58 formalises the lint that enforces this; Phase
-// 54 lays the foundation correctly so Phase 58 is a no-op formalisation.
+// consumes them. A lint enforces this; the task-control surface
+// lays the foundation correctly so the lint is a no-op formalisation.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // ControlSurface is a compiled artifact: every field is set once at
 // construction (the TaskRegistry, the steering Registry, the clock — all
@@ -73,7 +73,7 @@ import (
 )
 
 // TopologyAccessor is the narrow read-only contract the ControlSurface
-// calls into for the Phase 74 `topology.snapshot` method. The Runtime
+// calls into for the `topology.snapshot` method. The Runtime
 // engine satisfies it structurally — the engine package never imports
 // the Protocol package; the wiring at cmd/harbor injects the engine as
 // a TopologyAccessor. Keeping the interface here (not in the engine
@@ -91,7 +91,7 @@ type TopologyAccessor interface {
 	// TenantID is the tenant the engine runs under. The
 	// admin-cross-tenant gate compares it against the caller's tenant:
 	// a caller whose tenant differs needs the verified auth.ScopeAdmin
-	// claim (D-079).
+	// claim.
 	TenantID() string
 }
 
@@ -104,22 +104,21 @@ type ScopeChecker func(ctx context.Context, s auth.Scope) bool
 
 // ControlSurface is the transport-agnostic Harbor Protocol task-control
 // handler. It is built once per Runtime process and shared across every
-// Protocol request; Dispatch is safe for concurrent use by N goroutines
-// (D-025).
+// Protocol request; Dispatch is safe for concurrent use by N goroutines.
 //
 // Construct a ControlSurface via NewControlSurface; do not construct one
 // directly.
 type ControlSurface struct {
 	tasks      tasks.TaskRegistry
 	steering   *steering.Registry
-	topology   TopologyAccessor // Phase 74 — may be nil (Runtime hosts no engine)
-	adminScope ScopeChecker     // Phase 74 — the admin-cross-tenant gate; defaults to auth.HasScope
-	bus        events.EventBus  // Phase 74 — optional; the audit.admin_scope_used emit on a cross-tenant topology read
-	sessions   SessionEnsurer   // D-171 — optional; create-on-first-use on `start`
+	topology   TopologyAccessor // may be nil (Runtime hosts no engine)
+	adminScope ScopeChecker     // the admin-cross-tenant gate; defaults to auth.HasScope
+	bus        events.EventBus  // optional; the audit.admin_scope_used emit on a cross-tenant topology read
+	sessions   SessionEnsurer   // optional; create-on-first-use on `start`
 }
 
 // SessionEnsurer is the create-on-first-use seam the `start` method
-// calls (D-171). The session id is the per-request session the client
+// calls. The session id is the per-request session the client
 // chose (carried in the request's IdentityScope, sourced from the
 // X-Harbor-Session header by auth.Middleware). When a `start` names a
 // session id that has no registry row yet, EnsureSession materialises it
@@ -136,29 +135,29 @@ type SessionEnsurer interface {
 
 // Option configures a ControlSurface at construction time. Reserved for
 // later Protocol-surface phases (a clock override, a metrics hook); the
-// Phase 54 surface has no options yet, but the variadic seam means a
+// surface has no options yet, but the variadic seam means a
 // later phase adds one without a signature break.
 type Option func(*ControlSurface)
 
 // NewControlSurface builds the Protocol task-control surface. Two
 // dependencies are mandatory:
 //
-//   - taskRegistry — the Phase 20 task registry the `start` method maps
+//   - taskRegistry — the task registry the `start` method maps
 //     onto (tasks.TaskRegistry.Spawn).
-//   - steeringRegistry — the Phase 52/53 process-wide steering inbox
+//   - steeringRegistry — the process-wide steering inbox
 //     registry the nine control methods map onto (a control event is
 //     enqueued on the run's steering.Inbox).
 //
 // A nil either fails loud with a wrapped ErrMisconfigured — there is no
 // silent-degradation path (CLAUDE.md §5).
 //
-// The Phase 74 `topology` accessor is OPTIONAL — a nil topology builds
+// The `topology` accessor is OPTIONAL — a nil topology builds
 // a surface that rejects `topology.snapshot` with CodeUnknownMethod (a
 // Runtime hosting no engine, e.g. validate-only mode). It is wired via
 // the WithTopologyAccessor option so existing two-arg callers compile
 // unchanged.
 //
-// The returned ControlSurface is immutable after construction (D-025)
+// The returned ControlSurface is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steering.Registry, opts ...Option) (*ControlSurface, error) {
 	if taskRegistry == nil {
@@ -178,7 +177,7 @@ func NewControlSurface(taskRegistry tasks.TaskRegistry, steeringRegistry *steeri
 	return s, nil
 }
 
-// WithTopologyAccessor wires the Phase 74 engine topology accessor into
+// WithTopologyAccessor wires the engine topology accessor into
 // the ControlSurface so `topology.snapshot` returns a real projection.
 // A surface built WITHOUT it rejects `topology.snapshot` with
 // CodeUnknownMethod — the explicit "this Runtime hosts no engine"
@@ -224,7 +223,7 @@ func WithEventBus(b events.EventBus) Option {
 	}
 }
 
-// WithSessionEnsurer wires the create-on-first-use seam (D-171) the
+// WithSessionEnsurer wires the create-on-first-use seam the
 // `start` method calls so a brand-new conversation's session row
 // materialises in the SessionRegistry on the first turn. A surface
 // built WITHOUT it does NOT create sessions on start — the explicit

@@ -10,7 +10,7 @@ import (
 )
 
 // runCapability computes the capability envelope the skill_* built-in
-// delegations pass to the Phase-38 handlers (Phase 111d / D-201).
+// delegations pass to the Phase-38 handlers.
 //
 // The envelope is SERVER-computed, never LLM-supplied: the builtin
 // arg shapes deliberately omit the `capability` field so a model
@@ -24,7 +24,7 @@ import (
 // AllowedNamespaces / AllowedTags stay EMPTY: Harbor has no runtime
 // source of namespace / tag grants (no config surface declares them),
 // so per the Phase-38 default-deny stance a skill whose RequiredNS /
-// RequiredTags is non-empty is filtered out. Recorded in D-201 —
+// RequiredTags is non-empty is filtered out. A recorded decision —
 // when a grants surface lands, this is the one place to thread it.
 //
 // A missing identity yields an empty envelope; the downstream handler

@@ -1,11 +1,11 @@
-// from_config.go — the exported config→snapshot projection (Phase 110c,
-// D-196). Before 110c the `config.SkillsConfig` → `skills.ConfigSnapshot`
+// from_config.go — the exported config→snapshot projection.
+// Previously the `config.SkillsConfig` → `skills.ConfigSnapshot`
 // projection was an inline literal in `cmd/harbor/cmd_dev.go` with no
-// reachable equivalent for headless consumers — the D-155 silent-field-
+// reachable equivalent for headless consumers — the silent-field-
 // drop class. The projection now lives next to the snapshot type so a
 // new snapshot field and its projection land in the same package.
 //
-// Import direction (D-193): the subsystem imports `internal/config`
+// Import direction: the subsystem imports `internal/config`
 // additively; config stays a leaf. `SnapshotFromConfig` is optional
 // sugar — `Open(ctx, snapshot, deps)` is unchanged and snapshot-first
 // construction remains the headless golden path.
@@ -31,7 +31,7 @@ func SnapshotFromConfig(cfg config.SkillsConfig) ConfigSnapshot {
 
 // DirectoryFromConfig projects the operator-facing
 // `config.SkillsConfig.Directory` block onto a DirectoryConfig for
-// `NewDirectory` (Phase 111d — D-201).
+// `NewDirectory`.
 //
 // `fallbackMaxEntries` is consulted when `skills.directory.max_entries`
 // is unset (zero): the run-loop callers pass the resolved

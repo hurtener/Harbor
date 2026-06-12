@@ -86,7 +86,7 @@ type peerRecord struct {
 // Registry maps capability strings (`AgentSkill.ID` or a tag) to a
 // scored list of peer candidates. Read-mostly: AddPeer takes the
 // write lock, Resolve takes the read lock. Internally synchronized;
-// safe for N concurrent goroutines (D-025).
+// safe for N concurrent goroutines.
 type Registry struct {
 	mu sync.RWMutex
 	// peers keyed by their canonical URL — duplicate registrations

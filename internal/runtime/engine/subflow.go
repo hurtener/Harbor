@@ -16,7 +16,7 @@ var ErrSubflowFactoryFailed = errors.New("engine: subflow factory failed")
 
 // SubflowFactory returns a fresh child Engine per call. Caller never
 // reuses subflow engines; cheap construction is the contract per
-// brief 01 §5 ("a subflow is a freshly-built engine that runs to
+// the settled rule ("a subflow is a freshly-built engine that runs to
 // completion for one parent envelope, then Stops").
 type SubflowFactory func() (Engine, error)
 
@@ -25,7 +25,7 @@ type SubflowFactory func() (Engine, error)
 // parent's Engine.Cancel(parentRunID) into the child, returns the
 // first egress envelope, then Stops the child.
 //
-// **Cancellation scope (Phase 13/14):** two paths cooperate.
+// **Cancellation scope:** two paths cooperate.
 //   - ctx propagation: childCtx is derived from ctx via WithCancel,
 //     so a parent ctx cancel terminates the child immediately.
 //   - Engine.Cancel mirroring: the parent engine fires registered
@@ -63,7 +63,7 @@ func (nctx *NodeContext) CallSubflow(ctx context.Context, factory SubflowFactory
 	childCtx, cancelChild := context.WithCancel(ctx)
 	defer cancelChild()
 
-	// Phase 13: mirror parent.Cancel(parentRunID) into the child
+	// mirror parent.Cancel(parentRunID) into the child
 	// engine. The observer fires synchronously from the parent's
 	// Cancel goroutine; child.Cancel runs against its own locks so
 	// the call doesn't deadlock the parent. A timed bounded context

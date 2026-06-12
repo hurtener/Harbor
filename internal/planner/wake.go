@@ -1,6 +1,6 @@
 package planner
 
-// Wake-on-resolution contract (D-032).
+// Wake-on-resolution contract.
 //
 // When a planner concrete returns SpawnTask WITHOUT retain-turn (i.e.
 // SpawnTask.Spec.RetainTurn == false), it MUST consume
@@ -19,20 +19,20 @@ package planner
 //     sidecar polls intermediate state and emits user-visible
 //     progress events between push deliveries.
 //
-// D-032 keeps the TaskRegistry NEUTRAL — no `WakeMode` field, no
+// keeps the TaskRegistry NEUTRAL — no `WakeMode` field, no
 // `Supports*` capability protocol. The choice is a planner-concrete
 // concern. The planner-side `WakeMode` enum below + the optional
 // `WakeAware` interface exist so:
 //
 //   - Each concrete declares its mode in ONE canonical place.
-//   - The conformance pack (Phase 49) asserts the round-trip for the
+//   - The conformance pack asserts the round-trip for the
 //     declared mode (SpawnTask → group completes → planner re-enters
 //     → reads MemberOutcome).
 //   - Observability + the Console can surface the mode without
 //     introspecting concrete-private fields.
 //
 // `WakeAware` is OPTIONAL — a planner that never spawns
-// non-retain-turn tasks (e.g. the Phase 42 stub finish.Planner) can
+// non-retain-turn tasks (e.g. the stub finish.Planner) can
 // implement it returning `WakePush` (the safe default) or skip it
 // entirely. The conformance pack falls back to `WakePush` when the
 // concrete does not implement `WakeAware`.
@@ -42,16 +42,16 @@ package planner
 // `internal/tasks/groups.go`.
 type WakeMode string
 
-// Wake modes (D-032 — settled).
+// Wake modes (settled).
 const (
 	// WakePush — the planner subscribes to WatchGroup; the runtime
 	// re-invokes Next on group resolution. Lowest latency, lowest
-	// LLM cost (no in-flight polls). Phase 45 ReAct uses WakePush.
+	// LLM cost (no in-flight polls). ReAct uses WakePush.
 	WakePush WakeMode = "push"
 
 	// WakePoll — the planner skips WatchGroup and re-checks group
 	// status deterministically on its own cadence. No subscription
-	// required. Suits deterministic / workflow planners (Phase 48+).
+	// required. Suits deterministic / workflow planners.
 	WakePoll WakeMode = "poll"
 
 	// WakeHybrid — the main planner subscribes via WatchGroup (push)
@@ -79,7 +79,7 @@ func (m WakeMode) String() string {
 
 // WakeAware is the OPTIONAL interface a planner concrete may
 // implement to declare its non-retain-turn wake strategy. The
-// conformance pack (Phase 49) asserts the round-trip for the
+// conformance pack asserts the round-trip for the
 // declared mode; observability + the Console surface the value.
 //
 // A planner that does not implement WakeAware is treated as WakePush
