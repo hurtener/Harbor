@@ -1,16 +1,16 @@
-// tracebridge.go — the bus→tracer bridge (Phase 111f, D-203).
+// tracebridge.go — the bus→tracer bridge.
 //
 // BridgeBusToTracer is the OTel-span derivation of the canonical event
 // bus, symmetric in shape and lifecycle with BridgeBusToMetrics
 // (subscribe → drain goroutine → stop func; fail-loud on a nil bus /
-// tracer). It closes the brief 06 "No OpenTelemetry in the runtime"
-// anti-pattern's trace half: metrics got their bus bridge in PR #91
-// (D-082); traces had exporters blank-imported but NewTracer was never
-// constructed on a production path and no bridge existed. Phase 111f
+// tracer). It closes the "No OpenTelemetry in the runtime"
+// anti-pattern's trace half: metrics got their bus bridge in PR #91;
+// traces had exporters blank-imported but NewTracer was never
+// constructed on a production path and no bridge existed. The telemetry assembly
 // constructs the tracer in `assemble.Assemble` and starts this bridge
 // alongside the metrics bridge.
 //
-// # Span model (brief 06 §"span lifecycle from events")
+// # Span model
 //
 // Canonical lifecycle pairs open and end spans:
 //
@@ -30,7 +30,7 @@
 //
 // Identity + run IDs ride as span attributes via Tracer.SpanFromEvent
 // — the bridge never widens the metrics derivation (which stays
-// Type/Producer/Node only; the brief 06 cardinality split is enforced
+// Type/Producer/Node only; the cardinality split is enforced
 // by keeping the two bridges separate, not blurred).
 //
 // # Volume control

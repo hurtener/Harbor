@@ -1,32 +1,32 @@
 // Package memory owns Harbor's declared-policy, identity-scoped,
 // pluggable memory subsystem.
 //
-// Phase 23 lands the leaf surface:
+// lands the leaf surface:
 //
 //   - The single mandatory `MemoryStore` interface every backend
-//     (inmem here, sqlite + postgres at Phase 25) implements.
+//     (inmem here, sqlite + postgres) implements.
 //   - The shared types — `Strategy`, `Health`, `ConversationTurn`,
 //     `TrajectoryDigest`, `LLMContextPatch`, `Snapshot`.
 //   - Sentinel errors compared via `errors.Is`.
 //   - The §4.4 extensibility-seam plumbing (registry + factory).
 //   - Ctx helpers (`WithStore` / `MustFrom` / `From`).
 //
-// The interface owns the typed shape (D-027); drivers persist
+// The interface owns the typed shape; drivers persist
 // opaque bytes through `state.StateStore` via the typed wrapper
 // pattern. Memory records key on `(identity.Quadruple, Kind=
 // "memory.state")` — sessions own the wrapper layer of session
 // records, memory owns its own.
 //
-// Identity is mandatory at every method (D-001). The triple
+// Identity is mandatory at every method. The triple
 // `(tenant, user, session)` MUST be fully populated; empty `RunID`
 // is accepted (memory is session-scoped, not run-scoped, mirroring
-// Phase 07's `state.StateStore` rule). Missing-triple operations
+// the `state.StateStore` rule). Missing-triple operations
 // fail closed with `ErrIdentityRequired` AND emit a
 // `memory.identity_rejected` event on the configured `events.EventBus`
-// so the rejection is observable — never silent (brief 04 §4.2 +
+// so the rejection is observable — never silent (per
 // AGENTS.md §5 "Fail loudly").
 //
-// Phase 23 ships `Strategy = StrategyNone` only:
+// Harbor ships `Strategy = StrategyNone` only:
 //
 //   - `AddTurn` is a no-op.
 //   - `GetLLMContext` returns an empty patch.
@@ -37,8 +37,8 @@
 //   - `Restore` accepts only an empty snapshot; non-empty is
 //     `ErrInvalidSnapshot`.
 //
-// Phase 24 will activate `StrategyTruncation` and
-// `StrategyRollingSummary`; Phase 25 will add the SQLite + Postgres
+// A later phase will activate `StrategyTruncation` and
+// `StrategyRollingSummary`; A later phase will add the SQLite + Postgres
 // drivers under the same conformance suite.
 package memory
 
@@ -53,10 +53,10 @@ import (
 
 // Strategy declares the memory shape the store applies.
 //
-// Phase 23 ships `StrategyNone` operational. `StrategyTruncation`
+// Harbor ships `StrategyNone` operational. `StrategyTruncation`
 // and `StrategyRollingSummary` are declared so operators can stage
 // their config today; the registry's `Open` rejects them with
-// `ErrStrategyNotImplemented` until Phase 24 lands.
+// `ErrStrategyNotImplemented` until a later phase lands.
 type Strategy string
 
 // Strategy values.
@@ -66,10 +66,10 @@ const (
 	// "memory disabled" mode.
 	StrategyNone Strategy = "none"
 	// StrategyTruncation keeps a recent-turn window with budget
-	// enforcement. Reserved for Phase 24.
+	// enforcement. Reserved for a later phase.
 	StrategyTruncation Strategy = "truncation"
 	// StrategyRollingSummary keeps a recent-turn window plus a
-	// background-summarised long-term context. Reserved for Phase 24.
+	// background-summarised long-term context. Reserved for a later phase.
 	StrategyRollingSummary Strategy = "rolling_summary"
 )
 
@@ -122,7 +122,7 @@ type ScoredTurn struct {
 
 // Health enumerates the memory subsystem health states.
 //
-// Phase 23 only produces `HealthHealthy`. Phase 24 will drive the
+// only produces `HealthHealthy`. A later phase will drive the
 // full FSM (`healthy → retry → degraded → recovering → healthy`)
 // for `rolling_summary` failures.
 type Health string
@@ -132,24 +132,23 @@ const (
 	// HealthHealthy — operating normally.
 	HealthHealthy Health = "healthy"
 	// HealthRetry — last summarisation attempt failed; will retry
-	// next opportunity. Reserved for Phase 24.
+	// next opportunity. Reserved for a later phase.
 	HealthRetry Health = "retry"
 	// HealthDegraded — retry budget exhausted; falling back to
 	// truncation semantics and queueing recovery. Reserved for
-	// Phase 24.
 	HealthDegraded Health = "degraded"
 	// HealthRecovering — recovery loop is running; will return to
-	// healthy on success. Reserved for Phase 24.
+	// healthy on success. Reserved for a later phase.
 	HealthRecovering Health = "recovering"
 )
 
 // ConversationTurn is one turn of a memory-tracked conversation.
-// Producers (planner runtime, Phase 42+) hand turns to `AddTurn`.
+// Producers (the planner runtime) hand turns to `AddTurn`.
 //
 // `ArtifactsShown` / `ArtifactsHiddenRefs` carry the model-visible /
 // model-hidden artifact references for this turn so memory's
 // downstream injection logic can prune or include them per the
-// configured strategy (Phase 24+). Phase 23 round-trips both fields
+// configured strategy. Snapshot/Restore round-trips both fields
 // through the Snapshot bytes but applies no strategy logic.
 type ConversationTurn struct {
 	UserMessage         string
@@ -161,8 +160,8 @@ type ConversationTurn struct {
 }
 
 // TrajectoryDigest is the compact planner-side trace snapshot the
-// memory subsystem MAY persist alongside the turn. Phase 23 does
-// not ingest it (Strategy=none); the type ships now so Phase 24
+// memory subsystem MAY persist alongside the turn. Harbor does
+// not ingest it (Strategy=none); the type ships now so the strategy layer
 // and downstream planner phases share one definition.
 type TrajectoryDigest struct {
 	ToolsInvoked        []string
@@ -206,10 +205,10 @@ func (s Snapshot) IsEmpty() bool {
 
 // MemoryStore is Harbor's mandatory memory interface. A single
 // surface; every V1 driver (inmem here, sqlite + postgres at
-// Phase 25) implements every method. No `Supports*` ceremony per
+// Postgres) implements every method. No `Supports*` ceremony per
 // AGENTS.md §4.4.
 //
-// Identity-mandatory contract (D-001):
+// Identity-mandatory contract:
 //
 //   - Every method validates the identity `Quadruple` at the
 //     boundary. Empty tenant / user / session returns wrapped
@@ -217,7 +216,7 @@ func (s Snapshot) IsEmpty() bool {
 //     `memory.identity_rejected` event on the bus. Empty `RunID`
 //     is accepted (memory is session-scoped).
 //
-// Concurrent-reuse contract (D-025):
+// Concurrent-reuse contract:
 //
 //   - One instance is safe to share across N concurrent
 //     goroutines. Mutable state is internally synchronised; per-
@@ -226,7 +225,7 @@ func (s Snapshot) IsEmpty() bool {
 type MemoryStore interface {
 	// AddTurn appends a conversation turn to the memory tracked
 	// for `id`. Strategy=none is a no-op (returns nil); other
-	// strategies will apply their shape logic (Phase 24+).
+	// strategies will apply their shape logic.
 	AddTurn(ctx context.Context, id identity.Quadruple, turn ConversationTurn) error
 
 	// GetLLMContext returns the patch a planner runtime applies to
@@ -276,13 +275,13 @@ type MemoryStore interface {
 // Sentinel errors. Callers compare via `errors.Is`.
 var (
 	// ErrNotFound — a load-by-key style lookup found nothing.
-	// Phase 23 returns this when `Snapshot` is asked for a slot
+	// Harbor returns this when `Snapshot` is asked for a slot
 	// the StateStore wrapper layer has never written.
 	ErrNotFound = errors.New("memory: record not found")
 
 	// ErrIdentityRequired — a method was called with a
 	// `Quadruple` whose tenant, user, or session was empty.
-	// The fail-closed gate per D-001 + brief 04 §4.2.
+	// The fail-closed gate
 	ErrIdentityRequired = errors.New("memory: identity triple incomplete")
 
 	// ErrUnknownDriver — `Open` was asked for a driver name no
@@ -296,7 +295,7 @@ var (
 	// ErrStrategyNotImplemented — `Open` (or a driver) was asked for
 	// an UNKNOWN strategy name. The three canonical strategies
 	// (`none` / `truncation` / `rolling_summary`) are implemented on
-	// every driver via the shared strategy executor (Phase 25a / D-174);
+	// every driver via the shared strategy executor;
 	// this sentinel now guards an unrecognised strategy string, not a
 	// phase gap. (The error text is preserved for callers that match it.)
 	ErrStrategyNotImplemented = errors.New("memory: strategy not implemented at this phase")
@@ -324,31 +323,31 @@ var (
 
 // OverflowPolicy is the buffer-overflow action a `truncation`-style
 // strategy applies when the recent-window buffer's token total
-// exceeds the configured `BudgetTokens`. Phase 24 ships only
-// `OverflowDropOldest`. See D-035 for the rationale (the brief 04
-// §2 trio `truncate_oldest | truncate_summary | error` was narrowed
+// exceeds the configured `BudgetTokens`. Harbor ships only
+// `OverflowDropOldest`. The original trio
+// `truncate_oldest | truncate_summary | error` was narrowed
 // to a single safe default; the `error` policy is a silent-
 // degradation footgun and `truncate_summary` conflates strategies).
 type OverflowPolicy string
 
 const (
 	// OverflowDropOldest evicts oldest turns until the buffer's
-	// token estimate fits within the budget. The only Phase 24
+	// token estimate fits within the budget. The only shipped
 	// policy.
 	OverflowDropOldest OverflowPolicy = "drop_oldest"
 )
 
 // Summarizer is the injectable callable the `rolling_summary`
-// strategy consumes. The LLM-backed implementation lands at Phase
-// 32+; Phase 24 ships only the interface and a test-grade stub
+// strategy consumes. The LLM-backed implementation lands
+// +; Harbor ships only the interface and a test-grade stub
 // (`EchoSummarizer`, exported from `internal/memory/strategy`).
 //
-// The interface intentionally mirrors brief 04 §4.1's "input
+// The interface intentionally mirrors the "input
 // `{previous_summary, turns}`, output `{summary: string}`" with a
 // Go-idiomatic `(ctx, identity, req)` shape so the LLM-client
 // integration phase doesn't have to invent a fresh shape.
 //
-// Concurrent-reuse contract (D-025): one `Summarizer` instance is
+// Concurrent-reuse contract: one `Summarizer` instance is
 // safe to share across N concurrent goroutines. Implementers MUST
 // honour `ctx.Done()`; the executor cancels in-flight summaries on
 // `Close`.

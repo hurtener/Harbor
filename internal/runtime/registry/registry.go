@@ -1,15 +1,15 @@
 // Package registry owns Harbor's Agent Registry — the in-process,
 // per-runtime-instance subsystem that owns the *registration identity*
-// of agents (RFC §6.16, D-059 / D-060).
+// of agents (RFC §6.16).
 //
 // There is no central Harbor service and there must not be one: every
 // `harbor` process (and every embedding of the library) has its own
 // AgentRegistry, persisted via that instance's configured StateStore
 // driver (in-mem / SQLite / Postgres — the §9 persistence triad, behind
-// the §4.4 seam). The registry consumes the *existing* StateStore seam
-// (D-027); it does not define a driver seam of its own.
+// the §4.4 seam). The registry consumes the *existing* StateStore seam;
+// it does not define a driver seam of its own.
 //
-// # The three-ID model (D-059)
+// # The three-ID model
 //
 // Each registered agent carries three identifiers, each answering a
 // different question:
@@ -38,9 +38,9 @@
 // runtime *entity* that runs *within* (tenant, user, session); it does
 // not widen the isolation boundary. The registry's storage methods
 // scope by the tuple, NEVER by agent_id — agent_id is a registration
-// identity, not a WHERE-clause isolation filter (D-059, AGENTS.md §6).
+// identity, not a WHERE-clause isolation filter (AGENTS.md §6).
 //
-// # Two creation cases (D-060)
+// # Two creation cases
 //
 //   - Locally-hosted agent — the runtime instance is running the agent;
 //     Register mints a local agent_id.
@@ -50,7 +50,7 @@
 //     and stores an AgentCardRef pointing at the canonical A2A
 //     AgentCard, owned by the remote operator.
 //
-// # Fleet privilege tiers (D-066)
+// # Fleet privilege tiers
 //
 // Fleet *observation* (Get / List / Inspect / ReportHealth) requires the
 // ordinary identity scope. Fleet *control* (Pause / Drain / Restart /
@@ -59,9 +59,9 @@
 // Every fleet-control command is audit-redacted and emitted. The
 // control-scope claim is trust-based in V1 (mirrors the events
 // package's Phase-05 Admin claim); cryptographic verification arrives
-// with Protocol auth (Phase 61).
+// with Protocol auth.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // *Registry is a compiled reusable artifact: one shared instance is
 // safe under N concurrent registrations / lookups / control commands.
@@ -77,7 +77,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// Hosting discriminates the two creation cases (D-060).
+// Hosting discriminates the two creation cases.
 type Hosting string
 
 const (
@@ -137,7 +137,7 @@ type ToolDescriptor struct {
 // (after canonicalisation) — the registry never stores it as a
 // user-facing persona object; only the resulting VersionHash is
 // persisted on the AgentRecord. version_hash bumps iff this content
-// changes (D-068: SHA-256 over canonical JSON).
+// changes (SHA-256 over canonical JSON).
 type AgentConfig struct {
 	// Prompts is the agent's prompt set. Order is not semantic — the
 	// hash canonicaliser sorts before hashing.
@@ -177,7 +177,7 @@ type AgentRecord struct {
 	// registration.
 	Incarnation uint64
 	// VersionHash is the deterministic content hash of the agent's
-	// configuration (D-068). Stable across a plain restart; bumps iff
+	// configuration. Stable across a plain restart; bumps iff
 	// configuration content changed. Empty for HostingRemote agents
 	// (the configuration is owned by the remote operator).
 	VersionHash string
@@ -220,11 +220,11 @@ type AgentSnapshot struct {
 }
 
 // AgentRegistry is the public surface every consumer talks to — the
-// Protocol surface (Phase 54+), the Console Agents page lens (Phase
-// 72–75), and Phase 30's agent-bound OAuth (which keys tokens by the
-// registration AgentID). One concrete impl ships in Phase 53a
+// Protocol surface, the Console Agents page lens (75),
+// and the agent-bound OAuth (which keys tokens by the
+// registration AgentID). One concrete impl ships in a later phase
 // (*Registry); there is no driver pluralism at the registry layer —
-// driver pluralism lives at the StateStore layer (D-027).
+// driver pluralism lives at the StateStore layer.
 //
 // Identity is mandatory on every method: a context whose identity
 // triple is missing or incomplete is rejected with a wrapped
@@ -243,7 +243,7 @@ type AgentRegistry interface {
 	// Returns a copy of the resulting AgentRecord.
 	Register(ctx context.Context, key string, cfg AgentConfig, opts RegisterOptions) (*AgentRecord, error)
 
-	// RegisterRemote registers a connect-to-remote agent (D-060). The
+	// RegisterRemote registers a connect-to-remote agent. The
 	// local agent_id is a *handle*; cardRef references the canonical
 	// A2A AgentCard owned by the remote operator. Semantics mirror
 	// Register (first vs re-registration of `key`), but no version_hash
@@ -313,7 +313,7 @@ var (
 	// ErrControlScopeRequired — a fleet-control command (Pause / Drain
 	// / Restart / ForceStop) was called without the elevated
 	// control-scope claim. Fleet control is a distinct, more-elevated
-	// privilege tier than fleet observation (D-066).
+	// privilege tier than fleet observation.
 	ErrControlScopeRequired = errors.New("registry: fleet-control requires elevated control-scope claim")
 	// ErrAgentNotFound — Get / Inspect / ReportHealth / Deregister /
 	// any control command targeting an agent_id with no record under
@@ -342,8 +342,8 @@ const controlScopeKey ctxKey = iota
 // require this claim; fleet-observation methods do not.
 //
 // The claim is trust-based in V1 — it is set by the Protocol auth
-// layer once it has verified an operator's elevated scope claim
-// (Phase 61). Until then, any caller that sets it is trusted; the
+// layer once it has verified an operator's elevated scope claim.
+// Until then, any caller that sets it is trusted; the
 // audit emit on every control command makes abuse retroactively
 // detectable, mirroring the events package's Admin-claim model.
 func WithControlScope(ctx context.Context) context.Context {

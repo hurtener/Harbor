@@ -19,7 +19,7 @@ import (
 //
 // Payload is whatever the event's EventPayload marshals to. The bus has
 // already run the payload through the audit redactor on Publish for any
-// payload that is not SafePayload (Phase 05, D-020), so what reaches the
+// payload that is not SafePayload, so what reaches the
 // wire here is redaction-safe by construction — the SSE transport does
 // not re-redact and does not bypass the redactor.
 type wireEvent struct {

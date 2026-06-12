@@ -12,7 +12,7 @@ import (
 )
 
 // RoutePrefix is the canonical path prefix the draft handler is
-// mounted under by `harbor dev`. The Phase 60 transport mux owns
+// mounted under by `harbor dev`. The transport mux owns
 // `/v1/control/...` + `/v1/events`; the draft surface is `/v1/dev/
 // drafts/...` so a future Console can discover it via a stable
 // well-known root.
@@ -21,7 +21,7 @@ const RoutePrefix = "/v1/dev/drafts"
 // Stable wire error codes. The Console + scripted clients branch on
 // these strings; new codes ADD entries here. Codes mirror the
 // Protocol error-code naming convention even though this surface is
-// not (yet) part of the Single Source CanonicalWireTypes (D-093).
+// not (yet) part of the Single Source CanonicalWireTypes.
 const (
 	// CodeIdentityRequired — the request reached the handler without
 	// a verified identity in ctx. Maps to 401.
@@ -133,7 +133,7 @@ const maxRequestBodyBytes = 2 << 20
 
 // Handler wraps a Store in an http.Handler that routes the five
 // draft endpoints under RoutePrefix. The returned handler is a
-// compiled artifact (D-025) and safe to share across N concurrent
+// compiled artifact and safe to share across N concurrent
 // requests; per-request state lives in the request ctx.
 //
 // The handler does NOT perform auth — `harbor dev`'s boot wraps it

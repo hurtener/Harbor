@@ -1,19 +1,19 @@
-// cmd/harbor/topology_render.go — Phase 70 (D-102): the ASCII tree
+// cmd/harbor/topology_render.go — the ASCII tree
 // renderer that backs `harbor inspect-topology`.
 //
-// # Source choice — trajectory-synthesised, not event-driven (D-102)
+// # Source choice — trajectory-synthesised, not event-driven
 //
-// Phase 70's master-plan goal cites `topology.snapshot` events; Phase 74
+// the master-plan goal cites `topology.snapshot` events; the topology surface
 // (Console topology projection events, RFC §6.13) is the canonical
-// producer of those events. Phase 74 has not yet landed, so Phase 70
+// producer of those events has not yet landed, so this command
 // SYNTHESISES the topology from the run's existing event stream
 // (`tool.invoked` / `tool.completed` / `tool.failed`, `task.spawned`,
-// `planner.finish`, `pause.requested`). When Phase 74 ships, this
+// `planner.finish`, `pause.requested`). When Harbor ships, this
 // renderer gains a "preferred-source" branch that reads `topology.snapshot`
 // frames directly — the synthesise path stays as a fallback for runs whose
-// snapshot frames pre-date the producer (D-102's source dual-path note).
+// snapshot frames pre-date the producer (source dual-path note).
 //
-// # Renderer shape — indent-based (D-102)
+// # Renderer shape — indent-based
 //
 // Two valid ASCII shapes for run graphs: box-drawing (`├──`, `└──`,
 // `│`) and indent-based (`+--`, plain spaces). The indent-based shape
@@ -71,7 +71,7 @@ const (
 	// kind (foreground / background) + the assigned TaskID prefix.
 	TopologyNodeTask TopologyNodeKind = "task"
 	// TopologyNodePause — a `pause.requested` event (unified pause
-	// primitive, Phase 50 / D-067). Renders the pause Reason so
+	// primitive,). Renders the pause Reason so
 	// operators see which kind of pause (`approval_required` /
 	// `auth_required` / `input_required`) is blocking the run.
 	TopologyNodePause TopologyNodeKind = "pause"
@@ -156,8 +156,8 @@ type Topology struct {
 	User    string `json:"user,omitempty"`
 	Session string `json:"session,omitempty"`
 	// SourceMode records how the topology was assembled — either
-	// `"events.synthesised"` (Phase 70's V1 path, this PR) or
-	// `"events.topology_snapshot"` (post-Phase 74 path, future). The
+	// `"events.synthesised"` (the V1 path, this PR) or
+	// `"events.topology_snapshot"` (post-path, future). The
 	// header line names it so an operator can distinguish the two.
 	SourceMode string `json:"source_mode"`
 	// Nodes is the rendered body, sorted by (Sequence, EventID) at

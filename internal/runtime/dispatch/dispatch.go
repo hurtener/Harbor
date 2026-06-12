@@ -1,13 +1,13 @@
 // Package dispatch is the runtime's production tool-dispatch concrete —
-// the one full `steering.ToolExecutor` implementation (Phase 110a, D-194;
-// originally Phase 83i, D-152, as the dev binary's executor).
+// the one full `steering.ToolExecutor` implementation (
+// originally, as the dev binary's executor).
 //
-// Before 83i the runloop's default case dropped every planner CallTool
-// decision on the floor (Phase 53's deliberately-punted scope), which
+// Previously the runloop's default case dropped every planner CallTool
+// decision on the floor (the deliberately-punted scope), which
 // made multi-step ReAct structurally broken against real LLMs because
 // the planner never saw tool observations. The audit pinned this as
 // the root cause of the "64 steps, 0 tools called" failure mode that
-// surfaced in the v1.1 operator validation. Phase 110a promoted the
+// surfaced in the v1.1 operator validation. An earlier phase promoted the
 // executor out of `package main` (the SDK friction audit's Pattern 1 /
 // P1 finding) so every assembly — `cmd/harbor`, `harbortest/devstack`,
 // a headless embedder's own run loop — wires the SAME dispatch
@@ -22,16 +22,14 @@
 //     `RunContext.Trajectory.Steps[N].Observation`.
 //
 //   - CallParallel: fan the branches out concurrently via
-//     `internal/runtime/parallel` in non-atomic mode (Phase 107d —
-//     D-169).
+//     `internal/runtime/parallel` in non-atomic mode.
 //
 //   - SpawnTask / AwaitTask: drive the background-task registry with
-//     spawn-depth caps and terminal-status polling (Phase 107e —
-//     D-170).
+//     spawn-depth caps and terminal-status polling.
 //
 // The executor is constructed once per stack and shared across every
 // run; it holds only the catalog + artifact store + task registry
-// (immutable after construction) + a logger, so the D-025 reuse
+// (immutable after construction) + a logger, so the reuse
 // contract is satisfied.
 package dispatch
 
@@ -59,7 +57,7 @@ import (
 // implementation. Concurrent-safe — the catalog + artifact store are
 // immutable after the stack's boot wiring runs.
 //
-// D-026 heavy-content discipline: tool results whose JSON encoding
+// heavy-content discipline: tool results whose JSON encoding
 // exceeds `heavyThreshold` get stored in the artifact store; the
 // runloop's trajectory append uses the small llmObservation summary
 // so the next LLM prompt never carries raw heavy content. Before
@@ -72,26 +70,26 @@ type toolExecutor struct {
 	heavyThreshold int
 	logger         *slog.Logger
 
-	// parallel dispatches CallParallel decisions (Phase 107d — D-169).
+	// parallel dispatches CallParallel decisions.
 	// Constructed once over the same catalog (which satisfies
-	// parallel.Resolver via Resolve); immutable after construction
-	// (D-025). The native React path drives it in non-atomic mode so a
+	// parallel.Resolver via Resolve); immutable after construction.
+	// The native React path drives it in non-atomic mode so a
 	// single bad-args branch becomes that branch's error result rather
 	// than aborting the whole call (every provider tool_call_id must be
 	// answered).
 	parallel *parallel.Executor
 
 	// tasks is the background-task registry SpawnTask / AwaitTask dispatch
-	// drives (Phase 107e — D-170). SpawnTask creates a KindBackground
+	// drives. SpawnTask creates a KindBackground
 	// task the per-task RunLoop driver picks up and runs; AwaitTask and a
 	// retain-turn SpawnTask poll Get until the task reaches a terminal
-	// status. Immutable after construction (D-025); the registry is itself
+	// status. Immutable after construction; the registry is itself
 	// concurrent-safe. Nil only in degraded / legacy wiring — Spawn / Await
 	// then fail loud with ErrDecisionShapeUnsupported rather than panic.
 	tasks tasks.TaskRegistry
 
 	// maxSpawnDepth caps the ParentTaskID-chain depth of planner-spawned
-	// background tasks (Phase 107e — D-170; planner.absolute_max_spawn_depth).
+	// background tasks (planner.absolute_max_spawn_depth).
 	// A SpawnTask whose child would exceed it is rejected loudly so a
 	// background sub-agent that itself emits SpawnTask cannot recurse
 	// without bound. The cap bounds depth, not breadth.
@@ -114,11 +112,11 @@ const spawnAwaitPollInterval = 100 * time.Millisecond
 // Option configures the executor [NewToolExecutor] constructs.
 type Option func(*toolExecutor)
 
-// WithHeavyThreshold sets the D-026 heavy-output threshold in bytes:
+// WithHeavyThreshold sets the heavy-output threshold in bytes:
 // tool results whose JSON encoding meets or exceeds it get promoted to
 // artifact-backed truncation summaries before reaching the planner /
 // LLM edge. Non-positive values fall back to the 32 KiB safety floor
-// (the Wave 11 default) — the same normalization the pre-110a
+// (the default) — the same normalization the pre-110a
 // constructor applied, so passing an unset config value through is
 // safe.
 func WithHeavyThreshold(bytes int) Option {
@@ -128,7 +126,7 @@ func WithHeavyThreshold(bytes int) Option {
 // WithMaxSpawnDepth caps the ParentTaskID-chain depth of
 // planner-spawned background tasks (planner.absolute_max_spawn_depth).
 // Non-positive values fall back to `config.DefaultSpawnDepthCap` (the
-// one source of the spawn-depth default — D-196).
+// one source of the spawn-depth default).
 func WithMaxSpawnDepth(n int) Option {
 	return func(e *toolExecutor) { e.maxSpawnDepth = n }
 }
@@ -143,7 +141,7 @@ func WithLogger(l *slog.Logger) Option {
 // the run loop dispatches against — the SAME instances the stack's
 // boot wiring constructs. The returned executor covers all four
 // non-Finish Decision shapes (CallTool, CallParallel, SpawnTask,
-// AwaitTask) with the D-026 heavy-result→artifact promotion applied
+// AwaitTask) with the heavy-result→artifact promotion applied
 // to every observation that reaches the planner / LLM edge.
 //
 // `taskReg` MAY be nil in degraded wiring — SpawnTask / AwaitTask then
@@ -151,7 +149,7 @@ func WithLogger(l *slog.Logger) Option {
 // panic. `store` MAY be nil — heavy results then degrade to a loudly
 // logged truncated preview instead of an artifact promotion.
 //
-// Concurrent reuse (D-025): the executor is a compiled artifact —
+// Concurrent reuse: the executor is a compiled artifact —
 // construct once per stack, share across N concurrent runs. Per-run
 // state lives in ctx + RunContext, never on the executor.
 func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskReg tasks.TaskRegistry, opts ...Option) steering.ToolExecutor {
@@ -175,8 +173,8 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 	}
 	if e.maxSpawnDepth <= 0 {
 		// The spawn-depth default is single-sourced on
-		// `config.DefaultSpawnDepthCap` (Phase 110c — D-196; the
-		// cross-region reference wired by Phase 110b per the Stage-1
+		// `config.DefaultSpawnDepthCap` (the
+		// cross-region reference wired by per the
 		// handoff). No other literal copy of the value is allowed.
 		e.maxSpawnDepth = config.DefaultSpawnDepthCap
 	}
@@ -192,20 +190,20 @@ func NewToolExecutor(cat tools.ToolCatalog, store artifacts.ArtifactStore, taskR
 //     value unless the encoded result exceeds `heavyThreshold`, in
 //     which case it gets promoted to an artifact-backed summary.
 //   - CallParallel: dispatch the branches concurrently via the shared
-//     parallel.Executor in non-atomic mode (Phase 107d — D-169), then
-//     assemble a per-branch aggregate observation (raw + D-026
+//     parallel.Executor in non-atomic mode, then
+//     assemble a per-branch aggregate observation (raw +
 //     projected) so the prompt builder can round-trip N RoleTool
 //     messages.
 //   - SpawnTask: spawn a KindBackground task via the TaskRegistry under
-//     the run's identity triple, bounded by the spawn-depth cap (Phase
-//     107e — D-170). A non-retain-turn spawn returns {task_id, kind,
+//     the run's identity triple, bounded by the spawn-depth cap (
+//     ). A non-retain-turn spawn returns {task_id, kind,
 //     status} immediately; a retain-turn spawn blocks (ctx-bounded) until
 //     the spawned task reaches a terminal status and returns its outcome.
 //   - AwaitTask: poll the named task (Get) until it reaches a terminal
-//     status, then return its answer-envelope / error as the observation
-//     (Phase 107e — D-170). Both spawn/await observations go through the
-//     same D-026 projectForLLM discipline so a heavy result never trips
-//     ErrContextLeak.
+//     status, then return its answer-envelope / error as the observation.
+//
+// Both spawn/await observations go through the same projectForLLM
+// discipline so a heavy result never trips ErrContextLeak.
 func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContext, decision planner.Decision) (any, any, error) {
 	switch d := decision.(type) {
 	case planner.CallTool:
@@ -225,7 +223,7 @@ func (e *toolExecutor) ExecuteDecision(ctx context.Context, rc planner.RunContex
 //   - tool name does not resolve → wrapped tools.ErrToolNotFound.
 //   - descriptor.Invoke returns an error → wrapped + surfaced.
 //   - the result's Value is the observation the planner sees on its
-//     next step (after D-026 heavy-content projection).
+//     next step (after heavy-content projection).
 func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d planner.CallTool) (any, any, error) {
 	if d.Tool == "" {
 		return nil, nil, errors.New("CallTool.Tool is empty")
@@ -252,7 +250,7 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 	return raw, llmObs, nil
 }
 
-// callParallel dispatches a CallParallel decision (Phase 107d — D-169 /
+// callParallel dispatches a CallParallel decision (/
 // AC-1..AC-4). The branches fan out concurrently through the shared
 // parallel.Executor in NON-ATOMIC mode (AC-2): a branch whose tool fails
 // to resolve or whose args fail Validate surfaces as that branch's error
@@ -262,7 +260,7 @@ func (e *toolExecutor) callTool(ctx context.Context, rc planner.RunContext, d pl
 //
 //   - raw observation: the untruncated per-branch tool values, what the
 //     trajectory persists as Step.Observation.
-//   - llmObservation: each branch's value run through the same D-026
+//   - llmObservation: each branch's value run through the same
 //     projectForLLM discipline as the single-CallTool path (AC-3), so a
 //     parallel observation with several heavy branches never trips the
 //     LLM-edge ErrContextLeak guard. The prompt builder decomposes this
@@ -309,7 +307,7 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 			Index:  r.Index,
 			Value:  rawVal,
 		})
-		// AC-3: per-branch D-026 projection — heavy branch values get
+		// AC-3: per-branch projection — heavy branch values get
 		// promoted to an artifact-stub summary independently.
 		llmAgg.Branches = append(llmAgg.Branches, planner.ParallelBranchObservation{
 			CallID: callID,
@@ -321,7 +319,7 @@ func (e *toolExecutor) callParallel(ctx context.Context, rc planner.RunContext, 
 	return raw, llmAgg, nil
 }
 
-// spawnTask dispatches a planner.SpawnTask (Phase 107e — D-170).
+// spawnTask dispatches a planner.SpawnTask.
 //
 // It maps the decision into a tasks.SpawnRequest under the run's
 // identity triple (NEVER a global — CLAUDE.md §6) and calls Spawn. The
@@ -396,7 +394,7 @@ func (e *toolExecutor) spawnTask(ctx context.Context, rc planner.RunContext, d p
 	return raw, raw, nil
 }
 
-// awaitTask dispatches a planner.AwaitTask (Phase 107e — D-170): it
+// awaitTask dispatches a planner.AwaitTask: it
 // blocks (ctx-bounded) until the named task reaches a terminal status,
 // then returns its answer-envelope / error as the observation. Get
 // enforces identity scope, so a cross-session / cross-tenant task id
@@ -470,7 +468,7 @@ func (e *toolExecutor) spawnChainDepth(ctx context.Context, id tasks.TaskID) int
 // planner-readable observation for AwaitTask / retain-turn SpawnTask.
 // The answer envelope on Result.Value is JSON — the per-task driver's
 // [planner.AnswerEnvelope] `{answer, finish_reason, tool_calls_seen}`
-// shape (Phase 106; named and exported by Phase 110a). It is embedded
+// shape (exported for run-loop drivers). It is embedded
 // parsed-generic (not as the typed struct) so the planner sees
 // structured data rather than a JSON-string AND so non-envelope
 // Result.Values (a TaskResult is not guaranteed to be an envelope)
@@ -498,7 +496,7 @@ func taskOutcomeObservation(task *tasks.Task) any {
 	return out
 }
 
-// projectForLLM applies D-026 heavy-content discipline to the tool
+// projectForLLM applies heavy-content discipline to the tool
 // result before it reaches the planner's next-step renderer. When the
 // JSON encoding is small enough (< heavyThreshold), the projection is
 // the raw value (the planner sees the full result). When it exceeds
@@ -541,7 +539,7 @@ func (e *toolExecutor) projectForLLM(ctx context.Context, rc planner.RunContext,
 		UserID:    rc.Quadruple.UserID,
 		SessionID: rc.Quadruple.SessionID,
 	}
-	// W6 (Phase 83x): stamp `created_at` on the Source map so the
+	// W6: stamp `created_at` on the Source map so the
 	// Protocol wire layer's `extractCreatedAt` populates the row with
 	// a real timestamp. Without this the Console renders the Go
 	// zero-value `0001-01-01T00:00:00Z` for every heavy-promoted
@@ -550,7 +548,7 @@ func (e *toolExecutor) projectForLLM(ctx context.Context, rc planner.RunContext,
 		Filename: fmt.Sprintf("tool-result-%s.json", tool),
 		MimeType: "application/json",
 		Source: map[string]any{
-			// Phase 107f (D-176): stamp the canonical `source`
+			// stamp the canonical `source`
 			// discriminator so artifacts.list and the session-artifact
 			// manifest project a real provenance ("tool") instead of a
 			// blank source. The `tool`/`producer` keys stay for the
@@ -609,7 +607,7 @@ const previewTotalMaxBytes = 16384
 // (`internal/planner/react/prompt.go::renderHeavyContentMap`)
 // pattern-matches the `{tool, size_bytes, truncated, preview,
 // artifact_ref}` map this function emits. Changing a key here is a
-// prompt-renderer change in the same PR (Phase 110a re-pointed the
+// prompt-renderer change in the same PR (re-pointed the
 // renderer's citation from the pre-promotion `cmd/harbor` copy to
 // this function).
 func HeavyTruncationSummary(tool string, raw any, encoded []byte, size int, artifactID string) any {

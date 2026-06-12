@@ -44,7 +44,7 @@ func (c *Config) Validate() error {
 
 // ValidateCore runs every section validator EXCEPT the Protocol-server
 // identity ceremony (`identity.jwt_algorithms` / `issuer` / `audience`
-// / JWKS source — the `validateIdentity` section). Phase 110c (D-196):
+// / JWKS source — the `validateIdentity` section). Rationale:
 // a Go consumer embedding the Runtime headless — never serving the
 // Protocol — is not forced to configure a JWT surface it never serves.
 //
@@ -116,7 +116,7 @@ func (c *Config) validateServer() error {
 	if c.Server.ShutdownGracePeriod <= 0 {
 		return fieldError("server.shutdown_grace_period", "must be > 0")
 	}
-	// Phase 83v (D-162) — CORS allowlist validation. Each entry must be
+	// CORS allowlist validation. Each entry must be
 	// an exact origin (`scheme://host[:port]`); wildcards are forbidden
 	// unless the operator explicitly opts in via `server.cors_dev_allow_any`.
 	// CLAUDE.md §7: never wildcard in production.
@@ -216,20 +216,20 @@ func (c *Config) validateState() error {
 	return nil
 }
 
-// allowedLLMDrivers is the registered-driver allowlist Phase 32 ships
-// with. Phase 33 adds "bifrost" here when its driver registers.
+// allowedLLMDrivers is the registered-driver allowlist Harbor ships
+// with. Harbor adds "bifrost" here when its driver registers.
 var allowedLLMDrivers = map[string]struct{}{
 	"mock":    {},
-	"bifrost": {}, // Phase 33 will register the factory; the name is reserved here so a config that targets bifrost passes validation today and only the registry-miss fires at runtime.
+	"bifrost": {}, // A later phase will register the factory; the name is reserved here so a config that targets bifrost passes validation today and only the registry-miss fires at runtime.
 }
 
 func (c *Config) validateLLM() error {
 	// Driver — empty is accepted and treated as the runtime's
-	// `llm.DefaultDriver` (Phase 64 / D-089 flipped this to
+	// `llm.DefaultDriver` (flipped this to
 	// `"bifrost"`). The loader's `Defaults()` populates the same
 	// string so any production config loaded from YAML carries an
 	// explicit driver; hand-constructed config values (e.g. in tests
-	// built before Phase 32) keep working with `"mock"` when the
+	// built previously) keep working with `"mock"` when the
 	// test blank-imports the mock package to seat its registration.
 	driver := c.LLM.Driver
 	if driver == "" {
@@ -241,7 +241,7 @@ func (c *Config) validateLLM() error {
 				sortedKeys(allowedLLMDrivers), c.LLM.Driver))
 	}
 	// Custom-provider validation runs before the legacy single-provider
-	// checks so we can decide which path applies. Phase 33a: when
+	// checks so we can decide which path applies. When
 	// `llm.provider` matches a custom-provider `name`, the entry's
 	// `base_url`/`api_key_env_var`/`models`/`timeout` fill the role
 	// the legacy `llm.base_url`/`llm.api_key`/`llm.timeout` fields
@@ -311,14 +311,14 @@ func (c *Config) validateLLM() error {
 				)
 			}
 		}
-		// Phase 34 correction-layer overrides — validate enum values.
+		// correction-layer overrides — validate enum values.
 		// Empty string is always valid (= use per-provider default).
 		if prof.Corrections != nil {
 			if err := validateCorrectionsProfile(name, prof.Corrections); err != nil {
 				return err
 			}
 		}
-		// Phase 35 — JSONSchemaMode is the legacy operator-facing string
+		// JSONSchemaMode is the legacy operator-facing string
 		// that the snapshot normalises into `llm.OutputMode`. Validate
 		// the enum here so operators get a useful error at boot.
 		if _, ok := allowedJSONSchemaModes[prof.JSONSchemaMode]; !ok {
@@ -327,7 +327,7 @@ func (c *Config) validateLLM() error {
 				fmt.Sprintf("must be one of \"\", \"native\", \"tools\", \"prompted\"; got %q", prof.JSONSchemaMode),
 			)
 		}
-		// Phase 36 — MaxRetries must be non-negative.
+		// MaxRetries must be non-negative.
 		if prof.MaxRetries < 0 {
 			return fieldError(
 				fmt.Sprintf("llm.model_profiles[%q].max_retries", name),
@@ -381,7 +381,7 @@ var allowedResponseFormatShapes = map[string]struct{}{
 	"anthropic": {},
 }
 
-// validateCorrectionsProfile enforces the Phase 34 per-profile
+// validateCorrectionsProfile enforces the per-profile
 // correction-layer enum constraints. Each enum's empty string maps
 // to "use the per-provider default" — the operator opts in by setting
 // a specific value.
@@ -421,11 +421,11 @@ func (c *Config) validateGovernance() error {
 	if c.Governance.RepairAttempts < 0 {
 		return fieldError("governance.repair_attempts", "must be >= 0")
 	}
-	// Phase 36a / 36b — validate the IdentityTiers block. Empty map is
+	// validate the IdentityTiers block. Empty map is
 	// the latent default (no enforcement); the validator rejects only
 	// malformed entries. The pre-Phase-36a single-knob fields
 	// (`default_max_tokens`, `cost_ceiling_usd`, `rate_limit_tps`)
-	// were removed in D-081 — the loader now emits a deprecation
+	// were removed — the loader now emits a deprecation
 	// warning and drops them before this validator runs, so there is
 	// nothing left for `validateGovernance` to reject for those keys.
 	for name, tier := range c.Governance.IdentityTiers {
@@ -490,8 +490,8 @@ func (c *Config) validateGovernance() error {
 	return nil
 }
 
-// allowedEventDrivers is the registered-driver allowlist. Phase 05
-// shipped "inmem"; Phase 57 adds "durable" (the StateStore-backed
+// allowedEventDrivers is the registered-driver allowlist. An earlier phase
+// shipped "inmem"; Harbor adds "durable" (the StateStore-backed
 // event log).
 var allowedEventDrivers = map[string]struct{}{"inmem": {}, "durable": {}}
 
@@ -523,8 +523,8 @@ func (c *Config) validateEvents() error {
 	// `durable` driver. When set they must name a real StateStore
 	// driver and pair a DSN with any non-inmem backend (mirrors
 	// validateState). An empty StateDriver is valid even for the
-	// durable driver — it triggers the loud best-effort degradation
-	// (D-074), not a config error.
+	// durable driver — it triggers the loud best-effort degradation,
+	// not a config error.
 	if c.Events.StateDriver != "" {
 		if _, ok := allowedDrivers[c.Events.StateDriver]; !ok {
 			return fieldError("events.state_driver",
@@ -562,7 +562,7 @@ func (c *Config) validateSessions() error {
 	return nil
 }
 
-// validatePauseResume validates the Phase 111c (D-200) pause-lifecycle
+// validatePauseResume validates the pause-lifecycle
 // block. Both fields are zero-meaning-default because the block is
 // OFF by default (unlike the always-on sessions sweeper):
 // max_park_duration 0 = pauses never expire and no sweeper starts;
@@ -584,7 +584,7 @@ func (c *Config) validatePauseResume() error {
 		// The one-sweep-overstay invariant is checked against the
 		// EFFECTIVE interval: an explicit `sweep_interval: 0` means the
 		// documented 1m default applies, and that default must not
-		// exceed the park ceiling either (Wave C checkpoint audit — a
+		// exceed the park ceiling either (checkpoint audit — a
 		// 30s max_park_duration with the defaulted 1m cadence would
 		// overstay its own validated invariant).
 		effective := c.PauseResume.SweepInterval
@@ -608,9 +608,9 @@ func (c *Config) validatePauseResume() error {
 // `internal/runtime/pauseresume/sweeper_test.go`.
 const defaultPauseSweepInterval = time.Minute
 
-// allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Phase
-// 17 ships `inmem` + `fs`; Phase 18 adds `sqlite` and `postgres`;
-// Phase 19 adds the S3-style driver. The validator only checks
+// allowedArtifactsDrivers is the V1 artifacts-driver allowlist. Harbor
+// ships `inmem` + `fs`; Harbor adds `sqlite` and `postgres`;
+// Harbor adds the S3-style driver. The validator only checks
 // shape; the registry surfaces the matching factory at Open time.
 var allowedArtifactsDrivers = map[string]struct{}{
 	"inmem":    {},
@@ -647,7 +647,7 @@ func (c *Config) validateArtifacts() error {
 	return nil
 }
 
-// allowedTasksDrivers is the V1 tasks-driver allowlist. Phase 20
+// allowedTasksDrivers is the V1 tasks-driver allowlist. Harbor
 // ships only `inprocess`; later post-V1 phases (e.g. a durable
 // queue-backed driver) extend this list.
 var allowedTasksDrivers = map[string]struct{}{"inprocess": {}}
@@ -661,7 +661,7 @@ func (c *Config) validateTasks() error {
 			fmt.Sprintf("must be one of %s, got %q",
 				sortedKeys(allowedTasksDrivers), c.Tasks.Driver))
 	}
-	// Phase 21: backgroundtasks-config knobs. Defaults are applied in
+	// backgroundtasks-config knobs. Defaults are applied in
 	// `Defaults()`; the validator rejects negative / zero values so an
 	// operator-set override that elides the field flips back to the
 	// default rather than silently disabling the feature.
@@ -675,12 +675,12 @@ func (c *Config) validateTasks() error {
 }
 
 // allowedDistributedBusDrivers is the V1 distributed bus driver
-// allowlist. Phase 22 ships only `loopback`; post-V1 phase 86 adds
+// allowlist. Harbor ships only `loopback`; post-V1 Harbor adds
 // durable backends (NATS / Redis Streams / Postgres-as-queue).
 var allowedDistributedBusDrivers = map[string]struct{}{"loopback": {}}
 
 // allowedDistributedRemoteDrivers is the V1 RemoteTransport driver
-// allowlist. Phase 22 ships `loopback`; Phase 29 adds the `a2a` wire
+// allowlist. Harbor ships `loopback`; Harbor adds the `a2a` wire
 // driver.
 var allowedDistributedRemoteDrivers = map[string]struct{}{
 	"loopback": {},
@@ -707,8 +707,8 @@ func (c *Config) validateDistributed() error {
 	return nil
 }
 
-// allowedMemoryDrivers is the V1 memory-driver allowlist. Phase 23
-// shipped `inmem`; Phase 25 adds `sqlite` and `postgres`.
+// allowedMemoryDrivers is the V1 memory-driver allowlist. An earlier phase
+// shipped `inmem`; Harbor adds `sqlite` and `postgres`.
 var allowedMemoryDrivers = map[string]struct{}{
 	"inmem":    {},
 	"sqlite":   {},
@@ -716,7 +716,7 @@ var allowedMemoryDrivers = map[string]struct{}{
 }
 
 // memoryDriversRequiringDSN names the drivers whose `DSN` field must
-// be non-empty. Phase 25's persistent drivers need explicit DSNs;
+// be non-empty. the persistent drivers need explicit DSNs;
 // `inmem` does not.
 var memoryDriversRequiringDSN = map[string]struct{}{
 	"sqlite":   {},
@@ -724,8 +724,8 @@ var memoryDriversRequiringDSN = map[string]struct{}{
 }
 
 // allowedMemoryStrategies is the V1 memory-strategy allowlist.
-// Phase 24 added `truncation` and `rolling_summary` alongside the
-// Phase 23 `none`. The allowlist tracks the operational set so an
+// An earlier phase added `truncation` and `rolling_summary` alongside the
+// `none`. The allowlist tracks the operational set so an
 // operator-set unsupported strategy is rejected at config
 // validation rather than later at memory.Open — fail fast.
 var allowedMemoryStrategies = map[string]struct{}{
@@ -839,8 +839,8 @@ func (c *Config) validateMemory() error {
 	return nil
 }
 
-// allowedSkillsDrivers is the V1 skills-driver allowlist. Phase 37
-// ships only `"localdb"`. Phase 49 (Portico) will add `"portico"`.
+// allowedSkillsDrivers is the V1 skills-driver allowlist. Harbor
+// ships only `"localdb"`. A later phase will add `"portico"`.
 var allowedSkillsDrivers = map[string]struct{}{
 	"localdb": {},
 }
@@ -862,7 +862,7 @@ var skillsDriversRequiringDSN = map[string]struct{}{
 func (c *Config) validateSkills() error {
 	// Directory shape-validation runs unconditionally so a typo'd
 	// `skills.directory` block fails at load time even when the
-	// parent store fields are empty (Phase 111d — D-201).
+	// parent store fields are empty.
 	if err := c.validateSkillsDirectory(); err != nil {
 		return err
 	}
@@ -916,7 +916,7 @@ var allowedSkillsDirectorySelections = map[string]struct{}{
 }
 
 // validateSkillsDirectory validates the optional `skills.directory`
-// block (Phase 111d — D-201). Runs even when the parent skills block
+// block. Runs even when the parent skills block
 // is empty so a typo'd directory block under a not-yet-configured
 // store still fails at load time rather than silently no-oping.
 func (c *Config) validateSkillsDirectory() error {
@@ -931,7 +931,7 @@ func (c *Config) validateSkillsDirectory() error {
 				fmt.Sprintf("must be one of %s, got %q",
 					sortedKeys(allowedSkillsDirectorySelections), d.Selection))
 		}
-		// Wave C checkpoint audit (D-201 addendum): nothing in
+		// checkpoint audit (addendum): nothing in
 		// production increments UseCount yet, so `pinned_then_top`
 		// would validate cleanly and then silently degrade to
 		// alphabetical ordering (every counter is 0) — the §13
@@ -974,9 +974,9 @@ var allowedMCPTransportModes = map[string]struct{}{
 	"stdio":           {},
 }
 
-// validateTools checks the Phase 26+ tools configuration: Phase 27's
-// HTTP manifest paths + Phase 28's MCP servers. Later phases extend
-// (Phase 29 A2A peers, Phase 30 OAuth token stores, etc.). The
+// validateTools checks the tools configuration: the
+// HTTP manifest paths + the MCP servers. Later phases extend
+// (A2A peers, OAuth token stores, etc.). The
 // manifest itself is parsed by `internal/tools/drivers/http` at
 // boot; this validator only enforces structural shape so a typo
 // (empty list entry, trailing comma in YAML) fails at config load
@@ -993,7 +993,7 @@ var allowedMCPTransportModes = map[string]struct{}{
 // Auto-mode + empty URL + empty Command is rejected (no candidate
 // transport would be selected).
 func (c *Config) validateTools() error {
-	// Phase 83n / D-153 — built-in tools opt-in via name. Each entry
+	// built-in tools opt-in via name. Each entry
 	// must be in the mirror allowlist; a typo fails loudly with the
 	// known set in the error message.
 	seenBuiltIn := make(map[string]struct{}, len(c.Tools.BuiltIn))
@@ -1013,7 +1013,7 @@ func (c *Config) validateTools() error {
 					name, sortedKeys(allowedBuiltInTools)))
 		}
 	}
-	// Phase 83o / D-154 — operator-declared custom tools (the
+	// operator-declared custom tools (the
 	// scaffold reads these). Each entry's name must be non-empty,
 	// unique within the slice, and not collide with `tools.built_in`.
 	// Each input/output field's type must be in the V1.1 yaml-
@@ -1059,7 +1059,7 @@ func (c *Config) validateTools() error {
 		}
 	}
 	// SDK friction audit (docs/notes/sdk-friction-audit.md §1): the
-	// Phase 27 manifest loader (`LoadManifest` / `RegisterManifest`)
+	// manifest loader (`LoadManifest` / `RegisterManifest`)
 	// has no boot-path consumer yet — a populated list would validate
 	// cleanly and then silently register nothing (§13 — no silent
 	// degradation). Fail loud until the boot wiring lands. An empty
@@ -1068,9 +1068,9 @@ func (c *Config) validateTools() error {
 		return fieldError("tools.http_manifests",
 			"declared manifests are not loaded at boot yet — the surface is not wired "+
 				"(see docs/notes/sdk-friction-audit.md §1); remove the entries until the "+
-				"boot loader lands, or register HTTP tools programmatically via the Phase 27 driver")
+				"boot loader lands, or register HTTP tools programmatically via the HTTP tool driver")
 	}
-	// Phase 83m (Item 6, D-156) — operator-declared granted scopes
+	// operator-declared granted scopes
 	// pass-through. The validator asserts only that each entry is a
 	// non-empty string; scope names are operator-defined per their
 	// tool sources (no allowlist). An empty list is valid (the
@@ -1126,7 +1126,7 @@ func (c *Config) validateTools() error {
 		if s.KeepAlive < 0 {
 			return fieldError(prefix+".keep_alive", "must be >= 0")
 		}
-		// Phase 26b — per-server default tool policy + per-tool
+		// per-server default tool policy + per-tool
 		// overrides. Both optional; omitting them preserves today's
 		// behaviour (every tool inherits tools.DefaultPolicy()).
 		if s.Policy != nil {
@@ -1154,7 +1154,7 @@ func (c *Config) validateTools() error {
 			}
 		}
 	}
-	// Phase 29 A2A peers. Empty list is valid. Each entry must
+	// A2A peers. Empty list is valid. Each entry must
 	// declare a non-empty URL, a TrustTier in [1, 5], a non-negative
 	// LatencyTierMS, and a non-negative AgentCardTTL. URL scheme
 	// enforcement (HTTPS-only by default) is deferred to the driver —
@@ -1178,8 +1178,8 @@ func (c *Config) validateTools() error {
 				"must be >= 0")
 		}
 	}
-	// D-095 — `tools.oauth_providers[]` operator-config block (closes
-	// issue #116 + D-090's deferred construction gap). Empty list is
+	// `tools.oauth_providers[]` operator-config block (closes
+	// issue #116 — the deferred construction gap). Empty list is
 	// valid (no OAuth-bound entries → no providers needed). When the
 	// list is non-empty:
 	//   - every Name is unique within the slice;
@@ -1192,7 +1192,7 @@ func (c *Config) validateTools() error {
 	//     typoing the driver name gets a clear pre-boot error.
 	// Operators who declare any `tools.oauth_providers[]` entry MUST
 	// also set `tools.oauth_token_kek_env`; the dev stack constructs a
-	// single AES-256-GCM Sealer over the named env var (§7 Phase 30).
+	// single AES-256-GCM Sealer over the named env var (§7).
 	oauthProviderNames := make(map[string]struct{}, len(c.Tools.OAuthProviders))
 	for i, p := range c.Tools.OAuthProviders {
 		prefix := fmt.Sprintf("tools.oauth_providers[%d]", i)
@@ -1226,14 +1226,14 @@ func (c *Config) validateTools() error {
 			"must not be empty when tools.oauth_providers[] is set (names env var holding the 32-byte hex KEK for AES-256-GCM token encryption at rest; §7 rule 2)")
 	}
 
-	// Phase 64a catalog wiring entries (D-090). Empty list is valid;
+	// catalog wiring entries. Empty list is valid;
 	// duplicate names are rejected; an entry whose Approval AND OAuth
 	// are both nil is a configuration typo (nothing to wire) and is
 	// rejected with a clear error. Policy / binding-scope strings are
 	// checked against the canonical allowlists so a typo fails at
 	// `harbor validate` time instead of at `harbor dev` boot.
 	//
-	// D-095 cross-validation: every `entries[].oauth.provider` value
+	// cross-validation: every `entries[].oauth.provider` value
 	// MUST resolve to a `tools.oauth_providers[].name` declared above.
 	// An unresolved reference fails loud with both the entry and the
 	// unknown provider name in the error message.
@@ -1248,7 +1248,7 @@ func (c *Config) validateTools() error {
 				fmt.Sprintf("duplicate entry for tool %q (must be unique)", e.Name))
 		}
 		seenEntries[e.Name] = struct{}{}
-		// Phase 107c / D-167 — `loading_mode` is the third configurable
+		// `loading_mode` is the third configurable
 		// surface on a `tools.entries[]` row (alongside `approval` and
 		// `oauth`). Valid values: "" (use registrar default), "always",
 		// "deferred". Unknown values fail loud pre-boot per CLAUDE.md
@@ -1283,7 +1283,7 @@ func (c *Config) validateTools() error {
 					fmt.Sprintf("must be one of %s, got %q",
 						sortedKeys(allowedOAuthBindingScopes), e.OAuth.BindingScope))
 			}
-			// D-095 cross-validation — entry's provider name MUST
+			// cross-validation — entry's provider name MUST
 			// resolve to a configured tools.oauth_providers[].name.
 			if _, ok := oauthProviderNames[e.OAuth.Provider]; !ok {
 				return fieldError(prefix+".oauth.provider",
@@ -1296,7 +1296,7 @@ func (c *Config) validateTools() error {
 }
 
 // allowedCustomToolTypes is the V1.1 yaml-shorthand type allowlist for
-// `tools.custom[].input` / `.output` entries (Phase 83o / D-154). Each
+// `tools.custom[].input` / `.output` entries. Each
 // value maps to a Go primitive at scaffold time:
 //
 //	string   → string
@@ -1339,14 +1339,14 @@ func KnownCustomToolTypes() []string {
 var allowedBuiltInTools = map[string]struct{}{
 	"clock.now": {},
 	"text.echo": {},
-	// Phase 107c / D-167 — meta-tools for discovery + escape-hatch.
+	// meta-tools for discovery + escape-hatch.
 	"tool_search":        {},
 	"tool_get":           {},
 	"skill_search":       {},
 	"skill_get":          {},
 	"declarative_action": {},
 	"artifact_fetch":     {},
-	// Phase 111d / D-201 — the canonical skills surface. `skill_list`
+	// the canonical skills surface. `skill_list`
 	// joins the discovery set; `skill_propose` (persistence-capable
 	// generator) is a deliberate operator opt-in, absent from every
 	// recommended default.
@@ -1377,7 +1377,7 @@ func sortStringSlice(s []string) {
 }
 
 // allowedApprovalPolicies mirrors the bundled `approval.ApprovalPolicy`
-// implementations (Phase 31 / D-086). Duplicated here (not imported)
+// implementations. Duplicated here (not imported)
 // because `internal/config` MUST NOT depend on a concrete tool-side
 // package (CLAUDE.md §4.4 — drivers depend on interfaces, not the
 // other way round). Drift between the two surfaces is caught by
@@ -1389,8 +1389,8 @@ var allowedApprovalPolicies = map[string]struct{}{
 	"tagged":      {},
 }
 
-// allowedOAuthBindingScopes mirrors `auth.BindingScope` (Phase 30 /
-// D-083). Same duplication rationale as `allowedApprovalPolicies`.
+// allowedOAuthBindingScopes mirrors `auth.BindingScope`
+// Same duplication rationale as `allowedApprovalPolicies`.
 // Drift caught by `TestValidateTools_BindingScopeAllowlistMirrors_AuthPackage`.
 var allowedOAuthBindingScopes = map[string]struct{}{
 	"user":  {},
@@ -1398,7 +1398,7 @@ var allowedOAuthBindingScopes = map[string]struct{}{
 }
 
 // allowedOAuthDrivers mirrors the `internal/tools/auth` driver
-// registry (D-095). V1 ships only the `oauth2` driver (generic OAuth2/
+// registry. V1 ships only the `oauth2` driver (generic OAuth2/
 // PKCE Authorization Code flow). New drivers under
 // `internal/tools/auth/drivers/<name>/` add a row here in the same PR.
 // Same duplication rationale as `allowedApprovalPolicies` — the
@@ -1411,8 +1411,8 @@ var allowedOAuthDrivers = map[string]struct{}{
 }
 
 // allowedPlannerDrivers mirrors the `internal/planner` driver registry
-// (D-103, closes issue #126). V1 ships only the `react` driver (the
-// reference LLM-driven ReAct planner — Phase 45 / D-051). New drivers
+// (closes issue #126). V1 ships only the `react` driver (the
+// reference LLM-driven ReAct planner —). New drivers
 // under `internal/planner/<name>/` add a row here in the same PR. Same
 // duplication rationale as `allowedOAuthDrivers` — the `internal/config`
 // package MUST NOT import a concrete driver package (§4.4 — drivers
@@ -1423,7 +1423,7 @@ var allowedPlannerDrivers = map[string]struct{}{
 	"react": {},
 }
 
-// validatePlanner checks the D-103 planner-config block. Empty Driver
+// validatePlanner checks the planner-config block. Empty Driver
 // defaults to "react" (the V1 reference planner — see PlannerConfig
 // godoc). Unknown driver names fail loud pre-boot with the registered
 // allowlist in the error message; negative MaxSteps is rejected.
@@ -1474,13 +1474,13 @@ func (c *Config) validatePlanner() error {
 	return nil
 }
 
-// validateMultimodal validates the Phase 84b (D-189) attachment
+// validateMultimodal validates the attachment
 // disposition block. Keys must be `*`, a family wildcard (`type/*`),
 // or an exact `type/subtype` media type; values must satisfy the
 // disposition grammar (`ref` / `inline` / `provider_native` /
 // `tool:<name>`). The grammar locally mirrors
 // `planner.ParseDisposition` — `internal/config` MUST NOT import
-// `internal/planner` (the D-193 import direction; the
+// `internal/planner` (the import direction; the
 // allowlist-mirror pattern, same as `allowedPlannerDrivers`); the
 // planner package's `TestParseDisposition_ConfigGrammarLockstep`
 // asserts no drift.
@@ -1524,7 +1524,7 @@ func validDispositionValue(value string) bool {
 }
 
 // allowedReasoningReplayModes mirrors the `planner.ReasoningReplayMode`
-// enum (Phase 83e — D-148). The empty string is accepted — it is the
+// enum. The empty string is accepted — it is the
 // unset sentinel that the planner resolves to `never`. `internal/config`
 // MUST NOT import `internal/planner` (the allowlist-mirror pattern, same
 // as `allowedPlannerDrivers`); the planner package's
@@ -1541,13 +1541,13 @@ func fieldError(path, reason string) error {
 	return fmt.Errorf("config.%s: %s", path, reason)
 }
 
-// validateToolPolicy validates one `ToolPolicyConfig` block (Phase
-// 26b). `prefix` is the field path so the error names the offending
+// validateToolPolicy validates one `ToolPolicyConfig` block (
+// ). `prefix` is the field path so the error names the offending
 // key (e.g. `tools.mcp_servers[0].policy`). Rules:
 //   - `max_attempts >= 0`. The TOTAL attempt count incl. the first.
 //     0 (the Go zero value = the operator omitted the key) means
 //     "inherit the default attempt count" — the per-field fall-through
-//     D-175 documents (a `policy:` that sets only `timeout_ms` keeps
+//     documents (a `policy:` that sets only `timeout_ms` keeps
 //     the default 4 attempts). YAML cannot distinguish "absent" from
 //     "0" for a plain int, and the projection treats both as
 //     fall-through, so validation matches that: only a NEGATIVE value
@@ -1601,7 +1601,7 @@ func IsValidationError(err error) bool {
 // list). The mirror lives here so the config package stays decoupled
 // from the bifrost SDK — when a new native bifrost provider is added
 // in a future bifrost release, this list updates in lockstep via the
-// next phase plan. Phase 33a only widens this surface; future phases
+// next phase plan. only widens this surface; future phases
 // may consult bifrost directly if the decoupling proves costly.
 var nativeBifrostProviders = map[string]struct{}{
 	"openai":      {},
@@ -1630,7 +1630,7 @@ var nativeBifrostProviders = map[string]struct{}{
 }
 
 // allowedCustomBaseProviderTypes is the wire-protocol family allowlist
-// for `LLMCustomProviderConfig.BaseProviderType` (Phase 33a). The
+// for `LLMCustomProviderConfig.BaseProviderType`. The
 // empty string defaults to `"openai"` in the driver; both are valid
 // here. Future phases widen.
 var allowedCustomBaseProviderTypes = map[string]struct{}{
@@ -1639,7 +1639,7 @@ var allowedCustomBaseProviderTypes = map[string]struct{}{
 }
 
 // validateLLMCustomProviders validates the operator-declared custom
-// provider list (Phase 33a) and returns the set of declared names so
+// provider list and returns the set of declared names so
 // the legacy single-provider validator can decide whether the
 // configured `llm.provider` resolves to a custom or native entry.
 //
@@ -1785,7 +1785,7 @@ func sortedKeys(m map[string]struct{}) string {
 	return strings.Join(keys, ",")
 }
 
-// allowedDevHotReloadPolicies enumerates the Phase 65 (D-099) retain-
+// allowedDevHotReloadPolicies enumerates the retain-
 // in-flight policy values an operator may configure under
 // `cli.dev_hot_reload.policy`. Centralised here so both the validator
 // and the dev cmd reference one allowlist; unknown values fail loud at
@@ -1796,7 +1796,7 @@ var allowedDevHotReloadPolicies = map[string]struct{}{
 	DevHotReloadPolicyDisabled: {},
 }
 
-// validateCLI checks the CLI section. Phase 65 (D-099) is the first
+// validateCLI checks the CLI section. is the first
 // consumer — the `cli.dev_hot_reload` block configures the `harbor dev`
 // fsnotify watcher. Unknown policy values are rejected; a negative
 // drain timeout is rejected; an empty WatchRoots list is rejected when
@@ -1851,7 +1851,7 @@ func (c *Config) validateCLI() error {
 }
 
 // LiveReloadable returns dotted YAML paths for every field tagged
-// `reload:"live"`. Phase 02 ships zero live fields so this returns
+// `reload:"live"`. Harbor ships zero live fields so this returns
 // an empty slice; later phases that opt in extend it automatically.
 func (c *Config) LiveReloadable() []string {
 	var paths []string

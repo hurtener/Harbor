@@ -12,7 +12,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// serveSearch is the Phase 72c (D-108) search-method REST adapter. It
+// serveSearch is the search-method REST adapter. It
 // decodes the body into a `*types.SearchRequest`, defends the body
 // identity against the auth-verified identity in ctx (defence in
 // depth, same shape as assertBodyMatchesAuthedIdentity for control

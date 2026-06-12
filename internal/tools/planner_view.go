@@ -1,8 +1,8 @@
 package tools
 
 // PlannerView is the planner-facing, schema-only projection of a
-// [ToolCatalog] under one run's identity scope (Phase 110a — D-194;
-// originally Phase 83i / D-152 as a `cmd/harbor` adapter).
+// [ToolCatalog] under one run's identity scope (
+// originally as a `cmd/harbor` adapter).
 //
 // `planner.RunContext.Catalog` is the surface that renders into the
 // `<available_tools>` prompt section. PlannerView wraps the production
@@ -20,7 +20,7 @@ package tools
 // assertion lives in `internal/planner`'s tests, where the import is
 // legal.
 //
-// Per-run construction discipline (D-025): the view is a value type
+// Per-run construction discipline: the view is a value type
 // with two read-only fields. Each run constructs its own view via
 // [NewPlannerView] — the filter depends on the run's identity. Sharing
 // one view across runs would cross-contaminate visibility across
@@ -32,8 +32,8 @@ type PlannerView struct {
 
 // NewPlannerView constructs the per-run view over `cat` with
 // `filter`'s visibility predicate. The filter's GrantedScopes is the
-// operator-configured `tools.granted_scopes` list (Phase 83m / Item 6
-// / D-156): tools whose declared AuthScopes are entirely contained in
+// operator-configured `tools.granted_scopes` list (a scoped
+// ): tools whose declared AuthScopes are entirely contained in
 // the granted set are visible; tools that require a missing scope are
 // filtered out. An empty / nil GrantedScopes keeps the "no scopes
 // granted" default — tools with AuthScopes are invisible to the

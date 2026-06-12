@@ -182,7 +182,7 @@ This is the canonical execution index for Harbor's V1 build. Every individual ph
 | 99 | Vision-aware memory summarization             | memory               | §6.6, D-021 | 24, 33, 97            | n/a  | Post-V1  |
 |100 | Recipe loader (declarative YAML flows)        | runtime/flow/recipe  | §6.1, D-023 | 26a                   | n/a  | Post-V1  |
 |101 | GitHub Actions Node 24 modernisation          | .github/workflows    | §12         | 81                    | n/a  | Shipped (V1.1.x) |
-|102 | Godoc hygiene — strip internal phase jargon   | internal/ + cmd/     | §1, §12     | (none hard)           | n/a  | Pending (V1.1.x) |
+|102 | Godoc hygiene — strip internal phase jargon   | internal/ + cmd/     | §1, §12     | (none hard)           | n/a  | Shipped (V1.1.x) |
 |103 | GitHub Pages docs site (Dockyard parity)      | docs/site + workflows| §1, §7, §12 | 85k (102 soft — see D-208) | n/a  | Shipped (V1.3) |
 |104 | Composable resilient flows — value proposition| RFC §1 + README + docs/skills | §1, §6.1 | 85k                   | n/a  | Pending (V1.1.x) |
 |105 | Console first-attach UX (zero-clicks-to-attached) | web/console + cmd/harbor + internal/server | §1, §7 | 85k, 73m | n/a | Shipped |

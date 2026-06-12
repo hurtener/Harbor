@@ -1,20 +1,20 @@
 // Package artifacts defines Harbor's content-addressed blob store —
 // the mandatory routing target for any output above the heavy-output
-// threshold (default 32 KB; D-022, D-026, RFC §6.10).
+// threshold (default 32 KB; RFC §6.10).
 //
 // The surface is a single mandatory `ArtifactStore` interface (eight
-// methods including `Close`); there is NO `NoOp` fallback (brief 05 §1).
+// methods including `Close`); there is NO `NoOp` fallback.
 // V1 ships two drivers — an in-memory floor for dev/embedded use and a
-// filesystem driver for single-binary production deployments. Phase 18
-// adds SQLite-blob + Postgres-blob; Phase 19 adds the S3-style driver;
-// all four downstream drivers inherit Phase 17's conformance suite
+// filesystem driver for single-binary production deployments. Harbor
+// also ships SQLite-blob, Postgres-blob, and the S3-style driver;
+// all four downstream drivers inherit the conformance suite
 // verbatim.
 //
 // Identity model. `ArtifactScope` is a flat `(TenantID, UserID,
 // SessionID, TaskID)` tuple — deliberately distinct from the runtime's
 // `identity.Quadruple{Identity, RunID}` shape. RFC §6.10 keys artifacts
 // on tasks (foreground OR background); for foreground tasks the
-// consumer (tool dispatcher, Phase 26) maps `RunID → TaskID`. Keeping
+// consumer (tool dispatcher) maps `RunID → TaskID`. Keeping
 // `ArtifactScope` as a flat-string struct lets the store stay
 // dependency-free of `internal/identity` while still reading like the
 // brief's wire shape.
@@ -31,7 +31,7 @@
 // reserved for actual error contexts (e.g. corrupted indexing); the
 // conformance suite tests the `(nil, false, nil)` shape explicitly.
 //
-// Audit redaction is upstream (D-020). The store stores opaque bytes
+// Audit redaction is upstream. The store stores opaque bytes
 // and never re-redacts; mixing redaction into a leaf would couple the
 // store to the audit subsystem and split responsibility.
 package artifacts
@@ -45,7 +45,7 @@ import (
 
 // ArtifactScope identifies the (tenant, user, session, task) owner of
 // an artifact. All four fields are flat strings; the consumer (tool
-// dispatcher Phase 26+) is responsible for translating the runtime's
+// dispatcher) is responsible for translating the runtime's
 // `identity.Quadruple` (whose `RunID` becomes `TaskID` for foreground
 // runs) into this shape.
 //
@@ -127,7 +127,7 @@ type PutOpts struct {
 // ArtifactStore is Harbor's mandatory content-addressed blob store.
 // All eight methods are required; there is no `Supports*` capability
 // ceremony (AGENTS.md §4.4). Implementations MUST be safe for N
-// concurrent goroutines on a single shared instance (D-025); the
+// concurrent goroutines on a single shared instance; the
 // conformance suite's `Concurrent_PutGet_NoRace` is the gate.
 //
 // Identity is enforced at the API boundary: every Put*/Get/GetRef/

@@ -35,7 +35,7 @@ type HealthDeps struct {
 // identity-rejected-24h / recovery-dropped-24h) plus the per-scope
 // driver mapping.
 //
-// Identity is mandatory (D-001): an incomplete triple on id fails
+// Identity is mandatory: an incomplete triple on id fails
 // loudly with `memory.ErrIdentityRequired`. The record counters derive
 // from the caller's per-identity snapshot; the 24-hour event counters
 // derive from the events Aggregator (when wired); the driver mapping

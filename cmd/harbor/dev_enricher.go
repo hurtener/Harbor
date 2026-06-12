@@ -11,9 +11,9 @@ import (
 
 // devEnricher is the production tasks.get Enricher for the dev stack.
 // It provides parent-session / cost / planner-snapshot enrichment from
-// in-memory runtime state, plus (Phase 107a) trajectory projection.
+// in-memory runtime state, plus trajectory projection.
 //
-// D-025-safe: the enricher is immutable after construction — the
+// safe for concurrent reuse: the enricher is immutable after construction — the
 // trajectory accessor is a pure function (no mutable receiver state).
 type devEnricher struct {
 	trajectoryFn func(tasks.TaskID) *planner.Trajectory
@@ -33,7 +33,7 @@ func (e *devEnricher) Cost(_ context.Context, _ identity.Identity, _ string) pro
 }
 
 // PlannerSnapshot returns nil — planner-checkpoint references are
-// deferred to Phase 51's checkpoint store.
+// deferred to the checkpoint store.
 func (e *devEnricher) PlannerSnapshot(_ context.Context, _ identity.Identity, _ string) *prototypes.TaskPlannerSnapshotRef {
 	return nil
 }

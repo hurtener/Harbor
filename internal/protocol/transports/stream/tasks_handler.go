@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73d): the `tasks.*` HTTP
+// Package stream — additions: the `tasks.*` HTTP
 // handler. Like `tools.*` and `pause.list`, the two Tasks-page read
 // methods are one-shot request/response — POST JSON in, JSON out —
 // and the handler lives in the stream package because its identity +
@@ -14,16 +14,16 @@
 //	list | get
 //
 // The handler reads identity from r.Context() (auth.Middleware) or the
-// X-Harbor-* carrier headers (Phase 60 fallback), decodes the JSON body
+// X-Harbor-* carrier headers (fallback), decodes the JSON body
 // into the method-specific wire request, computes the verified
 // `auth.ScopeAdmin` claim (consulted by `tasks.list` only for a
-// cross-tenant fan-in — D-079), dispatches into the tasksprotocol.Service,
+// cross-tenant fan-in), dispatches into the tasksprotocol.Service,
 // and encodes the response. On failure, a JSON error body with the
 // canonical Protocol Code, identical in shape to the REST control
 // transport's error body.
 //
 // The handler is READ-ONLY: both methods are pure reads. The Console
-// Tasks page consumes the EXISTING Phase 54 task-control verbs
+// Tasks page consumes the EXISTING task-control verbs
 // (`cancel` / `pause` / `resume` / `prioritize` / `approve` / `reject`)
 // for mutation through the control transport — there is NO `tasks.*`
 // mutating method (CLAUDE.md §13 "no parallel implementations").
@@ -62,7 +62,7 @@ var ErrTasksMisconfigured = errors.New("stream: tasks handler missing a mandator
 // TasksHandler serves `POST /v1/tasks/{method}`. It is the wire adapter
 // over a tasksprotocol.Service: resolve identity, decode the request,
 // compute the admin-scope claim, dispatch, encode. The handler is a
-// D-025-safe compiled artifact — every field is set once at
+// safe for concurrent reuse compiled artifact — every field is set once at
 // construction; ServeHTTP holds no per-request state.
 type TasksHandler struct {
 	service *tasksprotocol.Service
@@ -87,7 +87,7 @@ func WithTasksLogger(l *slog.Logger) TasksOption {
 // service is mandatory — a nil fails loud with ErrTasksMisconfigured
 // rather than building a handler that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *TasksHandler is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewTasksHandler(service *tasksprotocol.Service, opts ...TasksOption) (*TasksHandler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("%w: tasks/protocol.Service is nil", ErrTasksMisconfigured)
@@ -139,7 +139,7 @@ func (h *TasksHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// adminScoped is the verified-JWT scope decision. `tasks.list`
-	// consults it only for a cross-tenant fan-in (D-079); `tasks.get`
+	// consults it only for a cross-tenant fan-in; `tasks.get`
 	// ignores it.
 	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin)
 

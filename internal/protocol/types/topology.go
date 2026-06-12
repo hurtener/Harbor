@@ -6,9 +6,9 @@ import (
 )
 
 // TopologyProjection is the canonical Protocol wire shape of an engine's
-// node graph (Phase 74 / D-114). It is the projection a Protocol client
-// — the Live Runtime topology canvas (Phase 73b), the Playground trace
-// toggle (Phase 73n), a third-party Console — renders the engine's
+// node graph. It is the projection a Protocol client
+// the Live Runtime topology canvas, the Playground trace
+// toggle, a third-party Console — renders the engine's
 // static graph + live per-edge queue depth from. It is NOT a re-export
 // of any internal Runtime type: the Runtime constructs a
 // TopologyProjection from its private adjacency list + per-edge channel
@@ -21,9 +21,9 @@ import (
 // runs of the same engine. Per-run overlays (node status, latency,
 // selection state) are NOT here — the consumer composes those from the
 // existing event taxonomy (`tool.invoked`, `task.spawned`,
-// `pause.requested`, ...). See D-114.
+// `pause.requested`,...).
 //
-// TopologyProjection is the wire shape on BOTH Phase 74 surfaces: the
+// TopologyProjection is the wire shape on BOTH surfaces: the
 // `topology.snapshot` Protocol method (request → reply) returns one, and
 // the `topology.changed` canonical event carries one in its payload.
 type TopologyProjection struct {
@@ -93,7 +93,7 @@ type TopologyEdge struct {
 // SortDeterministic sorts the projection's Nodes (by Name) and Edges
 // (by From then To) in place so two projections of the same engine
 // marshal to byte-identical JSON. The Runtime calls this before
-// returning a projection on either Phase 74 surface; callers
+// returning a projection on either surface; callers
 // constructing a projection by hand (tests) call it to get the
 // canonical ordering.
 func (p *TopologyProjection) SortDeterministic() {
@@ -113,7 +113,7 @@ func (p *TopologyProjection) SortDeterministic() {
 // surface translates into the runtime's identity triple at the edge —
 // identity is mandatory (RFC §5.5). The request targets the Runtime's
 // engine; a cross-tenant snapshot (Identity.Tenant ≠ the engine's
-// tenant) requires the verified `auth.ScopeAdmin` claim (D-079).
+// tenant) requires the verified `auth.ScopeAdmin` claim.
 type TopologySnapshotRequest struct {
 	// Identity is the mandatory caller identity scope. An incomplete
 	// triple fails the request closed with CodeIdentityRequired.

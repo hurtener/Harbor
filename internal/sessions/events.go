@@ -45,7 +45,7 @@ type SessionTouchedPayload struct {
 // ClosedAt timestamp, and the operator-provided Reason. Reason is a
 // short caller-controlled string — callers MUST NOT pass tool args,
 // raw user input, or any secret-shaped material; the bus does not
-// re-redact SafePayload types (D-020 / D-028).
+// re-redact SafePayload types.
 type SessionClosedPayload struct {
 	events.SafeSealed
 	SessionID string

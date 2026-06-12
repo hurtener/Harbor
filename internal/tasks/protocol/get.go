@@ -15,7 +15,7 @@ import (
 // ErrTaskNotFound — existence is never revealed across tenants
 // (CLAUDE.md §6; same posture `tasks.TaskRegistry.Get` already
 // enforces). Heavy result content is referenced via ArtifactRef
-// (D-026) — the Projector never inlines bytes above the heavy-content
+// the Projector never inlines bytes above the heavy-content
 // threshold.
 func (s *Service) Get(ctx context.Context, req prototypes.TaskGetRequest) (prototypes.TaskDetail, error) {
 	id, err := validIdentity(req.Identity)

@@ -14,13 +14,13 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// Phase 73m (D-129) — the `auth.rotate_token` implementation.
+// the `auth.rotate_token` implementation.
 //
 // `auth.rotate_token` rotates the operator's current Protocol-auth
 // token. The Runtime re-mints a JWT for the caller's already-verified
 // `(tenant, user, session)` identity and returns it once
 // (one-time-reveal). The encrypted persistence — the operator re-saving
-// the new token into the 72h `auth_profiles` table — is the Console's
+// the new token into the Console-local `auth_profiles` table — is the Console's
 // job, not the Runtime's.
 //
 // # Why a TokenIssuer seam (CLAUDE.md §4.4)
@@ -38,7 +38,7 @@ import (
 // When no TokenIssuer is wired, the surface fails loudly — it never
 // silently degrades to a no-op (CLAUDE.md §13).
 //
-// # Admin-gated (D-079)
+// # Admin-gated
 //
 // `auth.rotate_token` requires the verified `ScopeAdmin` claim. The
 // closed two-scope set (`admin` + `console:fleet`) is the only admit
@@ -58,7 +58,7 @@ import (
 // issuer (RFC 8693) behind the same shape.
 //
 // An implementation MUST be safe for concurrent use by N goroutines
-// (D-025) — RotateSurface shares one issuer across every request.
+// RotateSurface shares one issuer across every request.
 type TokenIssuer interface {
 	// IssueToken mints a fresh Bearer-shaped JWT for the supplied
 	// identity triple + scope set, expiring at `now + TTL`. The
@@ -92,7 +92,7 @@ var (
 // RotateSurface is the transport-agnostic `auth.rotate_token` handler.
 // It is built once per Runtime process via NewRotateSurface and shared
 // across every Protocol request; Rotate is safe for concurrent use by
-// N goroutines (D-025) — every field is set once at construction and
+// N goroutines — every field is set once at construction and
 // never mutated.
 type RotateSurface struct {
 	issuer   TokenIssuer
@@ -133,7 +133,7 @@ func WithRotateLogger(l *slog.Logger) RotateOption {
 // nil-panic or emit an unredacted audit payload (CLAUDE.md §5, §7
 // rule 6, §13).
 //
-// The returned *RotateSurface is immutable after construction (D-025)
+// The returned *RotateSurface is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewRotateSurface(issuer TokenIssuer, redactor audit.Redactor, opts ...RotateOption) (*RotateSurface, error) {
 	if issuer == nil {
@@ -155,7 +155,7 @@ func NewRotateSurface(issuer TokenIssuer, redactor audit.Redactor, opts ...Rotat
 
 // AuthRotateTokenPayload is the typed SafePayload published on the
 // canonical `audit.admin_scope_used` event when an operator rotates
-// their token. Phase 73m / D-129.
+// their token.
 //
 // SafePayload by construction: every field is a bounded identity
 // component or a Protocol method name — the re-minted token itself is
@@ -193,7 +193,7 @@ func (s *RotateSurface) Rotate(ctx context.Context, verified Verified, req types
 		return nil, ErrRotateIdentityMismatch
 	}
 
-	// Admin gate (D-079). The closed two-scope set is the only admit
+	// Admin gate. The closed two-scope set is the only admit
 	// surface; `auth.rotate_token` gates on `admin` specifically.
 	if !hasScopeIn(verified.Scopes, ScopeAdmin) {
 		return nil, ErrRotateScopeRequired
@@ -236,7 +236,7 @@ func (s *RotateSurface) emitRotationAudit(ctx context.Context, actor identity.Id
 		Method: string(methods.MethodAuthRotateToken),
 	}
 	// A redactor error means "do not emit" — log loudly, never publish
-	// unredacted (parity with the Phase 73f tools admin-audit site).
+	// unredacted (parity with the tools admin-audit site).
 	if _, err := s.redactor.Redact(ctx, payload); err != nil {
 		s.logger.ErrorContext(ctx, "auth: token-rotation audit redaction failed — event NOT published",
 			append(logAttrs, slog.String("error", err.Error()))...)

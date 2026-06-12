@@ -3,9 +3,9 @@
 // (in-memory floor, SQLite, Postgres) defined by RFC §6.6 + §9.
 //
 // The driver is built on `modernc.org/sqlite` — a CGo-free SQLite
-// engine (D-013, AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
+// engine (AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
 //
-// # Strategy delegation (Phase 25a, D-174)
+// # Strategy delegation
 //
 // All three memory strategies (`none`, `truncation`,
 // `rolling_summary`) are implemented by the driver-agnostic
@@ -14,7 +14,7 @@
 // `memory.identity_rejected` emit + the `closed` flag) and delegates
 // every `MemoryStore` method to a `strategy.StrategyExecutor`. The
 // executor persists state through the injected `state.StateStore`
-// (D-027 typed wrapper, `Kind = "memory.state"`). When that
+// (typed wrapper, `Kind = "memory.state"`). When that
 // StateStore is itself SQLite-backed (the operator's
 // `state.driver: sqlite`), the memory strategies persist durably to
 // disk — which is what makes `truncation` / `rolling_summary` survive
@@ -50,7 +50,7 @@
 // `cmd/harbor/main.go`; tests may call `New` directly to skip the
 // registry.
 //
-// Concurrency contract (D-025):
+// Concurrency contract:
 //
 //   - The driver struct holds the strategy executor (internally
 //     synchronised per-key), a `*sql.DB` (an internally-synchronised
@@ -98,7 +98,7 @@ const busyTimeoutMs = 5000
 // call `New` directly to skip the registry.
 //
 // The configured strategy is resolved by the shared
-// `strategy.StrategyExecutor` (Phase 25a, D-174): `none`,
+// `strategy.StrategyExecutor`: `none`,
 // `truncation`, and `rolling_summary` all delegate to the executor,
 // which persists through `deps.State`. `rolling_summary` requires a
 // non-nil `deps.Summarizer`; the executor's `New` rejects a nil
@@ -140,7 +140,7 @@ func New(cfg memory.ConfigSnapshot, deps memory.Deps) (memory.MemoryStore, error
 		return nil, fmt.Errorf("memory/sqlite: sql.Open(%q): %w", cfg.DSN, err)
 	}
 
-	// Pin the pool to a single connection — see Phase 15's
+	// Pin the pool to a single connection — see the
 	// `internal/state/drivers/sqlite/sqlite.go` for the rationale.
 	// SQLite's BEGIN IMMEDIATE does not honor busy_timeout across
 	// pool connections; pinning serialises writers at the Go layer.
@@ -194,7 +194,7 @@ func init() {
 // use by N goroutines; mutable state is the `atomic.Bool` close flag
 // (load-then-act pattern), the strategy executor (internally
 // synchronised), plus the underlying `*sql.DB` (internally
-// synchronized by database/sql). Per D-025 nothing per-run lives on
+// synchronized by database/sql). Nothing per-run lives on
 // the driver — every method reads identity from its arguments.
 type driver struct {
 	strategy memory.Strategy
@@ -330,12 +330,12 @@ func (d *driver) Close(ctx context.Context) error {
 // augmentDSNForPragmas appends the open-time PRAGMA + transaction
 // settings Harbor requires to dsn so modernc.org/sqlite applies them
 // to every new connection the pool opens. The implementation mirrors
-// the SQLite StateStore + ArtifactStore drivers verbatim (Phase 15
-// settled the shape; D-207 added the per-Open `:memory:` isolation).
+// the SQLite StateStore + ArtifactStore drivers verbatim (
+// settled the shape; a follow-up added the per-Open `:memory:` isolation).
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
-	// across Opens (D-207).
+	// across Opens.
 	if dsn == ":memory:" {
 		unique, err := uniqueMemoryDSN()
 		if err != nil {
@@ -377,8 +377,8 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	return dsn + sep + strings.Join(parts, "&"), nil
 }
 
-// uniqueMemoryDSN mints a per-Open named in-memory database URI
-// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// uniqueMemoryDSN mints a per-Open named in-memory database URI.
+// `mode=memory` keeps it off disk; `cache=shared` lets every
 // connection in THIS store's pool see the same database; the
 // crypto-random name keeps two `:memory:` stores — this subsystem's or
 // any other's — fully isolated within one process (the previous

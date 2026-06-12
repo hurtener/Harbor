@@ -10,7 +10,7 @@ import (
 )
 
 // ListerProjector is the V1 production Projector — a thin read-only
-// projection over a `sessions.SessionLister` (the Phase 08 Registry's
+// projection over a `sessions.SessionLister` (the Registry's
 // `ListSnapshots` surface). It maps the runtime `sessions.SessionSnapshot`
 // onto the flat Protocol `SessionRow` wire shape (RFC §5.1 single-source
 // rule: the Console never reads `sessions.Session`).
@@ -24,7 +24,7 @@ import (
 // the gate is the Service's `ErrCrossTenantScope` check; this projector
 // only translates the gate decision into the filter shape.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *ListerProjector is immutable after NewListerProjector
 // and safe to share across N concurrent goroutines — it holds only the
@@ -61,7 +61,7 @@ func (p *ListerProjector) ListSessions(ctx context.Context, id identity.Identity
 		// Non-admin (or admin with no explicit tenant filter): restrict
 		// to the caller's own (tenant, user). CLAUDE.md §6 — the registry
 		// WHERE-clauses by the triple; the Service already rejected a
-		// cross-tenant filter without the admin claim. D-171: naming the
+		// cross-tenant filter without the admin claim. Naming the
 		// caller's UserID (not just the tenant) lets the registry hydrate
 		// the per-(tenant, user) session catalog so sessions a prior
 		// process created are listable after a restart, and keeps one
@@ -98,7 +98,7 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 		IncludeClosed: true,
 	}
 	if !adminScoped {
-		// D-171: scope by the caller's full (tenant, user) so the
+		// scope by the caller's full (tenant, user) so the
 		// registry hydrates the catalog and a closed/past session created
 		// by a prior process is inspectable after a restart.
 		regFilter.TenantIDs = []string{id.TenantID}
@@ -124,13 +124,13 @@ func (p *ListerProjector) InspectSession(ctx context.Context, id identity.Identi
 // SessionRow wire shape.
 //
 // Cost / token / task / event counters and the agent binding are NOT
-// modelled on the Phase 08 Session record — the Sessions page surfaces
+// modelled on the Session record — the Sessions page surfaces
 // them from the live event stream (the `llm.cost.recorded` aggregation
 // the page spec §3 describes is Console-local). projectRow ships the
 // lifecycle fields the registry owns; the count fields are zero and the
 // Console enriches them from its event subscription. This keeps
 // `sessions.list` a pure registry projection (no shadow aggregation
-// store — D-061) and is a documented D-122 deviation.
+// store) and is a documented deviation.
 func projectRow(snap sessions.SessionSnapshot) prototypes.SessionRow {
 	status := prototypes.SessionStatusCompleted
 	switch {

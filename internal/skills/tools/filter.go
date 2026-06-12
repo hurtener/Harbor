@@ -16,8 +16,8 @@ import (
 // construction (pure function over value-type inputs).
 //
 // The subset logic lives in [capfilter] — the single source shared
-// with the virtual directory (internal/skills, Phase 39). Brief
-// 04 §4.5: "the skill's `RequiredTools/Namespaces/Tags` must be
+// with the virtual directory (internal/skills). By design:
+// "the skill's `RequiredTools/Namespaces/Tags` must be
 // subsets of the allowed sets."
 func Filter(in []skills.Skill, cap CapabilityContext) []skills.Skill {
 	if len(in) == 0 {

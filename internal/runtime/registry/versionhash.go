@@ -9,7 +9,7 @@ import (
 )
 
 // VersionHash computes the deterministic content hash of an
-// AgentConfig (RFC §6.16 "version_hash"; algorithm settled in D-068).
+// AgentConfig (RFC §6.16 "version_hash"; a settled algorithm).
 //
 // The hash answers "which configuration" — it bumps iff the
 // configuration *content* changes and is otherwise stable across a
@@ -26,7 +26,7 @@ import (
 //
 // The canonical form is JSON-encoded and SHA-256 hashed; the result is
 // lowercase hex. The function is pure: same content in, same hash out,
-// no package-level state, safe for concurrent use (D-025).
+// no package-level state, safe for concurrent use.
 func VersionHash(cfg AgentConfig) (string, error) {
 	canonical := canonicalConfig{
 		Prompts:       append([]string(nil), cfg.Prompts...),

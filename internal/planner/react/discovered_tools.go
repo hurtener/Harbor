@@ -10,7 +10,7 @@ import (
 
 // toolSearchToolName is the canonical builtin meta-tool whose results
 // the React planner harvests for per-run discovered-tool surfacing
-// (Phase 107c — AC-18 / D-167). The builtin lives at
+// (AC-18). The builtin lives at
 // `internal/tools/builtin/tool_search.go`; its `Invoke` returns a JSON
 // payload whose top-level `tools` array carries `{name, description}`
 // entries. The planner reads `tools[].name` and adds each name to the
@@ -41,7 +41,7 @@ const toolSearchToolName = "tool_search"
 // The walker tolerates either a `map[string]any` (the typical
 // dispatcher observation) or a `json.RawMessage` / `[]byte` shape
 // (when the dispatcher serialised the result to bytes before storing).
-// A `LLMObservation` projection (Phase 44 D-026) is preferred over the
+// A `LLMObservation` projection is preferred over the
 // raw `Observation` when both are present, matching the prompt
 // renderer's heavy-content discipline.
 //
@@ -209,7 +209,7 @@ func mergeDiscovered(existing, derived []string) []string {
 //
 // Ordering is insertion-order, with the reserved-name planner controls
 // (`_spawn_task` / `_await_task`) at the FRONT so the LLM always sees
-// them regardless of catalog size (Phase 107c step 10 follow-up to
+// them regardless of catalog size (step 10 follow-up to
 // AC-20a — Path 1 from the planner reserved-name native declaration
 // gap). Then always-loaded tools (in catalog registration order),
 // then discovered tools (in discovery order). A discovered name that
@@ -277,7 +277,7 @@ func buildToolDeclarations(rc planner.RunContext, discovered []string) []llm.Too
 // the projector's `translateNativeSpawn` / `translateNativeAwait`
 // args envelopes verbatim.
 //
-// Background — the AC-20a follow-up. Step 9 of Phase 107c shipped the
+// Background — the AC-20a follow-up. Step 9 of An earlier phase shipped the
 // React projector's reserved-name interception (`_finish` /
 // `_spawn_task` / `_await_task` in `resp.ToolCalls[0].Name` are
 // translated to planner.Finish / SpawnTask / AwaitTask). The projector

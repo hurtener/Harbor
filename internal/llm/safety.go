@@ -11,17 +11,18 @@ import (
 )
 
 // safetyClient wraps a `Driver` and enforces the runtime-wide
-// invariants every `Complete` MUST respect (D-026 + D-021 + AGENTS.md
+// invariants every `Complete` MUST respect (AGENTS.md
 // §6 rule 9):
 //
 //  1. Identity is mandatory — missing → ErrIdentityMissing.
-//  2. Auto-materialize oversize DataURL content to ArtifactRef
-//     (D-022). Emits `llm.image.materialized`.
-//  3. Assert no raw heavy content survived (D-026 / AGENTS.md §13).
+//  2. Auto-materialize oversize DataURL content to ArtifactRef.
+//
+// Emits `llm.image.materialized`.
+//  3. Assert no raw heavy content survived (AGENTS.md §13).
 //     Emits `llm.context_leak` on failure.
 //  4. Estimate total tokens against ModelProfile.ContextWindowTokens
 //     and fail with ErrContextWindowExceeded when within the
-//     ContextWindowReserve margin (D-026). Emits
+//     ContextWindowReserve margin. Emits
 //     `llm.context_window_exceeded` on failure.
 //
 // The wrapper is mandatory by construction — `registry.Open` returns
@@ -29,7 +30,7 @@ import (
 // against a bare `Driver` can construct one in their own package
 // tests, but production calls always route through here.
 //
-// Concurrent-reuse contract (D-025): the wrapper is stateless across
+// Concurrent-reuse contract: the wrapper is stateless across
 // calls. The `closed` flag is `atomic.Bool` for the idempotent Close
 // path; `cfg` is read-only after construction.
 type safetyClient struct {
@@ -58,7 +59,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	id := identityQuad(ctx)
 
 	// Fill in the agent-configured default Model when the caller did
-	// not pin one. The react planner (Phase 45 / 83a) builds
+	// not pin one. The react planner builds
 	// `CompleteRequest{Messages: ...}` without setting Model — the
 	// configured `llm.model` is the natural default. A caller that
 	// explicitly pins Model (multi-model agents, posture sub-clients)
@@ -120,7 +121,7 @@ func (c *safetyClient) Complete(ctx context.Context, req CompleteRequest) (Compl
 	// ctx has no deadline, layer one in defensively. Prefer the
 	// operator-configured `llm.timeout` (`c.cfg.Timeout`) when > 0;
 	// fall back to `defaultRequestTimeout` only when the operator
-	// left it zero. (Phase 83m item 5 — the operator-facing yaml
+	// left it zero. (item 5 — the operator-facing yaml
 	// field was wired through `ConfigSnapshot.Timeout` but the
 	// safety wrapper ignored it and always used the 5-minute floor,
 	// so any operator who tightened `llm.timeout` saw no effect on
@@ -283,7 +284,7 @@ func validateContent(c Content) error {
 // per-part Text + each part's DataURL.
 //
 // Note: Artifact-shaped parts are skipped — they're exactly the
-// canonical form we expect (D-022). URL-shaped parts are skipped:
+// canonical form we expect. URL-shaped parts are skipped:
 // they're remote references, not in-prompt bytes.
 func findContextLeak(req CompleteRequest, threshold int) (site string, size int, ok bool) {
 	for mi, m := range req.Messages {

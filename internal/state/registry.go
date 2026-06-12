@@ -14,8 +14,8 @@ import (
 // Factory each via init() → Register.
 type Factory func(config.StateConfig) (StateStore, error)
 
-// DefaultDriver is the Phase 07 production driver name. Phase 15
-// (SQLite) and Phase 16 (Postgres) register additional names; Open
+// DefaultDriver is the production driver name. The SQLite
+// and Postgres drivers register additional names; Open
 // switches on cfg.Driver.
 const DefaultDriver = "inmem"
 

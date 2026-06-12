@@ -6,7 +6,7 @@
 // package (precedent: `internal/state/conformancetest` and
 // `internal/artifacts/conformancetest`).
 //
-// Downstream drivers (post-V1 durable queue at Phase 87+) consume
+// Downstream drivers (post-V1 durable queue in later phases) consume
 // it via:
 //
 //	import "github.com/hurtener/Harbor/internal/tasks/conformancetest"
@@ -42,7 +42,7 @@ type Factory func() (tasks.TaskRegistry, func())
 
 // Run executes the canonical correctness suite.
 //
-// Phase 20 subtests (per-task surface):
+// subtests (per-task surface):
 //
 //   - Spawn_AssignsTaskID
 //   - Spawn_Idempotent_SameKeyReturnsSameHandle
@@ -58,10 +58,10 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Cancel_AlreadyTerminal_NoOp
 //   - Cancel_DeepGrandchildren_AllReceiveCancellation
 //   - Prioritize_UpdatesValue
-//   - IncrementToolCount_HappyPath (Phase 83m item 7)
-//   - IncrementToolCount_NotFound (Phase 83m item 7)
-//   - IncrementToolCount_CrossSession_Rejected (Phase 83m item 7)
-//   - IncrementToolCount_D025_Concurrent (Phase 83m item 7, D-025)
+//   - IncrementToolCount_HappyPath
+//   - IncrementToolCount_NotFound
+//   - IncrementToolCount_CrossSession_Rejected
+//   - IncrementToolCount_D025_Concurrent
 //   - Identity_Mandatory
 //   - CrossTenant_Isolation
 //   - CrossSession_Isolation
@@ -69,11 +69,11 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - List_FiltersByStatus
 //   - List_FiltersByKind
 //   - List_FiltersByParent
-//   - Concurrent_SpawnGetCancel_NoRace (D-025)
+//   - Concurrent_SpawnGetCancel_NoRace
 //   - Close_Idempotent
 //   - GoroutineLeak_AfterClose
 //
-// Phase 21 subtests (group + retain-turn + patches + WatchGroup):
+// subtests (group + retain-turn + patches + WatchGroup):
 //
 //   - Group_ResolveOrCreate_Idempotent
 //   - Group_Seal_FreezesMembership
@@ -94,7 +94,7 @@ type Factory func() (tasks.TaskRegistry, func())
 //   - Patch_Apply_NotFound
 //   - Acknowledge_Background_EmitsPerTaskEvents
 //   - Group_CrossSession_Isolation
-//   - Group_Concurrent_AddRemoveSeal_NoRace (D-025)
+//   - Group_Concurrent_AddRemoveSeal_NoRace
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 
@@ -535,7 +535,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	// IncrementToolCount_HappyPath — Phase 83m item 7.
+	// IncrementToolCount_HappyPath — item 7.
 	//
 	// Each call atomically increments Task.ToolCount by 1; the new
 	// value is visible on Get.
@@ -602,7 +602,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	// IncrementToolCount_D025_Concurrent — D-025 concurrent-reuse:
+	// IncrementToolCount_D025_Concurrent — concurrent-reuse:
 	// N=128 concurrent increments against ONE shared task yield
 	// exactly N as the final count. Asserts no torn writes under
 	// the FSM lock.
@@ -990,7 +990,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
-	// --- Phase 21 subtests --------------------------------------------------
+	// --- subtests --------------------------------------------------
 
 	runGroupSubtests(t, factory)
 }

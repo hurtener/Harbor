@@ -1,18 +1,18 @@
 // Package http is Harbor's HTTP transport driver for the unified
-// tool catalog (Phase 27). It ships two registration paths — inline
+// tool catalog. It ships two registration paths — inline
 // `RegisterHTTPTool(...)` for the dev loop and a UTCP-style YAML
 // manifest loader for operator deployments — converging on the same
 // `tools.ToolDescriptor` shape (Transport = TransportHTTP). Every
-// invocation runs through the Phase 26 `ToolPolicy` reliability shell
-// (D-024); the driver itself does NOT loop independently.
+// invocation runs through the `ToolPolicy` reliability shell;
+// the driver itself does NOT loop independently.
 //
 // Static auth (API key, bearer, cookie) is supported via the
 // `AuthSpec` value plus a secret loaded from operator-supplied
 // config; secrets MUST NOT live in URL templates or request payloads
 // (AGENTS.md §7). OAuth / token-exchange flows are deferred to
-// Phase 30 via the unified pause/resume primitive.
+// via the unified pause/resume primitive.
 //
-// Concurrent reuse (D-025): every HTTP `ToolDescriptor` is safe under
+// Concurrent reuse: every HTTP `ToolDescriptor` is safe under
 // N concurrent invocations against the same underlying `*http.Client`
 // because (a) per-invocation state lives on the goroutine stack
 // (request value, response value, attempt context, classifier), and
@@ -27,8 +27,8 @@ import (
 	"strings"
 )
 
-// AuthKind is the static-auth discriminator. Phase 27 ships three
-// values; OAuth and token-exchange land in Phase 30.
+// AuthKind is the static-auth discriminator. Harbor ships three
+// values; OAuth and token-exchange land in a later phase.
 type AuthKind string
 
 const (

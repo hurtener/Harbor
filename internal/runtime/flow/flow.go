@@ -1,5 +1,5 @@
 // Package flow implements Harbor's Flow-as-Tool registration
-// (RFC §6.1, D-023): a typed DAG of Nodes assembled into a
+// (RFC §6.1): a typed DAG of Nodes assembled into a
 // runnable Engine via `Compose(def)`, then registered as a single
 // Tool in the catalog via `RegisterAsTool(catalog, def, eng)`. The
 // planner sees one Tool with an args/result schema; invoking it
@@ -10,16 +10,16 @@
 // Composition with the parent run + identity-tier ceilings is via
 // `min()` on each axis (deadline / hop budget / cost cap); whichever
 // fires first aborts the flow with `ErrFlowBudgetExceeded`. Identity-
-// tier governance budgets (Phase 36a, not yet shipped) compose
+// tier governance budgets (not yet shipped) compose
 // uniformly through the same min() path — the Budget composition
 // is open-ended.
 //
-// Layering rule (D-024): when a flow is invoked AS a tool, the
+// Layering rule: when a flow is invoked AS a tool, the
 // dispatcher's `ToolPolicy` wraps the OUTER invocation; the per-node
 // `NodePolicy` runs INSIDE the flow's engine. No double-wrapping at
 // any single layer.
 //
-// Concurrent reuse contract (D-025): a composed `engine.Engine` is
+// Concurrent reuse contract: a composed `engine.Engine` is
 // reusable across invocations; each invocation gets its own per-call
 // Budget accumulator (lock-free atomic counters) so budget state
 // never bleeds between concurrent flow invocations.
@@ -131,7 +131,7 @@ func WithComposeQueueSize(n int) ComposeOption {
 }
 
 // WithRunErrorHandler forwards a run-error handler to the composed
-// engine (`engine.WithRunErrorHandler` — Phase 111f, D-203). An
+// engine (`engine.WithRunErrorHandler` —). An
 // embedder composing flows passes the assembly's handler
 // (`assemble.Stack.RunErrorHandler` — see
 // docs/recipes/observe-an-embedded-runtime.md), which routes the
@@ -140,8 +140,8 @@ func WithComposeQueueSize(n int) ComposeOption {
 // `runtime.error` bus event (RFC §6.14). The shipped binary registers
 // flow Definitions without composing an engine, so the recipe + the
 // flow-as-tool failure E2E are the seam's executing consumers. Nil is
-// a no-op: the engine's slog path still logs the failure (the Phase
-// 10 behaviour).
+// a no-op: the engine's slog path still logs the failure (the
+// behaviour).
 func WithRunErrorHandler(h engine.RunErrorHandler) ComposeOption {
 	return func(c *composeConfig) { c.runErrorHandler = h }
 }
@@ -215,7 +215,7 @@ func RegisterAsTool(cat tools.ToolCatalog, def Definition, eng engine.Engine) (t
 		SideEffects: tools.SideEffectStateful,
 		Loading:     tools.LoadingAlways,
 		Transport:   tools.TransportFlow,
-		// Per Phase 26 plan line 31: "No double-wrapping" — the outer
+		// Per plan line 31: "No double-wrapping" — the outer
 		// ToolPolicy provides timeout + validation around the flow,
 		// but retries are handled INSIDE the engine by per-node
 		// NodePolicy. Retrying a flow at the tool layer is also
@@ -236,7 +236,7 @@ func RegisterAsTool(cat tools.ToolCatalog, def Definition, eng engine.Engine) (t
 			return nil
 		},
 		Invoke: func(ctx context.Context, args json.RawMessage) (tools.ToolResult, error) {
-			// D-024 / Phase 26 plan line 31: the OUTER flow
+			// the OUTER flow
 			// invocation wraps in ToolPolicy regardless of transport;
 			// per-node NodePolicy lives INSIDE the engine. No
 			// double-wrapping at either layer.

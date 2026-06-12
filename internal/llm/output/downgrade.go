@@ -13,7 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/llm"
 )
 
-// downgradeClient implements the Phase 35 wrapper. Immutable after
+// downgradeClient implements the wrapper. Immutable after
 // construction; the closed flag is atomic; the wrapped inner client
 // owns the per-attempt heavy lifting.
 type downgradeClient struct {

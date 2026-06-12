@@ -1,10 +1,9 @@
-// cmd/harbor/cmd_inspect_runs.go — `harbor inspect-runs` (Phase 69,
-// D-101).
+// cmd/harbor/cmd_inspect_runs.go — `harbor inspect-runs`.
 //
 // Two modes:
 //
 //   - `harbor inspect-runs` (no arg): list recent runs visible on the
-//     connected Runtime by replaying the Phase 60 SSE stream from
+//     connected Runtime by replaying the SSE stream from
 //     cursor=0 (or --since), aggregating task.spawned /
 //     task.completed / task.failed / task.cancelled into one row per
 //     Run.
@@ -14,14 +13,14 @@
 //     event per step, in arrival order).
 //
 // Why SSE replay rather than a new `runs.list` / `runs.trajectory`
-// Protocol method (D-101): both queries are derived projections over
+// Protocol method: both queries are derived projections over
 // the canonical event stream the Console / third-party Protocol
 // clients are ALREADY consuming. Inventing a new method would
 // duplicate that surface and add a primitive the Console does not yet
 // have a consumer for — the §13 primitive-with-consumer rule reads
 // backwards: don't ship a primitive without a consumer in the same
 // wave. The CLI is the consumer; the SSE stream is the primitive
-// Phase 60 already shipped. When Phase 72+ (Console subscription
+// already shipped. When the later Console-subscription
 // protocol surface) ships richer per-run query methods, the CLI will
 // migrate to them — but no sooner.
 
@@ -53,7 +52,7 @@ Modes:
   harbor inspect-runs                       list recent runs in the session
   harbor inspect-runs <run-id>              show one run's event trajectory
 
-Both modes consume the Phase 60 SSE event stream over /v1/events.
+Both modes consume the Runtime's SSE event stream over /v1/events.
 The list-mode summary aggregates task.* events keyed by Run ID; the
 single-run mode replays the events whose identity.run matches.
 
@@ -101,7 +100,7 @@ func runInspectRuns(cmd *cobra.Command, args []string) error {
 	// drop the spawn event from the stream and break list/trajectory
 	// modes. The CLI filters client-side via runIDFromEvent().
 	//
-	// Tracked as a follow-up to extend the Phase 60 stream's run-filter
+	// Tracked as a follow-up to extend the stream's run-filter
 	// to fall back to payload TaskID for task.spawned events.
 
 	if err := filter.validate(); err != nil {
@@ -338,7 +337,7 @@ func runInspectRunsList(
 // already scoped to one run) so the output is tighter.
 //
 // `ReasoningTrace` / `ReasoningChars` are lifted from a
-// `planner.decision` event's payload (Phase 83e — D-147): the ReAct
+// `planner.decision` event's payload: the ReAct
 // planner stamps the captured provider-side reasoning trace onto that
 // event, and `inspect-runs` surfaces it here so operators can read a
 // run's reasoning channel. Empty / zero for non-decision events and
@@ -482,7 +481,7 @@ func runInspectRunsTrajectory(
 	for _, s := range steps {
 		// RSN_CHARS surfaces the reasoning-trace size (a count, not the
 		// full text — the table stays scannable; the raw trace is in
-		// the --json output's steps[].reasoning_trace). Phase 83e.
+		// the --json output's steps[].reasoning_trace).
 		rsn := "-"
 		if s.ReasoningChars > 0 {
 			rsn = fmt.Sprintf("%d", s.ReasoningChars)

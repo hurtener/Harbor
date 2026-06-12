@@ -4,24 +4,24 @@
 // remote agent, or a Flow (a typed DAG of Nodes registered as one
 // Tool — see internal/runtime/flow).
 //
-// The unification is at the **type level** (RFC §6.4, brief 03 §1):
+// The unification is at the **type level** (RFC §6.4):
 // every Tool is the same struct regardless of Source / Transport;
 // the dispatch is one switch in one place. Adding a new transport
-// (Phase 27 HTTP, Phase 28 MCP, Phase 29 A2A) is a ToolProvider
+// (HTTP, MCP, A2A) is a ToolProvider
 // driver; nothing else changes.
 //
 // Identity is mandatory. CatalogFilter keys on the
 // (tenant, user, session) triple plus GrantedScopes; every
 // ToolDescriptor.Invoke reads identity from ctx and stamps it in
-// audit-emitted events (RFC §4, D-001).
+// audit-emitted events (RFC §4).
 //
 // Reliability shell. Every tool invocation (regardless of Transport)
 // is wrapped in the ToolPolicy shell — timeout, retry-with-
 // exponential-backoff, validation. Defaults fire on a zero-valued
 // ToolPolicy so a plain `tools.RegisterFunc(name, fn)` is
-// production-resilient with no ceremony (RFC §6.4, D-024).
+// production-resilient with no ceremony (RFC §6.4).
 //
-// Concurrent reuse contract (D-025). A constructed *catalog is safe
+// Concurrent reuse contract. A constructed *catalog is safe
 // to share across N concurrent goroutines: descriptors are immutable
 // after Register; storage is RWMutex-guarded; per-invocation state
 // lives in the call's ctx + ToolResult, never on the catalog or the
@@ -46,13 +46,13 @@ const (
 	// TransportInProcess — a Go function registered via
 	// drivers/inproc.RegisterFunc.
 	TransportInProcess TransportKind = "inprocess"
-	// TransportHTTP — Phase 27 (UTCP-style HTTP tool).
+	// TransportHTTP — (UTCP-style HTTP tool).
 	TransportHTTP TransportKind = "http"
-	// TransportMCP — Phase 28 (MCP southbound).
+	// TransportMCP — (MCP southbound).
 	TransportMCP TransportKind = "mcp"
-	// TransportA2A — Phase 29 (A2A southbound).
+	// TransportA2A — (A2A southbound).
 	TransportA2A TransportKind = "a2a"
-	// TransportFlow — Phase 26a (a typed DAG of Nodes registered as
+	// TransportFlow — (a typed DAG of Nodes registered as
 	// a Tool via internal/runtime/flow.RegisterAsTool).
 	TransportFlow TransportKind = "flow"
 )
@@ -148,7 +148,7 @@ type Tool struct {
 	// Zero value → DefaultPolicy is applied at dispatch time.
 	Policy ToolPolicy
 	// HandlesMIME declares the MIME types this tool can consume from
-	// the artifact store (Round-7 F11 / D-166). Used by the runtime's
+	// the artifact store. Used by the runtime's
 	// multimodal materializer to populate `ArtifactStub.Fetch.Tool`
 	// when an operator-uploaded input artifact's MIME matches — giving
 	// the planner an explicit "use this tool for this ref" hint
@@ -162,7 +162,7 @@ type Tool struct {
 // MatchesMIME reports whether the tool's HandlesMIME declaration
 // covers the supplied MIME type. Wildcards on the type half are
 // supported (`image/*` matches `image/png`, `image/webp`, etc.).
-// Round-7 F11 / D-166 — used by the runtime materializer when
+// used by the runtime materializer when
 // populating `ArtifactStub.Fetch.Tool`.
 func (t Tool) MatchesMIME(mime string) bool {
 	if mime == "" {
@@ -191,7 +191,7 @@ func (t Tool) MatchesMIME(mime string) bool {
 
 // ToolResult is the canonical result type returned by every
 // ToolDescriptor.Invoke. Heavy outputs route through the
-// ArtifactStore upstream (D-022, D-026); ToolResult.Value carries
+// ArtifactStore upstream; ToolResult.Value carries
 // either typed Go values or ArtifactRef-shaped placeholders.
 type ToolResult struct {
 	Value any
@@ -224,7 +224,7 @@ type ToolDescriptor struct {
 //   - TenantID / UserID / SessionID: typically mandatory at the
 //     dispatch boundary, but List is tolerant of empty fields so
 //     callers can build admin-view filters (an empty triple matches
-//     every tool — see HasFullTriple). Production wiring (Phase 60+
+//     every tool — see HasFullTriple). Production wiring (later phases
 //     Protocol surface) MUST gate the empty-triple case behind an
 //     elevated scope.
 //
@@ -246,7 +246,7 @@ type CatalogFilter struct {
 }
 
 // HasFullTriple reports whether the filter has all three identity
-// components. Phase 60+ Protocol surface uses this to reject empty-
+// components. The Protocol surface uses this to reject empty-
 // triple non-admin reads.
 func (f CatalogFilter) HasFullTriple() bool {
 	return f.TenantID != "" && f.UserID != "" && f.SessionID != ""
@@ -302,7 +302,7 @@ func (f CatalogFilter) matches(t Tool) bool {
 // (catalog.go); future drivers (remote-catalog, persistent-catalog)
 // plug in behind the interface.
 //
-// Concurrent reuse (D-025): implementations MUST be safe for N
+// Concurrent reuse: implementations MUST be safe for N
 // concurrent goroutines. The in-memory catalog uses a single
 // RWMutex; descriptors are immutable after Register.
 type ToolCatalog interface {
@@ -316,7 +316,7 @@ type ToolCatalog interface {
 	// filter. The slice is owned by the caller; mutations on it do
 	// not affect the catalog.
 	List(filter CatalogFilter) []Tool
-	// Search (Phase 107c / D-167) runs a full-text + tag-filter scan
+	// Search runs a full-text + tag-filter scan
 	// over the catalog's search index. Returns an empty slice when no
 	// SearchCache is attached (honest "discovery unavailable").
 	Search(ctx context.Context, query string, tags []string, limit int) []Tool
@@ -324,7 +324,7 @@ type ToolCatalog interface {
 
 // CatalogReplacer is the optional surface a ToolCatalog exposes when
 // it supports atomic per-tool descriptor replacement at boot. The
-// Phase 64a catalog wiring (internal/tools/catalog.Builder) uses
+// catalog wiring (internal/tools/catalog.Builder) uses
 // this to install wrapped descriptors over previously-registered
 // names without a Deregister+Register round trip (which would race
 // concurrent Resolve calls).
@@ -349,11 +349,11 @@ type CatalogReplacer interface {
 	Replace(wrapped []ToolDescriptor) error
 }
 
-// ToolProvider is the seam for external tool sources. Phase 27+
+// ToolProvider is the seam for external tool sources. later phases
 // drivers (HTTP, MCP, A2A) implement Connect / Discover / Close to
 // pull in remote tools as ToolDescriptors. The in-process registrar
 // does not need a provider lifecycle (it's a thin wrapper around
-// ToolCatalog.Register), so Phase 26 ships the interface shape
+// ToolCatalog.Register), so Harbor ships the interface shape
 // without a default driver.
 //
 // Identity-mandatory: Connect / Discover propagate identity via ctx

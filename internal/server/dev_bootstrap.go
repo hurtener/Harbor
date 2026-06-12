@@ -1,4 +1,4 @@
-// Phase 105 (V1.2) — dev-only bootstrap endpoint.
+// dev-only bootstrap endpoint.
 //
 // BootstrapHandler is mounted at POST /v1/dev/bootstrap.json on
 // harbor dev and harbor console only. It mints a fresh dev token

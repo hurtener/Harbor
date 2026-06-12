@@ -23,11 +23,11 @@ var ErrToolExampleInvalid = errors.New("tools: invalid tool example")
 // Validation is skipped (returns nil) when the tool declares no
 // `ArgsSchema` or no `properties` — a tool with no schema makes no
 // claims about its argument shape, so an example cannot contradict it.
-// This keeps schema-free tools (and the Phase 83a no-examples shape)
+// This keeps schema-free tools (and the no-examples shape)
 // registrable without ceremony.
 //
 // The check is read-side only: it does NOT validate JSON-Schema types,
-// `required`, or value constraints — Phase 26's catalog-edge validator
+// `required`, or value constraints — the catalog-edge validator
 // owns runtime arg validation. validateExamples guards the narrower
 // invariant that a curated example does not name a key the tool does
 // not accept.

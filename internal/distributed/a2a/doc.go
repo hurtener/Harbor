@@ -15,9 +15,9 @@
 //   - Every type's godoc quotes the source proto comment so the
 //     transcription is auditable from inside the repo.
 //
-// Phase 22 does NOT depend on `google.golang.org/protobuf` or
+// Harbor does NOT depend on `google.golang.org/protobuf` or
 // `google.golang.org/grpc`. The Go shapes JSON-marshal cleanly via
-// stdlib `encoding/json`. Phase 29 (A2A southbound) may use generated
+// stdlib `encoding/json`. The A2A southbound driver may use generated
 // gRPC code for the wire binding; the resulting types will be wrapped
 // to match this package or translated at the boundary.
 //

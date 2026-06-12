@@ -1,5 +1,5 @@
-// assembly.go — the governance enforcement assembly (Phase 111a,
-// D-198). Before 111a the enforcers (cost accumulator, rate limiter,
+// assembly.go — the governance enforcement assembly.
+// Previously the enforcers (cost accumulator, rate limiter,
 // MaxTokens enforcer) and the `SetFactory` seam all shipped with zero
 // production consumers — a populated `governance.identity_tiers` map
 // drove only the read-only posture surface (the SDK friction audit §1
@@ -30,7 +30,7 @@ import (
 //  2. RateLimiter — bucket drain (lock + small state lookup).
 //  3. CostAccumulator — accumulator lookup (state I/O).
 //
-// Latent default (D-044): an empty `cfg.IdentityTiers` map returns
+// Latent default: an empty `cfg.IdentityTiers` map returns
 // `(nil, nil)` — the ONE sanctioned "no enforcement" state. The
 // `llm.Open` wrapper hook treats a nil Subsystem as pass-through, and
 // the posture surface reports the empty map verbatim, so the latency is
@@ -47,12 +47,12 @@ import (
 // the production assembly keeps it for the stack's lifetime; a headless
 // embedder disposes it with the wrapped client.
 //
-// Concurrent reuse (D-025): one returned Subsystem is safe to share
-// across N concurrent goroutines — each member carries its own D-025
+// Concurrent reuse: one returned Subsystem is safe to share
+// across N concurrent goroutines — each member carries its own
 // guarantee (atomics + per-key mutexes; per-run scope flows via ctx).
 func NewSubsystemFromConfig(cfg Config, store state.StateStore, bus events.EventBus) (Subsystem, error) {
 	if len(cfg.IdentityTiers) == 0 {
-		// D-044 latent default: no tiers, no enforcement, no Subsystem.
+		// latent default: no tiers, no enforcement, no Subsystem.
 		return nil, nil
 	}
 	if store == nil {

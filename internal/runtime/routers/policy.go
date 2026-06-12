@@ -1,4 +1,4 @@
-// Package routers ships Harbor's runtime routing surface — Phase 14
+// Package routers ships Harbor's runtime routing surface — the
 // of the runtime kernel chain (RFC §6.1).
 //
 // Three router shapes:
@@ -12,7 +12,7 @@
 //     route to a specific target. The planner-driven path.
 //
 // Routers wrap as engine.Node via AsNode(name); they consume the
-// Phase 10 NodeContext.Emit surface to write into the chosen branch.
+// NodeContext.Emit surface to write into the chosen branch.
 // A router does NOT transform payloads — it decides where to send them.
 package routers
 

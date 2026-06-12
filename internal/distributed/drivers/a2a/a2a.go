@@ -2,9 +2,9 @@
 //
 // It implements `distributed.RemoteTransport` against the full A2A v1
 // spec (vendored at `docs/specifications/a2a.proto`, pinned in
-// `docs/specifications/README.md`). Phase 22 froze the Go shapes
+// `docs/specifications/README.md`). froze the Go shapes
 // (`internal/distributed/a2a/types.go`) and the contract surface
-// (`internal/distributed/remote.go`); Phase 29 ships the wire
+// (`internal/distributed/remote.go`); Harbor ships the wire
 // realisation: JSON-RPC 2.0 over HTTPS for unary calls, Server-Sent
 // Events for streaming, and `GET <peer>/.well-known/agent-card.json`
 // for discovery.
@@ -15,7 +15,7 @@
 // `cmd/harbor/main.go` blank import fires.
 //
 // Configuration. The driver reads its peer list from
-// `Dependencies.Cfg.Tools.A2APeers` (Phase 29 introduces
+// `Dependencies.Cfg.Tools.A2APeers` (Harbor introduces
 // `config.ToolsConfig` — see `internal/config`). Each peer carries
 // (URL, TrustTier, LatencyTierMS, AllowInsecureLoopback, AgentCardTTL).
 // HTTPS is required by default; HTTP is accepted only when the host is
@@ -24,7 +24,7 @@
 //
 // Discovery. Before a peer's first call, the driver fetches its
 // AgentCard via `GET <peer>/.well-known/agent-card.json`, validates
-// it against the Phase 22 Go shapes, caches it (per-peer TTL,
+// it against the Go shapes, caches it (per-peer TTL,
 // default 10 minutes), and locates the JSONRPC AgentInterface (the
 // peer's HTTP endpoint for JSON-RPC calls). Peers that advertise no
 // JSONRPC interface fail with `ErrNoJSONRPCInterface`.
@@ -33,16 +33,16 @@
 // reads `identity.Identity` from `ctx` and stamps the triple onto
 // the request headers (`X-Harbor-Tenant` / `X-Harbor-User` /
 // `X-Harbor-Session`). The wire driver does NOT validate identity at
-// its boundary — Phase 22's contract puts that responsibility on the
+// its boundary — the contract puts that responsibility on the
 // runtime above; the wire driver propagates verbatim so a missing
 // identity surfaces at the peer.
 //
-// Reliability shell (D-024). The wire driver does NOT add its own
-// retry/timeout shell. `ToolPolicy` (Phase 26) wraps every Tool
+// Reliability shell. The wire driver does NOT add its own
+// retry/timeout shell. `ToolPolicy` wraps every Tool
 // invocation that routes through this driver; double-wrapping is
-// forbidden per D-024.
+// forbidden.
 //
-// Concurrent reuse (D-025). The driver is safe for N concurrent
+// Concurrent reuse. The driver is safe for N concurrent
 // goroutines against a single instance: the `*http.Client` is shared,
 // the JSON-RPC ID counter is atomic, the AgentCard cache + Registry
 // take an RWMutex on reads, and per-call state (request body,
@@ -106,7 +106,7 @@ func WithRegistry(r *Registry) Option {
 }
 
 // transport is the wire driver state. Constructed once; safe for N
-// concurrent goroutines against the single instance (D-025).
+// concurrent goroutines against the single instance.
 type transport struct {
 	httpc        *http.Client
 	registry     *Registry

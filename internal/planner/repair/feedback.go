@@ -13,7 +13,7 @@ import (
 // loop holds the canonical request unchanged so its first user turn
 // is preserved on every re-ask).
 //
-// The corrective-turn shape mirrors Phase 36's retry wrapper
+// The corrective-turn shape mirrors the retry wrapper
 // (`internal/llm/retry/retry.go`) so observers (audit, memory) see a
 // coherent conversation history regardless of which layer triggered
 // the re-ask. We do NOT impersonate the assistant when authoring the
@@ -26,7 +26,7 @@ import (
 //	 - tool=`foo` arg-validation: missing required field `bar`
 //	Please respond again, addressing this issue exactly."
 //
-// Phase 44 intentionally does NOT add a system message — the
+// intentionally does NOT add a system message — the
 // existing system prompt (the planner's tool catalog + schema
 // guidance) is unchanged across the loop. Layering corrective system
 // messages on every attempt would dilute the original system context.

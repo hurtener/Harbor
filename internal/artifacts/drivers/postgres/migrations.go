@@ -26,7 +26,7 @@ var migrationsFS embed.FS
 // stable string so all replicas compute the same value without
 // coordination.
 //
-// Phase 18's key is distinct from Phase 16's StateStore lock
+// the key is distinct from the StateStore lock
 // (`harbor-state-migrations`) so the two subsystems do not serialise
 // against each other when both boot concurrently in a multi-replica
 // deployment.
@@ -93,7 +93,7 @@ func loadMigrations() ([]migration, error) {
 // CREATE TABLE / INSERT INTO schema_migrations.
 //
 // The lock key is FNV-64a("harbor-artifacts-migrations") — distinct
-// from Phase 16's `harbor-state-migrations` key, so the StateStore
+// from the `harbor-state-migrations` key, so the StateStore
 // and ArtifactStore migration runners do not serialise against each
 // other on a fresh multi-replica boot.
 //

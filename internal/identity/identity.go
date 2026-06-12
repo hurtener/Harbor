@@ -6,13 +6,13 @@
 // scope inside a session and is carried by Quadruple — never substituted
 // for Identity in scoping decisions.
 //
-// Identity is mandatory: there is no opt-out knob (decisions.md D-001).
+// Identity is mandatory: there is no opt-out knob (decisions.md).
 // Validate fails closed when any component is empty; With and WithRun
 // validate at write time so bugs surface at the call site.
 //
 // This package is dependency-free and holds no package-level mutable state
 // beyond two unexported context-key sentinels. Concurrent reuse is safe
-// by construction (decisions.md D-025).
+// by construction (decisions.md).
 package identity
 
 import (

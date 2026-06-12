@@ -16,7 +16,7 @@ import (
 // ToolNameSkillPropose is the planner-visible name of the generator
 // tool. Load-bearing string — the planner prompt references it; a
 // silent rename would break every downstream model. The smoke script
-// pins it with a string-grep (`scripts/smoke/phase-41.sh`).
+// pins it with a string-grep (the package's static smoke guard).
 const ToolNameSkillPropose = "skill_propose"
 
 // ProposeResult describes what `skill_propose` did. Surfaced on the
@@ -47,7 +47,7 @@ const (
 	// ResultRejected — `persist=true` path. An existing
 	// `Origin=PackImport` row with the same `(identity, scope,
 	// name)` key blocked the overwrite (conflict policy from RFC
-	// §6.7 + brief 04 §4.8). The generator returned
+	// §6.7). The generator returned
 	// `*ErrSkillConflict` AND emitted `skill.proposed` with
 	// `Result="rejected"` so the rejection is observable from the
 	// audit pipeline.
@@ -167,7 +167,7 @@ type Deps struct {
 //
 // Concurrent reuse: the registered descriptor holds an immutable
 // closure over (store, deps); per-call state lives on (ctx, args).
-// D-025 holds.
+// the concurrent-reuse contract holds.
 func Register(catalog tcat.ToolCatalog, store skills.SkillStore, deps Deps) error {
 	if catalog == nil {
 		return errors.New("skills/generator: catalog is nil")
@@ -234,9 +234,9 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 		return SkillReceipt{}, errors.New("skills/generator: Propose called without Redactor")
 	}
 
-	// Identity is mandatory (D-001). Read the Quadruple from ctx;
+	// Identity is mandatory. Read the Quadruple from ctx;
 	// missing / incomplete triple → wrapped ErrIdentityRequired +
-	// skill.identity_rejected emit (Phase 37's helper).
+	// skill.identity_rejected emit (the helper).
 	q, ok := identity.QuadrupleFrom(ctx)
 	if !ok {
 		// No Quadruple ctx key — fall back to Identity key and
@@ -254,7 +254,7 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 	skill := buildSkillFromDraft(args.Skill, q)
 
 	// Validate via the same skills.Skill validator the importer
-	// uses (brief 04 §4.8: "validates the draft via the same
+	// uses ("validates the draft via the same
 	// SkillDefinition validator the importer uses"). Validation
 	// happens against the post-stamp record so Origin / Scope are
 	// non-empty for the validator.
@@ -283,8 +283,8 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 	// persist=true: walk the conflict policy.
 	//
 	// We probe the existing row via store.Get. The localdb's Upsert
-	// also enforces pack-overwrite refusal at the SQL level (Phase
-	// 37); we duplicate the probe here so we can return our typed
+	// also enforces pack-overwrite refusal at the SQL level (
+	// ); we duplicate the probe here so we can return our typed
 	// `*ErrSkillConflict` + emit the rejection audit event before
 	// the SQL layer surfaces its sentinel.
 	existing, getErr := store.Get(ctx, q, skill.Name)
@@ -382,11 +382,11 @@ func Propose(ctx context.Context, store skills.SkillStore, deps Deps, args Propo
 
 // Promote writes sibling rows under each `target` identity so a
 // row previously persisted under `src` (with `Scope` set to a
-// non-session value) becomes visible from the targets. The Phase 37
+// non-session value) becomes visible from the targets. The skills-catalog
 // localdb storage layer filters by `(tenant, user, session)`
 // unconditionally; an explicit-target promotion is the V1
 // minimum-viable mechanism for "cross-session promotion REQUIRES
-// Scope=project or Scope=tenant" — Phase 39's Directory subsystem
+// Scope=project or Scope=tenant" — the Directory subsystem
 // will layer a more ergonomic surface on top.
 //
 // Each target write:

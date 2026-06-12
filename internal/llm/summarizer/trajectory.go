@@ -1,5 +1,5 @@
-// trajectory.go — the production LLM-backed planner.Summariser
-// (Phase 111e, D-202). Distinct from the memory-subsystem Summarizer
+// trajectory.go — the production LLM-backed planner.Summariser.
+// Distinct from the memory-subsystem Summarizer
 // in summarizer.go: see the package godoc's two-interface
 // disambiguation.
 package summarizer
@@ -22,9 +22,9 @@ import (
 const TrajectoryPromptVersion = "v1"
 
 // trajectorySystemPromptV1 anchors the compaction persona. The five
-// output fields mirror planner.TrajectorySummary (RFC §6.2, D-055).
+// output fields mirror planner.TrajectorySummary (RFC §6.2).
 // Kept declarative and provider-neutral; the JSON-schema response
-// format (Phase 35) constrains the shape, this prompt constrains the
+// format constrains the shape, this prompt constrains the
 // content.
 const trajectorySystemPromptV1 = `You are Harbor's trajectory compaction summariser. You receive an agent run's trajectory: the user's query, the current goal, and the sequence of steps taken so far (each step's action and its observation). Compress it into a JSON object with exactly these fields:
 - "goals": the goals the agent is tracking (array of short strings).
@@ -35,7 +35,7 @@ const trajectorySystemPromptV1 = `You are Harbor's trajectory compaction summari
 Be factual and concise. Never speculate beyond the trajectory provided. Respond with the JSON object only.`
 
 // trajectorySummarySchemaV1 is the JSON Schema handed to the LLM via
-// the Phase 35 structured-output path (FormatJSONSchema; the
+// the structured-output path (FormatJSONSchema; the
 // per-provider downgrade ladder json_schema → json_object → text
 // applies unchanged). Field names mirror trajectory.Summary's JSON
 // tags so the response unmarshals directly.
@@ -58,8 +58,8 @@ var trajectorySummarySchemaV1 = json.RawMessage(`{
 // oversize fragment; the aggregate payload across many steps is
 // bounded separately by the payload budget (defaultTrajectoryPayload
 // Budget / WithTrajectoryHeavyOutputThreshold) — per-fragment capping
-// alone cannot keep a long trajectory under the D-026 heavy-output
-// threshold (Wave C checkpoint audit).
+// alone cannot keep a long trajectory under the heavy-output
+// threshold.
 const trajectoryFragmentCap = 4096
 
 // trajectoryPayloadHeadroom is the safety margin the payload budget
@@ -71,21 +71,21 @@ const trajectoryPayloadHeadroom = trajectoryFragmentCap
 // defaultTrajectoryPayloadBudget is the aggregate byte budget the
 // payload builder applies when the caller does not thread the
 // operator's configured heavy-output threshold. Derived from the
-// D-022 default so the summariser's own Complete call can never fail
+// default so the summariser's own Complete call can never fail
 // with ErrContextLeak on the default configuration — the failure mode
 // would kill the run exactly when compression was needed.
 const defaultTrajectoryPayloadBudget = llm.DefaultHeavyOutputThreshold - trajectoryPayloadHeadroom
 
-// TrajectorySummariser is the production planner.Summariser Phase
-// 111e ships — the producer half of trajectory compression (RFC §6.2,
-// brief 02 §4). It composes a compaction prompt over the trajectory's
+// TrajectorySummariser is the production planner.Summariser Harbor
+// ships — the producer half of trajectory compression (RFC §6.2,
+// by design). It composes a compaction prompt over the trajectory's
 // planner-facing projection, calls llm.LLMClient.Complete in
-// structured-output JSON-schema mode (Phase 35), and parses the
+// structured-output JSON-schema mode, and parses the
 // response into the five-field planner.TrajectorySummary.
 //
 // Construct via NewTrajectorySummariser; do not construct directly.
 //
-// TrajectorySummariser is a compiled artifact (D-025): every field is
+// TrajectorySummariser is a compiled artifact: every field is
 // set once at construction and never mutated. One instance is safe to
 // share across N concurrent Summarise goroutines; per-call state
 // lives on the function stack and in ctx. trajectory_test.go pins
@@ -147,9 +147,9 @@ func WithTrajectoryMaxSummaryTokens(n int) TrajectoryOption {
 // so the aggregate compaction-payload budget tracks the SAME limit
 // the LLM-edge safety pass enforces — a summariser built against a
 // non-default threshold must never compose a payload its own Complete
-// call would reject with ErrContextLeak (Wave C checkpoint audit).
+// call would reject with ErrContextLeak.
 // The budget becomes threshold − trajectoryPayloadHeadroom, floored
-// at one fragment cap. Non-positive is a no-op (the D-022 default
+// at one fragment cap. Non-positive is a no-op (the default
 // applies).
 func WithTrajectoryHeavyOutputThreshold(threshold int) TrajectoryOption {
 	return func(s *TrajectorySummariser) {
@@ -173,7 +173,7 @@ func WithTrajectoryHeavyOutputThreshold(threshold int) TrajectoryOption {
 // planner.NewCompressionRunner(s) and set the runner on
 // steering.RunSpec.Compression (plus Base.Budget.TokenBudget > 0) —
 // or let the assembly do it from the `planner.token_budget` config
-// knob (Phase 111e, D-202).
+// knob.
 func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*TrajectorySummariser, error) {
 	if client == nil {
 		return nil, fmt.Errorf("summarizer: NewTrajectorySummariser requires a non-nil llm.LLMClient")
@@ -192,12 +192,12 @@ func NewTrajectorySummariser(client llm.LLMClient, opts ...TrajectoryOption) (*T
 // Summarise implements planner.Summariser. It renders the
 // trajectory's planner-facing projection (query, goal, per-step
 // action + LLM-visible observation), sends it through the LLM client
-// (which runs the Phase 32 safety pass + Phase 34 corrections +
-// Phase 35 structured-output downgrade + Phase 36 retry + governance
+// (which runs the safety pass + corrections +
+// structured-output downgrade + retry + governance
 // chain), and parses the assistant's JSON reply into the five-field
 // planner.TrajectorySummary.
 //
-// The payload deliberately renders Step.LLMObservation (the D-026
+// The payload deliberately renders Step.LLMObservation (the
 // heavy-content-disciplined projection — what the planner itself saw)
 // over the raw Step.Observation: raw observations may carry heavy
 // content that must never reach the LLM edge (CLAUDE.md §13 /
@@ -292,8 +292,8 @@ func stripJSONFence(s string) string {
 // buildTrajectoryPayload assembles the user-side message body: the
 // run's query + current goal + the per-step action/observation
 // sequence, each fragment capped at trajectoryFragmentCap and the
-// AGGREGATE bounded by budget (Wave C checkpoint audit — many small
-// near-cap steps must not compose past the D-026 heavy-output
+// AGGREGATE bounded by budget (checkpoint audit — many small
+// near-cap steps must not compose past the heavy-output
 // threshold and fail the summariser's own Complete call with
 // ErrContextLeak). When the steps overflow the budget, the MOST
 // RECENT steps are kept (original step numbers preserved) and the

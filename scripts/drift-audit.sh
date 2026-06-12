@@ -253,6 +253,35 @@ else
     warn 'npx not installed; skipped markdownlint parity (CI still enforces it)'
 fi
 
+# -----------------------------------------------------------------------------
+# Godoc hygiene (phase 102) — no internal phase jargon in godoc-visible
+# comments. pkg.go.dev renders every non-test comment under internal/ and
+# cmd/; "Phase NN" / "phase-NN" / inline "D-NNN" / "brief NN" / wave-band
+# references are contributor concepts that must not reach the public docs
+# surface. Test files (_test.go) are contributor-internal and exempt.
+# The patterns are intentionally narrow (numbering forms only) so legitimate
+# runtime vocabulary — e.g. "three phases: pending, running, completed" —
+# never trips the scan.
+# -----------------------------------------------------------------------------
+godoc_jargon_count=0
+godoc_jargon_patterns=(
+    '(Phase|phase-)[0-9]+'
+    '\bD-[0-9]+'
+    '\b[Bb]rief [0-9]+'
+    '\b(Wave|Round|Stage)[ -][0-9A-Z]+'
+)
+for pat in "${godoc_jargon_patterns[@]}"; do
+    hits=$(grep -rE "$pat" --include='*.go' internal/ cmd/ 2>/dev/null | grep -v '_test\.go' || true)
+    if [ -n "$hits" ]; then
+        fail "godoc hygiene: pattern '${pat}' found in non-test Go source (phase 102):"
+        printf '%s\n' "$hits" | head -10 | sed 's/^/       /'
+        godoc_jargon_count=$((godoc_jargon_count + 1))
+    fi
+done
+if [ "${godoc_jargon_count}" -eq 0 ]; then
+    ok 'godoc hygiene: no internal phase jargon in non-test Go source (phase 102)'
+fi
+
 # Summary
 printf '\n=== drift-audit summary ===\n'
 printf 'OK:   %d\n' "${OK}"

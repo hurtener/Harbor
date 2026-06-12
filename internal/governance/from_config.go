@@ -1,12 +1,12 @@
 // from_config.go — the exported config→governance projection (Phase
-// 110c, D-196). Before 110c the `config.GovernanceConfig` →
+// the config consolidation). Previously the `config.GovernanceConfig` →
 // `governance.Config` projection existed twice — unexported
 // `governanceConfigFromConfig` in `cmd/harbor/cmd_dev.go` and its
 // hand-maintained `governanceConfigForDevstack` mirror in
-// `harbortest/devstack` — the exact D-155 silent-field-drop mechanism.
+// `harbortest/devstack` — the exact silent-field-drop mechanism.
 // The projection now lives next to the type it fills.
 //
-// Import direction (D-193): the subsystem imports `internal/config`
+// Import direction: the subsystem imports `internal/config`
 // additively; config stays a leaf. The projection is optional sugar —
 // programmatic `governance.Config` construction remains the headless
 // golden path.
@@ -31,7 +31,7 @@ import "github.com/hurtener/Harbor/internal/config"
 // surface), not a tier-policy field — `governance.Config` carries no
 // equivalent. The field-parity test names this exclusion.
 //
-// An empty `IdentityTiers` in the YAML (the latent default, D-044)
+// An empty `IdentityTiers` in the YAML (the latent default)
 // yields a `governance.Config` with an empty tier map — the posture
 // surface reports it verbatim and enforcement stays latent.
 func ConfigFromOperator(in config.GovernanceConfig) Config {

@@ -8,17 +8,17 @@ import (
 	"github.com/hurtener/Harbor/internal/memory"
 )
 
-// EchoSummarizer is the test-grade `memory.Summarizer` stub Phase
-// 24 ships. It concatenates the previous summary + the joined
+// EchoSummarizer is the test-grade `memory.Summarizer` stub Harbor
+// ships. It concatenates the previous summary + the joined
 // user/assistant turns into a deterministic string so tests can
 // pin expected outputs without an LLM backend.
 //
-// The real LLM-backed `Summarizer` lands at Phase 32+ in the
-// `internal/llm` subsystem; tests in Phase 24 reach for
+// The real LLM-backed `Summarizer` lands in later phases in the
+// `internal/llm` subsystem; tests in reach for
 // `EchoSummarizer` because (a) it is fully deterministic, and
 // (b) it never hits the network so the test suite stays hermetic.
 //
-// Concurrent-reuse contract (D-025): no mutable state on the
+// Concurrent-reuse contract: no mutable state on the
 // struct; safe to share across N goroutines.
 type EchoSummarizer struct{}
 

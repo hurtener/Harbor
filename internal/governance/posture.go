@@ -1,8 +1,8 @@
 package governance
 
-// posture.go — the Phase 72g (D-112) read-only posture accessor over the
+// posture.go — the read-only posture accessor over the
 // configured governance policy. The `governance.posture` Protocol method
-// (Phase 72g) consumes a PostureProvider; the provider returns a deep-
+// consumes a PostureProvider; the provider returns a deep-
 // copied immutable Snapshot of the operator-configured `IdentityTiers`
 // map plus the `DefaultTier` selector and the caller-resolved tier.
 //
@@ -15,7 +15,7 @@ package governance
 // `governance.Config` value the binary built at boot. PostureProvider
 // wraps that Config and exposes the read projection.
 //
-// Concurrent reuse (D-025): PostureProvider is immutable after
+// Concurrent reuse: PostureProvider is immutable after
 // construction — `cfg` is set once and never mutated. `Posture` reads
 // the configured map and DEEP-COPIES it before returning, so a caller
 // that mutates the returned Snapshot cannot reach back into the
@@ -26,10 +26,10 @@ import (
 	"fmt"
 )
 
-// PostureProvider is the Phase 72g read-only accessor over a configured
+// PostureProvider is the read-only accessor over a configured
 // `governance.Config`. Built once per Runtime process via
 // NewPostureProvider; `Posture` is safe for concurrent use by N
-// goroutines (D-025).
+// goroutines.
 type PostureProvider struct {
 	cfg Config
 }
@@ -79,7 +79,7 @@ func (p *PostureProvider) Posture(ctx context.Context) (Snapshot, error) {
 	}
 
 	// Deep-copy the tier map so a caller mutating the snapshot cannot
-	// reach back into the provider's Config (D-025 — no shared mutable
+	// reach back into the provider's Config (no shared mutable
 	// state crossing the call boundary). Always non-nil.
 	tiers := make(map[string]TierConfig, len(p.cfg.IdentityTiers))
 	for name, tc := range p.cfg.IdentityTiers {

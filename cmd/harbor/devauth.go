@@ -1,6 +1,6 @@
 // cmd/harbor/devauth.go — `harbor dev` ephemeral JWT signing.
 //
-// Phase 64 (D-089) gives `harbor dev` a dev-only identity injection
+// gives `harbor dev` a dev-only identity injection
 // path: an ephemeral ES256 keypair generated at boot, a static
 // `auth.KeySet` that resolves the boot kid → the generated public
 // key, and a default-identity dev token printed to stderr at startup.
@@ -20,7 +20,7 @@
 // equivalent-strength RS256. `harbor dev` regenerates the key on
 // every boot, so generation cost is a real factor for the dev loop's
 // startup latency. Both algorithms are on the §7 allowlist; the
-// choice between them is purely operational. The Phase 61 Validator
+// choice between them is purely operational. The Validator
 // allows both, so an operator who needs RS256 can wire it via a
 // later jwks driver.
 //
@@ -77,7 +77,7 @@ const (
 
 // devKeySet is the auth.KeySet implementation `harbor dev` mounts.
 // One kid → one (ecdsa.PublicKey, "ES256") entry. Immutable after
-// construction; satisfies the D-025 concurrent-reuse contract by
+// construction; satisfies the concurrent-reuse contract by
 // being read-only.
 type devKeySet struct {
 	kid string
@@ -159,7 +159,7 @@ func (s *devSigner) SignDevToken(now time.Time, tenant, user, session string, sc
 // callers pass to `auth.NewValidator(keys, ...)`.
 func (s *devSigner) KeySet() auth.KeySet { return s.keys }
 
-// IssueToken implements auth.TokenIssuer (Phase 73m / D-129). It
+// IssueToken implements auth.TokenIssuer. It
 // re-mints a Bearer-shaped ES256 JWT for the supplied — already
 // verified — identity triple + scope set, used by the
 // `auth.rotate_token` Protocol method the Console Settings page calls.
@@ -171,7 +171,7 @@ func (s *devSigner) KeySet() auth.KeySet { return s.keys }
 // release-engineering phase — IssueToken's signature is the contract.
 //
 // IssueToken is read-only over the immutable signer; safe for
-// concurrent use by N goroutines (D-025).
+// concurrent use by N goroutines.
 func (s *devSigner) IssueToken(_ context.Context, id identity.Identity, scopes []auth.Scope, now time.Time) (string, time.Time, error) {
 	strScopes := make([]string, 0, len(scopes))
 	for _, sc := range scopes {

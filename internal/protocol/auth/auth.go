@@ -1,6 +1,6 @@
 // Package auth is the Harbor Protocol's JWT validation surface — the
-// Phase 61 transport-edge cryptographic identity check that turns the
-// Phase 60 wire transports' trust-based identity carriers into verified
+// transport-edge cryptographic identity check that turns the
+// wire transports' trust-based identity carriers into verified
 // ones (RFC §5.5: "JWT, asymmetric algorithms only ... the triple
 // (tenant, user, session) is in the JWT claims; the Protocol rejects any
 // request without an identity scope").
@@ -57,7 +57,7 @@
 // are optional — a token with no scopes is still authenticated, just
 // not entitled to elevated subscriptions.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // Validator is a compiled artifact: the KeySet, the parser
 // configuration, the clock, and the redactor are set once at
@@ -257,7 +257,7 @@ func WithRedactor(r audit.Redactor) Option {
 
 // WithEventBus wires an events.EventBus into the Validator so the
 // audit emit on every rejection ALSO publishes a canonical
-// `auth.rejected` event onto the bus (PR #91 amendment to D-079).
+// `auth.rejected` event onto the bus (PR #91 amendment to).
 // The bus is OPTIONAL — when not supplied (or nil), rejections still
 // emit a structured slog.Warn through the configured Redactor; the
 // bus emit is an additive observability surface that lets a Console
@@ -278,7 +278,7 @@ func WithEventBus(b events.EventBus) Option {
 
 // Validator is the JWT validation surface. Construct via NewValidator;
 // do not construct directly. One Validator is safe to share across N
-// concurrent Validate goroutines (D-025).
+// concurrent Validate goroutines.
 type Validator interface {
 	// Validate parses + verifies the rawToken JWT and returns the
 	// extracted identity + scopes. Every error wraps one of the
@@ -313,7 +313,7 @@ type jwtValidator struct {
 // real or test-local Redactor via the `auth_test` package or a
 // _test.go-local stub.
 //
-// The returned Validator is immutable after construction (D-025) and
+// The returned Validator is immutable after construction and
 // safe for concurrent use by N goroutines.
 func NewValidator(keys KeySet, opts ...Option) (Validator, error) {
 	if keys == nil {
@@ -485,7 +485,7 @@ func (v *jwtValidator) Validate(ctx context.Context, rawToken string) (Verified,
 // runs the payload as defence-in-depth in case a custom kid happens
 // to match a secret-shaped pattern.
 //
-// PR #91 / D-082: the bus emit was added per the Wave 10 audit's
+// PR #91: the bus emit was added per the checkpoint audit
 // WARN-3 so a Console subscribing to the canonical event bus sees
 // auth rejections alongside every other rejection-class signal.
 // The bus is optional; the slog emit is unconditional.

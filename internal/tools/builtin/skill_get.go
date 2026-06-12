@@ -10,7 +10,7 @@ import (
 )
 
 // SkillGetArgs is the LLM-facing input shape for the `skill_get`
-// built-in. Phase 111d (D-201): the pre-111d single-`name` shape is
+// built-in. The pre-111d single-`name` shape is
 // replaced by the Phase-38 handler's multi-name + budget envelope —
 // the `capability` field is omitted and server-computed (see
 // skill_capability.go).

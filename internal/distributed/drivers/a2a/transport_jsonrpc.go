@@ -81,7 +81,7 @@ func (e *jsonRPCError) Error() string {
 // instance per RemoteTransport; uses a single *http.Client and a
 // monotone ID counter.
 //
-// Concurrent reuse (D-025): the client is safe for N concurrent calls
+// Concurrent reuse: the client is safe for N concurrent calls
 // against a single instance. `*http.Client` is shared (its public
 // surface is documented concurrent-safe), the atomic counter handles
 // ID generation, and per-call state lives on the goroutine stack.
@@ -108,7 +108,7 @@ func newJSONRPCClient(httpc *http.Client) *jsonRPCClient {
 // driver does NOT modify the endpoint URL — instead it sets a
 // `X-Harbor-Tenant` header. The proto's "tenant" path parameter is
 // peer-specific and many peers prefer the header form; the proto
-// allows the param to be elided when supplied out-of-band. (Phase 29
+// allows the param to be elided when supplied out-of-band. (
 // keeps this off the URL to avoid double-encoding edge cases on
 // arbitrary paths.) The peer is expected to consume the header per
 // its own conventions; the conformance suite asserts the header
@@ -186,7 +186,7 @@ func (c *jsonRPCClient) buildRequestBody(method string, params any) ([]byte, err
 // receiving Harbor northbound (post-V1) reconstruct the identity
 // triple without re-authenticating. Missing identity is the caller-
 // side concern (the wire driver does not gate calls on identity; the
-// runtime above does — see Phase 22's contract).
+// runtime above does — see the contract).
 func applyIdentityHeader(ctx context.Context, req *http.Request) {
 	id, ok := identity.From(ctx)
 	if !ok {

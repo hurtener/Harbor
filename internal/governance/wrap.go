@@ -19,11 +19,11 @@ import (
 // supplant the call's result" behaviour.
 //
 // Compose order: governance is the OUTERMOST wrapper, sitting outside
-// Phase 36's retry wrapper (D-043). The wrapper closures here read
+// the retry wrapper. The wrapper closures here read
 // identity from ctx via `identityFromCtx`; missing identity → fail-closed
 // with `ErrIdentityRequired`.
 //
-// Headless / multi-runtime path (Phase 111a, D-198): Wrap +
+// Headless / multi-runtime path: Wrap +
 // `NewSubsystemFromConfig` are the documented composition for embedders
 // that run N runtime stacks (each with its own tier map) in one process
 // — the process-global `SetFactory` seam would collide there (second
@@ -33,7 +33,7 @@ import (
 //	sub, err := governance.NewSubsystemFromConfig(cfg, store, bus)
 //	client = governance.Wrap(client, sub)
 //
-// Concurrent reuse (D-025): the returned client is a thin functional
+// Concurrent reuse: the returned client is a thin functional
 // adapter (no mutable state of its own); concurrent reuse depends on the
 // inner client + Subsystem both honouring the contract.
 func Wrap(inner llm.LLMClient, sub Subsystem) llm.LLMClient {

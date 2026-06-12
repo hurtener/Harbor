@@ -13,7 +13,7 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// servePosture is the Phase 72f (D-111) runtime-posture REST adapter.
+// servePosture is the runtime-posture REST adapter.
 // It decodes the body into a `*types.RuntimeInfoRequest`, backfills the
 // body identity from the auth-verified identity in ctx when the body
 // left it empty (same posture as the control transport's
@@ -26,7 +26,7 @@ import (
 //     triple fails closed at the surface edge.
 //   - Cross-tenant gating (CodeScopeMismatch / 403) — a request whose
 //     body Tenant differs from the ctx-verified tenant requires the
-//     admin (or console:fleet) scope claim per D-079.
+//     admin (or console:fleet) scope claim per the closed admin-scope set.
 func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method methods.Method) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
@@ -44,11 +44,11 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 		}
 	}
 
-	// Phase 61 defence-in-depth: when auth.Middleware ran, r.Context()
+	// defence-in-depth: when auth.Middleware ran, r.Context()
 	// carries the verified identity. The body's IdentityScope MUST be
 	// consistent with it — backfill an empty body identity from the
 	// JWT, and reject a body claiming a different (tenant, user,
-	// session) than the verified one. When no middleware ran (Phase 60
+	// session) than the verified one. When no middleware ran (
 	// trust-based posture) the check is a no-op and the body identity
 	// is authoritative — same posture as the control transport.
 	if perr := backfillPostureIdentity(r, req); perr != nil {
@@ -64,7 +64,7 @@ func (h *Handler) servePosture(w http.ResponseWriter, r *http.Request, method me
 	h.writeJSON(w, r, http.StatusOK, resp)
 }
 
-// backfillPostureIdentity threads the Phase 61 verified identity into
+// backfillPostureIdentity threads the verified identity into
 // the posture request body. When ctx carries a verified identity:
 //
 //   - An empty body identity is backfilled from the JWT (the JWT is the

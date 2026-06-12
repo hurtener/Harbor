@@ -1,10 +1,10 @@
 // Package sqlite is Harbor's SQLite-backed `artifacts.ArtifactStore`
-// driver (Phase 18). It is the third leg of the artifact persistence
+// driver. It is the third leg of the artifact persistence
 // triad (in-memory floor, FS, SQLite, Postgres) defined by
 // RFC §6.10 + §9.
 //
 // The driver is built on `modernc.org/sqlite` — a CGo-free SQLite
-// engine (D-013, AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
+// engine (AGENTS.md §5). Builds remain `CGO_ENABLED=0`.
 //
 // Operating model:
 //
@@ -21,12 +21,12 @@
 //     `Concurrent_PutGet_NoRace` (N=128) and our supplemental
 //     `concurrent_test.go` does not surface caller-visible errors.
 //   - `db.SetMaxOpenConns(1)` pins the pool to a single connection.
-//     Phase 15's StateStore driver settled this — `BEGIN IMMEDIATE`
+//     the StateStore driver settled this — `BEGIN IMMEDIATE`
 //     does not honor `busy_timeout` for inter-connection writer
 //     contention, so under high concurrency the conformance suite's
 //     N=128 stress can otherwise leak `SQLITE_BUSY` to callers.
 //   - The schema is applied via embedded `migrations/*.sql` files
-//     (forward-only, brief 05 §4 + AGENTS.md §13). The runner is
+//     (forward-only, AGENTS.md §13). The runner is
 //     idempotent — re-running on an already-migrated DB is a no-op.
 //
 // The driver self-registers under `"sqlite"` from its `init()`. The
@@ -34,7 +34,7 @@
 // `cmd/harbor/main.go`; tests may call `New` directly to skip the
 // registry.
 //
-// Concurrency contract (D-025):
+// Concurrency contract:
 //
 //   - The driver struct holds a `*sql.DB` (an internally-synchronized
 //     connection pool, pinned to one connection) and an `atomic.Bool`
@@ -96,7 +96,7 @@ const (
 //
 //   - Empty DSN → clear error (no silent default-fallback).
 //   - `:memory:` → translated to a PER-OPEN uniquely named shared-cache
-//     memory URI (D-207; see uniqueMemoryDSN) so the pool can hand out
+//     memory URI (see uniqueMemoryDSN) so the pool can hand out
 //     multiple connections to the same in-memory database (the bare
 //     `:memory:` DSN gives every pool connection its own private DB,
 //     which would break Put+Get round-trip across pooled connections)
@@ -134,7 +134,7 @@ func New(cfg config.ArtifactsConfig) (artifacts.ArtifactStore, error) {
 	// can hand out N connections that race for the writer lock).
 	// Pinning the pool to a single connection serializes all access
 	// at the Go layer — the driver thus matches the engine's
-	// single-writer reality. This mirrors Phase 15's StateStore
+	// single-writer reality. This mirrors the StateStore
 	// settled choice.
 	db.SetMaxOpenConns(1)
 
@@ -175,13 +175,13 @@ func init() {
 //     write, eliminating SQLITE_BUSY_SNAPSHOT under contention.
 //
 // The bare `:memory:` DSN is translated to a PER-OPEN uniquely named
-// `file:`-form shared-cache memory URI (D-207; see uniqueMemoryDSN)
+// `file:`-form shared-cache memory URI (see uniqueMemoryDSN)
 // so `database/sql`'s pool shares one DB within this store while two
 // `:memory:` stores opened by different subsystems never collide.
 func augmentDSNForPragmas(dsn string) (string, error) {
 	// Translate bare `:memory:` to a per-Open uniquely named
 	// shared-cache memory URI: shared across the pool, isolated
-	// across Opens (D-207).
+	// across Opens.
 	if dsn == ":memory:" {
 		unique, err := uniqueMemoryDSN()
 		if err != nil {
@@ -226,8 +226,8 @@ func augmentDSNForPragmas(dsn string) (string, error) {
 	return dsn + sep + strings.Join(parts, "&"), nil
 }
 
-// uniqueMemoryDSN mints a per-Open named in-memory database URI
-// (D-207). `mode=memory` keeps it off disk; `cache=shared` lets every
+// uniqueMemoryDSN mints a per-Open named in-memory database URI.
+// `mode=memory` keeps it off disk; `cache=shared` lets every
 // connection in THIS store's pool see the same database; the
 // crypto-random name keeps two `:memory:` stores — this subsystem's or
 // any other's — fully isolated within one process (the previous
@@ -325,7 +325,7 @@ func (d *driver) PutBytes(ctx context.Context, scope artifacts.ArtifactScope, da
 	id := fmt.Sprintf("%s_%s", namespace, hexDigest[:12])
 
 	// Marshal Source up front. Non-encodable values fail loudly here
-	// rather than after partial work commits. Per Phase 17's
+	// rather than after partial work commits. Per the
 	// documented behavior.
 	sourceJSON, err := marshalSource(opts.Source)
 	if err != nil {

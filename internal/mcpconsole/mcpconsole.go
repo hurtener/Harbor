@@ -1,6 +1,6 @@
-// Package mcpconsole wires the Phase 73k (D-119) MCP-Connections
-// Protocol surface to its runtime-side dependencies — the Phase 28 MCP
-// driver registry and the Phase 30 tool-side OAuth provider.
+// Package mcpconsole wires the MCP-Connections
+// Protocol surface to its runtime-side dependencies — the MCP
+// driver registry and the tool-side OAuth provider.
 //
 // # Why a separate package
 //
@@ -10,14 +10,14 @@
 // Protocol package stays driver-free; a Protocol type that re-exported
 // a driver type would be the reject-on-sight smell). The adapters that
 // bridge the two live here, in a wiring package both `cmd/harbor` and
-// the Phase 73k integration test import. The MCPSurface depends ONLY on
+// the integration test import. The MCPSurface depends ONLY on
 // the interfaces; this package is the single concrete that satisfies
 // them.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // RegistryAccessor and OAuthAccessor are thin, immutable adapters — the
-// wrapped Registry / Provider are themselves D-025-safe compiled
+// wrapped Registry / Provider are themselves safe for concurrent reuse compiled
 // artifacts, and the adapters add no mutable state.
 package mcpconsole
 
@@ -201,7 +201,7 @@ func serverRow(v mcp.ServerView) protocol.MCPServerRow {
 //
 // # V1 binding-enumeration scope
 //
-// The Phase 30 `auth.Provider` keys tokens by `(BindingScope, subject,
+// The `auth.Provider` keys tokens by `(BindingScope, subject,
 // source)` and exposes no fleet-wide binding enumeration API. At V1 the
 // adapter therefore projects the caller-visible binding state: it reports
 // the configured binding scope for the source and the caller's own
@@ -227,7 +227,7 @@ var _ protocol.MCPOAuthAccessor = (*OAuthAccessor)(nil)
 // ListBindings implements protocol.MCPOAuthAccessor. It projects the
 // configured binding for the server (the OAuthConfig's BindingScope +
 // requested scopes) and the caller's own token freshness. NEVER returns
-// token plaintext (D-083 invariant).
+// token plaintext (invariant).
 func (a *OAuthAccessor) ListBindings(ctx context.Context, server string) ([]protocol.MCPBindingRow, error) {
 	cfg, ok := a.provider.ConfigFor(tools.ToolSourceID(server))
 	if !ok {

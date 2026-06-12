@@ -5,8 +5,8 @@ import "io"
 // Option configures the Logger at construction.
 type Option func(*Logger)
 
-// WithBusEmitter installs the production runtime.error emitter. Phase
-// 05+ wires this when constructing the Logger. Without it, Logger.Error
+// WithBusEmitter installs the production runtime.error emitter. The
+// event bus wires this when constructing the Logger. Without it, Logger.Error
 // only writes the slog record (the default noopEmitter is a no-op).
 func WithBusEmitter(b BusEmitter) Option {
 	return func(l *Logger) {

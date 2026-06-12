@@ -15,7 +15,7 @@ import (
 // ValidateMode selects which side of an invocation the policy
 // validates: input, output, both, or none. Mirrors engine.NodePolicy
 // (RFC §6.1) so a developer who learned NodePolicy already knows
-// ToolPolicy (D-024).
+// ToolPolicy.
 type ValidateMode string
 
 const (
@@ -53,7 +53,7 @@ const (
 )
 
 // ToolPolicy is the per-tool reliability shell. Every invocation
-// regardless of Transport wraps in ToolPolicy (RFC §6.4, D-024).
+// regardless of Transport wraps in ToolPolicy (RFC §6.4).
 // Zero value is "use defaults": DefaultPolicy fires on a fresh
 // Tool.Policy at dispatch time.
 //
@@ -96,7 +96,7 @@ type ToolPolicy struct {
 // DefaultPolicy returns the policy applied when ToolPolicy is
 // zero-valued. 3 retries / 100ms→30s exponential backoff (mult=2)
 // / 30s timeout / Validate=ValidateBoth / RetryOn=[transient,
-// timeout, 5xx]. Per D-024 acceptance criteria.
+// timeout, 5xx]. Per acceptance criteria.
 func DefaultPolicy() ToolPolicy {
 	return ToolPolicy{
 		TimeoutMS:   30000,
@@ -185,7 +185,7 @@ func (p ToolPolicy) shouldValidateOut() bool {
 }
 
 // DescriptorOption configures a ToolDescriptor at registration.
-// Drivers (Phase 26 in-process, Phase 27+ HTTP / MCP / A2A) accept
+// Drivers (in-process, HTTP / MCP / A2A) accept
 // `opts ...DescriptorOption` so the same option surface is reused
 // across transports.
 type DescriptorOption func(*descriptorConfig)
@@ -277,7 +277,7 @@ func WithSource(id ToolSourceID) DescriptorOption {
 // rejects missing identity already errored before this point).
 //
 // Drivers (inproc, http, mcp, a2a) honour this option in their
-// Invoke closures so the Phase 26 event surface fires regardless of
+// Invoke closures so the event surface fires regardless of
 // transport. Zero value (nil bus) keeps the previous no-op
 // behaviour, so legacy registrations continue to work.
 func WithBus(bus events.EventBus) DescriptorOption {
@@ -289,7 +289,7 @@ func WithBus(bus events.EventBus) DescriptorOption {
 // their ToolDescriptor — they read what the operator declared at
 // registration time + the package-set defaults.
 //
-// Exported so transports (Phase 27 HTTP, Phase 28 MCP, Phase 29
+// Exported so transports (HTTP, MCP, the
 // A2A) can reuse the option-resolution pipeline without
 // re-implementing it. The fields mirror the unexported
 // descriptorConfig in this file.
@@ -349,13 +349,13 @@ type invokeHooks struct {
 // timeout. The only delta is the input is `json.RawMessage` (not a
 // runtime envelope) and the output is `ToolResult`.
 //
-// Validation contract (D-033 candidate): the input-validation pass
+// Validation contract (candidate): the input-validation pass
 // runs ONCE BEFORE the retry loop. Retrying on invalid args would
 // waste budget and never converge. Output-validation runs on each
 // successful attempt's result (a retry that fixes a transient
 // error still gets its output checked).
 //
-// Concurrent reuse (D-025): all per-invocation state lives on the
+// Concurrent reuse: all per-invocation state lives on the
 // goroutine stack (attempt counter, last err, deadline timer).
 // `policy` is a value-typed parameter; no shared mutable state.
 func runWithPolicy(
@@ -570,7 +570,7 @@ func ClassifyError(err error, perAttemptTimeout bool) ErrorClass {
 // resolved policy's Validate mode to decide whether to call them.
 // `policy` is the Tool's policy (per-Tool); zero-valued → defaults.
 //
-// Concurrent reuse (D-025): RunWithPolicy is stateless — no shared
+// Concurrent reuse: RunWithPolicy is stateless — no shared
 // mutable state across calls. Safe for N concurrent invocations.
 func RunWithPolicy(
 	ctx context.Context,

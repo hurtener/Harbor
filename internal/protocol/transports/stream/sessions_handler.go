@@ -1,4 +1,4 @@
-// Package stream — Wave 13 additions (Phase 73c / D-122): the Console
+// Package stream — additions: the Console
 // Sessions-page HTTP handler. Like `events.aggregate`, `pause.list`,
 // and the Flows-page handler, these are one-shot request/response
 // endpoints — POST JSON in, JSON out. They live in the stream package
@@ -14,11 +14,11 @@
 // Both routes are read-only and identity-mandatory. A cross-tenant
 // `sessions.list` filter (a `tenant_ids` entry outside the caller's
 // verified tenant) is gated on the verified `auth.ScopeAdmin` claim
-// (D-079 closed two-scope set — NO new scope is minted); the
+// (closed two-scope set — NO new scope is minted); the
 // sessions/protocol.Service emits an `audit.admin_scope_used` event on
 // every successful admin-scope query.
 //
-// SessionsHandler is a D-025-safe compiled artifact — service / logger
+// SessionsHandler is a concurrency-safe compiled artifact — service / logger
 // are set once at construction; ServeHTTP holds no per-request state.
 package stream
 
@@ -82,7 +82,7 @@ func WithSessionsLogger(l *slog.Logger) SessionsOption {
 // would nil-panic on the first request (CLAUDE.md §5).
 //
 // The returned *SessionsHandler is immutable after construction
-// (D-025) and safe for concurrent use by N goroutines.
+// and safe for concurrent use by N goroutines.
 func NewSessionsHandler(service *sessionsprotocol.Service, opts ...SessionsOption) (*SessionsHandler, error) {
 	if service == nil {
 		return nil, fmt.Errorf("%w: sessions/protocol.Service is nil", ErrSessionsMisconfigured)
@@ -116,7 +116,7 @@ func (h *SessionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// adminScoped is the verified-JWT scope decision. The Service
-	// enforces the D-079 cross-tenant gate — a false value on a
+	// enforces the cross-tenant gate — a false value on a
 	// cross-tenant filter fails closed with CodeScopeMismatch (403).
 	adminScoped := auth.HasScope(r.Context(), auth.ScopeAdmin) ||
 		auth.HasScope(r.Context(), auth.ScopeConsoleFleet)

@@ -1,5 +1,5 @@
-// Package searchcache is Harbor's SQLite FTS5-backed tool search cache
-// (Phase 107c / D-167). It mirrors the shape of
+// Package searchcache is Harbor's SQLite FTS5-backed tool search cache.
+// It mirrors the shape of
 // internal/skills/drivers/localdb — FTS5 search over indexed tool
 // name + description + tags, with a regex fallback for environments
 // without FTS5.

@@ -1,12 +1,12 @@
 package llm
 
-// posture.go — the Phase 72g (D-112) read-only posture accessor over the
-// runtime's bound LLM provider. The `llm.posture` Protocol method (Phase
-// 72g) consumes a PostureProvider; the provider returns a PostureSnapshot
+// posture.go — the read-only posture accessor over the
+// runtime's bound LLM provider. The `llm.posture` Protocol method (
+// ) consumes a PostureProvider; the provider returns a PostureSnapshot
 // carrying the provider name, model id, region, and the `MockMode`
 // boolean.
 //
-// # The MockMode capture path (D-089)
+// # The MockMode capture path
 //
 // `MockMode == true` iff the runtime booted with the dev-only mock
 // escape hatch `HARBOR_DEV_ALLOW_MOCK=1`. The flag is captured ONCE at
@@ -14,7 +14,7 @@ package llm
 // `cmd/harbor/devmock.go::registerMockIfDevAllowMock` that prints the
 // `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` stderr banner. The
 // posture handler reads the captured boolean — it NEVER re-reads
-// `os.Getenv("HARBOR_DEV_ALLOW_MOCK")` at request time. D-089's boot-
+// `os.Getenv("HARBOR_DEV_ALLOW_MOCK")` at request time. The boot-
 // time capture is the single source of truth; a request-time re-read
 // would be a second source that could silently desync from the banner.
 //
@@ -25,7 +25,7 @@ package llm
 // thereafter. It is guarded by an atomic so the write/read pair is
 // race-free even if a test exercises the capture path concurrently.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // PostureProvider is immutable after construction — its ConfigSnapshot
 // is set once and never mutated. `Posture` reads the snapshot's
@@ -46,7 +46,7 @@ import (
 var mockModeCaptured atomic.Bool
 
 // RegisterMockModeCaptured records that the runtime booted with
-// `HARBOR_DEV_ALLOW_MOCK=1` (D-089). It is called exactly once from
+// `HARBOR_DEV_ALLOW_MOCK=1`. It is called exactly once from
 // `cmd/harbor/devmock.go::registerMockIfDevAllowMock` at boot — the SAME
 // call site that prints the `[DEV-ONLY MOCK LLM — DO NOT USE IN
 // PRODUCTION]` stderr banner. Calling it with `true` flips the captured
@@ -56,7 +56,7 @@ var mockModeCaptured atomic.Bool
 // A future PR that re-routes the dev-hatch path (e.g. promotes the env
 // var to a CLI flag) MUST keep this call reciprocal with the banner
 // emit — otherwise `LLMPostureResponse.MockMode` silently desyncs from
-// the banner. The Phase 72g integration + smoke tests assert both paths
+// the banner. The integration + smoke tests assert both paths
 // fire together.
 func RegisterMockModeCaptured(v bool) {
 	mockModeCaptured.Store(v)
@@ -81,15 +81,15 @@ type PostureSnapshot struct {
 	Model string
 	// Region is the provider endpoint region; "" when not applicable.
 	Region string
-	// MockMode is true iff the runtime booted with HARBOR_DEV_ALLOW_MOCK=1
-	// (D-089). Captured at boot via RegisterMockModeCaptured.
+	// MockMode is true iff the runtime booted with HARBOR_DEV_ALLOW_MOCK=1.
+	// Captured at boot via RegisterMockModeCaptured.
 	MockMode bool
 }
 
-// PostureProvider is the Phase 72g read-only accessor over the runtime's
+// PostureProvider is the read-only accessor over the runtime's
 // bound LLM configuration. Built once per Runtime process via
 // NewPostureProvider; `Posture` is safe for concurrent use by N
-// goroutines (D-025).
+// goroutines.
 type PostureProvider struct {
 	provider string
 	model    string
@@ -101,7 +101,7 @@ type PostureProvider struct {
 // region are read from the snapshot and frozen at construction; the
 // `MockMode` flag is NOT taken from the snapshot — it is read live (but
 // race-free) from the boot-captured atomic, so the posture surface
-// reflects D-089's single capture-path source.
+// reflects the single capture-path source.
 //
 // When the snapshot's `Driver` field is empty it is normalised to
 // `DefaultDriver` ("bifrost") — the same default `Open` applies — so the
@@ -137,11 +137,11 @@ func NewPostureProvider(cfg ConfigSnapshot) *PostureProvider {
 // LLM provider for the caller. The `ctx` is accepted for signature
 // symmetry with `governance.PostureProvider.Posture` and so a future
 // per-tenant LLM-routing model can scope the read; V1 ships a single
-// provider per Harbor instance (RFC §6.15 + D-088), so the snapshot is
+// provider per Harbor instance (RFC §6.15), so the snapshot is
 // identity-independent at this layer — the Protocol handler is the
 // identity-mandatory gate.
 //
-// `MockMode` is read from the boot-captured atomic (D-089) — NOT from an
+// `MockMode` is read from the boot-captured atomic — NOT from an
 // `os.Getenv` re-read.
 func (p *PostureProvider) Posture(_ context.Context) (PostureSnapshot, error) {
 	return PostureSnapshot{

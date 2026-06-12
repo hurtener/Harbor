@@ -4,9 +4,9 @@
 // separate driver per AGENTS.md §4.4 — every memory driver hosts
 // the same executor surface.
 //
-// Phase 24 ships three executors:
+// Harbor ships three executors:
 //
-//   - `none` (`noneExec`) — Strategy=none preserves the Phase 23
+//   - `none` (`noneExec`) — Strategy=none preserves the
 //     semantics: AddTurn is a no-op, GetLLMContext returns empty,
 //     all snapshot bytes round-trip through `state.StateStore`.
 //   - `truncation` (`truncationExec`) — synchronous recent-window
@@ -17,20 +17,20 @@
 //     `healthy → retry → degraded → recovering → healthy` with a
 //     bounded recovery backlog (`RecoveryBacklogMax`); failure paths
 //     emit `memory.health_changed` and `memory.recovery_dropped`
-//     events so degradation is observable, not silent (D-035).
+//     events so degradation is observable, not silent.
 //
 // Persistence: every successful mutation lands as a
-// `state.StateStore` record at `Kind = "memory.state"` (D-027 typed
-// wrapper). Phase 25's SQLite + Postgres drivers will inherit the
+// `state.StateStore` record at `Kind = "memory.state"` (typed
+// wrapper). the SQLite + Postgres drivers will inherit the
 // shape unchanged.
 //
-// Identity-mandatory contract (D-001): every method validates the
+// Identity-mandatory contract: every method validates the
 // identity quadruple at the boundary. Drivers OWN the boundary
 // validation + the `memory.identity_rejected` emit; executors trust
 // the driver's pre-validation. The driver passes through validated
 // identities and the executor focuses on the algorithmic core.
 //
-// Concurrent-reuse contract (D-025): one executor is safe to share
+// Concurrent-reuse contract: one executor is safe to share
 // across N concurrent goroutines. Per-key state lives in mutex-
 // guarded maps inside the executor; no per-call mutable state on
 // the executor struct itself.
@@ -54,7 +54,7 @@ import (
 // is closed.
 //
 // The interface is unexported-by-naming (`StrategyExecutor` is
-// exported because Phase 25's persistent drivers will type-assert
+// exported because the persistent drivers will type-assert
 // it); concrete implementations are unexported types behind the
 // package's `New` factory.
 //
@@ -74,8 +74,8 @@ type StrategyExecutor interface {
 // Deps carries the runtime dependencies an executor consumes.
 //
 // `State` is the persistence floor — every executor writes typed
-// records through it (D-027). Mandatory for every strategy
-// including `none` (the wiring is exercised by Phase 23's
+// records through it. Mandatory for every strategy
+// including `none` (the wiring is exercised by the
 // conformance suite).
 //
 // `Bus` is the event bus the executor publishes lifecycle events
@@ -87,7 +87,7 @@ type StrategyExecutor interface {
 // `Summarizer` is the injectable LLM-edge callable the
 // rolling-summary strategy consumes. Mandatory for
 // `StrategyRollingSummary`; ignored by other strategies. The
-// LLM-backed implementation lands at Phase 32+; Phase 24 ships a
+// LLM-backed implementation lands in later phases; Harbor ships a
 // test-grade stub (`EchoSummarizer`).
 //
 // `BudgetTokens` is the truncation / rolling-summary budget cap
@@ -123,8 +123,8 @@ type Deps struct {
 const DefaultRecoveryBacklogMax = 16
 
 // FullZoneTurns is the recent-window size before turns spill into
-// the rolling-summary `pending` queue. Constant per D-035 (the
-// brief 04 §2 knob is encoded as a constant; an operator who needs
+// the rolling-summary `pending` queue. Constant (the
+// design-brief knob is encoded as a constant; an operator who needs
 // to tune it files an RFC PR rather than fighting yaml).
 const FullZoneTurns = 4
 
@@ -132,9 +132,9 @@ const FullZoneTurns = 4
 // Unknown strategies return wrapped
 // `memory.ErrStrategyNotImplemented`.
 //
-// Phase 24 routes:
+// Harbor routes:
 //
-//	StrategyNone           → noneExec (no-op surface; preserves Phase 23 semantics)
+//	StrategyNone → noneExec (no-op surface; preserves semantics)
 //	StrategyTruncation     → truncationExec
 //	StrategyRollingSummary → rollingSummaryExec
 //

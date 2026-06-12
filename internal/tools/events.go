@@ -7,7 +7,7 @@ import (
 	"github.com/hurtener/Harbor/internal/identity"
 )
 
-// Phase 26 tool-side event types. Registered via init() so the
+// tool-side event types. Registered via init() so the
 // canonical events registry stays the single source of truth (see
 // internal/events/events.go).
 const (

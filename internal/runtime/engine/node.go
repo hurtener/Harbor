@@ -13,12 +13,12 @@ import (
 // Returning a nil envelope WITH nil error means "no emission on this
 // hop" — the worker drops the result and waits for the next ingress
 // envelope. Returning a non-nil error logs through the audit-redacted
-// logger (Phase 04 wiring) and continues; Phase 11 promotes errors to
+// logger (wiring) and continues; Harbor promotes errors to
 // the structured RunError envelope.
 type NodeFunc func(ctx context.Context, in messages.Envelope, nctx *NodeContext) (messages.Envelope, error)
 
 // Node wraps a typed async function with reliability policy + cycle
-// opt-in. Phase 10 shipped the shape; Phase 11 fills NodePolicy with
+// opt-in. An earlier phase shipped the shape; Harbor fills NodePolicy with
 // real fields (Validate / Timeout / Retry / Backoff) and the worker
 // loop now applies them via the reliability shell.
 type Node struct {
@@ -30,7 +30,7 @@ type Node struct {
 	Func NodeFunc
 	// Policy controls validation, timeout, retry, and backoff for
 	// each invocation of Func. Zero value = "no policy" (single
-	// invocation, no timeout, no retry — Phase 10's bare worker
+	// invocation, no timeout, no retry — the bare worker
 	// behavior). See policy.go for fields.
 	Policy NodePolicy
 	// AllowCycle opts this node out of the cycle detector. Set true
@@ -51,7 +51,7 @@ func (n Node) Ref() NodeRef { return NodeRef{Name: n.Name} }
 // NodeContext is the per-invocation handle the worker passes to the
 // NodeFunc. Carries the engine reference so the function can Emit /
 // EmitNoWait / EmitChunk / Fetch through the same channel mechanic as
-// external callers. CallSubflow (Phase 14) hangs off this same type.
+// external callers. CallSubflow hangs off this same type.
 //
 // lastEnv records the incoming envelope for the current invocation so
 // per-invocation operations (EmitChunk's identity propagation, future
@@ -68,7 +68,7 @@ type NodeContext struct {
 }
 
 // Emit sends env down the node's outgoing channel(s). Blocks if any
-// outgoing channel is full — this is the backpressure path. Phase 12
+// outgoing channel is full — this is the backpressure path. The concurrency layer
 // will hook capacity waiters here so per-run streaming doesn't
 // deadlock against shared bounded queues.
 //
@@ -84,7 +84,7 @@ func (nctx *NodeContext) Emit(ctx context.Context, env messages.Envelope) error 
 // want backpressure should use Emit; callers that want to drop
 // rather than wait use EmitNoWait.
 //
-// `ctx` carries identity (D-001) into the downstream emit path and
+// `ctx` carries identity into the downstream emit path and
 // honours the caller's cancellation. The send itself is
 // non-blocking; ctx is read for identity propagation + early-exit
 // on a cancelled run, NOT to wait for channel capacity.

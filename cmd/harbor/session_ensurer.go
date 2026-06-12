@@ -1,5 +1,5 @@
 // cmd/harbor/session_ensurer.go — adapts the concrete sessions.Registry
-// to the protocol.SessionEnsurer seam (D-171).
+// to the protocol.SessionEnsurer seam.
 //
 // The Protocol ControlSurface owns the create-on-first-use behaviour on
 // `start` but must not import the sessions package (it depends only on
@@ -22,7 +22,7 @@ import (
 
 // sessionEnsurerAdapter wraps a *sessions.Registry as a
 // protocol.SessionEnsurer. Immutable after construction; the wrapped
-// registry is itself concurrency-safe (D-025), so the adapter is too.
+// registry is itself concurrency-safe, so the adapter is too.
 type sessionEnsurerAdapter struct {
 	reg *sessions.Registry
 }

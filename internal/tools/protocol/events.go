@@ -12,16 +12,16 @@ import (
 // ToolsAdminActionPayload is the typed SafePayload published on the
 // canonical `audit.admin_scope_used` event when an operator invokes one
 // of the two Tools-page admin methods (`tools.set_approval_policy` /
-// `tools.revoke_oauth`). Phase 73f / D-116.
+// `tools.revoke_oauth`).
 //
 // SafePayload by construction: every field is a bounded identity
 // component, a Protocol method name, or a tool ID — no caller-supplied
 // bytes reach the bus. The Tools wire surface rejects malformed
 // requests at the Protocol edge before the emit.
 //
-// The payload is distinct from `auth.AdminScopeUsedPayload` (the Phase
-// 72b impersonation shape) and `events.AdminScopeUsedPayload` (the
-// Phase 05 Subscribe shape): all three ride the same canonical
+// The payload is distinct from `auth.AdminScopeUsedPayload` (the
+// impersonation shape) and `events.AdminScopeUsedPayload` (the
+// Subscribe shape): all three ride the same canonical
 // `audit.admin_scope_used` event type, but each emit source declares
 // its own typed payload (events.go §"Other emit sites ... MAY add new
 // payload types"). A subscriber type-switches on the payload.
@@ -68,7 +68,7 @@ func (s *Service) emitAdminAudit(ctx context.Context, actor identity.Identity, r
 		ToolID: toolID,
 	}
 	// Defence-in-depth: run the SafePayload through the redactor when
-	// one is wired (parity with the Phase 72b emit site). A redactor
+	// one is wired (parity with the emit site). A redactor
 	// error means "do not emit" — log loudly and fall back, never
 	// publish unredacted.
 	if s.redactor != nil {

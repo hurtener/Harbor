@@ -87,7 +87,7 @@ type Config struct {
 	// Headers are operator-supplied HTTP headers added to every
 	// SSE / streamable-HTTP request (auth tokens, custom auth).
 	// "URL connections require explicit headers for auth (no
-	// implicit env passthrough)" — brief 03 §4.
+	// implicit env passthrough)" — a settled security rule.
 	Headers map[string]string
 	// KeepAlive is the ping interval for the MCP session; zero
 	// disables. The SDK's KeepAlive runs the underlying ping/pong.
@@ -105,11 +105,11 @@ type Config struct {
 	// MCP server-side tool name (NOT the `<source>_<tool>` Harbor
 	// name). When a discovered tool's name is present here, its
 	// descriptor uses the override instead of DefaultPolicy; a tool
-	// absent from the map falls back to DefaultPolicy (Phase 26b).
+	// absent from the map falls back to DefaultPolicy.
 	// Per-tool overrides apply to TOOLS only — MCP resources and
 	// prompts always run under DefaultPolicy (the per-server default).
 	//
-	// Concurrent reuse (D-025): the map is read-only after New — it is
+	// Concurrent reuse: the map is read-only after New — it is
 	// never mutated per-run. buildToolDescriptor only reads it, and
 	// the resolved ToolPolicy is copied by value into each descriptor
 	// at Discover time, so concurrent invocations of different tools
@@ -120,7 +120,7 @@ type Config struct {
 	// inflight call). Required so the bus's ValidateEvent does not
 	// reject the event when the SDK-supplied ctx carries no triple.
 	//
-	// Phase 83m (Item 1, D-156): the role narrows. For events the
+	// the role narrows. For events the
 	// SDK delivers WITH a populated ctx (per-call notifications
 	// originating from an inflight tool / resource subscription),
 	// the driver prefers `identity.From(ctx)` over this cached
@@ -143,7 +143,7 @@ type Config struct {
 // that fallback is fully populated so the bus never sees an empty
 // triple.
 //
-// Phase 83m / D-156 (Item 1). Mirrors the §6 isolation rule: per-
+// (Item 1). Mirrors the §6 isolation rule: per-
 // call identity beats a cached default whenever both are present.
 func pushIdentity(ctx context.Context, cfg Config) identity.Identity {
 	if ctx != nil {
@@ -197,7 +197,7 @@ func (c Config) validate() error {
 }
 
 // Provider implements tools.ToolProvider against a remote MCP
-// server. Safe for N concurrent goroutines after Connect (D-025);
+// server. Safe for N concurrent goroutines after Connect;
 // per-call state lives on the call's ctx, never on the Provider.
 //
 // Concurrent reuse contract:
@@ -425,7 +425,7 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	}
 	outSchemaBytes, _ := marshalSchema(t.OutputSchema) //nolint:errcheck // OutputSchema is optional; a marshal failure yields no out-schema
 
-	// Phase 107c step 10/11 audit: provider-native tool-calling
+	// step 10/11 audit: provider-native tool-calling
 	// requires the wire-side function name to match
 	// `^[a-zA-Z0-9_-]{1,128}$` (OpenAI spec; OpenRouter→Bedrock
 	// enforces strictly). The original separator was `.` which fails
@@ -435,12 +435,12 @@ func (p *Provider) buildToolDescriptor(t *mcpsdk.Tool) (tools.ToolDescriptor, er
 	// `planning_hints.preferred_tools: [youtube_get_metadata, ...]`).
 	// The double-underscore `__` separator stays reserved for
 	// resources / prompts (`__resource.` / `__prompt.` markers).
-	// Phase 26b — per-tool policy override. A tool named in
+	// per-tool policy override. A tool named in
 	// p.cfg.ToolPolicies (keyed by the server-side MCP tool name)
 	// uses that policy; otherwise the per-server DefaultPolicy
 	// applies. The lookup happens BEFORE the Invoke closure captures
 	// tool.Policy below, so the configured budget governs every
-	// attempt. The map is read-only after New (D-025).
+	// attempt. The map is read-only after New.
 	policy := p.cfg.DefaultPolicy
 	if override, ok := p.cfg.ToolPolicies[t.Name]; ok {
 		policy = override
@@ -668,8 +668,8 @@ func (p *Provider) SubscribeResource(ctx context.Context, uri string) error {
 // identity on the resulting event so multi-tenant operators see
 // correct provenance instead of a cached single-triple stamp.
 // Falls back to `Config.DefaultIdentity` for genuine transport-
-// side events that arrive without an inflight call. Phase 83m
-// (Item 1, D-156) narrows the role of the cached default to that
+// side events that arrive without an inflight call. A cleanup pass
+// (Item 1) narrows the role of the cached default to that
 // fallback path; the prior shape stamped every push with the
 // cached default regardless of the ctx's contents.
 func (p *Provider) onResourceUpdated(ctx context.Context, req *mcpsdk.ResourceUpdatedNotificationRequest) {

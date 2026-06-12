@@ -16,7 +16,7 @@ import (
 )
 
 // sessionKind is the StateStore Kind constant for session-lifecycle
-// records. Centralised so callers / tests / Phase 60 Protocol mappers
+// records. Centralised so callers / tests / Protocol mappers
 // reference one symbol.
 const sessionKind = "session.lifecycle"
 
@@ -50,7 +50,7 @@ func WithGCPolicy(p GCPolicy) Option {
 //
 // Concurrency model:
 //   - StateStore writes go through `state.StateStore.Save` which is
-//     itself concurrent-safe per D-025.
+//     itself concurrent-safe per the concurrent-reuse contract.
 //   - The cross-tenant SessionID-uniqueness map is guarded by mu.
 //   - The sweeper goroutine's lifecycle is owned by `done` + `wg`.
 type Registry struct {
@@ -156,7 +156,7 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 		if stored.Closed {
 			// Reopen-after-close: still record the catalog mapping so
 			// ListSnapshots surfaces the closed row (operators audit
-			// closed sessions). Round-6 fix: P8 hydration gap — a
+			// closed sessions). fix: P8 hydration gap — a
 			// reboot that finds an existing record in the StateStore
 			// previously returned the error without updating idIndex,
 			// leaving the Sessions page empty even when records exist.
@@ -165,7 +165,7 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 				ErrReopenAfterClose, id, stored.ClosedAt.Format(time.RFC3339), stored.ClosedReason)
 		}
 		// Open record already exists for this exact triple → already open.
-		// Round-6 fix: hydrate idIndex + openSessions so the in-memory
+		// fix: hydrate idIndex + openSessions so the in-memory
 		// catalog reflects the persisted record. Without this, a reboot
 		// that finds an existing dev session would return the error and
 		// leave ListSnapshots reading an empty idIndex — exactly the P8
@@ -190,7 +190,7 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	r.idIndex[id] = ident
 	r.openSessions[id] = q
 
-	// D-171: record the new SessionID in the (tenant, user) catalog so a
+	// record the new SessionID in the (tenant, user) catalog so a
 	// later process can re-discover it (the StateStore has no List). The
 	// catalog write happens while holding r.mu, but it only touches the
 	// StateStore (its own concurrency boundary) — no nested registry-lock
@@ -214,7 +214,7 @@ func (r *Registry) Open(ctx context.Context, id string, ident identity.Identity)
 	return &cp, nil
 }
 
-// EnsureOpen is the create-on-first-use entry point (D-171). It returns
+// EnsureOpen is the create-on-first-use entry point. It returns
 // the live session for `ident`, creating it if no record exists. The
 // session id is `ident.SessionID` (the per-request session the client
 // chose); the (tenant, user) come from the verified connection token.
@@ -403,7 +403,7 @@ func (r *Registry) Inspect(ctx context.Context, id string) (*SessionSnapshot, er
 	return &SessionSnapshot{Session: *stored, Running: running}, nil
 }
 
-// ListSnapshots implements sessions.SessionLister — the Phase 72c
+// ListSnapshots implements sessions.SessionLister — the
 // `search.sessions` read-side projection. Returns snapshots for every
 // session the registry has seen (open OR closed) matching the filter.
 //
@@ -419,7 +419,7 @@ func (r *Registry) Inspect(ctx context.Context, id string) (*SessionSnapshot, er
 // every supplied `TenantIDs` / `UserIDs` / `SessionIDs` entry is
 // non-empty (a no-op for empty filters).
 //
-// Concurrent reuse (D-025): ListSnapshots only reads `idIndex` /
+// Concurrent reuse: ListSnapshots only reads `idIndex` /
 // `openSessions` under the registry's mutex; no per-call state lives
 // on `*Registry`. One Registry serves N concurrent ListSnapshots safely.
 func (r *Registry) ListSnapshots(ctx context.Context, f SessionListFilter) ([]SessionSnapshot, error) {
@@ -427,7 +427,7 @@ func (r *Registry) ListSnapshots(ctx context.Context, f SessionListFilter) ([]Se
 		return nil, ErrRegistryClosed
 	}
 
-	// D-171: hydrate the in-memory idIndex from the persisted
+	// hydrate the in-memory idIndex from the persisted
 	// per-(tenant, user) catalog so sessions created by a PRIOR process
 	// (the StateStore survived a restart) are discoverable. The
 	// StateStore has no List, so the catalog is how a fresh process
@@ -562,7 +562,7 @@ func (r *Registry) loadSession(ctx context.Context, ident identity.Identity) (*S
 
 // save serialises the Session and persists it through the StateStore.
 // EventID is fresh on every save; same-EventID idempotency is
-// surfaced by the StateStore (Phase 07 contract).
+// surfaced by the StateStore (contract).
 func (r *Registry) save(ctx context.Context, s Session) error {
 	bytes, err := json.Marshal(s)
 	if err != nil {
@@ -600,5 +600,5 @@ func sameIdentity(a, b identity.Identity) bool {
 // Compile-time assertion: *Registry satisfies SessionRegistry.
 var _ SessionRegistry = (*Registry)(nil)
 
-// Compile-time assertion: *Registry satisfies SessionLister (Phase 72c).
+// Compile-time assertion: *Registry satisfies SessionLister.
 var _ SessionLister = (*Registry)(nil)

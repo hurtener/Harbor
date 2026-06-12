@@ -9,7 +9,7 @@ import (
 )
 
 // catalog is the canonical in-memory ToolCatalog implementation.
-// Concurrent reuse (D-025): the mutex is a RWMutex so List + Resolve
+// Concurrent reuse: the mutex is a RWMutex so List + Resolve
 // scale; Register is rare and takes the write side. Descriptors are
 // immutable after Register so List can return Tool *values*
 // (copies) without locking the underlying descriptor.
@@ -17,7 +17,7 @@ type catalog struct {
 	mu     sync.RWMutex
 	byName map[string]ToolDescriptor
 
-	// searchCache (Phase 107c / D-167) is the optional FTS5-backed
+	// searchCache is the optional FTS5-backed
 	// search index. nil means Search returns empty (honest "discovery
 	// unavailable"). Set via WithSearchCache option at construction.
 	searchCache ToolSearchCache
@@ -39,8 +39,8 @@ type catalogConfig struct {
 // CatalogOption configures a catalog at construction.
 type CatalogOption func(*catalogConfig)
 
-// WithSearchCache attaches a search index to the catalog (Phase
-// 107c / D-167).
+// WithSearchCache attaches a search index to the catalog (
+// ).
 func WithSearchCache(sc ToolSearchCache) CatalogOption {
 	return func(cfg *catalogConfig) {
 		cfg.searchCache = sc
@@ -48,10 +48,10 @@ func WithSearchCache(sc ToolSearchCache) CatalogOption {
 }
 
 // NewCatalog constructs the canonical in-memory ToolCatalog. Safe
-// for N concurrent goroutines after construction (D-025). The
+// for N concurrent goroutines after construction. The
 // catalog is empty; callers register descriptors via Register.
 //
-// `opts` is reserved for future configuration; Phase 26 ships
+// `opts` is reserved for future configuration; Harbor ships
 // without options but the variadic surface is stable so future
 // fields land without breaking signatures.
 func NewCatalog(opts ...CatalogOption) ToolCatalog {
@@ -72,7 +72,7 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	if d.Invoke == nil {
 		return wrap(ErrToolDuplicateName, "tool %q has nil Invoke", d.Tool.Name)
 	}
-	// Phase 83b (D-144): a curated example whose Args name a key the
+	// a curated example whose Args name a key the
 	// tool's args_schema does not declare would teach the planner a
 	// shape the catalog edge then rejects. Fail loudly at registration.
 	if err := validateExamples(d.Tool); err != nil {
@@ -87,7 +87,7 @@ func (c *catalog) Register(d ToolDescriptor) error {
 	sc := c.searchCache
 	c.mu.Unlock()
 
-	// Phase 107c / D-167 — propagate registration to the SearchCache
+	// propagate registration to the SearchCache
 	// (AC-9 sync hook). Use Background ctx with a brief timeout so
 	// registration latency on the FTS5 path stays bounded; an error
 	// here is logged at warn (the registration itself succeeded; a
@@ -133,7 +133,7 @@ func (c *catalog) List(filter CatalogFilter) []Tool {
 // see either every old descriptor OR every new descriptor, never a
 // partial mix.
 //
-// Phase 64a / D-090 — the catalog wiring builder calls this once at
+// the catalog wiring builder calls this once at
 // boot AFTER every underlying tool registration has landed.
 //
 // Replace returns ErrToolNotFound (wrapped) when any `wrapped[i]`
@@ -160,7 +160,7 @@ func (c *catalog) Replace(wrapped []ToolDescriptor) error {
 	return nil
 }
 
-// Search implements ToolCatalog (Phase 107c / D-167). Delegates to
+// Search implements ToolCatalog. Delegates to
 // the attached SearchCache when present; returns an empty slice when
 // no cache is configured (honest "discovery unavailable" — no panic).
 //

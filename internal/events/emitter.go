@@ -1,11 +1,11 @@
 // internal/events/emitter.go — the per-run identity-stamping Emit
-// constructor (Phase 110b — D-195).
+// constructor.
 //
 // The planner's telemetry seam is `planner.RunContext.Emit
 // (func(events.Event))`: the planner emits `planner.decision` /
 // `planner.finish` / `planner.repair_guidance_injected` through it
 // and the runtime guarantees the run's identity quadruple is attached
-// before the event reaches the bus. Before 110b that guarantee lived
+// before the event reaches the bus. Previously that guarantee lived
 // as a per-run closure hand-written in `cmd/harbor`'s run loop (and
 // absent from the devstack mirror, leaving planner telemetry silently
 // dead on the official test surface). The constructor below makes the
@@ -21,14 +21,14 @@ import (
 )
 
 // IdentityStampingEmitter returns the per-run Emit closure a run-loop
-// driver hands to `planner.RunContext.Emit` (Phase 110b — D-195). The
+// driver hands to `planner.RunContext.Emit`. The
 // closure:
 //
 //   - stamps the run's identity quadruple `q` on any event whose
 //     Identity is missing (TenantID empty) — a pre-set identity is
 //     preserved so a planner that already scoped its event wins;
 //   - publishes onto `bus`;
-//   - Warns loudly on publish failure (brief 06 §5: bus publishing
+//   - Warns loudly on publish failure (bus publishing
 //     failures must be surfaced, not swallowed) — a closed bus mid-run
 //     logs rather than races or panics.
 //
@@ -44,9 +44,9 @@ import (
 // [IdentityStampingEmitterContext] so publishes are bounded by it —
 // the durable bus driver drives its `store.Save` with the publish ctx,
 // and an unbounded Background ctx silently outlived driver Close
-// (D-195's recorded correction, resolved by D-207).
+// (a recorded correction, since resolved).
 //
-// Concurrent reuse (D-025): the constructor allocates no shared
+// Concurrent reuse: the constructor allocates no shared
 // mutable state — each run constructs its own closure over the run's
 // quadruple; N concurrent runs see N independent closures over one
 // shared (concurrent-safe) bus.
@@ -58,8 +58,8 @@ func IdentityStampingEmitter(bus EventBus, q identity.Quadruple, logger *slog.Lo
 }
 
 // IdentityStampingEmitterContext is [IdentityStampingEmitter] with a
-// caller-supplied base context bounding every publish (D-207, closing
-// D-195's correction note). Run-loop drivers pass their
+// caller-supplied base context bounding every publish (closing
+// the correction note). Run-loop drivers pass their
 // driver-lifetime ctx (the pre-110b `d.subCtx` semantics): on the
 // durable bus driver — which persists each event via `store.Save`
 // under the publish ctx — cancelling baseCtx stops persistence at

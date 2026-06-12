@@ -14,7 +14,7 @@ package types
 // fails closed on an incomplete triple — there is no identity-downgrading
 // knob.
 //
-// Wave 13 (Phase 72b) admin-impersonation extension per Brief 11 §PG-5.
+// admin-impersonation extension.
 // The three optional fields Actor / Requester / Impersonating carry the
 // admin-on-behalf-of-user triplet so an operator with the `auth.ScopeAdmin`
 // claim can steer a run "on behalf of" another `(tenant, user, session)`
@@ -23,7 +23,7 @@ package types
 // MAY carry zero impersonation fields (today's behaviour, the verified
 // JWT identity IS the request identity) OR all three set (admin acting
 // on behalf of a target user). The runtime rejects any other shape loudly
-// at the Protocol edge — never silently degrades. See D-107.
+// at the Protocol edge — never silently degrades.
 type IdentityScope struct {
 	// Tenant / User / Session are the mandatory isolation triple. An
 	// empty component fails the request closed at the Protocol edge.
@@ -40,19 +40,19 @@ type IdentityScope struct {
 	Run string `json:"run,omitempty"`
 	// Scope is the caller's steering scope claim — one of the three
 	// canonical steering scopes (`session_user` / `owner_user` /
-	// `admin`). It is trust-based until Phase 61 Protocol auth, exactly
+	// `admin`). It is trust-based until a later phase Protocol auth, exactly
 	// as `events.Filter.Admin` is; the ControlSurface enforces the
-	// per-method scope via the Phase 52 steering CheckScope. Ignored for
+	// per-method scope via the steering CheckScope. Ignored for
 	// `start` (task creation is not a steering control).
 	Scope string `json:"scope,omitempty"`
 
 	// Actor is the verified admin identity at the request edge — the
-	// identity whose JWT claim was validated by the Phase 61 middleware.
+	// identity whose JWT claim was validated by the middleware.
 	// V1 invariant: Actor MUST equal the JWT's verified `(tenant, user,
 	// session)` triple; the transport rejects a body claiming a different
 	// Actor with CodeScopeMismatch. The Actor's audit trail ("admin X
 	// impersonated user Y at time T") is what makes impersonation
-	// accountable. Brief 11 §PG-5, Phase 72b, D-107.
+	// accountable.
 	Actor *IdentityScope `json:"actor,omitempty"`
 
 	// Requester is the originating admin identity for delegated
@@ -60,7 +60,7 @@ type IdentityScope struct {
 	// admin's audited request). At V1: Requester MUST equal Actor; the
 	// field exists so post-V1 delegated impersonation does not require a
 	// wire-shape break. The runtime rejects Requester != Actor with
-	// CodeScopeMismatch. Brief 11 §PG-5, Phase 72b, D-107.
+	// CodeScopeMismatch.
 	Requester *IdentityScope `json:"requester,omitempty"`
 
 	// Impersonating is the target identity the run executes under. When
@@ -73,8 +73,7 @@ type IdentityScope struct {
 	// V1 semantics: the top-level Tenant/User/Session fields MUST equal
 	// the Impersonating triple when impersonation is in use — the run
 	// executes as the impersonated identity. The Actor field carries the
-	// audit-visible record of WHO impersonated. Brief 11 §PG-5, Phase
-	// 72b, D-107.
+	// audit-visible record of WHO impersonated.
 	Impersonating *IdentityScope `json:"impersonating,omitempty"`
 }
 
@@ -89,7 +88,7 @@ func (s IdentityScope) IsImpersonating() bool {
 
 // StartRequest is the wire request for the `start` Protocol method — it
 // asks the Runtime to spawn a new task / foreground run. It maps onto the
-// Phase 20 tasks.TaskRegistry.Spawn surface.
+// tasks.TaskRegistry.Spawn surface.
 type StartRequest struct {
 	// Identity is the request's identity scope. The triple is mandatory;
 	// Run is ignored (a `start` mints the run). Scope is ignored.
@@ -107,7 +106,7 @@ type StartRequest struct {
 	// `start` with the same key (namespaced by session) returns the
 	// existing task handle with Reused=true. Empty disables dedup.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
-	// InputArtifactIDs (Round-7 F11 / D-166) attach operator-uploaded
+	// InputArtifactIDs attach operator-uploaded
 	// artifacts as multimodal inputs the run consumes on its first
 	// planner turn. The runtime's per-MIME materializer routes each
 	// id: `image/*` bytes inline as `ImagePart.DataURL`; everything
@@ -115,13 +114,13 @@ type StartRequest struct {
 	// catalog. The Playground composer's chat-attach control plumbs
 	// uploaded ids through this field. Empty is the text-only default.
 	InputArtifactIDs []string `json:"input_artifact_ids,omitempty"`
-	// InputArtifactDispositions (Phase 84b — D-189) carries the
+	// InputArtifactDispositions carries the
 	// OPTIONAL per-attachment disposition hint, keyed by an
 	// InputArtifactIDs entry. Values: `ref` (emit an `ArtifactStub` +
 	// `Fetch.Tool` hint — the runtime default for non-image MIMEs),
 	// `inline` (DataURL inline; `image/*` only at V1.1),
-	// `provider_native` (opt-in provider-side understanding — Phase
-	// 84c; degrades to `ref` with a logged notice until it ships), or
+	// `provider_native` (opt-in provider-side understanding;
+	// degrades to `ref` with a logged notice until it ships), or
 	// `tool:<name>` (force the named catalog tool). The hint is the
 	// TOP precedence layer: hint > the agent's
 	// `multimodal.disposition` config map > the runtime default
@@ -154,9 +153,9 @@ type StartResponse struct {
 // for prioritize, `hard` for a hard cancel, etc.).
 //
 // The ControlSurface constructs a steering.ControlEvent from a
-// ControlRequest and lets the Phase 52 Inbox.Enqueue do the validation,
+// ControlRequest and lets the Inbox.Enqueue do the validation,
 // the RFC §6.3 payload-bounds enforcement, and the per-event scope check
-// — Phase 54 does not re-implement any of that (CLAUDE.md §13 forbids a
+// does not re-implement any of that (CLAUDE.md §13 forbids a
 // second validator).
 type ControlRequest struct {
 	// Identity is the request's identity scope. The full quadruple
@@ -164,13 +163,13 @@ type ControlRequest struct {
 	// specific run's inbox. Scope is the caller's steering scope claim.
 	Identity IdentityScope `json:"identity"`
 	// Payload is the method-specific control payload. May be nil — a
-	// bare `cancel` / `pause` carries no payload. The Phase 52
+	// bare `cancel` / `pause` carries no payload. The steering
 	// ValidatePayload enforces the RFC §6.3 bounds (depth ≤ 6, ≤ 64
 	// keys, ≤ 50 list items, ≤ 4096 chars/string, ≤ 16 KiB total) at the
 	// edge; an oversize payload fails the request closed.
 	Payload map[string]any `json:"payload,omitempty"`
 	// EventID is the caller-supplied idempotency / correlation key
-	// (ULID-shaped). Optional — Phase 53's control-history dedupe uses
+	// (ULID-shaped). Optional — the control-history dedupe uses
 	// it. Empty is permitted.
 	EventID string `json:"event_id,omitempty"`
 }
@@ -180,8 +179,8 @@ type ControlRequest struct {
 // validated, scope-checked, and enqueued on the run's inbox. The control's
 // *effect* on the run (the redirected goal taking hold, the pause
 // blocking the loop, the approval advancing it) is observed via the
-// canonical event stream (`control.received` / `control.applied`, Phase
-// 53), NOT synchronously in this response — a richer synchronous response
+// canonical event stream (`control.received` / `control.applied`),
+// NOT synchronously in this response — a richer synchronous response
 // would couple the Protocol edge to the run loop's step timing.
 type ControlResponse struct {
 	// Accepted is true when the control event was validated, scope-checked,

@@ -13,14 +13,14 @@ import (
 	"github.com/hurtener/Harbor/internal/skills"
 )
 
-// search executes the three-tier ranking ladder per brief 04 §4.4.
+// search executes the three-tier ranking ladder
 //
 // Ladder:
 //
 //  1. FTS5 — strict AND first; if zero rows, OR-of-tokens fallback.
 //     Score = bm25(raw) → 1/(1+raw) → min-max normalised 0..1.
 //  2. Regex — try compiling the query as-is; for multi-token queries
-//     compile an OR-of-tokens regex. Scoring constants per brief 04
+//     compile an OR-of-tokens regex. Scoring constants
 //     §4.4: name fullmatch=0.95 / name match=0.90 / name search=0.85
 //     / body search=0.75.
 //  3. Exact — lowercase equality on `name | title | trigger | tags`.
@@ -60,7 +60,7 @@ func (d *driver) search(ctx context.Context, id identity.Quadruple, query string
 	return results, skills.PathExact, nil
 }
 
-// ftsTokenRE captures the alphanumeric tokens brief 04 §4.4 uses for
+// ftsTokenRE captures the alphanumeric tokens the search design uses for
 // FTS query construction. Punctuation / quoting is stripped so the
 // FTS5 parser never sees user-controlled syntax.
 var ftsTokenRE = regexp.MustCompile(`[A-Za-z0-9]+`)
@@ -125,7 +125,7 @@ type ftsHit struct {
 }
 
 // materializeFTSHits fetches the skill rows for the matched rowids
-// and applies the brief 04 §4.4 scoring: `1/(1+raw) → min-max
+// and applies the canonical scoring: `1/(1+raw) → min-max
 // normalised`. bm25 returns SMALLER values for stronger matches so
 // `1/(1+raw)` is the brief's documented inversion.
 func (d *driver) materializeFTSHits(ctx context.Context, hits []ftsHit) ([]skills.RankedSkill, error) {
@@ -247,7 +247,7 @@ func buildORExpr(tokens []string) string {
 	return strings.Join(parts, " OR ")
 }
 
-// searchRegex runs the regex fallback. Per brief 04 §4.4:
+// searchRegex runs the regex fallback. By design:
 //
 //   - Try compiling the query as-is; for multi-token queries, fall
 //     back to OR-of-tokens regex (NL queries are rarely intentional
@@ -328,7 +328,7 @@ func buildRegex(query string) (*regexp.Regexp, error) {
 	return regexp.Compile("(?i)(" + strings.Join(escaped, "|") + ")")
 }
 
-// regexScore applies brief 04 §4.4's per-field scoring constants.
+// regexScore applies the per-field scoring constants.
 // Returns the maximum applicable score for `s` against `re`, or 0
 // if no field matched.
 func regexScore(re *regexp.Regexp, s skills.Skill) float64 {

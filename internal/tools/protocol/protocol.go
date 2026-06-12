@@ -1,5 +1,5 @@
 // Package protocol implements the seven `tools.*` Protocol methods the
-// Console Tools page (Phase 73f / D-116) consumes:
+// Console Tools page consumes:
 //
 //   - tools.list           — paginated, faceted catalog projection.
 //   - tools.get            — single catalog-row projection.
@@ -25,7 +25,7 @@
 // identity-downgrading knob. The Service NEVER reads identity from a
 // package-level global; the triple flows in via the request.
 //
-// # Admin gating (D-079)
+// # Admin gating
 //
 // `tools.set_approval_policy` and `tools.revoke_oauth` MUTATE runtime
 // tool state and require the verified `auth.ScopeAdmin` claim. The
@@ -35,7 +35,7 @@
 // — the closed two-scope set (`admin` + `console:fleet`) is the only
 // admit surface, and the Tools admin methods gate on `ScopeAdmin`.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // A constructed *Service is immutable after NewService and safe to
 // share across N concurrent goroutines: it holds only the Projector
@@ -66,7 +66,7 @@ var (
 	ErrIdentityRequired = errors.New("tools/protocol: identity scope incomplete")
 	// ErrAdminScopeRequired — an admin method (`tools.set_approval_policy`
 	// / `tools.revoke_oauth`) was called without the verified
-	// `auth.ScopeAdmin` claim (D-079).
+	// `auth.ScopeAdmin` claim.
 	ErrAdminScopeRequired = errors.New("tools/protocol: admin scope claim required")
 	// ErrToolNotFound — the requested tool ID is not registered in the
 	// catalog visible to the caller's identity scope.
@@ -125,7 +125,7 @@ type OAuthRevoker interface {
 }
 
 // Service implements the seven `tools.*` Protocol methods. It is a
-// D-025-safe compiled artifact — immutable after NewService.
+// safe for concurrent reuse compiled artifact — immutable after NewService.
 type Service struct {
 	projector Projector
 	bus       events.EventBus // optional — nil ⇒ audit emit is logged only
@@ -154,7 +154,7 @@ func WithBus(b events.EventBus) Option {
 // `audit.admin_scope_used` payload through before publishing. A nil
 // redactor is treated as "WithRedactor not supplied". The
 // AdminScopeUsedPayload is a SafePayload by construction; the redactor
-// is wired for defence-in-depth + parity with the Phase 72b emit site.
+// is wired for defence-in-depth + parity with the emit site.
 func WithRedactor(r audit.Redactor) Option {
 	return func(s *Service) {
 		if r != nil {
@@ -177,7 +177,7 @@ func WithLogger(l *slog.Logger) Option {
 // projector is mandatory — a nil fails loud with ErrMisconfigured
 // rather than building a Service that would nil-panic on the first
 // request (CLAUDE.md §5). The returned *Service is immutable after
-// construction (D-025) and safe for concurrent use by N goroutines.
+// construction and safe for concurrent use by N goroutines.
 func NewService(projector Projector, opts ...Option) (*Service, error) {
 	if projector == nil {
 		return nil, fmt.Errorf("%w: Projector is nil", ErrMisconfigured)
@@ -357,7 +357,7 @@ func (s *Service) ContentStats(ctx context.Context, req prototypes.ToolContentSt
 // SetApprovalPolicy implements the `tools.set_approval_policy` ADMIN
 // method. adminScoped is the verified-JWT scope decision the wire
 // handler computes; a false value fails closed with
-// ErrAdminScopeRequired (D-079). On success, emits an
+// ErrAdminScopeRequired. On success, emits an
 // `audit.admin_scope_used` event.
 func (s *Service) SetApprovalPolicy(ctx context.Context, req prototypes.ToolSetApprovalPolicyRequest, adminScoped bool) (prototypes.ToolSetApprovalPolicyResponse, error) {
 	id, err := validIdentity(req.Identity)
@@ -389,7 +389,7 @@ func (s *Service) SetApprovalPolicy(ctx context.Context, req prototypes.ToolSetA
 
 // RevokeOAuth implements the `tools.revoke_oauth` ADMIN method.
 // adminScoped is the verified-JWT scope decision; a false value fails
-// closed with ErrAdminScopeRequired (D-079). On success, emits an
+// closed with ErrAdminScopeRequired. On success, emits an
 // `audit.admin_scope_used` event.
 func (s *Service) RevokeOAuth(ctx context.Context, req prototypes.ToolRevokeOAuthRequest, adminScoped bool) (prototypes.ToolRevokeOAuthResponse, error) {
 	id, err := validIdentity(req.Identity)

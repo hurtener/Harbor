@@ -11,7 +11,7 @@ import (
 )
 
 // memoryValueArtifactNamespace is the artifact namespace heavy memory
-// values are routed under (D-026). A dedicated namespace keeps the
+// values are routed under. A dedicated namespace keeps the
 // content-addressed IDs distinguishable from other artifact producers.
 const memoryValueArtifactNamespace = "memory_value"
 
@@ -20,7 +20,7 @@ type GetDeps struct {
 	// Store is the memory subsystem the snapshot is projected from.
 	Store memory.MemoryStore
 	// Artifacts is the ArtifactStore heavy values (≥ HeavyThreshold)
-	// are routed through (D-026). Mandatory — a nil fails loud.
+	// are routed through. Mandatory — a nil fails loud.
 	Artifacts artifacts.ArtifactStore
 	// DriverName is the configured memory-driver name surfaced on the
 	// returned row.
@@ -38,7 +38,7 @@ type GetDeps struct {
 // the full detail — metadata + post-redaction value (below the
 // heavy-content threshold) OR a `MemoryArtifactRef` (at or above it).
 //
-// Identity is mandatory (D-001). The heavy-value bypass (D-026) is
+// Identity is mandatory. The heavy-value bypass is
 // enforced: a record value at or above HeavyThreshold is routed
 // through the ArtifactStore and the detail ships `ValueArtifact`; the
 // inline `Value` is left empty. EXACTLY ONE of Value / ValueArtifact is
@@ -100,12 +100,12 @@ func Get(ctx context.Context, deps GetDeps, req prototypes.MemoryGetRequest, id 
 }
 
 // buildDetail assembles the MemoryItemDetail for a resolved row,
-// applying the D-026 heavy-content bypass. The classification — the
+// applying the heavy-content bypass. The classification — the
 // row's HeavyContent flag — was computed once in snapshotTurns so
 // `memory.list` and `memory.get` agree. A heavy row is routed through
 // the ArtifactStore by reference; a light row is inlined.
 //
-// Defence in depth (D-026 / CLAUDE.md §13): when the row is NOT flagged
+// Defence in depth (CLAUDE.md §13): when the row is NOT flagged
 // heavy yet its materialised value bytes nonetheless meet or exceed the
 // threshold, Get fails loudly with ErrContextLeak rather than inline
 // the heavy bytes — mirrors the LLM-edge enforcement pass in
@@ -128,7 +128,7 @@ func buildDetail(ctx context.Context, deps GetDeps, row projectedTurn, id identi
 		}
 		detail.ValueArtifact = ref
 		// Inline Value MUST stay empty — exactly one of Value /
-		// ValueArtifact is populated (D-026).
+		// ValueArtifact is populated.
 		detail.Value = nil
 		return detail, nil
 	}
@@ -147,7 +147,7 @@ func buildDetail(ctx context.Context, deps GetDeps, row projectedTurn, id identi
 
 // routeHeavyValue stores a heavy memory value in the ArtifactStore and
 // returns the by-reference stub. A marshal / store failure fails loud —
-// never a silent truncation (D-026, §13).
+// never a silent truncation (§13).
 func routeHeavyValue(ctx context.Context, store artifacts.ArtifactStore, value []byte, id identity.Quadruple, key string) (*prototypes.MemoryArtifactRef, error) {
 	scope := artifacts.ArtifactScope{
 		TenantID:  id.TenantID,

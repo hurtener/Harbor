@@ -1,21 +1,21 @@
-// Package corrections is Harbor's provider correction layer (Phase 34
+// Package corrections is Harbor's provider correction layer (
 // — RFC §6.5). It sits BETWEEN the runtime and the `llm.LLMClient`
 // driver, rewriting `CompleteRequest`s per a per-model
 // `CorrectionsProfile` before delegating, and optionally backfilling
 // `CompleteResponse.Usage` from the request's byte length.
 //
-// Compose order is settled by D-041:
+// Compose order is settled:
 //
 //	Open() → corrections.Wrap(safety.New(driver))
 //
-// — the corrections wrapper is the OUTERMOST layer so the Phase 32
+// — the corrections wrapper is the OUTERMOST layer so the
 // safety pass sees the POST-correction request (the final outgoing
 // payload reaching the driver). Materialization, leak-detection, and
 // the token-budget guard all run against the corrected payload, so
 // any future correction that grows token count is caught by the
 // safety pass.
 //
-// Five quirks (brief 03 §4, master plan Phase 34 detail block):
+// Five quirks:
 //
 //  1. Message reordering — NIM and some OpenAI-compatible proxies
 //     reject mid-thread `system` messages. `OrderingSystemFirstStrict`
@@ -39,12 +39,12 @@
 //     returns an all-zeros `Usage`.
 //
 // Scope is structured-output and message-shape correctness only —
-// NEVER provider-native tool dispatch (RFC §6.4 / brief 07). The
-// Phase 32/33 smoke static guard extends to this package; the banned
+// NEVER provider-native tool dispatch (RFC §6.4). The
+// smoke static guard extends to this package; the banned
 // provider-native tool-call API symbols MUST NOT appear here. The
 // runtime owns tool dispatch entirely.
 //
-// Concurrent-reuse (D-025): the wrapper is stateless across calls.
+// Concurrent-reuse: the wrapper is stateless across calls.
 // `Wrap` returns a value that holds an inner `LLMClient` and a
 // `ConfigSnapshot`; both are read-only after construction. The per-
 // call work allocates fresh slices/maps so concurrent callers never
@@ -68,7 +68,7 @@ import (
 // `ConfigSnapshot` whose `DisableCorrections` is false (the default).
 func init() {
 	llm.RegisterCorrectionsWrapper(Wrap)
-	// Wave 7b audit FAIL #1: applyDefaults consults this resolver so
+	// checkpoint audit FAIL #1: applyDefaults consults this resolver so
 	// operator-omitted `OutputMode` flows through to the per-known-
 	// provider canonical default — closing the dead-code gap the
 	// `DefaultOutputModeFor` symbol had before this hook landed.
@@ -123,7 +123,7 @@ func (c *client) Complete(ctx context.Context, req llm.CompleteRequest) (llm.Com
 	// pinning Model (the configured `llm.model` is the natural default —
 	// see safety.go). The defaulting MUST happen here, BEFORE the profile
 	// lookup, because the corrections layer wraps OUTSIDE the safety pass
-	// (D-041) — if we deferred to safety's own default, every
+	// if we deferred to safety's own default, every
 	// profile-keyed correction (reasoning effort, schema mode, envelope
 	// shaping) would look up `ModelProfiles[""]`, miss, and silently
 	// bypass. That is the bug this fix closes: reasoning effort was never
@@ -225,7 +225,7 @@ func applyRequestCorrections(req llm.CompleteRequest, cp llm.CorrectionsProfile)
 	if cp.ReasoningEffortRouting == llm.ReasoningRouteThinking && req.ReasoningEffort != "" {
 		// Move the hint from the top-level field into Extra. Bifrost
 		// passes Extra opaquely; the per-provider converter (or a
-		// future Phase 35 hook) reads `reasoning_effort`.
+		// future hook) reads `reasoning_effort`.
 		out.Extra["reasoning_effort"] = string(req.ReasoningEffort)
 		out.ReasoningEffort = ""
 	}

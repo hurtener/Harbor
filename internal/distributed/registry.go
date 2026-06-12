@@ -11,10 +11,10 @@ import (
 	"github.com/hurtener/Harbor/internal/events"
 )
 
-// DefaultDriver is the Phase 22 production driver name for BOTH the
+// DefaultDriver is the production driver name for BOTH the
 // MessageBus and the RemoteTransport registries. Post-V1 durable bus
-// drivers (NATS / Postgres-as-queue at phase 86) and the A2A wire
-// driver (phase 29) register additional names; Open switches on
+// drivers (NATS / Postgres-as-queue) and the A2A wire
+// driver register additional names; Open switches on
 // `cfg.BusDriver` / `cfg.RemoteDriver`.
 const DefaultDriver = "loopback"
 
@@ -31,16 +31,16 @@ type RemoteFactory func(deps Dependencies) (RemoteTransport, error)
 // loopback (drivers free to ignore when not in-process); Cfg carries
 // the driver names + any future per-driver tuning fields. Tools is
 // the tool-catalog config — the A2A wire RemoteTransport driver
-// (Phase 29) reads `Tools.A2APeers` to seed its route registry.
+// reads `Tools.A2APeers` to seed its route registry.
 type Dependencies struct {
 	// EventBus is the typed event bus the loopback MessageBus projects
 	// envelopes through. Optional for drivers that do not project;
 	// the loopback bus REQUIRES it.
 	EventBus events.EventBus
-	// Cfg carries Phase 22's DistributedConfig (driver names today).
+	// Cfg carries the DistributedConfig (driver names today).
 	Cfg config.DistributedConfig
 	// Tools carries the unified tool-catalog config. The A2A wire
-	// driver (Phase 29) reads `Tools.A2APeers` here. Other drivers
+	// driver reads `Tools.A2APeers` here. Other drivers
 	// MAY ignore.
 	Tools config.ToolsConfig
 }

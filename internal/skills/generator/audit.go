@@ -30,7 +30,7 @@ func redactExcerpt(ctx context.Context, r audit.Redactor, s string) (string, err
 	}
 	// The redactor's reflective walk operates over maps / structs; a
 	// bare string passes through unchanged unless wrapped in a
-	// map[string]any. Mirror the pattern Phase 20's tasks driver
+	// map[string]any. Mirror the pattern the tasks driver
 	// uses for caller-controlled strings.
 	out, err := r.Redact(ctx, map[string]any{"v": s})
 	if err != nil {

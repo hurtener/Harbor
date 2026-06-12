@@ -24,7 +24,7 @@ import (
 //
 // Materialization is the FIRST step of the safety pass — it rewrites
 // the request, then the leak-detection step asserts no raw heavy
-// content survived (D-026). The order matters: a producer that
+// content survived. The order matters: a producer that
 // fails to materialize gets one more chance here; a producer that
 // emits raw bytes in a text field (not a DataURL) is caught by the
 // leak step.
@@ -145,8 +145,8 @@ func materializeDataURL(
 	// MIME is empty. Declared MIME wins on conflict — operators who
 	// set Image.MIME=image/png but ship a data:image/jpeg payload
 	// have a real bug they should see in the error path; defer
-	// surfacing that to Phase 33 (the driver will reject the
-	// translation), Phase 32 normalises to what's on the wire.
+	// surfacing that to the driver layer (the driver will reject the
+	// translation), normalises to what's on the wire.
 	effectiveMIME := mime
 	if effectiveMIME == "" {
 		effectiveMIME = declaredMIME
@@ -174,7 +174,7 @@ func materializeDataURL(
 		SizeBytes: int64(len(bytes)),
 		Hash:      "sha256:" + hex.EncodeToString(sum[:]),
 		Fetch: &StubFetch{
-			// The REGISTERED Phase 107c meta-tool name
+			// The REGISTERED meta-tool name
 			// (`internal/tools/builtin/artifact_fetch.go`). The
 			// pre-84b value here was "artifact.fetch" (dot) — a tool
 			// that exists nowhere in the catalog, so every

@@ -1,12 +1,12 @@
 // Package conformancetest is the shared `SkillStore` conformance
-// harness. Drivers (localdb at Phase 37, Portico post-V1) supply a
+// harness. Drivers (localdb, Portico post-V1) supply a
 // `Harness` factory and run the suite via `Run(t, factory)`. The
 // suite asserts the surface every implementation MUST satisfy:
 // identity-mandatory, conflict policy, ordering determinism,
-// restart survival (when the driver is durable), and the D-025
+// restart survival (when the driver is durable), and the concurrent-reuse
 // concurrent-reuse contract.
 //
-// Phase 37 wires the harness against the `localdb` driver. Future
+// Harbor wires the harness against the `localdb` driver. Future
 // driver phases add their own seam-test (`Run` call) and inherit
 // the suite verbatim.
 package conformancetest

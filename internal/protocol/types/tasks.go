@@ -2,9 +2,9 @@ package types
 
 import "time"
 
-// Phase 73d (Wave 13 / D-123) — the Console Tasks-page wire types.
+// the Console Tasks-page wire types.
 //
-// These structs are the single source of truth (D-002) for the two
+// These structs are the single source of truth for the two
 // `tasks.*` read methods the Console Tasks page consumes:
 //
 //   - tasks.list — TaskListRequest → TaskListResponse
@@ -23,10 +23,10 @@ import "time"
 // rule 9): a request whose embedded IdentityScope is incomplete fails
 // closed at the wire edge with CodeIdentityRequired. A cross-tenant
 // `tasks.list` fan-in additionally requires the verified
-// `auth.ScopeAdmin` claim (D-079); a cross-tenant `tasks.get` lookup
+// `auth.ScopeAdmin` claim; a cross-tenant `tasks.get` lookup
 // returns CodeNotFound — existence is never revealed across tenants.
 //
-// The Console Tasks page consumes the EXISTING Phase 54 task-control
+// The Console Tasks page consumes the EXISTING task-control
 // verbs (`cancel` / `pause` / `resume` / `prioritize` / `approve` /
 // `reject`) for mutation — there is NO `tasks.*` mutating method
 // (CLAUDE.md §13 "no parallel implementations"). The two `tasks.*`
@@ -101,9 +101,9 @@ func IsValidTaskKind(k TaskKind) bool {
 // Heavy fields (the result / error payloads) stay on TaskDetail; the
 // row is compact for kanban + table density.
 //
-// NO session-level priority field appears here — D-065 carve-out. Only
-// Priority (the task-level priority shipped via the Phase 54
-// `prioritize` method, D-072) is rendered.
+// NO session-level priority field appears here — a deliberate carve-out. Only
+// Priority (the task-level priority shipped via the
+// `prioritize` method) is rendered.
 type TaskRow struct {
 	// ID is the unified task identifier (foreground run or background
 	// task; one TaskID namespace).
@@ -112,8 +112,8 @@ type TaskRow struct {
 	Kind TaskKind `json:"kind"`
 	// Status is the task's lifecycle state.
 	Status TaskStatus `json:"status"`
-	// Priority is the TASK-level priority (D-072 — the `prioritize`
-	// control method). NEVER a session-level priority (D-065 carve-out).
+	// Priority is the TASK-level priority (the `prioritize`
+	// control method). NEVER a session-level priority (carve-out).
 	Priority int `json:"priority"`
 	// Identity is the (tenant, user, session) triple the task runs
 	// within — the Console truncates it for display on the card.
@@ -150,28 +150,28 @@ type TaskRow struct {
 	// [0,1] range. It is a pointer so the wire shape distinguishes "the
 	// planner emitted progress 0.0" from "the planner emitted no
 	// progress at all" — nil ⇒ no hint, and the Console renders an
-	// indeterminate Progress mini-bar rather than a 0% bar. Phase 73h
-	// (D-128): the Background Jobs page's Progress column.
+	// indeterminate Progress mini-bar rather than a 0% bar. Note:
+	// the Background Jobs page's Progress column.
 	Progress *float64 `json:"progress,omitempty"`
 	// Tags is the slice of short labels the Background Jobs page renders
 	// in its Tags column — the parent task type plus any planner-emitted
-	// labels. Empty slice ⇒ no tags. Phase 73h (D-128).
+	// labels. Empty slice ⇒ no tags.
 	Tags []string `json:"tags,omitempty"`
 	// LastActivityAt is the timestamp of the most recent activity on the
 	// task — the max of UpdatedAt and any event on the run's stream. The
 	// Background Jobs page's `Stuck > 1h` saved-filter chip derives off
-	// this field (a Console-local rule — D-061). Phase 73h (D-128).
+	// this field (a Console-local rule).
 	LastActivityAt time.Time `json:"last_activity_at"`
 	// IsBackground mirrors `Kind == "background"` — a convenience
 	// boolean so a Console row-renderer branches without re-comparing
-	// the enum. Phase 73h (D-128): the Background Jobs queue is the
+	// the enum. The Background Jobs queue is the
 	// `IsBackground == true` projection of the unified task set.
 	IsBackground bool `json:"is_background"`
 	// HasPendingApproval is true when the task's run has at least one
 	// open HITL approval / tool-approval gate. The Background Jobs
 	// page's `Has pending approval` facet filters on it, and the
 	// per-job right-rail's Pending-approvals tab is populated when it is
-	// true. Phase 73h (D-128).
+	// true.
 	HasPendingApproval bool `json:"has_pending_approval"`
 }
 
@@ -190,7 +190,7 @@ type TaskFilter struct {
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 	// Identities scopes the query. A query naming more than one distinct
 	// tenant is a cross-tenant fan-in and requires the `auth.ScopeAdmin`
-	// claim (D-079). Empty = the caller's own identity scope.
+	// claim. Empty = the caller's own identity scope.
 	Identities []IdentityScope `json:"identities,omitempty"`
 	// Since is an optional lower bound on StartedAt (zero = unbounded).
 	Since time.Time `json:"since,omitempty"`
@@ -210,13 +210,13 @@ type TaskFilter struct {
 	// `tasks.list` with this facet set to surface the sibling tasks
 	// (foreground + background) under the same group. Identity scope is
 	// still enforced — a cross-tenant `group_id` lookup never widens
-	// visibility. Phase 73h (D-128).
+	// visibility.
 	GroupID string `json:"group_id,omitempty"`
 	// HasPendingApproval, when non-nil, restricts to tasks whose
 	// HasPendingApproval row field equals the pointee. nil = no
 	// approval filter; *true = only tasks with an open approval gate;
 	// *false = only tasks with none. The Background Jobs page's `Has
-	// pending approval` facet chip binds this. Phase 73h (D-128).
+	// pending approval` facet chip binds this.
 	HasPendingApproval *bool `json:"has_pending_approval,omitempty"`
 }
 
@@ -244,7 +244,7 @@ type TaskListCursor struct {
 	NextPageToken string `json:"next_page_token,omitempty"`
 }
 
-// TasksListStatusCounterStrip is the Phase 73b (Wave 13 / D-126)
+// TasksListStatusCounterStrip is the
 // status-counter-strip aggregate the Console Live Runtime page renders
 // as its header-level five-chip strip (`pending / running / completed /
 // paused / failed`). It is an OPT-IN projection on the `tasks.list`
@@ -295,11 +295,11 @@ type TaskListRequest struct {
 	// first page.
 	Cursor TaskListCursor `json:"cursor"`
 	// IncludeStatusCounterStrip opts the response into carrying the
-	// Phase 73b (D-126) TasksListStatusCounterStrip aggregate. It is
+	// TasksListStatusCounterStrip aggregate. It is
 	// off by default — the Console Live Runtime page sets it on its
 	// initial-load `tasks.list` call and then maintains the strip live
 	// from the `task.*` SSE stream (the aggregate is the initial-load
-	// shape only; see the phase-73b plan's "tasks.list aggregate cost"
+	// shape only; see the phase plan's "tasks.list aggregate cost"
 	// risk). The Tasks page (73d) never sets it — its kanban renders
 	// the filtered-view TaskListAggregates instead.
 	IncludeStatusCounterStrip bool `json:"include_status_counter_strip,omitempty"`
@@ -316,7 +316,7 @@ type TaskListResponse struct {
 	Cursor TaskListCursor `json:"cursor"`
 	// Aggregates carries the per-status counters for the filtered view.
 	Aggregates TaskListAggregates `json:"aggregates"`
-	// StatusCounterStrip carries the Phase 73b (D-126) header-strip
+	// StatusCounterStrip carries the header-strip
 	// aggregate — non-nil ONLY when the request set
 	// IncludeStatusCounterStrip. It is computed over the FULL identity-
 	// scoped task set (not the filtered view) and is the Console Live
@@ -391,7 +391,7 @@ type TaskCostRollup struct {
 // TaskPlannerSnapshotRef is the planner-checkpoint reference `tasks.get`
 // returns — it points at the planner checkpoint that existed at task
 // spawn time. Heavy checkpoint content is fetched on demand via the
-// existing Phase 73 `state.load_planner_checkpoint` method, never
+// existing `state.load_planner_checkpoint` method, never
 // inlined in the `tasks.get` response.
 type TaskPlannerSnapshotRef struct {
 	// CheckpointID is the planner-checkpoint identifier (resolvable via
@@ -402,7 +402,7 @@ type TaskPlannerSnapshotRef struct {
 }
 
 // TaskInputArtifact is one operator-attached input artifact on the
-// `tasks.get` projection (Phase 84b — D-189). It pairs the artifact
+// `tasks.get` projection. It pairs the artifact
 // id with the per-attachment disposition hint the `start` request
 // declared, so a client can verify its hint round-tripped onto the
 // task.
@@ -422,7 +422,7 @@ type TaskInputArtifact struct {
 // TaskDetail is the enriched payload `tasks.get` returns. It carries
 // the compact TaskRow projection plus the four enrichment fields the
 // Console Tasks-page detail tabs + right-rail cards render. Heavy
-// payload content is referenced via ArtifactRef (D-026) — `tasks.get`
+// payload content is referenced via ArtifactRef — `tasks.get`
 // MUST NOT inline bytes that exceed the heavy-content threshold.
 type TaskDetail struct {
 	// Task is the compact row projection (same shape `tasks.list`
@@ -440,7 +440,7 @@ type TaskDetail struct {
 	// nil when no checkpoint exists.
 	PlannerSnapshot *TaskPlannerSnapshotRef `json:"planner_snapshot,omitempty"`
 	// ResultRef references the task's result payload by artifact stub
-	// when the result exceeds the heavy-content threshold (D-026); nil
+	// when the result exceeds the heavy-content threshold; nil
 	// when the task has no result or the result is inlined small.
 	ResultRef *ArtifactRef `json:"result_ref,omitempty"`
 	// ResultInline carries the task's result payload directly when it is
@@ -450,7 +450,7 @@ type TaskDetail struct {
 	// nil when the trajectory is unavailable (evicted or not captured).
 	Trajectory *TaskTrajectoryRef `json:"trajectory,omitempty"`
 	// InputArtifacts lists the operator-attached input artifacts with
-	// their per-attachment disposition hints (Phase 84b — D-189), in
+	// their per-attachment disposition hints, in
 	// the order the `start` request supplied them. Empty for
 	// text-only tasks.
 	InputArtifacts []TaskInputArtifact `json:"input_artifacts,omitempty"`
@@ -459,7 +459,7 @@ type TaskDetail struct {
 // TaskTrajectoryRef is the projected reasoning-trace snapshot from the
 // planner's in-memory trajectory, carried on TaskDetail.Trajectory. The
 // projection is narrow — per-step index + reasoning-trace string only;
-// full action / observation projection is a later expansion. Phase 107a.
+// full action / observation projection is a later expansion.
 type TaskTrajectoryRef struct {
 	Steps []TaskTrajectoryStep `json:"steps"`
 }

@@ -1,7 +1,7 @@
 // Package capfilter holds the primitive capability-filter and
 // tool-name-scrub logic shared by the skills planner tools
-// (internal/skills/tools, Phase 38) and the virtual directory
-// (internal/skills, Phase 39).
+// (internal/skills/tools) and the virtual directory
+// (internal/skills).
 //
 // It exists to close an import cycle: internal/skills/tools imports
 // internal/skills, so internal/skills cannot import
@@ -19,8 +19,8 @@
 // disallowed-name computation, replacement selection, word-boundary
 // scrub) is shared.
 //
-// Brief 04 §4.5 is the design source for both the subset gate and the
-// scrub semantics. D-052 (Phase 39) records the extraction.
+// The skills design is the source for both the subset gate and the
+// scrub semantics; the extraction is a recorded decision.
 package capfilter
 
 import "regexp"
@@ -32,7 +32,7 @@ import "regexp"
 const ToolSearchName = "tool_search"
 
 // Replacement variants for a disallowed tool name in skill text.
-// Brief 04 §4.5: "replacement is `'a suitable tool (use tool_search)'`
+// By design: "replacement is `'a suitable tool (use tool_search)'`
 // when search is available, else `'a suitable tool'`."
 const (
 	ReplacementWithSearch    = "a suitable tool (use tool_search)"
@@ -76,7 +76,7 @@ func Subset(required []string, allowed map[string]struct{}) bool {
 // DisallowedNames returns every name in `required` that is NOT in
 // `allowed`. Empty names are skipped. The result is the input to
 // [Scrub] — the names whose mentions must be rewritten out of
-// planner-facing skill text. Brief 04 §4.5: the scrub operates on
+// planner-facing skill text. By design the scrub operates on
 // skill text, never on the skill's RequiredTools slice itself.
 func DisallowedNames(required []string, allowed map[string]struct{}) []string {
 	if len(required) == 0 {

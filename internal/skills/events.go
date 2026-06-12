@@ -30,18 +30,18 @@ const EventTypeSkillPackOverwriteRefused events.EventType = "skill.pack_overwrit
 const EventTypeSkillSearchExecuted events.EventType = "skill.search_executed"
 
 // EventTypeSkillIdentityRejected is emitted when a `SkillStore`
-// method is called with a missing identity triple (D-001 fail-
+// method is called with a missing identity triple (fail-
 // closed contract). Mirrors `memory.identity_rejected` for the
 // skills subsystem.
 const EventTypeSkillIdentityRejected events.EventType = "skill.identity_rejected"
 
 // EventTypeSkillProposed is the mandatory audit event emitted by the
-// Phase 41 in-runtime skill generator (`skill_propose(persist=true)`)
+// in-runtime skill generator (`skill_propose(persist=true)`)
 // on every persist — whether the persist succeeded (`persisted`), was
 // idempotent (`idempotent`), or was rejected by the conflict policy
 // (`rejected`). Caller-controlled string fields (Title / Trigger
 // excerpts) are run through `audit.Redactor.Redact` BEFORE the event
-// is built (RFC §6.7, brief 04 §4.8). The payload itself is
+// is built (RFC §6.7). The payload itself is
 // SafePayload so the bus does not re-run it through the redactor;
 // the generator is the authoritative redaction point.
 const EventTypeSkillProposed events.EventType = "skill.proposed"

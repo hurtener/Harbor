@@ -1,4 +1,4 @@
-// Input-artifact disposition observability (Phase 84b — D-189).
+// Input-artifact disposition observability.
 //
 // The disposition resolver and the materializer are pure — they
 // RETURN the winning precedence layer and any degradation fact as
@@ -18,8 +18,8 @@ import (
 )
 
 // EventTypeInputDispositionResolved is published once per input
-// artifact when the run loop resolves the attachment's disposition
-// (Phase 84b — D-189). The payload carries the resolved disposition,
+// artifact when the run loop resolves the attachment's disposition.
+// The payload carries the resolved disposition,
 // the precedence layer that won (caller_hint / agent_policy /
 // runtime_default), and — when the resolved disposition could not be
 // honoured — the typed degradation fact (e.g. an unknown

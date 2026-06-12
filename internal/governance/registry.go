@@ -9,14 +9,14 @@
 //
 // Why a factory instead of a global singleton: each `llm.Open` may run
 // with different `Config` (different tier maps, different StateStore for
-// tests). Phase 36a's accumulator is a long-lived sibling of the
+// tests). the accumulator is a long-lived sibling of the
 // LLMClient — operators build one per Open and dispose with the client.
 //
 // The factory is installed by the production assembly
-// (`internal/runtime/assemble.Assemble`, Phase 111a / D-198) whenever
+// (`internal/runtime/assemble.Assemble`,) whenever
 // the operator config declares identity tiers, and cleared when it
 // declares none. If unset when `llm.Open` runs, the governance hook is
-// a no-op pass-through — preserving the latent default (D-044) for
+// a no-op pass-through — preserving the latent default for
 // callers (especially test code) that don't wire governance explicitly.
 package governance
 
@@ -41,11 +41,11 @@ type Factory func(cfg llm.ConfigSnapshot, deps llm.Deps) (Subsystem, error)
 
 // SetFactory installs the per-`llm.Open` factory. Calling SetFactory
 // twice is allowed (the second call wins) — the production assembly
-// (`assemble.Assemble`, the seam's first production caller per Phase
-// 111a / D-198) calls this once at boot when `Config.IdentityTiers` is
+// (`assemble.Assemble`, the seam's first production caller)
+// calls this once at boot when `Config.IdentityTiers` is
 // non-empty; tests may swap it repeatedly. Concurrent-safe.
 //
-// Multi-runtime limitation (D-198): the factory is PROCESS-GLOBAL. An
+// Multi-runtime limitation: the factory is PROCESS-GLOBAL. An
 // embedder assembling two runtime stacks with different tier maps in
 // one process would collide here — the second SetFactory wins for
 // every subsequent `llm.Open`, and the same wipe exists on the CLOSE
@@ -58,7 +58,7 @@ type Factory func(cfg llm.ConfigSnapshot, deps llm.Deps) (Subsystem, error)
 // stack instead:
 //
 //	sub, err := governance.NewSubsystemFromConfig(cfg, store, bus)
-//	client = governance.Wrap(llmClient, sub) // governance outermost, D-043
+//	client = governance.Wrap(llmClient, sub) // governance outermost
 //
 // See `Wrap` and `NewSubsystemFromConfig` for the documented headless
 // path.
@@ -103,7 +103,7 @@ func init() {
 			return inner
 		}
 		if sub == nil {
-			// nil Subsystem = the sanctioned latent default (D-044).
+			// nil Subsystem = the sanctioned latent default.
 			return inner
 		}
 		return Wrap(inner, sub)

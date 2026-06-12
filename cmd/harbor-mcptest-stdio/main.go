@@ -1,5 +1,5 @@
 // harbor-mcptest-stdio is a minimal MCP stdio server used by the
-// Phase 83g integration test. It exposes a single tool — `echo` — and
+// integration test. It exposes a single tool — `echo` — and
 // nothing else. Built only by the integration test (via `go build`
 // into a tempdir); never shipped in releases.
 //

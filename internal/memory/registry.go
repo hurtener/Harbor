@@ -13,14 +13,14 @@ import (
 
 // Deps carries the runtime dependencies a memory driver needs.
 //
-// The `State` field is mandatory (D-027 — typed wrapper writes
+// The `State` field is mandatory (typed wrapper writes
 // opaque bytes through the generic surface). The `Bus` field is
 // mandatory so identity-rejection emits land on the audit pipeline.
 // Drivers MUST NOT accept missing deps silently; the registry
 // rejects an `Open` call whose Deps omits either with a wrapped
 // error.
 //
-// The `Summarizer` field (Phase 25a, D-174) is the injectable
+// The `Summarizer` field is the injectable
 // LLM-edge callable the `rolling_summary` strategy consumes. It is
 // OPTIONAL — required only when `cfg.Strategy == StrategyRollingSummary`,
 // ignored by `none` / `truncation`. The registry routes it into the
@@ -51,7 +51,7 @@ type Deps struct {
 // `cmd/harbor/main.go`'s bootstrap or a test wiring helper)
 // translate `config.MemoryConfig` → `ConfigSnapshot` at the seam.
 //
-// `DSN` is consumed by the SQLite + Postgres drivers (Phase 25); the
+// `DSN` is consumed by the SQLite + Postgres drivers; the
 // InMem driver ignores it. Validation of "DSN required for
 // persistent drivers" lives at the config layer (`validateMemory`
 // in `internal/config/validate.go`) and at the driver constructor
@@ -80,7 +80,7 @@ type ConfigSnapshot struct {
 // Drivers expose one `Factory` each via `init()` → `Register`.
 type Factory func(cfg ConfigSnapshot, deps Deps) (MemoryStore, error)
 
-// DefaultDriver is the Phase 23 production driver name. Phase 25
+// DefaultDriver is the production driver name. The SQL drivers
 // (SQLite + Postgres) registers additional names.
 const DefaultDriver = "inmem"
 
@@ -144,7 +144,7 @@ func validateDeps(cfg ConfigSnapshot, d Deps) error {
 		return fmt.Errorf("memory: Deps.Bus is required (events.EventBus)")
 	}
 	// Fail loudly at the registry boundary when rolling_summary is
-	// configured without a Summarizer (Phase 25a, D-174). The driver
+	// configured without a Summarizer. The driver
 	// factory + strategy.New also reject this, but catching it here
 	// surfaces the misconfiguration before any DB connection is
 	// opened — and never silently falls back to a stub (AGENTS.md §13).

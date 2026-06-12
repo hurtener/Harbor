@@ -7,7 +7,7 @@ import (
 )
 
 // Fit applies the tiered budgeter ladder to `in` and returns the
-// first slice that fits within `maxTokens`. The ladder (brief 04
+// first slice that fits within `maxTokens`. The ladder (a
 // §4.5):
 //
 //  1. Full — every field intact.

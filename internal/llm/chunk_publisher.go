@@ -1,11 +1,11 @@
 // internal/llm/chunk_publisher.go — the per-run completion-chunk
-// publisher constructor (Phase 110b — D-195).
+// publisher constructor.
 //
 // The planner's streaming seam is `planner.RunContext.OnChunk
 // (func(delta string, done bool, kind planner.ChunkKind))`: the
 // planner invokes it per provider token delta and the runtime
 // translates each delta into an `llm.completion.chunk` bus event
-// under the run's identity quadruple (Phase 107). Before 110b that
+// under the run's identity quadruple. Previously that
 // translation lived as a per-run closure hand-written in
 // `cmd/harbor`'s run loop (and absent from the devstack mirror,
 // leaving streaming silently dead on the official test surface).
@@ -22,8 +22,8 @@ import (
 )
 
 // NewChunkPublisher returns the per-run OnChunk closure a run-loop
-// driver adapts onto `planner.RunContext.OnChunk` (Phase 110b —
-// D-195). The closure builds a [CompletionChunkPayload] and publishes
+// driver adapts onto `planner.RunContext.OnChunk`.
+// The closure builds a [CompletionChunkPayload] and publishes
 // [EventTypeCompletionChunk] with the run's identity quadruple on the
 // **Event envelope**, not just the payload — the event bus validates
 // the envelope before fan-out (CLAUDE.md §6 rule 5). This is the
@@ -31,7 +31,7 @@ import (
 // stamped the payload only, live testing surfaced 280+ rejected
 // chunks per task ("events: event identity missing one or more
 // components: type=llm.completion.chunk"). Publish failures Warn
-// loudly (brief 06 §5) — never silent drops.
+// loudly — never silent drops.
 //
 // `kind` is string-typed because `planner` imports `llm`, so this
 // package cannot name `planner.ChunkKind`; the run loop adapts with a
@@ -46,10 +46,10 @@ import (
 // caller: they own a driver-lifetime ctx and MUST use
 // [NewChunkPublisherContext] so publishes are bounded by it — the
 // durable bus driver drives its `store.Save` with the publish ctx, and
-// an unbounded Background ctx silently outlived driver Close (D-195's
-// recorded correction, resolved by D-207).
+// an unbounded Background ctx silently outlived driver Close (a
+// recorded correction, since resolved).
 //
-// Concurrent reuse (D-025): the constructor allocates no shared
+// Concurrent reuse: the constructor allocates no shared
 // mutable state — each run constructs its own closure over the run's
 // quadruple + task ID; N concurrent runs see N independent closures
 // over one shared (concurrent-safe) bus.
@@ -61,9 +61,9 @@ func NewChunkPublisher(bus events.EventBus, q identity.Quadruple, taskID string,
 }
 
 // NewChunkPublisherContext is [NewChunkPublisher] with a
-// caller-supplied base context bounding every publish (D-207, closing
-// D-195's correction note). Run-loop drivers pass their
-// driver-lifetime ctx (the pre-110b `d.subCtx` semantics): on the
+// caller-supplied base context bounding every publish (closing
+// the correction note). Run-loop drivers pass their
+// driver-lifetime ctx (the earlier `d.subCtx` semantics): on the
 // durable bus driver — which persists each chunk event via
 // `store.Save` under the publish ctx — cancelling baseCtx stops
 // persistence at driver teardown instead of letting late chunks write

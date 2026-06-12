@@ -1,9 +1,9 @@
 package types
 
-// llm.go — the Phase 72g (D-112) wire types for the `llm.posture`
+// llm.go — the wire types for the `llm.posture`
 // Protocol method. The method surfaces the runtime's bound LLM provider
-// posture so the Console Settings page LLM-Provider Posture card (Phase
-// 73m) and any third-party Console implementation render the same
+// posture so the Console Settings page LLM-Provider Posture card (
+// ) and any third-party Console implementation render the same
 // projection.
 //
 // Single source of truth (CLAUDE.md §8): these are THE Protocol LLM
@@ -12,7 +12,7 @@ package types
 // shape onto these wire types.
 //
 // The surface is READ-ONLY and reports the LLM posture honestly. The
-// `MockMode` flag (D-089) is `true` iff the runtime booted with the
+// `MockMode` flag is `true` iff the runtime booted with the
 // dev-only mock escape hatch (`HARBOR_DEV_ALLOW_MOCK=1`). A Console
 // implementation that hides the canonical `[DEV-ONLY MOCK LLM — DO NOT
 // USE IN PRODUCTION]` banner when `MockMode == true` is a CLAUDE.md §13
@@ -39,8 +39,8 @@ type LLMPostureResponse struct {
 	// Region is the provider endpoint region; "" when not applicable
 	// (the Console renders an em-dash placeholder for the empty case).
 	Region string `json:"region"`
-	// MockMode is true iff the runtime booted with HARBOR_DEV_ALLOW_MOCK=1
-	// (D-089). The Console renders the canonical
+	// MockMode is true iff the runtime booted with HARBOR_DEV_ALLOW_MOCK=1.
+	// The Console renders the canonical
 	// `[DEV-ONLY MOCK LLM — DO NOT USE IN PRODUCTION]` banner when this
 	// is true; hiding the banner is a §13 forbidden-practice violation.
 	MockMode bool `json:"mock_mode"`

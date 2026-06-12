@@ -1,5 +1,5 @@
 // Package protocol composes the read-only Console-memory-page Protocol
-// surface (Phase 73j / D-118) on top of the shipped memory subsystem.
+// surface on top of the shipped memory subsystem.
 //
 // It exposes three pure functions — List, Get, Health — that the
 // Protocol stream-transport handlers (`internal/protocol/transports/
@@ -8,11 +8,11 @@
 // every dependency is passed in per call, nothing is cached on a
 // package-level value, and the compiled artifacts they consume
 // (MemoryStore, ArtifactStore, the events Aggregator) are themselves
-// D-025-safe.
+// safe for concurrent reuse.
 //
 // # The projection model
 //
-// The shipped `memory.MemoryStore` interface (Phases 23–25) is
+// The shipped `memory.MemoryStore` interface is
 // per-identity: it has no per-item enumeration method. It exposes
 // `Snapshot(ctx, id)` — an opaque JSON `memory.Record{Strategy, Turns}`
 // — and `Health(ctx, id)`. This package projects that record into the
@@ -23,17 +23,17 @@
 // honest projection: the runtime's memory state is conversation turns,
 // and the Memory page renders them per-identity.
 //
-// # Identity is mandatory (D-001 / D-033)
+// # Identity is mandatory
 //
 // Every function validates the identity quadruple before touching the
 // store. A missing tenant / user / session fails loudly with
 // `memory.ErrIdentityRequired`; the caller (the stream handler) maps
 // that onto the canonical `CodeIdentityRequired` Protocol error. The
 // driver layer ALSO emits a `memory.identity_rejected` event on the
-// bus (D-033) — this package does not re-emit; it relies on the shipped
+// bus — this package does not re-emit; it relies on the shipped
 // driver-layer emit and never masks the rejection.
 //
-// # Heavy values bypass via artifacts (D-026)
+// # Heavy values bypass via artifacts
 //
 // `Get` mirrors the LLM-edge enforcement pass (`internal/llm/safety.go`):
 // a record value whose byte length meets or exceeds the configured
@@ -46,7 +46,7 @@
 // # No mutation surface
 //
 // V1 is read-only. `memory.put` / `memory.delete` are deferred to
-// Phase 73 / post-V1 (page-memory.md §10); this package ships no
+// post-V1 (page-memory.md §10); this package ships no
 // mutation path.
 package protocol
 
@@ -68,10 +68,10 @@ import (
 // ErrContextLeak — Get materialised a memory record value whose byte
 // length meets or exceeds the heavy-content threshold but the value
 // reached the response path as raw inline bytes rather than an
-// ArtifactStub. Mirrors `llm.ErrContextLeak` (D-026 / CLAUDE.md §13):
+// ArtifactStub. Mirrors `llm.ErrContextLeak` (CLAUDE.md §13):
 // a heavy value MUST route through the ArtifactStore by reference; an
 // inline heavy value is a leak and is failed loudly, never truncated.
-var ErrContextLeak = errors.New("memory/protocol: heavy memory value reached the response path as raw inline bytes (D-026)")
+var ErrContextLeak = errors.New("memory/protocol: heavy memory value reached the response path as raw inline bytes")
 
 // ErrInvalidFilter — a memory.list filter carried a structurally
 // invalid value: an unknown scope / driver / strategy enum, or a
@@ -148,7 +148,7 @@ type projectedTurn struct {
 // every conversation turn into a projectedTurn. driver is the
 // configured driver name (surfaced on each row's Driver field — the
 // MemoryStore interface does not expose it, so the caller supplies it).
-// heavyThreshold is the D-026 heavy-content byte size; a turn whose
+// heavyThreshold is the heavy-content byte size; a turn whose
 // value bytes meet or exceed it has its row's HeavyContent flag set —
 // the SINGLE classification point, so `memory.list` and `memory.get`
 // agree on which rows are heavy.
@@ -205,7 +205,7 @@ func snapshotTurns(snap memory.Snapshot, id identity.Quadruple, driver string, h
 }
 
 // containsFold reports whether haystack contains needle, case-folded.
-// Used for the runtime-side ContentSearch facet (brief 11 §CC-4).
+// Used for the runtime-side ContentSearch facet.
 func containsFold(haystack, needle string) bool {
 	if needle == "" {
 		return true

@@ -7,7 +7,7 @@ import (
 )
 
 // DeclarativeActionToolName is the canonical built-in meta-tool name
-// the React planner inspects for repair-outcome signals (Phase 107c
+// the React planner inspects for repair-outcome signals (
 // step 10 — AC-13 + AC-20c). When the runloop dispatches
 // `declarative_action`, the meta-tool body classifies its outcome into
 // a `repair_outcome` field on its observation. The planner walks the
@@ -108,10 +108,10 @@ func applyDeclarativeOutcome(rc planner.RunContext) bool {
 // `extractDiscoveredNames` tolerance pattern):
 //
 //  1. A `builtin.DeclarativeActionOut` struct (the inproc executor
-//     path before D-026 heavy-content projection — typical case).
+//     path before heavy-content projection — typical case).
 //  2. A `map[string]any` (post-projection generic representation).
 //  3. A `json.RawMessage` / `[]byte` / `string` (when the dispatcher
-//     serialised before storing — D-026 truncation path also lands
+//     serialised before storing — truncation path also lands
 //     here).
 //
 // Returns (nil, true) when the observation parsed cleanly but carried

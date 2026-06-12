@@ -1,10 +1,10 @@
 // Package conformancetest is Harbor's shared conformance suite for
-// any ToolCatalog implementation. Drivers (Phase 27 HTTP, Phase 28
-// MCP, Phase 29 A2A) consume this suite verbatim against their own
+// any ToolCatalog implementation. Drivers (HTTP, MCP,
+// A2A) consume this suite verbatim against their own
 // CatalogFactory so the contract surface is uniform regardless of
 // transport.
 //
-// Phase 26 ships the suite; the in-process driver (inproc) is the
+// Harbor ships the suite; the in-process driver (inproc) is the
 // first consumer.
 package conformancetest
 
@@ -404,7 +404,7 @@ func testConcurrentReuse(t *testing.T, newCatalog CatalogFactory) {
 		}
 	}
 	if failures > 0 {
-		t.Errorf("%d concurrent invocations failed (D-025 retry budget should cover all)", failures)
+		t.Errorf("%d concurrent invocations failed (the retry budget should cover all)", failures)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)

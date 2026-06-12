@@ -17,26 +17,26 @@ import (
 	"github.com/hurtener/Harbor/internal/protocol/types"
 )
 
-// ArtifactsSurface is the Phase 73l (Wave 13 / D-120) transport-agnostic
+// ArtifactsSurface is the transport-agnostic
 // Harbor Protocol artifacts handler. It owns the three artifacts methods
 // the Console Artifacts page consumes:
 //
 //   - artifacts.list    — the identity-scope-filtered catalog, with the
-//     Phase 73l filter extensions (mime / source / size / created /
+//     filter extensions (mime / source / size / created /
 //     tags) applied as a Go-side projection over the driver slice.
-//   - artifacts.put     — the file-upload pipeline per Brief 11 §PG-2;
-//     routes the payload through audit.Redactor (D-020) then
+//   - artifacts.put     — the Console file-upload pipeline;
+//     routes the payload through audit.Redactor then
 //     ArtifactStore.PutBytes and returns the canonical ArtifactRef.
 //   - artifacts.get_ref — the read-side presigned-URL resolver per
-//     D-022 / D-026; type-asserts the store to artifacts.Presigner and
+//     contract; type-asserts the store to artifacts.Presigner and
 //     fails loud (CodePresignUnsupported) on a non-S3 driver.
 //
-// ArtifactsSurface is a sibling of the Phase 54 ControlSurface and the
-// Phase 72f PostureSurface, not an extension: the artifacts methods are
+// ArtifactsSurface is a sibling of the ControlSurface and the
+// PostureSurface, not an extension: the artifacts methods are
 // not steering controls, they do not reach the task registry, and they
 // carry their own per-method wire types.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // ArtifactsSurface is a compiled artifact: the store, redactor, bus,
 // clock, and maxBodyBytes are all set once at construction and never
@@ -50,17 +50,17 @@ import (
 // Every method fails closed on an incomplete identity triple with
 // CodeIdentityRequired. A cross-tenant artifacts.list — the request
 // scope's Tenant differing from the caller's ctx-verified tenant —
-// requires the admin (or console:fleet) scope per D-079; without it the
+// requires the admin (or console:fleet) scope per the closed admin-scope set; without it the
 // response is CodeScopeMismatch. artifacts.put rejects a body whose
 // scope Tenant disagrees with the verified tenant (no silent rewrite —
 // identity is mandatory).
 //
-// # Heavy content by reference (D-026)
+// # Heavy content by reference
 //
 // artifacts.list returns metadata-only rows; artifacts.get_ref returns a
 // presigned URL; artifacts.put accepts upload bytes only on the request
 // leg and returns a reference. No raw heavy content crosses the wire on
-// a response, ever — the D-026 context-window safety net read into the
+// a response, ever — the context-window safety net read into the
 // artifacts surface.
 type ArtifactsSurface struct {
 	store        artifacts.ArtifactStore
@@ -75,10 +75,10 @@ type ArtifactsSurface struct {
 // through. The Runtime wires these at boot.
 type ArtifactsDeps struct {
 	// Store is the runtime's content-addressed artifact store — the
-	// shipped Phase 17–19 ArtifactStore. Mandatory.
+	// shipped ArtifactStore. Mandatory.
 	Store artifacts.ArtifactStore
 	// Redactor is the audit Redactor every artifacts.put body runs
-	// through before reaching the store (CLAUDE.md §7 rule 6 + D-020).
+	// through before reaching the store (CLAUDE.md §7 rule 6).
 	// Mandatory.
 	Redactor audit.Redactor
 	// Bus is the canonical event bus the artifacts.put success path
@@ -106,7 +106,7 @@ var ErrArtifactsMisconfigured = stderrors.New("protocol: ArtifactsSurface missin
 // ArtifactsDeps seam is mandatory; a missing one fails loud with a
 // wrapped ErrArtifactsMisconfigured.
 //
-// The returned ArtifactsSurface is immutable after construction (D-025)
+// The returned ArtifactsSurface is immutable after construction
 // and safe for concurrent use by N goroutines.
 func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 	if deps.Store == nil {
@@ -143,8 +143,8 @@ func NewArtifactsSurface(deps ArtifactsDeps) (*ArtifactsSurface, error) {
 const EventTypeArtifactUploaded events.EventType = "artifacts.uploaded"
 
 // EventTypeArtifactDeleted is the canonical event type the
-// artifacts.delete success path publishes onto the bus (Phase 108o /
-// D-187) — the audit-visible record of an admin eviction.
+// artifacts.delete success path publishes onto the bus
+// — the audit-visible record of an admin eviction.
 const EventTypeArtifactDeleted events.EventType = "artifacts.deleted"
 
 func init() {
@@ -155,8 +155,8 @@ func init() {
 }
 
 // ArtifactDeletedPayload is the typed payload of an artifacts.deleted
-// event (Phase 108o / D-187). SafePayload — it carries the
-// content-addressed artifact id only, never any artifact bytes (D-026).
+// event. SafePayload — it carries the
+// content-addressed artifact id only, never any artifact bytes.
 type ArtifactDeletedPayload struct {
 	events.SafeSealed
 	// ArtifactID is the content-addressed identifier of the evicted artifact.
@@ -165,7 +165,7 @@ type ArtifactDeletedPayload struct {
 
 // ArtifactUploadedPayload is the typed payload of an artifacts.uploaded
 // event. It carries the artifact metadata only — never the uploaded
-// bytes (D-026). It is a SafePayload: the fields are content-addressed
+// bytes. It is a SafePayload: the fields are content-addressed
 // IDs + sizes + a media type, none secret-shaped, so the bus preserves
 // typed subscriber access without a redactor pass.
 type ArtifactUploadedPayload struct {
@@ -184,7 +184,7 @@ type ArtifactUploadedPayload struct {
 }
 
 // Dispatch is the single transport-agnostic entry point for a Protocol
-// artifacts-method call. A Phase 60 REST handler decodes a request,
+// artifacts-method call. A REST handler decodes a request,
 // calls Dispatch, and encodes the response — Dispatch IS the surface.
 //
 // method selects the handler; it MUST be one of the three artifacts
@@ -195,7 +195,7 @@ type ArtifactUploadedPayload struct {
 // The return is always a *types.<Method>Response or a *protoerrors.Error
 // so the wire layer never sees an unstructured runtime error.
 //
-// Dispatch holds no per-call state on the surface (D-025).
+// Dispatch holds no per-call state on the surface.
 func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, req any) (any, error) {
 	if !methods.IsArtifactsMethod(method) {
 		return nil, protoerrors.Newf(protoerrors.CodeUnknownMethod,
@@ -238,8 +238,8 @@ func (s *ArtifactsSurface) Dispatch(ctx context.Context, method methods.Method, 
 }
 
 // handleList serves artifacts.list. It validates identity, gates a
-// cross-tenant request on the admin scope (D-079), reads the driver's
-// slice, and applies the Phase 73l filter extensions as a Go-side
+// cross-tenant request on the admin scope, reads the driver's
+// slice, and applies the filter extensions as a Go-side
 // projection.
 func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsListRequest) (any, error) {
 	m := string(methods.MethodArtifactsList)
@@ -255,7 +255,7 @@ func (s *ArtifactsSurface) handleList(ctx context.Context, req *types.ArtifactsL
 			"method %q: %v", m, err)
 	}
 
-	// Cross-tenant gate (D-079). When auth middleware ran, ctx carries
+	// Cross-tenant gate. When auth middleware ran, ctx carries
 	// the verified identity; a list whose scope Tenant differs from the
 	// verified tenant requires the admin (or console:fleet) scope.
 	if verified, ok := identity.From(ctx); ok {
@@ -294,11 +294,11 @@ type projectedRows struct {
 	total int
 }
 
-// projectRows applies the Phase 73l filter extensions (mime / source /
+// projectRows applies the filter extensions (mime / source /
 // size / created / tags) to the driver's returned refs, sorts newest-
 // first, and bounds the result to the request's normalised Limit. The
 // projection lives in the surface (not the driver) so the V1
-// ArtifactStore.List signature stays untouched (D-120).
+// ArtifactStore.List signature stays untouched.
 func (s *ArtifactsSurface) projectRows(refs []artifacts.ArtifactRef, req *types.ArtifactsListRequest) projectedRows {
 	mimeSet := toStringSet(req.MimeType)
 	sourceSet := make(map[types.ArtifactSource]struct{}, len(req.Source))
@@ -359,7 +359,7 @@ func (s *ArtifactsSurface) projectRows(refs []artifacts.ArtifactRef, req *types.
 
 // handlePut serves artifacts.put. It validates identity, gates against a
 // cross-tenant body, bounds the body size, routes the payload through
-// the audit Redactor (D-020), stores it, and emits artifacts.uploaded.
+// the audit Redactor, stores it, and emits artifacts.uploaded.
 func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPutRequest) (any, error) {
 	m := string(methods.MethodArtifactsPut)
 
@@ -374,7 +374,7 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			"method %q: identity scope incomplete: %v", m, err)
 	}
 
-	// Cross-tenant body gate (D-079). A put whose body Tenant disagrees
+	// Cross-tenant body gate. A put whose body Tenant disagrees
 	// with the verified tenant is rejected — there is no silent rewrite,
 	// identity is mandatory at this boundary.
 	if verified, ok := identity.From(ctx); ok {
@@ -402,7 +402,7 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			"method %q: unknown source %q", m, string(source))
 	}
 
-	// CLAUDE.md §7 rule 6 + D-020 — run the upload payload through the
+	// CLAUDE.md §7 rule 6 — run the upload payload through the
 	// audit Redactor BEFORE it reaches the store. The redactor may
 	// rewrite or refuse; a refusal fails loud (never store unredacted).
 	redactView := map[string]any{
@@ -418,7 +418,7 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 			"method %q: audit redactor refused the upload payload: %v", m, err)
 	}
 
-	// W6 (Phase 83x): stamp `created_at` on the Source map so
+	// W6: stamp `created_at` on the Source map so
 	// projectRow's `extractCreatedAt` populates a real timestamp on
 	// the wire row. Without this every uploaded artifact rendered with
 	// the Go zero-value `0001-01-01T00:00:00Z` on the Console.
@@ -471,7 +471,7 @@ func (s *ArtifactsSurface) handlePut(ctx context.Context, req *types.ArtifactsPu
 // handleGetRef serves artifacts.get_ref. It validates identity, bounds
 // the expiry, resolves the ref's metadata, and type-asserts the store to
 // artifacts.Presigner — failing loud (CodePresignUnsupported) on a
-// driver that does not implement the capability (D-022 / D-026).
+// driver that does not implement the capability.
 func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.ArtifactsGetRefRequest) (any, error) {
 	m := string(methods.MethodArtifactsGetRef)
 
@@ -508,7 +508,7 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 
 	// Type-assert the store to Presigner. A driver without the
 	// capability fails loud with CodePresignUnsupported — no silent
-	// fallback to byte-streaming (D-022 fail-loud posture).
+	// fallback to byte-streaming (fail-loud posture).
 	presigner, ok := s.store.(artifacts.Presigner)
 	if !ok {
 		return nil, protoerrors.Newf(protoerrors.CodePresignUnsupported,
@@ -531,7 +531,7 @@ func (s *ArtifactsSurface) handleGetRef(ctx context.Context, req *types.Artifact
 	}, nil
 }
 
-// handleDelete serves artifacts.delete (Phase 108o / D-187). It validates
+// handleDelete serves artifacts.delete. It validates
 // the full identity triple, gates STRICTLY on the verified admin scope (a
 // mutation requires admin — console:fleet is an observation claim, never a
 // write entitlement; page-artifacts §9), evicts via the shipped idempotent
@@ -554,7 +554,7 @@ func (s *ArtifactsSurface) handleDelete(ctx context.Context, req *types.Artifact
 			"method %q: artifact id is required", m)
 	}
 
-	// Admin gate (D-079). Unlike the cross-tenant READ gate (admin OR
+	// Admin gate. Unlike the cross-tenant READ gate (admin OR
 	// console:fleet), a runtime-state MUTATION requires admin strictly.
 	if !auth.HasScope(ctx, auth.ScopeAdmin) {
 		return nil, protoerrors.Newf(protoerrors.CodeScopeMismatch,
@@ -617,7 +617,7 @@ func projectRef(ref artifacts.ArtifactRef) types.ArtifactRef {
 
 // projectRow maps a storage-side artifacts.ArtifactRef onto a Protocol
 // ArtifactRow, projecting the catalog-only fields (Tags / Source /
-// CreatedAt) from the storage ref's opaque Source map. Per the D-120
+// CreatedAt) from the storage ref's opaque Source map. Per the Artifacts-page
 // open-question resolution, Tags are projected on the Protocol row, not
 // promoted onto the storage ArtifactRef shape.
 func projectRow(ref artifacts.ArtifactRef, driverName string) types.ArtifactRow {
@@ -636,7 +636,7 @@ func projectRow(ref artifacts.ArtifactRef, driverName string) types.ArtifactRow 
 }
 
 // resolveArtifactSource projects the storage ref's opaque Source map onto
-// a canonical, closed-enum types.ArtifactSource (Phase 107f — D-176).
+// a canonical, closed-enum types.ArtifactSource.
 //
 // Resolution order:
 //
@@ -649,9 +649,9 @@ func projectRow(ref artifacts.ArtifactRef, driverName string) types.ArtifactRow 
 //  3. Otherwise a `flow` key implies a flow → `system`.
 //  4. Otherwise a `producer` key with the flow-describe value → `system`.
 //
-// The else-chain is what keeps EXISTING artifacts (put before Phase 107f,
+// The else-chain is what keeps EXISTING artifacts (put previously,
 // so carrying no `source` key) projecting a correct, non-blank source —
-// no back-fill migration is needed (D-176). When nothing matches, the
+// no back-fill migration is needed. When nothing matches, the
 // zero value (an empty ArtifactSource) is returned, matching the prior
 // behaviour for an unrecognised producer.
 func resolveArtifactSource(src map[string]any) types.ArtifactSource {

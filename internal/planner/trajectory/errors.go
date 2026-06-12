@@ -19,8 +19,7 @@ import "fmt"
 // This closes the predecessor's silent-context-loss bug: there is
 // no `try { ... } catch { return nil }`-shaped path through
 // Serialize. Either the trajectory encodes cleanly and bytes are
-// returned, or this struct error is raised. See RFC §3.4 + §6.2
-// and brief 02 §4.
+// returned, or this struct error is raised. See RFC §3.4 + §6.2.
 type ErrUnserializable struct {
 	// Field is the dotted path to the offending leaf, rooted at
 	// "Trajectory". Example: "Trajectory.Steps[2].Action.fn".

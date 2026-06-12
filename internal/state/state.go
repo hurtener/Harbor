@@ -3,17 +3,17 @@
 // (sessions, tasks, governance accumulators, planner checkpoints,
 // memory snapshots, steering events) saves through.
 //
-// The surface is generic by design (D-027): identity-scoped CRUD keyed
+// The surface is generic by design: identity-scoped CRUD keyed
 // on `(identity.Quadruple, Kind string, Bytes []byte)` with idempotency
 // on a caller-supplied `EventID` (ULID), plus ONE explicitly-elevated
-// maintenance scan (`ListKind` — RFC §6.11, D-207). Consuming
+// maintenance scan (`ListKind` — RFC §6.11). Consuming
 // subsystems land their typed wrappers at their own layer atop this
 // interface — a `SessionRegistry.Save(s Session)` reduces to
 // `StateStore.Save(StateRecord{Identity: s.Identity, Kind: "session.lifecycle", Bytes: marshal(s)})`.
 //
 // Three V1 drivers ship to the §9 persistence triad (in-memory,
-// SQLite, Postgres). Phase 07 ships only the in-memory reference;
-// SQLite (Phase 15) and Postgres (Phase 16) inherit the
+// SQLite, Postgres). Harbor ships only the in-memory reference;
+// SQLite and Postgres inherit the
 // conformancetest suite verbatim.
 //
 // Identity is mandatory at the API boundary. Any `Quadruple` whose
@@ -23,8 +23,7 @@
 //
 // Audit redaction is upstream of `Save`. The store stores opaque
 // `Bytes`; mixing redaction into the persistence layer would couple
-// a leaf package to the audit subsystem and split responsibility
-// (D-020).
+// a leaf package to the audit subsystem and split responsibility.
 package state
 
 import (
@@ -85,7 +84,7 @@ type StateRecord struct {
 // surface, no `Supports*` capability ceremony (AGENTS.md §4.4 + §9).
 //
 // Implementations MUST be safe for concurrent use by N goroutines
-// against a single shared instance (D-025). Mutable state must be
+// against a single shared instance. Mutable state must be
 // guarded; per-call state lives in `ctx`, never on the driver.
 type StateStore interface {
 	// Save persists a record. Idempotent on `EventID`:
@@ -115,7 +114,7 @@ type StateStore interface {
 
 	// ListKind enumerates every record whose Kind starts with
 	// kindPrefix — the store's ONE maintenance-scan surface
-	// (RFC §6.11, D-207). Unlike every other method, the scan crosses
+	// (RFC §6.11). Unlike every other method, the scan crosses
 	// identity boundaries: it exists so runtime maintenance loops (the
 	// pause sweeper's crash-orphan rescan is the first consumer) can
 	// find records whose identities the process has never seen. That

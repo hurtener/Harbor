@@ -35,7 +35,7 @@ type AppliedControl struct {
 }
 
 // controlHistory is the process-wide, per-session capped applied-control
-// log. It is a compiled-artifact component (D-025): the per-session ring
+// log. It is a compiled-artifact component: the per-session ring
 // map is guarded by a documented-invariant sync.Mutex; no per-run state
 // lives outside the map. One controlHistory is shared by one RunLoop
 // across every run it drives.

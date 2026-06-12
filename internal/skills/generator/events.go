@@ -1,10 +1,10 @@
 // Package generator owns Harbor's in-runtime skill generator with
-// persistence (Phase 41, RFC §6.7).
+// persistence (RFC §6.7).
 //
 // The generator validates a planner-drafted skill, stamps generation
 // provenance (`Origin=Generated`, `OriginRef = "gen:{session_id}:{run_id}"`),
 // scopes by operator-supplied `Scope` (default `project`), upserts via
-// the Phase 37 `SkillStore`, and emits a mandatory `skill.proposed`
+// the `SkillStore`, and emits a mandatory `skill.proposed`
 // audit event on every persist. Audit-emit failure rolls back the
 // persist; there is no silent path (CLAUDE.md §13).
 //
@@ -20,11 +20,11 @@
 //     overwrite; return `Result="persisted"`.
 //   - No existing row → insert; return `Result="persisted"`.
 //
-// Identity is mandatory (D-001): missing identity returns wrapped
+// Identity is mandatory: missing identity returns wrapped
 // `skills.ErrIdentityRequired` AND emits `skill.identity_rejected` on
 // the bus.
 //
-// Concurrent reuse (D-025): the registered tool descriptor holds an
+// Concurrent reuse: the registered tool descriptor holds an
 // immutable closure over (store, redactor, bus). One catalog + one
 // store is safe to share across N concurrent goroutines.
 package generator

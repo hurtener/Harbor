@@ -12,16 +12,16 @@ import (
 // TasksAdminActionPayload is the typed SafePayload published on the
 // canonical `audit.admin_scope_used` event when an operator issues a
 // cross-tenant `tasks.list` fan-in (a query whose Filter.Identities
-// names more than one distinct tenant). Phase 73d / D-123.
+// names more than one distinct tenant).
 //
 // SafePayload by construction: every field is a bounded identity
 // component or a Protocol method name — no caller-supplied bytes reach
 // the bus. The Tasks wire surface rejects malformed requests at the
 // Protocol edge before the emit.
 //
-// The payload is distinct from `auth.AdminScopeUsedPayload` (the Phase
-// 72b impersonation shape), `events.AdminScopeUsedPayload` (the Phase
-// 05 Subscribe shape), and `ToolsAdminActionPayload` (Phase 73f): all
+// The payload is distinct from `auth.AdminScopeUsedPayload` (the
+// impersonation shape), `events.AdminScopeUsedPayload` (the
+// Subscribe shape), and `ToolsAdminActionPayload`: all
 // ride the same canonical `audit.admin_scope_used` event type, but each
 // emit source declares its own typed payload (events.go §"Other emit
 // sites ... MAY add new payload types"). A subscriber type-switches on

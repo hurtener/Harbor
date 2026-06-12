@@ -3,22 +3,22 @@
 // `harbor version` prints three distinct version facts:
 //
 //   - HarborVersion   — the product RELEASE version of the binary,
-//     stamped at link time by the Phase 81 release build (D-139). An
+//     stamped at link time by the release build. An
 //     un-stamped build reports the "v0.0.0-dev" sentinel.
-//   - types.ProtocolVersion — the Harbor PROTOCOL version (Phase 59,
-//     RFC §5.3, D-077): the Runtime↔Console wire contract. It is
+//   - types.ProtocolVersion — the Harbor PROTOCOL version (
+//     RFC §5.3): the Runtime↔Console wire contract. It is
 //     DISTINCT from HarborVersion and versioned independently — a
 //     Runtime refactor that bumps the release version need not bump
 //     the Protocol version, and vice versa.
 //   - the VCS build hash from runtime/debug.ReadBuildInfo().
 //
-// Human-mode output (default), pinned by D-084:
+// Human-mode output (default), pinned:
 //
 //	harbor <semver>
 //	protocol <protocol_version>
 //	build <hash>
 //
-// JSON-mode output (--json), pinned by D-084:
+// JSON-mode output (--json), pinned:
 //
 //	{"harbor":"<semver>","protocol":"<protocol_version>","build_hash":"<hash>"}
 
@@ -36,7 +36,7 @@ import (
 )
 
 // versionInfo is the wire shape `harbor version --json` emits. Pinned
-// by D-084; smoke scripts and Console / IDE clients depend on the
+// deliberate; smoke scripts and Console / IDE clients depend on the
 // field names.
 type versionInfo struct {
 	Harbor    string `json:"harbor"`
@@ -86,7 +86,7 @@ func renderVersionHuman(w io.Writer, info versionInfo) error {
 
 // renderVersionJSON writes the --json rendering. Single-line JSON
 // object followed by a newline. Field names pinned by versionInfo
-// struct tags (D-084).
+// struct tags.
 func renderVersionJSON(w io.Writer, info versionInfo) error {
 	buf, err := json.Marshal(info)
 	if err != nil {

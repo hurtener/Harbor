@@ -1,16 +1,16 @@
 // Package finish ships Harbor's stub Planner — a planner that always
 // returns Finish{Reason: Goal}. The stub exists to prove the Planner
-// interface holds end-to-end at Phase 42:
+// interface holds end-to-end:
 //
 //   - It compiles against `internal/planner.Planner`.
 //   - It demonstrates the §13 import-graph contract (no
 //     `internal/runtime/...` imports).
-//   - It exercises the D-025 concurrent-reuse contract — a shared
+//   - It exercises the concurrent-reuse contract — a shared
 //     stub instance handles N=128 concurrent Next calls under -race
 //     without races, context bleed, cancel cross-talk, or goroutine
 //     leaks.
 //
-// Production planner concretes land at Phase 45 (ReAct) and Phase 48
+// Production planner concretes land (ReAct) and the Deterministic work
 // (Deterministic). The stub stays in V1 as a test fixture for the
 // conformance pack + integration tests that need a deterministic
 // terminal result.
@@ -63,7 +63,7 @@ func WithMetadata(metadata map[string]any) Option {
 // New constructs a stub planner. The returned value satisfies
 // planner.Planner and planner.WakeAware.
 //
-// The stub is safe for concurrent reuse (D-025) — no per-call state
+// The stub is safe for concurrent reuse — no per-call state
 // lives on the receiver.
 func New(opts ...Option) *Planner {
 	p := &Planner{}
@@ -87,7 +87,7 @@ func (p *Planner) Next(ctx context.Context, run planner.RunContext) (planner.Dec
 	}
 
 	// Shallow-copy the configured metadata template and stamp the
-	// per-call RunID so the conformance pack + the D-025 concurrent-
+	// per-call RunID so the conformance pack + the concurrent-
 	// reuse test can assert per-call identity round-trip.
 	var meta map[string]any
 	if p.metadata != nil || run.Quadruple.RunID != "" {
@@ -107,7 +107,7 @@ func (p *Planner) Next(ctx context.Context, run planner.RunContext) (planner.Dec
 	}, nil
 }
 
-// WakeMode declares the stub's wake-on-resolution strategy (D-032).
+// WakeMode declares the stub's wake-on-resolution strategy.
 // The stub never spawns non-retain-turn tasks, so the choice is
 // structurally irrelevant; WakePush is the documented default the
 // conformance pack assumes for non-WakeAware planners (the stub

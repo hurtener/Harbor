@@ -10,9 +10,9 @@ import (
 )
 
 // emitCostRecorded publishes the `llm.cost.recorded` event after a
-// successful Complete. Phase 36a's governance accumulator subscribes
+// successful Complete. the governance accumulator subscribes
 // against this emit site to drive per-identity cost ceilings (per the
-// Wave 7b scoping decision: latent governance, opt-in via config).
+// V1 scoping: latent governance, opt-in via config).
 //
 // Best-effort — never blocks the request path on the bus. A nil bus
 // (e.g. tests that construct the Driver directly) is a no-op. Cost

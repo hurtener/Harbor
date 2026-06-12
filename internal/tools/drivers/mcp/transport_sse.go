@@ -13,7 +13,7 @@ import (
 // URL MUST be set; caller (selectTransport) validates this.
 //
 // "URL connections require explicit headers for auth (no implicit
-// env passthrough)" — brief 03 §4. Headers come from Config, not
+// env passthrough)" — a settled security rule. Headers come from Config, not
 // from the process environment. The driver does not inject any
 // HARBOR_*-style env vars into the request.
 func newSSETransport(cfg Config) mcpsdk.Transport {

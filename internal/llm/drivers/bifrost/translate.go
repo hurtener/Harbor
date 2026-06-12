@@ -1,32 +1,32 @@
 // Package bifrost is Harbor's bifrost-backed LLM driver. It wires
 // `github.com/maximhq/bifrost/core` behind the `llm.Driver` interface
-// settled in Phase 32 (RFC §6.5 / brief 08).
+// settled earlier (RFC §6.5).
 //
 // The driver is a thin translation adapter: `llm.CompleteRequest`
 // flows into `schemas.BifrostChatRequest`, the response flows back into
 // `llm.CompleteResponse`, and the multimodal `ContentPart` sum-type
-// (D-021) maps to bifrost's `ChatContentBlock` shapes. Bifrost's
+// maps to bifrost's `ChatContentBlock` shapes. Bifrost's
 // provider-native tool-calling parameters (the `tools=` request field,
 // the `tool_choice=` mode selector, OpenAI's `function_call`,
 // Anthropic's `tool_use` blocks) are intentionally NEVER referenced —
-// Harbor's runtime owns tool dispatch (RFC §6.4 / brief 07). The
-// Phase 32 smoke script's static guard fails on any leak.
+// Harbor's runtime owns tool dispatch (RFC §6.4). The
+// smoke script's static guard fails on any leak.
 //
-// Auto-materialization (D-022 / D-039) runs in the Phase 32 safety pass
+// Auto-materialization runs in the safety pass
 // upstream; this driver sees post-materialization requests where
 // oversize `DataURL`s have already been rewritten as `ArtifactStub`s.
 // The driver translates each supply form (URL / DataURL / Artifact)
 // faithfully — the safety pass guarantees the inline `DataURL` is
 // below the heavy-output threshold.
 //
-// Concurrent-reuse contract (D-025): the driver itself is stateless
+// Concurrent-reuse contract: the driver itself is stateless
 // across calls. The `*bf.Bifrost` it holds is internally synchronized
 // by bifrost. The `closed` flag is `atomic.Bool` for the idempotent
 // Close path. Safe for N concurrent goroutines after construction.
 //
 // Cancellation semantics: a streaming Complete cancelled mid-flight
 // returns `ctx.Err()` immediately; the driver abandons the bifrost
-// chunk reader (brief 08 §"Cancellation caveat"). Bifrost drains its
+// chunk reader. Bifrost drains its
 // upstream HTTP connection on its own goroutine; Harbor never blocks
 // waiting for it. The goroutine-leak test pins this.
 package bifrost
@@ -44,11 +44,11 @@ import (
 // translateRequest builds a `*schemas.BifrostChatRequest` from
 // Harbor's `llm.CompleteRequest`. The driver-level fields (`Provider`,
 // `Model`) come from the driver's `cfg`; sampler / parameter fields
-// come from `req`. Validation has already run upstream (Phase 32
+// come from `req`. Validation has already run upstream (
 // safety pass); this function trusts its inputs.
 //
 // Provider-native tool-calling fields are NEVER set — see RFC §6.4
-// / brief 07 / the smoke static guard.
+// / the smoke static guard.
 func translateRequest(provider bfschemas.ModelProvider, req llm.CompleteRequest) (*bfschemas.BifrostChatRequest, error) {
 	messages, err := translateMessages(req.Messages)
 	if err != nil {
@@ -98,7 +98,7 @@ func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 			len(content.ContentBlocks) == 0 {
 			content = nil
 		}
-		// Phase 107c / D-167 — native tool-result routing.
+		// native tool-result routing.
 		//
 		// A RoleTool message that carries a non-nil ToolCallID is a
 		// native tool-result thread-back: it MUST map to bifrost's
@@ -122,7 +122,7 @@ func translateMessages(in []llm.ChatMessage) ([]bfschemas.ChatMessage, error) {
 				ToolCallID: &tid,
 			}
 		}
-		// Phase 107c / D-167 — native tool-call replay on the
+		// native tool-call replay on the
 		// assistant side. The React planner's trajectory renderer
 		// emits a RoleAssistant message with `ToolCalls` set for
 		// every prior CallTool step, paired with a RoleTool message
@@ -153,7 +153,7 @@ func translateRole(r llm.Role) bfschemas.ChatMessageRole {
 		return bfschemas.ChatMessageRoleAssistant
 	case llm.RoleTool:
 		// Harbor's RoleTool is the convention for tool-observation
-		// renderings; brief 07 §5 says these arrive as user-role
+		// renderings; by design these arrive as user-role
 		// messages inside the LLM thread. Bifrost has a separate
 		// "tool" role, but we DO NOT use it — to a remote provider, a
 		// Harbor tool-observation looks exactly like a user message
@@ -179,7 +179,7 @@ func translateContent(c llm.Content) (*bfschemas.ChatMessageContent, error) {
 		}
 		return &bfschemas.ChatMessageContent{ContentBlocks: blocks}, nil
 	}
-	// Defensive — Phase 32's safety pass rejects this case before
+	// Defensive — the safety pass rejects this case before
 	// the driver runs.
 	return nil, fmt.Errorf("content has neither Text nor Parts set")
 }
@@ -238,7 +238,7 @@ func translateParts(in []llm.ContentPart) ([]bfschemas.ChatContentBlock, error) 
 // driver's provider-native upload pass, or pre-set by the caller)
 // takes precedence and emits the provider file-reference block.
 // Artifact form renders as the canonical `ArtifactStub` JSON inside a
-// text block (D-022 / RFC §6.5) so providers without vision still
+// text block (RFC §6.5) so providers without vision still
 // receive a meaningful description.
 func translateImagePart(p *llm.ImagePart) (bfschemas.ChatContentBlock, error) {
 	if p == nil {
@@ -332,7 +332,7 @@ func translateFilePart(p *llm.FilePart) (bfschemas.ChatContentBlock, error) {
 		fileURL = &u
 	case p.DataURL != "":
 		// Bifrost's `ChatInputFile.FileData` expects base64-encoded
-		// data. The Phase 32 safety pass has already decoded the data
+		// data. The safety pass has already decoded the data
 		// URL to bytes when materializing oversize content; sub-
 		// threshold content arrives as the raw `data:` URI which we
 		// pass straight through — bifrost's provider converters know
@@ -426,7 +426,7 @@ func stripMIMEPrefix(mime string) string {
 // lower values. Harbor maps the effort enum to a token budget for the
 // Anthropic provider and fails LOUDLY with [ErrReasoningBudgetTooLow]
 // when the resulting budget is below the floor — never silently
-// clamping (brief 13 §2.6, CLAUDE.md §5 fail-loudly).
+// clamping.
 func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) (*bfschemas.ChatParameters, error) {
 	params := &bfschemas.ChatParameters{}
 	used := false
@@ -483,7 +483,7 @@ func translateParams(provider bfschemas.ModelProvider, req llm.CompleteRequest) 
 		}
 	}
 
-	// Phase 107c / D-167 — native tool-calling params.
+	// native tool-calling params.
 	if len(req.Tools) > 0 {
 		bftools := make([]bfschemas.ChatTool, 0, len(req.Tools))
 		for _, td := range req.Tools {
@@ -553,8 +553,8 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 		}
 		// Wrap the raw schema bytes inside the `{"type":"json_schema",
 		// "json_schema": {...}}` envelope. Many providers expect the
-		// envelope (`name`, `strict`, `schema` keys); Phase 34's
-		// SchemaSanitizer normalizes the shape per provider — Phase 33
+		// envelope (`name`, `strict`, `schema` keys); the
+		// SchemaSanitizer normalizes the shape per provider — this driver
 		// passes the operator-supplied schema bytes verbatim.
 		var schemaObj any
 		if err := json.Unmarshal(schema, &schemaObj); err != nil {
@@ -573,7 +573,7 @@ func translateResponseFormat(rf *llm.ResponseFormat) (*interface{}, error) {
 // translateResponse builds Harbor's `llm.CompleteResponse` from
 // bifrost's non-streaming response. The assistant message's text
 // content goes into `Content`; the message's normalised
-// `ReasoningDetails` go into `Reasoning` (Phase 83e — closes the
+// `ReasoningDetails` go into `Reasoning` (closes the
 // unary-path reasoning-capture gap); usage and cost flow through.
 func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse {
 	out := llm.CompleteResponse{}
@@ -591,7 +591,7 @@ func translateResponse(resp *bfschemas.BifrostChatResponse) llm.CompleteResponse
 // non-streaming choice's assistant message. Bifrost populates
 // `reasoning_details[]` on the message for every reasoning-capable
 // provider, including the native Gemini path where the per-delta
-// `delta.Reasoning` field is nil (brief 13 §2.6). Empty when the
+// `delta.Reasoning` field is nil. Empty when the
 // provider surfaced no reasoning.
 func extractReasoning(resp *bfschemas.BifrostChatResponse) string {
 	if resp == nil || len(resp.Choices) == 0 {
@@ -638,7 +638,7 @@ func extractContent(resp *bfschemas.BifrostChatResponse) string {
 
 // extractUsageAndCost decodes bifrost's usage shape (which carries
 // `*BifrostCost` as a sub-field) into Harbor's `Usage` + `Cost`. A
-// nil-usage response yields zero values; Phase 36a's accumulator
+// nil-usage response yields zero values; the accumulator
 // treats zero cost as "no charge for this call" (a deliberate
 // no-op).
 func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Cost) {
@@ -666,7 +666,7 @@ func extractUsageAndCost(resp *bfschemas.BifrostChatResponse) (llm.Usage, llm.Co
 
 // translateError converts bifrost's typed error into a Go error. The
 // driver wraps `BifrostError.Error.Message` (or the type field) with a
-// short status-code prefix; provider-correction (Phase 34) can match
+// short status-code prefix; provider-correction can match
 // on the wrapped message strings.
 func translateError(berr *bfschemas.BifrostError, kind string) error {
 	if berr == nil {
@@ -688,7 +688,7 @@ func translateError(berr *bfschemas.BifrostError, kind string) error {
 	return fmt.Errorf("%s: bifrost: %s", kind, msg)
 }
 
-// Phase 107c / D-167 — native tool-calling translation helpers.
+// native tool-calling translation helpers.
 
 func translateToolDeclaration(td llm.ToolDeclaration) (bfschemas.ChatTool, error) {
 	desc := td.Description

@@ -1,19 +1,19 @@
 // Package engine is Harbor's typed, async, queue-backed graph
-// executor — the runtime kernel every other phase sits on. Phase 10
+// executor — the runtime kernel every other phase sits on. An earlier phase
 // shipped the Engine interface, the worker loop (one goroutine per
 // node), bounded per-adjacency channels (default 64), the always-on
 // egress dispatcher (RunID demux), cycle detection at construction,
 // and Run / Stop / Emit / EmitTo / Fetch.
 //
-// Phase 11 layered the reliability shell on top (NodePolicy,
-// RunError); Phase 12 added streaming (StreamFrame, EmitChunk) +
-// per-run capacity backpressure; Phase 13 lands Cancel(runID) +
-// FetchByRun (replacing Phase 10's stubs) plus engine-Cancel
-// mirroring into Phase 14's Subflow; Phase 14 adds routers,
+// layered the reliability shell on top (NodePolicy,
+// RunError); An earlier phase added streaming (StreamFrame, EmitChunk) +
+// per-run capacity backpressure; lands Cancel(runID) +
+// FetchByRun (replacing the stubs) plus engine-Cancel
+// mirroring into the Subflow; Harbor adds routers,
 // concurrency utilities, and Subflow. None of those phases change
 // this surface — they extend it.
 //
-// Concurrent reuse contract (D-025): a compiled *engine is reusable
+// Concurrent reuse contract: a compiled *engine is reusable
 // across goroutines after Run starts. Per-run state lives in the
 // dispatcher's subqueues + the worker stacks; never on the engine
 // struct itself. The N=100 reuse test pins this — see
@@ -53,9 +53,9 @@ type Engine interface {
 	Run(ctx context.Context) error
 	Stop(ctx context.Context) error
 	// Topology builds a canonical types.TopologyProjection of the
-	// engine's static node graph + live per-edge queue depth (Phase 74
-	// / D-114). Identity-mandatory; pure read; safe for N concurrent
-	// callers (D-025). See topology.go.
+	// engine's static node graph + live per-edge queue depth
+	// Identity-mandatory; pure read; safe for N concurrent
+	// callers. See topology.go.
 	Topology(ctx context.Context) (types.TopologyProjection, error)
 }
 
@@ -70,9 +70,9 @@ type engine struct {
 
 	// engineID is a process-unique identifier minted once at New. It
 	// is immutable for the engine's lifetime and appears on every
-	// TopologyProjection (Phase 74 / D-114). A compiled artifact's
+	// TopologyProjection. A compiled artifact's
 	// id is set-once at construction — never mutated — so it is
-	// concurrent-reuse-safe (D-025) without synchronisation.
+	// concurrent-reuse-safe without synchronisation.
 	engineID string
 
 	// channels[from][to] is the bounded buffer between two adjacent
@@ -96,19 +96,19 @@ type engine struct {
 	stopped  atomic.Bool
 	wg       sync.WaitGroup // worker join group
 
-	// Phase 12: per-run streaming capacity bookkeeping.
+	// per-run streaming capacity bookkeeping.
 	//
 	// capMu guards capacities + runCapacityOverrides. Trackers are
 	// created lazily on first EmitChunk for a run; overrides are
 	// recorded on Engine.Emit when WithRunCapacity is passed. Both
 	// maps grow over time (one entry per run); a run's entry is NOT
-	// reaped on completion in V1 (Phase 13's Cancel and a future
+	// reaped on completion in V1 (the Cancel and a future
 	// run-end signal will manage cleanup).
 	capMu                sync.Mutex
 	capacities           map[string]*runCapacity
 	runCapacityOverrides map[string]int
 
-	// Phase 13: per-run cancellation bookkeeping. cancelMu guards
+	// per-run cancellation bookkeeping. cancelMu guards
 	// cancellations + cancelObservers; activeRunsMu guards
 	// activeRuns. Both maps grow over time bounded by the cancellation
 	// TTL sweeper.
@@ -214,11 +214,11 @@ func New(adjacencies []Adjacency, opts ...Option) (Engine, error) {
 
 	e.dispatcher = newDispatcher(e.outletChan, cfg.queueSize, e.signalDrainedFrame)
 
-	// Phase 74 (D-114): construction-time topology.changed emit. When
+	// construction-time topology.changed emit. When
 	// WithEventBus wired a bus, publish one event carrying the initial
 	// projection so a Protocol consumer that subscribed before the
 	// engine existed catches the graph the moment it is built. A nil
-	// bus (the Phase 02 default) is a no-op — every existing engine
+	// bus (the default) is a no-op — every existing engine
 	// test that never wires a bus sees zero behavioural change.
 	//
 	// The emit fails the constructor loud if the bus rejects the event
@@ -292,7 +292,7 @@ func (e *engine) Run(ctx context.Context) error {
 
 	e.dispatcher.start(internalCtx)
 
-	// Phase 13: cancellation TTL sweeper. Joined via wg on Stop.
+	// cancellation TTL sweeper. Joined via wg on Stop.
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -339,7 +339,7 @@ func (e *engine) Stop(ctx context.Context) error {
 	cancel := e.cancelFn
 	e.mu.Unlock()
 
-	// Phase 12: release every blocked EmitChunk waiter with
+	// release every blocked EmitChunk waiter with
 	// ErrEngineStopped BEFORE cancelling the engine ctx. The reserve
 	// loop's exit checks the rc.stopped flag before ctx.Err, so a
 	// blocked producer that wakes via the cond broadcast returns
@@ -386,8 +386,8 @@ func (e *engine) Stop(ctx context.Context) error {
 
 // Emit lands env at the engine's inlet(s). Identity-mandatory: the
 // envelope's triple (TenantID, UserID, SessionID) must validate per
-// identity.Validate; empty RunID is acceptable in Phase 10 (Phase
-// 13 will tighten when FetchByRun arrives).
+// identity.Validate; empty RunID is acceptable in a later phase (
+// will tighten when FetchByRun arrives).
 //
 // When the graph has multiple inlets, Emit lands env at the first
 // inlet (lexicographic order). Use EmitTo(env, target) for explicit
@@ -402,7 +402,7 @@ func (e *engine) Emit(ctx context.Context, env messages.Envelope, opts ...EmitOp
 	if err := e.validateIdentity(env); err != nil {
 		return err
 	}
-	// Phase 13: reject Emit for runs that have been Cancel'd within
+	// reject Emit for runs that have been Cancel'd within
 	// the cancellation TTL. Closes the "Cancel beats Emit" race window.
 	if _, cancelled := e.runIsCancelled(env.RunID); cancelled {
 		return ErrRunCancelled
@@ -423,7 +423,7 @@ func (e *engine) Emit(ctx context.Context, env messages.Envelope, opts ...EmitOp
 
 // EmitTo lands env at a specific node's inlet. The target must be
 // an inlet (no parent) — EmitTo to an internal node would skip
-// validation Phase 11 will add and isn't supported in V1.
+// validation A later phase will add and isn't supported in V1.
 //
 // Use case: graphs with multiple typed inlets where the caller
 // knows which inlet the envelope belongs to.
@@ -455,7 +455,7 @@ func (e *engine) Fetch(ctx context.Context, _ ...FetchOption) (messages.Envelope
 }
 
 // validateIdentity enforces the identity-mandatory contract on the
-// inbound envelope. Empty RunID is acceptable in Phase 10; the rest
+// inbound envelope. Empty RunID is acceptable in a later phase; the rest
 // of the triple must be non-empty per identity.Validate.
 func (e *engine) validateIdentity(env messages.Envelope) error {
 	q := env.Identity()
@@ -569,7 +569,7 @@ func (e *engine) ctxOrNew() context.Context {
 // for outlet nodes).
 //
 // Worker error path: a non-nil error from Func is logged via the
-// engine's slog.Logger. Phase 11 will replace this with a structured
+// engine's slog.Logger. A later phase will replace this with a structured
 // RunError emitted to the bus + (optionally) the egress.
 func (e *engine) workerLoop(ctx context.Context, node Node) {
 	incomingChans := e.incomingChannelsFor(node.Name)
@@ -584,7 +584,7 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		if fatal != nil || !ok {
 			return
 		}
-		// Phase 13: per-run cancellation observed BEFORE any
+		// per-run cancellation observed BEFORE any
 		// processing. A cancelled run's pending envelopes are dropped
 		// silently here (Cancel's drainQueuedForRun handled the
 		// already-queued ones; this catches envelopes that landed in
@@ -592,9 +592,9 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		if _, cancelled := e.runIsCancelled(env.RunID); cancelled {
 			continue
 		}
-		// Deadline check before invocation (per brief 01 §4 worker
-		// loop). Phase 11 promotes ErrDeadlineExceeded into a
-		// RunError; Phase 10 just logs and continues.
+		// Deadline check before invocation (per the worker
+		// loop). Harbor promotes ErrDeadlineExceeded into a
+		// RunError; just logs and continues.
 		if env.DeadlineAt != nil && time.Now().After(*env.DeadlineAt) {
 			e.logWorkerError(env, ErrDeadlineExceeded)
 			continue
@@ -610,10 +610,10 @@ func (e *engine) workerLoop(ctx context.Context, node Node) {
 		// Track this worker as active on the run so Cancel can report
 		// "the run was active" while the worker is mid-invocation.
 		e.markRunActive(env.RunID)
-		// Phase 11: invoke under the reliability shell. NodePolicy
+		// invoke under the reliability shell. NodePolicy
 		// drives validate / timeout / retry / backoff. Zero-value
-		// policy = bare invocation (Phase 10 behavior).
-		// Phase 13: pass the per-run cancel-flag pointer so the shell
+		// policy = bare invocation (behavior).
+		// pass the per-run cancel-flag pointer so the shell
 		// can observe cancellation between retries.
 		rcCancel, _ := e.runIsCancelled(env.RunID)
 		out, err := runWithReliability(ctx, env, node.Func, node.Policy, nctx, node.Name, rcCancel)
@@ -733,13 +733,13 @@ func (e *engine) incomingChannelsFor(name string) []chan messages.Envelope {
 }
 
 // logWorkerError logs a worker-loop error via the engine's slog
-// logger AND fires the configured RunErrorHandler (Phase 11). The
+// logger AND fires the configured RunErrorHandler. The
 // slog path keeps internal failures visible to operators even when
 // no handler is installed; the handler is the seam an engine-hosting
 // assembly uses to route the structured RunError into the
 // telemetry.Logger → eventbus adapter → runtime.error bus event
 // chain. The production assembly builds that handler
-// (`assemble.Stack.RunErrorHandler` — Phase 111f, D-203) and flow
+// (`assemble.Stack.RunErrorHandler` —) and flow
 // composition forwards it via `flow.WithRunErrorHandler`.
 //
 // The handler call is best-effort: a panic is recovered and logged.
@@ -765,7 +765,7 @@ func (e *engine) logWorkerError(env messages.Envelope, err error) {
 			slog.String("run_id", q.RunID),
 		)
 	}
-	// Phase 11: if a RunErrorHandler is wired and we have a typed
+	// if a RunErrorHandler is wired and we have a typed
 	// RunError, fire it. The handler is the seam telemetry.Logger
 	// connects through to the wave-2 eventbus adapter.
 	if e.cfg.runErrorHandler != nil {
@@ -823,7 +823,7 @@ func (e *engine) emitErrorEnvelope(ctx context.Context, env messages.Envelope, e
 }
 
 // identityCtxFor returns a context.Context carrying the envelope's
-// identity quadruple via Phase 01 helpers. Used to ensure the
+// identity quadruple via helpers. Used to ensure the
 // RunErrorHandler's BusEmitter sees a complete triple regardless of
 // what the worker's ctx carried.
 func identityCtxFor(env messages.Envelope) context.Context {

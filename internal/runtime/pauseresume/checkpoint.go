@@ -21,10 +21,10 @@ const checkpointKindPrefix = "pauseresume.checkpoint:"
 
 // checkpointRecord is the JSON envelope persisted to the StateStore
 // for a durable pause — the canonical RFC §6.3 "Pause-state
-// serialization format" (JSON with format_version: 1). Phase 50
+// serialization format" (JSON with format_version: 1). An earlier phase
 // shipped the envelope shape as the Coordinator's checkpoint surface;
-// Phase 51 closes the fail-loudly serialise contract ON it
-// (SerializeRecord / DeserializeRecord in pauserecord.go) — see D-069.
+// Harbor closes the fail-loudly serialise contract ON it
+// (SerializeRecord / DeserializeRecord in pauserecord.go) —
 //
 // The FormatVersion field is the forward-compatibility hinge:
 // SerializeRecord stamps it to the current FormatVersion constant,
@@ -91,8 +91,8 @@ func checkpointKind(token Token) string {
 // re-saving the same EventID with different Bytes — see
 // coordinator.go's resume path.
 func saveCheckpoint(ctx context.Context, store state.StateStore, rec checkpointRecord) error {
-	// SerializeRecord is the fail-loudly pause-record serialise contract
-	// (Phase 51 / D-069): it walks the envelope reflectively and
+	// SerializeRecord is the fail-loudly pause-record serialise contract:
+	// it walks the envelope reflectively and
 	// surfaces trajectory.ErrUnserializable naming the offending leaf
 	// (the load-bearing case: a non-JSON-encodable Payload value) —
 	// never a silent drop, never a half-persisted checkpoint. It also
@@ -122,7 +122,7 @@ func saveCheckpoint(ctx context.Context, store state.StateStore, rec checkpointR
 // token, ErrCheckpointCorrupt when the persisted bytes fail to decode,
 // and ErrUnsupportedFormatVersion when the record carries a
 // format_version this Runtime does not recognise — all loud, never a
-// half-decoded record (Phase 51 / D-069).
+// half-decoded record.
 func loadCheckpoint(ctx context.Context, store state.StateStore, token Token) (checkpointRecord, error) {
 	sr, err := store.LoadByEventID(ctx, state.EventID(token))
 	if err != nil {

@@ -1,8 +1,8 @@
 // Package inmem is Harbor's V1 in-memory ArtifactStore driver. It is
 // the floor: every deployment can fall back to it (per-process
 // lifetime, no persistence), and the conformance suite drives it as
-// the canonical reference for Phase 18 (SQLite-blob, Postgres-blob)
-// and Phase 19 (S3-style) drivers.
+// the canonical reference for the SQLite-blob, Postgres-blob, and
+// S3-style drivers.
 //
 // Internal model:
 //

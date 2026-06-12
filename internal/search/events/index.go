@@ -1,14 +1,14 @@
-// Package events implements the Phase 72c `search.events` runtime-side
+// Package events implements the `search.events` runtime-side
 // index — a server-enforced search over the event bus's replay ring,
 // scoped to the caller's identity triple unless the `auth.ScopeAdmin`
-// claim is present (D-079).
+// claim is present.
 //
-// The Searcher consumes the `events.Replayer` capability (Phase 06)
+// The Searcher consumes the `events.Replayer` capability
 // and the `events.Filter` server-enforced shape. Free-text search runs
 // against the event header fields — type, source, identity. Substring
-// search over event payload contents is post-V1 per the Phase 72c
+// search over event payload contents is post-V1 per the
 // plan (would force materialisation of heavy payloads through the LLM-
-// edge safety net; D-026).
+// edge safety net).
 package events
 
 import (

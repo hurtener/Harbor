@@ -1,6 +1,6 @@
 // Package prod is the production driver aggregator — the single
-// sanctioned home of Harbor's driver blank-import block (Phase 110c,
-// D-196; AGENTS.md §4.4).
+// sanctioned home of Harbor's driver blank-import block
+// (AGENTS.md §4.4).
 //
 // Importing this package for effect:
 //
@@ -23,21 +23,21 @@
 //   - `internal/llm/mock` — the dev-only mock LLM driver. It is never
 //     part of the production set (CLAUDE.md §13 "test stubs as
 //     production defaults"); `harbor dev` conditionally imports it at
-//     the subcommand boundary behind HARBOR_DEV_ALLOW_MOCK=1 (D-089),
+//     the subcommand boundary behind HARBOR_DEV_ALLOW_MOCK=1,
 //     and tests blank-import it explicitly.
 //
 // Adding a new driver: add its blank import here (with a one-line
 // comment naming the phase/decision) — not to main.go, not to
 // devstack. The §4.4 rule "drivers are pulled in via blank import at
-// the binary entry point" reads, since 110c, "…via this aggregator,
+// the binary entry point" now reads "…via this aggregator,
 // which the binary entry points import."
 package prod
 
 import (
 	// Artifacts drivers — content-addressed blob store. Each V1
 	// driver self-registers via init() so `artifacts.Open` can resolve
-	// them. Phase 17 ships fs + inmem; Phase 18 adds sqlite +
-	// postgres; Phase 19 adds the S3-style driver.
+	// them. Harbor ships fs + inmem; Harbor adds sqlite +
+	// postgres; Harbor adds the S3-style driver.
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/fs"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/inmem"
 	_ "github.com/hurtener/Harbor/internal/artifacts/drivers/postgres"
@@ -46,79 +46,79 @@ import (
 
 	// Audit driver — production redactor, registered via init().
 	_ "github.com/hurtener/Harbor/internal/audit/drivers/patterns"
-	// Distributed drivers — Phase 22 loopback MessageBus + RemoteTransport.
+	// Distributed drivers — loopback MessageBus + RemoteTransport.
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/loopback"
-	// Distributed driver — Phase 29 A2A wire RemoteTransport (southbound).
+	// Distributed driver — A2A wire RemoteTransport (southbound).
 	_ "github.com/hurtener/Harbor/internal/distributed/drivers/a2a"
-	// Embeddings driver — Phase 84d (D-191) bifrost-backed Embedder,
+	// Embeddings driver — bifrost-backed Embedder,
 	// registered via init(). Feeds the opt-in semantic retrieval
 	// modes in memory + skills and the à-la-carte embed path.
 	_ "github.com/hurtener/Harbor/internal/embeddings/drivers/bifrost"
 	// Events driver — production in-memory bus, registered via init().
 	_ "github.com/hurtener/Harbor/internal/events/drivers/inmem"
-	// Events driver — Phase 57 StateStore-backed durable event log,
+	// Events driver — StateStore-backed durable event log,
 	// registered via init(). Opens its StateStore from
 	// EventsConfig.StateDriver / StateDSN; an empty StateDriver
 	// auto-degrades to a best-effort ring buffer with a loud warning.
 	_ "github.com/hurtener/Harbor/internal/events/drivers/durable"
-	// LLM corrections — Phase 34 per-provider correction layer (RFC §6.5,
-	// brief 03 §4 + brief 08). Self-registers a wrapper hook in
+	// LLM corrections — per-provider correction layer (RFC §6.5).
+	// Self-registers a wrapper hook in
 	// internal/llm via init() so `llm.Open()` composes
 	// `corrections(safetyClient(driver))` by default.
 	_ "github.com/hurtener/Harbor/internal/llm/corrections"
-	// LLM driver — Phase 33 bifrost-backed LLMClient, registered via init().
+	// LLM driver — bifrost-backed LLMClient, registered via init().
 	_ "github.com/hurtener/Harbor/internal/llm/drivers/bifrost"
-	// LLM output — Phase 35 structured-output downgrade chain (RFC §6.5).
+	// LLM output — structured-output downgrade chain (RFC §6.5).
 	// Self-registers a wrapper hook so `llm.Open()` composes
 	// `downgrade(corrections(safetyClient(driver)))`.
 	_ "github.com/hurtener/Harbor/internal/llm/output"
-	// LLM retry — Phase 36 retry-with-feedback (RFC §6.5). Self-
+	// LLM retry — retry-with-feedback (RFC §6.5). Self-
 	// registers a wrapper hook so `llm.Open()` composes
 	// `retry(downgrade(corrections(safetyClient(driver))))`.
 	_ "github.com/hurtener/Harbor/internal/llm/retry"
-	// Governance — Phase 36a + 36b cost accumulator + rate limiter +
+	// Governance — + 36b cost accumulator + rate limiter +
 	// MaxTokens enforcer (RFC §6.15). Self-registers a wrapper hook
 	// so `llm.Open()` composes `governance(retry(...))` outermost.
-	// **LATENT default (D-044):** with no factory registered via
+	// **LATENT default:** with no factory registered via
 	// `governance.SetFactory`, the wrapper is a pass-through — the
 	// blank-import only seats the hook. The production assembly
-	// (`assemble.Assemble`, Phase 111a / D-198) installs the factory
+	// (`assemble.Assemble`,) installs the factory
 	// when `governance.identity_tiers` is non-empty, so configured
 	// tiers ENFORCE through this hook.
 	_ "github.com/hurtener/Harbor/internal/governance"
-	// Memory driver — Phase 23 in-memory MemoryStore, registered via init().
+	// Memory driver — in-memory MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/inmem"
-	// Memory driver — Phase 25 Postgres MemoryStore, registered via init().
+	// Memory driver — Postgres MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/postgres"
-	// Memory driver — Phase 25 SQLite MemoryStore, registered via init().
+	// Memory driver — SQLite MemoryStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/memory/drivers/sqlite"
-	// Skills driver — Phase 37 LocalDB SkillStore, registered via init().
+	// Skills driver — LocalDB SkillStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/skills/drivers/localdb"
-	// Skills planner tools — Phase 38 (`skill_search` / `skill_get` /
+	// Skills planner tools — (`skill_search` / `skill_get` /
 	// `skill_list`). The package has no init-time registration
 	// (catalogs are constructed at boot, not from a factory registry);
 	// the blank import documents the package's presence in the binary.
-	// Since Phase 111d (D-201) these handlers ARE the production path:
+	// Since these handlers ARE the production path:
 	// the `internal/tools/builtin` carrier delegates the skill_* set
 	// to them, so capability filtering + redaction + the budgeter run
 	// on every production call.
 	_ "github.com/hurtener/Harbor/internal/skills/tools"
-	// Skills generator — Phase 41 (`skill_propose(persist=true)`). The
+	// Skills generator — (`skill_propose(persist=true)`). The
 	// package has no init-time registration (the catalog is built at
 	// boot); the blank import documents the package's presence in the
-	// binary. Since Phase 111d (D-201) the builtin carrier registers
+	// binary. Since the builtin carrier registers
 	// `skill_propose` as a delegation to `generator.Propose` when the
 	// operator opts in via `tools.built_in`.
 	_ "github.com/hurtener/Harbor/internal/skills/generator"
 	// State driver — production in-memory StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/inmem"
-	// State driver — Postgres StateStore (Phase 16), registered via init().
+	// State driver — Postgres StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/postgres"
-	// State driver — production SQLite StateStore (Phase 15), registered via init().
+	// State driver — production SQLite StateStore, registered via init().
 	_ "github.com/hurtener/Harbor/internal/state/drivers/sqlite"
-	// Tasks driver — production in-process TaskRegistry (Phase 20), registered via init().
+	// Tasks driver — production in-process TaskRegistry, registered via init().
 	_ "github.com/hurtener/Harbor/internal/tasks/drivers/inprocess"
-	// Telemetry span exporters — Phase 55 OTel traces. The noop driver
+	// Telemetry span exporters — OTel traces. The noop driver
 	// is the default (no collector); the otlp driver ships spans to an
 	// OTLP/gRPC collector when telemetry.otel_endpoint is configured.
 	// Both self-register via init() so `telemetry.NewTracer` resolves
@@ -126,7 +126,7 @@ import (
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/noop"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlp"
 
-	// Telemetry metric exporters — Phase 56 OTel metrics. The
+	// Telemetry metric exporters — OTel metrics. The
 	// prometheus driver is the default (built-in /metrics pull
 	// endpoint, no collector); the otlpmetric driver pushes metrics to
 	// an OTLP/gRPC collector when telemetry.otel_endpoint is
@@ -135,23 +135,23 @@ import (
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/otlpmetric"
 	_ "github.com/hurtener/Harbor/internal/telemetry/drivers/prometheus"
 
-	// Tools OAuth driver — D-095 (closes issue #116). The `oauth2`
+	// Tools OAuth driver (closes issue #116). The `oauth2`
 	// driver self-registers under that name via init() so
 	// `tools.oauth_providers[].driver: oauth2` resolves at boot. New
 	// OAuth flow strategies (device-code, vendor-specific) add a new
 	// driver under `internal/tools/auth/drivers/<name>/` + a blank
 	// import here, per the §4.4 seam pattern.
 	_ "github.com/hurtener/Harbor/internal/tools/auth/drivers/oauth2"
-	// Planner driver — D-103 (closes issue #126). The `react` driver
+	// Planner driver (closes issue #126). The `react` driver
 	// self-registers under that name via init() so
 	// `planner.driver: react` resolves at boot. New planner concretes
 	// (Plan-Execute, Workflow, Graph, Deterministic, Supervisor,
 	// MultiAgent, HumanApproval per RFC §6.2) add a new driver under
 	// `internal/planner/<name>/` + a blank import here, per the §4.4
-	// seam pattern that D-095 uses for OAuth providers. The V1
+	// seam pattern used for OAuth providers. The V1
 	// reference planner remains the no-config-needed default.
 	_ "github.com/hurtener/Harbor/internal/planner/react"
-	// Notifications event topic — Phase 72d (D-109). The package's init()
+	// Notifications event topic — The package's init()
 	// registers the five V1 notification.* event-type constants
 	// (notification.task_failed / tool_approval_requested /
 	// governance_budget_exceeded / auth_required / pause_requested) plus

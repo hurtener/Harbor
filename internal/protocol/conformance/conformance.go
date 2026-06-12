@@ -1,17 +1,17 @@
 // Package conformance is the Harbor Protocol conformance suite — the
 // single binding pass/fail definition of "the Protocol surface works at
-// version 0.1.0" (RFC §5 + master-plan Phase 62 detail block; D-080).
+// version 0.1.0" (RFC §5 + master-plan detail block).
 //
 // The suite exhaustively exercises every Protocol method
 // (internal/protocol/methods), every Protocol error code
 // (internal/protocol/errors), every documented event-filter shape, the
-// Phase 59 versioning + capability handshake, and the Phase 61 auth
+// versioning + capability handshake, and the auth
 // pipeline. It runs the same scenario bodies against TWO transports:
 //
 //   - In-process — direct `protocol.ControlSurface.Dispatch` calls. No
-//     HTTP; the transport-agnostic surface Phase 54 shipped.
-//   - Over-the-wire — the Phase 60 mux mounted on an `httptest.Server`,
-//     including the Phase 61 auth middleware. JWT bearers, JSON bodies,
+//     HTTP; the transport-agnostic surface An earlier phase shipped.
+//   - Over-the-wire — the mux mounted on an `httptest.Server`,
+//     including the auth middleware. JWT bearers, JSON bodies,
 //     HTTP status codes.
 //
 // A conformance pass means the Protocol surface is consistent across
@@ -21,7 +21,7 @@
 //
 // # Consumer pattern
 //
-// The suite is itself a reusable artifact (D-025): one shared `Stack`
+// The suite is itself a reusable artifact: one shared `Stack`
 // serves N concurrent invocations. Consumers wire a `Factory` that
 // builds a fresh `Stack` per top-level subtest (each subtest gets its
 // own in-mem state, its own event bus, its own task registry, its own
@@ -34,7 +34,7 @@
 // The default factory wires real drivers everywhere on the seam — real
 // `tasks.TaskRegistry` (inprocess), real `events.EventBus` (inmem),
 // real `state.StateStore` (inmem), real `protocol.ControlSurface`, real
-// `protocol/auth.Validator` over a real ES256 keypair, real Phase 60
+// `protocol/auth.Validator` over a real ES256 keypair, real wire
 // `transports.NewMux` under `httptest.Server`. A future Protocol
 // transport (WebSocket, stdio) consumes the suite via the same Factory
 // seam — no second conformance implementation.
@@ -56,7 +56,7 @@
 // loudly otherwise — the failure mode the suite exists to prevent
 // (silent surface drift) is mechanically guarded.
 //
-// # Concurrent reuse (D-025)
+// # Concurrent reuse
 //
 // `RunSuite` is safe to call concurrently against a single factory:
 // the factory builds a fresh `Stack` per subtest, and every scenario
@@ -116,7 +116,7 @@ import (
 // `test/integration/wave10_test.go`'s own Stack builder) can pin to
 // the same instant — keeping `fixedNow` in one canonical home
 // instead of two `time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)`
-// literals (PR #91, Wave 10 audit NIT-3). The concrete value is
+// literals (PR #91, checkpoint audit NIT-3). The concrete value is
 // irrelevant — what matters is that every JWT signer + every
 // validator sees the same instant.
 var FixedNow = time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
@@ -136,13 +136,13 @@ const kid = "harbor-conformance-k1"
 // the wired Protocol transports a conformance scenario exercises. Each
 // top-level subtest gets a fresh Stack (via Factory) so per-test state
 // (the task registry, the event bus, the steering registry) does not
-// bleed across subtests. The Stack itself is a D-025 compiled artifact
+// bleed across subtests. The Stack itself is a compiled artifact
 // — its fields are set once at construction and never mutated; the
 // concurrent-reuse scenario runs N≥100 invocations against one shared
 // Stack.
 type Stack struct {
-	// Surface is the in-process Protocol task-control surface (Phase
-	// 54). The in-process transport scenarios reach the runtime
+	// Surface is the in-process Protocol task-control surface (
+	// ). The in-process transport scenarios reach the runtime
 	// through `Surface.Dispatch`.
 	Surface *protocol.ControlSurface
 	// Bus is the real events.EventBus the SSE wire transport
@@ -151,13 +151,13 @@ type Stack struct {
 	// Steering is the steering.Registry behind Surface — the
 	// nine-control methods enqueue events on inboxes opened here.
 	// Exposed so scenarios can pre-open an inbox before submitting a
-	// control (mirroring the Wave 9 pattern).
+	// control (mirroring the pattern).
 	Steering *steering.Registry
 	// Tasks is the real tasks.TaskRegistry behind Surface — the
 	// `start` method spawns on this; identity-propagation scenarios
 	// read spawned tasks back via Get to verify the triple landed.
 	Tasks tasks.TaskRegistry
-	// Mux is the Phase 60 wire mux mounted on a Phase 61 validator.
+	// Mux is the wire mux mounted on a validator.
 	// The over-the-wire scenarios round-trip through `httptest.Server`
 	// against this handler.
 	Mux http.Handler
@@ -195,7 +195,7 @@ type Factory func(t *testing.T) *Stack
 //   - real `protocol.ControlSurface`,
 //   - real `protocol/auth.Validator` over a real ES256 keypair (loaded
 //     from `internal/protocol/auth/testdata/`),
-//   - real Phase 60 `transports.NewMux` with the Phase 61 validator
+//   - real `transports.NewMux` with the validator
 //     threaded via `WithValidator`.
 //
 // A keypath argument lets a consumer relocate the testdata directory
@@ -479,7 +479,7 @@ var errorCodeMatrix = []protoerrors.Code{
 	protoerrors.CodeRuntimeError,
 	protoerrors.CodeAuthRejected,
 	protoerrors.CodeIdentityScopeRequired,
-	// Phase 73l (D-120) artifacts surface — `CodePresignUnsupported`
+	// artifacts surface — `CodePresignUnsupported`
 	// (an `artifacts.get_ref` against a non-S3 driver) and
 	// `CodeRequestTooLarge` (an oversize `artifacts.put` body). Both are
 	// exercised end-to-end by the artifacts surface unit tests +
@@ -513,7 +513,7 @@ func methodScopeFor(m methods.Method) steering.Scope {
 }
 
 // happyPayloadFor returns a valid payload for method m — minimal but
-// passes the Phase 52 ValidatePayload bounds.
+// passes the ValidatePayload bounds.
 func happyPayloadFor(m methods.Method) map[string]any {
 	switch m {
 	case methods.MethodRedirect:
@@ -614,17 +614,17 @@ func RunSuite(t *testing.T, factory Factory) {
 func assertMethodMatrixExhaustive(t *testing.T) {
 	t.Helper()
 	got := methods.Methods()
-	// Phase 54 task-control ten + Wave 13 streaming-events two +
-	// Phase 72c search cluster five + Phase 72f posture cluster five +
-	// Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase
-	// 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 108o artifacts.delete one +
-	// Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve +
-	// Phase 73f tools cluster seven + Phase 73i flows-page six +
-	// Phase 73d tasks-page two + Phase 73e agents-page eight +
-	// Phase 73c sessions-page two + Phase 73n runs-page one +
-	// Phase 73m auth.rotate_token one = 71.
+	// task-control ten + streaming-events two +
+	// search cluster five + posture cluster five +
+	// posture pair two + pause-snapshot one +
+	// topology.snapshot one + artifacts cluster three + artifacts.delete one +
+	// memory cluster three + mcp.servers.* twelve +
+	// tools cluster seven + flows-page six +
+	// tasks-page two + agents-page eight +
+	// sessions-page two + Harbor runs-page one +
+	// auth.rotate_token one = 71.
 	if len(got) != 80 {
-		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 80 (Phase 54 task-control ten + Wave 13 streaming-events two + Phase 72c search cluster five + Phase 72f posture cluster five + Phase 72g posture pair two + Phase 72e pause-snapshot one + Phase 74 topology.snapshot one + Phase 73l artifacts cluster three + Phase 108o artifacts.delete one + Phase 73j memory cluster three + Phase 73k mcp.servers.* twelve + Phase 73f tools cluster seven + Phase 73i flows-page six + Phase 73d tasks-page two + Phase 73e agents-page eight + Phase 73c sessions-page two + Phase 73n runs-page one + Phase 73m auth.rotate_token one + Phase 108l agents-control five + Phase 108n memory-mutation/trace three)", len(got))
+		t.Fatalf("conformance: methods.Methods() returned %d entries, expected 80 (task-control ten + streaming-events two + search cluster five + posture cluster five + posture pair two + pause-snapshot one + topology.snapshot one + artifacts cluster three + artifacts.delete one + memory cluster three + mcp.servers.* twelve + tools cluster seven + flows-page six + tasks-page two + agents-page eight + sessions-page two + runs-page one + auth.rotate_token one + agents-control five + memory-mutation/trace three)", len(got))
 	}
 	wantSet := map[methods.Method]struct{}{
 		methods.MethodStart:               {},
@@ -737,7 +737,7 @@ func assertMethodMatrixExhaustive(t *testing.T) {
 // errors package's IsValidCode is the gate. A new code is a new entry
 // in errorCodeMatrix in the same PR.
 //
-// PR #91 / D-082 (Wave 10 audit WARN-4): the exhaustiveness side of
+// PR #91: the exhaustiveness side of
 // the check now iterates `protoerrors.Codes()` (added in PR #91) so
 // the assertion is structurally exhaustive — a new canonical code
 // landing without a matrix entry surfaces by NAME, not by a stale
@@ -769,7 +769,7 @@ func assertErrorCodeMatrixExhaustive(t *testing.T) {
 // happy-path on BOTH transports.
 //
 // Streaming-events methods (MethodEventsSubscribe / MethodEventsAggregate
-// — Wave 13) are NOT exercised via the ControlSurface here: they route
+// —) are NOT exercised via the ControlSurface here: they route
 // through their own transport (the SSE handler / the events-aggregate
 // HTTP handler), not the REST control surface. Their happy-paths live
 // under EventsSubscribe_HappyPath (subscribe) and the EventFilterMatrix
@@ -792,16 +792,16 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
-			// Phase 72c (D-108): the five `search.*` methods are
+			// the five `search.*` methods are
 			// task-control-disjoint — they need a SearchSurface, not
-			// a ControlSurface. Phase 80 will extend the conformance
+			// a ControlSurface. A later phase will extend the conformance
 			// suite to exercise them end-to-end; until then, skip with
 			// an explicit issue-style reason so the SKIP is observable
 			// rather than silent.
 			if methods.IsSearchMethod(m) {
-				t.Skip("phase-72c: search.* methods exercised by their per-package conformance + integration tests; conformance-suite scenario lands in Phase 80")
+				t.Skip("search.* methods exercised by their per-package conformance + integration tests; conformance-suite scenario lands with a later surface extension")
 			}
-			// Phase 72f / 72g (D-111 / D-112): the seven posture methods
+			// the seven posture methods
 			// — the five `runtime.*` / `metrics.*` reads plus
 			// `governance.posture` / `llm.posture` — are dispatched by
 			// PostureSurface, not ControlSurface. Their happy-paths are
@@ -810,9 +810,9 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// conformance-suite scenario lands later (same posture as
 			// the search cluster).
 			if methods.IsPostureMethod(m) {
-				t.Skip("phase-72f/72g: posture methods exercised by internal/protocol posture tests + test/integration posture tests; conformance-suite scenario lands later")
+				t.Skip("posture methods exercised by internal/protocol posture tests + test/integration posture tests; conformance-suite scenario lands later")
 			}
-			// Phase 72e (D-110): `pause.list` is a read-only snapshot
+			// `pause.list` is a read-only snapshot
 			// over the pauseresume.Coordinator — it routes through its
 			// own HTTP handler (POST /v1/pause/list), not the REST
 			// ControlSurface. It is exercised end-to-end by the
@@ -824,19 +824,19 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsPauseMethod(m) {
 				t.Skip("phase-72e: pause.list exercised by its handler unit tests + test/integration/pause_list_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 74 (D-114): topology.snapshot needs a
+			// topology.snapshot needs a
 			// TopologyAccessor (an engine.Engine) the conformance
 			// Stack does not wire — its runtime is task/steering-
 			// shaped. The method's happy-path + failure modes are
-			// exercised end-to-end by Phase 74's own unit tests, the
+			// exercised end-to-end by the own unit tests, the
 			// concurrent-reuse test, and test/integration/phase74_
 			// topology_test.go (real engine + real bus + real wire
 			// transport). The conformance-suite scenario lands when
 			// the suite gains an engine-bearing Stack.
 			if methods.IsTopologyMethod(m) {
-				t.Skip("phase-74: topology.snapshot exercised by its unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an engine")
+				t.Skip("topology.snapshot exercised by its unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an engine")
 			}
-			// Phase 73l (D-120): the three `artifacts.*` methods are
+			// the three `artifacts.*` methods are
 			// dispatched by ArtifactsSurface, not ControlSurface — they
 			// need an ArtifactStore the conformance Stack does not wire.
 			// Their happy-paths + failure modes are exercised by the
@@ -846,18 +846,18 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// scenario lands when the Stack gains an ArtifactStore — same
 			// posture as the search / posture / pause / topology clusters.
 			if methods.IsArtifactsMethod(m) {
-				t.Skip("phase-73l: artifacts.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an ArtifactStore")
+				t.Skip("artifacts.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires an ArtifactStore")
 			}
-			// Phase 73j (D-118) memory.* methods route through their own
+			// memory.* methods route through their own
 			// stream-transport handlers (POST /v1/memory/*), NOT the
 			// task-control ControlSurface. They are exercised end-to-end
 			// by their own unit + concurrent-reuse + integration tests +
-			// the phase-73j smoke; the conformance-suite scenario lands
+			// the memory-page smoke; the conformance-suite scenario lands
 			// when the Stack wires a MemoryStore-bearing memory handler.
 			if methods.IsMemoryMethod(m) {
-				t.Skip("phase-73j: memory.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires a memory handler")
+				t.Skip("memory.* methods exercised by their unit + concurrent + integration tests; conformance-suite scenario lands when the Stack wires a memory handler")
 			}
-			// Phase 73k (D-119): the twelve `mcp.servers.*` methods are
+			// the twelve `mcp.servers.*` methods are
 			// dispatched by the MCPSurface, not the ControlSurface — the
 			// conformance Stack wires no MCP accessor. Their happy-paths
 			// + failure modes are exercised end-to-end by the MCPSurface
@@ -865,9 +865,9 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// explicit reason — same posture as the search / posture /
 			// topology clusters above.
 			if methods.IsMCPServersMethod(m) {
-				t.Skip("phase-73k: mcp.servers.* methods exercised by the MCPSurface unit tests + test/integration MCP-page test; conformance-suite scenario lands with the Phase 80 surface extension")
+				t.Skip("mcp.servers.* methods exercised by the MCPSurface unit tests + test/integration MCP-page test; conformance-suite scenario lands with a later surface extension")
 			}
-			// Phase 73f (D-116): the seven `tools.*` methods are
+			// the seven `tools.*` methods are
 			// dispatched by the Tools handler (POST /v1/tools/{method}),
 			// not the REST ControlSurface — they need a tools.ToolCatalog
 			// the conformance Stack does not wire. Their happy-paths +
@@ -880,7 +880,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsToolsMethod(m) {
 				t.Skip("phase-73f: tools.* methods exercised by internal/tools/protocol tests + stream tools_handler tests + test/integration/tools_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73i (D-117): the six `flows.*` methods route through
+			// the six `flows.*` methods route through
 			// the Console Flows-page handler (POST /v1/flows/*), not the
 			// REST ControlSurface — they need a flowprotocol.Surface the
 			// conformance Stack does not wire. Their happy-paths +
@@ -888,12 +888,12 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// tests, the flow/protocol surface tests, the concurrent-
 			// reuse test, and test/integration/flows_page_test.go (real
 			// registry + real bus + real wire transport). The
-			// conformance-suite scenario lands with the Phase 80 surface
+			// conformance-suite scenario lands with the surface
 			// extension — same posture as the search / pause clusters.
 			if methods.IsFlowsMethod(m) {
 				t.Skip("phase-73i: flows.* methods exercised by their handler + surface unit tests + test/integration/flows_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73d (D-123): the two `tasks.*` methods route through
+			// the two `tasks.*` methods route through
 			// the Console Tasks-page handler (POST /v1/tasks/{method}),
 			// not the REST ControlSurface — they need a tasks.TaskRegistry
 			// the conformance Stack does not wire. Their happy-paths +
@@ -905,7 +905,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsTasksMethod(m) {
 				t.Skip("phase-73d: tasks.* methods exercised by internal/tasks/protocol tests + stream tasks_handler tests + test/integration/tasks_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73e (D-124): the eight `agents.*` methods route
+			// the eight `agents.*` methods route
 			// through the Console Agents-page handler
 			// (POST /v1/agents/{method}), not the REST ControlSurface —
 			// they need an Agent Registry the conformance Stack does not
@@ -914,17 +914,17 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			// concurrent-reuse test, the stream-package agents_handler
 			// tests, and test/integration/agents_page_test.go (real
 			// registry + real bus + real wire transport). The
-			// conformance-suite scenario lands with the Phase 80 surface
+			// conformance-suite scenario lands with the surface
 			// extension — same posture as the tools / flows clusters.
 			if methods.IsAgentsMethod(m) {
 				t.Skip("phase-73e: agents.* methods exercised by internal/runtime/registry/protocol tests + stream agents_handler tests + test/integration/agents_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73c (D-122): the two `sessions.*` methods route
+			// the two `sessions.*` methods route
 			// through the Console Sessions-page handler (POST
 			// /v1/sessions/*), not the REST ControlSurface — they need a
 			// sessions/protocol.Service the conformance Stack does not
 			// wire. Their happy-paths + failure modes are exercised by
-			// the sessions/protocol unit tests, the D-025 concurrent-
+			// the sessions/protocol unit tests, the concurrent-
 			// reuse test, the stream sessions_handler tests, and
 			// test/integration/sessions_page_test.go (real registry +
 			// real wire transport + real auth). Skip with an explicit
@@ -933,7 +933,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsSessionsMethod(m) {
 				t.Skip("phase-73c: sessions.* methods exercised by internal/sessions/protocol tests + stream sessions_handler tests + test/integration/sessions_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73n (D-130): `runs.set_overrides` routes through the
+			// `runs.set_overrides` routes through the
 			// Console Playground-page handler (POST /v1/runs/set_overrides),
 			// not the REST ControlSurface — it needs a runs/protocol.Service
 			// (override Store) the conformance Stack does not wire. Its
@@ -946,12 +946,12 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 			if methods.IsRunsMethod(m) {
 				t.Skip("phase-73n: runs.* methods exercised by internal/runtime/runs/protocol tests + stream runs_handler tests + test/integration/playground_overrides_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73m (D-129): auth.rotate_token routes through its own
+			// auth.rotate_token routes through its own
 			// stream-transport handler (AuthHandler over auth.RotateSurface),
 			// not the ControlSurface — its happy path is exercised by
 			// internal/protocol/auth/rotate_token_test.go + stream
 			// auth_handler_test.go + test/integration/settings_page_test.go;
-			// the conformance-suite scenario lands with the Phase 80
+			// the conformance-suite scenario lands with the
 			// surface extension.
 			if methods.IsAuthMethod(m) {
 				t.Skip("phase-73m: auth.rotate_token exercised by internal/protocol/auth/rotate_token_test.go + stream auth_handler_test.go + test/integration/settings_page_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
@@ -1047,7 +1047,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 				}
 				// The token MUST carry an identity scope matching what
 				// the body claims (defence-in-depth in the control
-				// handler). The Phase 61 control handler also accepts
+				// handler). The control handler also accepts
 				// an empty body identity and backfills from the JWT;
 				// to keep the wire test honest we echo the identity.
 				tok := st.SignToken(t, q.Identity, []auth.Scope{auth.ScopeAdmin})
@@ -1083,7 +1083,7 @@ func runMethodMatrixHappyPath(t *testing.T, factory Factory) {
 // surfaces it as HTTP 400.
 //
 // Streaming-events methods (MethodEventsSubscribe / MethodEventsAggregate
-// — Wave 13) are intentionally skipped — their "wrong transport"
+// —) are intentionally skipped — their "wrong transport"
 // rejection is structurally CodeInvalidRequest (the streaming-events
 // method is hitting the REST control surface), not "malformed JSON". A
 // dedicated assertion lives below.
@@ -1095,42 +1095,42 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			continue
 		}
 		t.Run(string(m), func(t *testing.T) {
-			// Phase 72c (D-108): the five search.* methods are
+			// the five search.* methods are
 			// dispatched by SearchSurface, not ControlSurface. Their
 			// malformed-request rejection is covered in the
 			// per-package conformance test in internal/search/*; the
-			// conformance suite picks them up in Phase 80.
+			// conformance suite picks them up in a later phase.
 			if methods.IsSearchMethod(m) {
-				t.Skip("phase-72c: search.* malformed-request paths covered by per-package conformance; conformance-suite scenario lands in Phase 80")
+				t.Skip("search.* malformed-request paths covered by per-package conformance; conformance-suite scenario lands with a later surface extension")
 			}
-			// Phase 72f / 72g (D-111 / D-112): the seven posture methods
+			// the seven posture methods
 			// are dispatched by PostureSurface, not ControlSurface.
 			// Their malformed-request rejection is covered by the
 			// internal/protocol posture tests + the per-package
 			// posture-handler tests; the conformance-suite scenario
 			// lands later.
 			if methods.IsPostureMethod(m) {
-				t.Skip("phase-72f/72g: posture malformed-request paths covered by internal/protocol + per-package posture-handler tests; conformance-suite scenario lands later")
+				t.Skip("posture malformed-request paths covered by internal/protocol + per-package posture-handler tests; conformance-suite scenario lands later")
 			}
-			// Phase 72e (D-110): pause.list routes through its own HTTP
+			// pause.list routes through its own HTTP
 			// handler, not the ControlSurface. Its malformed-request
 			// rejection (PageSize > max → 400, bad status enum → 400)
 			// is covered by pause_list_handler_test.go; the conformance
-			// suite picks it up with the Phase 80 surface extension.
+			// suite picks it up with the surface extension.
 			if methods.IsPauseMethod(m) {
 				t.Skip("phase-72e: pause.list malformed-request paths covered by pause_list_handler_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 74 (D-114): topology.snapshot against the
+			// topology.snapshot against the
 			// engine-less conformance Stack returns CodeUnknownMethod
 			// (the nil-accessor branch) before any request-shape
 			// check, so the generic malformed-request CodeInvalidRequest
 			// assertion does not apply. The method's malformed-request
 			// path (wrong request type against a wired accessor) is
-			// covered by Phase 74's protocol_test.go.
+			// covered by the protocol_test.go.
 			if methods.IsTopologyMethod(m) {
 				t.Skip("phase-74: topology.snapshot malformed-request path covered by internal/protocol/protocol_test.go; conformance-suite scenario lands when the Stack wires an engine")
 			}
-			// Phase 73l (D-120): the three artifacts.* methods are
+			// the three artifacts.* methods are
 			// dispatched by ArtifactsSurface, which the engine-less
 			// conformance Stack does not wire — the control transport
 			// returns CodeUnknownMethod before any request-shape check.
@@ -1141,20 +1141,20 @@ func runMethodMatrixMalformedRequest(t *testing.T, factory Factory) {
 			if methods.IsArtifactsMethod(m) {
 				t.Skip("phase-73l: artifacts.* malformed-request paths covered by internal/protocol/artifacts_test.go; conformance-suite scenario lands when the Stack wires an ArtifactStore")
 			}
-			// Phase 73j (D-118): memory.* methods route through their own
+			// memory.* methods route through their own
 			// stream-transport handlers, not the ControlSurface — their
 			// malformed-request paths are covered by the memory_handler
 			// tests.
 			if methods.IsMemoryMethod(m) {
 				t.Skip("phase-73j: memory.* malformed-request paths covered by internal/protocol/transports/stream/memory_handler_test.go")
 			}
-			// Phase 73k (D-119): mcp.servers.* methods route through the
+			// mcp.servers.* methods route through the
 			// MCPSurface, not the ControlSurface — their malformed-request
 			// paths are covered by the MCPSurface unit tests.
 			if methods.IsMCPServersMethod(m) {
 				t.Skip("phase-73k: mcp.servers.* malformed-request path covered by internal/protocol/mcp_test.go; conformance-suite scenario lands with the Phase 80 surface extension")
 			}
-			// Phase 73m (D-129): auth.rotate_token routes through its own
+			// auth.rotate_token routes through its own
 			// stream-transport handler, not the ControlSurface — its
 			// malformed-request paths are covered by stream
 			// auth_handler_test.go + internal/protocol/auth/rotate_token_test.go.
@@ -1318,10 +1318,10 @@ func runErrorCodeMatrix(t *testing.T, factory Factory) {
 	})
 
 	t.Run("CodeIdentityScopeRequired_CrossTenantWithoutScope", func(t *testing.T) {
-		// Phase 72 / D-105: a `?admin=1` request from a JWT lacking
+		// a `?admin=1` request from a JWT lacking
 		// `auth.ScopeAdmin` AND `auth.ScopeConsoleFleet` is rejected
 		// 403 with the typed Code `identity_scope_required`. The wire
-		// surface is the Phase 60 `/v1/events` SSE route.
+		// surface is the `/v1/events` SSE route.
 		st := factory(t)
 		defer st.Cleanup()
 		srv := httptest.NewServer(st.Mux)
@@ -1403,7 +1403,7 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 			t.Fatalf("build request: %v", reqErr)
 		}
 		req.Header.Set("Authorization", "Bearer "+tok)
-		// Two event types: the runtime.error type from Phase 04 + the
+		// Two event types: the telemetry runtime.error type + the
 		// bus-internal dropped type. Both are in the canonical
 		// registry.
 		req.Header.Add("X-Harbor-Event-Type", string(events.EventTypeRuntimeError))
@@ -1491,7 +1491,7 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 		}
 	})
 
-	// PR #91 / D-082 (Wave 10 audit WARN-5): the optional
+	// PR #91: the optional
 	// `X-Harbor-Run` carrier header narrows the subscription to a
 	// single run inside the (tenant, user, session) scope. A
 	// run-scoped subscription opens cleanly; the events.Filter.Run
@@ -1523,9 +1523,9 @@ func runEventFilterMatrix(t *testing.T, factory Factory) {
 	})
 }
 
-// runEventsSubscribeNegotiation pins the Phase 72 / D-105 method-name
+// runEventsSubscribeNegotiation pins the method-name
 // surface: `events.subscribe` is a canonical Protocol method. The wire
-// transport is `GET /v1/events` (Phase 60 SSE); the method-name
+// transport is `GET /v1/events` (SSE); the method-name
 // constant is the contract a third-party Console branches on. The
 // happy-path scenario opens a triple-scoped SSE stream over the wire
 // and asserts HTTP 200 + the SSE Content-Type. The reject paths
@@ -1595,7 +1595,7 @@ func runEventsSubscribeNegotiation(t *testing.T, factory Factory) {
 	})
 }
 
-// runVersionHandshake pins the Phase 59 version + capability handshake
+// runVersionHandshake pins the version + capability handshake
 // shape at Protocol 0.1.0. A drift in any of these surfaces as a
 // conformance failure — the trip-wire that flags silent surface drift
 // per RFC §5.3 ("the Protocol surface is versioned independently of
@@ -1615,11 +1615,11 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("handshake.ProtocolVersion = %q, want %q", h.ProtocolVersion, types.ProtocolVersion)
 	}
 	caps := types.Capabilities()
-	// Phase 54 task-control + Wave 13 streaming-events + Phase 72f
-	// runtime-posture + phase 84a topology-snapshot = 4 capabilities
+	// task-control + streaming-events +
+	// runtime-posture + topology-snapshot = 4 capabilities
 	// at Protocol 0.1.0. (The capability constants live in
 	// internal/protocol/types/version.go; a new capability is a new
-	// constant + a new entry in canonicalCapabilities. Phase 84a / F1
+	// constant + a new entry in canonicalCapabilities. A checkpoint fix
 	// — `topology_snapshot` is in the canonical *registry*; per-instance
 	// advertisement is conditional via `PostureDeps.TopologyAvailable`.)
 	if len(caps) != 4 {
@@ -1645,16 +1645,16 @@ func runVersionHandshake(t *testing.T) {
 		t.Fatalf("types.Capabilities() missing canonical capabilities %v", missing)
 	}
 	if !h.Accepts(types.CapTaskControl) {
-		t.Fatal("handshake.Accepts(CapTaskControl) = false; the Phase 54 task-control surface must be advertised")
+		t.Fatal("handshake.Accepts(CapTaskControl) = false; the task-control surface must be advertised")
 	}
 	if !h.Accepts(types.CapEventsSubscribe) {
-		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the Wave 13 streaming-events surface (Phase 72 / 72a) must be advertised")
+		t.Fatal("handshake.Accepts(CapEventsSubscribe) = false; the streaming-events surface must be advertised")
 	}
 	if !h.Accepts(types.CapRuntimePosture) {
-		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the Wave 13 runtime-posture surface (Phase 72f) must be advertised")
+		t.Fatal("handshake.Accepts(CapRuntimePosture) = false; the runtime-posture surface must be advertised")
 	}
 	if !h.Accepts(types.CapTopologySnapshot) {
-		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the Phase 74 topology-snapshot surface must appear in the canonical capability set (per-instance advertisement is conditional, but the handshake universe is unconditional)")
+		t.Fatal("handshake.Accepts(CapTopologySnapshot) = false; the topology-snapshot surface must appear in the canonical capability set (per-instance advertisement is conditional, but the handshake universe is unconditional)")
 	}
 
 	// The deprecation registry is empty at 0.1.0 — nothing has been
@@ -1673,7 +1673,7 @@ func runVersionHandshake(t *testing.T) {
 	}
 }
 
-// runAuthPipeline pins the Phase 61 auth surface:
+// runAuthPipeline pins the auth surface:
 //
 //   - The asymmetric-algorithm allowlist is exactly the six entries.
 //   - HS* tokens are rejected at the parser level (alg confusion).
@@ -1791,12 +1791,12 @@ func runWireStatusMapping(t *testing.T, factory Factory) {
 }
 
 // runTracePropagation pins the W3C TraceContext propagation through
-// the Phase 60 SSE transport: a `traceparent` header on the GET
+// the SSE transport: a `traceparent` header on the GET
 // /v1/events request flows into the stream handler's context;
 // SpanFromEvent on the received event then produces a span whose
 // TraceID matches the inbound traceparent.
 //
-// PR #91 / D-082 (Wave 10 audit WARN-7): added so the conformance
+// PR #91: added so the conformance
 // matrix observes the trace-propagation seam, not just unit tests.
 // The previous conformance pass did not exercise the propagation
 // helpers (`InjectHTTP` / `ExtractHTTP`) end-to-end at all — this

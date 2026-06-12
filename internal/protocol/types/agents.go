@@ -1,5 +1,5 @@
-// Phase 73e (Wave 13 / D-124) — the Console Agents-page Protocol wire
-// types. These structs are the single source of truth (D-002 / §8) for
+// the Console Agents-page Protocol wire
+// types. These structs are the single source of truth (§8) for
 // the eight `agents.*` methods the Console Agents page consumes:
 //
 //   - agents.list        — paginated, faceted agent catalog projection.
@@ -16,7 +16,7 @@
 //
 // Every `agents.*` wire request carries an IdentityScope — the
 // (tenant, user, session) triple. The runtime filters by that triple,
-// NEVER by AgentID. AgentID is a registration identity (D-059), not a
+// NEVER by AgentID. AgentID is a registration identity, not a
 // WHERE-clause isolation key (CLAUDE.md §6 clarifying note).
 //
 // # Flat Protocol projection, not a re-export
@@ -89,7 +89,7 @@ const (
 )
 
 // AgentHosting discriminates a locally-hosted agent from a
-// connect-to-remote agent (D-060).
+// connect-to-remote agent.
 type AgentHosting string
 
 const (
@@ -102,19 +102,19 @@ const (
 
 // Agent is the catalog-row projection of one registered agent — the
 // shape `agents.list` returns per row and `agents.get` nests in its
-// response. ID is a registration identity (D-059), NOT an isolation
+// response. ID is a registration identity, NOT an isolation
 // principal.
 type Agent struct {
-	// ID is the agent_id — the stable registration identity (D-059).
+	// ID is the agent_id — the stable registration identity.
 	ID string `json:"id"`
 	// Name is the operator-facing display name.
 	Name string `json:"name"`
 	// Description is the operator-facing description.
 	Description string `json:"description"`
-	// Incarnation bumps on every process start (D-059).
+	// Incarnation bumps on every process start.
 	Incarnation int64 `json:"incarnation"`
-	// VersionHash is the SHA-256 over canonical JSON of AgentConfig
-	// (D-068). Empty for a HostingRemote agent.
+	// VersionHash is the SHA-256 over canonical JSON of AgentConfig.
+	// Empty for a HostingRemote agent.
 	VersionHash string `json:"version_hash"`
 	// Owner is the registration key of the agent — the operator-stable
 	// logical-agent key the admin registered it under.
@@ -238,7 +238,7 @@ type AgentToolsRequest struct {
 }
 
 // AgentToolBinding is one tool binding on an agent — a tool + the
-// per-binding OAuth status (D-083).
+// per-binding OAuth status.
 type AgentToolBinding struct {
 	// ToolID is the catalog key of the bound tool.
 	ToolID string `json:"tool_id"`
@@ -250,8 +250,8 @@ type AgentToolBinding struct {
 	// AuthStatus is the per-binding OAuth status: "no_auth" / "headers"
 	// / "oauth_user_bound" / "oauth_agent_bound" / "oauth_expired".
 	AuthStatus string `json:"auth_status"`
-	// BindingScope is the OAuth binding scope (auth.BindingScope per
-	// D-083): "user" / "agent". Empty for a non-OAuth binding.
+	// BindingScope is the OAuth binding scope (auth.BindingScope per):
+	// "user" / "agent". Empty for a non-OAuth binding.
 	BindingScope string `json:"binding_scope,omitempty"`
 }
 
@@ -273,7 +273,7 @@ type AgentMemoryRequest struct {
 
 // AgentMemoryBinding is the agent's configured memory strategy.
 type AgentMemoryBinding struct {
-	// StrategyID is the memory strategy id (Phase 24).
+	// StrategyID is the memory strategy id.
 	StrategyID string `json:"strategy_id"`
 	// TTLSeconds is the configured memory TTL in seconds (0 ⇒ no TTL).
 	TTLSeconds int64 `json:"ttl_seconds"`
@@ -297,7 +297,7 @@ type AgentGovernanceRequest struct {
 	ID string `json:"id"`
 }
 
-// AgentCostCeiling is one per-identity-tier cost ceiling (Phase 36a).
+// AgentCostCeiling is one per-identity-tier cost ceiling.
 type AgentCostCeiling struct {
 	// Tier is the identity tier the ceiling applies to.
 	Tier string `json:"tier"`
@@ -307,8 +307,8 @@ type AgentCostCeiling struct {
 	SpendUSD float64 `json:"spend_usd"`
 }
 
-// AgentRateLimit is one per-identity-tier rate-limit posture (Phase
-// 36b).
+// AgentRateLimit is one per-identity-tier rate-limit posture (
+// ).
 type AgentRateLimit struct {
 	// Tier is the identity tier the rate limit applies to.
 	Tier string `json:"tier"`
@@ -343,15 +343,15 @@ type AgentSkillsRequest struct {
 	ID string `json:"id"`
 }
 
-// AgentSkillBinding is one skill attached to an agent (Phase 38 + Phase
-// 41 generated skills).
+// AgentSkillBinding is one skill attached to an agent (built-in +
+// generated skills).
 type AgentSkillBinding struct {
 	// SkillID is the catalog key of the attached skill.
 	SkillID string `json:"skill_id"`
 	// Name is the operator-facing skill name.
 	Name string `json:"name"`
 	// Generated reports whether the skill was generated in-runtime
-	// (Phase 41) rather than imported (Phase 38).
+	// rather than imported.
 	Generated bool `json:"generated"`
 }
 
@@ -421,9 +421,9 @@ type AgentMetricsResponse struct {
 
 // AgentControlRequest is the shared request body for the five fleet-
 // control verbs (`agents.pause` / `agents.drain` / `agents.restart` /
-// `agents.force_stop` / `agents.deregister`) — Phase 108l / D-184. Every
+// `agents.force_stop` / `agents.deregister`) —. Every
 // control verb mutates registry state and requires the elevated
-// `auth.ScopeAdmin` control claim (D-066). `Reason` is operator-supplied
+// `auth.ScopeAdmin` control claim. `Reason` is operator-supplied
 // free text the registry redacts through `audit.Redactor` before it
 // reaches the `agent.*` event; `agents.deregister` ignores it.
 type AgentControlRequest struct {

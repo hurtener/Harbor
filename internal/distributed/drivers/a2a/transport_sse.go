@@ -110,7 +110,7 @@ func buildSSERequestBody(method string, params any) ([]byte, error) {
 //   - ctx.Done() fires → Recv returns ctx.Err().
 //   - Close() was called → Recv returns io.EOF.
 //
-// Concurrent reuse (D-025): the stream wraps per-call state (scanner
+// Concurrent reuse: the stream wraps per-call state (scanner
 // buffers + cancel func) and is NOT designed for concurrent Recv from
 // multiple goroutines — A2A streams are single-consumer by spec. The
 // per-stream goroutine that pumps the bufio.Scanner runs at most once

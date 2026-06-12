@@ -13,7 +13,7 @@ import (
 )
 
 // DefaultTemplate is the template `harbor scaffold` selects when the
-// operator omits --template. Phase 67 ships only minimal-react.
+// operator omits --template. Harbor ships only minimal-react.
 const DefaultTemplate = "minimal-react"
 
 // Sentinel errors. Callers (cmd/harbor/cmd_scaffold.go) compare via
@@ -35,7 +35,7 @@ var (
 	// failed. The wrapped message names the offending file path.
 	ErrRender = errors.New("scaffold: render failed")
 	// ErrUpstreamConfigInvalid signals the operator-supplied yaml at
-	// FromConfigPath failed to load or validate (Phase 83o / D-154).
+	// FromConfigPath failed to load or validate.
 	// Wraps the underlying `internal/config.ErrConfigInvalid`.
 	ErrUpstreamConfigInvalid = errors.New("scaffold: upstream harbor.yaml is invalid")
 )
@@ -57,14 +57,14 @@ type Options struct {
 	// are skipped.
 	OutputDir string
 	// FromConfigPath is the optional path to an operator-edited
-	// `harbor.yaml` (Phase 83o / D-154). When set, Scaffold loads +
+	// `harbor.yaml`. When set, Scaffold loads +
 	// validates it and uses its `tools.custom[]` entries to generate
 	// per-tool Go stubs under `OutputDir/tools/`. Empty + no
 	// `./harbor.yaml` in the cwd ⇒ Scaffold falls back to the
 	// template-only behavior (the existing scaffold-without-init
 	// path stays valid).
 	FromConfigPath string
-	// Patch relaxes the refuse-overwrite default (Phase 83o / D-154).
+	// Patch relaxes the refuse-overwrite default.
 	// When true, an existing OutputDir is accepted and Scaffold writes
 	// only files that do NOT already exist; existing files are
 	// skipped and listed under `Result.Skipped`. The operator-edit
@@ -76,7 +76,7 @@ type Options struct {
 // OutputDir, in deterministic (lexicographic) order — a smoke script
 // or scripted consumer can rely on the ordering.
 //
-// Phase 83o / D-154: `Skipped` lists files that were already on disk
+// `Skipped` lists files that were already on disk
 // at scaffold time and were therefore NOT overwritten. Only populated
 // when `Options.Patch == true`; non-patch runs reject existing output
 // dirs outright.
@@ -121,7 +121,7 @@ func validateName(name string) error {
 }
 
 // Templates returns the deterministic-order list of registered
-// template names. Phase 67 ships exactly one entry.
+// template names. Harbor ships exactly one entry.
 func Templates() []string {
 	entries, err := fs.ReadDir(templatesFS, "templates")
 	if err != nil {
@@ -163,7 +163,7 @@ func templateExists(name string) bool {
 //     mode) MUST NOT exist. With `opts.Patch == true`, an existing
 //     directory is accepted; existing files are skipped.
 //
-// Upstream config (Phase 83o / D-154): when `opts.FromConfigPath` is
+// Upstream config: when `opts.FromConfigPath` is
 // set OR `./harbor.yaml` exists in the cwd, Scaffold loads + validates
 // it via `internal/config.Load`. Its `tools.custom[]` entries drive
 // per-tool stub generation; the yaml file itself is copied verbatim
@@ -208,7 +208,7 @@ func Scaffold(opts Options) (Result, error) {
 			return Result{}, fmt.Errorf("%w: stat output_dir: %w", ErrRender, statErr)
 		}
 	}
-	// Resolve the upstream config (Phase 83o / D-154). An explicit
+	// Resolve the upstream config. An explicit
 	// path is honoured verbatim; an empty path auto-detects
 	// `./harbor.yaml` and silently falls through to template-only
 	// when neither resolves.

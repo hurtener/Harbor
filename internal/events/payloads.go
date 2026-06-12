@@ -36,8 +36,8 @@ type AuditRedactionFailedPayload struct {
 // AdminScopeUsedPayload is emitted whenever Subscribe is called with
 // Filter.Admin=true, regardless of whether the triple is empty or
 // partially specified. Surfaces admin-scope use for after-the-fact
-// auditability — Phase 61 will additionally enforce a cryptographic
-// scope claim, but the audit emit itself is Phase 05's contribution.
+// auditability — will additionally enforce a cryptographic
+// scope claim, but the audit emit itself is the contribution.
 type AdminScopeUsedPayload struct {
 	SafeSealed
 	Tenant       string
@@ -56,7 +56,7 @@ type AdminScopeUsedPayload struct {
 // path (e.g. emitting a runtime error directly from a handler that
 // bypassed the redactor). Running this payload through the bus
 // redactor on every Publish is an extra walk per error event, but
-// it preserves the audit-redactor-as-bus-boundary contract (D-020).
+// it preserves the audit-redactor-as-bus-boundary contract.
 //
 // Fields is the slog.Attr key/value map after Logger redaction, in
 // `map[string]any` shape so the audit redactor's reflective walk
@@ -75,7 +75,7 @@ type RuntimeErrorPayload struct {
 //
 // SafePayload by construction — every field is internal bookkeeping
 // (no caller-controlled bytes). Subscribers consume the typed shape
-// directly without an audit-redactor walk. Phase 13.
+// directly without an audit-redactor walk.
 type RunCancelledPayload struct {
 	SafeSealed
 	RunID                string

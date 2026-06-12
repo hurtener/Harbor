@@ -21,7 +21,7 @@ import (
 //     CodeRunCancelled.
 //  4. On terminal failure, build a *RunError tagged with the
 //     envelope's identity quadruple and return it. The worker emits
-//     to the logger + bus via the Phase 04→05 wiring.
+//     to the logger + bus via the telemetry↔events wiring.
 //  5. Optional output validation on the successful path.
 //
 // Concurrent-reuse safe: all per-invocation state lives on the
@@ -29,8 +29,8 @@ import (
 // NodePolicy is a value type captured by value; ValidateFunc is a
 // shared pointer the caller guarantees concurrent-safe.
 //
-// Worker integration: this is the function the Phase 11 worker loop
-// calls in place of the bare `node.Func(ctx, env, nctx)` Phase 10
+// Worker integration: this is the function the worker loop
+// calls in place of the bare `node.Func(ctx, env, nctx)` An earlier phase
 // shipped. On nil err, the returned envelope flows downstream; on
 // non-nil, the worker emits the *RunError to the logger and continues.
 func runWithReliability(
@@ -66,7 +66,7 @@ func runWithReliability(
 				"run cancelled", ctxErr, map[string]any{"attempt": attempt})
 		}
 
-		// Phase 13: per-run Cancel observed between iterations. The
+		// per-run Cancel observed between iterations. The
 		// flag is sticky once Cancel has fired; subsequent retries see
 		// it on the next loop pass and terminate the shell.
 		if rcCancel != nil && rcCancel.cancelled.Load() {

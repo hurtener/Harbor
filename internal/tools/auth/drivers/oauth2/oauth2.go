@@ -1,5 +1,5 @@
 // Package oauth2 ships Harbor's V1 default OAuth provider driver
-// (D-095, closes issue #116 and D-090's deferred construction gap).
+// (closes issue #116 and the deferred construction gap).
 //
 // The driver implements the §4.4 seam pattern for OAuth flow
 // strategies: it self-registers under the canonical driver name
@@ -9,7 +9,7 @@
 //
 // # The OAuth2 + PKCE Authorization Code flow
 //
-// The driver delegates to `internal/tools/auth.Provider` (the Phase 30
+// The driver delegates to `internal/tools/auth.Provider` (the
 // concrete `OAuthProvider`), which already implements the full
 // Authorization Code + PKCE + RFC 7591 dynamic registration + metadata
 // discovery flow. This package's responsibility is the operator-config
@@ -19,7 +19,7 @@
 //
 // # Source ID binding (V1 simplification)
 //
-// The Phase 30 `*Provider.Token(ctx, source)` API keys by
+// The `*Provider.Token(ctx, source)` API keys by
 // `tools.ToolSourceID` — each provider holds one `OAuthConfig` per
 // source. For V1, the `oauth2` driver constructs ONE `*Provider` per
 // `tools.oauth_providers[]` entry with a single `OAuthConfig` whose
@@ -89,8 +89,8 @@ var (
 	ErrMissingEndpoints = errors.New("auth/oauth2: both auth_url and token_url must be set (the oauth2 driver does not auto-discover endpoints — declare them in tools.oauth_providers[])")
 	// ErrMissingRedirectURL — `cfg.RedirectURL` was empty. The
 	// redirect_uri names the callback endpoint; `harbor dev` mounts
-	// Harbor's production handler (`auth.CallbackHandler`, Phase
-	// 111b / D-199) at `GET /v1/tools/oauth/callback`, so the dev
+	// Harbor's production handler (`auth.CallbackHandler`)
+	// at `GET /v1/tools/oauth/callback`, so the dev
 	// value is `http://<bind>/v1/tools/oauth/callback`. Headless
 	// embedders mount the same handler on their own mux (see
 	// docs/recipes/steer-and-resume-a-run.md).
@@ -130,7 +130,7 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 	// shared-service-account flow (ScopeAgent) compose with a future
 	// per-vendor driver that pins the agent identity. The catalog
 	// entry's `oauth.binding_scope` field steers the wrapper but the
-	// underlying OAuthConfig must match (Phase 30 enforces). For V1
+	// underlying OAuthConfig must match (Harbor enforces). For V1
 	// the driver pins ScopeUser; an entry declaring ScopeAgent against
 	// the `oauth2` driver yields a clear runtime error from the
 	// Provider rather than a silent mismatch.
@@ -170,8 +170,8 @@ func New(cfg auth.ProviderConfig, deps auth.FactoryDeps) (auth.OAuthProvider, er
 //
 // `InitiateFlow` / `CompleteFlow` retarget the same way.
 //
-// Concurrent reuse (D-025): the wrapper holds an immutable inner +
-// metadata; the underlying `*auth.Provider` is already D-025-safe
+// Concurrent reuse: the wrapper holds an immutable inner +
+// metadata; the underlying `*auth.Provider` is already safe for concurrent reuse
 // (per `internal/tools/auth/concurrent_test.go`).
 type provider struct {
 	name   string

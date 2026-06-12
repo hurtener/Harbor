@@ -5,7 +5,7 @@ import (
 )
 
 // estimateTokens returns a token-count estimate for an assembled
-// CompleteRequest. The default algorithm (`chars_div_4` per brief 04
+// CompleteRequest. The default algorithm (`chars_div_4`
 // §2) is `len(text) / 4 + 1` per text fragment plus a 4-token
 // per-message overhead for role + structural framing.
 //
@@ -27,8 +27,8 @@ import (
 //     legitimately-bounded multimodal requests.
 //
 // Response-format JSON schemas contribute to the prompt — schemas
-// over a few hundred tokens are real. Phase 35's downgrade chain
-// will hand-balance schema size vs prompt size; Phase 32 estimates
+// over a few hundred tokens are real. the downgrade chain
+// will hand-balance schema size vs prompt size; estimates
 // the bytes-rendered schema at chars/4.
 func estimateTokens(req CompleteRequest, profile ModelProfile) int {
 	if profile.TokenEstimator == "" || profile.TokenEstimator == "chars_div_4" {
@@ -42,7 +42,7 @@ func estimateTokens(req CompleteRequest, profile ModelProfile) int {
 
 const (
 	// messageRoleOverhead is the per-message structural cost
-	// (role token, delimiters). Calibrated against brief 04 §2's
+	// (role token, delimiters). Calibrated against the memory design's
 	// reference; deliberately conservative on the "more tokens"
 	// side.
 	messageRoleOverhead = 4

@@ -10,15 +10,15 @@ import (
 )
 
 // projectResponse maps an [llm.CompleteResponse] onto a
-// [planner.Decision] (brief 15 §6 "Decision-sum invariance"):
+// [planner.Decision]:
 //
 //   - 0 ToolCalls + Content  → Finish{Goal}
 //   - 0 ToolCalls + no content → Finish{NoPath}
 //   - 1 ToolCall              → CallTool (or reserved-name translation
 //     to Finish / SpawnTask / AwaitTask)
 //   - N>1 ToolCalls           → CallParallel{Branches, Join: nil}
-//     when `parallelEnabled` (Phase 107d — D-169, the default), else the
-//     Phase 107c serialization fallback (head CallTool + tail queued on
+//     when `parallelEnabled` (the default), else the
+//     serialization fallback (head CallTool + tail queued on
 //     `rc.PendingToolCalls`).
 //
 // AC-21 (carried-over 107c silent tail-drop fix): a reserved
@@ -99,7 +99,7 @@ func projectResponse(resp llm.CompleteResponse, rc *planner.RunContext, parallel
 		return planner.CallParallel{Branches: branches, Join: nil}, nil
 	}
 
-	// Serialization fallback (Phase 107c — parallel_tool_calls: false):
+	// Serialization fallback (parallel_tool_calls: false):
 	// dispatch the head, queue the tail on rc.PendingToolCalls.
 	call := planner.CallTool{
 		Tool:   first.Name,

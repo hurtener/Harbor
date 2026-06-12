@@ -17,7 +17,7 @@
 //   - The reaper goroutine ticks at IdleTimeout/4 and Cancels any
 //     subscription whose Events() channel has not been drained for
 //     IdleTimeout.
-//   - Replay (Phase 06) snapshots the ring under publishMu, applies
+//   - Replay snapshots the ring under publishMu, applies
 //     the same filter rules as Subscribe, returns events strictly
 //     newer than the cursor in Sequence order. ReplayBufferSize=0
 //     disables the ring entirely; Replay returns
@@ -465,9 +465,9 @@ func (b *bus) Replay(_ context.Context, from events.Cursor, f events.Filter) ([]
 
 	if f.Admin {
 		// Mirror Subscribe: surface admin-scope use on the bus so
-		// abuse is retroactively detectable. Phase 61 (Protocol auth)
-		// will add cryptographic verification; Phase 06 trusts the
-		// boolean exactly as Phase 05's Subscribe does.
+		// abuse is retroactively detectable. The Protocol auth layer
+		// will add cryptographic verification; Harbor trusts the
+		// boolean exactly as the Subscribe does.
 		notice := events.Event{
 			Type:       events.EventTypeAdminScopeUsed,
 			Identity:   identity.Quadruple{Identity: identity.Identity{TenantID: f.Tenant, UserID: f.User, SessionID: f.Session}},
@@ -813,7 +813,7 @@ func (s *subscription) resetDropWindow(now time.Time) {
 }
 
 // Compile-time assertion that bus implements events.EventBus AND
-// events.Replayer (Phase 06).
+// events.Replayer.
 var (
 	_ events.EventBus = (*bus)(nil)
 	_ events.Replayer = (*bus)(nil)

@@ -21,7 +21,7 @@
 // returns identical bytes. The invariant is asserted in
 // trajectory_test.go via golden bytes.
 //
-// Phase 43 is the load-bearing predecessor-bug closure. The fail-loudly
+// is the load-bearing predecessor-bug closure. The fail-loudly
 // tests in serialize_negative_test.go + toolcontext_test.go are the
 // gate.
 package trajectory
@@ -62,7 +62,7 @@ type Trajectory struct {
 	Steps []Step `json:"steps,omitempty"`
 
 	// Summary is the compaction artefact produced by the trajectory
-	// summariser (Phase 46). Non-nil when the runtime compressed the
+	// summariser. Non-nil when the runtime compressed the
 	// trajectory; the planner sees only the compacted view.
 	Summary *Summary `json:"summary,omitempty"`
 
@@ -110,11 +110,11 @@ type Step struct {
 	Action any `json:"action,omitempty"`
 
 	// ReasoningTrace is the provider-side thinking trace captured for
-	// this step (Phase 83e — D-147). The planner stamps it from
+	// this step. The planner stamps it from
 	// `llm.CompleteResponse.Reasoning` after the step's LLM call.
 	// It is captured content, kept for observability and `inspect-runs`
 	// — it is NEVER re-injected into a subsequent prompt unless the
-	// agent's `ReasoningReplay` mode is `text` (D-148). Empty when the
+	// agent's `ReasoningReplay` mode is `text`. Empty when the
 	// provider surfaced no reasoning. Reasoning content can be
 	// sensitive; any sink that persists or logs it routes through the
 	// audit redactor (CLAUDE.md §7).
@@ -143,14 +143,14 @@ type Step struct {
 
 	// LLMObservation is the projection of Observation that becomes
 	// the next prompt's input. Distinct from Observation so heavy
-	// blobs can be summarised before reaching the LLM (D-026).
+	// blobs can be summarised before reaching the LLM.
 	LLMObservation any `json:"llm_observation,omitempty"`
 
 	// Error captures a step-level failure (tool error, repair
 	// failure). Empty when the step succeeded.
 	Error string `json:"error,omitempty"`
 
-	// Failure is the structured failure record (Phase 44 repair
+	// Failure is the structured failure record (repair
 	// pipeline populates).
 	Failure *FailureRecord `json:"failure,omitempty"`
 
@@ -169,7 +169,7 @@ type Step struct {
 	TokenEstimate int `json:"token_estimate,omitempty"`
 }
 
-// Summary is the compaction artefact produced by Phase 46's
+// Summary is the compaction artefact produced by the
 // summariser. Replaces the raw step history in subsequent prompt
 // builds when the trajectory exceeds the configured budget.
 type Summary struct {
@@ -233,7 +233,7 @@ type BackgroundResult struct {
 	ResolvedAt time.Time `json:"resolved_at,omitempty"`
 
 	// Members is the per-member outcome summary (Result / Error /
-	// Cancelled, ref-shaped per D-026).
+	// Cancelled, ref-shaped).
 	Members []BackgroundMemberOutcome `json:"members,omitempty"`
 
 	// Reason is the cancel reason when Status == "cancelled";
@@ -260,7 +260,7 @@ type BackgroundMemberOutcome struct {
 }
 
 // ResumeHint signals the planner that this is a resume continuation.
-// The unified pause/resume primitive (Phase 50) populates the hint
+// The unified pause/resume primitive populates the hint
 // when re-invoking the planner after a pause.
 type ResumeHint struct {
 	// PauseToken is the opaque token the runtime issued at pause time.
@@ -274,7 +274,7 @@ type ResumeHint struct {
 	ResumePayload map[string]any `json:"resume_payload,omitempty"`
 }
 
-// FailureRecord is Phase 44's structured-failure projection. The
+// FailureRecord is the structured-failure projection. The
 // repair pipeline populates the fields.
 type FailureRecord struct {
 	// Code is the failure classification ("schema_repair_exhausted",

@@ -7,7 +7,7 @@ import (
 )
 
 // NodePolicy controls per-node reliability semantics. Zero value is
-// "no policy" — Phase 10's bare worker behavior (single invocation, no
+// "no policy" — the bare worker behavior (single invocation, no
 // timeout, no retry, no validation). Construct explicitly for
 // production nodes; the engine never silently applies defaults (per
 // AGENTS.md §5 "Fail loudly").
@@ -18,7 +18,7 @@ import (
 type NodePolicy struct {
 	// Validate selects which side(s) of the invocation the worker
 	// runs ValidateFunc on. Zero value is ValidateNone (no validation
-	// — matches the Phase 10 bare-worker behavior).
+	// matches the bare-worker behavior).
 	Validate ValidateMode
 	// TimeoutMS is the per-invocation deadline in milliseconds. 0
 	// means "no timeout" — the worker invokes Func with the engine's
@@ -44,10 +44,10 @@ type NodePolicy struct {
 	// (Validate=Both/In) and/or output (Validate=Both/Out) envelopes.
 	// nil with Validate != ValidateNone is a no-op (the worker treats
 	// it as "no validator configured" — fail-loud at construction
-	// time is the engine's responsibility, not the shell's; Phase 10
+	// time is the engine's responsibility, not the shell's; the retry layer
 	// could harden this if needed).
 	ValidateFunc func(messages.Envelope) error
-	// RunCapacity (Phase 12) caps the number of pending stream frames
+	// RunCapacity caps the number of pending stream frames
 	// (EmitChunk-emitted) for a run originating at this node before
 	// EmitChunk blocks. 0 means "use the engine's DefaultQueueSize"
 	// (64). Per-run override via WithRunCapacity on the originating
@@ -55,7 +55,7 @@ type NodePolicy struct {
 	//
 	// Backpressure is per-run, not per-engine: one run's saturation
 	// never pauses other runs (this is the deadlock-prevention
-	// guarantee from brief 01 §4).
+	// guarantee).
 	RunCapacity int
 }
 
@@ -65,7 +65,7 @@ type ValidateMode string
 
 const (
 	// ValidateNone disables validation. The perf escape hatch for hot
-	// streaming paths (Phase 12 will lean on this for stream nodes).
+	// streaming paths (A later phase will lean on this for stream nodes).
 	// Zero value of ValidateMode.
 	ValidateNone ValidateMode = ""
 	// ValidateBoth runs ValidateFunc on the input AND output envelope.
