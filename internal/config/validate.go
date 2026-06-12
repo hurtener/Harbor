@@ -836,6 +836,10 @@ func (c *Config) validateMemory() error {
 	if c.Memory.RetrievalTopK < 0 {
 		return fieldError("memory.retrieval_top_k", "must be >= 0")
 	}
+	if c.Memory.RetrievalMinScore < -1 || c.Memory.RetrievalMinScore > 1 {
+		return fieldError("memory.retrieval_min_score",
+			fmt.Sprintf("must be in [-1, 1], got %g", c.Memory.RetrievalMinScore))
+	}
 	return nil
 }
 

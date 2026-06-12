@@ -66,6 +66,7 @@ memory:
   strategy: rolling_summary
   retrieval: semantic        # opt-in; composes with the strategy
   retrieval_top_k: 5         # optional result cap (default 5)
+  retrieval_min_score: 0.0   # cosine similarity floor [-1, 1]; 0.0 is the default
 
 embeddings:                  # REQUIRED when any retrieval is semantic
   provider: openai
@@ -74,6 +75,8 @@ embeddings:                  # REQUIRED when any retrieval is semantic
 ```
 
 The `embeddings:` block is the embedding model/provider pair — configured **separately from the chat `llm` block** (they routinely come from different providers). Enabling a semantic mode without it fails validation loudly, naming the missing keys; there is no silent fallback to non-semantic retrieval and no mock embeddings driver.
+
+When `memory.retrieval: semantic` is set the run loop calls `SearchTurns` on every task, applies the `retrieval_min_score` floor, deduplicates against the recent-turn window, caps each recalled turn at 2 KiB per side, and injects the result into the prompt's `<read_only_external_memory>` tier. A `SearchTurns` error fails the run loudly (`runtime_fetch_error`) — there is no silent fall-back to summary-only.
 
 ### Identity scoping
 

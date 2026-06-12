@@ -45,8 +45,8 @@ for def in 'func projectMemoryBlocks' 'func projectSkillsContext' \
     assert_grep_absent "${def}" "cmd/harbor/cmd_dev_runloop.go" \
         "cmd runloop no longer defines '${def}'"
 done
-assert_grep_present 'runctx\.ProjectMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
-    "cmd runloop calls runctx.ProjectMemoryBlocks"
+assert_grep_present 'runctx\.FetchMemoryBlocks' "cmd/harbor/cmd_dev_runloop.go" \
+    "cmd runloop calls runctx.FetchMemoryBlocks (promotes ProjectMemoryBlocks + semantic recall)"
 assert_grep_present 'runctx\.ResolveInputArtifacts' "cmd/harbor/cmd_dev_runloop.go" \
     "cmd runloop calls runctx.ResolveInputArtifacts"
 assert_grep_present 'events\.IdentityStampingEmitter' "cmd/harbor/cmd_dev_runloop.go" \

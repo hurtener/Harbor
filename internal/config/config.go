@@ -477,6 +477,13 @@ type MemoryConfig struct {
 	// the memory subsystem default (5). Ignored unless
 	// `retrieval: semantic`.
 	RetrievalTopK int `yaml:"retrieval_top_k,omitempty"`
+	// RetrievalMinScore is the cosine-similarity floor for semantic
+	// recall: a scored turn must meet or exceed this value to be
+	// injected into the prompt. Valid range [-1, 1]. Default 0.0
+	// (turns with negative similarity, i.e. anti-correlated with the
+	// query, are filtered out while marginally-similar turns are
+	// admitted). Ignored unless `retrieval: semantic`.
+	RetrievalMinScore float64 `yaml:"retrieval_min_score,omitempty"`
 }
 
 // SkillsConfig is owned by the skills subsystem phases.

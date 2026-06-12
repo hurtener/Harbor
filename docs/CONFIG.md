@@ -393,6 +393,14 @@ Result cap for a semantic `SearchTurns` when the caller passes no
 limit. Default: `0` (resolves to the subsystem default, 5).
 Validation: >= 0. Ignored unless `memory.retrieval = "semantic"`.
 
+### memory.retrieval_min_score
+
+Cosine-similarity floor for semantic recall: a scored turn must meet
+or exceed this value to be injected into the prompt's External memory
+tier. Turns that fall below the floor are silently skipped. Default:
+`0.0`. Validation: must be in the range `[-1, 1]`. Ignored unless
+`memory.retrieval = "semantic"`.
+
 ---
 
 ## Skills

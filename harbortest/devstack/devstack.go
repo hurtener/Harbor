@@ -662,7 +662,8 @@ func assembleWith(cfg *config.Config, opts AssembleOpts) (*DevStack, error) {
 				// AssembleOpts overrides win; otherwise the cfg-opened
 				// stores + the SAME exported projections production uses
 				// (Phase 110c, D-196).
-				memory: resolveMemoryStore(opts, stack),
+				memory:       resolveMemoryStore(opts, stack),
+				memoryRecall: memory.RecallFromConfig(cfg.Memory),
 				// Phase 111d (D-201): the Phase-39 Directory is the
 				// `<skills_context>` producer (mirrors production).
 				skillsDirectory: skillsDir,
@@ -1203,6 +1204,7 @@ type DevStackRunLoopDriver struct {
 	// Directory (the `<skills_context>` producer), mirroring
 	// production's swap off raw SkillStore.Search.
 	memory          memory.MemoryStore
+	memoryRecall    memory.RecallSettings
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
@@ -1255,6 +1257,7 @@ type devStackRunLoopDriverOpts struct {
 	// `perTaskRunLoopDriverOpts` godoc. Phase 111d (D-201): the
 	// skills surface is the Directory.
 	memory          memory.MemoryStore
+	memoryRecall    memory.RecallSettings
 	skillsDirectory *skills.Directory
 	planningHints   *planner.PlanningHints
 
@@ -1301,6 +1304,7 @@ func newDevStackRunLoopDriver(opts devStackRunLoopDriverOpts) (*DevStackRunLoopD
 		tasks:           opts.tasks,
 		logger:          opts.logger,
 		memory:          opts.memory,
+		memoryRecall:    opts.memoryRecall,
 		skillsDirectory: opts.skillsDirectory,
 		planningHints:   opts.planningHints,
 		catalog:         opts.catalog,
@@ -1434,16 +1438,16 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 	sessionQ := identity.Quadruple{Identity: q.Identity}
 	var memBlocks *planner.MemoryBlocks
 	if d.memory != nil {
-		patch, mErr := d.memory.GetLLMContext(taskCtx, sessionQ)
+		mb, mErr := runctx.FetchMemoryBlocks(taskCtx, d.memory, sessionQ, task.Query, d.memoryRecall)
 		if mErr != nil {
 			if d.logger != nil {
-				d.logger.Warn("devstack runloop: memory.GetLLMContext failed",
+				d.logger.Warn("devstack runloop: FetchMemoryBlocks failed",
 					slog.String("task_id", string(taskID)),
 					slog.String("err", mErr.Error()))
 			}
 			if fErr := d.tasks.MarkFailed(taskCtx, taskID, tasks.TaskError{
 				Code:    "runtime_fetch_error",
-				Message: fmt.Sprintf("memory.GetLLMContext: %v", mErr),
+				Message: fmt.Sprintf("FetchMemoryBlocks: %v", mErr),
 			}); fErr != nil && d.logger != nil {
 				d.logger.Warn("devstack runloop: MarkFailed(runtime_fetch_error) failed",
 					slog.String("task_id", string(taskID)),
@@ -1451,9 +1455,7 @@ func (d *DevStackRunLoopDriver) runOne(q identity.Quadruple, taskID tasks.TaskID
 			}
 			return
 		}
-		if mb := runctx.ProjectMemoryBlocks(patch); mb != nil {
-			memBlocks = mb
-		}
+		memBlocks = mb
 	}
 
 	var skillsCtx []any
